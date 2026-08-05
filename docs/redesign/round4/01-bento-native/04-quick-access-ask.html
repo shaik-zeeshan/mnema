@@ -1,0 +1,1346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema · Bento Native · 04 Quick Access — Ask + ask about the current frame</title>
+<style>
+/* ==========================================================================
+   MNEMA · round 4 · direction 01 — BENTO NATIVE
+   One shared stylesheet, inlined into every page (pages are self-contained).
+
+   THEMING RULE: only TOKENS are themed. No component rule may branch on the
+   theme — if a component needs a different value in light, it gets a token.
+   That is what lets the light palette be injected in exactly two places:
+     @media (prefers-color-scheme: light) html:not([data-theme="dark"])
+     html[data-theme="light"]
+   ...with the attribute override always winning (it is later + more specific).
+   ========================================================================== */
+
+/* ── tokens: dark is the base ─────────────────────────────────────────── */
+:root {
+  /* surfaces — elevation is a surface STEP, never a shadow (except floating) */
+  --app-bg: #0c0c0e;
+  --app-surface: #17171f;
+  --app-surface-subtle: #1c1c26;
+  --app-surface-raised: #22222e;
+  --app-surface-hover: #2e2e40;
+  --app-surface-active: #282836;
+
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #9696ae;
+  --app-text-subtle: #7e7e98;
+  --app-text-faint: #5c5c76;
+
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-contrast: #07120c;
+  --app-accent-glow: rgba(61, 255, 160, .18);
+
+  --app-danger: #ff6b7a; --app-danger-strong: #ff4455;
+  --app-danger-bg: #2e0f14; --app-danger-border: #4a1a20;
+  --app-warn: #d6a14a;   --app-warn-strong: #c47a30;
+  --app-warn-bg: #1a1208; --app-warn-border: #7a4a18;
+  --app-info: #60b0ff;   --app-info-strong: #4a6aaa;
+  --app-info-bg: #0c1a2e; --app-info-border: #1a3050;
+
+  --app-record: #ff3148; --app-record-fg: #ff8a96;
+  --app-record-bg: #1a0f12; --app-record-border: #3a1820;
+
+  --app-src-screen: #c0b0ff; --app-src-screen-bg: #1a1a3a;
+  --app-src-mic: #80d0a8;    --app-src-mic-bg: #0f2e1f;
+  --app-src-sys: #b0c080;    --app-src-sys-bg: #2a2010;
+
+  /* direction tokens — the bento surface system */
+  --tile-fill: #17171f;
+  --tile-fill-hover: #1d1d27;
+  --tile-sep: #22222e;
+  --tile-live: rgba(255, 49, 72, .07);   /* the ONE tinted tile per screen  */
+  --media-void: #0b0b10;
+
+  /* materials + bezels — chrome only, content stays opaque */
+  --mat-toolbar: rgba(12, 12, 14, .76);
+  --mat-menu: rgba(26, 26, 32, .85);
+  --mat-pop: rgba(28, 28, 34, .96);   /* a popover over CONTENT stays opaque   */
+  --mat-dim: rgba(0, 0, 0, .34);
+  --mat-hud: rgba(22, 22, 28, .88);
+  --menu-edge: rgba(255, 255, 255, .10);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.07), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(6,6,10,.74), rgba(6,6,10,0) 44%);
+  --win-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.09);
+  --hud-shadow: 0 12px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.10);
+  --seg-on-bg: #22222e;
+  --seg-on-shadow: 0 1px 2.5px rgba(0,0,0,.35), inset 0 .5px 0 rgba(255,255,255,.08);
+  --shadow-popover: 0 8px 24px rgba(0,0,0,.32);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.48);
+  --tl-r: #ff5f57; --tl-y: #febc2e; --tl-g: #28c840;
+
+  /* the mockup document itself (never part of the app) */
+  --page-bg: #08080a;
+  --page-ink: #c0c0d0;
+  --desk-1: #1d2536; --desk-2: #0f141d;   /* the simulated desktop wallpaper */
+}
+
+/* ── type: six roles, three weights ───────────────────────────────────── */
+:root {
+  --app-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --app-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --t-label: 10px;   --lh-label: 1.4;   --ls-label: .02em;
+  --t-meta: 11px;    --lh-meta: 1.35;   --ls-meta: .01em;
+  --t-ui: 13px;      --lh-ui: 1.25;     --ls-ui: -.006em;
+  --t-read: 14px;    --lh-read: 1.55;   --ls-read: -.008em;
+  --t-title: 17px;   --lh-title: 1.3;   --ls-title: -.016em;
+  --t-display: 22px; --lh-display: 1.2; --ls-display: -.02em;
+  --w-regular: 400; --w-medium: 510; --w-semi: 590;
+
+  /* spacing ramp + named layout constants */
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px; --s-12:12px;
+  --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px; --s-48:48px;
+  --gap-inline: var(--s-6);
+  --gap-label: var(--s-4);
+  --gap-row: var(--s-8);
+  --gap-group: var(--s-16);
+  --gap-section: var(--s-24);
+  --pad-window: var(--s-16);
+  --pad-control: var(--s-8);
+  --pad-panel: var(--s-16);
+
+  /* THE BENTO GRID — one cell unit, one gutter, four legal footprints */
+  --cell-gutter: 16px;
+  --tile-pad: 14px;        /* 16 outer margin - 2 optical, held on every tile */
+  --tile-r: 12px;          /* the tile radius                                */
+  --tile-r-in: 6px;        /* derived: parent radius - inner inset (Container-
+                              RelativeShape). Never a hand-picked number.    */
+  --tile-hd: 18px;         /* the constant header row height (one baseline)  */
+
+  /* control metrics */
+  --h-sm: 24px; --h-md: 28px; --h-lg: 32px; --h-row: 28px; --h-titlebar: 38px;
+  --o-badge: 20px; --o-icon-sm: 14px; --o-icon: 20px; --o-icon-lg: 24px;
+  --o-setting-row: 40px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 999px;
+  --ring: 0 0 0 2px var(--app-accent-glow);
+  --opacity-disabled: .4;
+  --dur-quick: 100ms; --dur-regular: 250ms;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --hairline: 1px;
+}
+@media (min-resolution: 2dppx) { :root { --hairline: .5px; } }
+
+/* ── the light palette — TOKENS ONLY (injected twice, see build note) ─── */
+@media (prefers-color-scheme: light) { html:not([data-theme="dark"]) {
+  color-scheme: light;
+  --app-bg: #f6f6f4;
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a;
+  --app-text-faint: #9a9aa4;
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-contrast: #ffffff;
+  --app-accent-glow: rgba(31, 122, 74, .16);
+  --app-danger: #c43a48; --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2; --app-danger-border: #e4b6be;
+  --app-warn: #9a5a12;   --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df; --app-warn-border: #dfbc8a;
+  --app-info: #2b78c5;   --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff; --app-info-border: #bdd3ef;
+  --app-record: #d62236; --app-record-fg: #c81d2e;
+  --app-record-bg: #ffffff; --app-record-border: #ecbcc2;
+  --app-src-screen: #6f5ed1; --app-src-screen-bg: #f1edff;
+  --app-src-mic: #2f8e59;    --app-src-mic-bg: #e8f5ec;
+  --app-src-sys: #8b7a2c;    --app-src-sys-bg: #faf4df;
+
+  --tile-fill: #ffffff;
+  --tile-fill-hover: #f2f2f0;
+  --tile-sep: #e6e6e2;
+  --tile-live: rgba(214, 34, 54, .05);
+  --media-void: #e9e9e6;
+
+  --mat-toolbar: rgba(246, 246, 244, .80);
+  --mat-menu: rgba(250, 250, 248, .86);
+  --mat-pop: rgba(252, 252, 250, .97);
+  --mat-dim: rgba(30, 30, 34, .18);
+  --mat-hud: rgba(250, 250, 248, .90);
+  --menu-edge: rgba(0, 0, 0, .12);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.9), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(10,10,14,.80), rgba(10,10,14,0) 46%);
+  --win-shadow: 0 18px 50px rgba(21,28,38,.25), 0 0 0 1px rgba(0,0,0,.10);
+  --hud-shadow: 0 12px 40px rgba(21,28,38,.28), 0 0 0 1px rgba(0,0,0,.10);
+  --seg-on-bg: #ffffff;
+  --seg-on-shadow: 0 1px 2.5px rgba(21,28,38,.22);
+  --shadow-popover: 0 8px 24px rgba(21,28,38,.14);
+  --shadow-modal: 0 24px 64px rgba(21,28,38,.22);
+
+  --page-bg: #ececeb;
+  --page-ink: #2a2a32;
+  --desk-1: #cfd8e6; --desk-2: #9fb0c8;
+} }
+html[data-theme="light"] {
+  color-scheme: light;
+  --app-bg: #f6f6f4;
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a;
+  --app-text-faint: #9a9aa4;
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-contrast: #ffffff;
+  --app-accent-glow: rgba(31, 122, 74, .16);
+  --app-danger: #c43a48; --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2; --app-danger-border: #e4b6be;
+  --app-warn: #9a5a12;   --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df; --app-warn-border: #dfbc8a;
+  --app-info: #2b78c5;   --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff; --app-info-border: #bdd3ef;
+  --app-record: #d62236; --app-record-fg: #c81d2e;
+  --app-record-bg: #ffffff; --app-record-border: #ecbcc2;
+  --app-src-screen: #6f5ed1; --app-src-screen-bg: #f1edff;
+  --app-src-mic: #2f8e59;    --app-src-mic-bg: #e8f5ec;
+  --app-src-sys: #8b7a2c;    --app-src-sys-bg: #faf4df;
+
+  --tile-fill: #ffffff;
+  --tile-fill-hover: #f2f2f0;
+  --tile-sep: #e6e6e2;
+  --tile-live: rgba(214, 34, 54, .05);
+  --media-void: #e9e9e6;
+
+  --mat-toolbar: rgba(246, 246, 244, .80);
+  --mat-menu: rgba(250, 250, 248, .86);
+  --mat-pop: rgba(252, 252, 250, .97);
+  --mat-dim: rgba(30, 30, 34, .18);
+  --mat-hud: rgba(250, 250, 248, .90);
+  --menu-edge: rgba(0, 0, 0, .12);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.9), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(10,10,14,.80), rgba(10,10,14,0) 46%);
+  --win-shadow: 0 18px 50px rgba(21,28,38,.25), 0 0 0 1px rgba(0,0,0,.10);
+  --hud-shadow: 0 12px 40px rgba(21,28,38,.28), 0 0 0 1px rgba(0,0,0,.10);
+  --seg-on-bg: #ffffff;
+  --seg-on-shadow: 0 1px 2.5px rgba(21,28,38,.22);
+  --shadow-popover: 0 8px 24px rgba(21,28,38,.14);
+  --shadow-modal: 0 24px 64px rgba(21,28,38,.22);
+
+  --page-bg: #ececeb;
+  --page-ink: #2a2a32;
+  --desk-1: #cfd8e6; --desk-2: #9fb0c8;
+}
+
+/* ── resets + type classes ────────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { background: var(--page-bg); }
+body {
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--page-ink);
+  background: var(--page-bg);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; cursor: default; border: 0; background: none; }
+svg { display: block; }
+
+.t-label { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-muted); }
+.t-meta { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted); }
+.t-ui { font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text); }
+.t-read { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 70ch; }
+.t-title { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.t-display { font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.is-mono { font-family: var(--app-font-mono); }
+.is-num, .is-mono, .t-label { font-variant-numeric: tabular-nums; }
+.strong { color: var(--app-text-strong); }
+.muted { color: var(--app-text-muted); }
+.subtle { color: var(--app-text-subtle); }
+.acc { color: var(--app-accent); }
+
+/* ── the mockup document (masthead, page furniture) ───────────────────── */
+.mock { padding: 40px 32px 120px; max-width: 1600px; margin: 0 auto; }
+.mh { max-width: 92ch; }
+.mh__dir { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: .06em; text-transform: uppercase; color: var(--app-text-subtle); }
+.mh__pg { margin-top: var(--s-8); font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.mh__pg em { font-style: normal; font-family: var(--app-font-mono); font-size: 15px;
+  color: var(--app-text-subtle); margin-right: var(--s-8); }
+.mh__look { margin-top: var(--s-12); font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  color: var(--app-text-muted); max-width: 78ch; }
+.mh__look b { color: var(--app-text); font-weight: var(--w-medium); }
+.mh__rule { height: var(--hairline); background: var(--app-border); margin: 24px 0 0; }
+
+.fit { margin-top: var(--s-16); overflow-x: auto; padding-bottom: var(--s-8); }
+.fitrow { display: flex; gap: var(--s-32); align-items: flex-start; }
+.wlabel { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle);
+  margin: 0 0 var(--s-8); }
+.sect { margin-top: 56px; }
+.sect > h3 { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.sect > .note { margin-top: var(--s-6); max-width: 84ch;
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.sect > .note b { color: var(--app-text); font-weight: var(--w-medium); }
+.themetoggle { position: fixed; top: 14px; right: 16px; z-index: 999;
+  display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-md);
+  padding: 0 var(--s-12); border-radius: var(--r-pill);
+  background: var(--app-surface-raised); color: var(--app-text-strong);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), 0 4px 14px rgba(0,0,0,.22);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); }
+.themetoggle svg { width: 13px; height: 13px; }
+
+/* ── window shell ─────────────────────────────────────────────────────── */
+.window { position: relative; flex: 0 0 auto; background: var(--app-bg);
+  border-radius: 10px; overflow: hidden; box-shadow: var(--win-shadow);
+  display: flex; flex-direction: column; }
+.w1100 { width: 1100px; height: 720px; }
+.w800  { width: 800px;  height: 600px; }
+.wql   { width: 1120px; height: 720px; }
+
+.tbar { flex: 0 0 var(--h-titlebar); display: flex; align-items: center; gap: var(--s-12);
+  padding-right: var(--s-12); position: relative; z-index: 20;
+  background: var(--mat-toolbar); backdrop-filter: blur(20px) saturate(1.4); }
+.tbar--seam { box-shadow: 0 var(--hairline) 0 var(--app-border); }
+.tbar--float { position: absolute; top: 0; left: 0; right: 0; }
+.tl { display: flex; gap: 8px; padding: 0 var(--s-8) 0 20px; flex: 0 0 auto; }
+.tl i { width: 12px; height: 12px; border-radius: 50%; }
+.tl i:nth-child(1) { background: var(--tl-r); }
+.tl i:nth-child(2) { background: var(--tl-y); }
+.tl i:nth-child(3) { background: var(--tl-g); }
+.tbar__title { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+
+/* NSSegmentedControl */
+.seg { display: inline-flex; align-items: center; height: var(--h-md); padding: 2px;
+  border-radius: calc(var(--r-md) + 1px);
+  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent); }
+.seg__i { display: inline-flex; align-items: center; gap: var(--gap-inline); height: 100%;
+  padding: 0 var(--s-12); border-radius: var(--r-md);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  color: var(--app-text-muted); white-space: nowrap; }
+.seg__i.on { background: var(--seg-on-bg); color: var(--app-text-strong); box-shadow: var(--seg-on-shadow); }
+.seg__i .kbd { height: 16px; min-width: 16px; background: transparent; color: var(--app-text-subtle); padding: 0; }
+.seg--sm .seg__i { padding: 0 var(--s-8); }
+.seg--sm { height: var(--h-sm); }
+
+/* recording chrome — the state pill */
+.rec { display: flex; align-items: center; gap: var(--s-8); margin-left: auto; }
+.pill { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-pill); background: var(--app-record-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-record-border); }
+.pill__t { font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text); }
+.pill__gb { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+.pill__w { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--app-record-fg); white-space: nowrap; }
+.pill--quiet { background: var(--app-surface-hover); box-shadow: none; }
+.pill--quiet .pill__w { color: var(--app-text-muted); }
+.pill--warn { background: var(--app-warn-bg); box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); }
+.pill--warn .pill__w { color: var(--app-warn); }
+.rec__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-record); flex: 0 0 auto;
+  animation: recpulse 2s var(--ease) infinite; }
+@keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+.srcg { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+.srcg svg { width: 12px; height: 12px; }
+.srcg--screen { color: var(--app-src-screen); }
+.srcg--mic { color: var(--app-src-mic); }
+.srcg--sys { color: var(--app-src-sys); }
+.srcg--off { color: var(--app-text-faint); }
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 var(--s-12); border-radius: var(--r-md);
+  border: var(--hairline) solid var(--app-border-strong);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  white-space: nowrap; background: var(--app-surface-raised); color: var(--app-text-strong);
+  transition: background-color var(--dur-quick) var(--ease); }
+.btn:hover { background: var(--app-surface-hover); }
+.btn:active { background: var(--app-surface-active); }
+.btn svg { width: 12px; height: 12px; }
+.btn--push { background-image: var(--push-grad); box-shadow: 0 .5px 1.5px rgba(0,0,0,.25); }
+.btn--default { background: linear-gradient(to bottom, color-mix(in srgb, var(--app-accent) 88%, white), var(--app-accent));
+  color: var(--app-accent-contrast); border-color: transparent; box-shadow: 0 .5px 1.5px rgba(0,0,0,.3); }
+.btn--ghost { background: transparent; border-color: transparent; color: var(--app-text-muted); }
+.btn--ghost:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+.btn--danger { background: var(--app-danger-bg); color: var(--app-danger); border-color: var(--app-danger-border); }
+.btn--sm { height: var(--h-sm); padding: 0 var(--s-8); }
+.btn--icon { width: var(--h-md); padding: 0; }
+.btn--icon.btn--sm { width: var(--h-sm); }
+.btn.is-dis { opacity: var(--opacity-disabled); }
+.is-focused { box-shadow: 0 0 0 3.5px var(--app-accent-glow) !important; }
+
+.input { display: flex; align-items: center; gap: var(--s-6); height: var(--h-md);
+  padding: 0 var(--pad-control); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-subtle); color: var(--app-text-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui); }
+.input .ph { color: var(--app-text-subtle); }
+.input svg { width: 12px; height: 12px; color: var(--app-text-subtle); flex: 0 0 auto; }
+
+/* NSPopUpButton */
+.pop { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm);
+  padding: 0 3px 0 var(--s-8); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-raised) var(--push-grad);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong);
+  box-shadow: 0 .5px 1.5px rgba(0,0,0,.25); white-space: nowrap; }
+.pop b { width: 16px; height: 18px; border-radius: var(--r-sm); background: var(--app-accent);
+  color: var(--app-accent-contrast); display: inline-flex; align-items: center; justify-content: center; }
+.pop b svg { width: 9px; height: 9px; }
+
+/* NSSwitch / checkbox */
+.sw { position: relative; width: 38px; height: 22px; border-radius: var(--r-pill); flex: 0 0 auto;
+  background: color-mix(in srgb, var(--app-text-subtle) 42%, transparent); }
+.sw i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2.5px rgba(0,0,0,.35); }
+.sw.on { background: var(--app-accent); }
+.sw.on i { left: 18px; }
+.sw.is-dis { opacity: var(--opacity-disabled); }
+.cb { width: 14px; height: 14px; border-radius: 3.5px; flex: 0 0 auto;
+  border: var(--hairline) solid var(--app-border-strong);
+  background: var(--app-surface-raised) var(--push-grad); }
+.cb.on { border-color: transparent; background: var(--app-accent);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--app-accent-contrast); }
+.cb.on svg { width: 9px; height: 9px; }
+
+.kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+  padding: 0 var(--s-4); border-radius: var(--r-sm); background: var(--app-surface-raised);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted); }
+.kbd--mod { min-width: 46px; }
+.kbd--lg { height: 24px; min-width: 24px; font-size: var(--t-meta); color: var(--app-text-strong); }
+
+.chip { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-pill); background: var(--app-surface);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); white-space: nowrap; }
+.chip.on { background: var(--app-accent); color: var(--app-accent-contrast); }
+.chip--verdict { height: var(--o-badge); padding: 0 var(--s-6); border-radius: var(--r-sm);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.chip--ok { background: var(--app-accent-bg); color: var(--app-accent); }
+.chip--warn { background: var(--app-warn-bg); color: var(--app-warn); }
+.chip--bad { background: var(--app-danger-bg); color: var(--app-danger); }
+.chip--flat { background: var(--app-surface-hover); color: var(--app-text-muted); }
+
+.chev { color: var(--app-text-faint); flex: 0 0 auto; }
+.chev svg { width: 8px; height: 12px; }
+.spin { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--app-border-strong); border-top-color: var(--app-text-muted);
+  animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.caret { display: inline-block; width: 1.5px; height: 16px; background: var(--app-accent);
+  animation: caret 1.1s step-end infinite; vertical-align: -3px; }
+@keyframes caret { 50% { opacity: 0; } }
+
+/* NSMenu */
+.menu { min-width: 210px; padding: 5px; border-radius: var(--r-md); background: var(--mat-menu);
+  backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge); }
+.menu__i { height: 24px; display: flex; align-items: center; padding: 0 var(--s-8) 0 0;
+  border-radius: 5px; font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-strong); white-space: nowrap; }
+.menu__i.is-hl { background: var(--app-accent); color: var(--app-accent-contrast); }
+.menu__i.is-dis { color: var(--app-text-subtle); }
+.menu__ck { width: 20px; flex: 0 0 auto; display: inline-flex; justify-content: center; }
+.menu__ck svg { width: 10px; height: 10px; }
+.menu__gl { width: 18px; flex: 0 0 auto; margin-right: var(--s-4); display: inline-flex; justify-content: center; }
+.menu__gl svg { width: 13px; height: 13px; opacity: .85; }
+.menu__kbd { margin-left: auto; padding-left: var(--s-16);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.menu__i.is-hl .menu__kbd { color: var(--app-accent-contrast); opacity: .8; }
+.menu__sep { height: var(--hairline); background: var(--app-border-strong); margin: 5px var(--s-8); }
+.menu__hd { padding: var(--s-4) var(--s-8) var(--s-4) 20px;
+  font: var(--w-medium) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-subtle); }
+
+/* toast */
+.toast { display: grid; gap: var(--gap-label); width: 320px; padding: var(--s-12);
+  border-radius: var(--r-xl); background: var(--app-surface-raised); box-shadow: var(--shadow-popover); }
+.toast__t { font: var(--w-medium) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  color: var(--app-text-strong); display: flex; align-items: center; gap: var(--gap-inline); }
+.toast__m { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.dot-danger, .dot-info, .dot-ok { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.dot-danger { background: var(--app-danger); }
+.dot-info { background: var(--app-info); }
+.dot-ok { background: var(--app-accent); }
+
+/* ══ THE BENTO ══════════════════════════════════════════════════════════
+   One cell unit, one gutter, four legal footprints (1x1, 2x1, 2x2, 4x1).
+   Chrome is CONSTANT: every tile opens with the same header row on the same
+   baseline. Below it the payload is free — and it may bleed to the tile edge,
+   clipped by the tile radius. That bleed is what stops a bento reading as a
+   form.                                                                     */
+.bento { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--cell-gutter); }
+.bento--2 { grid-template-columns: repeat(2, 1fr); }
+.bento--3 { grid-template-columns: repeat(3, 1fr); }
+.tile { position: relative; background: var(--tile-fill); border-radius: var(--tile-r);
+  padding: var(--tile-pad); min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; }
+.tile--w2 { grid-column: span 2; }
+.tile--w3 { grid-column: span 3; }
+.tile--w4 { grid-column: 1 / -1; }
+.tile--h2 { grid-row: span 2; }
+.tile--live { background: linear-gradient(to bottom, var(--tile-live), transparent 62%), var(--tile-fill); }
+.tile--acc { background: linear-gradient(to bottom, var(--app-accent-glow), transparent 58%), var(--tile-fill); }
+.tile:hover { background-color: var(--tile-fill-hover); }
+.tile--static:hover { background-color: var(--tile-fill); }
+
+/* the constant header row — every tile, same height, same baseline */
+.tile__h { flex: 0 0 var(--tile-hd); display: flex; align-items: center; gap: var(--gap-inline);
+  margin-bottom: var(--s-8); }
+.tile__h .t-label { color: var(--app-text-subtle); }
+.tile__h .more { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans);
+  color: var(--app-text-subtle); display: inline-flex; align-items: center; gap: var(--s-4); }
+.tile__h .more svg { width: 8px; height: 12px; }
+.tile__h .hglyph { width: 13px; height: 13px; color: var(--app-text-subtle); flex: 0 0 auto; }
+/* the payload zone: everything under the header. --bleed pulls it back out to
+   the tile edge so it clips on the radius. */
+.pay { flex: 1 1 auto; min-height: 0; position: relative; }
+.pay--bleed { margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1); }
+.pay--bleedr { margin-right: calc(var(--tile-pad) * -1); }
+.pay--bleedb { margin-bottom: calc(var(--tile-pad) * -1); }
+.trow { display: flex; align-items: center; gap: var(--s-8); min-height: var(--h-row); }
+.trow--sep + .trow--sep { box-shadow: 0 -1px 0 var(--tile-sep); }
+
+/* rows inside a tile (conversations, subjects, settings) */
+.row { position: relative; display: flex; align-items: center; gap: var(--s-12);
+  min-height: var(--o-setting-row); padding: var(--s-6) var(--tile-pad); }
+.row + .row::before { content: ""; position: absolute; top: 0; left: var(--tile-pad); right: 0;
+  height: var(--hairline); background: var(--tile-sep); }
+.row:hover { background: var(--tile-fill-hover); }
+.row--static:hover { background: transparent; }
+.row__txt { min-width: 0; flex: 1 1 auto; }
+.row__lbl { display: block; font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-strong);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row__sub { display: block; margin-top: 2px; font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row__val { margin-left: auto; flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-8);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.row.is-sel { background: var(--app-accent); }
+.row.is-sel .row__lbl, .row.is-sel .row__sub, .row.is-sel .row__val { color: var(--app-accent-contrast); }
+/* a tile whose payload IS a row list: rows bleed to both edges */
+.pay--rows { margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1); }
+.pay--rows .row:last-child { padding-bottom: var(--s-8); }
+
+.aicon { width: var(--o-icon); height: var(--o-icon); border-radius: 5px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: var(--w-semi) var(--t-label)/1 var(--app-font-mono); color: #fff; }
+.aicon--lg { width: var(--o-icon-lg); height: var(--o-icon-lg); border-radius: var(--r-md); }
+.thumb { width: 50px; height: 28px; border-radius: var(--tile-r-in); overflow: hidden; flex: 0 0 auto;
+  position: relative; background: var(--media-void); }
+.conv { display: inline-flex; gap: 3px; }
+.conv i { width: 5px; height: 5px; border-radius: 50%; background: var(--app-border-strong); }
+.conv i.on { background: var(--app-accent); }
+.spark { display: flex; align-items: flex-end; gap: 4px; }
+.spark span { flex: 1 1 0; display: flex; align-items: flex-end; height: 100%; }
+.spark i { width: 100%; border-radius: 2px 2px 0 0; background: var(--app-accent); opacity: .34; }
+.spark i.on { opacity: 1; }
+
+/* the moments filmstrip — media payload, bleeds and clips on the radius */
+.strip { display: flex; gap: 2px; background: var(--media-void); height: 100%; }
+.strip > i { flex: 1 1 0; position: relative; overflow: hidden; display: block; }
+.strip > i::after { content: ""; position: absolute; inset: 0; background: var(--scrim); }
+.strip > i.half { flex: 0 0 46px; }
+.strip__t { position: absolute; left: var(--s-8); bottom: var(--s-6); z-index: 2;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  color: #f2f2f5; font-variant-numeric: tabular-nums; }
+.strip__c { position: absolute; left: var(--s-8); bottom: 20px; z-index: 2; max-width: 84%;
+  font: var(--w-medium) var(--t-meta)/1.2 var(--app-font-sans); color: #f2f2f5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* an inline citation chip (digest prose) */
+.cite { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--o-badge);
+  padding: 0 var(--s-6) 0 var(--s-2); border-radius: var(--r-sm); background: var(--app-surface-hover);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums; vertical-align: -5px; }
+.cite i { width: 24px; height: 14px; border-radius: 2px; overflow: hidden; position: relative;
+  display: inline-block; background: var(--media-void); }
+
+/* ── scrollbars: overlay ──────────────────────────────────────────────── */
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--app-text-subtle) 45%, transparent);
+  border-radius: 4px; border: 2px solid transparent; background-clip: content-box; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ── app icon stand-ins ───────────────────────────────────────────────── */
+.ic-code{background:#2f7cd6} .ic-safari{background:#2c8ef3} .ic-figma{background:#a259ff}
+.ic-slack{background:#611f69} .ic-term{background:#3a3f45} .ic-notion{background:#8a8378}
+.ic-zoom{background:#2d8cff} .ic-mnema{background:var(--app-accent-strong)}
+.ic-1p{background:#4b8bf5} .ic-sig{background:#3ba55c} .ic-mail{background:#d64a3f}
+
+/* ══ CSS-DRAWN FAKE SCREENSHOTS ═════════════════════════════════════════
+   Percentage-based, so one markup block works full-bleed in the stage, at
+   349x196 in a result tile, and at 24x14 in a citation chip. No percentage
+   padding on .shot children (it resolves against the containing-block WIDTH).
+   ====================================================================== */
+:root {
+  --shot-void:#0b0b10;
+  --shot-ed-bg:#1b1b24; --shot-ed-side:#15151d; --shot-ed-act:#0f0f16; --shot-ed-tab:#262633;
+  --shot-ink:#4c4c62; --shot-ink-2:#6e6e8c; --shot-ink-3:#33334a;
+  --shot-kw:#c08cf0; --shot-str:#8fd694; --shot-fn:#6fb8f0; --shot-num:#e0a55c; --shot-cm:#48584f;
+  --shot-paper:#f5f5f2; --shot-paper-2:#e7e7e2; --shot-paper-3:#d6d6d0;
+  --shot-pink:#3d3d46; --shot-pink-2:#9c9ca8;
+  --shot-chrome-lt:#e9e9e6;
+  --shot-slack:#3b2544; --shot-slack-2:#4d3157;
+  --shot-fig-bg:#2c2c33; --shot-fig-canvas:#1d1d23; --shot-fig-blue:#4b8bf5;
+  --shot-fig-orange:#f24e1e; --shot-fig-green:#0acf83; --shot-fig-purple:#a259ff;
+  --shot-term-bg:#0c0e0d; --shot-term-green:#4ade80; --shot-term-red:#f87171; --shot-term-dim:#4f6058;
+  --shot-sheet-head:#1e7a4a; --shot-sheet-line:#dcdcd6; --shot-sheet-sel:#1a73e8;
+  --shot-call-bg:#16161c; --shot-call-tile:#282833; --shot-call-ctrl:#33333f;
+  --shot-blue:#5b8def; --shot-amber:#e0894a; --shot-wave:#7c8ba0;
+}
+.shot{position:relative;width:100%;height:100%;overflow:hidden;background:var(--shot-void)}
+.shot > *{position:absolute}
+span.shot{display:block}
+.ln{display:flex;align-items:center;gap:2.2%;width:100%;height:100%}
+.tk{flex:0 0 auto;height:100%;border-radius:1px;background:var(--shot-ink)}
+.tk--kw{background:var(--shot-kw)} .tk--str{background:var(--shot-str)}
+.tk--fn{background:var(--shot-fn)} .tk--num{background:var(--shot-num)}
+.tk--cm{background:var(--shot-cm)} .tk--dim{background:var(--shot-ink-3)}
+.tk--pi{background:var(--shot-pink)} .tk--pi2{background:var(--shot-pink-2)}
+.tk--g{background:var(--shot-term-green)} .tk--r{background:var(--shot-term-red)}
+.tk--t{background:var(--shot-term-dim)}
+.w4{width:4%}.w6{width:6%}.w8{width:8%}.w10{width:10%}.w12{width:12%}.w14{width:14%}
+.w16{width:16%}.w18{width:18%}.w20{width:20%}.w22{width:22%}.w24{width:24%}.w26{width:26%}
+.w28{width:28%}.w30{width:30%}.w32{width:32%}.w34{width:34%}.w36{width:36%}.w38{width:38%}
+.w40{width:40%}.w44{width:44%}.w48{width:48%}.w52{width:52%}.w56{width:56%}.w60{width:60%}
+.w64{width:64%}.w70{width:70%}.w76{width:76%}.w82{width:82%}.w88{width:88%}.w94{width:94%}
+.stack{display:flex;flex-direction:column;justify-content:space-between}
+.stack > .ln{height:6%}
+.shot--dense .stack{justify-content:flex-start;gap:2.2%}
+.shot--dense .stack > .ln{height:3.1%}
+.shot--dense .files i{height:2.4%}
+.shot--dense .files{gap:3.4%}
+.shot--editor{background:var(--shot-ed-bg)}
+.shot--editor .act{left:0;top:0;bottom:0;width:5.5%;background:var(--shot-ed-act);border-right:1px solid var(--shot-ink-3)}
+.shot--editor .side{left:5.5%;top:0;bottom:0;width:21%;background:var(--shot-ed-side)}
+.shot--editor .tabs{left:26.5%;right:0;top:0;height:9%;background:var(--shot-ed-act)}
+.shot--editor .tab{top:0;height:9%;background:var(--shot-ed-tab)}
+.shot--editor .tab.a{left:26.5%;width:15%;background:var(--shot-ed-bg)}
+.shot--editor .tab.b{left:41.5%;width:13%}
+.shot--editor .tab.c{left:54.5%;width:14%}
+.shot--editor .files{left:8%;right:76%;top:12%;bottom:6%;display:flex;flex-direction:column;justify-content:flex-start;gap:6%}
+.shot--editor .files i{display:block;height:4.5%;background:var(--shot-ink-3);border-radius:1px}
+.shot--editor .files i.on{background:var(--shot-ink-2)}
+.shot--editor .code{left:29%;right:3%;top:13%;bottom:5%}
+.shot--editor .gut{left:27%;width:1.4%;top:13%;bottom:5%;background:var(--shot-ink-3);opacity:.35}
+.shot--editor .caret{left:44%;top:41%;width:.5%;height:5%;background:var(--shot-str);animation:none}
+.shot--browser{background:var(--shot-chrome-lt)}
+.shot--browser .bar{left:0;right:0;top:0;height:13%;background:var(--shot-chrome-lt)}
+.shot--browser .dots{left:2%;top:4.5%;width:12%;height:4%;display:flex;gap:12%}
+.shot--browser .dots i{flex:1 1 0;border-radius:50%;background:var(--shot-paper-3)}
+.shot--browser .url{left:20%;right:20%;top:3.5%;height:6%;border-radius:3px;background:var(--shot-paper-2)}
+.shot--browser .pg{left:0;right:0;top:13%;bottom:0;background:var(--shot-paper)}
+.shot--browser .art{left:14%;right:32%;top:19%;bottom:6%;display:flex;flex-direction:column;gap:4.5%}
+.shot--browser .art .h{height:9%;background:var(--shot-pink);border-radius:2px;width:74%}
+.shot--browser .art .ln{height:4.5%}
+.shot--browser .aside{right:6%;width:22%;top:19%;bottom:14%;display:flex;flex-direction:column;gap:6%}
+.shot--browser .aside i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px}
+.shot--browser .aside i.hi{background:var(--shot-blue);opacity:.25}
+.shot--figma{background:var(--shot-fig-canvas)}
+.shot--figma .top{left:0;right:0;top:0;height:9%;background:var(--shot-fig-bg)}
+.shot--figma .lp{left:0;top:9%;bottom:0;width:19%;background:var(--shot-fig-bg)}
+.shot--figma .rp{right:0;top:9%;bottom:0;width:17%;background:var(--shot-fig-bg);display:flex;flex-direction:column;gap:5%;padding:5% 2% 0}
+.shot--figma .rp em{position:static;flex:0 0 auto;height:6%;border-radius:2px;background:var(--shot-ink)}
+.shot--figma .rp em.sw{background:var(--shot-fig-orange);opacity:.8;width:auto;border-radius:2px}
+.shot--figma .lyr{left:4%;right:83%;top:14%;bottom:8%;display:flex;flex-direction:column;gap:7%}
+.shot--figma .lyr i{height:4%;background:var(--shot-ink-3);border-radius:1px}
+.shot--figma .lyr i.on{background:var(--shot-fig-blue);opacity:.7}
+.shot--figma .art1{left:26%;top:20%;width:26%;height:44%;background:var(--shot-paper);border-radius:2px;outline:1px solid var(--shot-fig-blue)}
+.shot--figma .art2{left:56%;top:20%;width:22%;height:28%;background:var(--shot-paper-2);border-radius:2px}
+.shot--figma .sq{left:56%;top:53%;width:10%;height:18%;background:var(--shot-fig-orange);border-radius:2px}
+.shot--figma .ci{left:69%;top:53%;width:9%;height:16%;background:var(--shot-fig-purple);border-radius:50%}
+.shot--figma .lbl{left:26%;top:15.5%;width:12%;height:3.5%;background:var(--shot-fig-blue);border-radius:1px}
+.shot--chat{background:var(--shot-ed-bg)}
+.shot--chat .rail{left:0;top:0;bottom:0;width:7%;background:var(--shot-slack);display:flex;flex-direction:column;gap:8%;padding:4.5% 1.5%}
+.shot--chat .rail i{flex:0 0 auto;height:7%;border-radius:3px;background:var(--shot-pink-2);opacity:.5}
+.shot--chat .rail i.on{background:var(--shot-paper-3)}
+.shot--chat .chans{left:7%;top:0;bottom:0;width:21%;background:var(--shot-slack-2);display:flex;flex-direction:column;gap:5.5%;padding:5.5% 2.5% 0}
+.shot--chat .chans i{flex:0 0 auto;height:4%;border-radius:1px;background:var(--shot-pink-2);opacity:.55}
+.shot--chat .chans i.on{opacity:1;background:var(--shot-paper-3)}
+.shot--chat .msgs{left:30%;right:17%;top:12%;bottom:12%;display:flex;flex-direction:column;justify-content:space-between}
+.shot--chat .msg{display:flex;gap:3%;height:26%;align-items:stretch}
+.shot--chat .av{width:9%;aspect-ratio:1;border-radius:3px;background:var(--shot-blue);flex:0 0 auto}
+.shot--chat .msg:nth-child(2) .av{background:var(--shot-amber)}
+.shot--chat .msg:nth-child(3) .av{background:var(--shot-fig-green)}
+.shot--chat .bd{flex:1 1 auto;height:100%;display:flex;flex-direction:column;justify-content:flex-start;gap:9%;padding-top:3%}
+.shot--chat .bd i{flex:0 0 auto;height:13%;background:var(--shot-ink);border-radius:1px}
+.shot--chat .bd i.n{background:var(--shot-paper-3);width:26%!important}
+.shot--chat .who{right:0;top:0;bottom:0;width:16%;background:var(--shot-ed-side);display:flex;flex-direction:column;gap:7%;padding:5% 2.2% 0}
+.shot--chat .who i{flex:0 0 auto;height:5%;border-radius:1px;background:var(--shot-ink)}
+.shot--chat .cmp{left:30%;right:17%;bottom:4%;height:8%;border-radius:3px;background:var(--shot-ed-side);outline:1px solid var(--shot-ink-3)}
+.shot--terminal{background:var(--shot-term-bg)}
+.shot--terminal .code{left:4%;right:4%;top:8%;bottom:8%}
+.shot--terminal .cur{left:9%;bottom:14%;width:1.4%;height:5%;background:var(--shot-term-green);animation:none}
+.shot--sheet{background:var(--shot-paper)}
+.shot--sheet .hd{left:0;right:0;top:0;height:11%;background:var(--shot-sheet-head)}
+.shot--sheet .colh{left:0;right:0;top:11%;height:8%;background:var(--shot-paper-2);display:flex}
+.shot--sheet .colh i{position:static;flex:1 1 0;border-right:1px solid var(--shot-sheet-line)}
+.shot--sheet .g{left:0;right:0;top:19%;bottom:0;display:flex;flex-direction:column}
+.shot--sheet .r{display:flex;flex:1 1 0;border-bottom:1px solid var(--shot-sheet-line)}
+.shot--sheet .c{flex:1 1 0;border-right:1px solid var(--shot-sheet-line);position:relative}
+.shot--sheet .c b{position:absolute;right:10%;top:34%;height:30%;border-radius:1px;background:var(--shot-pink);opacity:.5}
+.shot--sheet .c.l b{left:10%;right:auto}
+.shot--sheet .c.sel{outline:2px solid var(--shot-sheet-sel);outline-offset:-2px}
+.shot--sheet .c.pos b{background:var(--shot-sheet-head);opacity:.7}
+.shot--call{background:var(--shot-call-bg)}
+.shot--call .tiles{left:2%;right:2%;top:4%;bottom:19%;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:2%}
+.shot--call .t{position:relative;background:var(--shot-call-tile);border-radius:3px}
+.shot--call .t i{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);width:30%;aspect-ratio:1;border-radius:50%;background:var(--shot-ink-2)}
+.shot--call .t u{position:absolute;left:10%;bottom:10%;width:52%;height:10%;border-radius:1px;background:var(--shot-ink-3)}
+.shot--call .t.on{outline:2px solid var(--shot-fig-green);outline-offset:-2px}
+.shot--call .ctrl{left:0;right:0;bottom:0;height:15%;background:var(--shot-call-ctrl);display:flex;align-items:center;justify-content:center;gap:3%}
+.shot--call .ctrl i{position:static;height:52%;aspect-ratio:1;border-radius:50%;background:var(--shot-ink-3);flex:0 0 auto}
+.shot--call .ctrl i.r{background:var(--shot-term-red)}
+.shot--docs{background:var(--shot-paper)}
+.shot--docs .nav{left:0;top:0;bottom:0;width:17%;background:var(--shot-paper-2);display:flex;flex-direction:column;gap:5%;padding:5% 2.4% 0}
+.shot--docs .nav i{flex:0 0 auto;height:3.6%;border-radius:1px;background:var(--shot-pink-2);opacity:.6}
+.shot--docs .nav i.on{background:var(--shot-pink-2);opacity:1}
+.shot--docs .pg{left:23%;right:26%;top:12%;bottom:6%;display:flex;flex-direction:column;gap:4%}
+.shot--docs .pg .h{height:10%;width:62%;background:var(--shot-pink);border-radius:2px}
+.shot--docs .pg .ln{height:4%}
+.shot--docs .cmt{right:4%;width:19%;top:16%;bottom:26%;display:flex;flex-direction:column;gap:8%}
+.shot--docs .cmt i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px;border-left:2px solid var(--shot-amber)}
+.shot--wave{background:var(--media-void);display:flex;align-items:center;justify-content:center;gap:1.1%;padding:0 6%}
+.shot--wave > *{position:static}
+.shot--wave i{flex:1 1 0;background:var(--shot-wave);border-radius:1px;opacity:.75}
+.shot--wave i.hi{background:var(--app-src-mic);opacity:1}
+.shot--wave i.sy{background:var(--app-src-sys);opacity:1}
+/* span hosts (row thumbs, citation chips) would otherwise take span.shot's
+   display:block and stack the bars vertically */
+span.shot--wave{display:flex}
+/* OCR overlay bits that sit on a shot */
+.ocrbox{position:absolute;z-index:4;border:1px dashed color-mix(in srgb,var(--app-accent) 75%,transparent);
+  border-radius:2px;background:color-mix(in srgb,var(--app-accent) 8%,transparent)}
+.hit{position:absolute;z-index:3;background:color-mix(in srgb,var(--app-accent) 26%,transparent);
+  outline:1px solid var(--app-accent);border-radius:1px}
+mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;padding:0 2px}
+
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-spark" viewBox="0 0 14 14"><path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor"/></symbol>
+<symbol id="i-spark-o" viewBox="0 0 14 14"><path d="M7 1.8 8.3 5.7 12.2 7 8.3 8.3 7 12.2 5.7 8.3 1.8 7 5.7 5.7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-check" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9 10 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevr" viewBox="0 0 8 12"><path d="M2 1.5 6.5 6 2 10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevl" viewBox="0 0 8 12"><path d="M6.5 1.5 2 6l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 12 8"><path d="M1.5 2 6 6.5 10.5 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevud" viewBox="0 0 10 12"><path d="M2 4.5 5 1.5 8 4.5 M2 7.5 5 10.5 8 7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-screen" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="7.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 12h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-mic" viewBox="0 0 14 14"><rect x="5" y="1.5" width="4" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-sys" viewBox="0 0 14 14"><path d="M2.5 5.5h2.4L8 2.8v8.4L4.9 8.5H2.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 5a3 3 0 0 1 0 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-pause" viewBox="0 0 12 12"><path d="M3.5 2v8M8.5 2v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-stop" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1.4" fill="currentColor"/></symbol>
+<symbol id="i-play" viewBox="0 0 12 12"><path d="M3 1.8v8.4L10 6z" fill="currentColor"/></symbol>
+<symbol id="i-cal" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 5.5h11M4.5 1v3M9.5 1v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-clock" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4.2V7l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-scan" viewBox="0 0 14 14"><path d="M1.5 4V2.5A1 1 0 0 1 2.5 1.5H4M10 1.5h1.5a1 1 0 0 1 1 1V4M12.5 10v1.5a1 1 0 0 1-1 1H10M4 12.5H2.5a1 1 0 0 1-1-1V10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4.2 5.5h5.6M4.2 8.5h3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-frame" viewBox="0 0 14 14"><path d="M4 1.2v11.6M10 1.2v11.6M1.2 4h11.6M1.2 10h11.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 14 14"><path d="M12 6.2A5 5 0 1 0 11.4 9.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.4 2.4v3.9H8.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-more" viewBox="0 0 14 14"><circle cx="3" cy="7" r="1.15" fill="currentColor"/><circle cx="7" cy="7" r="1.15" fill="currentColor"/><circle cx="11" cy="7" r="1.15" fill="currentColor"/></symbol>
+<symbol id="i-x" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+<symbol id="i-plus" viewBox="0 0 12 12"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+<symbol id="i-arrup" viewBox="0 0 12 12"><path d="M6 10V2.4M2.6 5.8 6 2.4l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-pin" viewBox="0 0 14 14"><path d="M8.5 1.8 12.2 5.5 9.6 8.1 9.2 11 7.4 9.2 3.6 13 1 13 4.8 6.6 3 4.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-head" viewBox="0 0 14 14"><path d="M2.5 10V7a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="1.5" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/><rect x="9.9" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/></symbol>
+<symbol id="i-slider" viewBox="0 0 14 14"><path d="M1.5 4h8M11.5 4h1M1.5 10h3M6.5 10h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="10.4" cy="4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5.4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-db" viewBox="0 0 14 14"><ellipse cx="7" cy="3.4" rx="4.8" ry="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 3.4v7.2c0 1.05 2.15 1.9 4.8 1.9s4.8-.85 4.8-1.9V3.4M2.2 7c0 1.05 2.15 1.9 4.8 1.9s4.8-.85 4.8-1.9" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-lock" viewBox="0 0 14 14"><rect x="2.6" y="6.2" width="8.8" height="6.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.8 6.2V4.5a2.2 2.2 0 0 1 4.4 0v1.7" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-info" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 6.4v3.4M7 4.3v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-warn" viewBox="0 0 14 14"><path d="M7 1.8 13 12.2H1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7 5.6v3M7 10.4v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-trash" viewBox="0 0 14 14"><path d="M2.4 3.6h9.2M5.4 3.6V2.4h3.2v1.2M3.6 3.6l.6 8.2h5.6l.6-8.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-eye" viewBox="0 0 14 14"><path d="M1 7s2.3-4 6-4 6 4 6 4-2.3 4-6 4-6-4-6-4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="7" cy="7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 14 14"><path d="M2.6 4.2C1.6 5.2 1 7 1 7s2.3 4 6 4c1.2 0 2.2-.3 3-.7M11 8.9c1.3-1 2-1.9 2-1.9s-2.3-4-6-4c-.5 0-1 .07-1.4.18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M1.8 1.8l10.4 10.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-layers" viewBox="0 0 14 14"><path d="M7 1.6 12.6 4.6 7 7.6 1.4 4.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M1.4 7.4 7 10.4l5.6-3M1.4 10.1 7 13.1l5.6-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 14 14"><path d="M1.8 10.6a6 6 0 1 1 10.4 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7 9.6 9.7 5.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 14 14"><rect x="3.4" y="3.4" width="7.2" height="7.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="5.8" y="5.8" width="2.4" height="2.4" rx=".6" fill="currentColor"/><path d="M5.4 1.4v2M8.6 1.4v2M5.4 10.6v2M8.6 10.6v2M1.4 5.4h2M1.4 8.6h2M10.6 5.4h2M10.6 8.6h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 14 14"><path d="M4 10.6a2.8 2.8 0 0 1-.2-5.6 3.6 3.6 0 0 1 7 .6 2.5 2.5 0 0 1-.4 5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-users" viewBox="0 0 14 14"><circle cx="5.4" cy="4.6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.6 12a3.8 3.8 0 0 1 7.6 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.8 3.1a2.2 2.2 0 0 1 0 4.2M10.6 8.9a3.8 3.8 0 0 1 2 3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-sun" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 .9v1.7M7 11.4v1.7M1.4 7h1.7M10.9 7h1.7M3.1 3.1l1.2 1.2M9.7 9.7l1.2 1.2M10.9 3.1 9.7 4.3M4.3 9.7 3.1 10.9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-moon" viewBox="0 0 14 14"><path d="M11.6 8.4A5.2 5.2 0 0 1 5.6 2.4a5.2 5.2 0 1 0 6 6z" fill="currentColor"/></symbol>
+<symbol id="i-key" viewBox="0 0 14 14"><circle cx="4.4" cy="9.6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 7.7 12 2m-1.9 1.9 1.4 1.4M8.6 5.4 10 6.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-zoom" viewBox="0 0 14 14"><rect x="1.4" y="3.4" width="11.2" height="7.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.6 7h4.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-grid" viewBox="0 0 14 14"><rect x="1.6" y="1.6" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="7.8" y="1.6" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="1.6" y="7.8" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="7.8" y="7.8" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-clap" viewBox="0 0 34 34"><rect x="3" y="12" width="28" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12 29 5.5l1.4 4.8L4.5 17z M10 10l3 5 M17 8.2l3 5 M24 6.4l3 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+</defs></svg>
+
+<button class="themetoggle" id="tt"><svg><use href="#i-moon"/></svg><span class="ttl">Dark</span></button>
+<div class="mock">
+<header class="mh">
+  <p class="mh__dir">Mnema · round 4 · direction 01 — Bento Native</p>
+  <h1 class="mh__pg"><em>04</em>Quick Access — Ask + ask about the current frame</h1>
+  <p class="mh__look">Ask identity is deliberately unlike Search: accent chrome, a model pill, and a heterogeneous <b>tile</b> answer instead of a grid. Then the new feature in four states — trigger, collapsed control bar over your real screen with the captured region outlined, frame attached as an inline chip inside the sentence, and the answering panel with its mode tab overhanging the corner.</p>
+  <div class="mh__rule"></div>
+</header>
+<style>
+/* ── page 04 · Quick Access — Ask, and the current-frame overlay ─────── */
+.ql__top { flex: 0 0 52px; display: flex; align-items: center; gap: var(--s-12); padding: 0 20px;
+  position: relative; z-index: 20; background: var(--mat-toolbar); backdrop-filter: blur(20px) saturate(1.4); }
+.ql__field { flex: 1 1 auto; display: flex; align-items: center; gap: var(--s-8); height: 34px;
+  padding: 0 var(--s-8) 0 var(--s-6); border-radius: var(--r-lg);
+  font: var(--w-regular) var(--t-title)/1 var(--app-font-sans); letter-spacing: var(--ls-title);
+  color: var(--app-text-strong);
+  background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+/* ASK identity: the field itself carries the accent, and it is the only
+   accent-filled field in the app. */
+.ql__field--ask { background: var(--app-accent-bg); box-shadow: 0 0 0 var(--hairline) var(--app-accent-border); }
+.modechip { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-md); flex: 0 0 auto;
+  background: var(--app-surface-hover); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.modechip svg { width: 11px; height: 11px; }
+.modechip--ask { background: var(--app-accent); color: var(--app-accent-contrast); }
+.ql__ctx { flex: 0 0 36px; display: flex; align-items: center; gap: var(--s-6); padding: 0 20px; }
+.ql__body { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: var(--s-4) 20px 20px; }
+.ql__foot { flex: 0 0 40px; display: flex; align-items: center; gap: var(--s-8); padding: 0 20px;
+  background: var(--app-surface); }
+.ql__crumb { display: inline-flex; align-items: center; gap: var(--gap-inline);
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.act { display: inline-flex; align-items: center; gap: var(--s-4);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.act .kbd { height: 18px; min-width: 18px; }
+.ql__sep { width: var(--hairline); height: 16px; background: var(--app-border-strong); }
+.mpill { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm);
+  padding: 0 var(--s-6) 0 var(--s-8); border-radius: var(--r-pill); flex: 0 0 auto;
+  background: var(--app-surface-raised); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.mpill svg { width: 10px; height: 7px; color: var(--app-text-subtle); }
+.mpill .dot-ok { margin-right: 1px; }
+
+.answer { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 70ch; }
+.answer p + p { margin-top: var(--s-12); }
+.answer b { color: var(--app-text-strong); font-weight: var(--w-medium); }
+.mcard + .mcard { margin-top: var(--s-8); }
+.mcard__f { height: 108px; border-radius: var(--tile-r-in); overflow: hidden; position: relative;
+  background: var(--media-void); }
+.mcard__c { margin-top: var(--s-4); display: flex; align-items: baseline; gap: var(--gap-inline); }
+.mcard__a { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--app-text-subtle); }
+.mcard__t { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mcard__n { position: absolute; z-index: 3; left: var(--s-6); top: var(--s-6); width: 16px; height: 16px;
+  border-radius: var(--r-sm); background: var(--app-accent); color: var(--app-accent-contrast);
+  display: inline-flex; align-items: center; justify-content: center;
+  font: var(--w-semi) var(--t-label)/1 var(--app-font-mono); }
+.qa { display: flex; align-items: center; gap: var(--s-8); flex-wrap: wrap; }
+.qa span { font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.qa b { font-weight: var(--w-medium); color: var(--app-text); }
+.qa i { color: var(--app-text-faint); font-style: normal; }
+
+/* ── the simulated display the overlay rides on ─────────────────────── */
+.desk { position: relative; width: 1120px; height: 720px; border-radius: 10px; overflow: hidden;
+  background: linear-gradient(150deg, var(--desk-1), var(--desk-2)); box-shadow: var(--win-shadow); }
+.desk__menu { position: absolute; top: 0; left: 0; right: 0; height: 24px; z-index: 4;
+  display: flex; align-items: center; gap: var(--s-16); padding: 0 var(--s-12);
+  background: rgba(0,0,0,.28); backdrop-filter: blur(12px);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: rgba(255,255,255,.72); }
+.desk__win { position: absolute; border-radius: 8px; overflow: hidden;
+  box-shadow: 0 18px 44px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.08); }
+.desk__wbar { height: 26px; display: flex; align-items: center; gap: var(--s-8); padding: 0 var(--s-8);
+  background: #23232c; }
+.desk__wbar .tl i { width: 9px; height: 9px; }
+.desk__wbar .tl { padding: 0; gap: 5px; }
+.desk__wt { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: #9a9aac; }
+
+/* what the model can see is outlined ON the screen, not described in the panel */
+.capframe { position: absolute; inset: 8px; z-index: 6; border-radius: 8px;
+  border: 1.5px dashed var(--app-accent); pointer-events: none; }
+.capframe i { position: absolute; width: 16px; height: 16px; border: 2px solid var(--app-accent); }
+.capframe i:nth-child(1) { left: -2px; top: -2px; border-right: 0; border-bottom: 0; border-radius: 8px 0 0 0; }
+.capframe i:nth-child(2) { right: -2px; top: -2px; border-left: 0; border-bottom: 0; border-radius: 0 8px 0 0; }
+.capframe i:nth-child(3) { left: -2px; bottom: -2px; border-right: 0; border-top: 0; border-radius: 0 0 0 8px; }
+.capframe i:nth-child(4) { right: -2px; bottom: -2px; border-left: 0; border-top: 0; border-radius: 0 0 8px 0; }
+.capframe b { position: absolute; left: 50%; bottom: -11px; transform: translateX(-50%);
+  height: 22px; padding: 0 var(--s-8); border-radius: var(--r-sm); display: inline-flex; align-items: center;
+  gap: var(--s-6); background: var(--app-accent); color: var(--app-accent-contrast);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  white-space: nowrap; }
+.capframe b svg { width: 11px; height: 11px; }
+
+/* the control pill — persistent; it survives when the panel is hidden */
+.hudbar { position: absolute; z-index: 20; left: 50%; transform: translateX(-50%);
+  display: inline-flex; align-items: center; gap: var(--s-8); height: 40px; padding: 0 var(--s-6) 0 var(--s-8);
+  border-radius: var(--r-pill); background: var(--mat-hud); backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: var(--hud-shadow); }
+.hudbar__g { width: 26px; height: 26px; border-radius: var(--r-pill); flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--app-accent); color: var(--app-accent-contrast); }
+.hudbar__g svg { width: 14px; height: 14px; }
+.hudbar__t { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); white-space: nowrap; }
+.hudbar__d { width: var(--hairline); height: 18px; background: var(--app-border-strong); }
+.hudstop { width: 28px; height: 28px; border-radius: var(--r-pill); display: inline-flex;
+  align-items: center; justify-content: center; background: var(--app-surface-hover); color: var(--app-text-muted); }
+.hudstop svg { width: 11px; height: 11px; }
+
+/* the panel under it — dismissible, 12px gap, mode tab overhanging the corner */
+.hudpanel { position: absolute; z-index: 19; left: 50%; transform: translateX(-50%); width: 620px;
+  border-radius: var(--tile-r); background: var(--mat-hud); backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: var(--hud-shadow); padding: var(--s-12); }
+.hudtab { position: absolute; top: -11px; right: 14px; height: 22px; padding: 0 var(--s-8);
+  border-radius: var(--r-sm); background: var(--app-accent); color: var(--app-accent-contrast);
+  display: inline-flex; align-items: center; gap: var(--s-4);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.hudtab svg { width: 10px; height: 10px; }
+.hudctx { display: flex; align-items: center; gap: var(--gap-inline);
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.hudctx svg { width: 11px; height: 11px; color: var(--app-accent); }
+.hudin { display: flex; align-items: center; gap: var(--s-6); height: 34px; padding: 0 var(--s-6) 0 var(--s-8);
+  border-radius: var(--r-lg); background: var(--app-surface-subtle);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.hudin .ph { color: var(--app-text-subtle); }
+.hudin .kbd { height: 18px; min-width: 18px; }
+.send { width: 26px; height: 26px; border-radius: var(--r-pill); flex: 0 0 auto; margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--app-accent); color: var(--app-accent-contrast); }
+.send svg { width: 12px; height: 12px; }
+/* the attached frame lives INSIDE the sentence, at chip scale */
+.fchip { display: inline-flex; align-items: center; gap: var(--s-4); height: 22px; vertical-align: -5px;
+  padding: 0 var(--s-6) 0 2px; border-radius: var(--r-sm); background: var(--app-accent-bg);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-accent);
+  font-variant-numeric: tabular-nums; }
+.fchip i { width: 26px; height: 16px; border-radius: 2px; overflow: hidden; position: relative;
+  display: inline-block; background: var(--media-void); }
+
+/* the collapse diagram */
+.coll { display: flex; align-items: center; gap: var(--s-24); }
+.coll__b { border-radius: var(--r-md); background: var(--tile-fill);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+  display: flex; align-items: center; justify-content: center;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle); }
+.coll__a { color: var(--app-text-subtle); font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); }
+</style>
+
+<section class="sect" style="margin-top:32px">
+  <h3>1120 × 720 — Ask mode</h3>
+  <p class="note">Same window, opposite posture. <b>Search is a grid; Ask is a composition.</b> The field is
+    accent-filled (the only one in the app), the mode chip is accent, the second row is <b>context</b> rather than
+    scope — what the model is being handed — and the active model is a pill in the chrome, not a buried setting.
+    The answer is a tile with the same header row as every other tile; the citations are a second tile; the
+    follow-up composer is a third.</p>
+  <div class="fit">
+    <div class="window wql">
+      <div class="ql__top">
+        <div class="ql__field ql__field--ask">
+          <span class="modechip modechip--ask"><svg><use href="#i-spark"/></svg>Ask</span>
+          <span>What changed in licensing last week?</span><span class="caret"></span>
+        </div>
+        <span class="mpill"><span class="dot-ok"></span>claude-sonnet-4<svg><use href="#i-chevd"/></svg></span>
+        <span class="kbd kbd--mod">⌘⌥Space</span>
+      </div>
+      <div class="ql__ctx">
+        <span class="t-label" style="margin-right:var(--s-2)">Context</span>
+        <span class="chip on">This week</span><span class="chip on">Screen</span><span class="chip on">Audio</span>
+        <span class="chip">Context notes</span>
+        <span class="chip"><svg style="width:11px;height:11px"><use href="#i-frame"/></svg>This screen <span class="kbd" style="background:transparent;padding:0 0 0 4px">⌘⇧␣</span></span>
+        <span class="t-meta" style="margin-left:auto"><span class="is-mono is-num">2,140</span> frames · <span class="is-mono is-num">3</span> conversations read</span>
+      </div>
+      <div class="ql__body">
+        <div class="bento bento--3" style="grid-template-rows:460px 116px">
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">Answer</span>
+              <span class="more" style="display:inline-flex;align-items:center;gap:6px"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>reading Friday's release sync…</span></div>
+            <div class="answer">
+              <p><b>The webhook verifier was the week's one real licensing change.</b> Friday's release sync settled
+                retry behaviour; on Monday Priya identified why deliveries were 400-ing — the HMAC was computed on the
+                decoded secret instead of the raw <span class="is-mono">whsec_</span> string — and you shipped the fix
+                that afternoon with the fixture rerun green.</p>
+              <p>Two things did <b>not</b> move. The CRL cache spec was open for twelve minutes on Friday and never
+                revisited. Tom's request — delivery ids in the webhook log — is still unaddressed in any frame I can
+                see.<span class="caret" style="margin-left:3px;height:14px"></span></p>
+            </div>
+            <div class="qa" style="margin-top:auto">
+              <b>Follow up</b><i>·</i><span>Show me the fix</span><i>·</i><span>What did Tom ask for?</span><i>·</i><span>Draft the log change</span>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Cited</span><span class="more is-num">3 moments</span></div>
+            <div class="pay">
+              <div class="mcard">
+                <div class="mcard__f">
+                  <div class="shot shot--call" aria-hidden="true">
+                    <div class="tiles"><span class="t on"><i></i><u></u></span><span class="t"><i></i><u></u></span><span class="t"><i></i><u></u></span><span class="t"><i></i><u></u></span><span class="t"><i></i><u></u></span><span class="t"><i></i><u></u></span></div>
+                    <div class="ctrl"><i></i><i></i><i class="r"></i></div>
+                  </div>
+                  <span class="mcard__n">1</span>
+                </div>
+                <div class="mcard__c"><span class="mcard__a">Zoom · 13:02</span><span class="mcard__t">Priya's diagnosis</span></div>
+              </div>
+              <div class="mcard">
+                <div class="mcard__f">
+                  <div class="shot shot--editor" aria-hidden="true">
+                    <i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i>
+                    <div class="code stack" style="left:32%;right:5%;top:14%;bottom:8%">
+                      <p class="ln"><s class="tk tk--kw w14"></s><s class="tk tk--fn w30"></s></p>
+                      <p class="ln"><s class="tk tk--str w44"></s></p>
+                      <p class="ln"><s class="tk tk--dim w10"></s><s class="tk tk--num w8"></s></p>
+                      <p class="ln"><s class="tk tk--cm w30"></s></p>
+                    </div>
+                  </div>
+                  <span class="mcard__n">2</span>
+                </div>
+                <div class="mcard__c"><span class="mcard__a">VS Code · 14:32</span><span class="mcard__t">webhook.rs — the fix</span></div>
+              </div>
+              <div class="mcard">
+                <div class="mcard__f">
+                  <div class="shot shot--terminal" aria-hidden="true">
+                    <div class="code stack" style="left:6%;right:6%;top:10%;bottom:10%">
+                      <p class="ln"><s class="tk tk--g w8"></s><s class="tk tk--t w40"></s></p>
+                      <p class="ln"><s class="tk tk--t w60"></s></p>
+                      <p class="ln"><s class="tk tk--g w8"></s><s class="tk tk--str w30"></s></p>
+                    </div><i class="cur"></i>
+                  </div>
+                  <span class="mcard__n">3</span>
+                </div>
+                <div class="mcard__c"><span class="mcard__a">Terminal · 14:41</span><span class="mcard__t">fixture rerun — green</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--w3 tile--static">
+            <div class="tile__h"><span class="t-label">Ask again</span>
+              <span class="more">this conversation keeps its context</span></div>
+            <div style="display:flex;align-items:center;gap:var(--s-8)">
+              <span class="input" style="flex:1;height:32px"><svg><use href="#i-spark-o"/></svg><span class="ph">Ask a follow-up…</span></span>
+              <span class="kbd kbd--mod">⏎</span>
+              <button class="btn btn--push">Stop</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ql__foot">
+        <span class="ql__crumb"><svg style="width:12px;height:12px"><use href="#i-spark-o"/></svg>Ask · this week · 3 sources cited</span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:var(--s-12)">
+          <span class="act">Open moment <span class="kbd">⏎</span></span>
+          <span class="ql__sep"></span>
+          <span class="act">Continue in Overview <span class="kbd kbd--mod">⌘O</span></span>
+          <span class="ql__sep"></span>
+          <span class="act">New question <span class="kbd kbd--mod">⌘N</span></span>
+        </span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>Ask about the current frame — how the window gets out of the way</h3>
+  <p class="note"><b>⌘⇧Space</b> from anywhere, or the <span class="is-mono">This screen</span> context chip above.
+    The 1120×720 palette collapses to a 560×40 control pill pinned top-centre, and what the model can see is
+    outlined <b>on the screen itself</b> rather than described in the panel. The pill is persistent: hiding the
+    answer never hides the stop control.</p>
+  <div class="fit">
+    <div class="coll">
+      <div class="coll__b" style="width:280px;height:180px">1120 × 720 — the palette</div>
+      <div class="coll__a">collapses to →</div>
+      <div>
+        <div class="coll__b" style="width:140px;height:10px;border-radius:999px"></div>
+        <p class="coll__a" style="margin-top:6px">560 × 40 control pill<br>+ 620-wide panel, 12px below</p>
+      </div>
+      <div class="coll__a" style="max-width:34ch">Same window, resized and repositioned — not a second window.
+        Esc restores the palette with the draft intact.</div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>State 1 — armed. The screen is outlined; nothing has been sent.</h3>
+  <p class="note">The capture is implicit, the <b>indicator is explicit</b>: dashed accent frame, corner ticks, and one
+    label that names the moment it froze. No modal, no “attach screen?” dialog. The placeholder teaches the shortcut
+    with keycaps in place.</p>
+  <div class="fit">
+    <div class="desk">
+      <div class="desk__menu"><b style="color:#fff">Terminal</b><span>File</span><span>Edit</span><span>View</span>
+        <span style="margin-left:auto" class="is-num">Mon 3 Aug &nbsp; 14:32</span></div>
+      <div class="desk__win" style="left:96px;top:150px;width:660px;height:420px">
+        <div class="desk__wbar"><div class="tl"><i></i><i></i><i></i></div><span class="desk__wt">mnema — cargo build</span></div>
+        <div style="height:394px">
+          <div class="shot shot--terminal" aria-hidden="true">
+            <div class="code stack" style="top:5%;bottom:5%">
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w30"></s></p>
+              <p class="ln"><s class="tk tk--t w70"></s></p>
+              <p class="ln"><s class="tk tk--t w52"></s></p>
+              <p class="ln"><s class="tk tk--r w60"></s></p>
+              <p class="ln"><s class="tk tk--r w44"></s></p>
+              <p class="ln"><s class="tk tk--t w38"></s></p>
+              <p class="ln"><s class="tk tk--t w64"></s></p>
+              <p class="ln"><s class="tk tk--r w48"></s></p>
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w24"></s></p>
+            </div><i class="cur"></i>
+          </div>
+        </div>
+      </div>
+      <div class="desk__win" style="left:600px;top:300px;width:440px;height:300px">
+        <div class="desk__wbar"><div class="tl"><i></i><i></i><i></i></div><span class="desk__wt">answer_view.rs — mnema</span></div>
+        <div style="height:274px">
+          <div class="shot shot--editor" aria-hidden="true">
+            <i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i><i class="tab b"></i>
+            <div class="files"><i class="w60"></i><i class="w44 on"></i><i class="w52"></i><i class="w70"></i><i class="w40"></i></div>
+            <div class="code stack">
+              <p class="ln"><s class="tk tk--cm w44"></s></p>
+              <p class="ln"><s class="tk tk--kw w10"></s><s class="tk tk--fn w22"></s><s class="tk tk--str w20"></s></p>
+              <p class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--str w34"></s></p>
+              <p class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--fn w18"></s></p>
+              <p class="ln"><s class="tk tk--cm w30"></s></p>
+              <p class="ln"><s class="tk tk--kw w12"></s><s class="tk w26"></s></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="capframe"><i></i><i></i><i></i><i></i>
+        <b><svg><use href="#i-eye"/></svg>Mnema can see this screen · frozen at 14:32:08</b></div>
+
+      <div class="hudbar" style="top:44px">
+        <span class="hudbar__g"><svg><use href="#i-spark"/></svg></span>
+        <span class="hudbar__t">Ask about this screen</span>
+        <span class="hudbar__d"></span>
+        <span class="t-meta is-mono">⌥⇧H hide</span>
+        <button class="hudstop"><svg><use href="#i-stop"/></svg></button>
+      </div>
+      <div class="hudpanel" style="top:96px">
+        <span class="hudtab"><svg><use href="#i-frame"/></svg>Screen</span>
+        <div class="hudctx"><svg><use href="#i-eye"/></svg>Viewed screen · Terminal, answer_view.rs · 14:32:08</div>
+        <div class="hudin" style="margin-top:var(--s-8)">
+          <span class="ph">Ask about your screen, or</span>
+          <span class="kbd">⌘</span><span class="kbd">⏎</span>
+          <span class="ph">to explain the error</span>
+          <span class="send"><svg><use href="#i-arrup"/></svg></span>
+        </div>
+        <div class="qa" style="margin-top:var(--s-8)">
+          <span>Explain this error</span><i>·</i><span>What did I change?</span><i>·</i>
+          <span>Where have I seen this before?</span><i>·</i><span>Recap this hour</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>State 2 — the frame is attached, as a chip inside the sentence</h3>
+  <p class="note">The attachment is <b>editable text</b>, not a tray: the frozen frame is a chip in the prompt at
+    26 × 16, so it costs no panel width and you delete it the way you delete a word. Adding a second context (the
+    last hour of screen) adds a second chip in the same sentence. A big thumbnail was rejected — you already know
+    what is on your screen; the outline behind the panel is the preview.</p>
+  <div class="fit">
+    <div class="desk">
+      <div class="desk__menu"><b style="color:#fff">Terminal</b><span>File</span><span>Edit</span><span>View</span>
+        <span style="margin-left:auto" class="is-num">Mon 3 Aug &nbsp; 14:32</span></div>
+      <div class="desk__win" style="left:96px;top:150px;width:660px;height:420px">
+        <div class="desk__wbar"><div class="tl"><i></i><i></i><i></i></div><span class="desk__wt">mnema — cargo build</span></div>
+        <div style="height:394px">
+          <div class="shot shot--terminal" aria-hidden="true">
+            <div class="code stack" style="top:5%;bottom:5%">
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w30"></s></p>
+              <p class="ln"><s class="tk tk--t w70"></s></p>
+              <p class="ln"><s class="tk tk--t w52"></s></p>
+              <p class="ln"><s class="tk tk--r w60"></s></p>
+              <p class="ln"><s class="tk tk--r w44"></s></p>
+              <p class="ln"><s class="tk tk--t w38"></s></p>
+              <p class="ln"><s class="tk tk--t w64"></s></p>
+              <p class="ln"><s class="tk tk--r w48"></s></p>
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w24"></s></p>
+            </div><i class="cur"></i>
+          </div>
+        </div>
+      </div>
+      <div class="desk__win" style="left:600px;top:300px;width:440px;height:300px">
+        <div class="desk__wbar"><div class="tl"><i></i><i></i><i></i></div><span class="desk__wt">answer_view.rs — mnema</span></div>
+        <div style="height:274px">
+          <div class="shot shot--editor" aria-hidden="true">
+            <i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i><i class="tab b"></i>
+            <div class="files"><i class="w60"></i><i class="w44 on"></i><i class="w52"></i><i class="w70"></i><i class="w40"></i></div>
+            <div class="code stack">
+              <p class="ln"><s class="tk tk--cm w44"></s></p>
+              <p class="ln"><s class="tk tk--kw w10"></s><s class="tk tk--fn w22"></s><s class="tk tk--str w20"></s></p>
+              <p class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--str w34"></s></p>
+              <p class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--fn w18"></s></p>
+              <p class="ln"><s class="tk tk--cm w30"></s></p>
+              <p class="ln"><s class="tk tk--kw w12"></s><s class="tk w26"></s></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="capframe"><i></i><i></i><i></i><i></i>
+        <b><svg><use href="#i-eye"/></svg>Mnema can see this screen · frozen at 14:32:08</b></div>
+
+      <div class="hudbar" style="top:44px">
+        <span class="hudbar__g"><svg><use href="#i-spark"/></svg></span>
+        <span class="hudbar__t">Ask about this screen</span>
+        <span class="hudbar__d"></span>
+        <span class="t-meta is-mono">⌥⇧H hide</span>
+        <button class="hudstop"><svg><use href="#i-stop"/></svg></button>
+      </div>
+      <div class="hudpanel" style="top:96px">
+        <span class="hudtab"><svg><use href="#i-frame"/></svg>Screen</span>
+        <div class="hudctx"><svg><use href="#i-eye"/></svg>Viewed screen · Terminal, answer_view.rs · 14:32:08</div>
+        <div class="hudin" style="margin-top:var(--s-8);height:auto;padding:var(--s-6) var(--s-6) var(--s-6) var(--s-8);line-height:1.9">
+          <span style="flex:1">Why is
+            <span class="fchip"><i><span class="shot shot--terminal" style="position:absolute;inset:0"><span class="code stack" style="left:6%;right:6%;top:12%;bottom:12%"><span class="ln"><s class="tk tk--r w60"></s></span><span class="ln"><s class="tk tk--t w40"></s></span></span></span></i>this screen 14:32</span>
+            failing when the same test passes locally?<span class="caret" style="height:14px"></span></span>
+          <span class="send"><svg><use href="#i-arrup"/></svg></span>
+        </div>
+        <div class="hudctx" style="margin-top:var(--s-8)">
+          <svg style="color:var(--app-text-subtle)"><use href="#i-plus"/></svg>
+          <span>Add context — <b class="strong" style="font-weight:510">the last hour of screen</b>,
+            <b class="strong" style="font-weight:510">today's conversations</b>, or a file</span>
+          <span class="kbd kbd--mod" style="margin-left:auto">⌘K</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>State 3 — answering</h3>
+  <p class="note">The panel grows downward from the same anchor; the pill does not move. The mode tab overhangs the
+    corner so the panel is identifiable at a glance even at the edge of a busy screen. The answer cites what it read,
+    including <b>your own history</b> — that citation is the thing no screen-reading assistant can do, so it is
+    given a real row rather than a footnote.</p>
+  <div class="fit">
+    <div class="desk">
+      <div class="desk__menu"><b style="color:#fff">Terminal</b><span>File</span><span>Edit</span><span>View</span>
+        <span style="margin-left:auto" class="is-num">Mon 3 Aug &nbsp; 14:32</span></div>
+      <div class="desk__win" style="left:96px;top:150px;width:660px;height:420px">
+        <div class="desk__wbar"><div class="tl"><i></i><i></i><i></i></div><span class="desk__wt">mnema — cargo build</span></div>
+        <div style="height:394px">
+          <div class="shot shot--terminal" aria-hidden="true">
+            <div class="code stack" style="top:5%;bottom:5%">
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w30"></s></p>
+              <p class="ln"><s class="tk tk--t w70"></s></p>
+              <p class="ln"><s class="tk tk--t w52"></s></p>
+              <p class="ln"><s class="tk tk--r w60"></s></p>
+              <p class="ln"><s class="tk tk--r w44"></s></p>
+              <p class="ln"><s class="tk tk--t w38"></s></p>
+              <p class="ln"><s class="tk tk--t w64"></s></p>
+              <p class="ln"><s class="tk tk--r w48"></s></p>
+              <p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w24"></s></p>
+            </div><i class="cur"></i>
+          </div>
+        </div>
+      </div>
+
+      <div class="capframe"><i></i><i></i><i></i><i></i>
+        <b><svg><use href="#i-eye"/></svg>Mnema can see this screen · frozen at 14:32:08</b></div>
+
+      <div class="hudbar" style="top:44px">
+        <span class="hudbar__g"><svg><use href="#i-spark"/></svg></span>
+        <span class="hudbar__t">Ask about this screen</span>
+        <span class="hudbar__d"></span>
+        <span class="t-meta is-mono">⌥⇧H hide</span>
+        <button class="hudstop"><svg><use href="#i-stop"/></svg></button>
+      </div>
+      <div class="hudpanel" style="top:96px">
+        <span class="hudtab"><svg><use href="#i-frame"/></svg>Screen</span>
+        <div class="hudctx"><svg><use href="#i-eye"/></svg>Viewed screen · Terminal · 14:32:08
+          <span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px">
+            <span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>
+            <span class="t-meta">also reading 2 of your own frames</span></span>
+        </div>
+        <p class="t-read" style="margin-top:var(--s-8)">
+          The linker cannot find <span class="is-mono">libgfortran</span>. Your local build works because
+          <span class="is-mono">LIBRARY_PATH</span> is exported by
+          <span class="is-mono">scripts/openblas-build-env.sh</span> — the CI job you are looking at never sources it.
+          <b class="strong" style="font-weight:510">You hit this exact error on 14 July</b> and fixed it by exporting
+          the path in <span class="is-mono">build.rs</span> instead.<span class="caret" style="height:14px"></span></p>
+        <div style="display:flex;gap:var(--s-8);margin-top:var(--s-8)">
+          <div style="flex:1 1 0">
+            <div class="mcard__f" style="height:78px">
+              <div class="shot shot--terminal" aria-hidden="true">
+                <div class="code stack" style="left:6%;right:6%;top:12%;bottom:12%">
+                  <p class="ln"><s class="tk tk--r w60"></s></p><p class="ln"><s class="tk tk--t w40"></s></p>
+                  <p class="ln"><s class="tk tk--g w8"></s><s class="tk tk--t w30"></s></p>
+                </div>
+              </div>
+              <span class="mcard__n">1</span>
+            </div>
+            <div class="mcard__c"><span class="mcard__a">14 Jul · 11:20</span><span class="mcard__t">the same link error</span></div>
+          </div>
+          <div style="flex:1 1 0">
+            <div class="mcard__f" style="height:78px">
+              <div class="shot shot--editor" aria-hidden="true">
+                <i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i>
+                <div class="code stack" style="left:32%;right:5%;top:14%;bottom:10%">
+                  <p class="ln"><s class="tk tk--kw w14"></s><s class="tk tk--fn w30"></s></p>
+                  <p class="ln"><s class="tk tk--str w44"></s></p>
+                  <p class="ln"><s class="tk tk--cm w26"></s></p>
+                </div>
+              </div>
+              <span class="mcard__n">2</span>
+            </div>
+            <div class="mcard__c"><span class="mcard__a">14 Jul · 11:26</span><span class="mcard__t">build.rs — the fix</span></div>
+          </div>
+          <div style="flex:1 1 0">
+            <div class="mcard__f" style="height:78px;background:var(--app-accent-bg);box-shadow:inset 0 0 0 1.5px var(--app-accent-border);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">
+              <svg style="width:14px;height:14px;color:var(--app-accent)"><use href="#i-eye"/></svg>
+              <span class="t-meta" style="text-align:center;padding:0 var(--s-8);color:var(--app-accent)">the frozen frame</span>
+            </div>
+            <div class="mcard__c"><span class="mcard__a">Now · 14:32</span><span class="mcard__t">this screen</span></div>
+          </div>
+        </div>
+        <div class="qa" style="margin-top:var(--s-8)">
+          <span>Show me that fix</span><i>·</i><span>Copy the export line</span><i>·</i><span>Open 14 Jul</span>
+        </div>
+        <div class="hudin" style="margin-top:var(--s-8)">
+          <span class="ph">Ask a follow-up…</span>
+          <span class="send"><svg><use href="#i-arrup"/></svg></span>
+        </div>
+        <div class="hudctx" style="margin-top:var(--s-8);padding-top:var(--s-8);box-shadow:0 -1px 0 var(--tile-sep)">
+          <span class="mpill" style="height:20px"><span class="dot-ok"></span>claude-sonnet-4<svg><use href="#i-chevd"/></svg></span>
+          <span class="t-meta">1 screenshot + 2 stored frames sent</span>
+          <span style="margin-left:auto" class="t-meta is-mono">⌘⏎ keep · esc close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+<script>
+(function(){
+  var r=document.documentElement,t=document.getElementById('tt'),mq=matchMedia('(prefers-color-scheme: light)');
+  function cur(){return r.dataset.theme||(mq.matches?'light':'dark');}
+  function sync(){var c=cur();t.querySelector('.ttl').textContent=c==='dark'?'Dark':'Light';
+    t.querySelector('use').setAttribute('href',c==='dark'?'#i-moon':'#i-sun');}
+  t.addEventListener('click',function(){r.dataset.theme=cur()==='dark'?'light':'dark';sync();});
+  mq.addEventListener('change',sync); sync();
+})();
+</script>
+</body>
+</html>

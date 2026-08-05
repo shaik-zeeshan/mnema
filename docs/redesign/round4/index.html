@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mnema · Round 4 — five whole-app mockups</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 48px 32px 80px;
+    font: 400 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+    background: light-dark(#f5f5f7, #1d1d1f); color: light-dark(#1d1d1f, #f5f5f7);
+    max-width: 1080px; margin-inline: auto;
+  }
+  h1 { font-size: 22px; font-weight: 590; letter-spacing: -.02em; margin: 0 0 4px; }
+  .sub { color: light-dark(#6e6e73, #98989d); margin: 0 0 12px; }
+  .meta a { color: inherit; }
+  .dir {
+    background: light-dark(#fff, #2c2c2e); border-radius: 12px;
+    padding: 20px 24px; margin-top: 20px;
+  }
+  .dir h2 { font-size: 17px; font-weight: 590; letter-spacing: -.016em; margin: 0 0 2px; }
+  .dir p { margin: 0 0 12px; color: light-dark(#6e6e73, #98989d); }
+  .pages { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pages a {
+    display: inline-block; padding: 5px 12px; border-radius: 6px;
+    background: light-dark(#f5f5f7, #3a3a3c); color: inherit; text-decoration: none;
+    font-size: 13px; letter-spacing: -.006em;
+  }
+  .pages a:hover { background: light-dark(#e8e8ed, #48484a); }
+  .pages a.readme { font-variant-numeric: tabular-nums; background: transparent; outline: 1px solid light-dark(#d2d2d7, #48484a); }
+</style>
+</head>
+<body>
+<h1>Round 4 — five whole-app mockups</h1>
+<p class="sub">Every direction: the bento Overview kept, the timeline layout preserved with improved date
+navigation, Audio Drawer intact, Search vs Ask differentiated, the new “ask about the current frame”
+feature, rethought settings navigation, always-visible autosave, restrained custom inputs.</p>
+<p class="meta">Ground rules: <a href="BRIEF.md">BRIEF.md</a> · research: <a href="INSPIRATION.md">INSPIRATION.md</a>
+· each page has a light/dark toggle top-right and a masthead saying what to look at.</p>
+
+<div class="dir">
+  <h2>1 · Bento Native</h2>
+  <p>The bento you liked becomes the app’s one organizing idiom — search results, the ask answer and settings groups share the same tile grid. The timeline readout itself becomes the date-jump control.</p>
+  <div class="pages">
+    <a class="readme" href="01-bento-native/README.md">README</a>
+    <a href="01-bento-native/01-overview.html">01 Overview</a>
+    <a href="01-bento-native/02-timeline.html">02 Timeline</a>
+    <a href="01-bento-native/03-quick-access-search.html">03 Quick Access · Search</a>
+    <a href="01-bento-native/04-quick-access-ask.html">04 Quick Access · Ask + current frame</a>
+    <a href="01-bento-native/05-settings-general.html">05 Settings · General</a>
+    <a href="01-bento-native/06-settings-intelligence.html">06 Settings · Intelligence</a>
+    <a href="01-bento-native/07-components.html">07 Components + audit</a>
+  </div>
+</div>
+
+<div class="dir">
+  <h2>2 · Studio Shell</h2>
+  <p>Pro-app bones (Final Cut/Logic): right inspector, dense rows, and a bottom status strip that carries capture state and autosave — nothing can clip. Settings is one filtered scroll, no sidebar.</p>
+  <div class="pages">
+    <a class="readme" href="02-studio-shell/README.md">README</a>
+    <a href="02-studio-shell/01-overview.html">01 Overview</a>
+    <a href="02-studio-shell/02-timeline.html">02 Timeline</a>
+    <a href="02-studio-shell/03-quick-access-search.html">03 Quick Access · Search</a>
+    <a href="02-studio-shell/04-quick-access-ask.html">04 Quick Access · Ask + current frame</a>
+    <a href="02-studio-shell/05-settings-general.html">05 Settings · General</a>
+    <a href="02-studio-shell/06-settings-intelligence.html">06 Settings · Intelligence</a>
+    <a href="02-studio-shell/07-components.html">07 Components + audit</a>
+  </div>
+</div>
+
+<div class="dir">
+  <h2>3 · Layered Glass</h2>
+  <p>Control-Center materials: bento tiles as Sonoma widgets, Quick Access as a true HUD, and the current-frame ask as a glass bar riding on your screen with a detached answer panel.</p>
+  <div class="pages">
+    <a class="readme" href="03-layered-glass/README.md">README</a>
+    <a href="03-layered-glass/01-overview.html">01 Overview</a>
+    <a href="03-layered-glass/02-timeline.html">02 Timeline</a>
+    <a href="03-layered-glass/03-quick-access-search.html">03 Quick Access · Search</a>
+    <a href="03-layered-glass/04-quick-access-ask.html">04 Quick Access · Ask + current frame</a>
+    <a href="03-layered-glass/05-settings-general.html">05 Settings · General</a>
+    <a href="03-layered-glass/06-settings-intelligence.html">06 Settings · Intelligence</a>
+    <a href="03-layered-glass/07-components.html">07 Components + audit</a>
+  </div>
+</div>
+
+<div class="dir">
+  <h2>4 · Command Deck</h2>
+  <p>Keyboard-first, Raycast-school: Ask is the top-ranked result row in one field instead of a mode toggle; every tile and action carries its shortcut; settings navigate by ⌘F.</p>
+  <div class="pages">
+    <a class="readme" href="04-command-deck/README.md">README</a>
+    <a href="04-command-deck/01-overview.html">01 Overview</a>
+    <a href="04-command-deck/02-timeline.html">02 Timeline</a>
+    <a href="04-command-deck/03-quick-access-search.html">03 Quick Access · Search</a>
+    <a href="04-command-deck/04-quick-access-ask.html">04 Quick Access · Ask + current frame</a>
+    <a href="04-command-deck/05-settings-general.html">05 Settings · General</a>
+    <a href="04-command-deck/06-settings-intelligence.html">06 Settings · Intelligence</a>
+    <a href="04-command-deck/07-components.html">07 Components + audit</a>
+  </div>
+</div>
+
+<div class="dir">
+  <h2>5 · Tactile Instruments</h2>
+  <p>The custom-input showcase: six instruments (capture-rate cost slider, retention ladder, disk gauge, OCR duty cycle, keycap shortcut recorder, model picker with RAM fit) against otherwise stock native rows.</p>
+  <div class="pages">
+    <a class="readme" href="05-tactile-instruments/README.md">README</a>
+    <a href="05-tactile-instruments/01-overview.html">01 Overview</a>
+    <a href="05-tactile-instruments/02-timeline.html">02 Timeline</a>
+    <a href="05-tactile-instruments/03-quick-access-search.html">03 Quick Access · Search</a>
+    <a href="05-tactile-instruments/04-quick-access-ask.html">04 Quick Access · Ask + current frame</a>
+    <a href="05-tactile-instruments/05-settings-general.html">05 Settings · General</a>
+    <a href="05-tactile-instruments/06-settings-intelligence.html">06 Settings · Intelligence</a>
+    <a href="05-tactile-instruments/07-components.html">07 Components + audit</a>
+  </div>
+</div>
+
+</body>
+</html>

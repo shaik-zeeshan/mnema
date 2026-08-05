@@ -1,0 +1,1068 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layered Glass · 02 Timeline</title>
+<style>
+/* ════════════════════════════════════════════════════════════════════════════
+   Mnema · round 4 · direction 03 — LAYERED GLASS
+   Shared core: tokens, type ramp, spacing, native controls, material, shots.
+   Rule of the direction: MATERIAL ONLY WHERE macOS USES IT (toolbars, HUDs,
+   popovers, overlays, sheets). Content always lands on an opaque surface.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root{
+  /* surfaces (opaque — CONTENT never sits on material) */
+  --page-bg:#eceae5;
+  --app-bg:#f6f6f4; --app-surface:#ffffff; --app-surface-subtle:#f6f6f4;
+  --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#e8f1ea;
+  --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a;
+  --app-text-subtle:#5e5e6a; --app-text-faint:#9a9aa4;
+  --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+  --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec;
+  --app-accent-border:#9bd3b4; --app-accent-contrast:#ffffff; --app-accent-glow:rgba(31,122,74,.16);
+  --app-danger:#c43a48; --app-danger-bg:#fff0f2; --app-danger-border:#e4b6be;
+  --app-warn:#9a5a12; --app-warn-bg:#fff1df; --app-warn-border:#dfbc8a;
+  --app-info:#2b78c5; --app-info-bg:#eef5ff; --app-info-border:#bdd3ef;
+  --app-record:#d62236; --app-record-bg:#fff2f3; --app-record-border:#ecbcc2;
+  --app-src-screen:#6f5ed1; --app-src-screen-bg:#f1edff;
+  --app-src-mic:#2f8e59; --app-src-mic-bg:#e8f5ec;
+  --app-src-sys:#8b7a2c; --app-src-sys-bg:#faf4df;
+
+  /* ── MATERIAL. Only chrome, HUDs, popovers, overlays wear these. ───────── */
+  --glass:rgba(252,252,251,.66);        /* toolbar / rail / drawer shell     */
+  --glass-hud:rgba(250,250,248,.80);    /* free-floating HUD over a desktop  */
+  --glass-pop:rgba(253,253,252,.86);    /* menu, popover, toast              */
+  --glass-line:rgba(20,20,26,.10);      /* material edge, NOT a container    */
+  --glass-hi:rgba(255,255,255,.85);     /* top inner highlight               */
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(20,20,26,.03);
+
+  /* depth = layering. Shadows only on things that float. */
+  --sh-tile:0 1px 2px rgba(21,28,38,.06), 0 4px 14px rgba(21,28,38,.05);
+  --sh-float:0 10px 34px rgba(21,28,38,.16), 0 2px 6px rgba(21,28,38,.10);
+  --sh-hud:0 28px 70px rgba(21,28,38,.28), 0 4px 14px rgba(21,28,38,.14);
+  --sh-win:0 34px 90px rgba(21,28,38,.26), 0 0 0 .5px rgba(21,28,38,.14);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  /* simulated desktop behind the glass */
+  --desk-a:#adc0da; --desk-b:#e0c9a4; --desk-c:#8fa6c6; --desk-d:#d8cbb6;
+  --desk-scrim:rgba(24,26,36,.30);
+
+  /* fake-screenshot palette */
+  --sh-bg:#ffffff; --sh-chrome:#ececeb; --sh-chrome-2:#e2e2e0; --sh-el:#1c1c22;
+  --sh-kw:#8250df; --sh-str:#0a7a4a; --sh-cm:#8b8b95; --sh-num:#b8562a;
+  --sh-term:#1d1f24; --sh-term-t:#c8d0c8;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}}
+:root[data-theme="dark"]{
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}
+
+
+:root{
+  --app-font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --app-font-mono:ui-monospace,"SF Mono",Menlo,Monaco,monospace;
+
+  --t-label:10px;  --lh-label:1.4;  --ls-label:.02em;
+  --t-meta:11px;   --lh-meta:1.35;  --ls-meta:.01em;
+  --t-ui:13px;     --lh-ui:1.25;    --ls-ui:-.006em;
+  --t-read:14px;   --lh-read:1.55;  --ls-read:-.008em;
+  --t-title:17px;  --lh-title:1.3;  --ls-title:-.016em;
+  --t-display:22px;--lh-display:1.2;--ls-display:-.02em;
+  --w-regular:400; --w-medium:510;  --w-semi:590;
+
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px;
+  --s-12:12px; --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px;
+  --gap-inline:6px; --gap-label:4px; --gap-row:8px; --gap-group:16px;
+  --gap-section:24px; --pad-window:16px; --pad-control:8px; --pad-panel:16px;
+
+  --h-sm:24px; --h-md:28px; --h-lg:32px; --h-row:28px; --h-titlebar:38px;
+  --o-icon-sm:14px; --o-icon:20px; --o-icon-lg:24px;
+  --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-panel:14px; --r-pill:999px;
+  --dur-quick:100ms; --dur-regular:250ms; --ease:cubic-bezier(.4,0,.2,1);
+  --opacity-disabled:.4;
+  --hairline:.5px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{
+  margin:0; padding:40px 40px 96px;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text);
+  background:
+    radial-gradient(1100px 620px at 12% -8%, color-mix(in srgb,var(--app-accent) 7%, transparent), transparent 62%),
+    var(--page-bg);
+  min-height:100vh;
+}
+svg{display:block; width:14px; height:14px; fill:none; stroke:currentColor;
+    stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round}
+
+/* ── page furniture (OUTSIDE the app window) ─────────────────────────────── */
+.mast{max-width:1180px; margin:0 0 28px}
+.mast__eyebrow{
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.12em; text-transform:uppercase; color:var(--app-accent);
+  display:flex; align-items:center; gap:10px; margin:0 0 12px}
+.mast__eyebrow b{width:26px; height:1px; background:currentColor; display:block; opacity:.6}
+.mast h1{
+  margin:0; font:var(--w-semi) 28px/1.15 var(--app-font-sans);
+  letter-spacing:-.024em; color:var(--app-text-strong)}
+.mast h1 span{color:var(--app-text-faint); font-variant-numeric:tabular-nums}
+.mast p{margin:10px 0 0; max-width:74ch;
+  font:var(--w-regular) var(--t-read)/1.6 var(--app-font-sans); color:var(--app-text-muted)}
+.mast p b{font-weight:var(--w-medium); color:var(--app-text)}
+.mast__rule{height:1px; background:var(--app-border); margin:22px 0 0; max-width:1180px}
+
+.themebtn{
+  position:fixed; top:20px; right:20px; z-index:99;
+  display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px;
+  border:none; border-radius:var(--r-pill); cursor:pointer;
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur); box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-mono); letter-spacing:.04em;
+  text-transform:uppercase; color:var(--app-text-strong)}
+
+.wlabel{
+  margin:0 0 10px; font:var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color:var(--app-text-muted); max-width:96ch}
+.wlabel b{color:var(--app-text-strong); font-weight:var(--w-medium)}
+.wlabel code{font-family:var(--app-font-mono); font-size:10px; color:var(--app-accent)}
+.block{margin:0 0 44px}
+.block__h{
+  display:flex; align-items:baseline; gap:12px; margin:0 0 14px;
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle)}
+.block__h:after{content:""; flex:1; height:1px; background:var(--app-border)}
+.row-of{display:flex; gap:32px; flex-wrap:wrap; align-items:flex-start}
+
+/* ── type roles ──────────────────────────────────────────────────────────── */
+.t-label{font:var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing:var(--ls-label); text-transform:uppercase; color:var(--app-text-muted)}
+.t-meta{font:var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing:var(--ls-meta); color:var(--app-text-muted)}
+.t-ui{font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text)}
+.t-read{font:var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing:var(--ls-read); color:var(--app-text); max-width:70ch}
+.t-title{font:var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing:var(--ls-title); color:var(--app-text-strong)}
+.t-display{font:var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing:var(--ls-display); color:var(--app-text-strong)}
+.is-mono{font-family:var(--app-font-mono)}
+.is-num{font-variant-numeric:tabular-nums}
+.strong{color:var(--app-text-strong)}
+.muted{color:var(--app-text-muted)}
+.subtle{color:var(--app-text-subtle)}
+
+/* ── the window ──────────────────────────────────────────────────────────── */
+.win{
+  position:relative; overflow:hidden; border-radius:10px;
+  background:var(--app-bg); box-shadow:var(--sh-win);
+  display:flex; flex-direction:column;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui);
+}
+.win--1100{width:1100px; height:720px}
+.win--800{width:800px; height:600px}
+.win--1120{width:1120px; height:720px}
+
+/* MATERIAL title bar — chrome, so it may be translucent; content scrolls under */
+.tbar{
+  position:absolute; inset:0 0 auto 0; z-index:6; height:var(--h-titlebar);
+  display:flex; align-items:center; gap:var(--s-12); padding:0 12px;
+  background:var(--glass); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi);
+}
+.tbar--static{position:relative; flex:0 0 auto}
+.tl{display:flex; gap:8px; padding-left:2px}
+.tl i{width:12px; height:12px; border-radius:50%; display:block}
+.tl i:nth-child(1){background:#ff5f57} .tl i:nth-child(2){background:#febc2e}
+.tl i:nth-child(3){background:#28c840}
+.tbar__title{font:var(--w-semi) var(--t-ui)/1 var(--app-font-sans); color:var(--app-text-strong)}
+.tbar__sp{flex:1}
+
+/* segmented control (AppKit) */
+.seg{display:inline-flex; padding:2px; border-radius:7px; background:var(--glass-tint);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.seg__i{display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px;
+  border-radius:5px; font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color:var(--app-text-muted); white-space:nowrap}
+.seg__i.on{background:var(--app-surface); color:var(--app-text-strong);
+  box-shadow:0 1px 2px rgba(0,0,0,.16), 0 0 0 var(--hairline) var(--glass-line)}
+.seg--lg .seg__i{height:26px; padding:0 14px}
+
+/* state pill */
+.pill{display:inline-flex; align-items:center; gap:var(--gap-inline); height:24px;
+  padding:0 10px; border:none; border-radius:var(--r-pill); background:var(--app-record-bg);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-record-border)}
+.pill__t{font:var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-strong)}
+.pill__gb{font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-subtle)}
+.pill__w{font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-text-muted)}
+.pill--quiet{background:var(--glass-tint); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.pill--warn{background:var(--app-warn-bg); box-shadow:inset 0 0 0 var(--hairline) var(--app-warn-border)}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--app-record); display:block;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--app-record) 18%, transparent)}
+.dot--off{background:var(--app-text-subtle); box-shadow:none}
+
+/* ── controls ────────────────────────────────────────────────────────────── */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:var(--gap-inline);
+  height:var(--h-md); padding:0 10px; border:none; border-radius:var(--r-md);
+  font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing:var(--ls-ui);
+  white-space:nowrap; background:var(--app-surface-raised); color:var(--app-text-strong);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line);
+  cursor:default}
+.btn:hover{background:var(--app-surface-hover)}
+.btn--primary{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.btn--ghost{background:transparent; box-shadow:none; color:var(--app-text-muted)}
+.btn--ghost.on,.btn--ghost:hover{background:var(--glass-tint); color:var(--app-text-strong)}
+.btn--danger{background:var(--app-danger-bg); color:var(--app-danger);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+.btn--sm{height:var(--h-sm); padding:0 8px}
+.btn--lg{height:var(--h-lg); padding:0 14px}
+.btn--icon{width:var(--h-md); padding:0}
+.btn--icon.btn--sm{width:var(--h-sm)}
+.btn[aria-disabled="true"]{opacity:var(--opacity-disabled)}
+.btn.is-focused{box-shadow:var(--ring), 0 1px 1px rgba(0,0,0,.10)}
+
+.chip{display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 9px;
+  border-radius:var(--r-pill); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.chip.on{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.chip--q{background:transparent; box-shadow:none}
+
+.kbd{display:inline-flex; align-items:center; justify-content:center; min-width:19px; height:19px;
+  padding:0 5px; border-radius:var(--r-sm); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.kbd--wide{min-width:auto; padding:0 7px}
+
+.input{display:flex; align-items:center; gap:8px; height:var(--h-md); padding:0 9px;
+  border-radius:var(--r-md); background:var(--app-surface-subtle); color:var(--app-text-strong);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans)}
+.input.is-focused{box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring)}
+.input .ph{color:var(--app-text-subtle)}
+
+.sw{position:relative; width:38px; height:22px; border-radius:var(--r-pill); flex:0 0 auto;
+  background:var(--app-surface-hover); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.sw i{position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.30); display:block}
+.sw.on{background:var(--app-accent); box-shadow:none}
+.sw.on i{left:18px}
+.sw.dis{opacity:var(--opacity-disabled)}
+
+.pop{display:inline-flex; align-items:center; gap:8px; height:var(--h-md); padding:0 6px 0 10px;
+  border-radius:var(--r-md); background:var(--app-surface-raised); color:var(--app-text-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line)}
+.pop b{display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px;
+  border-radius:3px; background:var(--app-accent); color:var(--app-accent-contrast)}
+.pop b svg{width:9px; height:9px; stroke-width:2}
+
+.spin{width:12px; height:12px; border-radius:50%; flex:0 0 auto; display:block;
+  border:1.5px solid var(--app-border-hover); border-top-color:var(--app-accent);
+  animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.caret{display:inline-block; width:1.5px; height:14px; background:var(--app-accent);
+  vertical-align:-2px; animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* MATERIAL: menu / popover — NSMenu anatomy */
+.menu{min-width:220px; padding:5px; border-radius:var(--r-lg);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+.menu__hd{padding:6px 10px 4px; font:var(--w-medium) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing:.02em; text-transform:uppercase; color:var(--app-text-subtle)}
+.menu__i{display:flex; align-items:center; gap:8px; height:24px; padding:0 8px;
+  border-radius:var(--r-sm); color:var(--app-text-strong); font-size:var(--t-ui)}
+.menu__i.on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.menu__ck{width:13px; flex:0 0 auto; display:flex; align-items:center}
+.menu__ck svg{width:11px; height:11px; stroke-width:2.2}
+.menu__gl{width:15px; flex:0 0 auto; color:var(--app-text-muted)}
+.menu__i.on .menu__gl{color:inherit}
+.menu__kbd{margin-left:auto; font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color:var(--app-text-subtle)}
+.menu__i.on .menu__kbd{color:var(--app-accent-contrast); opacity:.8}
+.menu__sep{height:1px; margin:5px 8px; background:var(--glass-line)}
+
+/* toast — floats, so material + shadow */
+.toast{width:344px; padding:12px 14px; border-radius:var(--r-xl);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+
+/* ── opaque content surfaces ─────────────────────────────────────────────── */
+.tile{position:relative; padding:14px; border-radius:var(--r-panel); background:var(--app-surface);
+  box-shadow:var(--sh-tile); display:flex; flex-direction:column; gap:var(--s-6); overflow:hidden}
+.tile-h{display:flex; align-items:center; gap:8px; margin-bottom:2px}
+.tile-h .more{margin-left:auto}
+.tile-row{display:flex; align-items:center; gap:8px; min-height:18px}
+
+.grow{display:flex; align-items:center; gap:10px; min-height:34px; padding:5px 2px}
+.grow + .grow{box-shadow:inset 0 1px 0 var(--glass-line)}
+.grow__txt{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1}
+.grow__lbl{font:var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); color:var(--app-text-strong);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__sub{font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color:var(--app-text-muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__val{margin-left:auto; display:inline-flex; align-items:center; gap:8px; flex:0 0 auto}
+.chev{color:var(--app-text-faint); display:flex}
+.chev svg{width:12px; height:12px}
+
+.gicon{width:var(--o-icon); height:var(--o-icon); border-radius:5px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; color:#fff;
+  font:var(--w-semi) 9px/1 var(--app-font-sans)}
+.ic-code{background:#2f7fd0} .ic-figma{background:#a259ff} .ic-slack{background:#4a154b}
+.ic-notion{background:#2f2f2f} .ic-safari{background:#1e90ff} .ic-term{background:#2b2b2b}
+.ic-zoom{background:#2d8cff} .ic-mail{background:#3b7ddd} .ic-mnema{background:var(--app-accent-bg);
+  color:var(--app-accent); box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border)}
+
+/* ── fake screenshots (all CSS, no assets) ───────────────────────────────── */
+.shot{display:block; position:relative; width:100%; height:100%; overflow:hidden;
+  background:var(--sh-bg); color:var(--sh-el)}
+.shot .code{position:absolute; display:flex; flex-direction:column; justify-content:space-evenly}
+.shot .ln{display:flex; gap:4px; align-items:center; height:4px}
+.shot .ln i{height:100%; border-radius:1px; background:currentColor; opacity:.34; display:block}
+.shot .ln i.k{background:var(--sh-kw); opacity:.85}
+.shot .ln i.s{background:var(--sh-str); opacity:.85}
+.shot .ln i.c{background:var(--sh-cm); opacity:.55}
+.shot .ln i.n{background:var(--sh-num); opacity:.8}
+
+.shot--editor{background:var(--sh-bg)}
+.shot--editor:before{content:""; position:absolute; inset:0 auto 0 0; width:5%; background:var(--sh-chrome-2)}
+.shot--editor:after{content:""; position:absolute; left:5%; top:0; bottom:0; width:20%;
+  background:linear-gradient(var(--sh-chrome),var(--sh-chrome));
+  box-shadow:inset -1px 0 0 rgba(128,128,150,.18)}
+.shot--editor .files{position:absolute; left:7%; top:12%; bottom:12%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--editor .files i{height:3px; border-radius:1px; background:currentColor; opacity:.28; display:block}
+.shot--editor .files i.on{opacity:.6; background:var(--sh-kw)}
+.shot--editor .tabs{position:absolute; left:25%; right:0; top:0; height:8%;
+  background:var(--sh-chrome); z-index:1}
+.shot--editor .code{left:29%; right:5%; top:12%; bottom:6%; z-index:2}
+.shot--editor .cur{position:absolute; left:38%; top:26%; width:1.5px; height:5px;
+  background:var(--sh-kw); z-index:3}
+
+.shot--browser:before{content:""; position:absolute; inset:0 0 auto 0; height:11%;
+  background:var(--sh-chrome)}
+.shot--browser .url{position:absolute; left:16%; top:3%; width:52%; height:5%; border-radius:9px;
+  background:var(--sh-chrome-2); box-shadow:inset 0 0 0 1px rgba(128,128,150,.16)}
+.shot--browser .dots{position:absolute; left:3%; top:4.2%; display:flex; gap:3px}
+.shot--browser .dots i{width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.25; display:block}
+.shot--browser .art{position:absolute; left:10%; right:26%; top:20%; bottom:8%; display:flex;
+  flex-direction:column; justify-content:flex-start; gap:7%}
+.shot--browser .art .h{height:8px; width:56%; border-radius:2px; background:var(--sh-kw); opacity:.6; display:block}
+.shot--browser .aside{position:absolute; right:5%; top:20%; width:16%; display:flex;
+  flex-direction:column; gap:9%}
+.shot--browser .aside i{height:5px; border-radius:2px; background:currentColor; opacity:.18; display:block}
+
+.shot--terminal{background:var(--sh-term); color:var(--sh-term-t)}
+.shot--terminal .code{left:5%; right:5%; top:8%; bottom:8%}
+.shot--terminal .ln i{opacity:.55}
+.shot--terminal .ln i.g{background:var(--sh-str); opacity:.95}
+.shot--terminal .ln i.r{background:#e06c75; opacity:.9}
+.shot--terminal .cur{position:absolute; left:5%; bottom:14%; width:5px; height:5px;
+  background:var(--sh-str); opacity:.9}
+
+.shot--docs{background:#fff}
+.shot--docs:before{content:""; position:absolute; inset:0 auto 0 0; width:22%;
+  background:#f3f3f1; box-shadow:inset -1px 0 0 rgba(128,128,150,.14)}
+.shot--docs .nav{position:absolute; left:4%; top:12%; bottom:16%; width:15%; display:flex;
+  flex-direction:column; justify-content:space-between}
+.shot--docs .nav i{height:3px; border-radius:1px; background:#1c1c22; opacity:.22; display:block}
+.shot--docs .nav i.on{opacity:.55; background:#1f7a4a}
+.shot--docs .code{left:28%; right:8%; top:12%; bottom:8%; color:#1c1c22}
+.shot--docs .code .h{height:8px; width:52%; border-radius:2px; background:#1c1c22; opacity:.7; display:block}
+
+.shot--figma{background:linear-gradient(180deg,#2a2a30,#1e1e24)}
+.shot--figma:before{content:""; position:absolute; inset:0 0 auto 0; height:9%; background:#111116}
+.shot--figma .lp,.shot--figma .rp{position:absolute; top:9%; bottom:0; width:16%; background:#17171c}
+.shot--figma .lp{left:0} .shot--figma .rp{right:0}
+.shot--figma .art{position:absolute; border-radius:3px}
+.shot--figma .a1{left:26%; top:22%; width:26%; height:34%; background:#6f5ed1; opacity:.85}
+.shot--figma .a2{left:56%; top:22%; width:20%; height:16%; background:#3ba55c; opacity:.8}
+.shot--figma .a3{left:56%; top:44%; width:26%; height:30%; background:#3a3a46}
+.shot--figma .a4{left:26%; top:62%; width:16%; height:16%; border-radius:50%; background:#e0a06a; opacity:.8}
+
+.shot--call{background:#0d0d12}
+.shot--call .tiles{position:absolute; inset:5% 4% 16% 4%; display:grid;
+  grid-template-columns:repeat(3,1fr); gap:6px}
+.shot--call .t{border-radius:5px; position:relative; display:block; overflow:hidden;
+  background:linear-gradient(158deg,#2c2c38,#1d1d26)}
+.shot--call .t:after{content:""; position:absolute; left:50%; top:50%; width:26%; aspect-ratio:1;
+  transform:translate(-50%,-58%); border-radius:50%; background:rgba(255,255,255,.20)}
+.shot--call .t:before{content:""; position:absolute; left:7%; bottom:8%; width:36%; height:4px;
+  border-radius:2px; background:rgba(255,255,255,.16)}
+.shot--call .t.on{box-shadow:inset 0 0 0 2px #3ba55c}
+.shot--call .ctrl{position:absolute; left:50%; bottom:5%; transform:translateX(-50%);
+  display:flex; gap:6px}
+.shot--call .ctrl i{width:10px; height:10px; border-radius:50%; background:#33333e; display:block}
+.shot--call .ctrl i.r{background:#e0455a}
+
+.shot--chat{background:var(--sh-bg)}
+.shot--chat:before{content:""; position:absolute; inset:0 auto 0 0; width:9%; background:#3f0f3f}
+.shot--chat:after{content:""; position:absolute; left:9%; top:0; bottom:0; width:22%; background:#4a154b}
+.shot--chat .chans{position:absolute; left:12%; top:12%; bottom:14%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--chat .chans i{height:3px; border-radius:1px; background:#fff; opacity:.32; display:block}
+.shot--chat .chans i.on{opacity:.85}
+.shot--chat .msgs{position:absolute; left:35%; right:5%; top:12%; bottom:12%; display:flex;
+  flex-direction:column; justify-content:space-evenly}
+.shot--chat .msg{display:flex; gap:5px; align-items:flex-start}
+.shot--chat .msg .av{width:9px; height:9px; border-radius:2px; background:currentColor;
+  opacity:.24; flex:0 0 auto; display:block}
+.shot--chat .msg .bd{flex:1; display:flex; flex-direction:column; gap:3px}
+.shot--chat .msg .bd i{height:3px; border-radius:1px; background:currentColor; opacity:.22; display:block}
+.shot--chat .msg .bd i.n{opacity:.5; background:var(--sh-kw)}
+
+.shot--sheet{background:#fff}
+.shot--sheet:before{content:""; position:absolute; inset:0 0 auto 0; height:12%; background:#f0efec}
+.shot--sheet .g{position:absolute; inset:16% 4% 6% 4%; display:flex; flex-direction:column; gap:4px}
+.shot--sheet .r{display:flex; gap:4px; flex:1; align-items:center}
+.shot--sheet .r i{height:4px; flex:1; border-radius:1px; background:#1c1c22; opacity:.16; display:block}
+.shot--sheet .r i.p{background:#1f7a4a; opacity:.5}
+.shot--sheet .r i.sel{background:#2b78c5; opacity:.5}
+
+.shot--wave{background:var(--app-surface-subtle); display:flex; align-items:center;
+  justify-content:center; gap:2px; padding:0 6%}
+.shot--wave i{flex:1; min-width:2px; border-radius:1px; background:var(--app-src-mic);
+  opacity:.45; display:block}
+.shot--wave i.hi{opacity:.95}
+.shot--wave i.sy{background:var(--app-src-sys); opacity:.7}
+
+.shot--desktop{background:
+  radial-gradient(120% 90% at 20% 0%, var(--desk-b), transparent 60%),
+  radial-gradient(120% 100% at 90% 20%, var(--desk-a), transparent 62%),
+  linear-gradient(160deg, var(--desk-c), var(--desk-d))}
+
+/* ── simulated desktop behind the HUD ────────────────────────────────────── */
+.desk{position:relative; overflow:hidden; border-radius:10px; box-shadow:var(--sh-win);
+  background:
+    radial-gradient(120% 90% at 18% 0%, var(--desk-b), transparent 58%),
+    radial-gradient(110% 100% at 88% 16%, var(--desk-a), transparent 60%),
+    linear-gradient(158deg, var(--desk-c), var(--desk-d))}
+.desk:before{content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+  background:repeating-linear-gradient(45deg, rgba(255,255,255,.014) 0 2px, transparent 2px 4px)}
+.desk__menubar{position:absolute; inset:0 0 auto 0; height:26px; z-index:4; display:flex;
+  align-items:center; gap:16px; padding:0 14px;
+  background:rgba(255,255,255,.16); -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:rgba(255,255,255,.92)}
+.desk__menubar .r{margin-left:auto; display:flex; align-items:center; gap:14px;
+  font-family:var(--app-font-mono); font-variant-numeric:tabular-nums}
+.desk__scrim{position:absolute; inset:0; z-index:5; background:var(--desk-scrim)}
+.deskwin{position:absolute; z-index:3; border-radius:9px; overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.34), 0 0 0 .5px rgba(0,0,0,.22)}
+.deskwin__bar{height:26px; display:flex; align-items:center; gap:7px; padding:0 10px;
+  background:var(--sh-chrome); box-shadow:inset 0 -1px 0 rgba(128,128,150,.2)}
+.deskwin__bar i{width:9px; height:9px; border-radius:50%; display:block}
+.deskwin__bar .t{margin-left:6px; font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  color:var(--sh-el); opacity:.7}
+.deskwin__body{position:absolute; inset:26px 0 0 0}
+
+/* the capture outline — Copilot-Vision move: say WHAT is being read, on screen */
+.capframe{position:absolute; z-index:6; border-radius:10px; pointer-events:none;
+  box-shadow:0 0 0 1.5px color-mix(in srgb,var(--app-accent) 78%, transparent),
+             0 0 0 7px color-mix(in srgb,var(--app-accent) 12%, transparent)}
+.capframe__tag{position:absolute; left:0; top:-26px; display:inline-flex; align-items:center;
+  gap:6px; height:22px; padding:0 9px; border-radius:var(--r-pill);
+  background:var(--app-accent); color:var(--app-accent-contrast);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); white-space:nowrap}
+
+/* ── HUD / floating glass panel ──────────────────────────────────────────── */
+.glass{position:relative; border-radius:var(--r-panel);
+  background:var(--glass-hud); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+             inset 0 1px 0 var(--glass-hi)}
+.plate{border-radius:var(--r-lg); background:var(--app-surface); box-shadow:var(--sh-tile)}
+
+/* overlay scrollbar */
+.scroll{overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--app-border-hover) transparent}
+.scroll::-webkit-scrollbar{width:8px}
+.scroll::-webkit-scrollbar-thumb{background:var(--app-border-hover); border-radius:4px;
+  border:2px solid transparent; background-clip:padding-box}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:1ms !important}}
+
+</style>
+<style>
+/* ── page 02: the frozen timeline, re-lit ─────────────────────────────────── */
+.chrome{position:relative; z-index:5; flex:0 0 auto;
+  background:var(--glass); -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi)}
+.chrome .tbar{position:relative; background:none; backdrop-filter:none;
+  -webkit-backdrop-filter:none; box-shadow:none}
+.tbar2{height:34px; display:flex; align-items:center; gap:8px; padding:0 14px}
+.tgrp{display:inline-flex; align-items:center; gap:6px}
+.tgrp--r{margin-left:auto}
+
+/* secondary rail controls — one utility cluster, each verb legible */
+.util{display:inline-flex; align-items:center; gap:2px; padding:2px; border-radius:7px;
+  background:var(--glass-tint); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.util button{display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 8px;
+  border:none; border-radius:5px; background:transparent; color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans)}
+.util button svg{width:12px; height:12px}
+.util button.on{background:var(--app-surface); color:var(--app-text-strong);
+  box-shadow:0 1px 2px rgba(0,0,0,.16)}
+.util .n{font-family:var(--app-font-mono); font-variant-numeric:tabular-nums;
+  color:var(--app-text-subtle)}
+
+/* stage — the frame is a print floating on an opaque surface */
+.stage{position:relative; flex:1; min-height:0; padding:14px 16px 10px;
+  display:flex; align-items:stretch; justify-content:center; background:var(--app-bg)}
+.print{position:relative; flex:1; border-radius:var(--r-lg); overflow:hidden;
+  box-shadow:0 10px 30px rgba(0,0,0,.30), 0 0 0 var(--hairline) var(--glass-line)}
+.stageacts{position:absolute; right:26px; top:24px; z-index:4; display:flex; gap:6px}
+.gbtn{display:inline-flex; align-items:center; justify-content:center; gap:6px; height:26px;
+  padding:0 8px; border:none; border-radius:var(--r-md); color:var(--app-text-strong);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:0 2px 10px rgba(0,0,0,.24), inset 0 0 0 var(--hairline) var(--glass-line);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans)}
+.gbtn--i{width:26px; padding:0}
+.ocrhint{position:absolute; left:26px; bottom:22px; z-index:4; display:inline-flex; align-items:center;
+  gap:6px; height:22px; padding:0 9px; border-radius:var(--r-pill); color:#fff;
+  background:rgba(12,12,16,.58); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px);
+  font:var(--w-regular) var(--t-meta)/1 var(--app-font-sans)}
+.ocrbox{position:absolute; border-radius:2px; background:color-mix(in srgb,var(--app-accent) 22%, transparent);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--app-accent) 45%, transparent)}
+
+/* ── rail wrap: readout → rail → mic/sys lane ────────────────────────────── */
+.railwrap{flex:0 0 auto; padding:0 16px 12px; background:var(--app-bg)}
+.readrow{position:relative; height:38px}
+/* the jump control: it IS the readout, and it rides the playhead (Rewind idiom) */
+.jump{position:absolute; bottom:2px; transform:translateX(-50%); display:inline-flex;
+  align-items:center; gap:8px; height:30px; padding:0 6px 0 8px; border-radius:var(--r-pill);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line); white-space:nowrap}
+.jump:after{content:""; position:absolute; left:50%; bottom:-4px; width:8px; height:8px;
+  margin-left:-4px; transform:rotate(45deg); border-radius:1px; background:var(--glass-pop);
+  -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur)}
+.jump__ic{width:18px; height:18px; border-radius:5px; display:flex; align-items:center;
+  justify-content:center; color:#fff; font:var(--w-semi) 8px/1 var(--app-font-sans); flex:0 0 auto}
+.jump__app{font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color:var(--app-text-strong)}
+.jump__t{font:var(--w-regular) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric:tabular-nums;
+  color:var(--app-text-strong)}
+.jump__d{font:var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color:var(--app-text-muted)}
+.jump__cv{display:flex; align-items:center; justify-content:center; width:18px; height:18px;
+  border-radius:5px; background:var(--glass-tint); color:var(--app-text-muted)}
+.jump__cv svg{width:10px; height:10px}
+/* ghost readout while the pointer is over the rail, before you commit */
+.ghost{position:absolute; bottom:6px; transform:translateX(-50%); display:inline-flex;
+  align-items:center; gap:6px; height:22px; padding:0 8px; border-radius:var(--r-pill);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:0 4px 14px rgba(0,0,0,.24), inset 0 0 0 var(--hairline) var(--glass-line);
+  font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric:tabular-nums;
+  color:var(--app-text-muted)}
+
+.rail{position:relative; height:46px; border-radius:var(--r-md); overflow:hidden;
+  background:var(--app-surface)}
+.band{position:absolute; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
+  background:
+    repeating-linear-gradient(90deg, var(--app-surface-hover) 0 6px, transparent 6px 8px),
+    var(--app-surface-raised)}
+.band--gap{background:var(--app-surface-subtle)}
+.band .gicon{box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.tickM{position:absolute; top:0; bottom:0; width:1px; background:var(--app-bg)}
+.tickA{position:absolute; top:-38px; bottom:-2px; width:2px; background:var(--app-record); z-index:3;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--app-record) 16%, transparent)}
+.tickG{position:absolute; top:-10px; bottom:-2px; width:1px; z-index:2;
+  background:repeating-linear-gradient(180deg, var(--app-text-subtle) 0 3px, transparent 3px 6px)}
+.hourlab{position:absolute; bottom:3px; z-index:3; font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.04em; color:var(--app-text-subtle); transform:translateX(-50%)}
+.jrow__h{white-space:nowrap}
+
+.lane{display:flex; gap:8px; margin-top:6px; align-items:center}
+.lane__labs{width:26px; flex:0 0 auto; display:flex; flex-direction:column; gap:4px}
+.lane__labs span{font:var(--w-medium) var(--t-label)/1 var(--app-font-mono); text-align:right}
+.lmic{color:var(--app-src-mic)} .lsys{color:var(--app-src-sys)}
+.lane__vp{position:relative; flex:1; height:26px; border-radius:var(--r-sm);
+  background:var(--app-surface); overflow:hidden}
+.abar{position:absolute; height:9px; border-radius:2px; border:none}
+.abar--mic{top:3px; background:color-mix(in srgb,var(--app-src-mic) 55%, transparent)}
+.abar--sys{top:14px; background:color-mix(in srgb,var(--app-src-sys) 55%, transparent)}
+.abar.sel{background:var(--app-record); box-shadow:0 0 0 1px color-mix(in srgb,var(--app-record) 40%, transparent)}
+
+/* ── AudioDrawer — a floating sheet: material shell, opaque transcript ─────── */
+.drawer{position:absolute; left:16px; right:16px; bottom:10px; z-index:6; border-radius:var(--r-panel);
+  overflow:hidden; background:var(--glass-hud); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line), inset 0 1px 0 var(--glass-hi)}
+.drawer__h{display:flex; align-items:center; gap:10px; height:38px; padding:0 10px}
+.drawer__cols{display:flex; gap:10px; margin:0 10px 10px; align-items:stretch}
+.wavebox{width:352px; flex:0 0 auto; border-radius:var(--r-lg); background:var(--app-surface);
+  padding:10px 12px; display:flex; flex-direction:column; gap:8px; justify-content:center}
+.wave{display:flex; align-items:center; justify-content:space-between; height:38px}
+.wave i{width:4px; border-radius:2px; background:var(--app-text-faint); display:block; opacity:.7}
+.wave i.done{background:var(--app-src-mic); opacity:1}
+.wavefoot{display:flex; align-items:center; gap:8px}
+.drawer__body{flex:1; min-width:0; padding:10px 12px; border-radius:var(--r-lg);
+  background:var(--app-surface); display:flex; flex-direction:column; gap:6px; justify-content:center}
+.turn{display:flex; gap:10px; align-items:baseline}
+.turn__who{width:52px; flex:0 0 auto; text-align:right;
+  font:var(--w-medium) var(--t-label)/1.5 var(--app-font-mono); text-transform:uppercase}
+.turn__txt{flex:1; font:var(--w-regular) var(--t-read)/1.5 var(--app-font-sans); color:var(--app-text)}
+.turn__t{font:var(--w-regular) var(--t-meta)/1.5 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint)}
+
+/* ── jump menu ───────────────────────────────────────────────────────────── */
+.jmenu{position:absolute; z-index:9; width:298px; padding:6px;
+  border-radius:var(--r-xl); background:var(--glass-pop);
+  -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line)}
+.jrow{display:flex; align-items:center; gap:8px; height:26px; padding:0 8px; border-radius:var(--r-sm)}
+.jrow.on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.jrow.off{opacity:.38}
+.jrow__d{flex:1; font-size:var(--t-ui); color:var(--app-text-strong)}
+.jrow.on .jrow__d{color:inherit}
+.jrow__b{width:52px; height:4px; border-radius:2px; background:var(--glass-tint); overflow:hidden}
+.jrow__b i{display:block; height:100%; background:var(--app-text-subtle)}
+.jrow.on .jrow__b i{background:var(--app-accent-contrast); opacity:.8}
+.jrow__h{font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric:tabular-nums;
+  color:var(--app-text-subtle); width:44px; text-align:right}
+.jrow.on .jrow__h{color:inherit; opacity:.85}
+.cal{padding:2px 6px 6px}
+.cal__h{display:flex; align-items:center; gap:6px; height:24px; margin-bottom:2px}
+.cal__h .m{font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color:var(--app-text-strong)}
+.cal__g{display:grid; grid-template-columns:repeat(7,1fr); gap:1px}
+.cal__g span{position:relative; height:22px; display:flex; align-items:center; justify-content:center;
+  border-radius:5px; font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text)}
+.cal__g span.dow{color:var(--app-text-faint); height:16px; font-size:9px}
+.cal__g span.off{color:var(--app-text-faint)}
+.cal__g span.has{color:var(--app-text-strong)}
+.cal__g span.has:after{content:""; position:absolute; left:50%; bottom:2px; margin-left:-1.5px;
+  width:3px; height:3px; border-radius:50%; background:var(--app-accent)}
+.cal__g span.sel{background:var(--app-accent); color:var(--app-accent-contrast)}
+.jfoot{display:flex; align-items:center; gap:8px; padding:6px 8px 2px}
+</style>
+</head>
+<body>
+<button class="themebtn" onclick="(function(r){r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'})(document.documentElement)">◐ theme</button>
+<svg style="display:none" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.2 14 8.6l5.4 2-5.4 2-2 5.4-2-5.4-5.4-2 5.4-2z"/><path d="M18.5 3.2 19.2 5l1.8.7-1.8.7-.7 1.8-.7-1.8L16 5l1.8-.7z"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/></symbol>
+<symbol id="i-chevr" viewBox="0 0 24 24"><path d="m9.5 18 6-6-6-6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+<symbol id="i-chevl" viewBox="0 0 24 24"><path d="m14.5 18-6-6 6-6"/></symbol>
+<symbol id="i-chevud" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6.5 9 17.5l-5-5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M6.5 4.5 19 12 6.5 19.5z" fill="currentColor" stroke-linejoin="round"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="2.4" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-screen" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13.5" rx="2.2"/><path d="M8.5 21h7M12 17v4"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 10.5v1.5a6.5 6.5 0 0 0 13 0v-1.5M12 19v2.5"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><path d="M11 5.2 6.4 9H2.8v6h3.6L11 18.8z"/><path d="M15.4 9a4.4 4.4 0 0 1 0 6M18.6 5.6a8.6 8.6 0 0 1 0 12.8"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7.5V5.5a2 2 0 0 1 2-2h2M17 3.5h2a2 2 0 0 1 2 2v2M21 16.5v2a2 2 0 0 1-2 2h-2M7 20.5H5a2 2 0 0 1-2-2v-2"/><path d="M7 9h10M7 12.5h6M7 16h8"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.3l3.2 1.9"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h11M18.5 6H21M3 12h4M11.5 12H21M3 18h9M16.5 18H21"/><circle cx="16.2" cy="6" r="2.2"/><circle cx="9.2" cy="12" r="2.2"/><circle cx="14.2" cy="18" r="2.2"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8.5" ry="3"/><path d="M3.5 5.5v13c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3v-13M3.5 12c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21.5s7.5-3.8 7.5-9.5V5.2L12 2.5 4.5 5.2V12c0 5.7 7.5 9.5 7.5 9.5z"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.4"/><rect x="9" y="9" width="6" height="6" rx="1.2"/><path d="M9 2.5v2M15 2.5v2M9 19.5v2M15 19.5v2M2.5 9h2M2.5 15h2M19.5 9h2M19.5 15h2"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.6" cy="15.6" r="3.6"/><path d="m21 2.4-10.8 10.8M15.6 7.8l3 3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 4v5.5H15"/><path d="M20 9.5A8.5 8.5 0 1 0 20.2 15"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5v-.8a7.5 7.5 0 0 1 15 0v.8"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.5 20v-.6A6.5 6.5 0 0 1 9 13a6.5 6.5 0 0 1 6.5 6.4v.6M16.5 4.6a3.4 3.4 0 0 1 0 6.7M18 13.4a6 6 0 0 1 3.5 5.4v1.2"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17.2h.01"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M12 16.5v-5M12 8h.01"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5 3.8 9.4 9 4.3"/><path d="M3.8 9.4h11.4a5.3 5.3 0 1 1 0 10.6h-4.4"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17.2V22M8.6 10.9V3.5h6.8v7.4l2.2 3.4H6.4z"/></symbol>
+<symbol id="i-frame" viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="17" rx="2.4"/><path d="m3.4 16.4 4.7-4.7 4 4 3-3 5.5 5.5"/><circle cx="15.6" cy="8.4" r="1.5"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 14.6a2 2 0 0 1-2 2H7.4L3 21V5.4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="i-ret" viewBox="0 0 24 24"><path d="M20 4.5v6.4a4 4 0 0 1-4 4H4"/><path d="m9 10.4-5 4.5 5 4.5"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.2 12S6 5.5 12 5.5 21.8 12 21.8 12 18 18.5 12 18.5 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2.6 9 4.7-9 4.7-9-4.7z"/><path d="m3 12.3 9 4.7 9-4.7M3 17.1l9 4.7 9-4.7"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.5 6h17M9 6V3.8h6V6M6.2 6l1 14.2h9.6L17.8 6"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2.2"/><path d="m7 9.5 3 2.7-3 2.7M12.6 15.4h4.4"/></symbol>
+<symbol id="i-zoomin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4M11 8.2v5.6M8.2 11h5.6"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M3.4 12h17.2M12 3.3c2.2 2.4 3.4 5.5 3.4 8.7S14.2 18.3 12 20.7c-2.2-2.4-3.4-5.5-3.4-8.7S9.8 5.7 12 3.3z"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4.5v14M5.5 12.5 12 19l6.5-6.5"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19.5v-14M5.5 11.5 12 5l6.5 6.5"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+</defs></svg>
+
+
+<header class="mast">
+  <p class="mast__eyebrow"><b></b>Direction 03 — Layered Glass</p>
+  <h1><span>02 ·</span> Timeline — the jump control rides the playhead</h1>
+  <p><b>Look at:</b> the layout is the shipping one, untouched — chrome → stage → tick rail (newest
+  anchored right) → mic/sys lane → readout → AudioDrawer. Two things improve: the readout and the
+  date picker are now <b>one glass capsule anchored over the playhead</b> — the position readout
+  and the jump menu are never in different places; and the loose thin-bar buttons become one
+  labelled utility cluster. The drawer is a floating sheet — material shell, opaque transcript
+  plate, because prose never sits on glass.</p>
+  <div class="mast__rule"></div>
+</header>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — an audio moment, AudioDrawer open.</b> The playhead sits on the
+  Zoom band; its capsule reads <code>Zoom · 13:07:24 · Mon, Aug 3</code> and its chevron is the
+  date jump. The selected mic bar keeps the shipping recording-red. Zoom level (Hour / Day / Week)
+  is the coarse control, so the capsule only ever has to handle “jump”.</p>
+  <div class="win win--1100">
+    <div class="chrome">
+      <div class="tbar tbar--static">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <div class="seg" style="margin-left:8px"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+        <div class="tbar__sp"></div>
+        <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-sliders"/></svg></button>
+        <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+      </div>
+      <div class="tbar2">
+        <div class="tgrp">
+          <span class="t-label">Zoom</span>
+          <div class="seg"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span></div>
+          <button class="btn btn--ghost btn--sm"><svg><use href="#i-chevl"/></svg></button>
+          <button class="btn btn--ghost btn--sm">Jump to latest<span class="kbd">⌘↓</span></button>
+        </div>
+        <div class="tgrp tgrp--r">
+          <span class="chip chip--q is-mono">apple-vision</span>
+          <div class="util">
+            <button class="on"><svg><use href="#i-scan"/></svg>Text<span class="n">42</span></button>
+            <button><svg><use href="#i-refresh"/></svg>Re-run OCR</button>
+            <button><svg><use href="#i-refresh"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="print">
+        <div class="shot shot--call" aria-hidden="true">
+          <div class="tiles"><span class="t on"></span><span class="t"></span><span class="t"></span>
+            <span class="t"></span><span class="t"></span><span class="t"></span></div>
+          <div class="ctrl"><i></i><i></i><i></i><i></i><i class="r"></i></div>
+        </div>
+      </div>
+      <div class="stageacts">
+        <button class="gbtn gbtn--i"><svg><use href="#i-sys"/></svg></button>
+        <button class="gbtn gbtn--i"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <div class="drawer" role="dialog" aria-label="Audio player">
+        <div class="drawer__h">
+          <button class="btn btn--icon btn--sm"><svg style="width:12px;height:12px"><use href="#i-play"/></svg></button>
+          <span class="is-mono is-num" style="font-size:var(--t-ui);color:var(--app-text-strong)">02:14 / 04:58</span>
+          <span class="chip" style="color:var(--app-src-mic)"><svg style="width:10px;height:10px"><use href="#i-mic"/></svg>Mic</span>
+          <span class="t-ui strong">Launch sync — Zoom</span>
+          <span class="t-meta is-mono is-num">13:02 – 13:07</span>
+          <span style="margin-left:auto; display:inline-flex; gap:6px">
+            <button class="btn btn--ghost btn--sm">Open moment</button>
+            <button class="btn btn--ghost btn--icon btn--sm"><svg style="width:11px;height:11px"><use href="#i-x"/></svg></button>
+          </span>
+        </div>
+        <div class="drawer__cols">
+        <div class="wavebox">
+          <div class="wave" aria-hidden="true">
+            <i class="done" style="height:26%"></i><i class="done" style="height:48%"></i><i class="done" style="height:70%"></i><i class="done" style="height:42%"></i><i class="done" style="height:84%"></i><i class="done" style="height:58%"></i><i class="done" style="height:90%"></i><i class="done" style="height:64%"></i><i class="done" style="height:38%"></i><i class="done" style="height:74%"></i><i class="done" style="height:52%"></i><i class="done" style="height:30%"></i><i class="done" style="height:66%"></i><i class="done" style="height:44%"></i><i class="done" style="height:78%"></i><i class="done" style="height:56%"></i><i class="done" style="height:34%"></i><i class="done" style="height:62%"></i><i style="height:40%"></i><i style="height:72%"></i><i style="height:50%"></i><i style="height:28%"></i><i style="height:68%"></i><i style="height:46%"></i><i style="height:80%"></i><i style="height:36%"></i><i style="height:60%"></i><i style="height:54%"></i><i style="height:32%"></i><i style="height:76%"></i><i style="height:44%"></i><i style="height:58%"></i><i style="height:30%"></i><i style="height:70%"></i><i style="height:48%"></i><i style="height:26%"></i><i style="height:64%"></i><i style="height:38%"></i><i style="height:72%"></i><i style="height:42%"></i>
+          </div>
+          <div class="wavefoot">
+            <span class="t-label" style="color:var(--app-src-mic)">mic · Priya's device</span>
+            <span class="t-meta is-mono is-num" style="margin-left:auto">5 speakers · 62 turns</span>
+          </div>
+        </div>
+        <div class="drawer__body">
+          <div class="turn"><span class="turn__who" style="color:var(--app-src-mic)">Priya</span>
+            <span class="turn__txt">The Stripe webhook is still 400-ing on the raw secret — Polar signs on the whole <b style="font-weight:510">whsec_</b> string, not the decoded key.</span>
+            <span class="turn__t">01:58</span></div>
+          <div class="turn"><span class="turn__who" style="color:var(--app-info)">You</span>
+            <span class="turn__txt">Right, so we HMAC the raw string. I'll patch the verifier after this call and rerun the fixture.</span>
+            <span class="turn__t">02:14</span></div>
+          <div class="turn"><span class="turn__who" style="color:var(--app-warn)">Tom</span>
+            <span class="turn__txt">Can we also log the delivery id? Debugging blind deliveries last week was painful.</span>
+            <span class="turn__t">02:31</span></div>
+        </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="railwrap">
+      <div class="readrow">
+        <div class="jump" style="left:424px">
+          <span class="jump__ic ic-zoom">Z</span>
+          <span class="jump__app">Zoom</span>
+          <span class="jump__t">13:07:24</span>
+          <span class="jump__d">Mon, Aug 3</span>
+          <span class="jump__cv"><svg><use href="#i-chevd"/></svg></span>
+        </div>
+      </div>
+      <div class="rail">
+        <span class="hourlab" style="left:80px">09:00</span>
+        <span class="hourlab" style="left:340px">11:00</span>
+        <span class="hourlab" style="left:600px">13:00</span>
+        <span class="hourlab" style="left:860px">15:00</span>
+        <div class="band" style="left:0;width:96px"><span class="gicon ic-notion">N</span></div>
+        <div class="band" style="left:100px;width:210px"><span class="gicon ic-figma">F</span></div>
+        <div class="band" style="left:314px;width:220px"><span class="gicon ic-zoom">Z</span></div>
+        <div class="band" style="left:538px;width:70px"><span class="gicon ic-term">›_</span></div>
+        <div class="band" style="left:612px;width:180px"><span class="gicon ic-safari">S</span></div>
+        <div class="band" style="left:796px;right:0"><span class="gicon ic-code">C</span></div>
+        <span class="tickM" style="left:98px"></span><span class="tickM" style="left:312px"></span>
+        <span class="tickM" style="left:536px"></span><span class="tickM" style="left:610px"></span>
+        <span class="tickM" style="left:794px"></span>
+        <span class="tickA" style="left:424px"></span>
+      </div>
+      <div class="lane">
+        <div class="lane__labs"><span class="lmic">mic</span><span class="lsys">sys</span></div>
+        <div class="lane__vp">
+          <span class="abar abar--mic sel" style="left:288px;width:220px"></span>
+          <span class="abar abar--mic" style="left:534px;width:40px"></span>
+          <span class="abar abar--sys" style="left:288px;width:220px"></span>
+          <span class="abar abar--sys" style="left:74px;width:210px"></span>
+          <span class="abar abar--sys" style="left:770px;width:190px"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>The jump menu, open — and a hover before you commit.</b> One control, two
+  jobs: it reads out position and it navigates. Recent days carry their coverage as a bar, a day
+  with <b>no recording is disabled</b> (Sunday), and the month grid dots the days that have
+  frames. The pointer is over 13:41 on the rail: a ghost playhead + a time bubble appear
+  <i>before</i> the click commits. Newest is still anchored right; the live edge is a red tick.</p>
+  <div class="win win--1100">
+    <div class="chrome">
+      <div class="tbar tbar--static">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <div class="seg" style="margin-left:8px"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+        <div class="tbar__sp"></div>
+        <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-sliders"/></svg></button>
+        <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+      </div>
+      <div class="tbar2">
+        <div class="tgrp">
+          <span class="t-label">Zoom</span>
+          <div class="seg"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span></div>
+          <button class="btn btn--ghost btn--sm"><svg><use href="#i-chevl"/></svg></button>
+          <button class="btn btn--ghost btn--sm" aria-disabled="true">Jump to latest<span class="kbd">⌘↓</span></button>
+        </div>
+        <div class="tgrp tgrp--r">
+          <span class="chip chip--q is-mono">apple-vision</span>
+          <div class="util">
+            <button><svg><use href="#i-scan"/></svg>Text<span class="n">42</span></button>
+            <button aria-busy="true"><span class="spin"></span>Re-running OCR</button>
+            <button><svg><use href="#i-refresh"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="print">
+        <div class="shot shot--editor" aria-hidden="true">
+          <span class="tabs"></span>
+          <span class="files"><i></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="code">
+            <span class="ln"><i class="c" style="width:44%"></i></span>
+            <span class="ln"><i class="k" style="width:10%"></i><i style="width:22%"></i><i style="width:14%"></i><i class="s" style="width:20%"></i></span>
+            <span class="ln"><i style="width:8%"></i><i class="k" style="width:12%"></i><i class="s" style="width:34%"></i></span>
+            <span class="ln"><i style="width:8%"></i><i style="width:18%"></i><i class="n" style="width:8%"></i><i style="width:16%"></i></span>
+            <span class="ln"><i style="width:6%"></i></span>
+            <span class="ln"><i class="k" style="width:14%"></i><i style="width:26%"></i><i class="c" style="width:12%"></i></span>
+            <span class="ln"><i style="width:10%"></i><i class="s" style="width:40%"></i></span>
+            <span class="ln"><i style="width:10%"></i><i class="k" style="width:8%"></i><i style="width:22%"></i><i class="n" style="width:6%"></i></span>
+            <span class="ln"><i style="width:8%"></i><i style="width:20%"></i><i class="c" style="width:28%"></i></span>
+            <span class="ln"><i class="c" style="width:30%"></i></span>
+            <span class="ln"><i class="k" style="width:12%"></i><i style="width:18%"></i><i class="s" style="width:24%"></i></span>
+            <span class="ln"><i style="width:8%"></i><i style="width:16%"></i><i class="s" style="width:30%"></i></span>
+            <span class="ln"><i style="width:6%"></i><i class="k" style="width:10%"></i><i style="width:26%"></i></span>
+            <span class="ln"><i class="c" style="width:38%"></i></span>
+          </span>
+          <span class="cur"></span>
+        </div>
+        <span class="ocrbox" style="left:32%;top:22%;width:22%;height:5%"></span>
+        <span class="ocrbox" style="left:32%;top:31%;width:34%;height:5%"></span>
+        <span class="ocrbox" style="left:34%;top:49%;width:28%;height:5%"></span>
+      </div>
+      <div class="stageacts">
+        <button class="gbtn"><svg><use href="#i-scan"/></svg>Copy text</button>
+        <button class="gbtn gbtn--i"><svg><use href="#i-more"/></svg></button>
+      </div>
+      <span class="ocrhint"><svg style="width:11px;height:11px"><use href="#i-eye"/></svg>42 text regions · hover to read</span>
+    </div>
+
+    <div class="railwrap">
+      <div class="readrow">
+        <div class="ghost" style="left:610px">13:41 · Safari</div>
+        <div class="jump" style="left:830px">
+          <span class="jump__ic ic-code">C</span>
+          <span class="jump__app">VS Code</span>
+          <span class="jump__t">14:32:08</span>
+          <span class="jump__d">Mon, Aug 3</span>
+          <span class="jump__cv" style="background:var(--app-accent);color:var(--app-accent-contrast)"><svg><use href="#i-chevd"/></svg></span>
+        </div>
+      </div>
+      <div class="rail">
+        <span class="hourlab" style="left:80px">09:00</span>
+        <span class="hourlab" style="left:340px">11:00</span>
+        <span class="hourlab" style="left:600px">13:00</span>
+        <span class="hourlab" style="left:860px">15:00</span>
+        <div class="band" style="left:0;width:96px"><span class="gicon ic-notion">N</span></div>
+        <div class="band" style="left:100px;width:210px"><span class="gicon ic-figma">F</span></div>
+        <div class="band band--gap" style="left:314px;width:8px"></div>
+        <div class="band" style="left:326px;width:150px"><span class="gicon ic-slack">S</span></div>
+        <div class="band" style="left:480px;width:70px"><span class="gicon ic-term">›_</span></div>
+        <div class="band" style="left:554px;width:180px"><span class="gicon ic-safari">S</span></div>
+        <div class="band band--gap" style="left:738px;width:8px"></div>
+        <div class="band" style="left:750px;right:0"><span class="gicon ic-code">C</span></div>
+        <span class="tickM" style="left:98px"></span><span class="tickM" style="left:312px"></span>
+        <span class="tickM" style="left:324px"></span><span class="tickM" style="left:478px"></span>
+        <span class="tickM" style="left:552px"></span><span class="tickM" style="left:736px"></span>
+        <span class="tickM" style="left:748px"></span>
+        <span class="tickG" style="left:610px"></span>
+        <span class="tickA" style="left:830px"></span>
+      </div>
+      <div class="lane">
+        <div class="lane__labs"><span class="lmic">mic</span><span class="lsys">sys</span></div>
+        <div class="lane__vp">
+          <span class="abar abar--mic" style="left:300px;width:150px"></span>
+          <span class="abar abar--mic" style="left:474px;width:44px"></span>
+          <span class="abar abar--sys" style="left:74px;width:210px"></span>
+          <span class="abar abar--sys" style="left:734px;width:190px"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- the jump menu, hung under the capsule -->
+    <div class="jmenu" style="left:681px; bottom:140px">
+      <div class="jrow on"><svg style="width:12px;height:12px"><use href="#i-check"/></svg>
+        <span class="jrow__d">Today · Mon, Aug 3</span><span class="jrow__b"><i style="width:74%"></i></span><span class="jrow__h">6h 42m</span></div>
+      <div class="jrow off"><span style="width:12px"></span><span class="jrow__d">Yesterday · Sun, Aug 2</span>
+        <span class="jrow__b"></span><span class="jrow__h">—</span></div>
+      <div class="jrow"><span style="width:12px"></span><span class="jrow__d">Sat, Aug 1</span>
+        <span class="jrow__b"><i style="width:14%"></i></span><span class="jrow__h">1h 12m</span></div>
+      <div class="jrow"><span style="width:12px"></span><span class="jrow__d">Fri, Jul 31</span>
+        <span class="jrow__b"><i style="width:82%"></i></span><span class="jrow__h">7h 18m</span></div>
+      <div class="jrow"><span style="width:12px"></span><span class="jrow__d">Thu, Jul 30</span>
+        <span class="jrow__b"><i style="width:67%"></i></span><span class="jrow__h">6h 05m</span></div>
+      <div class="menu__sep"></div>
+      <div class="cal">
+        <div class="cal__h">
+          <button class="btn btn--ghost btn--icon btn--sm"><svg style="width:11px;height:11px"><use href="#i-chevl"/></svg></button>
+          <span class="m">July 2026</span>
+          <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg style="width:11px;height:11px"><use href="#i-chevr"/></svg></button>
+        </div>
+        <div class="cal__g">
+          <span class="dow">S</span><span class="dow">M</span><span class="dow">T</span><span class="dow">W</span><span class="dow">T</span><span class="dow">F</span><span class="dow">S</span>
+          <span></span><span></span><span></span>
+          <span class="has">1</span><span class="has">2</span><span class="has">3</span><span class="off">4</span>
+          <span class="off">5</span><span class="has">6</span><span class="has">7</span><span class="has">8</span><span class="has">9</span><span class="has">10</span><span class="off">11</span>
+          <span class="off">12</span><span class="has">13</span><span class="has">14</span><span class="has">15</span><span class="has">16</span><span class="has">17</span><span class="has">18</span>
+          <span class="off">19</span><span class="has">20</span><span class="has">21</span><span class="has">22</span><span class="has">23</span><span class="has">24</span><span class="off">25</span>
+          <span class="off">26</span><span class="has">27</span><span class="has">28</span><span class="has">29</span><span class="has">30</span><span class="has">31</span><span></span>
+        </div>
+      </div>
+      <div class="jfoot"><span class="t-meta">Days without recording are dimmed</span>
+        <span style="margin-left:auto;display:inline-flex;gap:4px"><span class="kbd">⌘[</span><span class="kbd">⌘]</span></span></div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">The control, in its four readings</div>
+  <p class="wlabel">Same capsule, four states — this is why the readout and the date picker had to
+  become one thing: the answer to “where am I?” and the control for “take me somewhere else” were
+  never in the same place before.</p>
+  <div class="row-of">
+    <div><p class="t-label" style="margin-bottom:8px">At rest — the playhead position</p>
+      <div style="position:relative;height:44px;width:300px">
+        <div class="jump" style="left:150px"><span class="jump__ic ic-code">C</span><span class="jump__app">VS Code</span><span class="jump__t">14:32:08</span><span class="jump__d">Mon, Aug 3</span><span class="jump__cv"><svg><use href="#i-chevd"/></svg></span></div>
+      </div></div>
+    <div><p class="t-label" style="margin-bottom:8px">Live edge — pinned to now</p>
+      <div style="position:relative;height:44px;width:280px">
+        <div class="jump" style="left:140px"><i class="dot"></i><span class="jump__app">Now</span><span class="jump__t">14:41:02</span><span class="jump__cv"><svg><use href="#i-chevd"/></svg></span></div>
+      </div></div>
+    <div><p class="t-label" style="margin-bottom:8px">Hovering the rail — ghost, uncommitted</p>
+      <div style="position:relative;height:44px;width:220px">
+        <div class="ghost" style="left:110px">13:41 · Safari</div>
+      </div></div>
+    <div><p class="t-label" style="margin-bottom:8px">Another day — out of “today”</p>
+      <div style="position:relative;height:44px;width:300px">
+        <div class="jump" style="left:150px"><span class="jump__ic ic-figma">F</span><span class="jump__app">Figma</span><span class="jump__t">11:08:19</span><span class="jump__d">Fri, Jul 31</span><span class="jump__cv"><svg><use href="#i-chevd"/></svg></span></div>
+      </div></div>
+  </div>
+</div>
+</body>
+</html>

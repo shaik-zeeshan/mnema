@@ -1,0 +1,1232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tactile Instruments — Page 05 Settings — the shell, General + Capture</title>
+<style>
+/* ==========================================================================
+   Mnema round 4 — direction 05 "Tactile Instruments"
+   Shared system. Tokens are docs/redesign/system.css, expressed with
+   light-dark() so ONE declaration answers both prefers-color-scheme and the
+   [data-theme] override on <html> (the override wins by flipping color-scheme).
+   ========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* surfaces */
+  --app-bg:             light-dark(#f6f6f4, #0c0c0e);
+  --app-surface:        light-dark(#ffffff, #17171f);
+  --app-surface-subtle: light-dark(#f6f6f4, #1c1c26);
+  --app-surface-raised: light-dark(#fbfbfa, #22222e);
+  --app-surface-hover:  light-dark(#eeeeec, #2e2e40);
+  --app-surface-active: light-dark(#e8f1ea, #282836);
+
+  /* text */
+  --app-text-strong: light-dark(#14141a, #e2e2e8);
+  --app-text:        light-dark(#2a2a32, #c0c0d0);
+  --app-text-muted:  light-dark(#5a5a6a, #9696ae);
+  --app-text-subtle: light-dark(#5e5e6a, #7e7e98);
+  --app-text-faint:  light-dark(#9a9aa4, #62627a);
+
+  /* borders */
+  --app-border:        light-dark(#d8d8d4, #1e1e2e);
+  --app-border-strong: light-dark(#c4c4c0, #2a2a3a);
+  --app-border-hover:  light-dark(#a4a4a0, #3a3a5a);
+
+  /* one accent */
+  --app-accent:          light-dark(#1f7a4a, #3dffa0);
+  --app-accent-strong:   light-dark(#155a36, #2a8a60);
+  --app-accent-bg:       light-dark(#e6f4ec, #0d1f15);
+  --app-accent-border:   light-dark(#9bd3b4, #1a4a30);
+  --app-accent-contrast: light-dark(#ffffff, #07120c);
+  --app-accent-glow:     light-dark(rgba(31,122,74,.16), rgba(61,255,160,.18));
+
+  /* semantic */
+  --app-danger: light-dark(#c43a48, #ff6b7a);
+  --app-danger-bg: light-dark(#fff0f2, #2e0f14);
+  --app-danger-border: light-dark(#e4b6be, #4a1a20);
+  --app-warn: light-dark(#9a5a12, #d6a14a);
+  --app-warn-bg: light-dark(#fff1df, #1a1208);
+  --app-warn-border: light-dark(#dfbc8a, #7a4a18);
+  --app-info: light-dark(#2b78c5, #60b0ff);
+  --app-info-bg: light-dark(#eef5ff, #0c1a2e);
+  --app-info-border: light-dark(#bdd3ef, #1a3050);
+
+  /* recording red is a STATE, never an error */
+  --app-record: light-dark(#d62236, #ff3148);
+  --app-record-bg: light-dark(#ffffff, #1a0f12);
+  --app-record-border: light-dark(#ecbcc2, #3a1820);
+
+  /* capture sources */
+  --app-src-screen: light-dark(#6f5ed1, #c0b0ff);
+  --app-src-mic:    light-dark(#2f8e59, #80d0a8);
+  --app-src-sys:    light-dark(#8b7a2c, #b0c080);
+
+  /* direction-specific: group fill + the instrument WELL.
+     The well is a recessed surface step + a control bezel — depth is never a
+     container border here, so the de-boxing count stays low. */
+  --grp-fill:  light-dark(#ffffff, #17171f);
+  --well:      light-dark(#efefec, #101017);
+  --well-line: light-dark(#dcdcd7, #262633);
+  --well-tick: light-dark(#b9b9b2, #3a3a4c);
+  --canvas:    light-dark(#e6e6e3, #08080a);
+  --etch:      light-dark(rgba(255,255,255,.9), rgba(255,255,255,.045));
+
+  /* type ramp — six roles, three weights */
+  --app-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", system-ui, sans-serif;
+  --app-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --t-label: 10px;   --lh-label: 1.4;   --ls-label: .02em;
+  --t-meta: 11px;    --lh-meta: 1.35;   --ls-meta: .01em;
+  --t-ui: 13px;      --lh-ui: 1.25;     --ls-ui: -.006em;
+  --t-read: 14px;    --lh-read: 1.55;   --ls-read: -.008em;
+  --t-title: 17px;   --lh-title: 1.3;   --ls-title: -.016em;
+  --t-display: 22px; --lh-display: 1.2; --ls-display: -.02em;
+  --w-regular: 400; --w-medium: 510; --w-semi: 590;
+
+  /* spacing */
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px;
+  --s-12:12px; --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px; --s-48:48px;
+  --gap-inline: var(--s-6); --gap-label: var(--s-4); --gap-row: var(--s-8);
+  --gap-group: var(--s-16); --gap-section: var(--s-24);
+  --pad-window: var(--s-16); --pad-control: var(--s-8); --pad-panel: var(--s-16);
+
+  /* control metrics */
+  --h-sm:24px; --h-md:28px; --h-lg:32px; --h-row:28px; --h-titlebar:38px;
+  --o-icon-sm:14px; --o-icon:20px; --o-icon-lg:24px;
+  --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-pill:999px;
+  --hairline: 1px;
+  --shadow-popover: 0 8px 24px light-dark(rgba(21,28,38,.14), rgba(0,0,0,.32));
+  --shadow-modal:   0 24px 64px light-dark(rgba(21,28,38,.22), rgba(0,0,0,.48));
+  --shadow-window:  0 18px 52px light-dark(rgba(21,28,38,.20), rgba(0,0,0,.55));
+  --shadow-float:   0 10px 30px light-dark(rgba(21,28,38,.20), rgba(0,0,0,.50));
+  --ring: 0 0 0 2px var(--app-accent-glow);
+  --opacity-disabled: .4;
+  --dur-quick:100ms; --dur-regular:250ms;
+  --ease: cubic-bezier(.4,0,.2,1);
+}
+@media (min-resolution: 2dppx) { :root { --hairline: .5px; } }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 var(--s-48);
+  background: var(--canvas);
+  color: var(--app-text);
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  -webkit-font-smoothing: antialiased;
+}
+p, h1, h2, h3 { margin: 0; }
+button { font: inherit; letter-spacing: inherit; color: inherit; }
+
+/* ── type roles ─────────────────────────────────────────────────────────── */
+.t-label { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-muted); }
+.t-meta { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted); }
+.t-ui { font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text); }
+.t-read { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 70ch; }
+.t-title { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.t-display { font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.is-mono { font-family: var(--app-font-mono); }
+.is-num, .is-mono { font-variant-numeric: tabular-nums; }
+.strong { color: var(--app-text-strong); }
+.muted { color: var(--app-text-muted); }
+.subtle { color: var(--app-text-subtle); }
+.acc { color: var(--app-accent); }
+
+/* ── page scaffolding (outside the app window) ──────────────────────────── */
+.page { max-width: 1220px; margin: 0 auto; padding: var(--s-32) var(--s-24) 0; }
+.mast { padding-bottom: var(--s-16); margin-bottom: var(--s-24);
+  border-bottom: var(--hairline) solid var(--app-border); }
+.mast__dir { display: flex; align-items: center; gap: var(--s-8); margin-bottom: var(--s-8); }
+.mast__dot { width: 7px; height: 7px; border-radius: 2px; background: var(--app-accent); }
+.mast__no { color: var(--app-accent); }
+.mast h1 { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.mast p { margin-top: var(--s-6); max-width: 88ch; }
+.themeswitch { position: fixed; top: 14px; right: 16px; z-index: 90; display: inline-flex;
+  align-items: center; gap: 0; padding: 2px; border-radius: var(--r-md);
+  background: var(--app-surface); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), var(--shadow-popover); }
+.themeswitch button { height: 22px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent;
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); cursor: pointer; }
+.themeswitch button[aria-pressed="true"] { background: var(--app-accent); color: var(--app-accent-contrast); }
+
+.wlabel { font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); letter-spacing: var(--ls-meta);
+  color: var(--app-text-muted); margin-bottom: var(--s-8); max-width: 92ch; }
+.wlabel b { color: var(--app-text-strong); font-weight: var(--w-medium); }
+.block { margin-bottom: var(--s-40); }
+.block--tight { margin-bottom: var(--s-24); }
+.secrule { display: flex; align-items: center; gap: var(--s-12); margin: var(--s-40) 0 var(--s-16); }
+.secrule::after { content: ""; flex: 1; height: var(--hairline); background: var(--app-border); }
+.row-of { display: flex; gap: var(--s-24); align-items: flex-start; flex-wrap: wrap; }
+.row-of > div { align-items: flex-start; }
+
+/* ── the window ─────────────────────────────────────────────────────────── */
+.window { position: relative; overflow: hidden; background: var(--app-bg);
+  border-radius: 10px; box-shadow: var(--shadow-window), 0 0 0 var(--hairline) var(--app-border-strong);
+  display: flex; flex-direction: column; }
+.w1100 { width: 1100px; height: 720px; }
+.w800  { width: 800px;  height: 600px; }
+.wql   { width: 1120px; height: 720px; }
+
+.tbar { flex: 0 0 auto; height: var(--h-titlebar); display: flex; align-items: center;
+  gap: var(--s-12); padding: 0 var(--s-12); background: var(--app-surface);
+  box-shadow: inset 0 -1px 0 var(--app-border); position: relative; z-index: 5; }
+.tbar--glass { background: color-mix(in srgb, var(--app-surface) 78%, transparent);
+  backdrop-filter: saturate(180%) blur(20px); }
+.tl { display: flex; gap: 8px; flex: 0 0 auto; }
+.tl i { width: 12px; height: 12px; border-radius: 50%; background: #ff5f57; }
+.tl i:nth-child(2) { background: #febc2e; }
+.tl i:nth-child(3) { background: #28c840; }
+.tbar__title { font: var(--w-semi) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.tbar__sp { flex: 1 1 auto; }
+
+/* segmented control (native, full-row accent selection) */
+.seg { display: inline-flex; padding: 2px; border-radius: var(--r-md);
+  background: var(--app-surface-subtle); box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+.seg__i { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 10px;
+  border-radius: 4px; font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-muted); white-space: nowrap; }
+.seg__i.on { background: var(--app-surface); color: var(--app-text-strong);
+  box-shadow: 0 1px 2px light-dark(rgba(21,28,38,.14), rgba(0,0,0,.5)), 0 0 0 var(--hairline) var(--app-border-strong); }
+.seg--accent .seg__i.on { background: var(--app-accent); color: var(--app-accent-contrast); box-shadow: none; }
+.seg--sm .seg__i { height: 19px; padding: 0 8px; font-size: var(--t-meta); }
+
+/* state pill */
+.pill { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-8); border: 0; border-radius: var(--r-pill); background: var(--app-record-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-record-border); cursor: default; }
+.pill__t { font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text); }
+.pill__gb { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-subtle); }
+.pill__w { font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.pill--quiet { background: var(--app-surface-hover); box-shadow: none; }
+.pill--warn { background: var(--app-warn-bg); box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); }
+.rec__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-record);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-record) 18%, transparent); flex: 0 0 auto; }
+
+/* ── buttons + fields ───────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 var(--s-8); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-raised); color: var(--app-text-strong);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  white-space: nowrap; cursor: default; transition: background-color var(--dur-quick) var(--ease); }
+.btn:hover { background: var(--app-surface-hover); }
+.btn--primary { background: var(--app-accent); color: var(--app-accent-contrast); border-color: transparent; }
+.btn--ghost { background: transparent; border-color: transparent; color: var(--app-text-muted); }
+.btn--ghost:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+.btn--danger { background: var(--app-danger-bg); color: var(--app-danger); border-color: var(--app-danger-border); }
+.btn--sm { height: var(--h-sm); padding: 0 var(--s-8); font-size: var(--t-meta); }
+.btn--lg { height: var(--h-lg); padding: 0 var(--s-12); }
+.btn--icon { width: var(--h-md); padding: 0; }
+.btn--icon.btn--sm { width: var(--h-sm); }
+.btn.is-focus { box-shadow: var(--ring); border-color: var(--app-accent-border); }
+.btn.is-disabled { opacity: var(--opacity-disabled); }
+.btn.is-pressed { background: var(--app-surface-active); box-shadow: inset 0 1px 2px light-dark(rgba(0,0,0,.12), rgba(0,0,0,.5)); }
+.btn svg { width: 13px; height: 13px; flex: 0 0 auto; }
+
+.input { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-md);
+  padding: 0 var(--pad-control); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-subtle); color: var(--app-text-strong); }
+.input.is-focus { border-color: var(--app-accent-border); box-shadow: var(--ring); }
+.input.is-invalid { border-color: var(--app-danger-border); }
+.input svg { width: 13px; height: 13px; color: var(--app-text-subtle); flex: 0 0 auto; }
+.ph { color: var(--app-text-subtle); }
+
+.kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+  padding: 0 var(--s-4); border-radius: var(--r-sm); background: var(--app-surface-raised);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted); }
+.kbd--mod { min-width: 46px; }
+.chip { display: inline-flex; align-items: center; gap: var(--s-4); height: 22px; padding: 0 9px;
+  border-radius: var(--r-pill); background: var(--app-surface-subtle);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); white-space: nowrap; }
+.chip.on { background: var(--app-accent); color: var(--app-accent-contrast); box-shadow: none; }
+.chip--acc { background: var(--app-accent-bg); color: var(--app-accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border); }
+.chip--warn { background: var(--app-warn-bg); color: var(--app-warn);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border); }
+.chip--danger { background: var(--app-danger-bg); color: var(--app-danger);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border); }
+.chip--info { background: var(--app-info-bg); color: var(--app-info);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border); }
+
+/* switch, popup button, radio — stock native controls (the quiet majority) */
+.sw { width: 38px; height: 22px; border-radius: var(--r-pill); background: var(--app-surface-hover);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); position: relative; flex: 0 0 auto; }
+.sw i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left var(--dur-quick) var(--ease); }
+.sw.on { background: var(--app-accent); box-shadow: none; }
+.sw.on i { left: 18px; }
+.sw.is-disabled { opacity: var(--opacity-disabled); }
+.pop { display: inline-flex; align-items: center; gap: var(--s-8); height: var(--h-sm); padding: 0 6px 0 9px;
+  border-radius: var(--r-md); background: var(--app-surface-raised);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), 0 1px 1px light-dark(rgba(0,0,0,.05), rgba(0,0,0,.3));
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); white-space: nowrap; }
+.pop b { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 18px;
+  border-radius: 3px; background: var(--app-accent); color: var(--app-accent-contrast); }
+.pop b svg { width: 8px; height: 10px; }
+.rad { display: flex; align-items: flex-start; gap: var(--s-8); }
+.rad__d { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto; margin-top: 1px;
+  background: var(--app-surface); box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover); }
+.rad.on .rad__d { background: var(--app-accent); box-shadow: none; position: relative; }
+.rad.on .rad__d::after { content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--app-accent-contrast); }
+
+/* NSMenu anatomy */
+.menu { min-width: 200px; padding: var(--s-4); border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--app-surface-raised) 92%, transparent);
+  backdrop-filter: saturate(180%) blur(24px);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border-strong); }
+.menu__i { display: flex; align-items: center; gap: var(--s-6); height: 24px; padding: 0 var(--s-8);
+  border-radius: var(--r-sm); font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.menu__i.is-hl { background: var(--app-accent); color: var(--app-accent-contrast); }
+.menu__i.is-off { color: var(--app-text-faint); }
+.menu__ck { width: 13px; display: inline-flex; justify-content: center; flex: 0 0 auto; }
+.menu__ck svg { width: 11px; height: 11px; }
+.menu__gl { width: 15px; display: inline-flex; justify-content: center; color: var(--app-text-muted); flex: 0 0 auto; }
+.menu__gl svg { width: 13px; height: 13px; }
+.menu__i.is-hl .menu__gl { color: inherit; }
+.menu__kbd { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); color: var(--app-text-subtle); }
+.menu__i.is-hl .menu__kbd { color: color-mix(in srgb, var(--app-accent-contrast) 75%, transparent); }
+.menu__sep { height: var(--hairline); background: var(--app-border); margin: var(--s-4) var(--s-8); }
+.menu__hd { padding: var(--s-6) var(--s-8) var(--s-3); font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle); }
+
+/* toast */
+.toast { width: 344px; padding: var(--pad-panel); border-radius: var(--r-xl);
+  background: var(--app-surface-raised); box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border); }
+
+/* ── grouped settings surface (System Settings bones) ───────────────────── */
+.gcol { display: flex; flex-direction: column; gap: var(--gap-section); }
+.gsec { display: flex; flex-direction: column; gap: var(--gap-row); }
+.grp-h { display: flex; align-items: baseline; gap: var(--s-8); padding: 0 var(--s-2); }
+.grp { background: var(--grp-fill); border-radius: var(--r-lg); overflow: hidden; }
+.grow { display: flex; align-items: center; gap: var(--s-12); min-height: 40px; padding: var(--s-8) var(--s-12);
+  position: relative; }
+.grow + .grow::before { content: ""; position: absolute; left: var(--s-12); right: 0; top: 0;
+  height: var(--hairline); background: var(--app-border); }
+.grow__txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.grow__lbl { font: var(--w-regular) var(--t-ui)/1.25 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong); }
+.grow__sub { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); letter-spacing: var(--ls-meta);
+  color: var(--app-text-muted); }
+.grow__val { display: inline-flex; align-items: center; gap: var(--s-8); flex: 0 0 auto; margin-left: auto; }
+.grow--stack { flex-direction: column; align-items: stretch; gap: var(--s-8); }
+.chev { color: var(--app-text-faint); display: inline-flex; }
+.chev svg { width: 8px; height: 12px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE INSTRUMENTS
+   An instrument appears ONLY where a value has a physical consequence.
+   One anatomy everywhere:  header (name + live value) → WELL (the physical
+   control, recessed) → READOUT (the consequence, in user units, with a
+   denominator). The readout slot exists at rest and never reflows.
+   ══════════════════════════════════════════════════════════════════════════ */
+.instr { display: flex; flex-direction: column; gap: var(--s-8); padding: var(--s-12);
+  background: var(--grp-fill); border-radius: var(--r-lg); }
+.instr--bare { background: transparent; padding: 0; }
+.instr__hd { display: flex; align-items: baseline; gap: var(--s-8); }
+.instr__name { font: var(--w-medium) var(--t-ui)/1.25 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong); }
+.instr__sub { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+.instr__v { margin-left: auto; display: inline-flex; align-items: baseline; gap: 4px;
+  font: var(--w-semi) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); }
+.instr__v em { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-style: normal;
+  color: var(--app-text-subtle); }
+.instr__out { min-height: 15px; font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted); }
+.instr__out b { font-weight: var(--w-medium); color: var(--app-text-strong);
+  font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; }
+.instr__out .warn { color: var(--app-warn); font-weight: var(--w-medium); }
+
+/* the WELL — one recess treatment shared by every instrument */
+.well { position: relative; background: var(--well); border-radius: var(--r-md);
+  box-shadow: inset 0 1px 2px light-dark(rgba(21,28,38,.10), rgba(0,0,0,.55)),
+              inset 0 0 0 var(--hairline) var(--well-line); }
+
+/* ---- 1. GAUGE — a budget/footprint bar with a denominator and a target notch */
+.gauge { height: 26px; padding: 7px 8px; display: flex; align-items: center; }
+.gauge__track { position: relative; flex: 1 1 auto; height: 12px; border-radius: 3px;
+  background: light-dark(#e2e2dd, #16161f); overflow: hidden; display: flex; }
+.gauge__seg { height: 100%; }
+.gauge__seg--a { background: var(--app-accent); }
+.gauge__seg--b { background: color-mix(in srgb, var(--app-accent) 42%, transparent); }
+.gauge__seg--c { background: color-mix(in srgb, var(--app-text-muted) 30%, transparent); }
+.gauge__seg--warn { background: var(--app-warn); }
+.gauge__seg--free { background: transparent; }
+/* the designed EMPTY reading: what this gauge would show if the feature were on */
+.gauge__seg--ghost { background: repeating-linear-gradient(-45deg,
+    color-mix(in srgb, var(--app-accent) 30%, transparent) 0 3px, transparent 3px 7px); }
+.gauge__notch { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--app-text-strong);
+  opacity: .78; }
+.gauge__scale { display: flex; justify-content: space-between; margin-top: 5px; }
+.gauge__scale span { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: var(--ls-label); color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: var(--s-4) var(--s-12); }
+.legend span { display: inline-flex; align-items: center; gap: 5px;
+  font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-sans); color: var(--app-text-muted); }
+.legend i { width: 8px; height: 8px; border-radius: 2px; background: var(--app-accent); flex: 0 0 auto; }
+.legend .b { background: color-mix(in srgb, var(--app-accent) 42%, transparent); }
+.legend .c { background: color-mix(in srgb, var(--app-text-muted) 30%, transparent); }
+.legend .w { background: var(--app-warn); }
+.legend .d { background: var(--app-danger); }
+.legend .o { background: transparent; box-shadow: inset 0 0 0 1px var(--app-border-hover); }
+
+/* ---- 2. LADDER — retention: pick a stop, see what survives and what is culled */
+.ladder__stops { display: flex; gap: 2px; padding: 2px; }
+.ladder__s { flex: 1 1 0; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px; font: var(--w-medium) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted); }
+.ladder__s.on { background: var(--app-accent); color: var(--app-accent-contrast); }
+.ladder__s.is-hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+.survive { margin-top: var(--s-8); }
+.survive__bar { display: flex; height: 34px; border-radius: var(--r-sm); overflow: hidden; }
+.survive__keep { background: color-mix(in srgb, var(--app-accent) 26%, transparent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border); position: relative;
+  display: flex; align-items: center; padding-left: 8px; }
+.survive__cull { position: relative; flex: 1 1 auto; display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 8px;
+  background: repeating-linear-gradient(-45deg,
+    light-dark(rgba(196,58,72,.16), rgba(255,107,122,.14)) 0 3px,
+    transparent 3px 7px);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border); }
+.survive__lbl { font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; }
+.survive__scale { display: flex; justify-content: space-between; margin-top: 5px; }
+.survive__scale span { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint); }
+
+/* ---- 3. RATE — a notched slider whose consequence is written under it */
+.rate { height: 40px; padding: 0 12px; display: flex; align-items: center; }
+.rate__track { position: relative; flex: 1 1 auto; height: 4px; border-radius: 2px;
+  background: light-dark(#d6d6d0, #24242f); }
+.rate__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
+.rate__notch { position: absolute; top: -5px; width: 1px; height: 14px; background: var(--well-tick); }
+.rate__knob { position: absolute; top: 50%; width: 18px; height: 18px; border-radius: 50%;
+  transform: translate(-50%,-50%); background: light-dark(#fff,#e9e9f2);
+  box-shadow: 0 1px 3px rgba(0,0,0,.35), 0 0 0 var(--hairline) light-dark(rgba(0,0,0,.14), rgba(0,0,0,.6)); }
+.rate__knob.is-drag { box-shadow: 0 1px 3px rgba(0,0,0,.35), 0 0 0 5px var(--app-accent-glow); }
+.rate__ticks { display: flex; justify-content: space-between; margin-top: 4px; }
+.rate__ticks span { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+.rate__ticks span.on { color: var(--app-accent); }
+
+/* ---- 4. DUTY — a two-ended split bar: work vs cooldown, both halves visible */
+.duty { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.duty__bar { display: flex; height: 20px; position: relative; }
+.duty__work { background: var(--app-accent); border-radius: var(--r-sm) 0 0 var(--r-sm); display: flex; align-items: center; justify-content: center;
+  font: var(--w-semi) var(--t-label)/1 var(--app-font-mono); color: var(--app-accent-contrast);
+  font-variant-numeric: tabular-nums; }
+.duty__cool { flex: 1 1 auto; background: light-dark(#e2e2dd, #1d1d28); border-radius: 0 var(--r-sm) var(--r-sm) 0; display: flex; align-items: center;
+  justify-content: center; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+.duty__grip { position: absolute; top: -3px; bottom: -3px; width: 7px; transform: translateX(-3.5px);
+  border-radius: 3px; background: light-dark(#fff,#e9e9f2);
+  box-shadow: 0 1px 3px rgba(0,0,0,.35), 0 0 0 var(--hairline) light-dark(rgba(0,0,0,.16), rgba(0,0,0,.6)); }
+.duty__leg { display: flex; align-items: center; gap: var(--s-8); }
+.duty__leg .t-label { color: var(--app-text-subtle); }
+
+/* ---- 5. KEYREC — a shortcut recorder that draws real keycaps */
+.keycap { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 26px;
+  padding: 0 7px; border-radius: 5px; background: light-dark(#fdfdfc, #2b2b38);
+  box-shadow: 0 1px 0 light-dark(#c9c9c2, #0a0a10), inset 0 1px 0 var(--etch),
+              0 0 0 var(--hairline) light-dark(#c9c9c2, #3b3b4c);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-mono); color: var(--app-text-strong); }
+.keycap--wide { min-width: 52px; }
+.keyrec { height: 40px; padding: 0 8px; display: flex; align-items: center; gap: 5px; }
+.keyrec.is-armed { box-shadow: inset 0 1px 2px light-dark(rgba(21,28,38,.10), rgba(0,0,0,.55)),
+  inset 0 0 0 var(--hairline) var(--well-line), 0 0 0 3px var(--app-accent-glow); }
+.keyrec.is-conflict { box-shadow: inset 0 1px 2px light-dark(rgba(21,28,38,.10), rgba(0,0,0,.55)),
+  inset 0 0 0 1px var(--app-danger); }
+.keyrec__hint { font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.caretbar { width: 2px; height: 15px; background: var(--app-accent); border-radius: 1px; }
+
+/* ---- 6. MODEL ROW — size · quant · RAM footprint against this machine */
+.mrow { display: flex; align-items: center; gap: var(--s-12); min-height: 44px; padding: var(--s-8) var(--s-12);
+  position: relative; }
+.mrow + .mrow::before { content: ""; position: absolute; left: var(--s-12); right: 0; top: 0;
+  height: var(--hairline); background: var(--app-border); }
+.mrow.is-sel { background: var(--app-accent); }
+.mrow.is-sel .grow__lbl, .mrow.is-sel .grow__sub, .mrow.is-sel .mrow__num { color: var(--app-accent-contrast); }
+.mrow.is-sel .chip { background: color-mix(in srgb, var(--app-accent-contrast) 16%, transparent);
+  color: var(--app-accent-contrast); box-shadow: none; }
+.mrow__num { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted); }
+.ramfoot { width: 112px; flex: 0 0 auto; }
+.ramfoot__t { height: 6px; border-radius: 2px; background: light-dark(#e2e2dd,#08080d); overflow: hidden;
+  display: flex; box-shadow: inset 0 0 0 var(--hairline) var(--well-line); }
+.ramfoot__t i { height: 100%; background: var(--app-accent); }
+.ramfoot__t i.warn { background: var(--app-warn); }
+.ramfoot__t i.dan { background: var(--app-danger); }
+.mrow.is-sel .ramfoot__t { background: color-mix(in srgb, var(--app-accent-contrast) 22%, transparent); }
+.mrow.is-sel .ramfoot__t i { background: var(--app-accent-contrast); }
+
+/* ---- 7. COVERAGE STRIP — hours of the day that actually hold capture */
+.cov { display: flex; gap: 1px; height: 16px; align-items: stretch; }
+.cov i { flex: 1 1 0; border-radius: 1px; background: light-dark(#e4e4df, #1b1b24); }
+.cov i.s { background: var(--app-src-screen); }
+.cov i.h { background: var(--app-accent); }
+.cov i.p { background: color-mix(in srgb, var(--app-accent) 34%, transparent); }
+.cov__scale { display: flex; justify-content: space-between; margin-top: 4px; }
+.cov__scale span { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint); }
+
+/* ── bento tiles ────────────────────────────────────────────────────────── */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-16); align-items: stretch; }
+.tile { background: var(--grp-fill); border-radius: 10px; padding: var(--s-12);
+  display: flex; flex-direction: column; gap: var(--s-6); min-width: 0; }
+.tile--2 { grid-column: span 2; } .tile--3 { grid-column: span 3; } .tile--4 { grid-column: span 4; }
+.tile--media { padding: 0; overflow: hidden; }
+.tile-h { display: flex; align-items: baseline; gap: var(--s-8); margin-bottom: var(--s-2); }
+.tile-h .more { margin-left: auto; }
+.tile-row { display: flex; align-items: center; gap: var(--gap-inline); min-height: 18px; }
+.strip { display: flex; gap: 1px; height: 132px; }
+.strip > i { position: relative; flex: 1 1 0; overflow: hidden; display: block; }
+.strip__t { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: var(--r-sm);
+  background: rgba(8,8,12,.62); color: #fff; font: var(--w-medium) var(--t-label)/1.5 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; backdrop-filter: blur(3px); }
+.cite { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px 1px 3px; border-radius: var(--r-sm);
+  background: var(--app-surface-subtle); box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted); vertical-align: baseline; }
+.cite > i { position: relative; display: block; width: 22px; height: 13px; border-radius: 2px; overflow: hidden;
+  flex: 0 0 auto; }
+.gthumb { position: relative; display: block; width: 40px; height: 24px; border-radius: var(--r-sm);
+  overflow: hidden; flex: 0 0 auto; background: var(--app-surface-subtle); }
+.gicon { width: var(--o-icon); height: var(--o-icon); border-radius: 5px; flex: 0 0 auto; display: inline-flex;
+  align-items: center; justify-content: center; color: #fff;
+  font: var(--w-semi) 9px/1 var(--app-font-sans); }
+.spark { display: flex; align-items: flex-end; }
+.spark i { display: block; border-radius: 1px 1px 0 0; background: var(--app-text-muted); opacity: .45; }
+.conv { display: inline-flex; gap: 2px; }
+.conv i { width: 5px; height: 5px; border-radius: 50%; background: var(--app-text-faint); }
+.conv i.on { background: var(--app-accent); }
+
+/* app icon stand-ins */
+.ic-code{background:#2f7cd6}.ic-safari{background:#2c8ef3}.ic-figma{background:#a259ff}
+.ic-slack{background:#611f69}.ic-term{background:#3a3f45}.ic-notion{background:#8a8378}
+.ic-zoom{background:#2d8cff}.ic-mnema{background:var(--app-accent-strong)}
+.ic-1p{background:#4b8bf5}.ic-sig{background:#3ba55c}.ic-mail{background:#d64b3f}
+
+/* ── timeline ───────────────────────────────────────────────────────────── */
+.tline { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.tline__bar { flex: 0 0 auto; height: 34px; display: flex; align-items: center; gap: var(--s-8);
+  padding: 0 var(--s-12); box-shadow: inset 0 -1px 0 var(--app-border); }
+.tline__bar-g { display: flex; align-items: center; gap: var(--s-6); }
+.ocr-chip { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle);
+  text-transform: uppercase; letter-spacing: var(--ls-label); }
+.tline__stage { flex: 1 1 auto; position: relative; min-height: 0; background: light-dark(#e9e9e6,#08080b);
+  display: flex; align-items: center; justify-content: center; padding: var(--s-12); }
+.tline__shot { position: relative; height: 100%; aspect-ratio: 16/10; border-radius: var(--r-md);
+  overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,.28); }
+.stage-actions { position: absolute; right: var(--s-16); top: var(--s-16); display: flex; gap: var(--s-6); }
+.railwrap { flex: 0 0 auto; padding: var(--s-8) var(--s-12) var(--s-12); background: var(--app-surface);
+  box-shadow: inset 0 1px 0 var(--app-border); }
+.readout { display: flex; align-items: center; gap: var(--s-8); height: 30px; }
+.readout__icon { width: var(--o-icon-lg); height: var(--o-icon-lg); border-radius: 6px; display: inline-flex;
+  align-items: center; justify-content: center; color: #fff; font: var(--w-semi) 11px/1 var(--app-font-sans); flex: 0 0 auto; }
+.readout__app { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.readout__time { font: var(--w-semi) var(--t-display)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.rail { position: relative; height: 34px; margin-top: var(--s-6); border-radius: var(--r-sm);
+  background: light-dark(#eeeeec,#101017); overflow: hidden; }
+.band { position: absolute; top: 0; bottom: 0; background: light-dark(#dededa,#1c1c26);
+  display: flex; align-items: center; justify-content: center; }
+.band--single { background: light-dark(#e6e6e2,#16161d); }
+.rail .gicon { width: 18px; height: 18px; border-radius: 4px; }
+.tickM { position: absolute; top: 0; bottom: 0; width: 1px; background: light-dark(#fff,#08080b); }
+.tickA { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--app-record); }
+.lane { display: flex; align-items: stretch; gap: var(--s-6); margin-top: 3px; }
+.lane__labs { display: flex; flex-direction: column; justify-content: space-between; width: 22px; flex: 0 0 auto; }
+.lane__labs span { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); text-transform: uppercase; }
+.lane__labs .lmic { color: var(--app-src-mic); }
+.lane__labs .lsys { color: var(--app-src-sys); }
+.lane__vp { position: relative; flex: 1 1 auto; height: 22px; }
+.abar { position: absolute; height: 9px; border: 0; border-radius: 2px; padding: 0; }
+.abar--mic { top: 0; background: var(--app-src-mic); opacity: .8; }
+.abar--sys { top: 13px; background: var(--app-src-sys); opacity: .8; }
+.abar.is-sel { opacity: 1; box-shadow: 0 0 0 2px var(--app-record); }
+
+/* ── quick access ───────────────────────────────────────────────────────── */
+.ql__top { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-12); padding: var(--s-12) var(--s-20);
+  box-shadow: inset 0 -1px 0 var(--app-border); }
+.ql__field { flex: 1 1 auto; display: flex; align-items: center; gap: var(--s-8); height: 34px;
+  padding: 0 var(--s-12); border-radius: var(--r-lg); background: var(--app-surface-subtle);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-regular) var(--t-title)/1 var(--app-font-sans); letter-spacing: var(--ls-title);
+  color: var(--app-text-strong); }
+.ql__field svg { width: 15px; height: 15px; color: var(--app-text-subtle); flex: 0 0 auto; }
+.ql__field.is-focus { box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring); }
+.ql__scopes { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-6); padding: var(--s-8) var(--s-20); }
+.ql__body { flex: 1 1 auto; overflow: hidden; padding: 0 var(--s-20) var(--s-16); }
+.ql__foot { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-8); height: 34px;
+  padding: 0 var(--s-20); box-shadow: inset 0 1px 0 var(--app-border); }
+.qsec { display: flex; align-items: baseline; gap: var(--s-8); padding: var(--s-12) 0 var(--s-8); }
+.qgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-16); }
+.qcell { display: flex; flex-direction: column; gap: var(--s-6); }
+.qcell__f { position: relative; aspect-ratio: 16/9; border-radius: var(--r-md); overflow: hidden;
+  background: var(--app-surface-subtle); }
+.qcell.is-sel .qcell__f { box-shadow: 0 0 0 2px var(--app-accent); }
+.qcell__cap { display: flex; flex-direction: column; gap: 2px; }
+.qcell__l1 { display: flex; align-items: baseline; gap: var(--s-6); min-width: 0; }
+.qcell__app { font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono); text-transform: uppercase;
+  letter-spacing: var(--ls-label); color: var(--app-text-subtle); flex: 0 0 auto; }
+.qcell__ttl { font: var(--w-regular) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qcell__l2 { display: flex; align-items: center; gap: 5px; font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-muted); overflow: hidden; white-space: nowrap; }
+.qcell__dur { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: var(--r-sm);
+  background: rgba(8,8,12,.62); color: #fff; font: var(--w-medium) var(--t-label)/1.5 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; }
+.hit { position: absolute; border-radius: 2px; background: color-mix(in srgb, var(--app-accent) 34%, transparent);
+  box-shadow: 0 0 0 1px var(--app-accent); }
+mark { background: color-mix(in srgb, var(--app-accent) 30%, transparent); color: inherit; border-radius: 2px;
+  padding: 0 1px; }
+
+/* ── misc ───────────────────────────────────────────────────────────────── */
+.spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--app-border-hover);
+  border-top-color: var(--app-accent); animation: spin .8s linear infinite; flex: 0 0 auto; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* the save state — shared by every settings surface and the component sheet */
+.savechip { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm); padding: 0 10px;
+  border-radius: var(--r-pill); background: var(--app-accent-bg); color: var(--app-accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); white-space: nowrap; }
+.savechip svg { width: 11px; height: 11px; flex: 0 0 auto; }
+.savechip .t { font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+
+.saved { display: inline-flex; align-items: center; gap: 4px; font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  color: var(--app-accent); }
+.saved svg { width: 11px; height: 11px; }
+.sheet { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: 460px; padding: var(--s-20);
+  border-radius: 0 0 var(--r-xl) var(--r-xl); background: var(--app-surface-raised); box-shadow: var(--shadow-modal); }
+.sheetdim { position: absolute; inset: 0; background: rgba(0,0,0,.28); }
+.dlg__actions { display: flex; justify-content: flex-end; gap: var(--s-8); margin-top: var(--s-16); }
+
+/* app icon colours (mockup stand-ins for real app icons) */
+.ic-code { background: #2f7cd6; } .ic-safari { background: #2c8ef3; }
+.ic-figma { background: #a259ff; } .ic-slack { background: #611f69; }
+.ic-term { background: #3a3f45; } .ic-notion { background: #8a8378; }
+.ic-zoom { background: #2d8cff; } .ic-mnema { background: var(--app-accent-strong); }
+
+/* ============================================================================
+   CSS-DRAWN FAKE SCREENSHOTS — lifted wholesale from 02-command-canvas.html
+   (BRIEF-3: do not redraw, do not ship grey rectangles). Percentage-based, so
+   one markup block works at 349×196 in the grid, full-bleed in the stage, and
+   at 24×14 in a citation chip. Trap honoured: no percentage padding on .shot
+   children (resolves against containing-block WIDTH).
+   ========================================================================= */
+:root {
+  --shot-void:#0b0b10;
+  --shot-ed-bg:#1b1b24; --shot-ed-side:#15151d; --shot-ed-act:#0f0f16; --shot-ed-tab:#262633;
+  --shot-ink:#4c4c62; --shot-ink-2:#6e6e8c; --shot-ink-3:#33334a;
+  --shot-kw:#c08cf0; --shot-str:#8fd694; --shot-fn:#6fb8f0; --shot-num:#e0a55c; --shot-cm:#48584f;
+  --shot-paper:#f5f5f2; --shot-paper-2:#e7e7e2; --shot-paper-3:#d6d6d0;
+  --shot-pink:#3d3d46; --shot-pink-2:#9c9ca8;
+  --shot-chrome:#2b2b35; --shot-chrome-2:#3b3b49; --shot-chrome-lt:#e9e9e6;
+  --shot-slack:#3b2544; --shot-slack-2:#4d3157; --shot-slack-3:#5f3f6b;
+  --shot-fig-bg:#2c2c33; --shot-fig-canvas:#1d1d23; --shot-fig-blue:#4b8bf5;
+  --shot-fig-orange:#f24e1e; --shot-fig-green:#0acf83; --shot-fig-purple:#a259ff;
+  --shot-term-bg:#0c0e0d; --shot-term-green:#4ade80; --shot-term-red:#f87171; --shot-term-dim:#4f6058;
+  --shot-sheet-head:#1e7a4a; --shot-sheet-line:#dcdcd6; --shot-sheet-sel:#1a73e8;
+  --shot-call-bg:#16161c; --shot-call-tile:#282833; --shot-call-ctrl:#33333f;
+  --shot-blue:#5b8def; --shot-amber:#e0894a; --shot-wave:#7c8ba0;
+}
+.shot{position:relative;width:100%;height:100%;overflow:hidden;background:var(--shot-void)}
+.shot > *{position:absolute}
+.shot .fill{inset:0}
+.ln{display:flex;align-items:center;gap:2.2%;width:100%;height:100%}
+.tk{flex:0 0 auto;height:100%;border-radius:1px;background:var(--shot-ink)}
+.tk--kw{background:var(--shot-kw)} .tk--str{background:var(--shot-str)}
+.tk--fn{background:var(--shot-fn)} .tk--num{background:var(--shot-num)}
+.tk--cm{background:var(--shot-cm)} .tk--dim{background:var(--shot-ink-3)}
+.tk--pi{background:var(--shot-pink)} .tk--pi2{background:var(--shot-pink-2)}
+.tk--g{background:var(--shot-term-green)} .tk--r{background:var(--shot-term-red)}
+.tk--t{background:var(--shot-term-dim)}
+.w4{width:4%}.w6{width:6%}.w8{width:8%}.w10{width:10%}.w12{width:12%}.w14{width:14%}
+.w16{width:16%}.w18{width:18%}.w20{width:20%}.w22{width:22%}.w24{width:24%}.w26{width:26%}
+.w28{width:28%}.w30{width:30%}.w32{width:32%}.w34{width:34%}.w36{width:36%}.w38{width:38%}
+.w40{width:40%}.w44{width:44%}.w48{width:48%}.w52{width:52%}.w56{width:56%}.w60{width:60%}
+.w64{width:64%}.w70{width:70%}.w76{width:76%}.w82{width:82%}.w88{width:88%}.w94{width:94%}
+.stack{display:flex;flex-direction:column;justify-content:space-between}
+.stack > .ln{height:6%}
+.shot--dense .stack > .ln{height:2.6%}
+.shot--dense .files i{height:2.4%}
+.shot--dense .files{gap:3.4%}
+
+/* -- editor (VS Code) -- */
+.shot--editor{background:var(--shot-ed-bg)}
+.shot--editor .act{left:0;top:0;bottom:0;width:5.5%;background:var(--shot-ed-act);
+  border-right:1px solid var(--shot-ink-3)}
+.shot--editor .side{left:5.5%;top:0;bottom:0;width:21%;background:var(--shot-ed-side)}
+.shot--editor .tabs{left:26.5%;right:0;top:0;height:9%;background:var(--shot-ed-act)}
+.shot--editor .tab{top:0;height:9%;background:var(--shot-ed-tab)}
+.shot--editor .tab.a{left:26.5%;width:15%;background:var(--shot-ed-bg)}
+.shot--editor .tab.b{left:41.5%;width:13%}
+.shot--editor .tab.c{left:54.5%;width:14%}
+.shot--editor .files{left:8%;right:76%;top:12%;bottom:6%;display:flex;flex-direction:column;
+  justify-content:flex-start;gap:6%}
+.shot--editor .files i{display:block;height:4.5%;background:var(--shot-ink-3);border-radius:1px}
+.shot--editor .files i.on{background:var(--shot-ink-2)}
+.shot--editor .code{left:29%;right:3%;top:13%;bottom:5%}
+.shot--editor .gut{left:27%;width:1.4%;top:13%;bottom:5%;background:var(--shot-ink-3);opacity:.35}
+.shot--editor .caret{left:44%;top:41%;width:.5%;height:5%;background:var(--shot-str)}
+
+/* -- browser (Safari) -- */
+.shot--browser{background:var(--shot-chrome-lt)}
+.shot--browser .bar{left:0;right:0;top:0;height:13%;background:var(--shot-chrome-lt)}
+.shot--browser .dots{left:2%;top:4.5%;width:12%;height:4%;display:flex;gap:12%}
+.shot--browser .dots i{flex:1 1 0;border-radius:50%;background:var(--shot-paper-3)}
+.shot--browser .url{left:20%;right:20%;top:3.5%;height:6%;border-radius:3px;
+  background:var(--shot-paper-2)}
+.shot--browser .pg{left:0;right:0;top:13%;bottom:0;background:var(--shot-paper)}
+.shot--browser .art{left:14%;right:32%;top:19%;bottom:6%;display:flex;flex-direction:column;gap:4.5%}
+.shot--browser .art .h{height:9%;background:var(--shot-pink);border-radius:2px;width:74%}
+.shot--browser .art .ln{height:4.5%}
+.shot--browser .aside{right:6%;width:22%;top:19%;bottom:14%;display:flex;flex-direction:column;gap:6%}
+.shot--browser .aside i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px}
+.shot--browser .aside i.hi{background:var(--shot-blue);opacity:.25}
+
+/* -- figma -- */
+.shot--figma{background:var(--shot-fig-canvas)}
+.shot--figma .top{left:0;right:0;top:0;height:9%;background:var(--shot-fig-bg)}
+.shot--figma .lp{left:0;top:9%;bottom:0;width:19%;background:var(--shot-fig-bg)}
+.shot--figma .rp{right:0;top:9%;bottom:0;width:17%;background:var(--shot-fig-bg)}
+.shot--figma .lyr{left:4%;right:83%;top:14%;bottom:8%;display:flex;flex-direction:column;gap:7%}
+.shot--figma .lyr i{height:4%;background:var(--shot-ink-3);border-radius:1px}
+.shot--figma .lyr i.on{background:var(--shot-fig-blue);opacity:.7}
+.shot--figma .rp{display:flex;flex-direction:column;gap:5%;padding:5% 2% 0}
+.shot--figma .rp em{position:static;flex:0 0 auto;height:6%;border-radius:2px;
+  background:var(--shot-ink)}
+.shot--figma .rp em.sw{background:var(--shot-fig-orange);opacity:.8}
+.shot--figma .art1{left:26%;top:20%;width:26%;height:44%;background:var(--shot-paper);
+  border-radius:2px;outline:1px solid var(--shot-fig-blue)}
+.shot--figma .art2{left:56%;top:20%;width:22%;height:28%;background:var(--shot-paper-2);
+  border-radius:2px}
+.shot--figma .sq{left:56%;top:53%;width:10%;height:18%;background:var(--shot-fig-orange);
+  border-radius:2px}
+.shot--figma .ci{left:69%;top:53%;width:9%;height:16%;background:var(--shot-fig-purple);
+  border-radius:50%}
+.shot--figma .lbl{left:26%;top:15.5%;width:12%;height:3.5%;background:var(--shot-fig-blue);
+  border-radius:1px}
+
+/* -- chat (Slack) -- */
+.shot--chat{background:var(--shot-ed-bg)}
+.shot--chat .rail{left:0;top:0;bottom:0;width:7%;background:var(--shot-slack);
+  display:flex;flex-direction:column;gap:8%;padding:4.5% 1.5%}
+.shot--chat .rail i{flex:0 0 auto;height:7%;border-radius:3px;background:var(--shot-pink-2);opacity:.5}
+.shot--chat .rail i.on{background:var(--shot-paper-3)}
+.shot--chat .chans{left:7%;top:0;bottom:0;width:21%;background:var(--shot-slack-2);
+  display:flex;flex-direction:column;gap:5.5%;padding:5.5% 2.5% 0}
+.shot--chat .chans i{flex:0 0 auto;height:4%;border-radius:1px;
+  background:var(--shot-pink-2);opacity:.55}
+.shot--chat .chans i.on{opacity:1;background:var(--shot-paper-3)}
+.shot--chat .msgs{left:30%;right:17%;top:12%;bottom:12%;display:flex;flex-direction:column;
+  justify-content:space-between}
+.shot--chat .msg{display:flex;gap:3%;height:26%;align-items:stretch}
+.shot--chat .av{width:9%;aspect-ratio:1;border-radius:3px;background:var(--shot-blue);flex:0 0 auto}
+.shot--chat .msg:nth-child(2) .av{background:var(--shot-amber)}
+.shot--chat .msg:nth-child(3) .av{background:var(--shot-fig-green)}
+.shot--chat .bd{flex:1 1 auto;height:100%;display:flex;flex-direction:column;
+  justify-content:flex-start;gap:9%;padding-top:3%}
+.shot--chat .bd i{flex:0 0 auto;height:13%;background:var(--shot-ink);border-radius:1px}
+.shot--chat .bd i.n{background:var(--shot-paper-3);width:26%!important}
+.shot--chat .who{right:0;top:0;bottom:0;width:16%;background:var(--shot-ed-side);
+  display:flex;flex-direction:column;gap:7%;padding:5% 2.2% 0}
+.shot--chat .who i{flex:0 0 auto;height:5%;border-radius:1px;background:var(--shot-ink)}
+.shot--chat .cmp{left:30%;right:17%;bottom:4%;height:8%;border-radius:3px;
+  background:var(--shot-ed-side);outline:1px solid var(--shot-ink-3)}
+
+/* -- terminal -- */
+.shot--terminal{background:var(--shot-term-bg)}
+.shot--terminal .code{left:4%;right:4%;top:8%;bottom:8%}
+.shot--terminal .cur{left:9%;bottom:14%;width:1.4%;height:5%;background:var(--shot-term-green)}
+
+/* -- sheet -- */
+.shot--sheet{background:var(--shot-paper)}
+.shot--sheet .hd{left:0;right:0;top:0;height:11%;background:var(--shot-sheet-head)}
+.shot--sheet .hd i{position:absolute;top:32%;height:34%;background:var(--shot-paper);opacity:.55;
+  border-radius:1px}
+.shot--sheet .colh{left:0;right:0;top:11%;height:8%;background:var(--shot-paper-2)}
+.shot--sheet .colh{display:flex}
+.shot--sheet .colh i{position:static;flex:1 1 0;border-right:1px solid var(--shot-sheet-line)}
+.shot--sheet .g{left:0;right:0;top:19%;bottom:0;display:flex;flex-direction:column}
+.shot--sheet .r{display:flex;flex:1 1 0;border-bottom:1px solid var(--shot-sheet-line)}
+.shot--sheet .c{flex:1 1 0;border-right:1px solid var(--shot-sheet-line);position:relative}
+.shot--sheet .c b{position:absolute;right:10%;top:34%;height:30%;border-radius:1px;
+  background:var(--shot-pink);opacity:.5}
+.shot--sheet .c.l b{left:10%;right:auto}
+.shot--sheet .c.sel{outline:2px solid var(--shot-sheet-sel);outline-offset:-2px}
+.shot--sheet .c.pos b{background:var(--shot-sheet-head);opacity:.7}
+
+/* -- call (Zoom) -- */
+.shot--call{background:var(--shot-call-bg)}
+.shot--call .tiles{left:2%;right:2%;top:4%;bottom:19%;display:grid;
+  grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:2%}
+.shot--call .t{position:relative;background:var(--shot-call-tile);border-radius:3px}
+.shot--call .t i{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);
+  width:30%;aspect-ratio:1;border-radius:50%;background:var(--shot-ink-2)}
+.shot--call .t u{position:absolute;left:10%;bottom:10%;width:52%;height:10%;border-radius:1px;
+  background:var(--shot-ink-3)}
+.shot--call .t.on{outline:2px solid var(--shot-fig-green);outline-offset:-2px}
+.shot--call .ctrl{left:0;right:0;bottom:0;height:15%;background:var(--shot-call-ctrl);
+  display:flex;align-items:center;justify-content:center;gap:3%}
+.shot--call .ctrl i{position:static;height:52%;aspect-ratio:1;border-radius:50%;
+  background:var(--shot-ink-3);flex:0 0 auto}
+.shot--call .ctrl i.r{background:var(--shot-term-red)}
+
+/* -- docs (Notion) -- */
+.shot--docs{background:var(--shot-paper)}
+.shot--docs .nav{left:0;top:0;bottom:0;width:17%;background:var(--shot-paper-2);
+  display:flex;flex-direction:column;gap:5%;padding:5% 2.4% 0}
+.shot--docs .nav i{flex:0 0 auto;height:3.6%;border-radius:1px;background:var(--shot-pink-2);opacity:.6}
+.shot--docs .nav i.on{background:var(--shot-pink-2)}
+.shot--docs .pg{left:23%;right:26%;top:12%;bottom:6%;display:flex;flex-direction:column;gap:4%}
+.shot--docs .pg .h{height:10%;width:62%;background:var(--shot-pink);border-radius:2px}
+.shot--docs .pg .ln{height:4%}
+.shot--docs .cmt{right:4%;width:19%;top:16%;display:flex;flex-direction:column;gap:8%;bottom:26%}
+.shot--docs .cmt i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px;
+  border-left:2px solid var(--shot-amber)}
+
+/* -- waveform (audio results share the grid; not a separate list) -- */
+.shot--wave{background:var(--app-surface-subtle);display:flex;align-items:center;justify-content:center;
+  gap:.5%;padding:0 4%}
+.shot--wave > *{position:static}
+.shot--wave i{flex:1 1 0;background:var(--shot-wave);border-radius:1px;opacity:.75}
+.shot--wave i.hi{background:var(--app-src-mic);opacity:1}
+.shot--wave i.sy{background:var(--app-src-sys);opacity:1}
+/* this file mounts shots on <span> hosts (filmstrip, row thumbs, citation
+   chips); the lifted block assumed <div>. One addition, no redraw — scoped to
+   span so .shot--wave's own display:flex keeps winning on its div hosts: */
+span.shot{display:block}
+
+/* span hosts: keep the waveform a flex row (span.shot{display:block} outranks .shot--wave) */
+span.shot.shot--wave{display:flex}
+
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9 10 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevud" viewBox="0 0 10 12"><path d="M2 4.5 5 1.5 8 4.5 M2 7.5 5 10.5 8 7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevr" viewBox="0 0 8 12"><path d="M2 1.5 6.5 6 2 10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-screen" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="7.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 12h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 14 14"><rect x="5" y="1.5" width="4" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-sys" viewBox="0 0 14 14"><path d="M2.5 5.5h2.4L8 2.8v8.4L4.9 8.5H2.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 5a3 3 0 0 1 0 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 12 12"><path d="M3.5 2v8M8.5 2v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 12 12"><path d="M3 1.8v8.4L10 6z" fill="currentColor"/></symbol>
+    <symbol id="i-head" viewBox="0 0 14 14"><path d="M2.5 10V7a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="1.5" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/><rect x="9.9" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 14 14"><path d="M1.5 4V2.5A1 1 0 0 1 2.5 1.5H4M10 1.5h1.5a1 1 0 0 1 1 1V4M12.5 10v1.5a1 1 0 0 1-1 1H10M4 12.5H2.5a1 1 0 0 1-1-1V10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4.2 5.5h5.6M4.2 8.5h3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-cal" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 5.5h11M4.5 1v3M9.5 1v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-clap" viewBox="0 0 34 34"><rect x="3" y="12" width="28" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12 29 5.5l1.4 4.8L4.5 17z M10 10l3 5 M17 8.2l3 5 M24 6.4l3 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 14 14"><path d="M8.5 1.8 12.2 5.5 9.6 8.1 9.2 11 7.4 9.2 3.6 13 1 13 4.8 6.6 3 4.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 14 14"><path d="M7 1.8a3.8 3.8 0 0 1 3.8 3.8c0 3 .8 3.9 1.4 4.4H1.8c.6-.5 1.4-1.4 1.4-4.4A3.8 3.8 0 0 1 7 1.8zM5.6 12.2a1.5 1.5 0 0 0 2.8 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 14 14"><path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 1.3v1.6M7 11.1v1.6M12.7 7h-1.6M2.9 7H1.3M11 3l-1.1 1.1M4.1 9.9 3 11M11 11 9.9 9.9M4.1 4.1 3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-chevd" viewBox="0 0 12 12"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 14 14"><path d="M12 7a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.3 1.4v3h-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 14 14"><path d="M2 4h6M11 4h1M2 10h1M6 10h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="9.5" cy="4" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="4.5" cy="10" r="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 14 14"><path d="M2.5 3.5h9M5.5 3.5V2.2h3v1.3M3.6 3.5l.6 8h5.6l.6-8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-key" viewBox="0 0 14 14"><circle cx="4.4" cy="9.6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 7.7 12 2M9.6 4.4l1.4 1.4M8.2 5.8l1.4 1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 14 14"><rect x="3.5" y="3.5" width="7" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.6 1.4v2M8.4 1.4v2M5.6 10.6v2M8.4 10.6v2M1.4 5.6h2M1.4 8.4h2M10.6 5.6h2M10.6 8.4h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 14 14"><ellipse cx="7" cy="3.6" rx="4.8" ry="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 3.6v6.8c0 1 2.1 1.9 4.8 1.9s4.8-.9 4.8-1.9V3.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 7c0 1 2.1 1.9 4.8 1.9s4.8-.9 4.8-1.9" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 14 14"><path d="M1 7s2.3-3.8 6-3.8S13 7 13 7s-2.3 3.8-6 3.8S1 7 1 7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="7" cy="7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+    <symbol id="i-frame" viewBox="0 0 14 14"><rect x="1.6" y="1.6" width="10.8" height="10.8" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.6 5h10.8M5 1.6v10.8" stroke="currentColor" stroke-width="1.1" opacity=".6"/></symbol>
+    <symbol id="i-send" viewBox="0 0 14 14"><path d="M7 11.5V3M3.4 6.3 7 2.7l3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 12 12"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 14 14"><path d="M7 1.8 13 12H1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7 5.6v2.8M7 10.2v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 14 14"><path d="M2 7a5 5 0 1 0 1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M1.7 1.4v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 14 14"><path d="M1.6 7h1.2M4.4 4.2v5.6M7 2.4v9.2M9.6 4.8v4.4M12.2 6.2v1.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="themeswitch" role="group" aria-label="Theme">
+  <button data-t="auto" aria-pressed="true">Auto</button>
+  <button data-t="light" aria-pressed="false">Light</button>
+  <button data-t="dark" aria-pressed="false">Dark</button>
+</div>
+<div class="page">
+  <header class="mast">
+    <div class="mast__dir"><i class="mast__dot"></i><span class="t-label">Mnema round 4 · direction 05 — Tactile Instruments</span></div>
+    <h1><span class="mast__no is-mono">Page 05</span> &nbsp;Settings — the shell, General + Capture</h1>
+    <p class="t-meta">The left rail is gone. Top-level sections are a native toolbar of icon+label tabs; inside a tab there is ONE scrolling column with sticky group headers and a scoped search — so navigation is horizontal at the top and vertical in the content, never both at once. Save state lives in the toolbar (never a bottom bar that can fall off) and is echoed in the row that changed. Two instruments only: the capture-rate control with its disk consequence, and the retention ladder that shows what survives and what is culled. Everything else is a stock native row.</p>
+  </header>
+<style>
+  .set { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+  .tabbar { flex: 0 0 auto; height: 52px; display: flex; align-items: center; gap: var(--s-4);
+    padding: 0 var(--s-12); background: var(--app-surface); box-shadow: inset 0 -1px 0 var(--app-border); }
+  .tabb { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    width: 66px; height: 42px; border: 0; background: transparent; border-radius: var(--r-md); }
+  .tabb svg { width: 16px; height: 16px; color: var(--app-text-muted); }
+  .tabb span { font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+  .tabb.on { background: var(--app-accent); }
+  .tabb.on svg, .tabb.on span { color: var(--app-accent-contrast); }
+  .tabb:hover:not(.on) { background: var(--app-surface-hover); }
+  .setsearch { width: 176px; margin-left: auto; }
+  .savechip { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm); padding: 0 10px;
+    border-radius: var(--r-pill); background: var(--app-accent-bg); color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); }
+  .savechip svg { width: 11px; height: 11px; }
+  .savechip .t { font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+
+  .pane { flex: 1 1 auto; overflow-y: auto; padding: 0 var(--s-24) var(--s-32); }
+  .col { width: 660px; margin: 0 auto; }
+  .stick { position: sticky; top: 0; z-index: 4; display: flex; align-items: baseline; gap: var(--s-8);
+    padding: var(--s-16) var(--s-2) var(--s-6);
+    background: var(--app-bg); box-shadow: 0 6px 8px -6px light-dark(rgba(21,28,38,.10), rgba(0,0,0,.5)); }
+  .stick--lead { position: static; padding-top: var(--s-20); }
+  .rowecho { position: absolute; right: var(--s-12); top: 50%; transform: translateY(-50%); }
+  .grow--changed { background: color-mix(in srgb, var(--app-accent) 7%, transparent); }
+
+  /* retention: old on the left, kept on the right — the axis is time */
+  .survive__cull { flex: 0 0 36%; justify-content: flex-start; padding-left: 8px; padding-right: 0; }
+  .survive__keep { flex: 1 1 auto; justify-content: flex-end; padding-right: 8px; padding-left: 0; }
+</style>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — Capture, scrolled.</b> The pane is genuinely scrolled in this render:
+    the <b>Video</b> group header is pinned under the toolbar while its rows pass beneath it, and the
+    save state is still on screen because it lives at the top. The capture-rate instrument is drawn as
+    two stacked faces — the control you turn, and the gauge that shows what turning it costs, in GB/day
+    against the free space you actually have.</p>
+  <div class="window w1100">
+    <div class="tbar">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+      <span class="tbar__title" style="margin-left:var(--s-8)">Settings</span>
+      <div class="tbar__sp"></div>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+    <div class="set">
+      <div class="tabbar">
+        <button class="tabb"><svg><use href="#i-gear"/></svg><span>General</span></button>
+        <button class="tabb on"><svg><use href="#i-screen"/></svg><span>Capture</span></button>
+        <button class="tabb"><svg><use href="#i-spark"/></svg><span>Intelligence</span></button>
+        <button class="tabb"><svg><use href="#i-disk"/></svg><span>Data</span></button>
+        <button class="tabb"><svg><use href="#i-key"/></svg><span>About</span></button>
+        <span class="input setsearch"><svg><use href="#i-search"/></svg><span class="ph">Search settings</span></span>
+        <span class="savechip"><svg><use href="#i-check"/></svg>Saved<span class="t">14:41</span></span>
+      </div>
+      <div class="pane" id="pane05">
+        <div class="col">
+
+          <div class="stick stick--lead"><span class="t-title">Capture</span><span class="t-meta">what Mnema records, and what it costs</span></div>
+
+          <div class="gsec">
+            <div class="grp">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Record the screen</span><span class="grow__sub">Recording all displays · 2 excluded apps are never captured</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Record the microphone</span><span class="grow__sub">MacBook Pro Microphone · keeps recording while the screen sleeps</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Record system audio</span><span class="grow__sub">Every app except the 2 excluded ones — Mnema's own output is never captured</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stick"><span class="t-label">Video</span><span class="t-meta">the rate is the only setting on this screen with a price tag</span></div>
+          <div class="gsec">
+            <!-- ══ INSTRUMENT 1 — capture rate, and what it costs ══ -->
+            <div class="instr">
+              <div class="instr__hd">
+                <span class="instr__name">Capture rate</span>
+                <span class="instr__v">2<em>fps</em></span>
+              </div>
+              <div class="well rate">
+                <div class="rate__track">
+                  <span class="rate__fill" style="width:50%"></span>
+                  <span class="rate__notch" style="left:0%"></span><span class="rate__notch" style="left:25%"></span>
+                  <span class="rate__notch" style="left:50%"></span><span class="rate__notch" style="left:75%"></span>
+                  <span class="rate__notch" style="left:100%"></span>
+                  <span class="rate__knob" style="left:50%"></span>
+                </div>
+              </div>
+              <div class="rate__ticks"><span>0.5</span><span>1</span><span class="on">2</span><span>4</span><span>8</span></div>
+              <div class="well gauge" style="margin-top:var(--s-4)">
+                <div class="gauge__track">
+                  <span class="gauge__seg gauge__seg--a" style="width:47%"></span>
+                  <span class="gauge__seg gauge__seg--b" style="width:23%"></span>
+                  <span class="gauge__notch" style="left:87%"></span>
+                </div>
+              </div>
+              <div class="gauge__scale"><span>0</span><span>1.5 GB/day</span><span>3.0 GB/day — budget</span></div>
+              <div class="legend" style="margin-top:var(--s-2)">
+                <span><i></i>screen at 2 fps · 1.4 GB</span>
+                <span><i class="b"></i>audio + text index · 0.7 GB</span>
+                <span><i style="width:3px;background:var(--app-text-strong)"></i>7-day average · 2.6 GB/day</span>
+              </div>
+              <div class="instr__out">≈ <b>2.1 GB</b> a day · <b>63 GB</b> a month · <b>214 GB</b> free on this Mac —
+                about <b>101 days</b> before retention starts culling. Doubling to 4 fps costs <b>+1.4 GB</b> a day
+                and buys sharper scrubbing, not more searchable text.</div>
+            </div>
+
+            <div class="grp" style="margin-top:var(--s-8)">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Frame scale</span><span class="grow__sub">Frames are stored at half the display's pixel size</span></span>
+                <span class="pop">50 % <b><svg><use href="#i-chevud"/></svg></b></span>
+              </div>
+              <div class="grow grow--changed">
+                <span class="grow__txt"><span class="grow__lbl">Pause when nothing changes</span><span class="grow__sub">Capture stops after 3 minutes without input and resumes on the next keystroke</span></span>
+                <span class="grow__val"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span><span class="sw on"><i></i></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stick"><span class="t-label">Segments</span></div>
+          <div class="gsec">
+            <div class="instr">
+              <div class="instr__hd">
+                <span class="instr__name">Segment length</span>
+                <span class="instr__sub">how much a crash can cost you</span>
+                <span class="instr__v">5<em>min</em></span>
+              </div>
+              <div class="well ladder">
+                <div class="ladder__stops">
+                  <span class="ladder__s">30 s</span><span class="ladder__s">1 min</span>
+                  <span class="ladder__s">2 min</span><span class="ladder__s on">5 min</span>
+                  <span class="ladder__s" style="opacity:.35">10 min</span>
+                </div>
+              </div>
+              <div class="instr__out">A segment is only readable once it is finalised, so a crash or a power
+                loss costs the segment in flight — at most <b>5 min</b> of screen and audio.
+                <span class="warn">10 min is not available:</span> Mnema caps segments at five minutes.</div>
+            </div>
+          </div>
+
+          <div class="stick"><span class="t-label">Privacy</span><span class="t-meta">excluded apps are never captured, on screen or in system audio</span></div>
+          <div class="gsec">
+            <div class="grp">
+              <div class="grow"><span class="gicon ic-1p">1P</span><span class="grow__lbl">1Password</span><span class="grow__val"><span class="t-meta is-mono">screen + audio</span><button class="btn btn--ghost btn--sm">Remove</button></span></div>
+              <div class="grow"><span class="gicon ic-sig">Sg</span><span class="grow__lbl">Signal</span><span class="grow__val"><span class="t-meta is-mono">screen + audio</span><button class="btn btn--ghost btn--sm">Remove</button></span></div>
+              <div class="grow"><span class="grow__lbl muted">Add an app…</span><span class="grow__val"><span class="chev"><svg><use href="#i-chevr"/></svg></span></span></div>
+            </div>
+            <div class="grp" style="margin-top:var(--s-8)">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Pause capture in private browsing</span><span class="grow__sub">Safari, Chrome and Arc private windows stop the screen recorder while they are frontmost</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+            </div>
+
+            <!-- ══ INSTRUMENT 2 — retention: what survives, what is culled ══ -->
+            <div class="instr" style="margin-top:var(--s-8)">
+              <div class="instr__hd">
+                <span class="instr__name">Keep captures for</span>
+                <span class="instr__v">90<em>days</em></span>
+              </div>
+              <div class="well ladder">
+                <div class="ladder__stops">
+                  <span class="ladder__s">7 d</span><span class="ladder__s">30 d</span>
+                  <span class="ladder__s on">90 d</span><span class="ladder__s">1 yr</span>
+                  <span class="ladder__s">Forever</span>
+                </div>
+              </div>
+              <div class="survive">
+                <div class="survive__bar">
+                  <span class="survive__cull"><span class="survive__lbl" style="color:var(--app-danger)">12.4 GB culled</span></span>
+                  <span class="survive__keep"><span class="survive__lbl" style="color:var(--app-accent)">21.8 GB kept</span></span>
+                </div>
+                <div class="survive__scale"><span>FEB 12</span><span>MAY 5 — the line</span><span>TODAY</span></div>
+              </div>
+              <div class="instr__out">Moving to 90 days removes <b>12.4 GB</b> — everything recorded before
+                <b>May 5</b> — on tonight's sweep. What Mnema has already learned about you stays:
+                <b>142</b> context facts and <b>9</b> named speakers are never part of retention.</div>
+            </div>
+
+            <div class="grp" style="margin-top:var(--s-8)">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Delete recent capture</span><span class="grow__sub">Remove everything recorded in a recent window — screen, mic and system audio</span></span>
+                <button class="btn btn--sm btn--danger"><svg><use href="#i-trash"/></svg>Delete Recent…</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — General, at the top of the pane.</b> Appearance and startup are stock
+    rows: a theme has no physical quantity, so it gets a segmented control and nothing more. Shortcuts
+    are the exception — a key combination is a physical object, so the field draws real keycaps. Three
+    states are shown together: at rest, armed and listening, and in conflict with another app.</p>
+  <div class="window w1100">
+    <div class="tbar">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+      <span class="tbar__title" style="margin-left:var(--s-8)">Settings</span>
+      <div class="tbar__sp"></div>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+    <div class="set">
+      <div class="tabbar">
+        <button class="tabb on"><svg><use href="#i-gear"/></svg><span>General</span></button>
+        <button class="tabb"><svg><use href="#i-screen"/></svg><span>Capture</span></button>
+        <button class="tabb"><svg><use href="#i-spark"/></svg><span>Intelligence</span></button>
+        <button class="tabb"><svg><use href="#i-disk"/></svg><span>Data</span></button>
+        <button class="tabb"><svg><use href="#i-key"/></svg><span>About</span></button>
+        <span class="input setsearch"><svg><use href="#i-search"/></svg><span class="ph">Search settings</span></span>
+        <span class="savechip"><svg><use href="#i-undo"/></svg>Saved · Undo<span class="t">⌘Z</span></span>
+      </div>
+      <div class="pane">
+        <div class="col">
+          <div class="stick stick--lead"><span class="t-title">General</span></div>
+          <div class="gsec">
+            <div class="grp">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Appearance</span></span>
+                <div class="seg"><span class="seg__i">Light</span><span class="seg__i">Dark</span><span class="seg__i on">Auto</span></div>
+              </div>
+              <div class="grow grow--changed">
+                <span class="grow__txt"><span class="grow__lbl">Open Mnema on</span><span class="grow__sub">The surface shown at launch — the switcher's context menu writes the same setting</span></span>
+                <span class="grow__val"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span><span class="pop">Timeline <b><svg><use href="#i-chevud"/></svg></b></span></span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Start recording at login</span><span class="grow__sub">Mnema is recording within about 4 seconds of the desktop appearing</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Keep the menu-bar icon</span><span class="grow__sub">Full transport stays in the tray even when the window is closed</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stick"><span class="t-label">Shortcuts</span><span class="t-meta">a key combination is a physical thing — so it is drawn as one</span></div>
+          <div class="gsec">
+            <div class="grp">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Quick Access</span><span class="grow__sub">Summon search and Ask over any app</span></span>
+                <span class="grow__val">
+                  <span class="well keyrec">
+                    <span class="keycap">⌘</span><span class="keycap">⌥</span><span class="keycap keycap--wide">Space</span>
+                  </span>
+                  <button class="btn btn--ghost btn--sm">Change</button>
+                </span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Ask about this screen</span><span class="grow__sub">Collapses Quick Access to the floating bar and grabs the current frame</span></span>
+                <span class="grow__val">
+                  <span class="well keyrec is-armed">
+                    <span class="keyrec__hint">Type shortcut…</span><span class="caretbar"></span>
+                  </span>
+                  <button class="btn btn--ghost btn--sm">esc</button>
+                </span>
+              </div>
+              <div class="grow grow--stack">
+                <div style="display:flex;align-items:center;gap:var(--s-12)">
+                  <span class="grow__txt"><span class="grow__lbl">Start / stop recording</span><span class="grow__sub">Works while Mnema is in the background</span></span>
+                  <span class="grow__val">
+                    <span class="well keyrec is-conflict">
+                      <span class="keycap">⌥</span><span class="keycap">⌘</span><span class="keycap">R</span>
+                    </span>
+                    <button class="btn btn--ghost btn--sm">Change</button>
+                  </span>
+                </div>
+                <p class="t-meta" style="color:var(--app-danger);display:flex;align-items:center;gap:5px">
+                  <svg style="width:11px;height:11px"><use href="#i-warn"/></svg>
+                  ⌥⌘R is already taken by <b style="font-weight:510">Alfred — Global Hotkey</b>. Mnema will not receive it.
+                </p>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Pause / resume</span></span>
+                <span class="grow__val">
+                  <span class="well keyrec">
+                    <span class="keycap">⌥</span><span class="keycap">⌘</span><span class="keycap">P</span>
+                  </span>
+                  <button class="btn btn--ghost btn--sm">Change</button>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stick"><span class="t-label">Startup</span></div>
+          <div class="gsec">
+            <div class="grp">
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Launch Mnema at login</span></span>
+                <span class="sw on"><i></i></span>
+              </div>
+              <div class="grow">
+                <span class="grow__txt"><span class="grow__lbl">Check for updates</span><span class="grow__sub">Last checked today at 09:02 · you are on 0.4.1</span></span>
+                <span class="grow__val"><span class="pop">Automatically <b><svg><use href="#i-chevud"/></svg></b></span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block block--tight">
+  <p class="wlabel"><b>Where the save state lives, and why it cannot be clipped.</b> The chip sits in the
+    toolbar — the one strip that is pinned to the top of the window at every size — and the row that
+    changed echoes it for about 1.5 s. There is no Save button and no bottom bar anywhere in this
+    direction, so there is nothing to fall off a short window.</p>
+  <div class="row-of">
+    <div style="display:flex;flex-direction:column;gap:var(--s-8)">
+      <span class="t-label">Idle</span>
+      <span class="savechip" style="background:var(--app-surface);color:var(--app-text-muted);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)"><svg><use href="#i-check"/></svg>All changes saved<span class="t">14:41</span></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:var(--s-8)">
+      <span class="t-label">Writing</span>
+      <span class="savechip" style="background:var(--app-surface);color:var(--app-text-muted);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>Saving…</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:var(--s-8)">
+      <span class="t-label">Just saved — undo is what makes silence acceptable</span>
+      <span class="savechip"><svg><use href="#i-undo"/></svg>Saved · Undo<span class="t">⌘Z</span></span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:var(--s-8)">
+      <span class="t-label">Failed — the row keeps the value and the toast carries the reason</span>
+      <span class="savechip" style="background:var(--app-danger-bg);color:var(--app-danger);box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)"><svg><use href="#i-warn"/></svg>Not saved · Retry</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  // the pane really is scrolled, so the sticky group header is genuinely pinned
+  var p05 = document.getElementById("pane05");
+  if (p05) p05.scrollTop = 158;
+</script>
+
+</div>
+<script>
+(function () {
+  var sw = document.querySelector(".themeswitch");
+  sw.addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    var t = b.dataset.t;
+    if (t === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = t;
+    sw.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+  });
+  // keep the switch honest when the screenshot harness sets data-theme directly
+  new MutationObserver(function () {
+    var t = document.documentElement.dataset.theme || "auto";
+    sw.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", String(x.dataset.t === t)); });
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+})();
+</script>
+</body>
+</html>
