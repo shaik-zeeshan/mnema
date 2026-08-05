@@ -1407,8 +1407,8 @@
   /* ---- Card / Subject row ---- */
   .card {
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
+    box-shadow: var(--sh-tile);
   }
   .conv-row {
     padding: 0;
@@ -1781,8 +1781,8 @@
     gap: 6px;
     padding: 18px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
+    box-shadow: var(--sh-tile);
   }
   .state--error {
     border-color: var(--app-danger-border);

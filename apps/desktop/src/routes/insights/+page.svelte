@@ -464,8 +464,8 @@
     gap: 10px;
     padding: 26px 28px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 11px;
+    box-shadow: var(--sh-tile);
   }
   .gate-eyebrow {
     margin: 0;

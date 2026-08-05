@@ -277,12 +277,12 @@
     margin-top: 14px;
     padding-top: 11px;
     padding-bottom: 8px;
-    border-top: 1px solid var(--app-border);
+    box-shadow: inset 0 1px 0 var(--glass-line);
   }
   /* first group: sits clean below the search's bottom hairline — no double
      line. */
   .rail-group:first-child {
-    border-top: none;
+    box-shadow: none;
     margin-top: 12px;
     padding-top: 0;
   }

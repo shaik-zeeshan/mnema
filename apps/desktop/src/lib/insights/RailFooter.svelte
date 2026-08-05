@@ -51,7 +51,7 @@
      `.rail-foot`. Token-driven; lowercase, minimal. */
   .rail-foot {
     flex: 0 0 auto;
-    border-top: 1px solid var(--app-border);
+    box-shadow: inset 0 1px 0 var(--glass-line);
     padding: 12px 16px;
     display: flex;
     align-items: center;
@@ -93,7 +93,7 @@
     color: var(--app-accent-strong);
     cursor: pointer;
     border-bottom: 1px dotted var(--app-accent-border);
-    border-top: 0;
+    box-shadow: none;
     border-left: 0;
     border-right: 0;
     background: transparent;

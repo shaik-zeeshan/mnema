@@ -1778,7 +1778,7 @@
     background: var(--app-surface-raised);
     color: var(--app-accent-strong);
     cursor: pointer;
-    box-shadow: var(--app-shadow-popover, 0 4px 14px rgba(0, 0, 0, 0.35));
+    box-shadow: var(--sh-float);
     transition:
       border-color 0.12s ease,
       background 0.12s ease;
@@ -1914,9 +1914,9 @@
   .user-bubble {
     max-width: 80%;
     padding: 9px 13px;
-    border: 1px solid var(--app-border-strong);
     border-radius: 12px 12px 4px 12px;
     background: var(--app-surface-raised);
+    box-shadow: var(--sh-tile);
     color: var(--app-text-strong);
     font-size: 13px;
     line-height: 1.5;
@@ -2194,9 +2194,9 @@
   .graphic {
     margin: 0;
     padding: 12px 13px;
-    border: 1px solid var(--app-border);
     border-radius: 9px;
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
   .graphic-title {
     font-size: 10.5px;
@@ -2212,9 +2212,9 @@
   }
   .dossier-card {
     padding: 11px 12px;
-    border: 1px solid var(--app-border);
     border-radius: 8px;
     background: var(--app-surface);
+    box-shadow: var(--sh-tile);
     display: flex;
     flex-direction: column;
     gap: 9px;

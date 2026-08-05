@@ -711,9 +711,9 @@
   /* ---- Shared card + control primitives (mirrors app.css) ---- */
   .card {
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
     padding: 14px;
+    box-shadow: var(--sh-tile);
   }
   .section-title {
     font-size: var(--t-meta);
@@ -738,7 +738,7 @@
   .btn--danger-hover:hover {
     color: var(--app-danger);
     background: var(--app-danger-bg);
-    border-color: transparent;
+    box-shadow: none;
   }
 
   .chip {
@@ -1074,9 +1074,9 @@
   /* ---- Side panel ---- */
   .side-card {
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
     padding: 13px 14px;
+    box-shadow: var(--sh-tile);
   }
   .side-card .side-title {
     display: flex;
@@ -1325,8 +1325,8 @@
     gap: 6px;
     padding: 18px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
+    box-shadow: var(--sh-tile);
   }
   .state--error {
     border-color: var(--app-danger-border);

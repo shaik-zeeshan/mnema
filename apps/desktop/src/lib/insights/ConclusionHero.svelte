@@ -322,11 +322,11 @@
   }
   .btn--pinned {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     color: var(--app-accent-strong);
   }
   .btn--pinned:hover {
-    border-color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent);
     color: var(--app-accent);
     background: var(--app-accent-bg);
   }

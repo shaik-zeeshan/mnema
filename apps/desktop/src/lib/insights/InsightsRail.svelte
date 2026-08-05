@@ -96,7 +96,7 @@
 </script>
 
 {#if !collapsed}
-<aside class="sidebar" aria-label="Insights" style="width: {width}px;">
+<aside class="sidebar glass-chrome" aria-label="Insights" style="width: {width}px;">
   <div class="sidebar-scroll">
     <!-- A quiet collapse chevron in a compact right-aligned header row. It owns
          its own band so it never sits on top of the (full-width) Overview nav
@@ -180,7 +180,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background: var(--app-surface-subtle);
+    /* Level 3 of the material ladder: a rail is chrome, so it wears `.glass-chrome`
+       (background + rim + blur come from there). Content scrolls under it. */
   }
   .sidebar-scroll {
     flex: 1 1 auto;

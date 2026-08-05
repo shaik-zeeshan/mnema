@@ -2127,19 +2127,19 @@
     flex-direction: column;
     min-height: 120px;
     padding: 11px 12px;
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
+    background: var(--app-surface);
     border-radius: 9px;
     min-width: 0;
     overflow: hidden;
-    transition: border-color 0.12s ease;
+    box-shadow: var(--sh-tile);
+    transition: box-shadow 0.12s ease;
   }
   /* The whole card is the trigger when its detail modal is openable. */
   .exhibit--clickable {
     cursor: pointer;
   }
   .exhibit--clickable:hover {
-    border-color: var(--app-border-hover);
+    box-shadow: var(--sh-float);
   }
   /* Reinforce the "whole card opens detail" affordance: on card hover the hint
      lifts to accent (text + underline) so the cue and hover feedback agree. */
@@ -2388,9 +2388,9 @@
   .entry {
     position: relative;
     padding: 20px 22px 18px;
-    border: 1px solid var(--app-border);
     border-radius: 12px;
     background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
   .eyebrow {
     display: flex;
@@ -3017,8 +3017,8 @@
     gap: 6px;
     padding: 18px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
     border-radius: 9px;
+    box-shadow: var(--sh-tile);
   }
   .state--error {
     border-color: var(--app-danger-border);
