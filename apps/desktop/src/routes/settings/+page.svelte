@@ -29,6 +29,7 @@
     setSettingsController,
   } from "$lib/settings/state/controller.svelte";
   import {
+    SETTINGS_GROUPS,
     groupForSection,
     resolveTabDeeplink,
     resolveFocusDeeplink,
@@ -216,6 +217,16 @@
   // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
+      // A group's FIRST section already starts at the top of its panel, and the
+      // group's lead header sits ABOVE it. Scrolling that anchor to the pane top
+      // would push the lead off-screen and land every tab click 50-odd px down,
+      // with the first sticky header already pinned instead of in flow. Go to 0.
+      const group = SETTINGS_GROUPS.find((g) => g.id === groupForSection(section));
+      if (group?.sections[0].id === section) {
+        scrollRegion?.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
+        spySuppressTarget = 0;
+        return;
+      }
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
       if (el) setSpyTarget(el);
@@ -617,6 +628,27 @@
       onscroll={handleScrollRegionScroll}
       data-find-query={settingsFind.query}
     >
+      <!-- The lead header (page 11's `.stick--lead`): the group's name and the
+           sections it stacks, once, above the first group. Deliberately NOT
+           sticky — the group headers below it are the ones that pin; this one
+           scrolls away. Suppressed while ⌘F is filtering, where hits span every
+           group and each carries its own breadcrumb instead. It carries no
+           `settings-section-*` id, so the scroll-spy observer never sees it. -->
+      {#if !settingsFind.active}
+        {@const lead = SETTINGS_GROUPS.find((g) => g.id === activeGroup)}
+        {#if lead}
+          <header class="settings-lead">
+            <h2 class="settings-lead__title">{lead.label}</h2>
+            <!-- Sentence-case only the first letter: page 11's lead reads
+                 "providers, Ask AI, processing", not "…ask ai…". A blanket
+                 toLowerCase would flatten the proper nouns. -->
+            <p class="settings-lead__desc">
+              {lead.description.charAt(0).toLowerCase() + lead.description.slice(1)}
+            </p>
+          </header>
+        {/if}
+      {/if}
+
       {#if settingsFind.active}
         <!-- ⌘F: every group's panel is mounted so a hit in any section can
              render WITH ITS LIVE CONTROL; the rows/groups that don't match hide
@@ -652,6 +684,35 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+
+  /* Lead header — the group's name and, muted beside it, the sections it
+     stacks. One baseline row so it reads as a caption, not a second title bar:
+     the accent tab above already shouts the group name, so this one whispers. */
+  .settings-lead {
+    /* Same 660px centered column as `.settings-panel` — it is that panel's
+       sibling inside the scroll region, not its child. */
+    width: 660px;
+    max-width: 100%;
+    margin: 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 20px 2px 6px;
+  }
+
+  .settings-lead__title {
+    margin: 0;
+    font:
+      var(--w-semi) var(--t-body) / var(--lh-body) var(--app-font-sans);
+    color: var(--app-text-strong);
+  }
+
+  .settings-lead__desc {
+    margin: 0;
+    font:
+      var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-muted);
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

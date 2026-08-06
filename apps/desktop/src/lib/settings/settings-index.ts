@@ -119,6 +119,7 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	// ── Data ──
 	{ section: "storage", label: "Save Directory", synonyms: ["location", "path", "folder", "where"] },
 	{ section: "storage", label: "Retention", synonyms: ["delete old", "keep", "days", "cleanup", "disk"] },
+	{ section: "storage", label: "Delete recent capture", synonyms: ["erase", "remove", "wipe", "oops", "last 5 minutes", "undo recording", "purge"] },
 	{ section: "access", label: "CLI Access", synonyms: ["agent", "broker", "mnema-cli", "grant", "terminal"] },
 
 	// ── About ──

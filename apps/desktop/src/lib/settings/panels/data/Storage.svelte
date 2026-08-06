@@ -93,6 +93,55 @@
     }
   }
 
+  // ── Delete Recent Capture ───────────────────────────────────────────────────
+  // Page 11 draws this beside retention; until now it existed only in the tray
+  // submenu. Same backend command, same confirm wording. The backend accepts
+  // exactly 60/300/900 (`validate_delete_recent_window`), so the control is
+  // three buttons rather than a free window — an honest control, not a picker
+  // that can be set to a value the command rejects.
+  // ponytail: no window state, no picker component; three invokes.
+  const DELETE_RECENT_WINDOWS = [
+    { seconds: 60, label: "Last minute", phrase: "last 1 minute" },
+    { seconds: 300, label: "Last 5 minutes", phrase: "last 5 minutes" },
+    { seconds: 900, label: "Last 15 minutes", phrase: "last 15 minutes" },
+  ] as const;
+
+  interface DeleteRecentSummary {
+    deletedCaptureSegments: number;
+    deletedFrames: number;
+    deletedAudioSegments: number;
+    fileDeleteErrors: number;
+    pendingFileTombstones: number;
+  }
+
+  let deletingRecentSeconds = $state<number | null>(null);
+  let deleteRecentSummary = $state<DeleteRecentSummary | null>(null);
+  let deleteRecentError = $state<string | null>(null);
+
+  async function deleteRecentCapture(seconds: number, phrase: string) {
+    if (deletingRecentSeconds !== null) return;
+    const ok = await confirm(
+      `Delete the ${phrase} from Mnema's library? This removes whole overlapping capture segments and cannot be undone.`,
+      { title: "Delete Recent Capture", kind: "warning" },
+    );
+    if (!ok) return;
+    deletingRecentSeconds = seconds;
+    deleteRecentError = null;
+    deleteRecentSummary = null;
+    try {
+      deleteRecentSummary = await invoke<DeleteRecentSummary>("delete_recent_capture", {
+        request: { windowSeconds: seconds },
+      });
+      // Deleting changes what is on disk, so the measured rate the retention
+      // instrument prices itself against is re-read.
+      await systemFacts.refresh();
+    } catch (err) {
+      deleteRecentError = humanizeError(err);
+    } finally {
+      deletingRecentSeconds = null;
+    }
+  }
+
   async function browseSaveDirectory() {
     if (browsing) return;
     browsing = true;
@@ -179,7 +228,6 @@
     label="Retention"
     description="Automatically delete captured data after the chosen window."
     full
-    divider={false}
   >
     {#snippet control()}
       <div class="retention-control">
@@ -209,6 +257,46 @@
         {/if}
         {#if retentionCleanupError}
           <p class="error-text">{retentionCleanupError}</p>
+        {/if}
+      </div>
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow
+    label="Delete recent capture"
+    description="Remove everything recorded in a recent window — screen, mic and system audio. Whole overlapping segments go; this cannot be undone."
+    full
+  >
+    {#snippet control()}
+      <div class="delete-recent">
+        <div class="row-actions">
+          {#each DELETE_RECENT_WINDOWS as window (window.seconds)}
+            <button
+              type="button"
+              class="btn btn--danger btn--sm"
+              onclick={() => deleteRecentCapture(window.seconds, window.phrase)}
+              disabled={deletingRecentSeconds !== null}
+              aria-busy={deletingRecentSeconds === window.seconds}
+            >
+              {#if deletingRecentSeconds === window.seconds}<ButtonSpinner />Deleting…{:else}{window.label}{/if}
+            </button>
+          {/each}
+        </div>
+        {#if deleteRecentSummary}
+          <div class="cleanup-result" aria-live="polite">
+            <strong>Deleted</strong>
+            <p>
+              {deleteRecentSummary.deletedCaptureSegments} segment(s), {deleteRecentSummary.deletedFrames}
+              frame(s), {deleteRecentSummary.deletedAudioSegments} audio segment(s).
+              {#if deleteRecentSummary.fileDeleteErrors > 0}
+                {deleteRecentSummary.fileDeleteErrors} file(s) could not be removed from disk and were
+                queued for retry ({deleteRecentSummary.pendingFileTombstones} pending).
+              {/if}
+            </p>
+          </div>
+        {/if}
+        {#if deleteRecentError}
+          <p class="error-text">{deleteRecentError}</p>
         {/if}
       </div>
     {/snippet}
@@ -258,6 +346,19 @@
   }
 
   .retention-control .row-actions {
+    justify-content: flex-start;
+  }
+
+  /* Same stacked shape as the retention control: the three window buttons, then
+     whatever the last run reported. */
+  .delete-recent {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .delete-recent .row-actions {
     justify-content: flex-start;
   }
 
