@@ -59,12 +59,32 @@
     return starts.length ? Math.min(...starts) : null;
   });
 
-  // Tick only while there is a running clock to tick.
+  // Tick only while there is a running clock to tick AND the document is being
+  // shown — the same two gates the title bar's pill uses. The visibility half is
+  // not a micro-optimisation: a 1 Hz DOM write that starts on the Record click
+  // and never stops is a permanent repaint driver, and a repaint the compositor
+  // never shows is what strands WebKit's non-purgeable backing stores. A
+  // recorder runs for hours with its window hidden.
   let nowMs = $state(Date.now());
   $effect(() => {
     if (startedAtMs === null || !captureControls.running) return;
-    const id = setInterval(() => (nowMs = Date.now()), 1000);
-    return () => clearInterval(id);
+    let id: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (id !== null) clearInterval(id);
+      id = null;
+    };
+    const sync = () => {
+      stop();
+      if (document.visibilityState !== "visible") return;
+      nowMs = Date.now();
+      id = setInterval(() => (nowMs = Date.now()), 1000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
 
   const requested = $derived(session?.requestedSources ?? null);
