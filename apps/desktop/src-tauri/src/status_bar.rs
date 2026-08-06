@@ -577,12 +577,31 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
 
     // Mid-session the toggle is the user mask (this session only); idle it is the
     // capture-sources setting for the next one.
-    let result = if live.is_some() {
-        crate::native_capture::set_native_capture_live_sources_from_app_handle(app, next).map(|_| ())
-    } else {
-        crate::native_capture::update_recording_sources_from_app_handle(app, next).map(|_| ())
-    };
-    if let Err(error) = result {
+    if live.is_some() {
+        // Off the menu thread, exactly like `handle_recording_toggle`: applying a
+        // mask stops (or restarts) a real capture source, which takes hundreds of
+        // ms to seconds. Running it inline froze the app on every mid-session
+        // source toggle. The idle branch below stays inline — it is a settings
+        // write, which is what this handler used to do in every case.
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            if let Err(error) =
+                crate::native_capture::set_native_capture_live_sources_from_app_handle(
+                    &app_handle,
+                    next,
+                )
+            {
+                crate::native_capture::debug_log::log_warn(format!(
+                    "failed to update live recording sources from status bar: [{}] {}",
+                    error.code, error.message
+                ));
+                refresh(&app_handle);
+            }
+        });
+        return;
+    }
+
+    if let Err(error) = crate::native_capture::update_recording_sources_from_app_handle(app, next) {
         crate::native_capture::debug_log::log_warn(format!(
             "failed to update recording sources from status bar: [{}] {}",
             error.code, error.message
