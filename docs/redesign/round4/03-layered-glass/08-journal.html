@@ -1,0 +1,1295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layered Glass · 08 Journal</title>
+<style>
+/* ════════════════════════════════════════════════════════════════════════════
+   Mnema · round 4 · direction 03 — LAYERED GLASS
+   Shared core: tokens, type ramp, spacing, native controls, material, shots.
+   Rule of the direction: MATERIAL ONLY WHERE macOS USES IT (toolbars, HUDs,
+   popovers, overlays, sheets). Content always lands on an opaque surface.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root{
+  /* surfaces (opaque — CONTENT never sits on material) */
+  --page-bg:#eceae5;
+  --app-bg:#f6f6f4; --app-surface:#ffffff; --app-surface-subtle:#f6f6f4;
+  --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#e8f1ea;
+  --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a;
+  --app-text-subtle:#5e5e6a; --app-text-faint:#9a9aa4;
+  --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+  --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec;
+  --app-accent-border:#9bd3b4; --app-accent-contrast:#ffffff; --app-accent-glow:rgba(31,122,74,.16);
+  --app-danger:#c43a48; --app-danger-bg:#fff0f2; --app-danger-border:#e4b6be;
+  --app-warn:#9a5a12; --app-warn-bg:#fff1df; --app-warn-border:#dfbc8a;
+  --app-info:#2b78c5; --app-info-bg:#eef5ff; --app-info-border:#bdd3ef;
+  --app-record:#d62236; --app-record-bg:#fff2f3; --app-record-border:#ecbcc2;
+  --app-src-screen:#6f5ed1; --app-src-screen-bg:#f1edff;
+  --app-src-mic:#2f8e59; --app-src-mic-bg:#e8f5ec;
+  --app-src-sys:#8b7a2c; --app-src-sys-bg:#faf4df;
+
+  /* ── MATERIAL. Only chrome, HUDs, popovers, overlays wear these. ───────── */
+  --glass:rgba(252,252,251,.66);        /* toolbar / rail / drawer shell     */
+  --glass-hud:rgba(250,250,248,.80);    /* free-floating HUD over a desktop  */
+  --glass-pop:rgba(253,253,252,.86);    /* menu, popover, toast              */
+  --glass-line:rgba(20,20,26,.10);      /* material edge, NOT a container    */
+  --glass-hi:rgba(255,255,255,.85);     /* top inner highlight               */
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(20,20,26,.03);
+
+  /* depth = layering. Shadows only on things that float. */
+  --sh-tile:0 1px 2px rgba(21,28,38,.06), 0 4px 14px rgba(21,28,38,.05);
+  --sh-float:0 10px 34px rgba(21,28,38,.16), 0 2px 6px rgba(21,28,38,.10);
+  --sh-hud:0 28px 70px rgba(21,28,38,.28), 0 4px 14px rgba(21,28,38,.14);
+  --sh-win:0 34px 90px rgba(21,28,38,.26), 0 0 0 .5px rgba(21,28,38,.14);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  /* simulated desktop behind the glass */
+  --desk-a:#adc0da; --desk-b:#e0c9a4; --desk-c:#8fa6c6; --desk-d:#d8cbb6;
+  --desk-scrim:rgba(24,26,36,.30);
+
+  /* fake-screenshot palette */
+  --sh-bg:#ffffff; --sh-chrome:#ececeb; --sh-chrome-2:#e2e2e0; --sh-el:#1c1c22;
+  --sh-kw:#8250df; --sh-str:#0a7a4a; --sh-cm:#8b8b95; --sh-num:#b8562a;
+  --sh-term:#1d1f24; --sh-term-t:#c8d0c8;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}}
+:root[data-theme="dark"]{
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}
+
+
+:root{
+  --app-font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --app-font-mono:ui-monospace,"SF Mono",Menlo,Monaco,monospace;
+
+  --t-label:10px;  --lh-label:1.4;  --ls-label:.02em;
+  --t-meta:11px;   --lh-meta:1.35;  --ls-meta:.01em;
+  --t-ui:13px;     --lh-ui:1.25;    --ls-ui:-.006em;
+  --t-read:14px;   --lh-read:1.55;  --ls-read:-.008em;
+  --t-title:17px;  --lh-title:1.3;  --ls-title:-.016em;
+  --t-display:22px;--lh-display:1.2;--ls-display:-.02em;
+  --w-regular:400; --w-medium:510;  --w-semi:590;
+
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px;
+  --s-12:12px; --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px;
+  --gap-inline:6px; --gap-label:4px; --gap-row:8px; --gap-group:16px;
+  --gap-section:24px; --pad-window:16px; --pad-control:8px; --pad-panel:16px;
+
+  --h-sm:24px; --h-md:28px; --h-lg:32px; --h-row:28px; --h-titlebar:38px;
+  --o-icon-sm:14px; --o-icon:20px; --o-icon-lg:24px;
+  --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-panel:14px; --r-pill:999px;
+  --dur-quick:100ms; --dur-regular:250ms; --ease:cubic-bezier(.4,0,.2,1);
+  --opacity-disabled:.4;
+  --hairline:.5px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{
+  margin:0; padding:40px 40px 96px;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text);
+  background:
+    radial-gradient(1100px 620px at 12% -8%, color-mix(in srgb,var(--app-accent) 7%, transparent), transparent 62%),
+    var(--page-bg);
+  min-height:100vh;
+}
+svg{display:block; width:14px; height:14px; fill:none; stroke:currentColor;
+    stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round}
+
+/* ── page furniture (OUTSIDE the app window) ─────────────────────────────── */
+.mast{max-width:1180px; margin:0 0 28px}
+.mast__eyebrow{
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.12em; text-transform:uppercase; color:var(--app-accent);
+  display:flex; align-items:center; gap:10px; margin:0 0 12px}
+.mast__eyebrow b{width:26px; height:1px; background:currentColor; display:block; opacity:.6}
+.mast h1{
+  margin:0; font:var(--w-semi) 28px/1.15 var(--app-font-sans);
+  letter-spacing:-.024em; color:var(--app-text-strong)}
+.mast h1 span{color:var(--app-text-faint); font-variant-numeric:tabular-nums}
+.mast p{margin:10px 0 0; max-width:74ch;
+  font:var(--w-regular) var(--t-read)/1.6 var(--app-font-sans); color:var(--app-text-muted)}
+.mast p b{font-weight:var(--w-medium); color:var(--app-text)}
+.mast__rule{height:1px; background:var(--app-border); margin:22px 0 0; max-width:1180px}
+
+.themebtn{
+  position:fixed; top:20px; right:20px; z-index:99;
+  display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px;
+  border:none; border-radius:var(--r-pill); cursor:pointer;
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur); box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-mono); letter-spacing:.04em;
+  text-transform:uppercase; color:var(--app-text-strong)}
+
+.wlabel{
+  margin:0 0 10px; font:var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color:var(--app-text-muted); max-width:96ch}
+.wlabel b{color:var(--app-text-strong); font-weight:var(--w-medium)}
+.wlabel code{font-family:var(--app-font-mono); font-size:10px; color:var(--app-accent)}
+.block{margin:0 0 44px}
+.block__h{
+  display:flex; align-items:baseline; gap:12px; margin:0 0 14px;
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle)}
+.block__h:after{content:""; flex:1; height:1px; background:var(--app-border)}
+.row-of{display:flex; gap:32px; flex-wrap:wrap; align-items:flex-start}
+
+/* ── type roles ──────────────────────────────────────────────────────────── */
+.t-label{font:var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing:var(--ls-label); text-transform:uppercase; color:var(--app-text-muted)}
+.t-meta{font:var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing:var(--ls-meta); color:var(--app-text-muted)}
+.t-ui{font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text)}
+.t-read{font:var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing:var(--ls-read); color:var(--app-text); max-width:70ch}
+.t-title{font:var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing:var(--ls-title); color:var(--app-text-strong)}
+.t-display{font:var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing:var(--ls-display); color:var(--app-text-strong)}
+.is-mono{font-family:var(--app-font-mono)}
+.is-num{font-variant-numeric:tabular-nums}
+.strong{color:var(--app-text-strong)}
+.muted{color:var(--app-text-muted)}
+.subtle{color:var(--app-text-subtle)}
+
+/* ── the window ──────────────────────────────────────────────────────────── */
+.win{
+  position:relative; overflow:hidden; border-radius:10px;
+  background:var(--app-bg); box-shadow:var(--sh-win);
+  display:flex; flex-direction:column;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui);
+}
+.win--1100{width:1100px; height:720px}
+.win--800{width:800px; height:600px}
+.win--1120{width:1120px; height:720px}
+
+/* MATERIAL title bar — chrome, so it may be translucent; content scrolls under */
+.tbar{
+  position:absolute; inset:0 0 auto 0; z-index:6; height:var(--h-titlebar);
+  display:flex; align-items:center; gap:var(--s-12); padding:0 12px;
+  background:var(--glass); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi);
+}
+.tbar--static{position:relative; flex:0 0 auto}
+.tl{display:flex; gap:8px; padding-left:2px}
+.tl i{width:12px; height:12px; border-radius:50%; display:block}
+.tl i:nth-child(1){background:#ff5f57} .tl i:nth-child(2){background:#febc2e}
+.tl i:nth-child(3){background:#28c840}
+.tbar__title{font:var(--w-semi) var(--t-ui)/1 var(--app-font-sans); color:var(--app-text-strong)}
+.tbar__sp{flex:1}
+
+/* segmented control (AppKit) */
+.seg{display:inline-flex; padding:2px; border-radius:7px; background:var(--glass-tint);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.seg__i{display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px;
+  border-radius:5px; font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color:var(--app-text-muted); white-space:nowrap}
+.seg__i.on{background:var(--app-surface); color:var(--app-text-strong);
+  box-shadow:0 1px 2px rgba(0,0,0,.16), 0 0 0 var(--hairline) var(--glass-line)}
+.seg--lg .seg__i{height:26px; padding:0 14px}
+
+/* state pill */
+.pill{display:inline-flex; align-items:center; gap:var(--gap-inline); height:24px;
+  padding:0 10px; border:none; border-radius:var(--r-pill); background:var(--app-record-bg);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-record-border)}
+.pill__t{font:var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-strong)}
+.pill__gb{font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-subtle)}
+.pill__w{font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-text-muted)}
+.pill--quiet{background:var(--glass-tint); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.pill--warn{background:var(--app-warn-bg); box-shadow:inset 0 0 0 var(--hairline) var(--app-warn-border)}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--app-record); display:block;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--app-record) 18%, transparent)}
+.dot--off{background:var(--app-text-subtle); box-shadow:none}
+
+/* ── controls ────────────────────────────────────────────────────────────── */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:var(--gap-inline);
+  height:var(--h-md); padding:0 10px; border:none; border-radius:var(--r-md);
+  font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing:var(--ls-ui);
+  white-space:nowrap; background:var(--app-surface-raised); color:var(--app-text-strong);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line);
+  cursor:default}
+.btn:hover{background:var(--app-surface-hover)}
+.btn--primary{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.btn--ghost{background:transparent; box-shadow:none; color:var(--app-text-muted)}
+.btn--ghost.on,.btn--ghost:hover{background:var(--glass-tint); color:var(--app-text-strong)}
+.btn--danger{background:var(--app-danger-bg); color:var(--app-danger);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+.btn--sm{height:var(--h-sm); padding:0 8px}
+.btn--lg{height:var(--h-lg); padding:0 14px}
+.btn--icon{width:var(--h-md); padding:0}
+.btn--icon.btn--sm{width:var(--h-sm)}
+.btn[aria-disabled="true"]{opacity:var(--opacity-disabled)}
+.btn.is-focused{box-shadow:var(--ring), 0 1px 1px rgba(0,0,0,.10)}
+
+.chip{display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 9px;
+  border-radius:var(--r-pill); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.chip.on{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.chip--q{background:transparent; box-shadow:none}
+
+.kbd{display:inline-flex; align-items:center; justify-content:center; min-width:19px; height:19px;
+  padding:0 5px; border-radius:var(--r-sm); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.kbd--wide{min-width:auto; padding:0 7px}
+
+.input{display:flex; align-items:center; gap:8px; height:var(--h-md); padding:0 9px;
+  border-radius:var(--r-md); background:var(--app-surface-subtle); color:var(--app-text-strong);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans)}
+.input.is-focused{box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring)}
+.input .ph{color:var(--app-text-subtle)}
+
+.sw{position:relative; width:38px; height:22px; border-radius:var(--r-pill); flex:0 0 auto;
+  background:var(--app-surface-hover); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.sw i{position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.30); display:block}
+.sw.on{background:var(--app-accent); box-shadow:none}
+.sw.on i{left:18px}
+.sw.dis{opacity:var(--opacity-disabled)}
+
+.pop{display:inline-flex; align-items:center; gap:8px; height:var(--h-md); padding:0 6px 0 10px;
+  border-radius:var(--r-md); background:var(--app-surface-raised); color:var(--app-text-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line)}
+.pop b{display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px;
+  border-radius:3px; background:var(--app-accent); color:var(--app-accent-contrast)}
+.pop b svg{width:9px; height:9px; stroke-width:2}
+
+.spin{width:12px; height:12px; border-radius:50%; flex:0 0 auto; display:block;
+  border:1.5px solid var(--app-border-hover); border-top-color:var(--app-accent);
+  animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.caret{display:inline-block; width:1.5px; height:14px; background:var(--app-accent);
+  vertical-align:-2px; animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* MATERIAL: menu / popover — NSMenu anatomy */
+.menu{min-width:220px; padding:5px; border-radius:var(--r-lg);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+.menu__hd{padding:6px 10px 4px; font:var(--w-medium) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing:.02em; text-transform:uppercase; color:var(--app-text-subtle)}
+.menu__i{display:flex; align-items:center; gap:8px; height:24px; padding:0 8px;
+  border-radius:var(--r-sm); color:var(--app-text-strong); font-size:var(--t-ui)}
+.menu__i.on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.menu__ck{width:13px; flex:0 0 auto; display:flex; align-items:center}
+.menu__ck svg{width:11px; height:11px; stroke-width:2.2}
+.menu__gl{width:15px; flex:0 0 auto; color:var(--app-text-muted)}
+.menu__i.on .menu__gl{color:inherit}
+.menu__kbd{margin-left:auto; font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color:var(--app-text-subtle)}
+.menu__i.on .menu__kbd{color:var(--app-accent-contrast); opacity:.8}
+.menu__sep{height:1px; margin:5px 8px; background:var(--glass-line)}
+
+/* toast — floats, so material + shadow */
+.toast{width:344px; padding:12px 14px; border-radius:var(--r-xl);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+
+/* ── opaque content surfaces ─────────────────────────────────────────────── */
+.tile{position:relative; padding:14px; border-radius:var(--r-panel); background:var(--app-surface);
+  box-shadow:var(--sh-tile); display:flex; flex-direction:column; gap:var(--s-6); overflow:hidden}
+.tile-h{display:flex; align-items:center; gap:8px; margin-bottom:2px}
+.tile-h .more{margin-left:auto}
+.tile-row{display:flex; align-items:center; gap:8px; min-height:18px}
+
+.grow{display:flex; align-items:center; gap:10px; min-height:34px; padding:5px 2px}
+.grow + .grow{box-shadow:inset 0 1px 0 var(--glass-line)}
+.grow__txt{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1}
+.grow__lbl{font:var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); color:var(--app-text-strong);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__sub{font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color:var(--app-text-muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__val{margin-left:auto; display:inline-flex; align-items:center; gap:8px; flex:0 0 auto}
+.chev{color:var(--app-text-faint); display:flex}
+.chev svg{width:12px; height:12px}
+
+.gicon{width:var(--o-icon); height:var(--o-icon); border-radius:5px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; color:#fff;
+  font:var(--w-semi) 9px/1 var(--app-font-sans)}
+.ic-code{background:#2f7fd0} .ic-figma{background:#a259ff} .ic-slack{background:#4a154b}
+.ic-notion{background:#2f2f2f} .ic-safari{background:#1e90ff} .ic-term{background:#2b2b2b}
+.ic-zoom{background:#2d8cff} .ic-mail{background:#3b7ddd} .ic-mnema{background:var(--app-accent-bg);
+  color:var(--app-accent); box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border)}
+
+/* ── fake screenshots (all CSS, no assets) ───────────────────────────────── */
+.shot{display:block; position:relative; width:100%; height:100%; overflow:hidden;
+  background:var(--sh-bg); color:var(--sh-el)}
+.shot .code{position:absolute; display:flex; flex-direction:column; justify-content:space-evenly}
+.shot .ln{display:flex; gap:4px; align-items:center; height:4px}
+.shot .ln i{height:100%; border-radius:1px; background:currentColor; opacity:.34; display:block}
+.shot .ln i.k{background:var(--sh-kw); opacity:.85}
+.shot .ln i.s{background:var(--sh-str); opacity:.85}
+.shot .ln i.c{background:var(--sh-cm); opacity:.55}
+.shot .ln i.n{background:var(--sh-num); opacity:.8}
+
+.shot--editor{background:var(--sh-bg)}
+.shot--editor:before{content:""; position:absolute; inset:0 auto 0 0; width:5%; background:var(--sh-chrome-2)}
+.shot--editor:after{content:""; position:absolute; left:5%; top:0; bottom:0; width:20%;
+  background:linear-gradient(var(--sh-chrome),var(--sh-chrome));
+  box-shadow:inset -1px 0 0 rgba(128,128,150,.18)}
+.shot--editor .files{position:absolute; left:7%; top:12%; bottom:12%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--editor .files i{height:3px; border-radius:1px; background:currentColor; opacity:.28; display:block}
+.shot--editor .files i.on{opacity:.6; background:var(--sh-kw)}
+.shot--editor .tabs{position:absolute; left:25%; right:0; top:0; height:8%;
+  background:var(--sh-chrome); z-index:1}
+.shot--editor .code{left:29%; right:5%; top:12%; bottom:6%; z-index:2}
+.shot--editor .cur{position:absolute; left:38%; top:26%; width:1.5px; height:5px;
+  background:var(--sh-kw); z-index:3}
+
+.shot--browser:before{content:""; position:absolute; inset:0 0 auto 0; height:11%;
+  background:var(--sh-chrome)}
+.shot--browser .url{position:absolute; left:16%; top:3%; width:52%; height:5%; border-radius:9px;
+  background:var(--sh-chrome-2); box-shadow:inset 0 0 0 1px rgba(128,128,150,.16)}
+.shot--browser .dots{position:absolute; left:3%; top:4.2%; display:flex; gap:3px}
+.shot--browser .dots i{width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.25; display:block}
+.shot--browser .art{position:absolute; left:10%; right:26%; top:20%; bottom:8%; display:flex;
+  flex-direction:column; justify-content:flex-start; gap:7%}
+.shot--browser .art .h{height:8px; width:56%; border-radius:2px; background:var(--sh-kw); opacity:.6; display:block}
+.shot--browser .aside{position:absolute; right:5%; top:20%; width:16%; display:flex;
+  flex-direction:column; gap:9%}
+.shot--browser .aside i{height:5px; border-radius:2px; background:currentColor; opacity:.18; display:block}
+
+.shot--terminal{background:var(--sh-term); color:var(--sh-term-t)}
+.shot--terminal .code{left:5%; right:5%; top:8%; bottom:8%}
+.shot--terminal .ln i{opacity:.55}
+.shot--terminal .ln i.g{background:var(--sh-str); opacity:.95}
+.shot--terminal .ln i.r{background:#e06c75; opacity:.9}
+.shot--terminal .cur{position:absolute; left:5%; bottom:14%; width:5px; height:5px;
+  background:var(--sh-str); opacity:.9}
+
+.shot--docs{background:#fff}
+.shot--docs:before{content:""; position:absolute; inset:0 auto 0 0; width:22%;
+  background:#f3f3f1; box-shadow:inset -1px 0 0 rgba(128,128,150,.14)}
+.shot--docs .nav{position:absolute; left:4%; top:12%; bottom:16%; width:15%; display:flex;
+  flex-direction:column; justify-content:space-between}
+.shot--docs .nav i{height:3px; border-radius:1px; background:#1c1c22; opacity:.22; display:block}
+.shot--docs .nav i.on{opacity:.55; background:#1f7a4a}
+.shot--docs .code{left:28%; right:8%; top:12%; bottom:8%; color:#1c1c22}
+.shot--docs .code .h{height:8px; width:52%; border-radius:2px; background:#1c1c22; opacity:.7; display:block}
+
+.shot--figma{background:linear-gradient(180deg,#2a2a30,#1e1e24)}
+.shot--figma:before{content:""; position:absolute; inset:0 0 auto 0; height:9%; background:#111116}
+.shot--figma .lp,.shot--figma .rp{position:absolute; top:9%; bottom:0; width:16%; background:#17171c}
+.shot--figma .lp{left:0} .shot--figma .rp{right:0}
+.shot--figma .art{position:absolute; border-radius:3px}
+.shot--figma .a1{left:26%; top:22%; width:26%; height:34%; background:#6f5ed1; opacity:.85}
+.shot--figma .a2{left:56%; top:22%; width:20%; height:16%; background:#3ba55c; opacity:.8}
+.shot--figma .a3{left:56%; top:44%; width:26%; height:30%; background:#3a3a46}
+.shot--figma .a4{left:26%; top:62%; width:16%; height:16%; border-radius:50%; background:#e0a06a; opacity:.8}
+
+.shot--call{background:#0d0d12}
+.shot--call .tiles{position:absolute; inset:5% 4% 16% 4%; display:grid;
+  grid-template-columns:repeat(3,1fr); gap:6px}
+.shot--call .t{border-radius:5px; position:relative; display:block; overflow:hidden;
+  background:linear-gradient(158deg,#2c2c38,#1d1d26)}
+.shot--call .t:after{content:""; position:absolute; left:50%; top:50%; width:26%; aspect-ratio:1;
+  transform:translate(-50%,-58%); border-radius:50%; background:rgba(255,255,255,.20)}
+.shot--call .t:before{content:""; position:absolute; left:7%; bottom:8%; width:36%; height:4px;
+  border-radius:2px; background:rgba(255,255,255,.16)}
+.shot--call .t.on{box-shadow:inset 0 0 0 2px #3ba55c}
+.shot--call .ctrl{position:absolute; left:50%; bottom:5%; transform:translateX(-50%);
+  display:flex; gap:6px}
+.shot--call .ctrl i{width:10px; height:10px; border-radius:50%; background:#33333e; display:block}
+.shot--call .ctrl i.r{background:#e0455a}
+
+.shot--chat{background:var(--sh-bg)}
+.shot--chat:before{content:""; position:absolute; inset:0 auto 0 0; width:9%; background:#3f0f3f}
+.shot--chat:after{content:""; position:absolute; left:9%; top:0; bottom:0; width:22%; background:#4a154b}
+.shot--chat .chans{position:absolute; left:12%; top:12%; bottom:14%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--chat .chans i{height:3px; border-radius:1px; background:#fff; opacity:.32; display:block}
+.shot--chat .chans i.on{opacity:.85}
+.shot--chat .msgs{position:absolute; left:35%; right:5%; top:12%; bottom:12%; display:flex;
+  flex-direction:column; justify-content:space-evenly}
+.shot--chat .msg{display:flex; gap:5px; align-items:flex-start}
+.shot--chat .msg .av{width:9px; height:9px; border-radius:2px; background:currentColor;
+  opacity:.24; flex:0 0 auto; display:block}
+.shot--chat .msg .bd{flex:1; display:flex; flex-direction:column; gap:3px}
+.shot--chat .msg .bd i{height:3px; border-radius:1px; background:currentColor; opacity:.22; display:block}
+.shot--chat .msg .bd i.n{opacity:.5; background:var(--sh-kw)}
+
+.shot--sheet{background:#fff}
+.shot--sheet:before{content:""; position:absolute; inset:0 0 auto 0; height:12%; background:#f0efec}
+.shot--sheet .g{position:absolute; inset:16% 4% 6% 4%; display:flex; flex-direction:column; gap:4px}
+.shot--sheet .r{display:flex; gap:4px; flex:1; align-items:center}
+.shot--sheet .r i{height:4px; flex:1; border-radius:1px; background:#1c1c22; opacity:.16; display:block}
+.shot--sheet .r i.p{background:#1f7a4a; opacity:.5}
+.shot--sheet .r i.sel{background:#2b78c5; opacity:.5}
+
+.shot--wave{background:var(--app-surface-subtle); display:flex; align-items:center;
+  justify-content:center; gap:2px; padding:0 6%}
+.shot--wave i{flex:1; min-width:2px; border-radius:1px; background:var(--app-src-mic);
+  opacity:.45; display:block}
+.shot--wave i.hi{opacity:.95}
+.shot--wave i.sy{background:var(--app-src-sys); opacity:.7}
+
+.shot--desktop{background:
+  radial-gradient(120% 90% at 20% 0%, var(--desk-b), transparent 60%),
+  radial-gradient(120% 100% at 90% 20%, var(--desk-a), transparent 62%),
+  linear-gradient(160deg, var(--desk-c), var(--desk-d))}
+
+/* ── simulated desktop behind the HUD ────────────────────────────────────── */
+.desk{position:relative; overflow:hidden; border-radius:10px; box-shadow:var(--sh-win);
+  background:
+    radial-gradient(120% 90% at 18% 0%, var(--desk-b), transparent 58%),
+    radial-gradient(110% 100% at 88% 16%, var(--desk-a), transparent 60%),
+    linear-gradient(158deg, var(--desk-c), var(--desk-d))}
+.desk:before{content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+  background:repeating-linear-gradient(45deg, rgba(255,255,255,.014) 0 2px, transparent 2px 4px)}
+.desk__menubar{position:absolute; inset:0 0 auto 0; height:26px; z-index:4; display:flex;
+  align-items:center; gap:16px; padding:0 14px;
+  background:rgba(255,255,255,.16); -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:rgba(255,255,255,.92)}
+.desk__menubar .r{margin-left:auto; display:flex; align-items:center; gap:14px;
+  font-family:var(--app-font-mono); font-variant-numeric:tabular-nums}
+.desk__scrim{position:absolute; inset:0; z-index:5; background:var(--desk-scrim)}
+.deskwin{position:absolute; z-index:3; border-radius:9px; overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.34), 0 0 0 .5px rgba(0,0,0,.22)}
+.deskwin__bar{height:26px; display:flex; align-items:center; gap:7px; padding:0 10px;
+  background:var(--sh-chrome); box-shadow:inset 0 -1px 0 rgba(128,128,150,.2)}
+.deskwin__bar i{width:9px; height:9px; border-radius:50%; display:block}
+.deskwin__bar .t{margin-left:6px; font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  color:var(--sh-el); opacity:.7}
+.deskwin__body{position:absolute; inset:26px 0 0 0}
+
+/* the capture outline — Copilot-Vision move: say WHAT is being read, on screen */
+.capframe{position:absolute; z-index:6; border-radius:10px; pointer-events:none;
+  box-shadow:0 0 0 1.5px color-mix(in srgb,var(--app-accent) 78%, transparent),
+             0 0 0 7px color-mix(in srgb,var(--app-accent) 12%, transparent)}
+.capframe__tag{position:absolute; left:0; top:-26px; display:inline-flex; align-items:center;
+  gap:6px; height:22px; padding:0 9px; border-radius:var(--r-pill);
+  background:var(--app-accent); color:var(--app-accent-contrast);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); white-space:nowrap}
+
+/* ── HUD / floating glass panel ──────────────────────────────────────────── */
+.glass{position:relative; border-radius:var(--r-panel);
+  background:var(--glass-hud); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+             inset 0 1px 0 var(--glass-hi)}
+.plate{border-radius:var(--r-lg); background:var(--app-surface); box-shadow:var(--sh-tile)}
+
+/* overlay scrollbar */
+.scroll{overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--app-border-hover) transparent}
+.scroll::-webkit-scrollbar{width:8px}
+.scroll::-webkit-scrollbar-thumb{background:var(--app-border-hover); border-radius:4px;
+  border:2px solid transparent; background-clip:padding-box}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:1ms !important}}
+
+</style>
+<style>
+/* ── category / focus / grey tokens — the app's REAL values, lifted verbatim
+   from apps/desktop/src/routes/+layout.svelte (light block ~1816, dark ~1607) ── */
+:root{
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --focus-deep:#1f7a4a; --focus-mid:#9a5a12; --focus-distracted:#c43a48;
+  --chart-grey-3:#909099; --chart-grey-4:#6a6a74;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --focus-deep:#3dffa0; --focus-mid:#d6a14a; --focus-distracted:#ff6b7a;
+  --chart-grey-3:#565669; --chart-grey-4:#757589;
+}}
+:root[data-theme="dark"]{
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --focus-deep:#3dffa0; --focus-mid:#d6a14a; --focus-distracted:#ff6b7a;
+  --chart-grey-3:#565669; --chart-grey-4:#757589;
+}
+
+/* ── the DESTINATION shell — Journal / Subjects / Context all wear it ────────
+   Overview and Timeline are the only two main-window surfaces. A destination
+   replaces the pane under the same title bar and the ONLY way back is the
+   ‹ Overview button in the chrome — the same idiom Settings already uses. */
+.dpane{position:relative; flex:1; min-height:0; background:var(--app-bg); overflow:hidden}
+.dpane:before{content:""; position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(520px 320px at 4% 0%, color-mix(in srgb,var(--app-accent) 10%, transparent), transparent 70%),
+    radial-gradient(420px 380px at 98% 96%, color-mix(in srgb,var(--app-src-screen) 12%, transparent), transparent 72%)}
+.dscroll{position:absolute; inset:0; padding:18px 24px 24px; overflow:hidden}
+
+/* the date capsule — the direction's one glass control, reused from 02 */
+.datecap{display:inline-flex; align-items:center; gap:2px; height:26px; padding:2px;
+  border-radius:var(--r-pill); background:var(--glass-pop);
+  -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+.datecap b{display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px;
+  border-radius:var(--r-pill); font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color:var(--app-text-strong)}
+.datecap i{display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px;
+  border-radius:50%; color:var(--app-text-muted)}
+.datecap i svg{width:12px; height:12px}
+.datecap i.dis{opacity:var(--opacity-disabled)}
+
+/* the Overview door — the inset that shows WHERE this destination opens from */
+.door{width:268px; height:118px}
+.door .open{margin-left:auto; display:inline-flex; align-items:center; gap:4px;
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-accent)}
+.door .open svg{width:11px; height:11px}
+/* ── page 08: the Journal — a river of plates, and one gap that is NOT a plate ─ */
+.jhead{display:flex; align-items:baseline; gap:10px; margin:0 0 14px}
+
+/* the read (digest) — one opaque plate, the widest reading measure on the page */
+.lede{padding:14px 16px 16px; margin-bottom:14px}
+.lede__eb{display:flex; align-items:center; gap:8px; margin-bottom:8px}
+.lede__eb .re{margin-left:auto}
+.lede h2{margin:0 0 6px; font:var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing:var(--ls-title); color:var(--app-text-strong); max-width:62ch}
+
+/* four stat plates — the only four the backend actually computes */
+.stats{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:20px}
+.stat{padding:10px 12px 11px; display:flex; flex-direction:column; gap:3px}
+.stat .v{display:flex; align-items:center; gap:7px;
+  font:var(--w-semi) var(--t-display)/1.1 var(--app-font-sans); letter-spacing:var(--ls-display);
+  font-variant-numeric:tabular-nums; color:var(--app-text-strong)}
+.stat .v em{width:11px; height:11px; border-radius:3px; flex:0 0 auto; font-style:normal}
+.stat .v.sm{font:var(--w-semi) var(--t-title)/1.2 var(--app-font-sans); letter-spacing:var(--ls-title)}
+
+/* band headers — the river's only chrome */
+.band{display:flex; align-items:center; gap:10px; margin:18px 0 8px}
+.band:first-of-type{margin-top:0}
+.band:after{content:""; flex:1; height:1px; background:var(--app-border)}
+
+.rrow{display:grid; grid-template-columns:78px 1fr; gap:12px; margin-bottom:8px; align-items:start}
+.rwhen{padding-top:11px; display:flex; flex-direction:column; gap:1px; text-align:right}
+.rwhen .c{font:var(--w-medium) var(--t-ui)/1.2 var(--app-font-mono); font-variant-numeric:tabular-nums;
+  color:var(--app-text-strong)}
+.rwhen .d{font:var(--w-regular) var(--t-meta)/1.3 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint)}
+
+.jcard{padding:11px 13px 10px; display:flex; flex-direction:column; gap:5px}
+.jcard h3{margin:1px 0 0; font:var(--w-semi) var(--t-ui)/1.3 var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text-strong)}
+.jcard p{margin:0; font:var(--w-regular) var(--t-read)/1.5 var(--app-font-sans);
+  letter-spacing:var(--ls-read); color:var(--app-text-muted); max-width:68ch}
+.jchips{display:flex; align-items:center; gap:6px}
+.cchip,.fchip{display:inline-flex; align-items:center; gap:5px; height:19px; padding:0 8px;
+  border-radius:var(--r-pill); background:var(--glass-tint);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-text-muted);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.cchip em{width:7px; height:7px; border-radius:2px; display:block; font-style:normal}
+.fchip em{width:6px; height:6px; border-radius:50%; display:block; font-style:normal}
+.rfoot{display:flex; align-items:center; gap:6px; margin-top:2px;
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-accent)}
+.rfoot.gone{color:var(--app-text-faint); font-weight:var(--w-regular)}
+.rfoot svg{width:11px; height:11px}
+
+/* a short activity (< 5 min) is one line, still on a plate */
+.jcompact{display:flex; flex-direction:row; align-items:center; gap:9px; padding:0 13px; height:34px}
+.jcompact em{width:7px; height:7px; border-radius:2px; flex:0 0 auto; font-style:normal}
+
+/* THE GAP: the one row in the river with no plate and no shadow — a hole in the
+   layer stack, which is exactly what "no capture" is */
+.jgap{display:flex; align-items:center; gap:9px; height:30px; padding:0 13px;
+  border-radius:var(--r-lg); box-shadow:inset 0 0 0 var(--hairline) var(--app-border)}
+.jgap:before{content:""; flex:0 0 auto; width:26px; height:1px;
+  background:repeating-linear-gradient(90deg,var(--app-border-hover) 0 3px, transparent 3px 6px)}
+
+/* pending — the live edge; the journal trails capture */
+.pend{padding:11px 13px; display:flex; flex-direction:column; gap:4px}
+.pend .l{display:flex; align-items:center; gap:8px}
+.pend p{margin:0; font:var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans);
+  color:var(--app-text-subtle); max-width:64ch}
+
+/* ── the receipt: a floating SHEET (so it may be glass) whose every content
+   region is an opaque plate — the direction's whole rule in one component ──── */
+.dim{position:absolute; inset:0; z-index:8; background:rgba(12,12,18,.44);
+  -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px)}
+.rsheet{position:absolute; z-index:9; left:50%; top:50%; transform:translate(-50%,-50%);
+  width:900px; height:610px; padding:12px; display:flex; flex-direction:column; gap:10px;
+  border-radius:16px; background:var(--glass-hud);
+  -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+             inset 0 1px 0 var(--glass-hi)}
+.rhead{display:flex; align-items:center; gap:10px; padding:0 2px}
+.rhead h3{margin:0; font:var(--w-semi) var(--t-title)/1.2 var(--app-font-sans);
+  letter-spacing:var(--ls-title); color:var(--app-text-strong);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.rbody{flex:1; min-height:0; display:grid; grid-template-columns:1fr 268px; gap:10px}
+.rleft{display:flex; flex-direction:column; gap:8px; min-width:0}
+.rstage{flex:1; min-height:0; position:relative; border-radius:var(--r-lg); overflow:hidden;
+  background:var(--app-surface); box-shadow:var(--sh-tile)}
+.rchips{position:absolute; left:8px; bottom:8px; z-index:2; display:flex; gap:6px}
+.rchips .c{display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px;
+  border-radius:var(--r-pill); background:rgba(12,12,16,.62);
+  -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); color:#fff;
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans)}
+.rchips .c.ocr{font-family:var(--app-font-mono); letter-spacing:.06em}
+.rredact{position:absolute; right:8px; top:8px; z-index:2}
+
+/* scrub — evidence ticks live ON the track; the playhead carries the clock */
+.scrub{padding:28px 10px 8px; position:relative}
+.strack{position:relative; height:6px; border-radius:3px; background:var(--app-surface-hover)}
+.sfill{position:absolute; left:0; top:0; bottom:0; border-radius:3px; background:var(--app-accent); opacity:.55}
+.stick{position:absolute; top:-3px; width:2px; height:12px; border-radius:1px;
+  background:var(--chart-grey-4)}
+.stick.hl{background:var(--app-accent); height:16px; top:-5px;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--app-accent) 20%, transparent)}
+.shead{position:absolute; top:-24px; transform:translateX(-50%); display:inline-flex;
+  align-items:center; height:20px; padding:0 8px; border-radius:var(--r-pill);
+  background:var(--app-accent); color:var(--app-accent-contrast);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric:tabular-nums}
+.scaps{display:flex; margin-top:7px}
+.scaps span{font:var(--w-regular) var(--t-label)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint)}
+.scaps span:last-child{margin-left:auto}
+
+/* filmstrip */
+.film{display:flex; gap:6px; height:52px}
+.film i{position:relative; flex:1; border-radius:6px; overflow:hidden; display:block;
+  background:var(--app-surface-subtle); box-shadow:0 1px 2px rgba(0,0,0,.20)}
+.film i.cited:after{content:""; position:absolute; inset:0; border-radius:6px;
+  box-shadow:inset 0 0 0 1.5px var(--app-accent)}
+.film i.now:after{content:""; position:absolute; inset:0; border-radius:6px;
+  box-shadow:inset 0 0 0 2px var(--app-text-strong)}
+
+/* transcript — prose, so an opaque plate, never the sheet's material */
+.tscript{display:flex; flex-direction:column; min-height:0; padding:10px 0 4px; overflow:hidden}
+.tscript .h{padding:0 12px 7px; display:flex; align-items:center; gap:8px}
+.tlist{flex:1; min-height:0; overflow:hidden; display:flex; flex-direction:column; gap:1px;
+  padding:0 6px}
+.trow{display:flex; gap:8px; padding:5px 6px; border-radius:var(--r-sm); align-items:baseline}
+.trow .t{font:var(--w-regular) var(--t-label)/1.5 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint); flex:0 0 auto}
+.trow .x{font:var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color:var(--app-text-muted)}
+.trow .x b{font-weight:var(--w-medium)}
+.trow.on{background:var(--app-surface-hover)}
+.trow.on .x{color:var(--app-text)}
+.sp1{color:var(--cat-research)} .sp2{color:var(--cat-meetings)} .sp3{color:var(--cat-learning)}
+
+.rctrl{display:flex; align-items:center; gap:10px; padding:0 2px}
+.rfootl{display:flex; align-items:center; gap:8px; padding:0 4px}
+
+/* the three viewport states that are NOT "frames" */
+.vstate{width:296px; height:172px; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:7px; text-align:center; padding:0 22px}
+.vstate p{margin:0; font:var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans);
+  color:var(--app-text-muted)}
+.vstate svg{width:20px; height:20px; color:var(--app-text-faint)}
+.skel{border-radius:var(--r-sm); background:var(--app-surface-hover); display:block;
+  animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.5}}
+.playbig{width:44px; height:44px; border-radius:50%; display:flex; align-items:center;
+  justify-content:center; background:var(--app-accent); color:var(--app-accent-contrast)}
+.playbig svg{width:16px; height:16px; color:inherit}
+</style>
+</head>
+<body>
+<button class="themebtn" onclick="(function(r){r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'})(document.documentElement)">◐ theme</button>
+<svg style="display:none" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.2 14 8.6l5.4 2-5.4 2-2 5.4-2-5.4-5.4-2 5.4-2z"/><path d="M18.5 3.2 19.2 5l1.8.7-1.8.7-.7 1.8-.7-1.8L16 5l1.8-.7z"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/></symbol>
+<symbol id="i-chevr" viewBox="0 0 24 24"><path d="m9.5 18 6-6-6-6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+<symbol id="i-chevl" viewBox="0 0 24 24"><path d="m14.5 18-6-6 6-6"/></symbol>
+<symbol id="i-chevud" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6.5 9 17.5l-5-5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M6.5 4.5 19 12 6.5 19.5z" fill="currentColor" stroke-linejoin="round"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="2.4" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-screen" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13.5" rx="2.2"/><path d="M8.5 21h7M12 17v4"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 10.5v1.5a6.5 6.5 0 0 0 13 0v-1.5M12 19v2.5"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><path d="M11 5.2 6.4 9H2.8v6h3.6L11 18.8z"/><path d="M15.4 9a4.4 4.4 0 0 1 0 6M18.6 5.6a8.6 8.6 0 0 1 0 12.8"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7.5V5.5a2 2 0 0 1 2-2h2M17 3.5h2a2 2 0 0 1 2 2v2M21 16.5v2a2 2 0 0 1-2 2h-2M7 20.5H5a2 2 0 0 1-2-2v-2"/><path d="M7 9h10M7 12.5h6M7 16h8"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.3l3.2 1.9"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h11M18.5 6H21M3 12h4M11.5 12H21M3 18h9M16.5 18H21"/><circle cx="16.2" cy="6" r="2.2"/><circle cx="9.2" cy="12" r="2.2"/><circle cx="14.2" cy="18" r="2.2"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8.5" ry="3"/><path d="M3.5 5.5v13c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3v-13M3.5 12c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21.5s7.5-3.8 7.5-9.5V5.2L12 2.5 4.5 5.2V12c0 5.7 7.5 9.5 7.5 9.5z"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.4"/><rect x="9" y="9" width="6" height="6" rx="1.2"/><path d="M9 2.5v2M15 2.5v2M9 19.5v2M15 19.5v2M2.5 9h2M2.5 15h2M19.5 9h2M19.5 15h2"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.6" cy="15.6" r="3.6"/><path d="m21 2.4-10.8 10.8M15.6 7.8l3 3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 4v5.5H15"/><path d="M20 9.5A8.5 8.5 0 1 0 20.2 15"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5v-.8a7.5 7.5 0 0 1 15 0v.8"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.5 20v-.6A6.5 6.5 0 0 1 9 13a6.5 6.5 0 0 1 6.5 6.4v.6M16.5 4.6a3.4 3.4 0 0 1 0 6.7M18 13.4a6 6 0 0 1 3.5 5.4v1.2"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17.2h.01"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M12 16.5v-5M12 8h.01"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5 3.8 9.4 9 4.3"/><path d="M3.8 9.4h11.4a5.3 5.3 0 1 1 0 10.6h-4.4"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17.2V22M8.6 10.9V3.5h6.8v7.4l2.2 3.4H6.4z"/></symbol>
+<symbol id="i-frame" viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="17" rx="2.4"/><path d="m3.4 16.4 4.7-4.7 4 4 3-3 5.5 5.5"/><circle cx="15.6" cy="8.4" r="1.5"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 14.6a2 2 0 0 1-2 2H7.4L3 21V5.4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="i-ret" viewBox="0 0 24 24"><path d="M20 4.5v6.4a4 4 0 0 1-4 4H4"/><path d="m9 10.4-5 4.5 5 4.5"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.2 12S6 5.5 12 5.5 21.8 12 21.8 12 18 18.5 12 18.5 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2.6 9 4.7-9 4.7-9-4.7z"/><path d="m3 12.3 9 4.7 9-4.7M3 17.1l9 4.7 9-4.7"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.5 6h17M9 6V3.8h6V6M6.2 6l1 14.2h9.6L17.8 6"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2.2"/><path d="m7 9.5 3 2.7-3 2.7M12.6 15.4h4.4"/></symbol>
+<symbol id="i-zoomin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4M11 8.2v5.6M8.2 11h5.6"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M3.4 12h17.2M12 3.3c2.2 2.4 3.4 5.5 3.4 8.7S14.2 18.3 12 20.7c-2.2-2.4-3.4-5.5-3.4-8.7S9.8 5.7 12 3.3z"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4.5v14M5.5 12.5 12 19l6.5-6.5"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19.5v-14M5.5 11.5 12 5l6.5 6.5"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+</defs></svg>
+
+<header class="mast">
+  <p class="mast__eyebrow"><b></b>Direction 03 — Layered Glass</p>
+  <h1><span>08 ·</span> Journal — the day as a river of plates</h1>
+  <p><b>Look at:</b> the river is the material ladder read top-to-bottom. Every activity is an
+  <i>opaque plate</i> floating on the pane; the <b>away gap is the one row with no plate at all</b> — a
+  literal hole in the layer stack, which is exactly what “no capture” means. The date control is the
+  same glass capsule the Timeline uses, and it lives in the chrome, not the content. The receipt is a
+  floating <b>sheet</b> — so it may be glass — but its stage, its transcript and its filmstrip are all
+  opaque plates, because pixels and prose never sit on material.</p>
+  <div class="mast__rule"></div>
+</header>
+
+<div class="block">
+  <div class="block__h">The door out of Overview</div>
+  <p class="wlabel">The main window still has exactly two surfaces — Timeline and Overview
+  (<code>⌘1</code> / <code>⌘2</code>). Journal, Subjects and Context are <b>destinations opened from an
+  Overview widget</b>: the tile header carries the door, the tile keeps showing today's read. Compare
+  <code>01-overview.html</code> — these are the same three tiles, with their affordance lit. The way
+  back is the <b>‹ Overview</b> button in the destination's title bar; nothing about the two-surface
+  switcher changes.</p>
+  <div class="row-of">
+    <div class="tile door">
+      <div class="tile-h"><span class="t-label">Today</span>
+        <span class="open">Open Journal<svg><use href="#i-chevr"/></svg></span></div>
+      <p class="t-meta" style="margin:2px 0 0; color:var(--app-text)">Mostly licensing: the webhook
+        signature fix landed before the launch sync.</p>
+      <div class="tile-row" style="margin-top:auto"><span class="t-meta subtle is-num">7 activities · 1 away gap</span></div>
+    </div>
+    <div class="tile t-subj door">
+      <div class="tile-h"><span class="t-label">Subjects</span>
+        <span class="open">Open Subjects<svg><use href="#i-chevr"/></svg></span></div>
+      <div class="tile-row"><span class="t-ui strong">Mnema licensing</span>
+        <span class="t-meta is-mono is-num" style="margin-left:auto">0.72</span></div>
+      <div class="tile-row" style="margin-top:auto"><span class="t-meta subtle">12 active views · 3 fading</span></div>
+    </div>
+    <div class="tile t-ctx door">
+      <div class="tile-h"><span class="t-label">Context</span>
+        <span class="open">Open Context<svg><use href="#i-chevr"/></svg></span></div>
+      <div class="tile-row"><span class="t-ui strong is-num">8 standing statements</span></div>
+      <div class="tile-row" style="margin-top:auto"><span class="t-meta subtle is-num">24 conclusions in your dossier</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — the day.</b> The read on top (one plate, one reading measure),
+  then the four statistics that are genuinely computed — <code>tracked</code>, <code>deep focus</code>,
+  <code>top category</code>, <code>activities</code> — then the river, banded Morning / Afternoon /
+  Evening. Short activities (under five minutes) collapse to one line. The live edge is a
+  <i>pending</i> plate, because the journal trails capture.</p>
+  <div class="win win--1100">
+    <div class="tbar tbar--static">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <button class="btn btn--ghost btn--sm" style="margin-left:6px"><svg><use href="#i-chevl"/></svg>Overview</button>
+      <span class="tbar__title">Journal</span>
+      <div class="tbar__sp"></div>
+      <div class="datecap">
+        <i><svg><use href="#i-chevl"/></svg></i>
+        <b><svg style="width:12px;height:12px;color:var(--app-text-muted)"><use href="#i-cal"/></svg>Wed, Aug 5</b>
+        <i class="dis"><svg><use href="#i-chevr"/></svg></i>
+      </div>
+      <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+
+    <div class="dpane">
+      <div class="dscroll">
+        <div class="jhead"><p class="t-title" style="margin:0">Journal</p>
+          <p class="t-meta" style="margin:0">Your day, written down while you worked.</p></div>
+
+        <div class="plate lede">
+          <div class="lede__eb">
+            <span class="t-label" style="color:var(--app-accent)">◆ The read · Wed, Aug 5</span>
+            <span class="t-meta subtle is-num">12 min ago</span>
+            <button class="btn btn--ghost btn--sm re"><svg><use href="#i-refresh"/></svg>re-read</button>
+          </div>
+          <h2>Licensing day: the webhook signature finally stopped 400-ing</h2>
+          <p class="t-read" style="margin:0">The morning went to the Polar signature check — HMAC over the
+            raw <span class="is-mono">whsec_</span> string, then fixtures until the 400s stopped. The launch
+            sync turned into a cutover walkthrough, and the afternoon was spent parsing answer blocks in
+            <span class="is-mono">answer_view.rs</span>. One thread is still open: delivery ids in the webhook log.</p>
+        </div>
+
+        <div class="stats">
+          <div class="tile stat"><span class="v is-num">4.6h</span><span class="t-label">tracked</span></div>
+          <div class="tile stat"><span class="v is-num">43%</span><span class="t-label">deep focus</span></div>
+          <div class="tile stat"><span class="v sm"><em style="background:var(--cat-creating)"></em>Creating</span>
+            <span class="t-label">top category</span></div>
+          <div class="tile stat"><span class="v is-num">7</span><span class="t-label">activities</span></div>
+        </div>
+
+        <p class="t-label band">Morning</p>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">8:42 AM</span><span class="d">1h 12m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-creating)"></em>Creating</span>
+              <span class="fchip"><em style="background:var(--focus-deep)"></em>Deep</span>
+            </div>
+            <h3>Reworking the Polar webhook signature check</h3>
+            <p>Moved the HMAC onto the raw <span class="is-mono">whsec_</span> string instead of the decoded
+              key, then re-ran the fixture suite until the delivery callbacks stopped returning 400.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>412 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">9:58 AM</span><span class="d">4m</span></div>
+          <div class="tile jcompact">
+            <em style="background:var(--cat-organizing)"></em>
+            <span class="t-ui strong">Triaged the overnight CI failures</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"></div>
+          <div class="jgap"><span class="t-meta subtle is-num">10:02 AM – 10:47 AM</span>
+            <span class="t-meta subtle">· away — no capture</span></div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">10:47 AM</span><span class="d">38m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-meetings)"></em>Meetings</span>
+              <span class="fchip"><em style="background:var(--focus-mid)"></em>Mixed</span>
+            </div>
+            <h3>Launch sync</h3>
+            <p>Walked the team through the licensing cutover and the update window. Tom asked for delivery
+              ids in the webhook log so a failed callback can be traced back to a purchase.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>226 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">11:36 AM</span><span class="d">44m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-research)"></em>Research</span>
+              <span class="fchip"><em style="background:var(--focus-deep)"></em>Deep</span>
+            </div>
+            <h3>Reading the Deepgram streaming docs</h3>
+            <p>Compared the streaming socket against the batch endpoint Mnema already uses; no decision yet.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>268 frames · receipt</span>
+          </div>
+        </div>
+
+        <p class="t-label band">Afternoon</p>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">1:02 PM</span><span class="d">1h 04m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-creating)"></em>Creating</span>
+              <span class="fchip"><em style="background:var(--focus-deep)"></em>Deep</span>
+            </div>
+            <h3>Parsing answer blocks in answer_view.rs</h3>
+            <p>Typed the three block kinds and kept the fence parsing on the backend so both doors only render.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>386 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">2:32 PM</span><span class="d">12m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-communication)"></em>Communication</span>
+              <span class="fchip"><em style="background:var(--focus-distracted)"></em>Scattered</span>
+            </div>
+            <h3>Slack catch-up across four channels</h3>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>71 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">3:20 PM</span><span class="d">26m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--chart-grey-3)"></em>Uncategorized</span>
+            </div>
+            <h3>Comparing CRL cache strategies</h3>
+            <span class="rfoot gone">footage expired</span>
+          </div>
+        </div>
+
+        <p class="t-label band">Evening</p>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">5:40 PM</span><span class="d">now</span></div>
+          <div class="tile pend">
+            <div class="l"><span class="spin"></span><span class="t-ui strong">Summarizing this window…</span></div>
+            <p>The journal trails live capture by up to 30 minutes — the footage itself is already on the Timeline.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>The same pane, scrolled to the live edge.</b> The read and the four statistics
+  have gone under the toolbar and are genuinely blurred by it — chrome is the only material in the
+  window, so this is the one place the blur shows. At the bottom: an activity whose category the model
+  never assigned (<b>Uncategorized</b>, in the neutral grey the app reserves for it), one whose pixels
+  have already aged out, and the <i>pending</i> plate that marks how far the journal has caught up.</p>
+  <div class="win win--1100">
+    <div class="dpane">
+      <div class="dscroll" style="padding-top:22px">
+        <p class="t-label band" style="margin-top:0">Afternoon</p>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">1:02 PM</span><span class="d">1h 04m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-creating)"></em>Creating</span>
+              <span class="fchip"><em style="background:var(--focus-deep)"></em>Deep</span>
+            </div>
+            <h3>Parsing answer blocks in answer_view.rs</h3>
+            <p>Typed the three block kinds and kept the fence parsing on the backend so both doors only render.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>386 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">2:32 PM</span><span class="d">12m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--cat-communication)"></em>Communication</span>
+              <span class="fchip"><em style="background:var(--focus-distracted)"></em>Scattered</span>
+            </div>
+            <h3>Slack catch-up across four channels</h3>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>71 frames · receipt</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">3:20 PM</span><span class="d">26m</span></div>
+          <div class="tile jcard">
+            <div class="jchips">
+              <span class="cchip"><em style="background:var(--chart-grey-3)"></em>Uncategorized</span>
+            </div>
+            <h3>Comparing CRL cache strategies</h3>
+            <span class="rfoot gone">footage expired</span>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">4:06 PM</span><span class="d">3m</span></div>
+          <div class="tile jcompact">
+            <em style="background:var(--cat-personal)"></em>
+            <span class="t-ui strong">Booked the Thursday standup room</span>
+          </div>
+        </div>
+
+        <p class="t-label band">Evening</p>
+
+        <div class="rrow">
+          <div class="rwhen"><span class="c">5:40 PM</span><span class="d">now</span></div>
+          <div class="tile pend">
+            <div class="l"><span class="spin"></span><span class="t-ui strong">Summarizing this window…</span></div>
+            <p>The journal trails live capture by up to 30 minutes — the footage itself is already on the Timeline.</p>
+          </div>
+        </div>
+
+        <div class="rrow">
+          <div class="rwhen"></div>
+          <div class="tile pend">
+            <div class="l"><svg style="width:13px;height:13px;color:var(--app-warn)"><use href="#i-warn"/></svg>
+              <span class="t-ui strong">Summaries are paused</span></div>
+            <p>No API key is saved for the engine's provider. <span style="color:var(--app-accent)">Open engine settings</span></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="tbar">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <button class="btn btn--ghost btn--sm" style="margin-left:6px"><svg><use href="#i-chevl"/></svg>Overview</button>
+      <span class="tbar__title">Journal</span>
+      <div class="tbar__sp"></div>
+      <div class="datecap">
+        <i><svg><use href="#i-chevl"/></svg></i>
+        <b><svg style="width:12px;height:12px;color:var(--app-text-muted)"><use href="#i-cal"/></svg>Wed, Aug 5</b>
+        <i class="dis"><svg><use href="#i-chevr"/></svg></i>
+      </div>
+      <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>The receipt, open over the day.</b> A sheet <i>floats</i>, so it is the one place
+  on this page that may wear material — and it does, at the HUD level, over a dimmed pane. Everything
+  inside it that carries information is an opaque plate: the frame stage, the transcript, the
+  filmstrip. The scrub track puts <b>evidence ticks on the axis itself</b> (the glowing one is the
+  headline frame the model cited) and the playhead carries the clock. Note what is <i>not</i> here:
+  the OCR text. The backend tells the receipt only that OCR exists — so the chip says
+  <code>OCR</code> and nothing more.</p>
+  <div class="win win--1100">
+    <div class="tbar tbar--static">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <button class="btn btn--ghost btn--sm" style="margin-left:6px"><svg><use href="#i-chevl"/></svg>Overview</button>
+      <span class="tbar__title">Journal</span>
+      <div class="tbar__sp"></div>
+      <div class="datecap">
+        <i><svg><use href="#i-chevl"/></svg></i>
+        <b><svg style="width:12px;height:12px;color:var(--app-text-muted)"><use href="#i-cal"/></svg>Wed, Aug 5</b>
+        <i class="dis"><svg><use href="#i-chevr"/></svg></i>
+      </div>
+      <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+
+    <div class="dpane">
+      <div class="dscroll">
+        <div class="plate lede" style="opacity:.9">
+          <div class="lede__eb"><span class="t-label" style="color:var(--app-accent)">◆ The read · Wed, Aug 5</span></div>
+          <h2>Licensing day: the webhook signature finally stopped 400-ing</h2>
+        </div>
+        <div class="stats">
+          <div class="tile stat"><span class="v is-num">4.6h</span><span class="t-label">tracked</span></div>
+          <div class="tile stat"><span class="v is-num">43%</span><span class="t-label">deep focus</span></div>
+          <div class="tile stat"><span class="v sm"><em style="background:var(--cat-creating)"></em>Creating</span><span class="t-label">top category</span></div>
+          <div class="tile stat"><span class="v is-num">7</span><span class="t-label">activities</span></div>
+        </div>
+        <p class="t-label band" style="margin-top:0">Morning</p>
+        <div class="rrow">
+          <div class="rwhen"><span class="c">8:42 AM</span><span class="d">1h 12m</span></div>
+          <div class="tile jcard">
+            <div class="jchips"><span class="cchip"><em style="background:var(--cat-creating)"></em>Creating</span>
+              <span class="fchip"><em style="background:var(--focus-deep)"></em>Deep</span></div>
+            <h3>Reworking the Polar webhook signature check</h3>
+            <p>Moved the HMAC onto the raw <span class="is-mono">whsec_</span> string instead of the decoded
+              key, then re-ran the fixture suite until the delivery callbacks stopped returning 400.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>412 frames · receipt</span>
+          </div>
+        </div>
+        <div class="rrow">
+          <div class="rwhen"><span class="c">10:47 AM</span><span class="d">38m</span></div>
+          <div class="tile jcard">
+            <div class="jchips"><span class="cchip"><em style="background:var(--cat-meetings)"></em>Meetings</span>
+              <span class="fchip"><em style="background:var(--focus-mid)"></em>Mixed</span></div>
+            <h3>Launch sync</h3>
+            <p>Walked the team through the licensing cutover and the update window.</p>
+            <span class="rfoot"><svg><use href="#i-play"/></svg>226 frames · receipt</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="dim"></div>
+      <div class="rsheet">
+        <div class="rhead">
+          <span class="cchip"><em style="background:var(--cat-meetings)"></em>Meetings</span>
+          <h3>Launch sync</h3>
+          <span class="t-meta subtle is-num">10:47 AM – 11:25 AM · 38m</span>
+          <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-x"/></svg></button>
+        </div>
+
+        <div class="rbody">
+          <div class="rleft">
+            <div class="rstage">
+              <span class="shot shot--call"><span class="tiles"><span class="t on"></span><span class="t"></span><span class="t"></span><span class="t"></span><span class="t"></span><span class="t"></span></span><span class="ctrl"><i></i><i></i><i class="r"></i></span></span>
+              <span class="rchips">
+                <span class="c">zoom.us</span>
+                <span class="c">Launch sync — Zoom Meeting</span>
+                <span class="c is-num">11:04:18 AM</span>
+                <span class="c ocr">OCR</span>
+              </span>
+              <span class="rredact"><span class="chip" style="background:rgba(12,12,16,.62);color:#fff;box-shadow:none">2 redactions</span></span>
+            </div>
+
+            <div class="plate scrub">
+              <div class="strack">
+                <span class="sfill" style="width:57%"></span>
+                <span class="stick" style="left:9%"></span>
+                <span class="stick" style="left:22%"></span>
+                <span class="stick hl" style="left:41%"></span>
+                <span class="stick" style="left:57%"></span>
+                <span class="stick" style="left:74%"></span>
+                <span class="stick" style="left:88%"></span>
+                <span class="shead is-num" style="left:57%">11:04 AM</span>
+              </div>
+              <div class="scaps"><span>10:47 AM</span><span>11:25 AM</span></div>
+            </div>
+
+            <div class="film">
+              <i><span class="shot shot--call"><span class="tiles"><span class="t"></span><span class="t"></span><span class="t"></span></span></span></i>
+              <i class="cited"><span class="shot shot--sheet"><span class="g"><span class="r"><i></i><i class="p"></i><i></i></span><span class="r"><i></i><i></i><i class="sel"></i></span><span class="r"><i class="p"></i><i></i><i></i></span></span></span></i>
+              <i><span class="shot shot--call"><span class="tiles"><span class="t on"></span><span class="t"></span><span class="t"></span></span></span></i>
+              <i class="cited"><span class="shot shot--docs"><span class="nav"><i></i><i class="on"></i><i></i></span><span class="code" style="left:28%;right:8%;top:22%;bottom:14%"><span class="h"></span><span class="ln"><i style="width:88%"></i></span><span class="ln"><i style="width:70%"></i></span></span></span></i>
+              <i class="now"><span class="shot shot--call"><span class="tiles"><span class="t on"></span><span class="t"></span><span class="t"></span></span></span></i>
+              <i><span class="shot shot--browser"><span class="dots"><i></i><i></i><i></i></span><span class="url"></span><span class="art"><span class="h"></span><span class="ln"><i style="width:84%"></i></span><span class="ln"><i style="width:62%"></i></span></span><span class="aside"><i></i><i></i></span></span></i>
+              <i><span class="shot shot--call"><span class="tiles"><span class="t"></span><span class="t on"></span><span class="t"></span></span></span></i>
+              <i><span class="shot shot--terminal"><span class="code"><span class="ln"><i class="g" style="width:8%"></i><i style="width:36%"></i></span><span class="ln"><i style="width:64%"></i></span></span></span></i>
+            </div>
+          </div>
+
+          <div class="plate tscript">
+            <div class="h"><span class="t-label">Transcript</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">3 speakers</span></div>
+            <div class="tlist">
+              <div class="trow"><span class="t is-num">11:02</span><span class="x"><b class="sp1">Tom:</b> so the delivery still comes back 400 on our side</span></div>
+              <div class="trow"><span class="t is-num">11:02</span><span class="x"><b class="sp2">You:</b> that's the signature — we were HMAC-ing the decoded key</span></div>
+              <div class="trow on"><span class="t is-num">11:04</span><span class="x"><b class="sp1">Tom:</b> can we get the delivery id into the webhook log too, so a failure traces back to a purchase</span></div>
+              <div class="trow"><span class="t is-num">11:05</span><span class="x"><b class="sp2">You:</b> yes, it's one field on the log line</span></div>
+              <div class="trow"><span class="t is-num">11:07</span><span class="x"><b class="sp3">Speaker 3:</b> and the update window copy — does that go in the same release</span></div>
+              <div class="trow"><span class="t is-num">11:09</span><span class="x"><b class="sp2">You:</b> same release, yes</span></div>
+              <div class="trow"><span class="t is-num">11:12</span><span class="x"><b class="sp1">Tom:</b> then let's cut it tomorrow morning</span></div>
+              <div class="trow"><span class="t is-num">11:14</span><span class="x"><b class="sp3">Speaker 3:</b> —</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rctrl">
+          <button class="btn btn--icon"><svg><use href="#i-pause"/></svg></button>
+          <span class="seg"><span class="seg__i on">1×</span><span class="seg__i">2×</span><span class="seg__i">8×</span><span class="seg__i">16×</span></span>
+          <span class="t-meta is-mono is-num muted">11:04:18 AM · Tom · 1×</span>
+          <button class="btn btn--ghost btn--sm" style="margin-left:auto">Open in Timeline<svg><use href="#i-chevr"/></svg></button>
+        </div>
+        <div class="rfootl">
+          <span class="t-meta subtle is-num">226 frames across 3 capture segments · 6 frames + 2 spoken segments cited</span>
+          <span class="t-meta subtle" style="margin-left:auto">Esc closes · ←/→ steps a frame · Space plays</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">The receipt's other three viewports</div>
+  <p class="wlabel">A receipt has exactly four viewport states, and three of them have no picture. All
+  three still land on the same opaque plate — the sheet's material never becomes the backdrop for
+  text. <b>Footage expired is a normal long-term state,</b> not an error: retention ages out pixels
+  and keeps the card.</p>
+  <div class="row-of">
+    <div><p class="t-label" style="margin-bottom:8px">Loading</p>
+      <div class="plate vstate">
+        <span class="skel" style="width:210px;height:74px"></span>
+        <span class="skel" style="width:132px;height:9px"></span>
+      </div></div>
+    <div><p class="t-label" style="margin-bottom:8px">Expired</p>
+      <div class="plate vstate">
+        <svg><use href="#i-clock"/></svg>
+        <span class="t-ui strong">Footage expired</span>
+        <p>The raw frames behind this card were removed by Retention Cleanup. The card, its summary,
+          and its evidence list are kept — only the pixels age out.</p>
+      </div></div>
+    <div><p class="t-label" style="margin-bottom:8px">Audio only</p>
+      <div class="plate vstate">
+        <span class="playbig"><svg><use href="#i-play"/></svg></span>
+        <span class="t-ui strong"><i class="dot" style="background:var(--cat-research);display:inline-block;vertical-align:-1px;box-shadow:none"></i> Tom <span class="muted" style="font-weight:400">via system audio</span></span>
+        <p class="is-num">spoken segment · 11:02 AM–11:16 AM · captured as audio</p>
+      </div></div>
+  </div>
+  <p class="wlabel" style="margin-top:16px">Their footers, verbatim from the component:
+    <span class="chip chip--q is-mono">0 frames still on disk · summary retained</span>
+    <span class="chip chip--q is-mono">0 screen frames — captured as audio</span>
+    <span class="chip chip--q is-mono">Loading footage…</span></p>
+</div>
+
+<div class="block">
+  <div class="block__h">Honesty audit — what this page refuses to draw</div>
+  <div class="row-of">
+    <div style="width:340px"><p class="t-label" style="margin-bottom:6px">No app icon on a river card</p>
+      <p class="wlabel"><code>Activity</code> carries <code>title</code>, <code>summary</code>,
+      <code>category</code>, <code>focus</code> and an evidence list — <b>no app name, no window
+      title, no URL</b>. Those exist only per <i>frame</i>, inside the receipt. A row of app glyphs
+      in the river would be invented.</p></div>
+    <div style="width:340px"><p class="t-label" style="margin-bottom:6px">No focus score, no percentage per card</p>
+      <p class="wlabel"><code>focus</code> is a three-value enum — <code>deep</code> /
+      <code>mixed</code> / <code>distracted</code>, rendered <b>Deep / Mixed / Scattered</b>. There is
+      no number behind it, so the chip carries a word.</p></div>
+    <div style="width:340px"><p class="t-label" style="margin-bottom:6px">No OCR text in the receipt</p>
+      <p class="wlabel">The frame record has <code>ocrText</code>, but the receipt only tests it for
+      emptiness. Showing a paragraph of recognized text would be a new surface, not a mockup —
+      so the chip stays a chip.</p></div>
+    <div style="width:340px"><p class="t-label" style="margin-bottom:6px">“3 capture segments” is a heuristic</p>
+      <p class="wlabel">Frames carry no segment id; the count comes from a 90-second-gap rule in the
+      frontend. It is drawn because the shipping component draws it — but it is not a queried fact.</p></div>
+  </div>
+</div>
+</body>
+</html>

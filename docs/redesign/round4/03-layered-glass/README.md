@@ -21,7 +21,11 @@ Open any file directly — each page is self-contained (`file://`), both themes,
 | `05-settings-general.html` | the new settings shell (floating rail, sticky headers) on General and Capture; autosave in four states |
 | `06-settings-intelligence.html` | Providers/Ask AI and Transcription/Speakers, plus the five custom inputs as a gallery |
 | `07-components.html` | the material ladder, every control and state, the state pill's nine states, type + spacing specimens, the per-page self-audit |
-| `shots/` | rendered PNGs of all seven pages in both themes |
+| `08-journal.html` | the day as a river of plates — the read, the four real statistics, banded activities, the away gap as the one row with *no* plate; the receipt open as a glass sheet, plus its other three viewports |
+| `09-subjects.html` | tiers by conviction with the sparkline as the row's hero; one subject's detail — conclusion strip, the pinned belief, and the trajectory track whose spine position *is* the confidence |
+| `10-context.html` | authored context beside the dossier it steers; the composer, the standing list, the dismissed archive, and the deletion sentence stated exactly as true as the backend is |
+| `11-settings-complete.html` | settings whole — five groups, twenty-two sections, all 96 indexed rows plus the shortcut editor and the MCP connectors; the shell, ⌘F filtering, and each group's pane unrolled |
+| `shots/` | rendered PNGs of all eleven pages in both themes — **generated locally, not committed** (`docs/redesign/round4/*/shots/` is excluded in `.git/info/exclude`). Regenerate with a headless chromium at 1280×800, full page, one shot per theme. |
 
 ## What it does with each founder ask
 
@@ -98,5 +102,33 @@ Everything else stays a switch, a pop-up button or a segmented control.
 - **The retention ladder is drawn in the instrument gallery on 06, not inside a settings window.**
   It belongs to Data › Storage, which neither 05 nor 06 renders as a pane; showing it in the gallery
   keeps the nav semantics honest.
-- **`shots/` is committed** alongside the pages, so the direction can be reviewed without opening a
-  browser.
+- ~~**`shots/` is committed** alongside the pages~~ — **not true, corrected 2026-08-06.** The repo
+  excludes `docs/redesign/round4/*/shots/`, so the PNGs are a local render artefact. Open the pages
+  directly (`file://`) to review; every page is self-contained and carries both themes.
+
+### Added by the destination pages (08–11)
+
+- **Journal, Subjects and Context are destinations, not surfaces.** The main window still holds
+  exactly two surfaces (Timeline + Overview). Each destination replaces the pane under the same title
+  bar and its only way back is the **‹ Overview** button in the chrome — the idiom Settings already
+  used. Each of 08/09/10 opens with an inset of the Overview widget that is its door. The dissolved
+  Insights rail is never drawn.
+- **The away gap is the one row in the app with no plate.** Everything else in this direction floats
+  on an opaque plate; a gap in the day is drawn as a hairline outline with nothing behind it, because
+  a hole in the layer stack *is* what "no capture" means.
+- **The receipt is a glass sheet whose every content region is a plate.** A sheet floats, so material
+  is legal on it; the frame stage, the transcript and the filmstrip are still opaque, which is the
+  direction's whole rule stated in one component.
+- **Context's side column looks like a rail and deliberately is not one.** In this direction a rail
+  is the thing that wears material. That column carries explanation and beliefs — content — so it is
+  plates like everything else.
+- **11's rail corrects 05's.** 05 drew a re-grouped eleven-item rail; the app has five groups and
+  twenty-two sections, and twenty-seven rows will not fit 208px at native density. The rail now lists
+  the five groups and the active one discloses its sections — the pane's sticky headers already carry
+  the same names. The floating glass, the ⌘F field and the pinned cost footer are unchanged.
+- **The four shortcut-editor cards on 11 are bare hairlines, not plates** — a plate inside a plate is
+  the box-in-box this direction refuses. They are the reason 11's border count is 6 rather than 2.
+- **The unrolled panes on 11 are the same pane at its natural height,** not extra windows. Drawing
+  Intelligence's 45 rows inside a 720px frame would have hidden most of what the page exists to prove.
+- **Category, focus and chart-grey tokens are lifted verbatim** from `routes/+layout.svelte` rather
+  than re-invented, so the mockup's swatches are the app's actual `--cat-*` / `--focus-*` values.

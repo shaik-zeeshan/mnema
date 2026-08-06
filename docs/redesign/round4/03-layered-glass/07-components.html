@@ -1122,9 +1122,62 @@ td.num{font-family:var(--app-font-mono); font-variant-numeric:tabular-nums; colo
         <td>Same shell as 05; stock controls everywhere except the five instruments.</td>
         <td class="num">2<br><span class="t-meta">chrome + rail edge</span></td>
       </tr>
+      <tr>
+        <td><b class="strong">08 Journal</b></td>
+        <td>The read (one plate, one reading measure) → four stat plates → the river. A river card
+          leads with its title; the when-column is a low-contrast gutter, so the day scans as prose.</td>
+        <td>78px when-column + 12px gutter; cards 11–13px inner padding; bands 18px apart.</td>
+        <td>Category colour is the app's real <span class="is-mono">--cat-*</span> ramp, used only as a
+          7px swatch — never as a fill, so a category never competes with recording red.</td>
+        <td>Full card · compact (&lt; 5 min) · away gap · footage expired · pending (summarizing) ·
+          pending (engine paused). Receipt: frames · loading · expired · audio-only.</td>
+        <td>Toolbar is material; the receipt is a floating sheet, so it is too — its stage,
+          transcript and filmstrip are opaque plates.</td>
+        <td class="num">3<br><span class="t-meta">toolbar, gap row, sheet edge</span></td>
+      </tr>
+      <tr>
+        <td><b class="strong">09 Subjects</b></td>
+        <td>The sparkline is the row's hero — widest, tallest, only drawn element; the confidence
+          number is its caption. Tier labels float over the pane, rows sit on one plate per tier.</td>
+        <td>Rows ≥52px; sparkline 172×46; tiers 16px apart; detail cards on a 3-col 10px grid.</td>
+        <td>Accent = the lead conclusion's trajectory, <span class="is-mono">--chart-grey-3</span> =
+          every other line. Faded rows lose colour, never the plate.</td>
+        <td>Strong · forming · shaping · faded · pinned · selected conclusion · five timeline event
+          kinds (marker, evidence, contradict, replaced, formed).</td>
+        <td>Toolbar only. The trajectory spine is drawn on the pane <i>behind</i> the event plates —
+          one layer down, never a border.</td>
+        <td class="num">1<br><span class="t-meta">toolbar hairline</span></td>
+      </tr>
+      <tr>
+        <td><b class="strong">10 Context</b></td>
+        <td>Composer first (it is the page's verb) → standing list → dismissed archive. The side
+          column is explanation, so it never outweighs the list.</td>
+        <td>2fr/1fr with a 16px gutter; cards 10–12px inner padding; rows ≥40px.</td>
+        <td>Accent = authored (never fades); <span class="is-mono">--app-src-screen</span> = inferred
+          (fades). The two layers are told apart by hue, not by weight.</td>
+        <td>Composing · editing inline · hover (edit/delete) · loading (3 skeletons) · empty ·
+          load failed · dismissed archive open.</td>
+        <td>Toolbar only — the side column looks like a rail and deliberately is not one, because it
+          carries content.</td>
+        <td class="num">1<br><span class="t-meta">toolbar hairline</span></td>
+      </tr>
+      <tr>
+        <td><b class="strong">11 Settings, whole</b></td>
+        <td>Rail = five groups, active one discloses its sections; the pane's sticky headers repeat
+          the section name. Every status row is a read-only block, never a control.</td>
+        <td>Same as 05/06: rows ≥40px, groups 22px apart, 12px group padding. Unrolled panes keep the
+          window's 24px pane inset.</td>
+        <td>Verdict colours unchanged from 06. <span class="is-mono">.btn--danger</span> is the only
+          way the six buried destructive actions are findable.</td>
+        <td>Idle · saved (row echo) · ⌘F filtering with breadcrumbs · every conditional row tagged
+          <span class="is-mono">if …</span> · permission callouts · download progress.</td>
+        <td>Rail is floating material; the pane is opaque. The shortcut editor's four nested cards
+          are bare hairlines, not plates.</td>
+        <td class="num">6<br><span class="t-meta">chrome, rail edge, 4 bare cards</span></td>
+      </tr>
     </tbody>
   </table>
-  <p class="wlabel" style="margin-top:16px"><b>Border budget: 14 across six screens</b>, against a
+  <p class="wlabel" style="margin-top:16px"><b>Border budget: 25 across ten screens</b>, against a
   ceiling of ~12 <i>per window</i>. Depth here is material, shadow and surface step; a hairline is
   only ever the edge of a piece of glass. Control rings (segmented outlines, switch tracks, chip
   outlines) are free by the standing rule and are not counted.</p>

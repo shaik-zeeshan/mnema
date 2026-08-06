@@ -1,0 +1,2075 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layered Glass · 11 Settings, complete</title>
+<style>
+/* ════════════════════════════════════════════════════════════════════════════
+   Mnema · round 4 · direction 03 — LAYERED GLASS
+   Shared core: tokens, type ramp, spacing, native controls, material, shots.
+   Rule of the direction: MATERIAL ONLY WHERE macOS USES IT (toolbars, HUDs,
+   popovers, overlays, sheets). Content always lands on an opaque surface.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root{
+  /* surfaces (opaque — CONTENT never sits on material) */
+  --page-bg:#eceae5;
+  --app-bg:#f6f6f4; --app-surface:#ffffff; --app-surface-subtle:#f6f6f4;
+  --app-surface-raised:#fbfbfa; --app-surface-hover:#eeeeec; --app-surface-active:#e8f1ea;
+  --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a6a;
+  --app-text-subtle:#5e5e6a; --app-text-faint:#9a9aa4;
+  --app-border:#d8d8d4; --app-border-strong:#c4c4c0; --app-border-hover:#a4a4a0;
+  --app-accent:#1f7a4a; --app-accent-strong:#155a36; --app-accent-bg:#e6f4ec;
+  --app-accent-border:#9bd3b4; --app-accent-contrast:#ffffff; --app-accent-glow:rgba(31,122,74,.16);
+  --app-danger:#c43a48; --app-danger-bg:#fff0f2; --app-danger-border:#e4b6be;
+  --app-warn:#9a5a12; --app-warn-bg:#fff1df; --app-warn-border:#dfbc8a;
+  --app-info:#2b78c5; --app-info-bg:#eef5ff; --app-info-border:#bdd3ef;
+  --app-record:#d62236; --app-record-bg:#fff2f3; --app-record-border:#ecbcc2;
+  --app-src-screen:#6f5ed1; --app-src-screen-bg:#f1edff;
+  --app-src-mic:#2f8e59; --app-src-mic-bg:#e8f5ec;
+  --app-src-sys:#8b7a2c; --app-src-sys-bg:#faf4df;
+
+  /* ── MATERIAL. Only chrome, HUDs, popovers, overlays wear these. ───────── */
+  --glass:rgba(252,252,251,.66);        /* toolbar / rail / drawer shell     */
+  --glass-hud:rgba(250,250,248,.80);    /* free-floating HUD over a desktop  */
+  --glass-pop:rgba(253,253,252,.86);    /* menu, popover, toast              */
+  --glass-line:rgba(20,20,26,.10);      /* material edge, NOT a container    */
+  --glass-hi:rgba(255,255,255,.85);     /* top inner highlight               */
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(20,20,26,.03);
+
+  /* depth = layering. Shadows only on things that float. */
+  --sh-tile:0 1px 2px rgba(21,28,38,.06), 0 4px 14px rgba(21,28,38,.05);
+  --sh-float:0 10px 34px rgba(21,28,38,.16), 0 2px 6px rgba(21,28,38,.10);
+  --sh-hud:0 28px 70px rgba(21,28,38,.28), 0 4px 14px rgba(21,28,38,.14);
+  --sh-win:0 34px 90px rgba(21,28,38,.26), 0 0 0 .5px rgba(21,28,38,.14);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  /* simulated desktop behind the glass */
+  --desk-a:#adc0da; --desk-b:#e0c9a4; --desk-c:#8fa6c6; --desk-d:#d8cbb6;
+  --desk-scrim:rgba(24,26,36,.30);
+
+  /* fake-screenshot palette */
+  --sh-bg:#ffffff; --sh-chrome:#ececeb; --sh-chrome-2:#e2e2e0; --sh-el:#1c1c22;
+  --sh-kw:#8250df; --sh-str:#0a7a4a; --sh-cm:#8b8b95; --sh-num:#b8562a;
+  --sh-term:#1d1f24; --sh-term-t:#c8d0c8;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}}
+:root[data-theme="dark"]{
+  --page-bg:#050507;
+  --app-bg:#0c0c0e; --app-surface:#17171f; --app-surface-subtle:#1c1c26;
+  --app-surface-raised:#22222e; --app-surface-hover:#2e2e40; --app-surface-active:#282836;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#6a6a84;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-contrast:#07120c; --app-accent-glow:rgba(61,255,160,.18);
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-record:#ff3148; --app-record-bg:#1a0f12; --app-record-border:#3a1820;
+  --app-src-screen:#c0b0ff; --app-src-screen-bg:#1a1a3a;
+  --app-src-mic:#80d0a8; --app-src-mic-bg:#0f2e1f;
+  --app-src-sys:#b0c080; --app-src-sys-bg:#2a2010;
+
+  --glass:rgba(38,38,50,.58);
+  --glass-hud:rgba(30,30,40,.76);
+  --glass-pop:rgba(44,44,58,.84);
+  --glass-line:rgba(255,255,255,.10);
+  --glass-hi:rgba(255,255,255,.10);
+  --glass-blur:saturate(180%) blur(26px);
+  --glass-tint:rgba(255,255,255,.04);
+
+  --sh-tile:0 1px 2px rgba(0,0,0,.34), 0 6px 18px rgba(0,0,0,.28);
+  --sh-float:0 12px 38px rgba(0,0,0,.46), 0 2px 8px rgba(0,0,0,.34);
+  --sh-hud:0 30px 80px rgba(0,0,0,.60), 0 4px 16px rgba(0,0,0,.44);
+  --sh-win:0 36px 96px rgba(0,0,0,.62), 0 0 0 .5px rgba(255,255,255,.10);
+  --ring:0 0 0 2px var(--app-accent-glow);
+
+  --desk-a:#2d3d57; --desk-b:#5e4664; --desk-c:#222b40; --desk-d:#151c2b;
+  --desk-scrim:rgba(6,7,12,.42);
+
+  --sh-bg:#15151c; --sh-chrome:#22222c; --sh-chrome-2:#2a2a36; --sh-el:#d6d6e2;
+  --sh-kw:#c0a0ff; --sh-str:#7fd6a4; --sh-cm:#5e5e74; --sh-num:#e0a06a;
+  --sh-term:#0e0f14; --sh-term-t:#9fd8b4;
+}
+
+
+:root{
+  --app-font-sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;
+  --app-font-mono:ui-monospace,"SF Mono",Menlo,Monaco,monospace;
+
+  --t-label:10px;  --lh-label:1.4;  --ls-label:.02em;
+  --t-meta:11px;   --lh-meta:1.35;  --ls-meta:.01em;
+  --t-ui:13px;     --lh-ui:1.25;    --ls-ui:-.006em;
+  --t-read:14px;   --lh-read:1.55;  --ls-read:-.008em;
+  --t-title:17px;  --lh-title:1.3;  --ls-title:-.016em;
+  --t-display:22px;--lh-display:1.2;--ls-display:-.02em;
+  --w-regular:400; --w-medium:510;  --w-semi:590;
+
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px;
+  --s-12:12px; --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px;
+  --gap-inline:6px; --gap-label:4px; --gap-row:8px; --gap-group:16px;
+  --gap-section:24px; --pad-window:16px; --pad-control:8px; --pad-panel:16px;
+
+  --h-sm:24px; --h-md:28px; --h-lg:32px; --h-row:28px; --h-titlebar:38px;
+  --o-icon-sm:14px; --o-icon:20px; --o-icon-lg:24px;
+  --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-panel:14px; --r-pill:999px;
+  --dur-quick:100ms; --dur-regular:250ms; --ease:cubic-bezier(.4,0,.2,1);
+  --opacity-disabled:.4;
+  --hairline:.5px;
+}
+
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased}
+body{
+  margin:0; padding:40px 40px 96px;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text);
+  background:
+    radial-gradient(1100px 620px at 12% -8%, color-mix(in srgb,var(--app-accent) 7%, transparent), transparent 62%),
+    var(--page-bg);
+  min-height:100vh;
+}
+svg{display:block; width:14px; height:14px; fill:none; stroke:currentColor;
+    stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round}
+
+/* ── page furniture (OUTSIDE the app window) ─────────────────────────────── */
+.mast{max-width:1180px; margin:0 0 28px}
+.mast__eyebrow{
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.12em; text-transform:uppercase; color:var(--app-accent);
+  display:flex; align-items:center; gap:10px; margin:0 0 12px}
+.mast__eyebrow b{width:26px; height:1px; background:currentColor; display:block; opacity:.6}
+.mast h1{
+  margin:0; font:var(--w-semi) 28px/1.15 var(--app-font-sans);
+  letter-spacing:-.024em; color:var(--app-text-strong)}
+.mast h1 span{color:var(--app-text-faint); font-variant-numeric:tabular-nums}
+.mast p{margin:10px 0 0; max-width:74ch;
+  font:var(--w-regular) var(--t-read)/1.6 var(--app-font-sans); color:var(--app-text-muted)}
+.mast p b{font-weight:var(--w-medium); color:var(--app-text)}
+.mast__rule{height:1px; background:var(--app-border); margin:22px 0 0; max-width:1180px}
+
+.themebtn{
+  position:fixed; top:20px; right:20px; z-index:99;
+  display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px;
+  border:none; border-radius:var(--r-pill); cursor:pointer;
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur); box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-mono); letter-spacing:.04em;
+  text-transform:uppercase; color:var(--app-text-strong)}
+
+.wlabel{
+  margin:0 0 10px; font:var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color:var(--app-text-muted); max-width:96ch}
+.wlabel b{color:var(--app-text-strong); font-weight:var(--w-medium)}
+.wlabel code{font-family:var(--app-font-mono); font-size:10px; color:var(--app-accent)}
+.block{margin:0 0 44px}
+.block__h{
+  display:flex; align-items:baseline; gap:12px; margin:0 0 14px;
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle)}
+.block__h:after{content:""; flex:1; height:1px; background:var(--app-border)}
+.row-of{display:flex; gap:32px; flex-wrap:wrap; align-items:flex-start}
+
+/* ── type roles ──────────────────────────────────────────────────────────── */
+.t-label{font:var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing:var(--ls-label); text-transform:uppercase; color:var(--app-text-muted)}
+.t-meta{font:var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing:var(--ls-meta); color:var(--app-text-muted)}
+.t-ui{font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui); color:var(--app-text)}
+.t-read{font:var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing:var(--ls-read); color:var(--app-text); max-width:70ch}
+.t-title{font:var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing:var(--ls-title); color:var(--app-text-strong)}
+.t-display{font:var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing:var(--ls-display); color:var(--app-text-strong)}
+.is-mono{font-family:var(--app-font-mono)}
+.is-num{font-variant-numeric:tabular-nums}
+.strong{color:var(--app-text-strong)}
+.muted{color:var(--app-text-muted)}
+.subtle{color:var(--app-text-subtle)}
+
+/* ── the window ──────────────────────────────────────────────────────────── */
+.win{
+  position:relative; overflow:hidden; border-radius:10px;
+  background:var(--app-bg); box-shadow:var(--sh-win);
+  display:flex; flex-direction:column;
+  font:var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing:var(--ls-ui);
+}
+.win--1100{width:1100px; height:720px}
+.win--800{width:800px; height:600px}
+.win--1120{width:1120px; height:720px}
+
+/* MATERIAL title bar — chrome, so it may be translucent; content scrolls under */
+.tbar{
+  position:absolute; inset:0 0 auto 0; z-index:6; height:var(--h-titlebar);
+  display:flex; align-items:center; gap:var(--s-12); padding:0 12px;
+  background:var(--glass); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi);
+}
+.tbar--static{position:relative; flex:0 0 auto}
+.tl{display:flex; gap:8px; padding-left:2px}
+.tl i{width:12px; height:12px; border-radius:50%; display:block}
+.tl i:nth-child(1){background:#ff5f57} .tl i:nth-child(2){background:#febc2e}
+.tl i:nth-child(3){background:#28c840}
+.tbar__title{font:var(--w-semi) var(--t-ui)/1 var(--app-font-sans); color:var(--app-text-strong)}
+.tbar__sp{flex:1}
+
+/* segmented control (AppKit) */
+.seg{display:inline-flex; padding:2px; border-radius:7px; background:var(--glass-tint);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.seg__i{display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px;
+  border-radius:5px; font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color:var(--app-text-muted); white-space:nowrap}
+.seg__i.on{background:var(--app-surface); color:var(--app-text-strong);
+  box-shadow:0 1px 2px rgba(0,0,0,.16), 0 0 0 var(--hairline) var(--glass-line)}
+.seg--lg .seg__i{height:26px; padding:0 14px}
+
+/* state pill */
+.pill{display:inline-flex; align-items:center; gap:var(--gap-inline); height:24px;
+  padding:0 10px; border:none; border-radius:var(--r-pill); background:var(--app-record-bg);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-record-border)}
+.pill__t{font:var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-strong)}
+.pill__gb{font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-subtle)}
+.pill__w{font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-text-muted)}
+.pill--quiet{background:var(--glass-tint); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.pill--warn{background:var(--app-warn-bg); box-shadow:inset 0 0 0 var(--hairline) var(--app-warn-border)}
+.dot{width:7px; height:7px; border-radius:50%; background:var(--app-record); display:block;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--app-record) 18%, transparent)}
+.dot--off{background:var(--app-text-subtle); box-shadow:none}
+
+/* ── controls ────────────────────────────────────────────────────────────── */
+.btn{display:inline-flex; align-items:center; justify-content:center; gap:var(--gap-inline);
+  height:var(--h-md); padding:0 10px; border:none; border-radius:var(--r-md);
+  font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing:var(--ls-ui);
+  white-space:nowrap; background:var(--app-surface-raised); color:var(--app-text-strong);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line);
+  cursor:default}
+.btn:hover{background:var(--app-surface-hover)}
+.btn--primary{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.btn--ghost{background:transparent; box-shadow:none; color:var(--app-text-muted)}
+.btn--ghost.on,.btn--ghost:hover{background:var(--glass-tint); color:var(--app-text-strong)}
+.btn--danger{background:var(--app-danger-bg); color:var(--app-danger);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+.btn--sm{height:var(--h-sm); padding:0 8px}
+.btn--lg{height:var(--h-lg); padding:0 14px}
+.btn--icon{width:var(--h-md); padding:0}
+.btn--icon.btn--sm{width:var(--h-sm)}
+.btn[aria-disabled="true"]{opacity:var(--opacity-disabled)}
+.btn.is-focused{box-shadow:var(--ring), 0 1px 1px rgba(0,0,0,.10)}
+
+.chip{display:inline-flex; align-items:center; gap:5px; height:22px; padding:0 9px;
+  border-radius:var(--r-pill); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.chip.on{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.chip--q{background:transparent; box-shadow:none}
+
+.kbd{display:inline-flex; align-items:center; justify-content:center; min-width:19px; height:19px;
+  padding:0 5px; border-radius:var(--r-sm); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.kbd--wide{min-width:auto; padding:0 7px}
+
+.input{display:flex; align-items:center; gap:8px; height:var(--h-md); padding:0 9px;
+  border-radius:var(--r-md); background:var(--app-surface-subtle); color:var(--app-text-strong);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans)}
+.input.is-focused{box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring)}
+.input .ph{color:var(--app-text-subtle)}
+
+.sw{position:relative; width:38px; height:22px; border-radius:var(--r-pill); flex:0 0 auto;
+  background:var(--app-surface-hover); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.sw i{position:absolute; top:2px; left:2px; width:18px; height:18px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.30); display:block}
+.sw.on{background:var(--app-accent); box-shadow:none}
+.sw.on i{left:18px}
+.sw.dis{opacity:var(--opacity-disabled)}
+
+.pop{display:inline-flex; align-items:center; gap:8px; height:var(--h-md); padding:0 6px 0 10px;
+  border-radius:var(--r-md); background:var(--app-surface-raised); color:var(--app-text-strong);
+  font:var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line)}
+.pop b{display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px;
+  border-radius:3px; background:var(--app-accent); color:var(--app-accent-contrast)}
+.pop b svg{width:9px; height:9px; stroke-width:2}
+
+.spin{width:12px; height:12px; border-radius:50%; flex:0 0 auto; display:block;
+  border:1.5px solid var(--app-border-hover); border-top-color:var(--app-accent);
+  animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.caret{display:inline-block; width:1.5px; height:14px; background:var(--app-accent);
+  vertical-align:-2px; animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* MATERIAL: menu / popover — NSMenu anatomy */
+.menu{min-width:220px; padding:5px; border-radius:var(--r-lg);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+.menu__hd{padding:6px 10px 4px; font:var(--w-medium) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing:.02em; text-transform:uppercase; color:var(--app-text-subtle)}
+.menu__i{display:flex; align-items:center; gap:8px; height:24px; padding:0 8px;
+  border-radius:var(--r-sm); color:var(--app-text-strong); font-size:var(--t-ui)}
+.menu__i.on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.menu__ck{width:13px; flex:0 0 auto; display:flex; align-items:center}
+.menu__ck svg{width:11px; height:11px; stroke-width:2.2}
+.menu__gl{width:15px; flex:0 0 auto; color:var(--app-text-muted)}
+.menu__i.on .menu__gl{color:inherit}
+.menu__kbd{margin-left:auto; font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color:var(--app-text-subtle)}
+.menu__i.on .menu__kbd{color:var(--app-accent-contrast); opacity:.8}
+.menu__sep{height:1px; margin:5px 8px; background:var(--glass-line)}
+
+/* toast — floats, so material + shadow */
+.toast{width:344px; padding:12px 14px; border-radius:var(--r-xl);
+  background:var(--glass-pop); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+
+/* ── opaque content surfaces ─────────────────────────────────────────────── */
+.tile{position:relative; padding:14px; border-radius:var(--r-panel); background:var(--app-surface);
+  box-shadow:var(--sh-tile); display:flex; flex-direction:column; gap:var(--s-6); overflow:hidden}
+.tile-h{display:flex; align-items:center; gap:8px; margin-bottom:2px}
+.tile-h .more{margin-left:auto}
+.tile-row{display:flex; align-items:center; gap:8px; min-height:18px}
+
+.grow{display:flex; align-items:center; gap:10px; min-height:34px; padding:5px 2px}
+.grow + .grow{box-shadow:inset 0 1px 0 var(--glass-line)}
+.grow__txt{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1}
+.grow__lbl{font:var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); color:var(--app-text-strong);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__sub{font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color:var(--app-text-muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.grow__val{margin-left:auto; display:inline-flex; align-items:center; gap:8px; flex:0 0 auto}
+.chev{color:var(--app-text-faint); display:flex}
+.chev svg{width:12px; height:12px}
+
+.gicon{width:var(--o-icon); height:var(--o-icon); border-radius:5px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; color:#fff;
+  font:var(--w-semi) 9px/1 var(--app-font-sans)}
+.ic-code{background:#2f7fd0} .ic-figma{background:#a259ff} .ic-slack{background:#4a154b}
+.ic-notion{background:#2f2f2f} .ic-safari{background:#1e90ff} .ic-term{background:#2b2b2b}
+.ic-zoom{background:#2d8cff} .ic-mail{background:#3b7ddd} .ic-mnema{background:var(--app-accent-bg);
+  color:var(--app-accent); box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border)}
+
+/* ── fake screenshots (all CSS, no assets) ───────────────────────────────── */
+.shot{display:block; position:relative; width:100%; height:100%; overflow:hidden;
+  background:var(--sh-bg); color:var(--sh-el)}
+.shot .code{position:absolute; display:flex; flex-direction:column; justify-content:space-evenly}
+.shot .ln{display:flex; gap:4px; align-items:center; height:4px}
+.shot .ln i{height:100%; border-radius:1px; background:currentColor; opacity:.34; display:block}
+.shot .ln i.k{background:var(--sh-kw); opacity:.85}
+.shot .ln i.s{background:var(--sh-str); opacity:.85}
+.shot .ln i.c{background:var(--sh-cm); opacity:.55}
+.shot .ln i.n{background:var(--sh-num); opacity:.8}
+
+.shot--editor{background:var(--sh-bg)}
+.shot--editor:before{content:""; position:absolute; inset:0 auto 0 0; width:5%; background:var(--sh-chrome-2)}
+.shot--editor:after{content:""; position:absolute; left:5%; top:0; bottom:0; width:20%;
+  background:linear-gradient(var(--sh-chrome),var(--sh-chrome));
+  box-shadow:inset -1px 0 0 rgba(128,128,150,.18)}
+.shot--editor .files{position:absolute; left:7%; top:12%; bottom:12%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--editor .files i{height:3px; border-radius:1px; background:currentColor; opacity:.28; display:block}
+.shot--editor .files i.on{opacity:.6; background:var(--sh-kw)}
+.shot--editor .tabs{position:absolute; left:25%; right:0; top:0; height:8%;
+  background:var(--sh-chrome); z-index:1}
+.shot--editor .code{left:29%; right:5%; top:12%; bottom:6%; z-index:2}
+.shot--editor .cur{position:absolute; left:38%; top:26%; width:1.5px; height:5px;
+  background:var(--sh-kw); z-index:3}
+
+.shot--browser:before{content:""; position:absolute; inset:0 0 auto 0; height:11%;
+  background:var(--sh-chrome)}
+.shot--browser .url{position:absolute; left:16%; top:3%; width:52%; height:5%; border-radius:9px;
+  background:var(--sh-chrome-2); box-shadow:inset 0 0 0 1px rgba(128,128,150,.16)}
+.shot--browser .dots{position:absolute; left:3%; top:4.2%; display:flex; gap:3px}
+.shot--browser .dots i{width:4px; height:4px; border-radius:50%; background:currentColor; opacity:.25; display:block}
+.shot--browser .art{position:absolute; left:10%; right:26%; top:20%; bottom:8%; display:flex;
+  flex-direction:column; justify-content:flex-start; gap:7%}
+.shot--browser .art .h{height:8px; width:56%; border-radius:2px; background:var(--sh-kw); opacity:.6; display:block}
+.shot--browser .aside{position:absolute; right:5%; top:20%; width:16%; display:flex;
+  flex-direction:column; gap:9%}
+.shot--browser .aside i{height:5px; border-radius:2px; background:currentColor; opacity:.18; display:block}
+
+.shot--terminal{background:var(--sh-term); color:var(--sh-term-t)}
+.shot--terminal .code{left:5%; right:5%; top:8%; bottom:8%}
+.shot--terminal .ln i{opacity:.55}
+.shot--terminal .ln i.g{background:var(--sh-str); opacity:.95}
+.shot--terminal .ln i.r{background:#e06c75; opacity:.9}
+.shot--terminal .cur{position:absolute; left:5%; bottom:14%; width:5px; height:5px;
+  background:var(--sh-str); opacity:.9}
+
+.shot--docs{background:#fff}
+.shot--docs:before{content:""; position:absolute; inset:0 auto 0 0; width:22%;
+  background:#f3f3f1; box-shadow:inset -1px 0 0 rgba(128,128,150,.14)}
+.shot--docs .nav{position:absolute; left:4%; top:12%; bottom:16%; width:15%; display:flex;
+  flex-direction:column; justify-content:space-between}
+.shot--docs .nav i{height:3px; border-radius:1px; background:#1c1c22; opacity:.22; display:block}
+.shot--docs .nav i.on{opacity:.55; background:#1f7a4a}
+.shot--docs .code{left:28%; right:8%; top:12%; bottom:8%; color:#1c1c22}
+.shot--docs .code .h{height:8px; width:52%; border-radius:2px; background:#1c1c22; opacity:.7; display:block}
+
+.shot--figma{background:linear-gradient(180deg,#2a2a30,#1e1e24)}
+.shot--figma:before{content:""; position:absolute; inset:0 0 auto 0; height:9%; background:#111116}
+.shot--figma .lp,.shot--figma .rp{position:absolute; top:9%; bottom:0; width:16%; background:#17171c}
+.shot--figma .lp{left:0} .shot--figma .rp{right:0}
+.shot--figma .art{position:absolute; border-radius:3px}
+.shot--figma .a1{left:26%; top:22%; width:26%; height:34%; background:#6f5ed1; opacity:.85}
+.shot--figma .a2{left:56%; top:22%; width:20%; height:16%; background:#3ba55c; opacity:.8}
+.shot--figma .a3{left:56%; top:44%; width:26%; height:30%; background:#3a3a46}
+.shot--figma .a4{left:26%; top:62%; width:16%; height:16%; border-radius:50%; background:#e0a06a; opacity:.8}
+
+.shot--call{background:#0d0d12}
+.shot--call .tiles{position:absolute; inset:5% 4% 16% 4%; display:grid;
+  grid-template-columns:repeat(3,1fr); gap:6px}
+.shot--call .t{border-radius:5px; position:relative; display:block; overflow:hidden;
+  background:linear-gradient(158deg,#2c2c38,#1d1d26)}
+.shot--call .t:after{content:""; position:absolute; left:50%; top:50%; width:26%; aspect-ratio:1;
+  transform:translate(-50%,-58%); border-radius:50%; background:rgba(255,255,255,.20)}
+.shot--call .t:before{content:""; position:absolute; left:7%; bottom:8%; width:36%; height:4px;
+  border-radius:2px; background:rgba(255,255,255,.16)}
+.shot--call .t.on{box-shadow:inset 0 0 0 2px #3ba55c}
+.shot--call .ctrl{position:absolute; left:50%; bottom:5%; transform:translateX(-50%);
+  display:flex; gap:6px}
+.shot--call .ctrl i{width:10px; height:10px; border-radius:50%; background:#33333e; display:block}
+.shot--call .ctrl i.r{background:#e0455a}
+
+.shot--chat{background:var(--sh-bg)}
+.shot--chat:before{content:""; position:absolute; inset:0 auto 0 0; width:9%; background:#3f0f3f}
+.shot--chat:after{content:""; position:absolute; left:9%; top:0; bottom:0; width:22%; background:#4a154b}
+.shot--chat .chans{position:absolute; left:12%; top:12%; bottom:14%; width:16%; display:flex;
+  flex-direction:column; justify-content:space-between; z-index:2}
+.shot--chat .chans i{height:3px; border-radius:1px; background:#fff; opacity:.32; display:block}
+.shot--chat .chans i.on{opacity:.85}
+.shot--chat .msgs{position:absolute; left:35%; right:5%; top:12%; bottom:12%; display:flex;
+  flex-direction:column; justify-content:space-evenly}
+.shot--chat .msg{display:flex; gap:5px; align-items:flex-start}
+.shot--chat .msg .av{width:9px; height:9px; border-radius:2px; background:currentColor;
+  opacity:.24; flex:0 0 auto; display:block}
+.shot--chat .msg .bd{flex:1; display:flex; flex-direction:column; gap:3px}
+.shot--chat .msg .bd i{height:3px; border-radius:1px; background:currentColor; opacity:.22; display:block}
+.shot--chat .msg .bd i.n{opacity:.5; background:var(--sh-kw)}
+
+.shot--sheet{background:#fff}
+.shot--sheet:before{content:""; position:absolute; inset:0 0 auto 0; height:12%; background:#f0efec}
+.shot--sheet .g{position:absolute; inset:16% 4% 6% 4%; display:flex; flex-direction:column; gap:4px}
+.shot--sheet .r{display:flex; gap:4px; flex:1; align-items:center}
+.shot--sheet .r i{height:4px; flex:1; border-radius:1px; background:#1c1c22; opacity:.16; display:block}
+.shot--sheet .r i.p{background:#1f7a4a; opacity:.5}
+.shot--sheet .r i.sel{background:#2b78c5; opacity:.5}
+
+.shot--wave{background:var(--app-surface-subtle); display:flex; align-items:center;
+  justify-content:center; gap:2px; padding:0 6%}
+.shot--wave i{flex:1; min-width:2px; border-radius:1px; background:var(--app-src-mic);
+  opacity:.45; display:block}
+.shot--wave i.hi{opacity:.95}
+.shot--wave i.sy{background:var(--app-src-sys); opacity:.7}
+
+.shot--desktop{background:
+  radial-gradient(120% 90% at 20% 0%, var(--desk-b), transparent 60%),
+  radial-gradient(120% 100% at 90% 20%, var(--desk-a), transparent 62%),
+  linear-gradient(160deg, var(--desk-c), var(--desk-d))}
+
+/* ── simulated desktop behind the HUD ────────────────────────────────────── */
+.desk{position:relative; overflow:hidden; border-radius:10px; box-shadow:var(--sh-win);
+  background:
+    radial-gradient(120% 90% at 18% 0%, var(--desk-b), transparent 58%),
+    radial-gradient(110% 100% at 88% 16%, var(--desk-a), transparent 60%),
+    linear-gradient(158deg, var(--desk-c), var(--desk-d))}
+.desk:before{content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+  background:repeating-linear-gradient(45deg, rgba(255,255,255,.014) 0 2px, transparent 2px 4px)}
+.desk__menubar{position:absolute; inset:0 0 auto 0; height:26px; z-index:4; display:flex;
+  align-items:center; gap:16px; padding:0 14px;
+  background:rgba(255,255,255,.16); -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:rgba(255,255,255,.92)}
+.desk__menubar .r{margin-left:auto; display:flex; align-items:center; gap:14px;
+  font-family:var(--app-font-mono); font-variant-numeric:tabular-nums}
+.desk__scrim{position:absolute; inset:0; z-index:5; background:var(--desk-scrim)}
+.deskwin{position:absolute; z-index:3; border-radius:9px; overflow:hidden;
+  box-shadow:0 24px 60px rgba(0,0,0,.34), 0 0 0 .5px rgba(0,0,0,.22)}
+.deskwin__bar{height:26px; display:flex; align-items:center; gap:7px; padding:0 10px;
+  background:var(--sh-chrome); box-shadow:inset 0 -1px 0 rgba(128,128,150,.2)}
+.deskwin__bar i{width:9px; height:9px; border-radius:50%; display:block}
+.deskwin__bar .t{margin-left:6px; font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  color:var(--sh-el); opacity:.7}
+.deskwin__body{position:absolute; inset:26px 0 0 0}
+
+/* the capture outline — Copilot-Vision move: say WHAT is being read, on screen */
+.capframe{position:absolute; z-index:6; border-radius:10px; pointer-events:none;
+  box-shadow:0 0 0 1.5px color-mix(in srgb,var(--app-accent) 78%, transparent),
+             0 0 0 7px color-mix(in srgb,var(--app-accent) 12%, transparent)}
+.capframe__tag{position:absolute; left:0; top:-26px; display:inline-flex; align-items:center;
+  gap:6px; height:22px; padding:0 9px; border-radius:var(--r-pill);
+  background:var(--app-accent); color:var(--app-accent-contrast);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); white-space:nowrap}
+
+/* ── HUD / floating glass panel ──────────────────────────────────────────── */
+.glass{position:relative; border-radius:var(--r-panel);
+  background:var(--glass-hud); -webkit-backdrop-filter:var(--glass-blur);
+  backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+             inset 0 1px 0 var(--glass-hi)}
+.plate{border-radius:var(--r-lg); background:var(--app-surface); box-shadow:var(--sh-tile)}
+
+/* overlay scrollbar */
+.scroll{overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--app-border-hover) transparent}
+.scroll::-webkit-scrollbar{width:8px}
+.scroll::-webkit-scrollbar-thumb{background:var(--app-border-hover); border-radius:4px;
+  border:2px solid transparent; background-clip:padding-box}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:1ms !important}}
+
+</style>
+<style>
+/* ── category / focus / grey tokens — the app's REAL values, lifted verbatim
+   from apps/desktop/src/routes/+layout.svelte (light block ~1816, dark ~1607) ── */
+:root{
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --focus-deep:#1f7a4a; --focus-mid:#9a5a12; --focus-distracted:#c43a48;
+  --chart-grey-3:#909099; --chart-grey-4:#6a6a74;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --focus-deep:#3dffa0; --focus-mid:#d6a14a; --focus-distracted:#ff6b7a;
+  --chart-grey-3:#565669; --chart-grey-4:#757589;
+}}
+:root[data-theme="dark"]{
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --focus-deep:#3dffa0; --focus-mid:#d6a14a; --focus-distracted:#ff6b7a;
+  --chart-grey-3:#565669; --chart-grey-4:#757589;
+}
+
+/* ── the DESTINATION shell — Journal / Subjects / Context all wear it ────────
+   Overview and Timeline are the only two main-window surfaces. A destination
+   replaces the pane under the same title bar and the ONLY way back is the
+   ‹ Overview button in the chrome — the same idiom Settings already uses. */
+.dpane{position:relative; flex:1; min-height:0; background:var(--app-bg); overflow:hidden}
+.dpane:before{content:""; position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(520px 320px at 4% 0%, color-mix(in srgb,var(--app-accent) 10%, transparent), transparent 70%),
+    radial-gradient(420px 380px at 98% 96%, color-mix(in srgb,var(--app-src-screen) 12%, transparent), transparent 72%)}
+.dscroll{position:absolute; inset:0; padding:18px 24px 24px; overflow:hidden}
+
+/* the date capsule — the direction's one glass control, reused from 02 */
+.datecap{display:inline-flex; align-items:center; gap:2px; height:26px; padding:2px;
+  border-radius:var(--r-pill); background:var(--glass-pop);
+  -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line)}
+.datecap b{display:inline-flex; align-items:center; gap:6px; height:22px; padding:0 10px;
+  border-radius:var(--r-pill); font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color:var(--app-text-strong)}
+.datecap i{display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px;
+  border-radius:50%; color:var(--app-text-muted)}
+.datecap i svg{width:12px; height:12px}
+.datecap i.dis{opacity:var(--opacity-disabled)}
+
+/* the Overview door — the inset that shows WHERE this destination opens from */
+.door{width:268px; height:118px}
+.door .open{margin-left:auto; display:inline-flex; align-items:center; gap:4px;
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color:var(--app-accent)}
+.door .open svg{width:11px; height:11px}
+/* ── Settings shell: a FLOATING translucent rail over one opaque scroll pane ── */
+/* the wash exists so the floating rail has something to be translucent ABOUT;
+   it never sits under text — the pane's groups are opaque plates on top of it */
+.setwrap{position:relative; flex:1; min-height:0; background:var(--app-bg)}
+.setwrap:before{content:""; position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(420px 300px at 6% 4%, color-mix(in srgb,var(--app-accent) 16%, transparent), transparent 70%),
+    radial-gradient(360px 380px at 2% 92%, color-mix(in srgb,var(--app-src-screen) 18%, transparent), transparent 72%)}
+
+.srail{position:absolute; left:10px; top:10px; bottom:10px; width:208px; z-index:4;
+  border-radius:var(--r-panel); padding:8px; display:flex; flex-direction:column; gap:2px;
+  background:var(--glass); -webkit-backdrop-filter:var(--glass-blur); backdrop-filter:var(--glass-blur);
+  box-shadow:var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line), inset 0 1px 0 var(--glass-hi)}
+.srail__find{display:flex; align-items:center; gap:7px; height:26px; padding:0 8px; margin-bottom:6px;
+  border-radius:var(--r-md); background:var(--glass-tint); color:var(--app-text-subtle);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.srail__find svg{width:12px; height:12px}
+.srail__g{padding:9px 8px 3px; font:var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing:.08em; text-transform:uppercase; color:var(--app-text-faint)}
+.navi{display:flex; align-items:center; gap:9px; height:28px; padding:0 8px; border-radius:var(--r-md);
+  color:var(--app-text); font-size:var(--t-ui)}
+.navi svg{width:15px; height:15px; color:var(--app-text-muted); flex:0 0 auto}
+.navi .n{margin-left:auto; font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint)}
+.navi:hover{background:var(--glass-tint)}
+.navi.on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.navi.on svg,.navi.on .n{color:inherit}
+/* the cost of what you enabled, permanently, in the same surface as the controls */
+.srail__foot{margin-top:auto; padding:8px 8px 4px; display:flex; flex-direction:column; gap:5px;
+  box-shadow:inset 0 1px 0 var(--glass-line)}
+.srail__foot .l{display:flex; align-items:center; gap:6px}
+
+.spane{position:absolute; inset:0; padding:18px 24px 24px 232px; overflow:hidden}
+.sh{position:sticky; top:0; z-index:3; display:flex; align-items:baseline; gap:10px;
+  padding:6px 0 10px; margin:0 0 4px; background:var(--app-bg)}
+.gsec{margin-bottom:22px}
+.gsec__h{display:flex; align-items:baseline; gap:8px; padding:0 4px 6px}
+.grp{border-radius:var(--r-lg); background:var(--app-surface); box-shadow:var(--sh-tile);
+  padding:0 12px}
+.grp .grow{min-height:40px; padding:8px 0}
+.grp .grow:first-child{padding-top:9px}
+.help{padding:6px 4px 0; max-width:66ch}
+
+/* row-level autosave echo — locality tells you WHAT saved */
+.saved{display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px;
+  border-radius:var(--r-pill); background:var(--app-accent-bg); color:var(--app-accent);
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border)}
+.saved svg{width:10px; height:10px; stroke-width:2.4}
+/* header chip — the state is ALSO always visible in the chrome, never a bottom bar */
+.savechip{display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 10px;
+  border-radius:var(--r-pill); background:var(--glass-tint); color:var(--app-text-muted);
+  font:var(--w-regular) var(--t-meta)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.savechip svg{width:11px; height:11px}
+.savechip--ok{color:var(--app-accent)}
+.savechip--err{background:var(--app-danger-bg); color:var(--app-danger);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+
+/* ── the custom inputs (restrained: five, each where a value has consequence) ── */
+.inst{display:flex; flex-direction:column; gap:8px; padding:10px 0 4px}
+.slider{position:relative; height:22px; display:flex; align-items:center}
+.slider__t{position:absolute; left:0; right:0; height:4px; border-radius:2px;
+  background:var(--app-surface-hover)}
+.slider__f{position:absolute; left:0; height:4px; border-radius:2px; background:var(--app-accent)}
+.slider__k{position:absolute; width:18px; height:18px; margin-left:-9px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.34), 0 0 0 .5px rgba(0,0,0,.18)}
+.slider__tick{position:absolute; top:12px; width:1px; height:5px; background:var(--app-text-faint)}
+.sticks{position:relative; height:14px}
+.sticks span{position:absolute; transform:translateX(-50%);
+  font:var(--w-regular) var(--t-label)/1 var(--app-font-mono); color:var(--app-text-faint)}
+.readout{display:flex; align-items:baseline; gap:8px; flex-wrap:wrap}
+.readout .big{font:var(--w-semi) var(--t-ui)/1.2 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-strong)}
+.readout .den{color:var(--app-text-subtle)}
+
+/* retention ladder: the axis carries what you HAVE as well as what you keep */
+.ladder{display:flex; gap:3px}
+.ladder span{flex:1; height:28px; display:flex; align-items:center; justify-content:center;
+  border-radius:var(--r-md); background:var(--app-surface-subtle); color:var(--app-text-muted);
+  font:var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.ladder span.on{background:var(--app-accent); color:var(--app-accent-contrast); box-shadow:none}
+.axis{position:relative; height:26px; margin-top:2px}
+.axis__b{position:absolute; left:0; right:0; top:4px; height:8px; border-radius:4px;
+  background:var(--app-surface-hover); overflow:hidden}
+.axis__b i{display:block; height:100%; background:var(--app-accent); opacity:.55}
+.axis__m{position:absolute; top:0; width:2px; height:16px; background:var(--app-text-strong)}
+.axis__l{position:absolute; top:16px; transform:translateX(-50%);
+  font:var(--w-regular) var(--t-label)/1 var(--app-font-mono); color:var(--app-text-muted);
+  white-space:nowrap}
+
+/* duty cycle: show BOTH halves as one split bar, consequence in prose beneath */
+.duty{display:flex; height:26px; border-radius:var(--r-md); overflow:hidden}
+.duty span{display:flex; align-items:center; justify-content:center; gap:6px;
+  font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans)}
+.duty .work{background:var(--app-accent); color:var(--app-accent-contrast)}
+.duty .cool{background:var(--app-surface-hover); color:var(--app-text-muted)}
+
+/* shortcut recorder: keycaps, and the conflict named under the field */
+.rec{display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 8px;
+  border-radius:var(--r-md); background:var(--app-surface-subtle);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)}
+.rec.arm{background:var(--app-accent-bg); box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border),
+  var(--ring); color:var(--app-accent)}
+.rec.bad{box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+
+/* model rows: size · quant · a verdict computed against THIS machine */
+.verdict{display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px;
+  border-radius:var(--r-pill); font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans)}
+.verdict svg{width:10px; height:10px}
+.v-ok{background:var(--app-accent-bg); color:var(--app-accent);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border)}
+.v-warn{background:var(--app-warn-bg); color:var(--app-warn);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-warn-border)}
+.v-bad{background:var(--app-danger-bg); color:var(--app-danger);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-danger-border)}
+.v-cloud{background:var(--app-info-bg); color:var(--app-info);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-info-border)}
+.mrow{display:flex; align-items:center; gap:10px; min-height:44px; padding:8px 0}
+.mrow + .mrow{box-shadow:inset 0 1px 0 var(--glass-line)}
+.radio{width:16px; height:16px; border-radius:50%; flex:0 0 auto;
+  box-shadow:inset 0 0 0 1.5px var(--app-border-hover)}
+.radio.on{background:var(--app-accent); box-shadow:inset 0 0 0 3.5px var(--app-surface),
+  0 0 0 1.5px var(--app-accent)}
+.meter{display:inline-flex; gap:2px; align-items:flex-end; height:14px}
+.meter i{width:3px; border-radius:1px; background:var(--app-text-faint); display:block}
+.meter i.on{background:var(--app-accent)}
+
+/* right-most tick / axis labels align to the edge instead of overflowing it */
+.sticks span.r, .axis__l.r{left:auto; right:0; transform:none}
+
+
+/* ── page 11 additions: the rail carries the REAL structure ──────────────────
+   05 drew a re-grouped 11-item rail. The app has five groups and twenty-two
+   sections; twenty-seven rows will not fit a 208px rail at native density, so
+   the rail lists the five groups and the ACTIVE one discloses its sections.
+   The pane's sticky headers then carry the same section names — which is what
+   the shipping app already does. */
+.navi__sub{display:flex; align-items:center; gap:8px; height:24px; padding:0 8px 0 30px;
+  border-radius:var(--r-md); color:var(--app-text-muted); font-size:var(--t-meta)}
+.navi__sub:before{content:""; width:3px; height:3px; border-radius:50%; background:currentColor;
+  opacity:.5; flex:0 0 auto; margin-left:-9px}
+.navi__sub.on{background:var(--glass-tint); color:var(--app-text-strong)}
+.navi__sub .n{margin-left:auto; font:var(--w-regular) var(--t-label)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums; color:var(--app-text-faint)}
+.navi.grp-on{background:var(--app-accent); color:var(--app-accent-contrast)}
+.navi.grp-on svg,.navi.grp-on .n{color:inherit}
+
+/* the unrolled pane — the same pane, drawn at its natural height so every row
+   is visible at once. It is NOT a second window; the label says so. */
+.unroll{position:relative; border-radius:10px; background:var(--app-bg); box-shadow:var(--sh-win);
+  width:1100px; padding:14px 24px 22px 24px; overflow:hidden}
+.unroll:before{content:""; position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(420px 300px at 4% 2%, color-mix(in srgb,var(--app-accent) 12%, transparent), transparent 70%),
+    radial-gradient(360px 380px at 99% 98%, color-mix(in srgb,var(--app-src-screen) 14%, transparent), transparent 72%)}
+.unroll > *{position:relative}
+.crumb{display:flex; align-items:center; gap:8px; margin:0 0 12px}
+.crumb .g{font:var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing:.12em;
+  text-transform:uppercase; color:var(--app-accent)}
+.crumb .s{font:var(--w-regular) var(--t-meta)/1 var(--app-font-mono); color:var(--app-text-faint)}
+
+/* a bare nested card (the shortcut editor's four groups) */
+.bare{padding:0 12px; border-radius:var(--r-lg); box-shadow:inset 0 0 0 var(--hairline) var(--app-border)}
+.bare__h{padding:9px 0 5px}
+.sc{display:flex; align-items:center; gap:10px; min-height:30px; padding:4px 0}
+.sc + .sc{box-shadow:inset 0 1px 0 var(--glass-line)}
+.sc .l{flex:1; min-width:0; font-size:var(--t-ui); color:var(--app-text)}
+.sc .k{display:inline-flex; gap:3px}
+
+/* read-only status blocks that the app renders inside a row */
+.stat-card{border-radius:var(--r-md); background:var(--app-surface-subtle); padding:9px 11px;
+  display:flex; flex-direction:column; gap:6px; width:100%;
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.stat-card .l{display:flex; align-items:center; gap:8px}
+.notice{border-radius:var(--r-md); padding:8px 11px; width:100%;
+  font:var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); color:var(--app-text-muted);
+  background:var(--app-surface-subtle); box-shadow:inset 0 0 0 var(--hairline) var(--glass-line)}
+.notice.warn{background:var(--app-warn-bg); color:var(--app-warn);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-warn-border)}
+.notice.info{background:var(--app-info-bg); color:var(--app-info);
+  box-shadow:inset 0 0 0 var(--hairline) var(--app-info-border)}
+.cond{display:inline-flex; align-items:center; height:16px; padding:0 6px; border-radius:3px;
+  background:var(--glass-tint); color:var(--app-text-faint);
+  font:var(--w-medium) 9px/1 var(--app-font-mono); letter-spacing:.06em; text-transform:uppercase;
+  box-shadow:inset 0 0 0 var(--hairline) var(--glass-line); flex:0 0 auto}
+.stack{display:flex; flex-direction:column; gap:7px; width:100%}
+.opts{display:flex; flex-direction:column; gap:6px; width:100%}
+.opt{display:flex; align-items:flex-start; gap:9px; padding:5px 0}
+.opt .t{flex:1}
+.opt .t .lb{font:var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); color:var(--app-text-strong)}
+.opt .t .db{display:block; margin-top:1px;
+  font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color:var(--app-text-muted)}
+.mrow2{display:flex; align-items:center; gap:9px; min-height:34px; padding:5px 0}
+.mrow2 + .mrow2{box-shadow:inset 0 1px 0 var(--glass-line)}
+.step{display:inline-flex; align-items:center; height:var(--h-md); border-radius:var(--r-md);
+  background:var(--app-surface-raised); color:var(--app-text-strong);
+  box-shadow:0 1px 1px rgba(0,0,0,.10), inset 0 0 0 var(--hairline) var(--glass-line)}
+.step span{padding:0 10px; font:var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric:tabular-nums}
+.step b{display:inline-flex; align-items:center; justify-content:center; width:22px; height:100%;
+  color:var(--app-text-muted); box-shadow:inset 1px 0 0 var(--glass-line)}
+.step b svg{width:10px; height:10px}
+
+/* ⌘F row filtering — a hit renders with its breadcrumb AND its live control */
+.hit{display:flex; align-items:center; gap:10px; min-height:40px; padding:7px 0}
+.hit + .hit{box-shadow:inset 0 1px 0 var(--glass-line)}
+.hit__t{flex:1; min-width:0}
+.hit__bc{display:block; font:var(--w-regular) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing:.06em; text-transform:uppercase; color:var(--app-text-faint)}
+.hit__l{font:var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); color:var(--app-text-strong)}
+.hit__l mark{background:color-mix(in srgb,var(--app-accent) 26%, transparent); color:inherit;
+  border-radius:2px; padding:0 1px}
+
+/* .bar lives in 01's page block; the download meter needs it here too */
+.bar{height:5px; border-radius:3px; background:var(--app-surface-hover); overflow:hidden; display:flex}
+.bar i{display:block; height:100%}
+</style>
+</head>
+<body>
+<button class="themebtn" onclick="(function(r){r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'})(document.documentElement)">◐ theme</button>
+<svg style="display:none" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.2 14 8.6l5.4 2-5.4 2-2 5.4-2-5.4-5.4-2 5.4-2z"/><path d="M18.5 3.2 19.2 5l1.8.7-1.8.7-.7 1.8-.7-1.8L16 5l1.8-.7z"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M16 2.5v4M8 2.5v4M3 10h18"/></symbol>
+<symbol id="i-chevr" viewBox="0 0 24 24"><path d="m9.5 18 6-6-6-6"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+<symbol id="i-chevl" viewBox="0 0 24 24"><path d="m14.5 18-6-6 6-6"/></symbol>
+<symbol id="i-chevud" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6.5 9 17.5l-5-5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M6.5 4.5 19 12 6.5 19.5z" fill="currentColor" stroke-linejoin="round"/></symbol>
+<symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.5" y="4.5" width="4" height="15" rx="1.2" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="2.4" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-screen" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13.5" rx="2.2"/><path d="M8.5 21h7M12 17v4"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5.5 10.5v1.5a6.5 6.5 0 0 0 13 0v-1.5M12 19v2.5"/></symbol>
+<symbol id="i-sys" viewBox="0 0 24 24"><path d="M11 5.2 6.4 9H2.8v6h3.6L11 18.8z"/><path d="M15.4 9a4.4 4.4 0 0 1 0 6M18.6 5.6a8.6 8.6 0 0 1 0 12.8"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7.5V5.5a2 2 0 0 1 2-2h2M17 3.5h2a2 2 0 0 1 2 2v2M21 16.5v2a2 2 0 0 1-2 2h-2M7 20.5H5a2 2 0 0 1-2-2v-2"/><path d="M7 9h10M7 12.5h6M7 16h8"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.3l3.2 1.9"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h11M18.5 6H21M3 12h4M11.5 12H21M3 18h9M16.5 18H21"/><circle cx="16.2" cy="6" r="2.2"/><circle cx="9.2" cy="12" r="2.2"/><circle cx="14.2" cy="18" r="2.2"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="8.5" ry="3"/><path d="M3.5 5.5v13c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3v-13M3.5 12c0 1.7 3.8 3 8.5 3s8.5-1.3 8.5-3"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21.5s7.5-3.8 7.5-9.5V5.2L12 2.5 4.5 5.2V12c0 5.7 7.5 9.5 7.5 9.5z"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="2.4"/><rect x="9" y="9" width="6" height="6" rx="1.2"/><path d="M9 2.5v2M15 2.5v2M9 19.5v2M15 19.5v2M2.5 9h2M2.5 15h2M19.5 9h2M19.5 15h2"/></symbol>
+<symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.6" cy="15.6" r="3.6"/><path d="m21 2.4-10.8 10.8M15.6 7.8l3 3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20.5 4v5.5H15"/><path d="M20 9.5A8.5 8.5 0 1 0 20.2 15"/></symbol>
+<symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5v-.8a7.5 7.5 0 0 1 15 0v.8"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.4"/><path d="M2.5 20v-.6A6.5 6.5 0 0 1 9 13a6.5 6.5 0 0 1 6.5 6.4v.6M16.5 4.6a3.4 3.4 0 0 1 0 6.7M18 13.4a6 6 0 0 1 3.5 5.4v1.2"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4M12 17.2h.01"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M12 16.5v-5M12 8h.01"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14.5 3.8 9.4 9 4.3"/><path d="M3.8 9.4h11.4a5.3 5.3 0 1 1 0 10.6h-4.4"/></symbol>
+<symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 17.2V22M8.6 10.9V3.5h6.8v7.4l2.2 3.4H6.4z"/></symbol>
+<symbol id="i-frame" viewBox="0 0 24 24"><rect x="3" y="3.5" width="18" height="17" rx="2.4"/><path d="m3.4 16.4 4.7-4.7 4 4 3-3 5.5 5.5"/><circle cx="15.6" cy="8.4" r="1.5"/></symbol>
+<symbol id="i-msg" viewBox="0 0 24 24"><path d="M21 14.6a2 2 0 0 1-2 2H7.4L3 21V5.4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="i-ret" viewBox="0 0 24 24"><path d="M20 4.5v6.4a4 4 0 0 1-4 4H4"/><path d="m9 10.4-5 4.5 5 4.5"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.2 12S6 5.5 12 5.5 21.8 12 21.8 12 18 18.5 12 18.5 2.2 12 2.2 12z"/><circle cx="12" cy="12" r="2.9"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2.6 9 4.7-9 4.7-9-4.7z"/><path d="m3 12.3 9 4.7 9-4.7M3 17.1l9 4.7 9-4.7"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.5 6h17M9 6V3.8h6V6M6.2 6l1 14.2h9.6L17.8 6"/></symbol>
+<symbol id="i-term" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="16" rx="2.2"/><path d="m7 9.5 3 2.7-3 2.7M12.6 15.4h4.4"/></symbol>
+<symbol id="i-zoomin" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.5"/><path d="m21 21-4.4-4.4M11 8.2v5.6M8.2 11h5.6"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.7"/><path d="M3.4 12h17.2M12 3.3c2.2 2.4 3.4 5.5 3.4 8.7S14.2 18.3 12 20.7c-2.2-2.4-3.4-5.5-3.4-8.7S9.8 5.7 12 3.3z"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4.5v14M5.5 12.5 12 19l6.5-6.5"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19.5v-14M5.5 11.5 12 5l6.5 6.5"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.4" fill="currentColor" stroke="none"/></symbol>
+</defs></svg>
+
+<header class="mast">
+  <p class="mast__eyebrow"><b></b>Direction 03 — Layered Glass</p>
+  <h1><span>11 ·</span> Settings, whole — every real group, every real row</h1>
+  <p><b>Look at:</b> this is the settings surface <i>complete</i>, in this direction's floating-rail
+  shape. Nothing here is invented: the five groups, their twenty-two sections and all
+  <b>96 indexed rows</b> are the ones the app renders today, plus the shortcut editor's four nested
+  cards and the MCP connector list, which the index cannot see. Pages 05 and 06 showed the shell and
+  the instruments; this page proves the structure holds when you pour the whole app into it.</p>
+  <div class="mast__rule"></div>
+</header>
+
+<div class="block">
+  <div class="block__h">The rail, corrected to the real structure</div>
+  <p class="wlabel">05 drew a re-grouped eleven-item rail (Setup / Intelligence / Data / About). The
+  app has <b>five groups and twenty-two sections</b>, and twenty-seven rows will not fit a 208px rail
+  at native density. So the rail lists the five <i>groups</i>, and the active one <b>discloses its
+  sections</b> — the pane's sticky headers already carry the same names, which is exactly what the
+  shipping app does. The floating-glass rail, the ⌘F field and the pinned cost footer are unchanged
+  from 05. The number on a group is its indexed row count, so ⌘F and the rail agree.</p>
+  <div class="row-of">
+    <div style="width:236px; padding:14px; border-radius:var(--r-panel); background:var(--app-bg); box-shadow:var(--sh-win)">
+      <nav class="srail" style="position:relative; left:0; top:0; bottom:0; width:208px">
+        <div class="srail__find"><svg><use href="#i-search"/></svg><span class="t-meta">Search settings</span>
+          <span class="kbd" style="margin-left:auto">⌘F</span></div>
+        <div class="navi"><svg><use href="#i-sliders"/></svg>General<span class="n">5</span></div>
+        <div class="navi grp-on"><svg><use href="#i-screen"/></svg>Capture<span class="n">29</span></div>
+        <div class="navi__sub">Capture</div>
+        <div class="navi__sub on">Video</div>
+        <div class="navi__sub">Audio</div>
+        <div class="navi__sub">Privacy</div>
+        <div class="navi"><svg><use href="#i-spark"/></svg>Intelligence<span class="n">45</span></div>
+        <div class="navi"><svg><use href="#i-db"/></svg>Data<span class="n">3</span></div>
+        <div class="navi"><svg><use href="#i-info"/></svg>About<span class="n">14</span></div>
+        <div class="srail__foot">
+          <div class="l"><i class="dot"></i><span class="t-meta">Recording · all three sources</span></div>
+          <div class="l"><span class="t-meta is-mono is-num">270 MB today</span>
+            <span class="t-meta subtle is-mono is-num" style="margin-left:auto">34.2 GB kept</span></div>
+        </div>
+      </nav>
+    </div>
+    <div style="max-width:56ch">
+      <p class="t-label" style="margin-bottom:8px">The twenty-two sections, in order</p>
+      <p class="wlabel"><b>General</b> — Appearance · Startup · Shortcuts<br>
+        <b>Capture</b> — Capture · Video · Audio · Privacy<br>
+        <b>Intelligence</b> — Providers · Ask AI · User Context · OCR · Transcription · Speakers ·
+        Semantic Search<br>
+        <b>Data</b> — Storage · Access<br>
+        <b>About</b> — License &amp; Trial · About · Developer</p>
+      <p class="wlabel" style="margin-top:12px">One rail entry can hold several stacked cards: rail
+      “Providers” carries <i>Providers</i>, <i>Connected providers</i>, <i>Default model</i>,
+      <i>Status</i> <b>and</b> <i>MCP connectors</i>; rail “Speakers” carries <i>Speaker analysis</i>
+      and <i>Your voice</i>; rail “OCR” carries <i>OCR &amp; Previews</i> and <i>Preview Cache</i>.
+      The section is the anchor, the card is the grouping.</p>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — the shell, on General.</b> Everything below is the same pane at a
+  different scroll offset. Note the shortcut editor: its four nested cards are <b>bare</b> — a hairline
+  container inside the plate, not a second plate — because a plate inside a plate is exactly the
+  box-in-box this direction refuses. Twenty-one rebindable actions live there and <i>none</i> of them
+  is in the ⌘F index; only the umbrella toggle is.</p>
+  <div class="win win--1100">
+    <div class="tbar tbar--static">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <button class="btn btn--ghost btn--sm" style="margin-left:6px"><svg><use href="#i-chevl"/></svg>Overview</button>
+      <span class="tbar__title">Settings</span>
+      <div class="tbar__sp"></div>
+      <span class="savechip"><svg><use href="#i-check"/></svg>All changes saved · <span class="is-mono is-num">14:41</span></span>
+      <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+    <div class="setwrap">
+      <nav class="srail">
+        <div class="srail__find"><svg><use href="#i-search"/></svg><span class="t-meta">Search settings</span>
+          <span class="kbd" style="margin-left:auto">⌘F</span></div>
+        <div class="navi grp-on"><svg><use href="#i-sliders"/></svg>General<span class="n">5</span></div>
+        <div class="navi__sub on">Appearance</div>
+        <div class="navi__sub">Startup</div>
+        <div class="navi__sub">Shortcuts</div>
+        <div class="navi"><svg><use href="#i-screen"/></svg>Capture<span class="n">29</span></div>
+        <div class="navi"><svg><use href="#i-spark"/></svg>Intelligence<span class="n">45</span></div>
+        <div class="navi"><svg><use href="#i-db"/></svg>Data<span class="n">3</span></div>
+        <div class="navi"><svg><use href="#i-info"/></svg>About<span class="n">14</span></div>
+        <div class="srail__foot">
+          <div class="l"><i class="dot"></i><span class="t-meta">Recording · all three sources</span></div>
+          <div class="l"><span class="t-meta is-mono is-num">270 MB today</span>
+            <span class="t-meta subtle is-mono is-num" style="margin-left:auto">34.2 GB kept</span></div>
+        </div>
+      </nav>
+      <div class="spane">
+        <div class="sh"><p class="t-title" style="margin:0">General</p>
+          <span class="t-meta">Appearance, startup, shortcuts</span></div>
+
+        <div class="gsec">
+          <div class="gsec__h"><span class="t-label">Appearance</span>
+            <span class="t-meta">Theme switches immediately when saved and is also available from every titlebar.</span></div>
+          <div class="grp">
+            <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+              <span class="grow__txt" style="width:100%"><span class="grow__lbl">Theme</span>
+                <span class="grow__sub">System follows your OS setting; pick Light or Dark to override it.</span></span>
+              <div style="padding:8px 0 2px"><span class="seg seg--lg"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span></div>
+            </div>
+            <div class="grow">
+              <span class="grow__txt"><span class="grow__lbl">Follow live recording</span>
+                <span class="grow__sub">Keep the timeline pinned to the latest captured data while recording</span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="gsec">
+          <div class="gsec__h"><span class="t-label">Startup</span></div>
+          <div class="grp">
+            <div class="grow">
+              <span class="grow__txt"><span class="grow__lbl">Open Mnema on</span>
+                <span class="grow__sub">The surface a freshly launched window lands on. Switch anytime with ⌘1 / ⌘2.</span></span>
+              <span class="grow__val"><span class="seg"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span></span>
+            </div>
+            <div class="grow">
+              <span class="grow__txt"><span class="grow__lbl">Auto-start recording on launch</span>
+                <span class="grow__sub">Begin capturing immediately when the app opens</span></span>
+              <span class="grow__val"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span>
+                <span class="sw on"><i></i></span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="gsec">
+          <div class="gsec__h"><span class="t-label">Keyboard Shortcuts</span>
+            <span class="t-meta">Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears.</span>
+            <span style="margin-left:auto; display:flex; gap:4px">
+              <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button>
+              <button class="btn btn--ghost btn--sm">Restore all defaults</button></span></div>
+          <div class="grp">
+            <div class="grow">
+              <span class="grow__txt"><span class="grow__lbl">Global shortcuts</span>
+                <span class="grow__sub">Use system-wide shortcuts for recording and showing Mnema while it
+                  is in the background. Background shortcuts require Command/Control or Alt.</span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span>
+            </div>
+            <div style="padding:2px 0 12px; display:flex; flex-direction:column; gap:8px">
+              <div class="bare">
+                <div class="bare__h"><span class="t-label">Recording &amp; window</span></div>
+                <div class="sc"><span class="l">Start or stop recording</span>
+                  <span class="rec"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">R</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-undo"/></svg></button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button></div>
+                <div class="sc"><span class="l">Pause or resume recording</span>
+                  <span class="rec"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">P</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-undo"/></svg></button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button></div>
+                <div class="sc"><span class="l">Show or hide Mnema</span>
+                  <span class="rec"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">M</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-undo"/></svg></button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button></div>
+                <div class="sc"><span class="l">Summon Quick Recall</span>
+                  <span class="rec"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd kbd--wide">Space</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-undo"/></svg></button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button></div>
+              </div>
+              <div class="bare">
+                <div class="bare__h"><span class="t-label">App</span>
+                  <span class="t-meta subtle" style="margin-left:8px">Open settings · Open debug · Toggle screen ·
+                    Toggle microphone · Toggle system audio · Show keyboard shortcuts</span></div>
+                <div class="sc"><span class="l">Open settings</span>
+                  <span class="rec"><span class="kbd">⌘</span><span class="kbd">,</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-undo"/></svg></button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <p class="wlabel"><b>1100 × 720 — ⌘F, one field across all 96 rows.</b> A hit renders with its
+  breadcrumb <i>and its live control</i>, so you change the setting where you found it and never learn
+  the navigation. Index completeness is enforced by a test — every registered row has an entry — which
+  is why the rail's per-group counts can be shown at all. Note the honest gap: the shortcut
+  <i>actions</i> are unindexed, so “shortcut” finds the umbrella toggle, not “Seek back 5 seconds”.</p>
+  <div class="win win--1100">
+    <div class="tbar tbar--static">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <button class="btn btn--ghost btn--sm" style="margin-left:6px"><svg><use href="#i-chevl"/></svg>Overview</button>
+      <span class="tbar__title">Settings</span>
+      <div class="tbar__sp"></div>
+      <span class="savechip"><svg><use href="#i-check"/></svg>All changes saved · <span class="is-mono is-num">14:41</span></span>
+      <button class="pill"><i class="dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+    <div class="setwrap">
+      <nav class="srail">
+        <div class="srail__find" style="background:var(--app-surface);color:var(--app-text-strong);box-shadow:inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring)">
+          <svg style="color:var(--app-accent)"><use href="#i-search"/></svg>
+          <span class="t-ui">audio<span class="caret"></span></span></div>
+        <div class="navi"><svg><use href="#i-sliders"/></svg>General<span class="n">0</span></div>
+        <div class="navi"><svg><use href="#i-screen"/></svg>Capture<span class="n">7</span></div>
+        <div class="navi"><svg><use href="#i-spark"/></svg>Intelligence<span class="n">4</span></div>
+        <div class="navi"><svg><use href="#i-db"/></svg>Data<span class="n">0</span></div>
+        <div class="navi"><svg><use href="#i-info"/></svg>About<span class="n">1</span></div>
+        <div class="srail__foot">
+          <div class="l"><i class="dot"></i><span class="t-meta">Recording · all three sources</span></div>
+          <div class="l"><span class="t-meta is-mono is-num">270 MB today</span>
+            <span class="t-meta subtle is-mono is-num" style="margin-left:auto">34.2 GB kept</span></div>
+        </div>
+      </nav>
+      <div class="spane">
+        <div class="sh"><p class="t-title" style="margin:0">12 rows match “audio”</p>
+          <span class="t-meta">Label, synonyms and section are searched. Esc clears.</span></div>
+        <div class="gsec">
+          <div class="grp">
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Capture › Capture</span>
+              <span class="hit__l">System <mark>Audio</mark></span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Capture › Capture</span>
+              <span class="hit__l">System <mark>audio</mark> access</span></span>
+              <span class="grow__val"><button class="btn btn--sm">Open System Settings</button></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Capture › Capture</span>
+              <span class="hit__l"><mark>Audio</mark> Activity Monitoring</span></span>
+              <span class="grow__val"><span class="t-meta subtle">read-only</span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Capture › Capture</span>
+              <span class="hit__l">System <mark>Audio</mark> Activity Sensitivity</span></span>
+              <span class="grow__val" style="width:220px"><span class="slider" style="width:200px">
+                <span class="slider__t"></span><span class="slider__f" style="width:42%"></span>
+                <span class="slider__k" style="left:42%"></span></span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Capture › Privacy</span>
+              <span class="hit__l">Filter system <mark>audio</mark></span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Intelligence › Transcription</span>
+              <span class="hit__l">Enable <mark>audio</mark> transcription</span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Intelligence › Transcription</span>
+              <span class="hit__l">Transcribe system <mark>audio</mark></span></span>
+              <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">Intelligence › Speakers</span>
+              <span class="hit__l">Helper timeout</span>
+              </span><span class="grow__val"><span class="t-meta is-mono is-num muted">15 m</span></span></div>
+            <div class="hit"><span class="hit__t"><span class="hit__bc">About › Developer</span>
+              <span class="hit__l">Native capture debug logging</span></span>
+              <span class="grow__val"><span class="sw"><i></i></span></span></div>
+          </div>
+          <p class="help t-meta subtle">Three more rows match in <b>Capture › Audio</b> — the Microphone
+            Controller's device rows. The shortcut editor's <i>Audio Drawer</i> actions are not indexed and
+            do not appear.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">Capture — 29 indexed rows, four sections, one pane</div>
+  <p class="wlabel">The pane, unrolled to its natural height so every row is visible at once — this is
+  <i>the same pane</i> as the window above, not a second window. Rows tagged <span class="cond">if</span>
+  render only when their dependency is on; the app hides them, it does not disable them. The two
+  custom instruments from 05/06 (capture rate, and the sensitivity sliders) keep their consequence
+  readouts.</p>
+  <div class="unroll">
+    <div class="crumb"><span class="g">Capture</span><span class="s">4 sections · 29 indexed rows</span></div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Capture</span>
+        <span class="t-meta">What gets recorded and how often segments roll over.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Screen</span>
+          <span class="grow__sub">Capture the display</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Microphone</span>
+          <span class="grow__sub">Capture audio from microphone</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">System Audio</span>
+          <span class="grow__sub">Capture Mac system audio (macOS 15+) — meetings, videos, and app sound.</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">System audio access
+            <span class="cond">if blocked</span></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice warn">macOS has no API to query
+            this permission. Nothing has been recorded from the tap since it was rebuilt — if you never
+            granted “Screen &amp; System Audio Recording”, grant it and record a few seconds to confirm.
+            <span style="display:inline-flex;gap:6px;margin-left:6px;vertical-align:-6px">
+              <button class="btn btn--sm">Open System Settings</button>
+              <button class="btn btn--ghost btn--sm">Dismiss</button></span></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Segment Duration</span>
+            <span class="grow__sub">How long each recording segment is before a new one starts.</span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:100%"></span>
+              <span class="slider__tick" style="left:0"></span><span class="slider__tick" style="left:50%"></span>
+              <span class="slider__k" style="left:100%"></span></div>
+            <div class="sticks"><span style="left:0">10 s</span><span style="left:50%">2 m</span>
+              <span class="r">5 m — the ceiling</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Inactivity</span>
+        <span class="t-meta">Pause &amp; resume rules when you step away.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Pause capture when idle</span>
+          <span class="grow__sub">Automatically pause recording after the system has been idle, and resume
+            when system activity is detected</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Idle timeout <span class="cond">if idle-pause</span></span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:33%"></span>
+              <span class="slider__k" style="left:33%"></span></div>
+            <div class="sticks"><span style="left:0">5 s</span><span style="left:33%">100 s</span><span class="r">300 s</span></div>
+            <div class="readout"><span class="big">Pause after 1 m 40 s idle</span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Activity sources <span class="cond">if idle-pause</span></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice">Keyboard, pointer and audio
+            activity all count as presence. Read-only.</div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Microphone Voice Detection
+            <span class="cond">if idle-pause</span></span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">Silero</span>
+              <span class="db">Neural VAD — the most accurate at telling speech from room noise.</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">WebRTC</span>
+              <span class="db">Cheaper energy-based detector; fine in a quiet room.</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Off</span>
+              <span class="db">Treat any sound above the sensitivity threshold as activity.</span></span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Microphone Activity Sensitivity
+            <span class="cond">if idle-pause + VAD off</span></span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:55%"></span>
+              <span class="slider__k" style="left:55%"></span></div>
+            <div class="sticks"><span style="left:0">0</span><span style="left:55%">55</span><span class="r">100 %</span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">System Audio Activity Sensitivity
+            <span class="cond">if idle-pause</span></span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:42%"></span>
+              <span class="slider__k" style="left:42%"></span></div>
+            <div class="sticks"><span style="left:0">0</span><span style="left:42%">42</span><span class="r">100 %</span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Audio Activity Monitoring
+            <span class="cond">if idle-pause</span></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice">Microphone and system audio are
+            watched for sound while capture is paused; the first sound resumes it. Read-only.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Unsaved changes blocked <span class="cond">if invalid</span></span>
+        <span class="t-meta">Resolve these before recording settings can save.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Validation</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice warn">
+            ⚠ Custom resolution height must be an even number.<br>
+            ⚠ Idle timeout must be at least 5 seconds.</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Video Output</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Screen Capture Rate</span>
+            <span class="grow__sub">How often a snapshot of your screen is captured. More frequent snapshots
+              produce larger files.</span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:33%"></span>
+              <span class="slider__tick" style="left:0"></span><span class="slider__tick" style="left:33%"></span>
+              <span class="slider__tick" style="left:66%"></span><span class="slider__tick" style="right:0"></span>
+              <span class="slider__k" style="left:33%"></span></div>
+            <div class="sticks"><span style="left:0">0.5</span><span style="left:33%">2</span>
+              <span style="left:66%">4</span><span class="r">8 fps</span></div>
+            <div class="readout"><span class="big">2 fps → ≈ 1.4 GB / day</span>
+              <span class="t-meta den">≈ 42 GB / month · 126 GB at a 90-day keep ·
+                <b class="strong is-mono is-num">of 494 GB free</b></span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Screen Resolution</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="notice info">Downscaling is applied by ScreenCaptureKit on macOS 15+ — supported on
+              this Mac.</div>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+              <span class="seg"><span class="seg__i on">Original</span><span class="seg__i">1080p</span>
+                <span class="seg__i">720p</span><span class="seg__i">540p</span><span class="seg__i">Custom</span></span>
+              <span class="input" style="width:92px"><span class="ph">2560</span></span>
+              <span class="t-meta subtle">×</span>
+              <span class="input" style="width:92px"><span class="ph">1600</span></span>
+            </div>
+            <span class="t-meta subtle">Original records at the display's native size. Custom values must be even.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Video Bitrate</span>
+        <span class="t-meta">How much data is encoded per second of video. Applied on macOS 15+ via ScreenCaptureKit.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Bitrate</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div style="display:flex; align-items:center; gap:10px">
+              <span class="seg"><span class="seg__i">Low</span><span class="seg__i on">Medium</span>
+                <span class="seg__i">High</span><span class="seg__i">Custom</span></span>
+              <span class="step"><span class="is-num">8</span><b><svg><use href="#i-chevud"/></svg></b></span>
+              <span class="t-meta subtle">Mbps</span>
+            </div>
+            <span class="t-meta subtle">Medium ≈ 8 Mbps at 2 fps — the default this Mac's numbers above assume.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Microphone Controller</span>
+        <span style="margin-left:auto"><button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button></span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Active Device</span>
+            <span class="grow__sub">The microphone currently in use.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="dot" style="background:var(--app-accent);box-shadow:none"></span>
+              <span class="t-ui strong">MacBook Pro Microphone</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">48 kHz · built-in</span></div></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Available Devices</span>
+            <span class="grow__sub">Microphones detected on this Mac.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="mrow2"><span class="t-ui">MacBook Pro Microphone</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">48 kHz</span></div>
+            <div class="mrow2"><span class="t-ui">AirPods Pro</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">16 kHz · HFP</span></div>
+            <div class="mrow2"><span class="t-ui">Scarlett Solo USB</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">48 kHz</span></div></div></div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Preference</span>
+          <span class="grow__sub">Which microphone capture should use.</span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i">System Default</span>
+            <span class="seg__i on">Specific Device</span></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Device
+            <span class="cond">if specific</span></span>
+            <span class="grow__sub">Pick the microphone to lock to.</span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">MacBook Pro Microphone</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Scarlett Solo USB</span></span></div>
+          </div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">On Disconnect
+          <span class="cond">if specific</span></span>
+          <span class="grow__sub">What to do when the chosen microphone disconnects.</span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i on">Fallback to Default</span>
+            <span class="seg__i">Wait for Same Device</span></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Error <span class="cond">if mic error</span></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice warn">The chosen microphone stopped
+            responding and capture fell back to the default device.
+            <button class="btn btn--ghost btn--sm" style="vertical-align:-6px;margin-left:6px">Dismiss</button></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Microphone
+            <span class="cond">loading / failed</span></span></span>
+          <div style="padding:7px 0 3px; width:100%; display:flex; gap:10px; align-items:center">
+            <span class="spin"></span><span class="t-meta">Loading microphone state…</span>
+            <span class="t-meta subtle">— or, on failure —</span>
+            <button class="btn btn--sm">Retry</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Privacy</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Capture frame context</span>
+          <span class="grow__sub">Store app, window, and supported browser context with frames</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Browser URL mode</span>
+            <span class="grow__sub">How much of a captured browser URL is stored with the frame.</span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Off</span>
+              <span class="db">No page address is stored at all.</span></span></div>
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">Sanitized</span>
+              <span class="db">Host and path only — query strings and fragments are dropped.</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Full</span>
+              <span class="db">The whole address, including query parameters.</span></span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Browser URL access (Firefox / Zen)
+            <span class="cond">if gecko installed</span></span>
+            <span class="grow__sub">Firefox and Zen have no scriptable URL like Chrome/Safari; reading their
+              page address needs the macOS Accessibility permission.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice info">Accessibility is not granted.
+            <span style="display:inline-flex;gap:6px;margin-left:6px;vertical-align:-6px">
+              <button class="btn btn--sm">Grant access</button>
+              <button class="btn btn--ghost btn--sm">Open System Settings</button>
+              <button class="btn btn--ghost btn--sm">Recheck</button></span></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Excluded Apps</span>
+            <span class="grow__sub">Apps whose visible content is never recorded.</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="stat-card">
+              <div class="mrow2"><span class="gicon" style="background:#4b8bf5">1P</span>
+                <span class="t-ui">1Password</span>
+                <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+              <div class="mrow2"><span class="gicon" style="background:#3ba55c">Sg</span>
+                <span class="t-ui">Signal</span>
+                <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+            </div>
+            <span class="input" style="width:280px"><svg style="width:12px;height:12px;color:var(--app-text-subtle)"><use href="#i-search"/></svg>
+              <span class="ph">Add an app…</span><span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span>
+          </div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Filter system audio</span>
+          <span class="grow__sub">Also keep audio from excluded apps out of recordings.</span></span>
+          <span class="grow__val"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span>
+            <span class="sw on"><i></i></span></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">Intelligence — 45 indexed rows, seven sections, nine cards</div>
+  <p class="wlabel">The largest group by a distance, and the one that proves the shape: three
+  master switches (AI features → Ask AI / User Context), one global default model that every feature
+  inherits, and a per-feature override that reads “Global default model” until you change it. Every
+  model row carries <b>size · where it runs · a verdict computed against this Mac</b> — the verdict,
+  not the number, is the control's output. Sizes come from the corrected registry.</p>
+  <div class="unroll">
+    <div class="crumb"><span class="g">Intelligence</span><span class="s">7 sections · 45 indexed rows</span></div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Providers</span>
+        <span class="t-meta">Connect the AI providers Mnema can use and choose one global default model.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%; display:flex; flex-direction:row; align-items:center; gap:10px">
+            <span style="flex:1"><span class="grow__lbl">Enable AI features</span>
+              <span class="grow__sub">The master switch for everything AI in Mnema. While off, nothing is
+                sent to any AI model. Off by default.</span></span>
+            <span class="sw on"><i></i></span></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Connected providers</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Providers</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="stat-card">
+              <div class="l"><span class="t-ui strong">Anthropic</span><span class="chip">cloud</span>
+                <span class="verdict v-ok"><svg><use href="#i-key"/></svg>key in keychain</span>
+                <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+              <div class="mrow2"><span class="t-meta" style="width:74px">Label</span>
+                <span class="input" style="flex:1"><span>Anthropic</span></span></div>
+              <div class="mrow2"><span class="t-meta" style="width:74px">API key</span>
+                <span class="input" style="flex:1"><span class="ph">••••••••••••••••</span></span>
+                <button class="btn btn--sm">Save key</button><button class="btn btn--ghost btn--sm">Clear</button></div>
+            </div>
+            <div class="stat-card">
+              <div class="l"><span class="t-ui strong">Ollama</span><span class="chip">local</span>
+                <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+              <div class="mrow2"><span class="t-meta" style="width:74px">Endpoint</span>
+                <span class="input" style="flex:1"><span class="is-mono">http://127.0.0.1:11434</span></span></div>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap">
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Anthropic</button>
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>OpenAI</button>
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>OpenAI-compatible</button>
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Ollama</button>
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Llamafile</button>
+            </div>
+            <span class="t-meta subtle">Keys live in the macOS keychain, never in a settings file.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Default model</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Global default model</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <span class="input" style="width:420px"><span>claude-sonnet-4-5 · Anthropic</span>
+              <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span>
+            <span class="t-meta subtle">Every AI feature inherits this unless it sets its own override.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Status</span>
+        <span style="margin-left:auto"><button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button></span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">AI runtime</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="verdict v-ok"><svg><use href="#i-check"/></svg>ready</span>
+              <span class="t-meta">claude-sonnet-4-5 via Anthropic</span>
+              <button class="btn btn--sm" style="margin-left:auto">Test connection</button></div>
+            <span class="t-meta subtle">Test connection runs one structured round trip against the global
+              default model.</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">MCP connectors</span>
+        <span class="t-meta">A connector works only when it is both enabled AND authorized — two separate things.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Connectors</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="stat-card">
+              <div class="mrow2"><span class="t-ui strong">GitHub</span><span class="chip">OAuth</span>
+                <span class="verdict v-ok"><svg><use href="#i-check"/></svg>authorized</span>
+                <span class="t-meta subtle">18 tools · 6 active</span>
+                <span style="margin-left:auto; display:flex; gap:6px; align-items:center">
+                  <button class="btn btn--ghost btn--sm">Disconnect</button><span class="sw on"><i></i></span></span></div>
+              <div class="mrow2"><span class="t-ui strong">Notion</span><span class="chip">Bearer</span>
+                <span class="verdict v-ok"><svg><use href="#i-key"/></svg>secret in keychain</span>
+                <span style="margin-left:auto; display:flex; gap:6px; align-items:center">
+                  <button class="btn btn--ghost btn--sm">Configure</button><span class="sw on"><i></i></span></span></div>
+              <div class="mrow2"><span class="t-ui strong">Filesystem</span><span class="chip">stdio</span>
+                <span class="verdict v-warn"><svg><use href="#i-warn"/></svg>needs Node — install from nodejs.org</span>
+                <span style="margin-left:auto; display:flex; gap:6px; align-items:center">
+                  <button class="btn btn--ghost btn--sm">Configure</button><span class="sw"><i></i></span></span></div>
+              <div class="mrow2"><span class="t-ui strong">Linear</span><span class="chip">OAuth</span>
+                <span class="t-meta subtle">not connected</span>
+                <span style="margin-left:auto; display:flex; gap:6px; align-items:center">
+                  <button class="btn btn--sm">Connect</button><span class="sw"><i></i></span></span></div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px">
+              <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Add connector</button>
+              <span class="t-meta subtle">Secrets live only in the macOS keychain — never in Mnema's settings.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Ask AI</span>
+        <span class="t-meta">Uses the global default model unless overridden below.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Enable Ask AI</span>
+          <span class="grow__sub">Allow Quick Access to answer questions over your redacted capture history.
+            Off by default.</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Fetch pages you visited</span>
+          <span class="grow__sub">Lets Ask AI re-request a page you visited (its address minus any secrets)
+            over the network to check its current state. Off by default.</span></span>
+          <span class="grow__val"><span class="sw"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Limit tool calls per question</span>
+          <span class="grow__sub">Cap how many follow-up searches Ask AI can run for one question. Off means
+            no cap.</span></span>
+          <span class="grow__val"><span class="step"><span class="is-num">12</span><b><svg><use href="#i-chevud"/></svg></b></span>
+            <span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Model override</span></span>
+          <span class="grow__val"><span class="input" style="width:280px"><span class="ph">Global default model</span>
+            <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">User Context</span>
+        <span class="t-meta">A private, on-device understanding of your activity. High-consent and off by default.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Derive context continuously</span>
+          <span class="grow__sub">Needs a provider and default model configured above.</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Derivation status</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="verdict v-ok"><svg><use href="#i-check"/></svg>active</span>
+              <span class="t-meta is-num">318 activities · 24 conclusions</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">last run 6 min ago</span></div>
+            <span class="t-meta subtle is-num">≈ 1.24 M tokens used — an estimate, not a billed figure.
+              Last pass: 3 conclusions, 2 below the formation bar, 1 guardrail-suppressed.</span></div></div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Derivation Budget</span>
+          <span class="grow__sub">Paces background work over time so tokens are spent as a trickle, never a
+            one-time bill. A higher tier covers more of your history per pass.</span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i">Light</span>
+            <span class="seg__i on">Balanced</span><span class="seg__i">Thorough</span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">History Backfill</span>
+          <span class="grow__sub">Go deeper — derive all of history</span></span>
+          <span class="grow__val"><span class="sw"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Run derivation</span></span>
+          <span class="grow__val"><button class="btn btn--sm">Run derivation now</button>
+            <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button>
+            <button class="btn btn--danger btn--sm"><svg><use href="#i-trash"/></svg>Wipe User Context</button></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">OCR &amp; Previews</span>
+        <span class="t-meta">Choose the OCR engine, inspect model availability, and tune preview caching.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Enable OCR</span>
+          <span class="grow__sub">Automatically queue OCR for captured screen frames — 1,284 frames in the backlog</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Provider</span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">Apple Vision</span>
+              <span class="db">Built into macOS. No download, no model to manage.</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Tesseract</span>
+              <span class="db">Open-source engine with per-language trained data you download.</span></span></div>
+          </div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Model</span></span>
+          <span class="grow__val"><span class="input" style="width:280px"><span>Apple Vision (system)</span>
+            <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Language <span class="cond">if tesseract</span></span></span>
+          <span class="grow__val"><span class="input" style="width:220px"><span>English</span>
+            <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Recognition mode <span class="cond">if apple vision</span></span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i">Fast</span><span class="seg__i on">Accurate</span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Language correction <span class="cond">if apple vision</span></span>
+          <span class="grow__sub">Let Apple Vision spend extra work correcting recognized text using language models</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Page segmentation <span class="cond">if tesseract</span></span>
+          <span class="grow__sub">Use Auto for mixed layouts, Single block for paragraph regions.</span></span>
+          <span class="grow__val"><span class="pop">Auto <b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Image preprocessing <span class="cond">if tesseract</span></span>
+          <span class="grow__sub">Grayscale usually works best for clean UI text.</span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i on">Grayscale</span><span class="seg__i">Thresholded</span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Upscale before OCR <span class="cond">if tesseract</span></span>
+          <span class="grow__sub">Tesseract works best around 300 DPI.</span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i">1×</span><span class="seg__i on">2×</span>
+            <span class="seg__i">3×</span><span class="seg__i">4×</span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Character whitelist <span class="cond">if tesseract</span></span></span>
+          <span class="grow__val"><span class="input" style="width:280px"><span class="ph">Leave empty for all characters</span></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">OCR availability</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice">Apple Vision is available on this
+            Mac; no download is required.</div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Selected model status</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="t-ui strong">Apple Vision</span>
+              <span class="verdict v-ok"><svg><use href="#i-check"/></svg>runs on this Mac · no download</span>
+              <button class="btn btn--danger btn--sm" style="margin-left:auto"><svg><use href="#i-trash"/></svg>Delete unused OCR models</button></div>
+            <span class="t-meta subtle">Tesseract <span class="is-num">eng.traineddata</span> · 22.4 MB ·
+              Apache-2.0 · installed at ~/Library/Application Support/day.mnema/models</span></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Preview Cache</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Cache duration</span>
+          <span class="grow__sub">In-memory cache for frame and image previews. Cached entries expire
+            automatically after the selected duration.</span></span>
+          <span class="grow__val"><span class="pop">1 hour <b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Transcription</span>
+        <span class="t-meta">Speech-to-text provider and model setup for microphone and system audio.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Enable audio transcription</span>
+          <span class="grow__sub">Master switch for source-specific audio transcription</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Transcribe microphone</span>
+          <span class="grow__sub">Automatically queue transcription for committed microphone audio segments</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Transcribe system audio</span>
+          <span class="grow__sub">Transcribe system audio only when speech is detected.</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Provider</span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">Parakeet</span>
+              <span class="db">On-device, fastest of the three local engines.</span></span>
+              <span class="verdict v-ok">1.4 GB RAM · on device</span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Local Whisper</span>
+              <span class="db">Whisper.cpp with a downloaded model.</span></span>
+              <span class="verdict v-warn">3.0 GB RAM · tight on 16 GB</span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Apple Speech (on-device)</span>
+              <span class="db">Built into macOS; needs Speech Recognition permission.</span></span>
+              <span class="verdict v-ok">800 MB RAM · on device</span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Deepgram (cloud)</span>
+              <span class="db">Your own Deepgram account. Audio leaves this Mac.</span></span>
+              <span class="verdict v-cloud"><svg><use href="#i-globe"/></svg>cloud · consent required</span></div>
+          </div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Model</span></span>
+          <span class="grow__val"><span class="input" style="width:280px"><span>parakeet-tdt-0.6b-v3 · int8</span>
+            <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Language</span>
+          <span class="grow__sub">Use auto for automatic language detection, or enter a language hint such as en.</span></span>
+          <span class="grow__val"><span class="input" style="width:220px"><span>auto</span>
+            <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Deepgram API key <span class="cond">if deepgram</span></span></span>
+          <span class="grow__val"><span class="input" style="width:220px"><span class="ph">••••••••••••</span></span>
+            <button class="btn btn--sm">Save key</button><button class="btn btn--ghost btn--sm">Check connection</button>
+            <button class="btn btn--ghost btn--sm">Remove key</button></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Parakeet memory mode <span class="cond">if parakeet</span></span></span>
+          <span class="grow__val"><span class="seg"><span class="seg__i on">Balanced</span>
+            <span class="seg__i">Low memory</span><span class="seg__i">Performance</span></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Idle unload seconds
+          <span class="cond">if parakeet + balanced</span></span></span>
+          <span class="grow__val"><span class="step"><span class="is-num">300</span><b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Chunk seconds <span class="cond">if parakeet</span></span>
+          <span class="grow__sub">Chunking limits peak activation memory; set chunk seconds to 0 to disable chunking.</span></span>
+          <span class="grow__val"><span class="step"><span class="is-num">180</span><b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Selected model status</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="t-ui strong">parakeet-tdt-0.6b-v3 · int8</span>
+              <span class="t-meta subtle is-num">612 MB</span>
+              <span class="verdict v-ok"><svg><use href="#i-check"/></svg>installed · runs on this Mac</span>
+              <button class="btn btn--danger btn--sm" style="margin-left:auto"><svg><use href="#i-trash"/></svg>Delete unused transcription models</button></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Speaker analysis</span>
+        <span class="t-meta">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Speaker separation</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="mrow2"><span style="flex:1"><span class="grow__lbl">Separate speakers in transcripts</span>
+              <span class="grow__sub">Queue local diarization after successful microphone transcription</span></span>
+              <span class="sw on"><i></i></span></div>
+            <div class="mrow2"><span style="flex:1"><span class="grow__lbl">Recognize saved people</span>
+              <span class="grow__sub">Opt in to matching against confirmed local Person voice profiles</span></span>
+              <span class="sw"><i></i></span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Helper timeout</span>
+            <span class="grow__sub">Stops speaker analysis if the local helper runs too long. Existing queued
+              jobs keep the timeout they were created with.</span></span>
+          <div class="inst" style="width:100%">
+            <div class="slider"><span class="slider__t"></span><span class="slider__f" style="width:24%"></span>
+              <span class="slider__k" style="left:24%"></span></div>
+            <div class="sticks"><span style="left:0">1 m</span><span style="left:24%">15 m</span><span class="r">60 m</span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Speaker model</span>
+            <span class="grow__sub">Pick a preset by intent. Recognition is scoped per preset.</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <span class="input" style="width:340px"><span>speakrs · pyannote-community-1 + WeSpeaker</span>
+              <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span>
+            <div class="stat-card">
+              <div class="l"><span class="t-ui strong">speakrs</span>
+                <span class="t-meta subtle is-num">419 MB</span>
+                <span class="verdict v-ok"><svg><use href="#i-check"/></svg>installed · CoreML on this Mac</span>
+                <button class="btn btn--danger btn--sm" style="margin-left:auto">Delete speaker model</button></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Your voice</span>
+        <span class="t-meta">Record a short sample so Mnema can label your turns with your name instead of “Speaker 1”.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Voiceprint</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="stat-card">
+              <div class="l"><span class="verdict v-ok"><svg><use href="#i-check"/></svg>enrolled</span>
+                <span class="t-meta">Recorded 2 weeks ago · 15 s sample</span></div>
+              <span class="t-meta subtle">“The quick brown fox jumps over the lazy dog near the riverbank.”</span>
+              <div class="l"><span class="meter"><i class="on" style="height:5px"></i><i class="on" style="height:10px"></i>
+                <i class="on" style="height:13px"></i><i style="height:7px"></i><i style="height:4px"></i></span>
+                <button class="btn btn--sm">Record again (15 s)</button>
+                <button class="btn btn--ghost btn--sm">Play the take</button>
+                <button class="btn btn--danger btn--sm" style="margin-left:auto">Delete voiceprint</button></div></div>
+          </div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Label my voice automatically</span>
+          <span class="grow__sub">When Mnema is confident a voice is yours, it applies your name without
+            asking. Turn this off and it suggests your name and waits for you to confirm.</span></span>
+          <span class="grow__val"><span class="sw on"><i></i></span></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Semantic Search Model</span>
+        <span class="t-meta">Meaning-based search runs fully on-device. Nothing downloads until you choose a model.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%; display:flex; flex-direction:row; align-items:center; gap:10px">
+            <span style="flex:1"><span class="grow__lbl">Enable semantic search</span>
+              <span class="grow__sub">Fuse meaning-based results with keyword search. Inert until a model below
+                is installed.</span></span>
+            <span class="sw"><i></i></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice">Off. Enabling would embed
+            <b class="is-num">184,206</b> captured anchors — about <b class="is-num">1.2 GB</b> of vectors,
+            processed in the background over roughly a day at this Mac's pace. The coverage meter appears
+            once it is on.</div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Model</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <span class="input" style="width:340px"><span>nomic-embed-text-v1.5 · 768 d</span>
+              <span class="chev" style="margin-left:auto"><svg><use href="#i-chevud"/></svg></span></span>
+            <div class="stat-card">
+              <div class="l"><span class="t-ui strong">nomic-embed-text-v1.5</span>
+                <span class="t-meta subtle is-num">≈ 274 MB</span>
+                <span class="verdict v-warn">not installed</span>
+                <button class="btn btn--sm" style="margin-left:auto">Download (≈ 274 MB)</button></div>
+              <span class="t-meta subtle">Step 1: download · Step 2: use this model</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">General · Data · About — the remaining 22 rows</div>
+  <p class="wlabel">General's three sections are drawn in the shell above; here is everything else the
+  app has. <b>Data</b> is the smallest group in the app and holds the two heaviest decisions on the
+  surface — where the files live and how long they stay — plus the agent door: CLI Access grants.</p>
+  <div class="unroll">
+    <div class="crumb"><span class="g">Data</span><span class="s">2 sections · 3 indexed rows</span></div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Storage</span>
+        <span class="t-meta">Where capture files live on disk and how long they are kept.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Save Directory</span>
+            <span class="grow__sub">Where captures, the database, and model caches live on disk.</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div style="display:flex; gap:8px; align-items:center">
+              <span class="input is-mono" style="flex:1"><span>~/Library/Application Support/day.mnema</span></span>
+              <button class="btn btn--sm">Browse</button></div>
+            <div class="notice warn"><span class="cond">if changed</span> The new location takes effect after
+              a restart.
+              <button class="btn btn--sm" style="vertical-align:-6px;margin-left:6px">Restart Mnema</button></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Retention</span>
+            <span class="grow__sub">Automatically delete captured data after the chosen window.</span></span>
+          <div class="inst" style="width:100%">
+            <div class="ladder"><span>7 days</span><span>30 days</span><span class="on">90 days</span>
+              <span>1 year</span><span>Forever</span></div>
+            <div class="axis">
+              <div class="axis__b"><i style="width:27%"></i></div>
+              <span class="axis__m" style="left:27%"></span>
+              <span class="axis__l is-num" style="left:27%">34.2 GB you already have</span>
+              <span class="axis__l r is-num">126 GB at a 90-day keep</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; margin-top:18px">
+              <button class="btn btn--sm">Run cleanup now</button>
+              <span class="t-meta subtle is-num">Last cleanup 2 days ago — removed 1,204 frames, 18 audio
+                segments, 3.1 GB.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Access</span>
+        <span class="t-meta">Let local tools request time-bounded, redacted access to your Mnema history.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">CLI Access</span></span>
+          <div class="stack" style="padding:7px 0 3px">
+            <div class="notice info"><span class="cond">if request live</span> <b>Claude Code</b> is asking for
+              7 days of searchable text.
+              <span style="display:inline-flex;gap:6px;margin-left:6px;vertical-align:-6px">
+                <button class="btn btn--sm btn--primary">Approve</button>
+                <button class="btn btn--ghost btn--sm">Deny</button></span></div>
+            <span class="t-meta subtle">CLI Access lets local tools request time-bounded access to searchable
+              Mnema text. CLI output does not include media paths, raw database rows, app/window titles,
+              browser URLs, or deep-link URLs.</span>
+            <div style="display:flex; gap:8px; align-items:center">
+              <span class="t-meta is-mono">Installed at /usr/local/bin/mnema</span>
+              <button class="btn btn--sm">Reinstall CLI</button>
+              <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button></div>
+            <div class="stat-card">
+              <div class="mrow2"><span class="dot" style="background:var(--app-accent);box-shadow:none"></span>
+                <span class="t-ui strong">Claude Code</span>
+                <span class="t-meta subtle">search + read · 7 days</span>
+                <span class="t-meta subtle is-num">expires in 4 d</span>
+                <button class="btn btn--danger btn--sm" style="margin-left:auto">Revoke</button></div>
+              <div class="mrow2"><span class="dot dot--off"></span>
+                <span class="t-ui strong">mnema-cli (local shell)</span>
+                <span class="t-meta subtle">search only · 24 hours</span>
+                <span class="t-meta subtle is-num">expired</span>
+                <button class="btn btn--danger btn--sm" style="margin-left:auto">Revoke</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="unroll">
+    <div class="crumb"><span class="g">About</span><span class="s">3 sections · 14 indexed rows</span></div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">License &amp; Trial</span>
+        <span class="t-meta">Buy once, keep it forever. Everything is verified offline — no account, no phoning home.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Status</span>
+            <span class="grow__sub">Your current trial or license state.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="verdict v-ok"><svg><use href="#i-check"/></svg>licensed</span>
+              <span class="t-meta">2 of 3 devices in use</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">update window runs to 14 Mar 2027</span></div>
+            <div class="l"><button class="btn btn--ghost btn--sm">Free up my devices</button>
+              <button class="btn btn--ghost btn--sm">Buy another license</button>
+              <button class="btn btn--ghost btn--sm">Help</button></div></div></div>
+        </div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Refresh license status</span>
+          <span class="grow__sub">Re-check with the license server — a renewal or freed-up device lands right away.</span></span>
+          <span class="grow__val"><span class="t-meta subtle">Checked just now</span>
+            <button class="btn btn--sm">Refresh</button></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Renew <span class="cond">label swaps with Buy Mnema</span></span>
+          <span class="grow__sub">Renew ($29) to extend your update window for another year of new builds.</span></span>
+          <span class="grow__val"><button class="btn btn--primary btn--sm">Renew ($29)</button></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Activate license</span>
+          <span class="grow__sub">Paste the license key from your purchase email to unlock recording on this device.</span></span>
+          <span class="grow__val"><span class="input is-mono" style="width:260px"><span class="ph">MNEMA-XXXX-XXXX-XXXX</span></span>
+            <button class="btn btn--sm">Activate</button></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">About</span>
+        <span class="t-meta">Version, build details, and the projects Mnema is built on.</span></div>
+      <div class="grp">
+        <div class="grow">
+          <span class="gicon ic-mnema" style="width:32px;height:32px"><svg style="width:15px;height:15px"><use href="#i-layers"/></svg></span>
+          <span class="grow__txt"><span class="grow__lbl">Mnema <span class="is-mono is-num">0.1.9</span>
+            <span class="chip" style="vertical-align:-4px">stable</span></span>
+            <span class="grow__sub">macOS 15.4 · arm64 · day.mnema</span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Copy details</span>
+          <span class="grow__sub">Copy version and build details to the clipboard.</span></span>
+          <span class="grow__val"><button class="btn btn--sm">Copy details</button></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Updates</span>
+        <span class="t-meta">Mnema checks the selected channel at startup after onboarding.</span></div>
+      <div class="grp">
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Update channel</span>
+            <span class="grow__sub">Current channel: Stable. Switching channels checks immediately.</span></span>
+          <div class="opts" style="padding:7px 0 3px">
+            <div class="opt"><span class="radio on"></span><span class="t"><span class="lb">Stable</span>
+              <span class="db">Published releases</span></span></div>
+            <div class="opt"><span class="radio"></span><span class="t"><span class="lb">Preview</span>
+              <span class="db">Opt-in prereleases</span></span></div>
+          </div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Confirm preview channel
+            <span class="cond">if switching</span></span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="notice warn">Preview builds may be less
+            stable and may show macOS security warnings until Developer ID signing and notarization are
+            available.
+            <span style="display:inline-flex;gap:6px;margin-left:6px;vertical-align:-6px">
+              <button class="btn btn--sm">Use Preview Updates</button>
+              <button class="btn btn--ghost btn--sm">Keep Stable</button></span></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Status</span>
+            <span class="grow__sub">Check for a new build and install it from here.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="l"><span class="verdict v-info v-cloud"><svg><use href="#i-down"/></svg>update available</span>
+              <span class="t-ui strong is-num">0.2.0</span>
+              <span class="t-meta subtle is-num" style="margin-left:auto">checked 14:38 · 5 Aug 2026</span></div>
+            <div class="bar" style="height:5px"><i style="width:62%;background:var(--app-accent)"></i></div>
+            <div class="l"><span class="t-meta subtle is-num">62 % · 41 MB of 66 MB</span>
+              <button class="btn btn--sm" style="margin-left:auto">Check for Updates</button>
+              <button class="btn btn--primary btn--sm">Install Update</button></div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Acknowledgements</span>
+        <span class="t-meta">Mnema's on-device models are built on these open projects. Each is credited under its license.</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Third-party notices</span>
+          <span class="grow__sub">The full attribution list for the bundled open-source components.</span></span>
+          <span class="grow__val"><button class="btn btn--sm">Copy notices</button>
+            <span class="chev"><svg><use href="#i-chevr"/></svg></span></span></div>
+      </div>
+    </div>
+
+    <div class="gsec">
+      <div class="gsec__h"><span class="t-label">Developer &amp; Logs</span></div>
+      <div class="grp">
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Enable developer options</span>
+          <span class="grow__sub">Reveal the Debug surface in the navigation bar and record verbose
+            Debug-level entries in the General Application Log.</span></span>
+          <span class="grow__val"><span class="sw"><i></i></span></span></div>
+        <div class="grow"><span class="grow__txt"><span class="grow__lbl">Native capture debug logging</span>
+          <span class="grow__sub">Write native capture diagnostic output to a log file on disk for
+            troubleshooting. Changes auto-save and apply immediately.</span></span>
+          <span class="grow__val"><span class="sw"><i></i></span></span></div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">Native capture log
+            <span class="cond">if status loaded</span></span>
+            <span class="grow__sub">Where diagnostic output is written on disk.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="mrow2"><span class="t-meta" style="width:60px">Status</span>
+              <span class="t-meta subtle">Off — no file is being written</span></div>
+            <div class="mrow2"><span class="t-meta" style="width:60px">Path</span>
+              <span class="t-meta subtle is-mono">~/Library/Logs/day.mnema</span></div>
+            <div class="l"><button class="btn btn--sm">Open Log File</button>
+              <button class="btn btn--ghost btn--sm">Open Containing Folder</button>
+              <button class="btn btn--danger btn--sm" style="margin-left:auto">Delete Log File</button></div></div></div>
+        </div>
+        <div class="grow" style="align-items:flex-start; flex-direction:column; gap:0">
+          <span class="grow__txt" style="width:100%"><span class="grow__lbl">General application log</span>
+            <span class="grow__sub">Captures high-level runtime events and errors.</span></span>
+          <div style="padding:7px 0 3px; width:100%"><div class="stat-card">
+            <div class="mrow2"><span class="t-meta" style="width:60px">File</span>
+              <span class="t-meta subtle is-mono">rust.log · 14.2 MB</span></div>
+            <div class="l"><button class="btn btn--sm">Open Log File</button>
+              <button class="btn btn--danger btn--sm" style="margin-left:auto">Delete Log File</button></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="block">
+  <div class="block__h">Structure audit — what the index can and cannot see</div>
+  <div class="row-of">
+    <div style="width:330px"><p class="t-label" style="margin-bottom:6px">Not every indexed row is a setting</p>
+      <p class="wlabel">Ten of the 96 are pure status or placeholder rows — <i>Validation</i>,
+      <i>Active Device</i>, <i>OCR availability</i>, the four <i>Selected model status</i> cards,
+      <i>AI runtime</i>, <i>Derivation status</i>. They are drawn here as read-only blocks, not controls,
+      so the surface never implies a value you can change.</p></div>
+    <div style="width:330px"><p class="t-label" style="margin-bottom:6px">Twenty-one shortcut actions are invisible to ⌘F</p>
+      <p class="wlabel">The shortcut editor renders custom markup, not the indexed row primitive. Only
+      the umbrella <i>Global shortcuts</i> toggle has an index entry — so “seek forward” finds nothing.
+      Worth fixing, but the mockup states it rather than pretending otherwise.</p></div>
+    <div style="width:330px"><p class="t-label" style="margin-bottom:6px">MCP breadcrumbs as “Providers”</p>
+      <p class="wlabel">The connector list sets its section to <code>intelligence</code>, so ⌘F
+      breadcrumbs it <b>Intelligence › Providers</b> even though its card is titled <i>MCP connectors</i>.
+      Drawn as it is, not as it should be.</p></div>
+    <div style="width:330px"><p class="t-label" style="margin-bottom:6px">Destructive actions live inside rows</p>
+      <p class="wlabel">Wipe User Context, Delete unused OCR/transcription models, Delete speaker model,
+      Delete voiceprint, Revoke grant and Delete Log File are all children of another row — never their
+      own. Every one of them is drawn in <code>.btn--danger</code>, which is the only reason they are
+      findable at a glance.</p></div>
+  </div>
+</div>
+</body>
+</html>
