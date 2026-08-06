@@ -127,7 +127,7 @@
 
     <SettingRow
       label="Segment Duration"
-      description="How long each recording segment is before a new one starts."
+      description="Shorter segments recover more cleanly from a crash; capped at 5 minutes."
       full
       divider={false}
     >

@@ -25,6 +25,13 @@ export interface SettingsRowIndexEntry {
 	label: string;
 	/** Extra search terms. Words the label/section already carry are redundant. */
 	synonyms?: string[];
+	/**
+	 * This entry is a SECOND LABEL for a row already counted under another entry
+	 * — the License row renders `cond ? "Renew" : "Buy Mnema"`, so both labels
+	 * must be indexed (⌘F has to find either word) while the catalogue is one
+	 * row larger, not two. Excluded from `SETTINGS_ROW_COUNT` only.
+	 */
+	alias?: true;
 }
 
 // ── The index ───────────────────────────────────────────────────────────────
@@ -126,7 +133,8 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	{ section: "license", label: "Status", synonyms: ["license", "trial", "activated"] },
 	{ section: "license", label: "Refresh license status", synonyms: ["recheck", "sync"] },
 	{ section: "license", label: "Buy Mnema", synonyms: ["purchase", "pay", "license"] },
-	{ section: "license", label: "Renew", synonyms: ["update window", "extend", "subscription"] },
+	// The same row as "Buy Mnema" above, wearing its out-of-update-window label.
+	{ section: "license", label: "Renew", synonyms: ["update window", "extend", "subscription"], alias: true },
 	{ section: "license", label: "Activate license", synonyms: ["key", "activation", "redeem"] },
 	{ section: "about", label: "Copy details", synonyms: ["version", "build", "diagnostics", "support"] },
 	{ section: "about", label: "Update channel", synonyms: ["stable", "preview", "beta", "updates"] },
@@ -138,6 +146,13 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	{ section: "developer", label: "Native capture log", synonyms: ["logs", "rust log", "file"] },
 	{ section: "developer", label: "General application log", synonyms: ["logs", "file"] },
 ];
+
+/**
+ * How many settings rows Mnema HAS — the ⌘F denominator the deck states
+ * ("8 of 96"). Entries, minus the alias labels that name a row already counted,
+ * so the number is rows rather than index keys.
+ */
+export const SETTINGS_ROW_COUNT: number = SETTINGS_ROW_INDEX.filter((e) => !e.alias).length;
 
 // ── Lookup + breadcrumb ─────────────────────────────────────────────────────
 

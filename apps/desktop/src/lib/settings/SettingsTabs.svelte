@@ -24,7 +24,7 @@
     type SettingsGroupId,
     type SettingsSectionId,
   } from "./groups";
-  import { SETTINGS_ROW_INDEX, matchingRowCount } from "./settings-index";
+  import { SETTINGS_ROW_COUNT, matchingRowCount } from "./settings-index";
   import { settingsFind } from "./state/settings-find.svelte";
   import { getSettingsController } from "./state/controller.svelte";
   import SettingsFindBar from "./ui/SettingsFindBar.svelte";
@@ -95,7 +95,7 @@
   $effect(() => {
     setDeck({
       context: settingsFind.active
-        ? `Settings · filtering “${query}” · ${hits} of ${SETTINGS_ROW_INDEX.length}`
+        ? `Settings · filtering “${query}” · ${hits} of ${SETTINGS_ROW_COUNT}`
         : `Settings · ${activeLabel}`,
       hints,
     });

@@ -34,6 +34,7 @@
     resolveFocusDeeplink,
     sectionForFocus,
     sectionAnchor,
+    isGroupEntrySection,
     DEFAULT_SETTINGS_GROUP,
     DEFAULT_SETTINGS_SECTION,
     type SettingsGroupId,
@@ -218,6 +219,15 @@
   // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
+      // A group's ENTRY section leads its panel, and the panel head (the tab's
+      // own title line) sits above it — scrolling that anchor to the top would
+      // push the head off screen on every tab switch. Going to the entry
+      // section IS going to the top of the tab.
+      if (isGroupEntrySection(section)) {
+        scrollRegion?.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
+        spySuppressTarget = 0;
+        return;
+      }
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
       if (el) setSpyTarget(el);

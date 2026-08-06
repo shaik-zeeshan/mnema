@@ -10,6 +10,7 @@ import {
   retentionConsequence,
   semanticCoverage,
   semanticIndexPrice,
+  storageOverview,
 } from "./system-facts";
 
 const GB = 1_000_000_000;
@@ -183,5 +184,22 @@ describe("semanticCoverage", () => {
     expect(semanticCoverage(facts({ semanticVectorCount: null }))).toBeNull();
     expect(semanticCoverage(facts({ semanticPendingCount: null }))).toBeNull();
     expect(semanticCoverage(facts())).toBeNull();
+  });
+});
+
+describe("storageOverview", () => {
+  it("states what capture put on the volume and what is left", () => {
+    expect(storageOverview(facts())).toBe("≈ 70.0 GB captured · 200.0 GB free on this volume");
+  });
+
+  it("drops whichever half is unmeasurable, and the line entirely with neither (G8)", () => {
+    expect(storageOverview(facts({ measuredBytesPerDay: null }))).toBe(
+      "200.0 GB free on this volume",
+    );
+    expect(storageOverview(facts({ diskFreeBytes: null }))).toBe("≈ 70.0 GB captured");
+    expect(
+      storageOverview(facts({ measuredBytesPerDay: null, diskFreeBytes: null })),
+    ).toBeNull();
+    expect(storageOverview(null)).toBeNull();
   });
 });

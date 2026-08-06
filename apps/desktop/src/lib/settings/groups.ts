@@ -296,6 +296,13 @@ export function groupForSection(section: SettingsSectionId): SettingsGroupId {
   return SECTION_TO_GROUP[section];
 }
 
+// Is this the section a group LANDS on — the first one in its panel? The shell
+// scrolls the region to the top for these instead of to their anchor, so the
+// panel head above them stays visible.
+export function isGroupEntrySection(section: SettingsSectionId): boolean {
+  return SETTINGS_GROUPS.some((group) => group.sections[0]?.id === section);
+}
+
 export function sectionAnchor(section: SettingsSectionId): string {
   for (const group of SETTINGS_GROUPS) {
     const found = group.sections.find((s) => s.id === section);

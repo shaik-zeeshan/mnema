@@ -110,8 +110,10 @@
     background: var(--app-bg);
   }
 
-  /* The first section of a panel already has the column's own top padding. */
-  :global(.settings-panel > .setting-group:first-child) .setting-group__header {
+  /* The first section of a panel already has the column's own top padding
+     (`first-of-type`, not `first-child`: the panel head — a <div> — leads the
+     column, and the first <section> is still the first group under it). */
+  :global(.settings-panel > .setting-group:first-of-type) .setting-group__header {
     padding-top: 0;
   }
 

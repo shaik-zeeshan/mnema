@@ -197,6 +197,24 @@ export function modelFootprint(facts: SystemFacts | null, byteSize: number | nul
 }
 
 /**
+ * The Data tab's head-line: what capture has put on this volume, against what
+ * the volume has left. Both halves are the same measured facts the retention
+ * ladder draws its axis from — whichever is unmeasurable is simply left out,
+ * and with neither the head renders no meta line at all (G8).
+ */
+export function storageOverview(facts: SystemFacts | null): string | null {
+	if (!facts) return null;
+	const parts: string[] = [];
+	if (facts.measuredBytesPerDay !== null) {
+		parts.push(`≈ ${formatBytes(facts.measuredBytesPerDay * facts.measuredDays)} captured`);
+	}
+	if (facts.diskFreeBytes !== null) {
+		parts.push(`${formatBytes(facts.diskFreeBytes)} free on this volume`);
+	}
+	return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
  * A processing queue depth, in the units the user recognises. Zero is a real
  * measurement and says so; `null` (the query failed) renders nothing.
  */
