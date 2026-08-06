@@ -1,0 +1,2073 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema · Bento Native · 11 Settings — the whole thing</title>
+<style>
+/* ==========================================================================
+   MNEMA · round 4 · direction 01 — BENTO NATIVE
+   One shared stylesheet, inlined into every page (pages are self-contained).
+
+   THEMING RULE: only TOKENS are themed. No component rule may branch on the
+   theme — if a component needs a different value in light, it gets a token.
+   That is what lets the light palette be injected in exactly two places:
+     @media (prefers-color-scheme: light) html:not([data-theme="dark"])
+     html[data-theme="light"]
+   ...with the attribute override always winning (it is later + more specific).
+   ========================================================================== */
+
+/* ── tokens: dark is the base ─────────────────────────────────────────── */
+:root {
+  /* surfaces — elevation is a surface STEP, never a shadow (except floating) */
+  --app-bg: #0c0c0e;
+  --app-surface: #17171f;
+  --app-surface-subtle: #1c1c26;
+  --app-surface-raised: #22222e;
+  --app-surface-hover: #2e2e40;
+  --app-surface-active: #282836;
+
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #9696ae;
+  --app-text-subtle: #7e7e98;
+  --app-text-faint: #5c5c76;
+
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-contrast: #07120c;
+  --app-accent-glow: rgba(61, 255, 160, .18);
+
+  --app-danger: #ff6b7a; --app-danger-strong: #ff4455;
+  --app-danger-bg: #2e0f14; --app-danger-border: #4a1a20;
+  --app-warn: #d6a14a;   --app-warn-strong: #c47a30;
+  --app-warn-bg: #1a1208; --app-warn-border: #7a4a18;
+  --app-info: #60b0ff;   --app-info-strong: #4a6aaa;
+  --app-info-bg: #0c1a2e; --app-info-border: #1a3050;
+
+  --app-record: #ff3148; --app-record-fg: #ff8a96;
+  --app-record-bg: #1a0f12; --app-record-border: #3a1820;
+
+  --app-src-screen: #c0b0ff; --app-src-screen-bg: #1a1a3a;
+  --app-src-mic: #80d0a8;    --app-src-mic-bg: #0f2e1f;
+  --app-src-sys: #b0c080;    --app-src-sys-bg: #2a2010;
+
+  /* direction tokens — the bento surface system */
+  --tile-fill: #17171f;
+  --tile-fill-hover: #1d1d27;
+  --tile-sep: #22222e;
+  --tile-live: rgba(255, 49, 72, .07);   /* the ONE tinted tile per screen  */
+  --media-void: #0b0b10;
+
+  /* materials + bezels — chrome only, content stays opaque */
+  --mat-toolbar: rgba(12, 12, 14, .76);
+  --mat-menu: rgba(26, 26, 32, .85);
+  --mat-pop: rgba(28, 28, 34, .96);   /* a popover over CONTENT stays opaque   */
+  --mat-dim: rgba(0, 0, 0, .34);
+  --mat-hud: rgba(22, 22, 28, .88);
+  --menu-edge: rgba(255, 255, 255, .10);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.07), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(6,6,10,.74), rgba(6,6,10,0) 44%);
+  --win-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.09);
+  --hud-shadow: 0 12px 40px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.10);
+  --seg-on-bg: #22222e;
+  --seg-on-shadow: 0 1px 2.5px rgba(0,0,0,.35), inset 0 .5px 0 rgba(255,255,255,.08);
+  --shadow-popover: 0 8px 24px rgba(0,0,0,.32);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.48);
+  --tl-r: #ff5f57; --tl-y: #febc2e; --tl-g: #28c840;
+
+  /* the mockup document itself (never part of the app) */
+  --page-bg: #08080a;
+  --page-ink: #c0c0d0;
+  --desk-1: #1d2536; --desk-2: #0f141d;   /* the simulated desktop wallpaper */
+}
+
+/* ── type: six roles, three weights ───────────────────────────────────── */
+:root {
+  --app-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --app-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --t-label: 10px;   --lh-label: 1.4;   --ls-label: .02em;
+  --t-meta: 11px;    --lh-meta: 1.35;   --ls-meta: .01em;
+  --t-ui: 13px;      --lh-ui: 1.25;     --ls-ui: -.006em;
+  --t-read: 14px;    --lh-read: 1.55;   --ls-read: -.008em;
+  --t-title: 17px;   --lh-title: 1.3;   --ls-title: -.016em;
+  --t-display: 22px; --lh-display: 1.2; --ls-display: -.02em;
+  --w-regular: 400; --w-medium: 510; --w-semi: 590;
+
+  /* spacing ramp + named layout constants */
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px; --s-12:12px;
+  --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px; --s-48:48px;
+  --gap-inline: var(--s-6);
+  --gap-label: var(--s-4);
+  --gap-row: var(--s-8);
+  --gap-group: var(--s-16);
+  --gap-section: var(--s-24);
+  --pad-window: var(--s-16);
+  --pad-control: var(--s-8);
+  --pad-panel: var(--s-16);
+
+  /* THE BENTO GRID — one cell unit, one gutter, four legal footprints */
+  --cell-gutter: 16px;
+  --tile-pad: 14px;        /* 16 outer margin - 2 optical, held on every tile */
+  --tile-r: 12px;          /* the tile radius                                */
+  --tile-r-in: 6px;        /* derived: parent radius - inner inset (Container-
+                              RelativeShape). Never a hand-picked number.    */
+  --tile-hd: 18px;         /* the constant header row height (one baseline)  */
+
+  /* control metrics */
+  --h-sm: 24px; --h-md: 28px; --h-lg: 32px; --h-row: 28px; --h-titlebar: 38px;
+  --o-badge: 20px; --o-icon-sm: 14px; --o-icon: 20px; --o-icon-lg: 24px;
+  --o-setting-row: 40px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 999px;
+  --ring: 0 0 0 2px var(--app-accent-glow);
+  --opacity-disabled: .4;
+  --dur-quick: 100ms; --dur-regular: 250ms;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --hairline: 1px;
+}
+@media (min-resolution: 2dppx) { :root { --hairline: .5px; } }
+
+/* ── the light palette — TOKENS ONLY (injected twice, see build note) ─── */
+@media (prefers-color-scheme: light) { html:not([data-theme="dark"]) {
+  color-scheme: light;
+  --app-bg: #f6f6f4;
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a;
+  --app-text-faint: #9a9aa4;
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-contrast: #ffffff;
+  --app-accent-glow: rgba(31, 122, 74, .16);
+  --app-danger: #c43a48; --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2; --app-danger-border: #e4b6be;
+  --app-warn: #9a5a12;   --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df; --app-warn-border: #dfbc8a;
+  --app-info: #2b78c5;   --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff; --app-info-border: #bdd3ef;
+  --app-record: #d62236; --app-record-fg: #c81d2e;
+  --app-record-bg: #ffffff; --app-record-border: #ecbcc2;
+  --app-src-screen: #6f5ed1; --app-src-screen-bg: #f1edff;
+  --app-src-mic: #2f8e59;    --app-src-mic-bg: #e8f5ec;
+  --app-src-sys: #8b7a2c;    --app-src-sys-bg: #faf4df;
+
+  --tile-fill: #ffffff;
+  --tile-fill-hover: #f2f2f0;
+  --tile-sep: #e6e6e2;
+  --tile-live: rgba(214, 34, 54, .05);
+  --media-void: #e9e9e6;
+
+  --mat-toolbar: rgba(246, 246, 244, .80);
+  --mat-menu: rgba(250, 250, 248, .86);
+  --mat-pop: rgba(252, 252, 250, .97);
+  --mat-dim: rgba(30, 30, 34, .18);
+  --mat-hud: rgba(250, 250, 248, .90);
+  --menu-edge: rgba(0, 0, 0, .12);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.9), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(10,10,14,.80), rgba(10,10,14,0) 46%);
+  --win-shadow: 0 18px 50px rgba(21,28,38,.25), 0 0 0 1px rgba(0,0,0,.10);
+  --hud-shadow: 0 12px 40px rgba(21,28,38,.28), 0 0 0 1px rgba(0,0,0,.10);
+  --seg-on-bg: #ffffff;
+  --seg-on-shadow: 0 1px 2.5px rgba(21,28,38,.22);
+  --shadow-popover: 0 8px 24px rgba(21,28,38,.14);
+  --shadow-modal: 0 24px 64px rgba(21,28,38,.22);
+
+  --page-bg: #ececeb;
+  --page-ink: #2a2a32;
+  --desk-1: #cfd8e6; --desk-2: #9fb0c8;
+} }
+html[data-theme="light"] {
+  color-scheme: light;
+  --app-bg: #f6f6f4;
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a;
+  --app-text-faint: #9a9aa4;
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-contrast: #ffffff;
+  --app-accent-glow: rgba(31, 122, 74, .16);
+  --app-danger: #c43a48; --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2; --app-danger-border: #e4b6be;
+  --app-warn: #9a5a12;   --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df; --app-warn-border: #dfbc8a;
+  --app-info: #2b78c5;   --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff; --app-info-border: #bdd3ef;
+  --app-record: #d62236; --app-record-fg: #c81d2e;
+  --app-record-bg: #ffffff; --app-record-border: #ecbcc2;
+  --app-src-screen: #6f5ed1; --app-src-screen-bg: #f1edff;
+  --app-src-mic: #2f8e59;    --app-src-mic-bg: #e8f5ec;
+  --app-src-sys: #8b7a2c;    --app-src-sys-bg: #faf4df;
+
+  --tile-fill: #ffffff;
+  --tile-fill-hover: #f2f2f0;
+  --tile-sep: #e6e6e2;
+  --tile-live: rgba(214, 34, 54, .05);
+  --media-void: #e9e9e6;
+
+  --mat-toolbar: rgba(246, 246, 244, .80);
+  --mat-menu: rgba(250, 250, 248, .86);
+  --mat-pop: rgba(252, 252, 250, .97);
+  --mat-dim: rgba(30, 30, 34, .18);
+  --mat-hud: rgba(250, 250, 248, .90);
+  --menu-edge: rgba(0, 0, 0, .12);
+  --push-grad: linear-gradient(to bottom, rgba(255,255,255,.9), rgba(255,255,255,0));
+  --scrim: linear-gradient(to top, rgba(10,10,14,.80), rgba(10,10,14,0) 46%);
+  --win-shadow: 0 18px 50px rgba(21,28,38,.25), 0 0 0 1px rgba(0,0,0,.10);
+  --hud-shadow: 0 12px 40px rgba(21,28,38,.28), 0 0 0 1px rgba(0,0,0,.10);
+  --seg-on-bg: #ffffff;
+  --seg-on-shadow: 0 1px 2.5px rgba(21,28,38,.22);
+  --shadow-popover: 0 8px 24px rgba(21,28,38,.14);
+  --shadow-modal: 0 24px 64px rgba(21,28,38,.22);
+
+  --page-bg: #ececeb;
+  --page-ink: #2a2a32;
+  --desk-1: #cfd8e6; --desk-2: #9fb0c8;
+}
+
+/* ── resets + type classes ────────────────────────────────────────────── */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { background: var(--page-bg); }
+body {
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--page-ink);
+  background: var(--page-bg);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; cursor: default; border: 0; background: none; }
+svg { display: block; }
+
+.t-label { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-muted); }
+.t-meta { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted); }
+.t-ui { font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text); }
+.t-read { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 70ch; }
+.t-title { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.t-display { font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.is-mono { font-family: var(--app-font-mono); }
+.is-num, .is-mono, .t-label { font-variant-numeric: tabular-nums; }
+.strong { color: var(--app-text-strong); }
+.muted { color: var(--app-text-muted); }
+.subtle { color: var(--app-text-subtle); }
+.acc { color: var(--app-accent); }
+
+/* ── the mockup document (masthead, page furniture) ───────────────────── */
+.mock { padding: 40px 32px 120px; max-width: 1600px; margin: 0 auto; }
+.mh { max-width: 92ch; }
+.mh__dir { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: .06em; text-transform: uppercase; color: var(--app-text-subtle); }
+.mh__pg { margin-top: var(--s-8); font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.mh__pg em { font-style: normal; font-family: var(--app-font-mono); font-size: 15px;
+  color: var(--app-text-subtle); margin-right: var(--s-8); }
+.mh__look { margin-top: var(--s-12); font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  color: var(--app-text-muted); max-width: 78ch; }
+.mh__look b { color: var(--app-text); font-weight: var(--w-medium); }
+.mh__rule { height: var(--hairline); background: var(--app-border); margin: 24px 0 0; }
+
+.fit { margin-top: var(--s-16); overflow-x: auto; padding-bottom: var(--s-8); }
+.fitrow { display: flex; gap: var(--s-32); align-items: flex-start; }
+.wlabel { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle);
+  margin: 0 0 var(--s-8); }
+.sect { margin-top: 56px; }
+.sect > h3 { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.sect > .note { margin-top: var(--s-6); max-width: 84ch;
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.sect > .note b { color: var(--app-text); font-weight: var(--w-medium); }
+.themetoggle { position: fixed; top: 14px; right: 16px; z-index: 999;
+  display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-md);
+  padding: 0 var(--s-12); border-radius: var(--r-pill);
+  background: var(--app-surface-raised); color: var(--app-text-strong);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), 0 4px 14px rgba(0,0,0,.22);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); }
+.themetoggle svg { width: 13px; height: 13px; }
+
+/* ── window shell ─────────────────────────────────────────────────────── */
+.window { position: relative; flex: 0 0 auto; background: var(--app-bg);
+  border-radius: 10px; overflow: hidden; box-shadow: var(--win-shadow);
+  display: flex; flex-direction: column; }
+.w1100 { width: 1100px; height: 720px; }
+.w800  { width: 800px;  height: 600px; }
+.wql   { width: 1120px; height: 720px; }
+
+.tbar { flex: 0 0 var(--h-titlebar); display: flex; align-items: center; gap: var(--s-12);
+  padding-right: var(--s-12); position: relative; z-index: 20;
+  background: var(--mat-toolbar); backdrop-filter: blur(20px) saturate(1.4); }
+.tbar--seam { box-shadow: 0 var(--hairline) 0 var(--app-border); }
+.tbar--float { position: absolute; top: 0; left: 0; right: 0; }
+.tl { display: flex; gap: 8px; padding: 0 var(--s-8) 0 20px; flex: 0 0 auto; }
+.tl i { width: 12px; height: 12px; border-radius: 50%; }
+.tl i:nth-child(1) { background: var(--tl-r); }
+.tl i:nth-child(2) { background: var(--tl-y); }
+.tl i:nth-child(3) { background: var(--tl-g); }
+.tbar__title { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+
+/* NSSegmentedControl */
+.seg { display: inline-flex; align-items: center; height: var(--h-md); padding: 2px;
+  border-radius: calc(var(--r-md) + 1px);
+  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent); }
+.seg__i { display: inline-flex; align-items: center; gap: var(--gap-inline); height: 100%;
+  padding: 0 var(--s-12); border-radius: var(--r-md);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  color: var(--app-text-muted); white-space: nowrap; }
+.seg__i.on { background: var(--seg-on-bg); color: var(--app-text-strong); box-shadow: var(--seg-on-shadow); }
+.seg__i .kbd { height: 16px; min-width: 16px; background: transparent; color: var(--app-text-subtle); padding: 0; }
+.seg--sm .seg__i { padding: 0 var(--s-8); }
+.seg--sm { height: var(--h-sm); }
+
+/* recording chrome — the state pill */
+.rec { display: flex; align-items: center; gap: var(--s-8); margin-left: auto; }
+.pill { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-pill); background: var(--app-record-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-record-border); }
+.pill__t { font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text); }
+.pill__gb { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+.pill__w { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--app-record-fg); white-space: nowrap; }
+.pill--quiet { background: var(--app-surface-hover); box-shadow: none; }
+.pill--quiet .pill__w { color: var(--app-text-muted); }
+.pill--warn { background: var(--app-warn-bg); box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); }
+.pill--warn .pill__w { color: var(--app-warn); }
+.rec__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-record); flex: 0 0 auto;
+  animation: recpulse 2s var(--ease) infinite; }
+@keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+.srcg { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+.srcg svg { width: 12px; height: 12px; }
+.srcg--screen { color: var(--app-src-screen); }
+.srcg--mic { color: var(--app-src-mic); }
+.srcg--sys { color: var(--app-src-sys); }
+.srcg--off { color: var(--app-text-faint); }
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 var(--s-12); border-radius: var(--r-md);
+  border: var(--hairline) solid var(--app-border-strong);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  white-space: nowrap; background: var(--app-surface-raised); color: var(--app-text-strong);
+  transition: background-color var(--dur-quick) var(--ease); }
+.btn:hover { background: var(--app-surface-hover); }
+.btn:active { background: var(--app-surface-active); }
+.btn svg { width: 12px; height: 12px; }
+.btn--push { background-image: var(--push-grad); box-shadow: 0 .5px 1.5px rgba(0,0,0,.25); }
+.btn--default { background: linear-gradient(to bottom, color-mix(in srgb, var(--app-accent) 88%, white), var(--app-accent));
+  color: var(--app-accent-contrast); border-color: transparent; box-shadow: 0 .5px 1.5px rgba(0,0,0,.3); }
+.btn--ghost { background: transparent; border-color: transparent; color: var(--app-text-muted); }
+.btn--ghost:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+.btn--danger { background: var(--app-danger-bg); color: var(--app-danger); border-color: var(--app-danger-border); }
+.btn--sm { height: var(--h-sm); padding: 0 var(--s-8); }
+.btn--icon { width: var(--h-md); padding: 0; }
+.btn--icon.btn--sm { width: var(--h-sm); }
+.btn.is-dis { opacity: var(--opacity-disabled); }
+.is-focused { box-shadow: 0 0 0 3.5px var(--app-accent-glow) !important; }
+
+.input { display: flex; align-items: center; gap: var(--s-6); height: var(--h-md);
+  padding: 0 var(--pad-control); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-subtle); color: var(--app-text-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui); }
+.input .ph { color: var(--app-text-subtle); }
+.input svg { width: 12px; height: 12px; color: var(--app-text-subtle); flex: 0 0 auto; }
+
+/* NSPopUpButton */
+.pop { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm);
+  padding: 0 3px 0 var(--s-8); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-raised) var(--push-grad);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong);
+  box-shadow: 0 .5px 1.5px rgba(0,0,0,.25); white-space: nowrap; }
+.pop b { width: 16px; height: 18px; border-radius: var(--r-sm); background: var(--app-accent);
+  color: var(--app-accent-contrast); display: inline-flex; align-items: center; justify-content: center; }
+.pop b svg { width: 9px; height: 9px; }
+
+/* NSSwitch / checkbox */
+.sw { position: relative; width: 38px; height: 22px; border-radius: var(--r-pill); flex: 0 0 auto;
+  background: color-mix(in srgb, var(--app-text-subtle) 42%, transparent); }
+.sw i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2.5px rgba(0,0,0,.35); }
+.sw.on { background: var(--app-accent); }
+.sw.on i { left: 18px; }
+.sw.is-dis { opacity: var(--opacity-disabled); }
+.cb { width: 14px; height: 14px; border-radius: 3.5px; flex: 0 0 auto;
+  border: var(--hairline) solid var(--app-border-strong);
+  background: var(--app-surface-raised) var(--push-grad); }
+.cb.on { border-color: transparent; background: var(--app-accent);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--app-accent-contrast); }
+.cb.on svg { width: 9px; height: 9px; }
+
+.kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px;
+  padding: 0 var(--s-4); border-radius: var(--r-sm); background: var(--app-surface-raised);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted); }
+.kbd--mod { min-width: 46px; }
+.kbd--lg { height: 24px; min-width: 24px; font-size: var(--t-meta); color: var(--app-text-strong); }
+
+.chip { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-pill); background: var(--app-surface);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); white-space: nowrap; }
+.chip.on { background: var(--app-accent); color: var(--app-accent-contrast); }
+.chip--verdict { height: var(--o-badge); padding: 0 var(--s-6); border-radius: var(--r-sm);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.chip--ok { background: var(--app-accent-bg); color: var(--app-accent); }
+.chip--warn { background: var(--app-warn-bg); color: var(--app-warn); }
+.chip--bad { background: var(--app-danger-bg); color: var(--app-danger); }
+.chip--flat { background: var(--app-surface-hover); color: var(--app-text-muted); }
+
+.chev { color: var(--app-text-faint); flex: 0 0 auto; }
+.chev svg { width: 8px; height: 12px; }
+.spin { width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--app-border-strong); border-top-color: var(--app-text-muted);
+  animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.caret { display: inline-block; width: 1.5px; height: 16px; background: var(--app-accent);
+  animation: caret 1.1s step-end infinite; vertical-align: -3px; }
+@keyframes caret { 50% { opacity: 0; } }
+
+/* NSMenu */
+.menu { min-width: 210px; padding: 5px; border-radius: var(--r-md); background: var(--mat-menu);
+  backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge); }
+.menu__i { height: 24px; display: flex; align-items: center; padding: 0 var(--s-8) 0 0;
+  border-radius: 5px; font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-strong); white-space: nowrap; }
+.menu__i.is-hl { background: var(--app-accent); color: var(--app-accent-contrast); }
+.menu__i.is-dis { color: var(--app-text-subtle); }
+.menu__ck { width: 20px; flex: 0 0 auto; display: inline-flex; justify-content: center; }
+.menu__ck svg { width: 10px; height: 10px; }
+.menu__gl { width: 18px; flex: 0 0 auto; margin-right: var(--s-4); display: inline-flex; justify-content: center; }
+.menu__gl svg { width: 13px; height: 13px; opacity: .85; }
+.menu__kbd { margin-left: auto; padding-left: var(--s-16);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.menu__i.is-hl .menu__kbd { color: var(--app-accent-contrast); opacity: .8; }
+.menu__sep { height: var(--hairline); background: var(--app-border-strong); margin: 5px var(--s-8); }
+.menu__hd { padding: var(--s-4) var(--s-8) var(--s-4) 20px;
+  font: var(--w-medium) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-subtle); }
+
+/* toast */
+.toast { display: grid; gap: var(--gap-label); width: 320px; padding: var(--s-12);
+  border-radius: var(--r-xl); background: var(--app-surface-raised); box-shadow: var(--shadow-popover); }
+.toast__t { font: var(--w-medium) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  color: var(--app-text-strong); display: flex; align-items: center; gap: var(--gap-inline); }
+.toast__m { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.dot-danger, .dot-info, .dot-ok { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.dot-danger { background: var(--app-danger); }
+.dot-info { background: var(--app-info); }
+.dot-ok { background: var(--app-accent); }
+
+/* ══ THE BENTO ══════════════════════════════════════════════════════════
+   One cell unit, one gutter, four legal footprints (1x1, 2x1, 2x2, 4x1).
+   Chrome is CONSTANT: every tile opens with the same header row on the same
+   baseline. Below it the payload is free — and it may bleed to the tile edge,
+   clipped by the tile radius. That bleed is what stops a bento reading as a
+   form.                                                                     */
+.bento { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--cell-gutter); }
+.bento--2 { grid-template-columns: repeat(2, 1fr); }
+.bento--3 { grid-template-columns: repeat(3, 1fr); }
+.tile { position: relative; background: var(--tile-fill); border-radius: var(--tile-r);
+  padding: var(--tile-pad); min-width: 0; overflow: hidden;
+  display: flex; flex-direction: column; }
+.tile--w2 { grid-column: span 2; }
+.tile--w3 { grid-column: span 3; }
+.tile--w4 { grid-column: 1 / -1; }
+.tile--h2 { grid-row: span 2; }
+.tile--live { background: linear-gradient(to bottom, var(--tile-live), transparent 62%), var(--tile-fill); }
+.tile--acc { background: linear-gradient(to bottom, var(--app-accent-glow), transparent 58%), var(--tile-fill); }
+.tile:hover { background-color: var(--tile-fill-hover); }
+.tile--static:hover { background-color: var(--tile-fill); }
+
+/* the constant header row — every tile, same height, same baseline */
+.tile__h { flex: 0 0 var(--tile-hd); display: flex; align-items: center; gap: var(--gap-inline);
+  margin-bottom: var(--s-8); }
+.tile__h .t-label { color: var(--app-text-subtle); }
+.tile__h .more { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans);
+  color: var(--app-text-subtle); display: inline-flex; align-items: center; gap: var(--s-4); }
+.tile__h .more svg { width: 8px; height: 12px; }
+.tile__h .hglyph { width: 13px; height: 13px; color: var(--app-text-subtle); flex: 0 0 auto; }
+/* the payload zone: everything under the header. --bleed pulls it back out to
+   the tile edge so it clips on the radius. */
+.pay { flex: 1 1 auto; min-height: 0; position: relative; }
+.pay--bleed { margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1); }
+.pay--bleedr { margin-right: calc(var(--tile-pad) * -1); }
+.pay--bleedb { margin-bottom: calc(var(--tile-pad) * -1); }
+.trow { display: flex; align-items: center; gap: var(--s-8); min-height: var(--h-row); }
+.trow--sep + .trow--sep { box-shadow: 0 -1px 0 var(--tile-sep); }
+
+/* rows inside a tile (conversations, subjects, settings) */
+.row { position: relative; display: flex; align-items: center; gap: var(--s-12);
+  min-height: var(--o-setting-row); padding: var(--s-6) var(--tile-pad); }
+.row + .row::before { content: ""; position: absolute; top: 0; left: var(--tile-pad); right: 0;
+  height: var(--hairline); background: var(--tile-sep); }
+.row:hover { background: var(--tile-fill-hover); }
+.row--static:hover { background: transparent; }
+.row__txt { min-width: 0; flex: 1 1 auto; }
+.row__lbl { display: block; font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-strong);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row__sub { display: block; margin-top: 2px; font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row__val { margin-left: auto; flex: 0 0 auto; display: inline-flex; align-items: center; gap: var(--s-8);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.row.is-sel { background: var(--app-accent); }
+.row.is-sel .row__lbl, .row.is-sel .row__sub, .row.is-sel .row__val { color: var(--app-accent-contrast); }
+/* a tile whose payload IS a row list: rows bleed to both edges */
+.pay--rows { margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1); }
+.pay--rows .row:last-child { padding-bottom: var(--s-8); }
+
+.aicon { width: var(--o-icon); height: var(--o-icon); border-radius: 5px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: var(--w-semi) var(--t-label)/1 var(--app-font-mono); color: #fff; }
+.aicon--lg { width: var(--o-icon-lg); height: var(--o-icon-lg); border-radius: var(--r-md); }
+.thumb { width: 50px; height: 28px; border-radius: var(--tile-r-in); overflow: hidden; flex: 0 0 auto;
+  position: relative; background: var(--media-void); }
+.conv { display: inline-flex; gap: 3px; }
+.conv i { width: 5px; height: 5px; border-radius: 50%; background: var(--app-border-strong); }
+.conv i.on { background: var(--app-accent); }
+.spark { display: flex; align-items: flex-end; gap: 4px; }
+.spark span { flex: 1 1 0; display: flex; align-items: flex-end; height: 100%; }
+.spark i { width: 100%; border-radius: 2px 2px 0 0; background: var(--app-accent); opacity: .34; }
+.spark i.on { opacity: 1; }
+
+/* the moments filmstrip — media payload, bleeds and clips on the radius */
+.strip { display: flex; gap: 2px; background: var(--media-void); height: 100%; }
+.strip > i { flex: 1 1 0; position: relative; overflow: hidden; display: block; }
+.strip > i::after { content: ""; position: absolute; inset: 0; background: var(--scrim); }
+.strip > i.half { flex: 0 0 46px; }
+.strip__t { position: absolute; left: var(--s-8); bottom: var(--s-6); z-index: 2;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  color: #f2f2f5; font-variant-numeric: tabular-nums; }
+.strip__c { position: absolute; left: var(--s-8); bottom: 20px; z-index: 2; max-width: 84%;
+  font: var(--w-medium) var(--t-meta)/1.2 var(--app-font-sans); color: #f2f2f5;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* an inline citation chip (digest prose) */
+.cite { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--o-badge);
+  padding: 0 var(--s-6) 0 var(--s-2); border-radius: var(--r-sm); background: var(--app-surface-hover);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums; vertical-align: -5px; }
+.cite i { width: 24px; height: 14px; border-radius: 2px; overflow: hidden; position: relative;
+  display: inline-block; background: var(--media-void); }
+
+/* ── scrollbars: overlay ──────────────────────────────────────────────── */
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--app-text-subtle) 45%, transparent);
+  border-radius: 4px; border: 2px solid transparent; background-clip: content-box; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ── app icon stand-ins ───────────────────────────────────────────────── */
+.ic-code{background:#2f7cd6} .ic-safari{background:#2c8ef3} .ic-figma{background:#a259ff}
+.ic-slack{background:#611f69} .ic-term{background:#3a3f45} .ic-notion{background:#8a8378}
+.ic-zoom{background:#2d8cff} .ic-mnema{background:var(--app-accent-strong)}
+.ic-1p{background:#4b8bf5} .ic-sig{background:#3ba55c} .ic-mail{background:#d64a3f}
+
+/* ══ CSS-DRAWN FAKE SCREENSHOTS ═════════════════════════════════════════
+   Percentage-based, so one markup block works full-bleed in the stage, at
+   349x196 in a result tile, and at 24x14 in a citation chip. No percentage
+   padding on .shot children (it resolves against the containing-block WIDTH).
+   ====================================================================== */
+:root {
+  --shot-void:#0b0b10;
+  --shot-ed-bg:#1b1b24; --shot-ed-side:#15151d; --shot-ed-act:#0f0f16; --shot-ed-tab:#262633;
+  --shot-ink:#4c4c62; --shot-ink-2:#6e6e8c; --shot-ink-3:#33334a;
+  --shot-kw:#c08cf0; --shot-str:#8fd694; --shot-fn:#6fb8f0; --shot-num:#e0a55c; --shot-cm:#48584f;
+  --shot-paper:#f5f5f2; --shot-paper-2:#e7e7e2; --shot-paper-3:#d6d6d0;
+  --shot-pink:#3d3d46; --shot-pink-2:#9c9ca8;
+  --shot-chrome-lt:#e9e9e6;
+  --shot-slack:#3b2544; --shot-slack-2:#4d3157;
+  --shot-fig-bg:#2c2c33; --shot-fig-canvas:#1d1d23; --shot-fig-blue:#4b8bf5;
+  --shot-fig-orange:#f24e1e; --shot-fig-green:#0acf83; --shot-fig-purple:#a259ff;
+  --shot-term-bg:#0c0e0d; --shot-term-green:#4ade80; --shot-term-red:#f87171; --shot-term-dim:#4f6058;
+  --shot-sheet-head:#1e7a4a; --shot-sheet-line:#dcdcd6; --shot-sheet-sel:#1a73e8;
+  --shot-call-bg:#16161c; --shot-call-tile:#282833; --shot-call-ctrl:#33333f;
+  --shot-blue:#5b8def; --shot-amber:#e0894a; --shot-wave:#7c8ba0;
+}
+.shot{position:relative;width:100%;height:100%;overflow:hidden;background:var(--shot-void)}
+.shot > *{position:absolute}
+span.shot{display:block}
+.ln{display:flex;align-items:center;gap:2.2%;width:100%;height:100%}
+.tk{flex:0 0 auto;height:100%;border-radius:1px;background:var(--shot-ink)}
+.tk--kw{background:var(--shot-kw)} .tk--str{background:var(--shot-str)}
+.tk--fn{background:var(--shot-fn)} .tk--num{background:var(--shot-num)}
+.tk--cm{background:var(--shot-cm)} .tk--dim{background:var(--shot-ink-3)}
+.tk--pi{background:var(--shot-pink)} .tk--pi2{background:var(--shot-pink-2)}
+.tk--g{background:var(--shot-term-green)} .tk--r{background:var(--shot-term-red)}
+.tk--t{background:var(--shot-term-dim)}
+.w4{width:4%}.w6{width:6%}.w8{width:8%}.w10{width:10%}.w12{width:12%}.w14{width:14%}
+.w16{width:16%}.w18{width:18%}.w20{width:20%}.w22{width:22%}.w24{width:24%}.w26{width:26%}
+.w28{width:28%}.w30{width:30%}.w32{width:32%}.w34{width:34%}.w36{width:36%}.w38{width:38%}
+.w40{width:40%}.w44{width:44%}.w48{width:48%}.w52{width:52%}.w56{width:56%}.w60{width:60%}
+.w64{width:64%}.w70{width:70%}.w76{width:76%}.w82{width:82%}.w88{width:88%}.w94{width:94%}
+.stack{display:flex;flex-direction:column;justify-content:space-between}
+.stack > .ln{height:6%}
+.shot--dense .stack{justify-content:flex-start;gap:2.2%}
+.shot--dense .stack > .ln{height:3.1%}
+.shot--dense .files i{height:2.4%}
+.shot--dense .files{gap:3.4%}
+.shot--editor{background:var(--shot-ed-bg)}
+.shot--editor .act{left:0;top:0;bottom:0;width:5.5%;background:var(--shot-ed-act);border-right:1px solid var(--shot-ink-3)}
+.shot--editor .side{left:5.5%;top:0;bottom:0;width:21%;background:var(--shot-ed-side)}
+.shot--editor .tabs{left:26.5%;right:0;top:0;height:9%;background:var(--shot-ed-act)}
+.shot--editor .tab{top:0;height:9%;background:var(--shot-ed-tab)}
+.shot--editor .tab.a{left:26.5%;width:15%;background:var(--shot-ed-bg)}
+.shot--editor .tab.b{left:41.5%;width:13%}
+.shot--editor .tab.c{left:54.5%;width:14%}
+.shot--editor .files{left:8%;right:76%;top:12%;bottom:6%;display:flex;flex-direction:column;justify-content:flex-start;gap:6%}
+.shot--editor .files i{display:block;height:4.5%;background:var(--shot-ink-3);border-radius:1px}
+.shot--editor .files i.on{background:var(--shot-ink-2)}
+.shot--editor .code{left:29%;right:3%;top:13%;bottom:5%}
+.shot--editor .gut{left:27%;width:1.4%;top:13%;bottom:5%;background:var(--shot-ink-3);opacity:.35}
+.shot--editor .caret{left:44%;top:41%;width:.5%;height:5%;background:var(--shot-str);animation:none}
+.shot--browser{background:var(--shot-chrome-lt)}
+.shot--browser .bar{left:0;right:0;top:0;height:13%;background:var(--shot-chrome-lt)}
+.shot--browser .dots{left:2%;top:4.5%;width:12%;height:4%;display:flex;gap:12%}
+.shot--browser .dots i{flex:1 1 0;border-radius:50%;background:var(--shot-paper-3)}
+.shot--browser .url{left:20%;right:20%;top:3.5%;height:6%;border-radius:3px;background:var(--shot-paper-2)}
+.shot--browser .pg{left:0;right:0;top:13%;bottom:0;background:var(--shot-paper)}
+.shot--browser .art{left:14%;right:32%;top:19%;bottom:6%;display:flex;flex-direction:column;gap:4.5%}
+.shot--browser .art .h{height:9%;background:var(--shot-pink);border-radius:2px;width:74%}
+.shot--browser .art .ln{height:4.5%}
+.shot--browser .aside{right:6%;width:22%;top:19%;bottom:14%;display:flex;flex-direction:column;gap:6%}
+.shot--browser .aside i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px}
+.shot--browser .aside i.hi{background:var(--shot-blue);opacity:.25}
+.shot--figma{background:var(--shot-fig-canvas)}
+.shot--figma .top{left:0;right:0;top:0;height:9%;background:var(--shot-fig-bg)}
+.shot--figma .lp{left:0;top:9%;bottom:0;width:19%;background:var(--shot-fig-bg)}
+.shot--figma .rp{right:0;top:9%;bottom:0;width:17%;background:var(--shot-fig-bg);display:flex;flex-direction:column;gap:5%;padding:5% 2% 0}
+.shot--figma .rp em{position:static;flex:0 0 auto;height:6%;border-radius:2px;background:var(--shot-ink)}
+.shot--figma .rp em.sw{background:var(--shot-fig-orange);opacity:.8;width:auto;border-radius:2px}
+.shot--figma .lyr{left:4%;right:83%;top:14%;bottom:8%;display:flex;flex-direction:column;gap:7%}
+.shot--figma .lyr i{height:4%;background:var(--shot-ink-3);border-radius:1px}
+.shot--figma .lyr i.on{background:var(--shot-fig-blue);opacity:.7}
+.shot--figma .art1{left:26%;top:20%;width:26%;height:44%;background:var(--shot-paper);border-radius:2px;outline:1px solid var(--shot-fig-blue)}
+.shot--figma .art2{left:56%;top:20%;width:22%;height:28%;background:var(--shot-paper-2);border-radius:2px}
+.shot--figma .sq{left:56%;top:53%;width:10%;height:18%;background:var(--shot-fig-orange);border-radius:2px}
+.shot--figma .ci{left:69%;top:53%;width:9%;height:16%;background:var(--shot-fig-purple);border-radius:50%}
+.shot--figma .lbl{left:26%;top:15.5%;width:12%;height:3.5%;background:var(--shot-fig-blue);border-radius:1px}
+.shot--chat{background:var(--shot-ed-bg)}
+.shot--chat .rail{left:0;top:0;bottom:0;width:7%;background:var(--shot-slack);display:flex;flex-direction:column;gap:8%;padding:4.5% 1.5%}
+.shot--chat .rail i{flex:0 0 auto;height:7%;border-radius:3px;background:var(--shot-pink-2);opacity:.5}
+.shot--chat .rail i.on{background:var(--shot-paper-3)}
+.shot--chat .chans{left:7%;top:0;bottom:0;width:21%;background:var(--shot-slack-2);display:flex;flex-direction:column;gap:5.5%;padding:5.5% 2.5% 0}
+.shot--chat .chans i{flex:0 0 auto;height:4%;border-radius:1px;background:var(--shot-pink-2);opacity:.55}
+.shot--chat .chans i.on{opacity:1;background:var(--shot-paper-3)}
+.shot--chat .msgs{left:30%;right:17%;top:12%;bottom:12%;display:flex;flex-direction:column;justify-content:space-between}
+.shot--chat .msg{display:flex;gap:3%;height:26%;align-items:stretch}
+.shot--chat .av{width:9%;aspect-ratio:1;border-radius:3px;background:var(--shot-blue);flex:0 0 auto}
+.shot--chat .msg:nth-child(2) .av{background:var(--shot-amber)}
+.shot--chat .msg:nth-child(3) .av{background:var(--shot-fig-green)}
+.shot--chat .bd{flex:1 1 auto;height:100%;display:flex;flex-direction:column;justify-content:flex-start;gap:9%;padding-top:3%}
+.shot--chat .bd i{flex:0 0 auto;height:13%;background:var(--shot-ink);border-radius:1px}
+.shot--chat .bd i.n{background:var(--shot-paper-3);width:26%!important}
+.shot--chat .who{right:0;top:0;bottom:0;width:16%;background:var(--shot-ed-side);display:flex;flex-direction:column;gap:7%;padding:5% 2.2% 0}
+.shot--chat .who i{flex:0 0 auto;height:5%;border-radius:1px;background:var(--shot-ink)}
+.shot--chat .cmp{left:30%;right:17%;bottom:4%;height:8%;border-radius:3px;background:var(--shot-ed-side);outline:1px solid var(--shot-ink-3)}
+.shot--terminal{background:var(--shot-term-bg)}
+.shot--terminal .code{left:4%;right:4%;top:8%;bottom:8%}
+.shot--terminal .cur{left:9%;bottom:14%;width:1.4%;height:5%;background:var(--shot-term-green);animation:none}
+.shot--sheet{background:var(--shot-paper)}
+.shot--sheet .hd{left:0;right:0;top:0;height:11%;background:var(--shot-sheet-head)}
+.shot--sheet .colh{left:0;right:0;top:11%;height:8%;background:var(--shot-paper-2);display:flex}
+.shot--sheet .colh i{position:static;flex:1 1 0;border-right:1px solid var(--shot-sheet-line)}
+.shot--sheet .g{left:0;right:0;top:19%;bottom:0;display:flex;flex-direction:column}
+.shot--sheet .r{display:flex;flex:1 1 0;border-bottom:1px solid var(--shot-sheet-line)}
+.shot--sheet .c{flex:1 1 0;border-right:1px solid var(--shot-sheet-line);position:relative}
+.shot--sheet .c b{position:absolute;right:10%;top:34%;height:30%;border-radius:1px;background:var(--shot-pink);opacity:.5}
+.shot--sheet .c.l b{left:10%;right:auto}
+.shot--sheet .c.sel{outline:2px solid var(--shot-sheet-sel);outline-offset:-2px}
+.shot--sheet .c.pos b{background:var(--shot-sheet-head);opacity:.7}
+.shot--call{background:var(--shot-call-bg)}
+.shot--call .tiles{left:2%;right:2%;top:4%;bottom:19%;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:2%}
+.shot--call .t{position:relative;background:var(--shot-call-tile);border-radius:3px}
+.shot--call .t i{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);width:30%;aspect-ratio:1;border-radius:50%;background:var(--shot-ink-2)}
+.shot--call .t u{position:absolute;left:10%;bottom:10%;width:52%;height:10%;border-radius:1px;background:var(--shot-ink-3)}
+.shot--call .t.on{outline:2px solid var(--shot-fig-green);outline-offset:-2px}
+.shot--call .ctrl{left:0;right:0;bottom:0;height:15%;background:var(--shot-call-ctrl);display:flex;align-items:center;justify-content:center;gap:3%}
+.shot--call .ctrl i{position:static;height:52%;aspect-ratio:1;border-radius:50%;background:var(--shot-ink-3);flex:0 0 auto}
+.shot--call .ctrl i.r{background:var(--shot-term-red)}
+.shot--docs{background:var(--shot-paper)}
+.shot--docs .nav{left:0;top:0;bottom:0;width:17%;background:var(--shot-paper-2);display:flex;flex-direction:column;gap:5%;padding:5% 2.4% 0}
+.shot--docs .nav i{flex:0 0 auto;height:3.6%;border-radius:1px;background:var(--shot-pink-2);opacity:.6}
+.shot--docs .nav i.on{background:var(--shot-pink-2);opacity:1}
+.shot--docs .pg{left:23%;right:26%;top:12%;bottom:6%;display:flex;flex-direction:column;gap:4%}
+.shot--docs .pg .h{height:10%;width:62%;background:var(--shot-pink);border-radius:2px}
+.shot--docs .pg .ln{height:4%}
+.shot--docs .cmt{right:4%;width:19%;top:16%;bottom:26%;display:flex;flex-direction:column;gap:8%}
+.shot--docs .cmt i{flex:1 1 0;background:var(--shot-paper-2);border-radius:3px;border-left:2px solid var(--shot-amber)}
+.shot--wave{background:var(--media-void);display:flex;align-items:center;justify-content:center;gap:1.1%;padding:0 6%}
+.shot--wave > *{position:static}
+.shot--wave i{flex:1 1 0;background:var(--shot-wave);border-radius:1px;opacity:.75}
+.shot--wave i.hi{background:var(--app-src-mic);opacity:1}
+.shot--wave i.sy{background:var(--app-src-sys);opacity:1}
+/* span hosts (row thumbs, citation chips) would otherwise take span.shot's
+   display:block and stack the bars vertically */
+span.shot--wave{display:flex}
+/* OCR overlay bits that sit on a shot */
+.ocrbox{position:absolute;z-index:4;border:1px dashed color-mix(in srgb,var(--app-accent) 75%,transparent);
+  border-radius:2px;background:color-mix(in srgb,var(--app-accent) 8%,transparent)}
+.hit{position:absolute;z-index:3;background:color-mix(in srgb,var(--app-accent) 26%,transparent);
+  outline:1px solid var(--app-accent);border-radius:1px}
+mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;padding:0 2px}
+
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 14 14"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-spark" viewBox="0 0 14 14"><path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor"/></symbol>
+<symbol id="i-spark-o" viewBox="0 0 14 14"><path d="M7 1.8 8.3 5.7 12.2 7 8.3 8.3 7 12.2 5.7 8.3 1.8 7 5.7 5.7z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-check" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9 10 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevr" viewBox="0 0 8 12"><path d="M2 1.5 6.5 6 2 10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevl" viewBox="0 0 8 12"><path d="M6.5 1.5 2 6l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevd" viewBox="0 0 12 8"><path d="M1.5 2 6 6.5 10.5 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-chevud" viewBox="0 0 10 12"><path d="M2 4.5 5 1.5 8 4.5 M2 7.5 5 10.5 8 7.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-screen" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="7.5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5 12h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-mic" viewBox="0 0 14 14"><rect x="5" y="1.5" width="4" height="7" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 7a4 4 0 0 0 8 0M7 11v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-sys" viewBox="0 0 14 14"><path d="M2.5 5.5h2.4L8 2.8v8.4L4.9 8.5H2.5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10 5a3 3 0 0 1 0 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-pause" viewBox="0 0 12 12"><path d="M3.5 2v8M8.5 2v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+<symbol id="i-stop" viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1.4" fill="currentColor"/></symbol>
+<symbol id="i-play" viewBox="0 0 12 12"><path d="M3 1.8v8.4L10 6z" fill="currentColor"/></symbol>
+<symbol id="i-cal" viewBox="0 0 14 14"><rect x="1.5" y="2.5" width="11" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.5 5.5h11M4.5 1v3M9.5 1v3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-clock" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 4.2V7l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-scan" viewBox="0 0 14 14"><path d="M1.5 4V2.5A1 1 0 0 1 2.5 1.5H4M10 1.5h1.5a1 1 0 0 1 1 1V4M12.5 10v1.5a1 1 0 0 1-1 1H10M4 12.5H2.5a1 1 0 0 1-1-1V10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M4.2 5.5h5.6M4.2 8.5h3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-frame" viewBox="0 0 14 14"><path d="M4 1.2v11.6M10 1.2v11.6M1.2 4h11.6M1.2 10h11.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 14 14"><path d="M12 6.2A5 5 0 1 0 11.4 9.4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M12.4 2.4v3.9H8.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-more" viewBox="0 0 14 14"><circle cx="3" cy="7" r="1.15" fill="currentColor"/><circle cx="7" cy="7" r="1.15" fill="currentColor"/><circle cx="11" cy="7" r="1.15" fill="currentColor"/></symbol>
+<symbol id="i-x" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+<symbol id="i-plus" viewBox="0 0 12 12"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+<symbol id="i-arrup" viewBox="0 0 12 12"><path d="M6 10V2.4M2.6 5.8 6 2.4l3.4 3.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-pin" viewBox="0 0 14 14"><path d="M8.5 1.8 12.2 5.5 9.6 8.1 9.2 11 7.4 9.2 3.6 13 1 13 4.8 6.6 3 4.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-head" viewBox="0 0 14 14"><path d="M2.5 10V7a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><rect x="1.5" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/><rect x="9.9" y="8.4" width="2.6" height="3.6" rx="1" fill="currentColor"/></symbol>
+<symbol id="i-slider" viewBox="0 0 14 14"><path d="M1.5 4h8M11.5 4h1M1.5 10h3M6.5 10h6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="10.4" cy="4" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="5.4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-db" viewBox="0 0 14 14"><ellipse cx="7" cy="3.4" rx="4.8" ry="1.9" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 3.4v7.2c0 1.05 2.15 1.9 4.8 1.9s4.8-.85 4.8-1.9V3.4M2.2 7c0 1.05 2.15 1.9 4.8 1.9s4.8-.85 4.8-1.9" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-lock" viewBox="0 0 14 14"><rect x="2.6" y="6.2" width="8.8" height="6.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.8 6.2V4.5a2.2 2.2 0 0 1 4.4 0v1.7" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-info" viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 6.4v3.4M7 4.3v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-warn" viewBox="0 0 14 14"><path d="M7 1.8 13 12.2H1z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M7 5.6v3M7 10.4v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-trash" viewBox="0 0 14 14"><path d="M2.4 3.6h9.2M5.4 3.6V2.4h3.2v1.2M3.6 3.6l.6 8.2h5.6l.6-8.2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-eye" viewBox="0 0 14 14"><path d="M1 7s2.3-4 6-4 6 4 6 4-2.3 4-6 4-6-4-6-4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="7" cy="7" r="1.7" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 14 14"><path d="M2.6 4.2C1.6 5.2 1 7 1 7s2.3 4 6 4c1.2 0 2.2-.3 3-.7M11 8.9c1.3-1 2-1.9 2-1.9s-2.3-4-6-4c-.5 0-1 .07-1.4.18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M1.8 1.8l10.4 10.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-layers" viewBox="0 0 14 14"><path d="M7 1.6 12.6 4.6 7 7.6 1.4 4.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M1.4 7.4 7 10.4l5.6-3M1.4 10.1 7 13.1l5.6-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 14 14"><path d="M1.8 10.6a6 6 0 1 1 10.4 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M7 9.6 9.7 5.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-cpu" viewBox="0 0 14 14"><rect x="3.4" y="3.4" width="7.2" height="7.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="5.8" y="5.8" width="2.4" height="2.4" rx=".6" fill="currentColor"/><path d="M5.4 1.4v2M8.6 1.4v2M5.4 10.6v2M8.6 10.6v2M1.4 5.4h2M1.4 8.6h2M10.6 5.4h2M10.6 8.6h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 14 14"><path d="M4 10.6a2.8 2.8 0 0 1-.2-5.6 3.6 3.6 0 0 1 7 .6 2.5 2.5 0 0 1-.4 5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+<symbol id="i-users" viewBox="0 0 14 14"><circle cx="5.4" cy="4.6" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M1.6 12a3.8 3.8 0 0 1 7.6 0" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M9.8 3.1a2.2 2.2 0 0 1 0 4.2M10.6 8.9a3.8 3.8 0 0 1 2 3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-sun" viewBox="0 0 14 14"><circle cx="7" cy="7" r="2.8" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 .9v1.7M7 11.4v1.7M1.4 7h1.7M10.9 7h1.7M3.1 3.1l1.2 1.2M9.7 9.7l1.2 1.2M10.9 3.1 9.7 4.3M4.3 9.7 3.1 10.9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-moon" viewBox="0 0 14 14"><path d="M11.6 8.4A5.2 5.2 0 0 1 5.6 2.4a5.2 5.2 0 1 0 6 6z" fill="currentColor"/></symbol>
+<symbol id="i-key" viewBox="0 0 14 14"><circle cx="4.4" cy="9.6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6.3 7.7 12 2m-1.9 1.9 1.4 1.4M8.6 5.4 10 6.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-zoom" viewBox="0 0 14 14"><rect x="1.4" y="3.4" width="11.2" height="7.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.6 7h4.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-grid" viewBox="0 0 14 14"><rect x="1.6" y="1.6" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="7.8" y="1.6" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="1.6" y="7.8" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="7.8" y="7.8" width="4.6" height="4.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-clap" viewBox="0 0 34 34"><rect x="3" y="12" width="28" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 12 29 5.5l1.4 4.8L4.5 17z M10 10l3 5 M17 8.2l3 5 M24 6.4l3 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+</defs></svg>
+
+<button class="themetoggle" id="tt"><svg><use href="#i-moon"/></svg><span class="ttl">Dark</span></button>
+<div class="mock">
+<header class="mh">
+  <p class="mh__dir">Mnema · round 4 · direction 01 — Bento Native</p>
+  <h1 class="mh__pg"><em>11</em>Settings — the whole thing</h1>
+  <p class="mh__look">Pages 05 and 06 showed the settings <i>shell</i>. This one shows the <b>whole surface</b>: five
+    toolbar tabs, thirty-five real groups, every one of the <b>97 indexed rows</b>, drawn as bento tiles on the same
+    two-column grid. Each tab below is its pane <b>unrolled</b> — the window shows about 640px of it at a time and
+    the rest scrolls under the sticky bar. Nothing here is invented: if a row is not in
+    <span class="is-mono">settings-index.ts</span>, it is not on this page.</p>
+  <div class="mh__rule"></div>
+</header>
+<style>
+/* ── page 11 · Settings, complete ───────────────────────────────────── */
+/* shell — identical to pages 05/06 */
+.setbar { flex: 0 0 44px; display: flex; align-items: center; gap: var(--s-4); padding: 0 var(--s-12);
+  background: var(--app-surface); box-shadow: 0 var(--hairline) 0 var(--app-border); position: sticky; top: 0; z-index: 10; }
+.stab { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-md);
+  padding: 0 var(--s-8); border-radius: var(--r-md); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui); white-space: nowrap; }
+.stab svg { width: 14px; height: 14px; opacity: .85; }
+.stab.on { background: var(--app-accent-bg); color: var(--app-accent); }
+.setsearch { margin-left: auto; display: flex; align-items: center; gap: var(--s-6); height: var(--h-sm);
+  width: 190px; padding: 0 var(--s-6) 0 var(--s-8); border-radius: var(--r-md);
+  background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.setsearch svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.setsearch .kbd { margin-left: auto; height: 16px; min-width: 16px; }
+.save { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm);
+  padding: 0 var(--s-8); border-radius: var(--r-pill); flex: 0 0 auto;
+  background: var(--app-surface-subtle);
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.save svg { width: 11px; height: 11px; color: var(--app-accent); }
+.save .is-num { font-family: var(--app-font-mono); }
+.setbody { flex: 1 1 auto; min-height: 0; padding: var(--s-16) var(--pad-window) var(--s-24); }
+.sgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--cell-gutter); align-items: start; }
+.echo { display: inline-flex; align-items: center; gap: var(--s-4); height: 18px; padding: 0 var(--s-6);
+  border-radius: var(--r-sm); background: var(--app-accent-bg); color: var(--app-accent);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.echo svg { width: 9px; height: 9px; }
+
+/* the unrolled pane: the window keeps its chrome but is not clipped to 720 */
+.wroll { width: 1100px; }
+.wroll .setbody { overflow: visible; }
+.rollnote { position: absolute; right: -14px; top: 100px; bottom: 0; width: 3px; border-radius: 2px;
+  background: repeating-linear-gradient(to bottom, var(--app-border-hover) 0 8px, transparent 8px 16px); }
+
+/* settings rows */
+.srow { padding: var(--s-8) var(--tile-pad); }
+.srow .row__sub { white-space: normal; overflow: visible; text-overflow: clip; }
+.srow .row__lbl { white-space: normal; }
+.srow--full { display: block; }
+.slabel { display: flex; align-items: center; gap: var(--s-8); }
+.slabel .row__lbl { display: inline; }
+.cond { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: var(--r-sm);
+  background: var(--app-surface-hover); color: var(--app-text-subtle);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  white-space: nowrap; }
+.cond--warn { background: var(--app-warn-bg); color: var(--app-warn); }
+.grouphint { margin: 0 0 var(--s-8); font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  color: var(--app-text-subtle); }
+.combo { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm); min-width: 190px;
+  padding: 0 var(--s-6) 0 var(--s-8); border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md); background: var(--app-surface-subtle); color: var(--app-text-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); }
+.combo svg { width: 11px; height: 11px; color: var(--app-text-subtle); }
+.combo .sp { margin-left: auto; }
+.radio { display: grid; gap: var(--s-6); margin-top: var(--s-6); }
+.radio > span { display: grid; grid-template-columns: 14px 1fr; gap: var(--s-8); align-items: start; }
+.radio i { width: 14px; height: 14px; border-radius: 50%; margin-top: 2px;
+  border: var(--hairline) solid var(--app-border-strong); background: var(--app-surface-raised); }
+.radio i.on { border-color: var(--app-accent); background: var(--app-accent);
+  box-shadow: inset 0 0 0 3px var(--tile-fill); }
+.radio b { display: block; font: var(--w-regular) var(--t-ui)/1.3 var(--app-font-sans);
+  font-weight: var(--w-regular); color: var(--app-text-strong); }
+.radio em { display: block; font-style: normal; margin-top: 2px;
+  font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans); color: var(--app-text-muted); }
+
+/* custom inputs */
+.slider { padding: var(--s-12) 0 0; }
+.slider__t { position: relative; height: 4px; border-radius: 2px; background: var(--app-border-strong); }
+.slider__f { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
+.slider__k { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  transform: translate(-50%, -50%); box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 0 var(--hairline) rgba(0,0,0,.18); }
+.slider__ticks { display: flex; justify-content: space-between; margin-top: var(--s-6); }
+.slider__ticks span { font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+.slider__ticks span.on { color: var(--app-text-strong); }
+.cost { margin-top: var(--s-8); display: flex; align-items: baseline; gap: var(--gap-inline); flex-wrap: wrap;
+  font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+.cost b { font: var(--w-medium) var(--t-ui)/1 var(--app-font-mono); color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums; }
+.stepper { display: inline-flex; align-items: center; height: var(--h-sm); border-radius: var(--r-md);
+  background: var(--app-surface-raised); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+.stepper span { min-width: 62px; text-align: center;
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono); color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums; }
+.stepper button { width: 24px; height: 100%; color: var(--app-text-muted);
+  display: inline-flex; align-items: center; justify-content: center; }
+.stepper button svg { width: 10px; height: 10px; }
+.ladder { display: flex; height: var(--h-md); padding: 2px; border-radius: calc(var(--r-md) + 1px);
+  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent); }
+.ladder span { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-md); font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+.ladder span.on { background: var(--seg-on-bg); color: var(--app-text-strong); box-shadow: var(--seg-on-shadow); }
+.foot-bar { margin-top: var(--s-8); height: 10px; border-radius: 3px; overflow: hidden; display: flex;
+  background: var(--app-border-strong); }
+.foot-bar i { display: block; height: 100%; }
+.foot-bar i.now { background: var(--app-accent); }
+.foot-bar i.proj { background: color-mix(in srgb, var(--app-accent) 34%, transparent); }
+.foot-key { margin-top: var(--s-6); display: flex; gap: var(--s-12); flex-wrap: wrap;
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.foot-key i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 5px; }
+.krec { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-sm); padding: 0 var(--s-6);
+  border-radius: var(--r-md); background: var(--app-surface-subtle);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+.krec--live { background: var(--app-accent-bg); box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--ring); }
+.krec__ph { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); padding: 0 var(--s-4); }
+.krec--none { color: var(--app-text-faint); font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans);
+  padding: 0 var(--s-4); background: transparent; box-shadow: none; }
+
+/* duty-cycle bar — both halves of the cycle, no temperature claim */
+.duty { display: flex; height: 12px; border-radius: 3px; overflow: hidden; background: var(--app-border-strong); }
+.duty i { height: 100%; display: block; }
+.duty i.work { background: var(--app-accent); }
+.duty i.idle { background: color-mix(in srgb, var(--app-accent) 18%, transparent); }
+.dutyrow { display: grid; grid-template-columns: 62px 1fr; gap: var(--s-8); align-items: center;
+  margin-top: var(--s-6); }
+.dutyrow span:first-child { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle); }
+
+/* status / model cards, callouts */
+.card { margin-top: var(--s-8); padding: var(--s-8) var(--s-12); border-radius: var(--tile-r-in);
+  background: var(--app-surface-subtle); }
+.card__h { display: flex; align-items: center; gap: var(--s-8);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.card__m { margin-top: 5px; font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); color: var(--app-text-muted); }
+.card__m b { font-family: var(--app-font-mono); font-weight: var(--w-medium); color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums; }
+.callout { margin-top: var(--s-8); padding: var(--s-8) var(--s-12); border-radius: var(--tile-r-in);
+  background: var(--app-warn-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border); }
+.callout .t-label { color: var(--app-warn); }
+.acts { display: flex; gap: var(--s-6); flex-wrap: wrap; margin-top: var(--s-8); }
+.plist { display: grid; gap: var(--s-8); }
+.pcard { padding: var(--s-8) var(--s-12); border-radius: var(--tile-r-in); background: var(--app-surface-subtle); }
+.pcard__h { display: flex; align-items: center; gap: var(--s-6); }
+.pcard__n { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.dl { margin-top: var(--s-8); height: 4px; border-radius: 2px; background: var(--app-border-strong); position: relative; }
+.dl i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
+.prose { font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: var(--app-text-muted); }
+.chipwrap { display: flex; gap: var(--s-6); flex-wrap: wrap; margin-top: var(--s-8); }
+.meter { margin-top: var(--s-6); height: 6px; border-radius: 3px; background: var(--app-border-strong);
+  position: relative; overflow: hidden; }
+.meter i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--app-accent); }
+.idhero { display: flex; align-items: center; gap: var(--s-12); padding: var(--s-4) var(--tile-pad) var(--s-8); }
+.idhero__ic { width: 44px; height: 44px; border-radius: 10px; background: var(--app-accent-strong);
+  display: inline-flex; align-items: center; justify-content: center; color: #fff; flex: 0 0 auto; }
+.idhero__ic svg { width: 22px; height: 22px; }
+.dlist { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--s-8); margin-top: var(--s-6);
+  font: var(--w-regular) var(--t-label)/1.5 var(--app-font-mono); color: var(--app-text-faint); }
+.dlist b { color: var(--app-text-muted); font-weight: var(--w-regular); }
+
+.tbl { border-collapse: collapse; margin-top: var(--s-12); width: 100%; max-width: 1100px; }
+.tbl th, .tbl td { text-align: left; padding: var(--s-6) var(--s-16) var(--s-6) 0; vertical-align: top;
+  border-bottom: var(--hairline) solid var(--app-border); font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color: var(--app-text-muted); }
+.tbl th { font-weight: var(--w-medium); color: var(--app-text-strong); }
+.tbl td i { font-style: normal; font-family: var(--app-font-mono); color: var(--app-text); }
+.tbl td.n { font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong);
+  text-align: right; width: 60px; }
+</style>
+
+<!-- ══════════════════════════════ GENERAL ══════════════════════════════ -->
+<section class="sect" style="margin-top:32px">
+  <h3>General — 3 groups + the 4 shortcut categories</h3>
+  <p class="note">Seven tiles. The shortcut categories are <b>wide</b> (2×1) because a keycap recorder plus a
+    conflict line does not survive a one-column tile. Twenty-one shortcut editor rows live in those four tiles and
+    are deliberately <b>not</b> in the row index — they are one indexed row, <i>Global shortcuts</i>, plus a
+    binding table.</p>
+  <div class="fit">
+    <div class="window wroll">
+      <div class="tbar tbar--seam">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg></button>
+        <span class="tbar__title">Settings</span>
+        <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button></div>
+      </div>
+      <div class="setbar">
+        <span class="stab on"><svg><use href="#i-slider"/></svg>General</span>
+        <span class="stab"><svg><use href="#i-screen"/></svg>Capture</span>
+        <span class="stab"><svg><use href="#i-spark-o"/></svg>Intelligence</span>
+        <span class="stab"><svg><use href="#i-db"/></svg>Data</span>
+        <span class="stab"><svg><use href="#i-info"/></svg>About</span>
+        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-num">14:41:03</span></span>
+        <span class="setsearch"><svg><use href="#i-search"/></svg>Search settings<span class="kbd">⌘F</span></span>
+      </div>
+      <div class="setbody">
+        <div class="sgrid">
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Appearance</span></div>
+            <p class="grouphint">Theme switches immediately when saved and is also available from every titlebar.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Theme</span></span>
+                <span class="row__sub">System follows your OS setting; pick Light or Dark to override it.</span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span>
+              </div>
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Follow live recording</span>
+                  <span class="row__sub">Keep the timeline pinned to the latest captured data while recording</span></span>
+                <span class="row__val"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span><span class="sw on"><i></i></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Startup</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Open Mnema on</span>
+                  <span class="row__sub">The surface a freshly launched window lands on. Switch anytime with ⌘1 / ⌘2.</span></span>
+                <span class="row__val"><span class="seg seg--sm"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span></span>
+              </div>
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Auto-start recording on launch</span>
+                  <span class="row__sub">Begin capturing immediately when the app opens</span></span>
+                <span class="row__val"><span class="sw"><i></i></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">Keyboard Shortcuts</span>
+              <span class="more">click a shortcut to rebind · esc cancels · ⌫ clears</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:var(--s-8)"><svg><use href="#i-refresh"/></svg></button></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Global shortcuts</span>
+                  <span class="row__sub">Use system-wide shortcuts for recording and showing Mnema while it is in the background.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">Recording &amp; window</span><span class="more">4 bindings</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Start or stop recording</span>
+                  <span class="row__sub">Works even when Mnema is in the background.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">R</span></span>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button></span>
+              </div>
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Pause or resume recording</span>
+                  <span class="row__sub">Pauses or resumes User Capture Pause without stopping the session.</span></span>
+                <span class="row__val"><span class="krec krec--live"><span class="krec__ph">Press keys…</span></span>
+                  <button class="btn btn--ghost btn--sm">Cancel</button></span>
+              </div>
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Show or hide Mnema</span>
+                  <span class="row__sub">Works even when Mnema is in the background.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">M</span></span></span>
+              </div>
+              <div class="row row--static srow">
+                <span class="row__txt"><span class="row__lbl">Summon Quick Recall</span>
+                  <span class="row__sub">Already used by Quick Access — ⌘⌥Space</span></span>
+                <span class="row__val"><span class="krec" style="box-shadow:0 0 0 var(--hairline) var(--app-danger-border)">
+                  <span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd">Space</span></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">App</span><span class="more">6 bindings</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Open settings</span>
+                <span class="row__sub">Foreground app shortcut.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">,</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Open debug</span>
+                <span class="row__sub">Visible when developer options are enabled.</span></span>
+                <span class="row__val"><span class="krec krec--none">Set shortcut</span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Toggle screen</span>
+                <span class="row__sub">Turns the source off and on mid-recording, or picks it for the next one.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌃</span><span class="kbd">1</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Toggle microphone</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌃</span><span class="kbd">2</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Toggle system audio</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌃</span><span class="kbd">3</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Show keyboard shortcuts</span>
+                <span class="row__sub">Opens the shortcut help overlay.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">/</span></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">Dashboard</span><span class="more">6 bindings</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Open jump picker</span>
+                <span class="row__sub">Dashboard timeline navigation.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">J</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Jump to latest</span>
+                <span class="row__sub">Move to the newest available frame.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">L</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Toggle OCR panel</span>
+                <span class="row__sub">Show or hide OCR for the active frame.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">T</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Refresh timeline</span>
+                <span class="row__sub">Reload timeline and audio data.</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">R</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Copy active frame image</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">C</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Download active frame image</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⌘</span><span class="kbd">S</span></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">Audio Drawer</span><span class="more">5 bindings · audio drawer playback</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Play or pause</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">Space</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Seek back 5 seconds</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">←</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Seek forward 5 seconds</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">→</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Seek back 30 seconds</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⇧</span><span class="kbd">←</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Seek forward 30 seconds</span></span>
+                <span class="row__val"><span class="krec"><span class="kbd">⇧</span><span class="kbd">→</span></span></span></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ CAPTURE ══════════════════════════════ -->
+<section class="sect">
+  <h3>Capture — 8 groups, two of them conditional</h3>
+  <p class="note">Every consequence number on this pane is measured on this machine: the capture-rate slider's
+    GB/day comes from the real average frame size, the retention footprint from what is on disk today and the
+    projection from the current pace. <b>Retention lives here, not under Data</b> — a stated deviation, because it
+    is the second half of the frame-rate decision.</p>
+  <div class="fit">
+    <div class="window wroll">
+      <div class="tbar tbar--seam">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg></button>
+        <span class="tbar__title">Settings</span>
+        <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+      </div>
+      <div class="setbar">
+        <span class="stab"><svg><use href="#i-slider"/></svg>General</span>
+        <span class="stab on"><svg><use href="#i-screen"/></svg>Capture</span>
+        <span class="stab"><svg><use href="#i-spark-o"/></svg>Intelligence</span>
+        <span class="stab"><svg><use href="#i-db"/></svg>Data</span>
+        <span class="stab"><svg><use href="#i-info"/></svg>About</span>
+        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-num">14:41:03</span></span>
+        <span class="setsearch"><svg><use href="#i-search"/></svg>Search settings<span class="kbd">⌘F</span></span>
+      </div>
+      <div class="setbody">
+        <div class="sgrid">
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Capture</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <p class="grouphint">What gets recorded and how often segments roll over.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Screen</span>
+                <span class="row__sub">Capture the display</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Microphone</span>
+                <span class="row__sub">Capture audio from microphone</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">System Audio</span>
+                <span class="row__sub">Capture Mac system audio (macOS 15+) — meetings, videos, and app sound.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">System audio access</span>
+                  <span class="cond cond--warn">only when it may be blocked</span></span>
+                <div class="callout">
+                  <span class="t-label">Screen &amp; System Audio Recording</span>
+                  <p class="card__m" style="color:var(--app-text-strong);margin-top:3px">System audio · May be blocked</p>
+                  <p class="prose" style="margin-top:3px">macOS gives no API to query this permission. Mnema infers
+                    the state from one persisted evidence row — it never pre-checks.</p>
+                  <span class="acts"><button class="btn btn--sm">Open System Settings</button>
+                    <button class="btn btn--ghost btn--sm">Dismiss</button></span>
+                </div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Segment Duration</span>
+                  <span class="row__val" style="margin-left:auto"><span class="is-mono is-num t-meta">2m 30s</span></span></span>
+                <span class="row__sub">How long each recording segment is before a new one starts.</span>
+                <div class="slider">
+                  <div class="slider__t"><span class="slider__f" style="width:48%"></span><span class="slider__k" style="left:48%"></span></div>
+                  <div class="slider__ticks"><span>10s</span><span>1m</span><span class="on">2m 30s</span><span>4m</span><span>5m</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Inactivity</span></div>
+            <p class="grouphint">Pause &amp; resume rules when you step away.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Pause capture when idle</span>
+                <span class="row__sub">Automatically pause recording after the system has been idle, and resume when system activity returns.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Idle timeout</span>
+                  <span class="cond">with pause-when-idle on</span>
+                  <span class="is-mono is-num t-meta" style="margin-left:auto">90s</span></span>
+                <div class="slider">
+                  <div class="slider__t"><span class="slider__f" style="width:29%"></span><span class="slider__k" style="left:29%"></span></div>
+                  <div class="slider__ticks"><span>5s</span><span class="on">90s</span><span>5m</span></div>
+                </div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Activity sources</span>
+                <span class="row__sub">♪ Keyboard, pointer and audio activity all count as presence.</span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Microphone Voice Detection</span></span>
+                <div class="radio">
+                  <span><i class="on"></i><span><b>Silero</b><em>Default speech detector. Falls back to WebRTC when unavailable.</em></span></span>
+                  <span><i></i><span><b>WebRTC</b><em>Lightweight local speech detector.</em></span></span>
+                  <span><i></i><span><b>Off</b><em>Use legacy microphone peak-level activity.</em></span></span>
+                </div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Microphone Activity Sensitivity</span>
+                  <span class="cond">only when detection is Off</span>
+                  <span class="is-mono is-num t-meta" style="margin-left:auto">40% · medium</span></span>
+                <div class="slider"><div class="slider__t"><span class="slider__f" style="width:40%"></span><span class="slider__k" style="left:40%"></span></div></div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">System Audio Activity Sensitivity</span>
+                  <span class="is-mono is-num t-meta" style="margin-left:auto">55% · high</span></span>
+                <div class="slider"><div class="slider__t"><span class="slider__f" style="width:55%"></span><span class="slider__k" style="left:55%"></span></div></div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Audio Activity Monitoring</span>
+                <span class="row__sub">♪ Sound on either audio source keeps the session awake even with no input.</span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Video Output</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Screen Capture Rate</span>
+                  <span class="is-mono is-num t-meta" style="margin-left:auto">every 0.5s · 2 fps</span></span>
+                <span class="row__sub">How often a snapshot of your screen is captured. More frequent snapshots produce larger files.</span>
+                <div class="slider">
+                  <div class="slider__t"><span class="slider__f" style="width:18%"></span><span class="slider__k" style="left:18%"></span></div>
+                  <div class="slider__ticks"><span>10/sec</span><span class="on">1/sec</span><span>every 5s</span><span>every 15s</span><span>1/min</span></div>
+                </div>
+                <p class="cost">at this rate, on this Mac: <b>~1.4 GB/day</b> · <b>~42 GB/month</b>
+                  <span class="subtle">measured from your average frame</span></p>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Screen Resolution</span></span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i on">Original</span><span class="seg__i">1080p</span><span class="seg__i">720p</span><span class="seg__i">540p</span><span class="seg__i">Custom</span></span>
+                <p class="prose" style="margin-top:var(--s-6)">Output files will match the captured display's native pixel dimensions.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Video Bitrate</span></div>
+            <p class="grouphint">Bitrate controls how much data is encoded per second of video. Higher bitrate = sharper image but larger files.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Bitrate</span></span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i">Low · ~3 Mbps</span><span class="seg__i on">Medium · ~8 Mbps</span><span class="seg__i">High · ~20 Mbps</span><span class="seg__i">Custom</span></span>
+                <span class="acts"><span class="cond">Custom reveals a 1–40 Mbps stepper</span>
+                  <span class="stepper"><button><svg><use href="#i-chevd"/></svg></button><span>8 Mbps</span><button><svg><use href="#i-chevud"/></svg></button></span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Retention</span><span class="more">what survives, and what it costs</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Retention</span></span>
+                <span class="row__sub">Captures older than the chosen window are deleted automatically. Context and subjects Mnema has already derived are kept.</span>
+                <div class="ladder" style="margin-top:var(--s-8)"><span>7 days</span><span>14 days</span><span class="on">30 days</span><span>Forever</span></div>
+                <div class="foot-bar"><i class="now" style="width:37%"></i><i class="proj" style="width:63%"></i></div>
+                <div class="foot-key"><span><i class="now"></i>34.2 GB on disk today</span>
+                  <span><i class="proj"></i>~92 GB at a full 30-day window</span>
+                  <span><i style="background:var(--app-border-strong)"></i>318 GB free</span></div>
+                <span class="acts"><button class="btn btn--sm">Run cleanup now</button>
+                  <span class="t-meta subtle" style="align-self:center">Latest cleanup: 3 days ago · 4.1 GB removed</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Microphone Controller</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Active Device</span>
+                <span class="row__sub">The microphone currently in use.</span></span>
+                <span class="row__val"><i class="dot-ok"></i><span class="t-meta">MacBook Pro Microphone</span>
+                  <span class="chip chip--verdict chip--flat">default</span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Available Devices</span></span>
+                <span class="row__sub">Microphones detected on this Mac.</span>
+                <div class="chipwrap"><span class="chip chip--flat">MacBook Pro Microphone · default</span>
+                  <span class="chip chip--flat">AirPods Pro</span><span class="chip chip--flat">Scarlett Solo</span></div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Preference</span></span>
+                <span class="row__sub">Which microphone capture should use.</span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i on">System Default</span><span class="seg__i">Specific Device</span></span>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Device</span><span class="cond">with Specific Device</span></span>
+                <span class="row__sub">Pick the microphone to lock to.</span>
+                <div class="radio"><span><i class="on"></i><span><b>Scarlett Solo</b></span></span>
+                  <span><i></i><span><b>AirPods Pro</b></span></span></div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">On Disconnect</span><span class="cond">with Specific Device</span></span>
+                <span class="row__sub">What to do when the chosen microphone disconnects.</span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i on">Fallback to Default</span><span class="seg__i">Wait for Same Device</span></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Privacy</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Capture frame context</span>
+                <span class="row__sub">Store app, window, and supported browser context with frames</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Browser URL mode</span></span>
+                <span class="row__sub">How much of a captured browser URL is stored with the frame.</span>
+                <div class="radio">
+                  <span><i></i><span><b>Off</b><em>Don't store browser URLs with captured frames.</em></span></span>
+                  <span><i class="on"></i><span><b>Sanitized</b><em>Keep scheme, host, port, and path; drop query strings and fragments.</em></span></span>
+                  <span><i></i><span><b>Full</b><em>Store the complete URL, including query strings and fragments.</em></span></span>
+                </div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Browser URL access (Firefox / Zen)</span>
+                  <span class="cond">only when a Gecko browser is installed</span></span>
+                <span class="row__sub">Firefox and Zen have no scriptable URL like Chrome/Safari; reading their page address needs the Accessibility permission.</span>
+                <span class="acts"><button class="btn btn--sm">Grant access</button>
+                  <button class="btn btn--ghost btn--sm">Open System Settings</button>
+                  <button class="btn btn--ghost btn--sm">Recheck</button></span>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Excluded Apps</span></span>
+                <span class="row__sub">Apps whose visible content is never recorded.</span>
+                <span class="acts"><span class="combo"><svg><use href="#i-search"/></svg>Add an app…<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span>
+                <div class="chipwrap">
+                  <span class="chip chip--flat"><span class="aicon ic-1p" style="width:14px;height:14px;border-radius:3px"></span>1Password<svg style="width:8px;height:8px;margin-left:2px"><use href="#i-x"/></svg></span>
+                  <span class="chip chip--flat"><span class="aicon ic-sig" style="width:14px;height:14px;border-radius:3px"></span>Signal<svg style="width:8px;height:8px;margin-left:2px"><use href="#i-x"/></svg></span>
+                  <span class="chip chip--flat"><span class="aicon ic-mail" style="width:14px;height:14px;border-radius:3px"></span>Mail<svg style="width:8px;height:8px;margin-left:2px"><use href="#i-x"/></svg></span>
+                </div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Filter system audio</span>
+                <span class="row__sub">Also keep audio from excluded apps out of recordings.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Unsaved changes blocked</span>
+              <span class="cond cond--warn" style="margin-left:auto">only when validation fails</span></div>
+            <p class="grouphint">Resolve these before recording settings can save.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Validation</span></span>
+                <p class="prose" style="color:var(--app-danger);margin-top:var(--s-4)">⚠ Segment Duration must be
+                  between 10 and 300 seconds.</p>
+                <p class="prose" style="color:var(--app-danger)">⚠ At least one capture source must stay on.</p>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ INTELLIGENCE ════════════════════════════ -->
+<section class="sect">
+  <h3>Intelligence — 13 groups, the longest pane in the app</h3>
+  <p class="note">Providers, MCP connectors, Ask AI, User Context, OCR, Transcription, Speakers, your voiceprint and
+    Semantic Search. This is where the tab shape earns itself: a rail would have needed nine entries here and two
+    under Data. <b>OCR's duty cycle shows both halves of the cycle and says nothing about temperature</b>, and
+    <b>semantic search is off by default and states its price before you can turn it on</b>.</p>
+  <div class="fit">
+    <div class="window wroll">
+      <div class="tbar tbar--seam">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg></button>
+        <span class="tbar__title">Settings</span>
+        <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+      </div>
+      <div class="setbar">
+        <span class="stab"><svg><use href="#i-slider"/></svg>General</span>
+        <span class="stab"><svg><use href="#i-screen"/></svg>Capture</span>
+        <span class="stab on"><svg><use href="#i-spark-o"/></svg>Intelligence</span>
+        <span class="stab"><svg><use href="#i-db"/></svg>Data</span>
+        <span class="stab"><svg><use href="#i-info"/></svg>About</span>
+        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-num">14:41:03</span></span>
+        <span class="setsearch"><svg><use href="#i-search"/></svg>Search settings<span class="kbd">⌘F</span></span>
+      </div>
+      <div class="setbody">
+        <div class="sgrid">
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Providers</span></div>
+            <p class="grouphint">Connect the AI providers Mnema can use and choose one global default model. Every
+              AI feature inherits it unless you override it.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Enable AI features</span>
+                  <span class="row__val" style="margin-left:auto"><span class="sw on"><i></i></span></span></span>
+                <span class="row__sub">The master switch for everything AI in Mnema. While off, nothing is sent to
+                  any AI model. Off by default.</span>
+                <p class="prose" style="margin-top:var(--s-6)">Cloud providers receive the text of your question and
+                  whatever capture excerpts the feature attaches. Local providers never leave this Mac.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Connected providers</span><span class="more is-num">2</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Providers</span></span>
+                <div class="plist" style="margin-top:var(--s-8)">
+                  <div class="pcard">
+                    <div class="pcard__h"><span class="pcard__n">Anthropic</span>
+                      <span class="chip chip--verdict chip--flat">cloud</span>
+                      <span class="chip chip--verdict chip--ok">key in keychain</span>
+                      <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+                    <div class="acts"><span class="input" style="width:150px"><span class="ph">Label</span></span>
+                      <span class="input" style="width:190px"><svg><use href="#i-key"/></svg><span class="ph">••••••••••••</span></span>
+                      <button class="btn btn--sm">Save key</button>
+                      <button class="btn btn--ghost btn--sm">Clear</button></div>
+                  </div>
+                  <div class="pcard">
+                    <div class="pcard__h"><span class="pcard__n">Ollama</span>
+                      <span class="chip chip--verdict chip--flat">local</span>
+                      <button class="btn btn--ghost btn--sm" style="margin-left:auto">Remove</button></div>
+                    <div class="acts"><span class="input" style="width:150px"><span class="ph">Label</span></span>
+                      <span class="input" style="width:210px">http://127.0.0.1:11434</span></div>
+                  </div>
+                </div>
+                <div class="acts"><button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Anthropic</button>
+                  <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>OpenAI</button>
+                  <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>OpenAI-compatible</button>
+                  <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Ollama</button>
+                  <button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Llamafile</button></div>
+                <p class="prose" style="margin-top:var(--s-6)">Keys are stored in an app-managed encrypted vault
+                  unlocked by one keychain item — never in a config file.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Default model</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Global default model</span></span>
+                <span class="row__val"><span class="combo">Claude Sonnet 4.5 · Anthropic<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Status</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">AI runtime</span></span>
+                <div class="card"><div class="card__h"><i class="dot-ok"></i>AI runtime is ready
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">available</span></div>
+                  <p class="card__m">Default model resolved through <b>Anthropic</b>; last probe succeeded.</p></div>
+                <span class="acts"><button class="btn btn--sm">Test connection</button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--w2 tile--static">
+            <div class="tile__h"><span class="t-label">MCP connectors</span><span class="more is-num">3 · 2 enabled</span></div>
+            <p class="grouphint">Connect Model Context Protocol servers so chat can use their tools (GitHub, Notion,
+              a filesystem…).</p>
+            <div class="pay pay--rows">
+              <div class="row srow"><span class="row__txt"><span class="row__lbl">GitHub</span>
+                  <span class="row__sub">OAuth · <span class="acc">✓ authorized</span> · connected 2d ago</span></span>
+                <span class="row__val"><button class="btn btn--ghost btn--sm">42 tools · 11 active</button>
+                  <button class="btn btn--ghost btn--sm">Configure</button><span class="sw on"><i></i></span></span></div>
+              <div class="row srow"><span class="row__txt"><span class="row__lbl">Filesystem</span>
+                  <span class="row__sub">stdio · secret in keychain · needs Node — install from nodejs.org</span></span>
+                <span class="row__val"><button class="btn btn--ghost btn--sm">see tools</button>
+                  <button class="btn btn--sm">Reconnect</button><span class="sw"><i></i></span></span></div>
+              <div class="row srow"><span class="row__txt"><span class="row__lbl">Linear</span>
+                  <span class="row__sub">Bearer · not connected</span></span>
+                <span class="row__val"><button class="btn btn--sm">Connect</button><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow">
+                <span class="acts" style="margin-top:0"><button class="btn btn--sm"><svg><use href="#i-plus"/></svg>Add connector</button>
+                  <span class="t-meta subtle" style="align-self:center">Secrets live in the encrypted vault, not in config.</span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Ask AI</span></div>
+            <p class="grouphint">Let Quick Access answer questions over your redacted capture history. Uses the
+              global default model unless overridden below.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Enable Ask AI</span>
+                <span class="row__sub">Allow Quick Access to answer questions over your redacted capture history. Off by default.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Fetch pages you visited</span>
+                <span class="row__sub">Lets Ask AI re-request a page you visited (its address minus any secrets) over the network.</span></span>
+                <span class="row__val"><span class="sw"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Limit tool calls per question</span>
+                <span class="row__sub">Cap how many follow-up searches Ask AI can run for one question. Off means no cap.</span></span>
+                <span class="row__val"><span class="stepper"><button><svg><use href="#i-chevd"/></svg></button><span>12</span><button><svg><use href="#i-chevud"/></svg></button></span>
+                  <span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Model override</span></span>
+                <span class="row__val"><span class="combo">Global default model<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">User Context</span></div>
+            <p class="grouphint">A private, on-device understanding of your activity, derived continuously from your
+              capture history.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Derive context continuously</span>
+                <span class="row__sub">The derived understanding deliberately outlives raw-capture retention. Turning
+                  this off pauses derivation; it does not erase what was already learned.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Derivation status</span></span>
+                <div class="card"><div class="card__h"><i class="dot-ok"></i>Deriving Activities
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">active</span></div>
+                  <p class="card__m"><b>412</b> activities · <b>142</b> conclusions · covered through
+                    <b>3:16 PM</b> · <b>1.8M</b> tokens across <b>96</b> runs</p></div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Derivation Budget</span></span>
+                <span class="row__sub">Paces background work over time so tokens are spent as a trickle, never a
+                  one-time bill.</span>
+                <span class="seg" style="margin-top:var(--s-6)"><span class="seg__i">Light</span><span class="seg__i on">Balanced</span><span class="seg__i">Thorough</span></span>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">History Backfill</span>
+                <span class="row__sub">Go deeper — derive all of history</span></span>
+                <span class="row__val"><span class="sw"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Run derivation</span></span>
+                <span class="acts"><button class="btn btn--sm">Run derivation now</button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button>
+                  <button class="btn btn--sm btn--danger"><svg><use href="#i-trash"/></svg>Wipe User Context</button></span>
+                <p class="prose" style="margin-top:var(--s-6)">Wipe User Context is the only control that clears the
+                  derived understanding — Retention Cleanup never touches it.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">OCR &amp; Previews</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <p class="grouphint">Choose the OCR engine, inspect model availability, and tune preview caching.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Enable OCR</span>
+                <span class="row__sub">Automatically queue OCR for captured screen frames when the selected engine is available</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Pacing</span></span>
+                <span class="row__sub">OCR runs in short bursts and idles in between, so it never takes the machine
+                  over. The idle is longer while you are recording.</span>
+                <div class="dutyrow"><span>recording</span>
+                  <span class="duty"><i class="work" style="width:20%"></i><i class="idle" style="width:80%"></i></span></div>
+                <div class="dutyrow"><span>paused</span>
+                  <span class="duty"><i class="work" style="width:40%"></i><i class="idle" style="width:60%"></i></span></div>
+                <p class="cost">work <b>20%</b> / idle <b>80%</b> while recording · work <b>40%</b> / idle
+                  <b>60%</b> while paused · backlog <b>1 284 frames</b></p>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Provider</span></span>
+                <div class="radio"><span><i class="on"></i><span><b>Apple Vision</b></span></span>
+                  <span><i></i><span><b>Tesseract</b></span></span></div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Model</span></span>
+                <span class="row__val"><span class="combo">Managed by macOS<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Language</span>
+                <span class="row__sub"><span class="cond">with Tesseract</span></span></span>
+                <span class="row__val"><span class="combo">English (eng)<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Recognition mode</span>
+                <span class="row__sub"><span class="cond">with Apple Vision</span></span></span>
+                <span class="row__val"><span class="seg seg--sm"><span class="seg__i">Fast</span><span class="seg__i on">Accurate</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Language correction</span>
+                <span class="row__sub">Let Apple Vision spend extra work correcting recognized text using language models</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Page segmentation</span>
+                <span class="row__sub">Auto for mixed layouts, Single block for paragraph regions. <span class="cond">with Tesseract</span></span></span>
+                <span class="row__val"><span class="pop">Auto <b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Image preprocessing</span>
+                <span class="row__sub">Grayscale usually works best for clean UI text. <span class="cond">with Tesseract</span></span></span>
+                <span class="row__val"><span class="seg seg--sm"><span class="seg__i on">Grayscale</span><span class="seg__i">Thresholded</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Upscale before OCR</span>
+                <span class="row__sub">Tesseract works best around 300 DPI. <span class="cond">with Tesseract</span></span></span>
+                <span class="row__val"><span class="seg seg--sm"><span class="seg__i on">1×</span><span class="seg__i">2×</span><span class="seg__i">3×</span><span class="seg__i">4×</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Character whitelist</span>
+                <span class="row__sub"><span class="cond">with Tesseract</span></span></span>
+                <span class="row__val"><span class="input" style="width:200px"><span class="ph">Optional, e.g. ABCDEF…</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">OCR availability</span>
+                <span class="row__sub">Apple Vision is present on this Mac and needs no download.</span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Selected model status</span></span>
+                <div class="card"><div class="card__h">Apple Vision · managed by macOS
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">available</span></div>
+                  <p class="card__m">No download. Tesseract's <b>eng.traineddata</b> is <b>23 MB</b> if you switch.</p></div>
+                <span class="acts"><button class="btn btn--ghost btn--sm btn--danger"><svg><use href="#i-trash"/></svg>Delete unused OCR models</button></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Preview Cache</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Cache duration</span>
+                <span class="row__sub">In-memory cache for frame and image previews. Cached entries expire automatically.</span></span>
+                <span class="row__val"><span class="pop">1 hour (default) <b><svg><use href="#i-chevud"/></svg></b></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Transcription</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <p class="grouphint">Local speech-to-text provider and model setup for microphone and system audio.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Enable audio transcription</span>
+                <span class="row__sub">Master switch for source-specific audio transcription</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Transcribe microphone</span>
+                <span class="row__sub">Automatically queue transcription for committed microphone audio segments</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Transcribe system audio</span>
+                <span class="row__sub">Transcribe system audio only when speech is detected.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Provider</span></span>
+                <div class="radio">
+                  <span><i class="on"></i><span><b>Parakeet</b></span></span>
+                  <span><i></i><span><b>Local Whisper</b></span></span>
+                  <span><i></i><span><b>Apple Speech (on-device)</b></span></span>
+                  <span><i></i><span><b>Deepgram (cloud)</b><em>Cloud transcription — requires an API key</em></span></span>
+                </div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Model</span></span>
+                <span class="row__val"><span class="combo">parakeet-tdt-0.6b · int8<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Language</span>
+                <span class="row__sub">Use auto for automatic language detection, or enter a hint such as en.</span></span>
+                <span class="row__val"><span class="combo">auto<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Deepgram API key</span>
+                <span class="row__sub"><span class="cond">with Deepgram</span> · key lives in the keychain under <span class="is-mono">transcription.deepgram</span></span></span>
+                <span class="row__val"><span class="input" style="width:150px"><svg><use href="#i-key"/></svg><span class="ph">API key</span></span>
+                  <button class="btn btn--sm">Save key</button></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Parakeet memory mode</span>
+                <span class="row__sub"><span class="cond">with Parakeet</span></span></span>
+                <span class="row__val"><span class="seg seg--sm"><span class="seg__i on">Balanced</span><span class="seg__i">Low memory</span><span class="seg__i">Performance</span></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Idle unload seconds</span>
+                <span class="row__sub"><span class="cond">Parakeet · Balanced</span></span></span>
+                <span class="row__val"><span class="stepper"><button><svg><use href="#i-chevd"/></svg></button><span>300 s</span><button><svg><use href="#i-chevud"/></svg></button></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Chunk seconds</span>
+                <span class="row__sub">Chunking limits peak memory during long segments. <span class="cond">with Parakeet</span></span></span>
+                <span class="row__val"><span class="stepper"><button><svg><use href="#i-chevd"/></svg></button><span>180 s</span><button><svg><use href="#i-chevud"/></svg></button></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Selected model status</span></span>
+                <div class="card"><div class="card__h">parakeet-tdt-0.6b · int8
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">available</span></div>
+                  <p class="card__m"><b>612 MB</b> on disk · peak working set <b>~1.4 GB</b> ·
+                    <b>24 GB</b> of RAM on this Mac — <span class="acc">fits comfortably</span></p>
+                  <div class="dl"><i style="width:100%"></i></div></div>
+                <span class="acts"><button class="btn btn--ghost btn--sm btn--danger"><svg><use href="#i-trash"/></svg>Delete unused transcription models</button></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Speaker analysis</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <p class="grouphint">Anonymous diarization first; saved-person recognition only when you explicitly opt in.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Speaker separation</span></span>
+                <div class="card">
+                  <div class="card__h">Transcript speakers</div>
+                  <p class="card__m">Split the room before naming anyone.</p>
+                  <div class="row row--static srow" style="padding-left:0;padding-right:0">
+                    <span class="row__txt"><span class="row__lbl">Separate speakers in transcripts</span>
+                      <span class="row__sub">Queue local diarization after successful microphone transcription</span></span>
+                    <span class="row__val"><span class="sw on"><i></i></span></span></div>
+                  <div class="row row--static srow" style="padding-left:0;padding-right:0">
+                    <span class="row__txt"><span class="row__lbl">Recognize saved people</span>
+                      <span class="row__sub">Opt in to matching against confirmed local Person voice profiles</span></span>
+                    <span class="row__val"><span class="sw"><i></i></span></span></div>
+                </div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Helper timeout</span>
+                <span class="row__sub">Stops speaker analysis if the local helper runs too long.</span></span>
+                <span class="row__val"><span class="is-mono is-num t-meta">12 m</span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Speaker model</span></span>
+                <span class="row__sub">Pick a preset by intent. Each preset's download size is shown in the list.</span>
+                <span class="acts"><span class="combo" style="min-width:250px">Accurate · pyannote-community-1 + WeSpeaker<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span>
+                <div class="card"><div class="card__h">speakrs · pyannote-community-1 + WeSpeaker
+                  <span class="chip chip--verdict chip--warn" style="margin-left:auto">not installed</span></div>
+                  <p class="card__m">Download <b>419 MB</b> · runs on CoreML, no Python helper</p>
+                  <div class="dl"><i style="width:38%"></i></div></div>
+                <span class="acts"><button class="btn btn--sm">Download (419 MB)</button>
+                  <button class="btn btn--ghost btn--sm">Cancel download</button>
+                  <button class="btn btn--ghost btn--sm btn--danger">Delete speaker model</button></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Your voice</span></div>
+            <p class="grouphint">Record a short sample so Mnema can label your turns with your name instead of
+              “Speaker 1”.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Voiceprint</span>
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">enrolled</span></span>
+                <p class="prose" style="margin-top:var(--s-4)">“The quick brown fox jumps over the lazy dog — read
+                  this line at your normal speaking pace.”</p>
+                <div class="meter"><i style="width:64%"></i></div>
+                <span class="acts"><button class="btn btn--icon btn--sm"><svg><use href="#i-play"/></svg></button>
+                  <button class="btn btn--sm">Record again (15s)</button>
+                  <button class="btn btn--ghost btn--sm btn--danger">Delete voiceprint</button></span>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Label my voice automatically</span>
+                <span class="row__sub">When Mnema is confident a voice is yours, it applies your name without asking.</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Semantic Search Model</span>
+              <button class="btn btn--ghost btn--icon btn--sm" style="margin-left:auto"><svg><use href="#i-refresh"/></svg></button></div>
+            <p class="grouphint">Meaning-based search runs fully on-device. Pick a supported model and Mnema embeds
+              your captures in the background.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Enable semantic search</span>
+                <span class="row__sub">Fuse meaning-based results with keyword search. Inert until a model below is installed.</span></span>
+                <span class="row__val"><span class="sw"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="cond">price before enable · shown while OFF</span></span>
+                <p class="cost">Turning this on will embed <b>1 284 606</b> captured frames — about
+                  <b>2.1 GB</b> of index, processed over roughly <b>two days</b> of background work.
+                  <span class="subtle">The coverage meter only appears once it is on.</span></p>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Model</span></span>
+                <span class="acts"><span class="combo" style="min-width:250px"><svg><use href="#i-search"/></svg>Select a model — recommended tiers first…<span class="sp"><svg><use href="#i-chevud"/></svg></span></span></span>
+                <div class="card"><div class="card__h">nomic-embed-text-v1.5
+                  <span class="chip chip--verdict chip--flat" style="margin-left:auto">not installed</span></div>
+                  <p class="card__m">Download <b>~137 MB</b> <span class="subtle">(approximate — the registry does
+                    not pin an exact byte count for this one)</span></p></div>
+                <span class="acts"><button class="btn btn--sm">Download (~137 MB)</button>
+                  <button class="btn btn--ghost btn--sm">Delete</button></span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════ DATA + ABOUT ════════════════════════════ -->
+<section class="sect">
+  <h3>Data — 2 groups — and About — 5 groups</h3>
+  <p class="note">Data is the smallest pane in the app and stays that way: where files live, and who is allowed to
+    ask for them. <b>Agent access is here</b>, under <i>Access</i> — MCP connectors are a different thing and live
+    under Intelligence. About carries the licence, the build, updates, the acknowledgements and the developer
+    switches.</p>
+  <div class="fit">
+    <div class="window wroll">
+      <div class="tbar tbar--seam">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg></button>
+        <span class="tbar__title">Settings</span>
+        <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+      </div>
+      <div class="setbar">
+        <span class="stab"><svg><use href="#i-slider"/></svg>General</span>
+        <span class="stab"><svg><use href="#i-screen"/></svg>Capture</span>
+        <span class="stab"><svg><use href="#i-spark-o"/></svg>Intelligence</span>
+        <span class="stab on"><svg><use href="#i-db"/></svg>Data</span>
+        <span class="stab"><svg><use href="#i-info"/></svg>About</span>
+        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-num">14:41:03</span></span>
+        <span class="setsearch"><svg><use href="#i-search"/></svg>Search settings<span class="kbd">⌘F</span></span>
+      </div>
+      <div class="setbody">
+        <div class="sgrid">
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Storage</span></div>
+            <p class="grouphint">Where capture files live on disk.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Save Directory</span></span>
+                <span class="row__sub">Where captures, the database, and model caches live on disk.</span>
+                <span class="acts"><span class="input" style="flex:1;min-width:0">~/Library/Application Support/day.mnema</span>
+                  <button class="btn btn--sm">Browse</button></span>
+                <div class="callout"><span class="t-label">Restart required</span>
+                  <p class="prose" style="margin-top:3px">The new location takes effect on the next launch.</p>
+                  <span class="acts"><button class="btn btn--sm">Restart Mnema</button></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Access</span><span class="more">agent &amp; CLI</span></div>
+            <p class="grouphint">Let local tools request time-bounded, redacted access to your Mnema history.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">CLI Access</span></span>
+                <div class="callout"><span class="t-label">CLI access request</span>
+                  <p class="prose" style="margin-top:3px"><b class="strong">Claude Code</b> is asking to read your
+                    capture history. Approve a scope and a window, or deny.</p>
+                  <span class="acts"><button class="btn btn--sm btn--default">Approve for 1 hour</button>
+                    <button class="btn btn--ghost btn--sm">Deny</button></span></div>
+                <p class="prose" style="margin-top:var(--s-8)">Every grant is scoped and expires. Tools never read
+                  the database directly — the broker answers, redacts and logs.</p>
+                <span class="acts"><button class="btn btn--sm">Install CLI</button>
+                  <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-refresh"/></svg></button>
+                  <span class="t-meta subtle" style="align-self:center">mnema-cli installed · v0.1.9</span></span>
+                <div class="pay pay--rows" style="margin-top:var(--s-8)">
+                  <div class="row srow"><span class="row__txt"><span class="row__lbl">Claude Code</span>
+                    <span class="row__sub">search + frames · expires in 42 min</span></span>
+                    <span class="row__val"><i class="dot-ok"></i><button class="btn btn--ghost btn--sm">Revoke</button></span></div>
+                  <div class="row srow"><span class="row__txt"><span class="row__lbl">Raycast</span>
+                    <span class="row__sub">search only · expires in 6 days</span></span>
+                    <span class="row__val"><i class="dot-ok"></i><button class="btn btn--ghost btn--sm">Revoke</button></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="note" style="margin-top:24px"><b>About</b> — the licence, the build, updates, the acknowledgements and
+    the developer switches. Five groups, and the only pane where a row's <i>label</i> changes with state:
+    <i>Buy Mnema</i> becomes <i>Renew</i> once you own it and the update window has lapsed.</p>
+  <div class="fit">
+    <div class="window wroll">
+      <div class="tbar tbar--seam">
+        <div class="tl"><i></i><i></i><i></i></div>
+        <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg></button>
+        <span class="tbar__title">Settings</span>
+        <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+      </div>
+      <div class="setbar">
+        <span class="stab"><svg><use href="#i-slider"/></svg>General</span>
+        <span class="stab"><svg><use href="#i-screen"/></svg>Capture</span>
+        <span class="stab"><svg><use href="#i-spark-o"/></svg>Intelligence</span>
+        <span class="stab"><svg><use href="#i-db"/></svg>Data</span>
+        <span class="stab on"><svg><use href="#i-info"/></svg>About</span>
+        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-num">14:41:03</span></span>
+        <span class="setsearch"><svg><use href="#i-search"/></svg>Search settings<span class="kbd">⌘F</span></span>
+      </div>
+      <div class="setbody">
+        <div class="sgrid">
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">License &amp; Trial</span></div>
+            <p class="grouphint">Buy once, keep it forever. Everything is verified offline — no account, no phoning home.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Status</span>
+                  <span class="chip chip--verdict chip--ok" style="margin-left:auto">licensed</span></span>
+                <span class="row__sub">Your current trial or license state.</span>
+                <div class="card"><div class="card__h">Licensed to Shaik Zeeshan</div>
+                  <p class="card__m"><b>1 of 3</b> devices activated · update window ends <b>12 Mar 2027</b></p></div>
+              </div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Refresh license status</span>
+                <span class="row__sub">Re-check with the license server — a renewal or freed-up device lands right away.</span></span>
+                <span class="row__val"><button class="btn btn--sm">Refresh</button>
+                  <span class="t-meta subtle">Checked just now</span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Renew</span>
+                <span class="row__sub">Renew ($29) to extend your update window for another year of new builds.
+                  <span class="cond">Buy Mnema ($69) before purchase</span></span></span>
+                <span class="row__val"><button class="btn btn--sm btn--default">Renew ($29)</button></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Activate license</span>
+                <span class="row__sub">Paste the license key from your purchase email to unlock recording on this device.</span></span>
+                <span class="row__val"><span class="input" style="width:190px"><span class="ph">Paste your license key</span></span>
+                  <button class="btn btn--sm">Activate</button></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">About</span></div>
+            <p class="grouphint">Version, build details, and the projects Mnema is built on.</p>
+            <div class="idhero">
+              <span class="idhero__ic"><svg><use href="#i-clap"/></svg></span>
+              <span>
+                <span class="t-title" style="display:block">Mnema</span>
+                <span class="t-meta is-mono is-num">v0.1.9</span>
+                <span class="chip chip--verdict chip--flat" style="margin-left:6px">stable channel</span>
+                <span class="dlist"><b>Platform</b><span>macOS 26.0 · arm64</span>
+                  <b>Identifier</b><span>day.mnema</span></span>
+              </span>
+            </div>
+            <p class="prose" style="padding:0 var(--tile-pad)">Your memory, on rewind. Mnema records your screen so
+              you can scrub back to anything you've seen.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Copy details</span>
+                <span class="row__sub">Copy version and build details to the clipboard.</span></span>
+                <span class="row__val"><button class="btn btn--sm">Copy details</button></span></div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Updates</span></div>
+            <p class="grouphint">Mnema checks the selected channel at startup after onboarding.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Update channel</span></span>
+                <span class="row__sub">Current channel: Stable. Switching channels checks immediately.</span>
+                <div class="radio"><span><i class="on"></i><span><b>Stable</b><em>Published releases</em></span></span>
+                  <span><i></i><span><b>Preview</b><em>Opt-in prereleases</em></span></span></div>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Confirm preview channel</span>
+                  <span class="cond cond--warn">only after picking Preview</span></span>
+                <span class="row__sub">Preview builds may be less stable and may show macOS security warnings.</span>
+                <span class="acts"><button class="btn btn--sm">Use Preview Updates</button>
+                  <button class="btn btn--ghost btn--sm">Keep Stable</button></span>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Status</span></span>
+                <span class="row__sub">Check for a new build and install it from here.</span>
+                <div class="card"><div class="card__h"><i class="dot-info"></i>Update available · v0.1.10
+                  <button class="btn btn--sm" style="margin-left:auto">Check for Updates</button></div>
+                  <p class="card__m">Last checked <b>4 min ago</b> · downloading</p>
+                  <div class="dl"><i style="width:62%"></i></div>
+                  <p class="card__m">Stop recording to install this update.</p></div>
+                <span class="acts"><button class="btn btn--sm btn--default">Install Update</button></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Acknowledgements</span></div>
+            <p class="grouphint">Mnema's on-device models are built on these open projects. Each is credited under
+              its license.</p>
+            <div class="pay pay--rows">
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Third-party notices</span>
+                  <button class="btn btn--sm" style="margin-left:auto">Copy notices</button></span>
+                <span class="row__sub">The full attribution list for the bundled open-source components.</span>
+                <div class="pay pay--rows" style="margin-top:var(--s-6)">
+                  <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">speakrs · pyannote-community-1</span>
+                    <span class="row__sub">MIT · github.com/…</span></span></div>
+                  <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">whisper.cpp</span>
+                    <span class="row__sub">MIT · github.com/…</span></span></div>
+                  <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Tesseract OCR</span>
+                    <span class="row__sub">Apache-2.0 · github.com/…</span></span></div>
+                  <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">OpenBLAS</span>
+                    <span class="row__sub">BSD-3-Clause · github.com/…</span></span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tile tile--static">
+            <div class="tile__h"><span class="t-label">Developer &amp; Logs</span></div>
+            <div class="pay pay--rows">
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Enable developer options</span>
+                <span class="row__sub">Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra).</span></span>
+                <span class="row__val"><span class="sw on"><i></i></span></span></div>
+              <div class="row row--static srow"><span class="row__txt"><span class="row__lbl">Native capture debug logging</span>
+                <span class="row__sub">Write native capture diagnostic output to a log file on disk for troubleshooting.</span></span>
+                <span class="row__val"><span class="sw"><i></i></span></span></div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">Native capture log</span>
+                  <span class="cond">only when logging has run</span></span>
+                <span class="row__sub">Where diagnostic output is written on disk.</span>
+                <div class="card"><p class="card__m">Status <b>Inactive</b><br>Path
+                  <b>~/Library/Logs/day.mnema/</b><br>File <b>native-capture.log</b></p></div>
+                <span class="acts"><button class="btn btn--sm">Open Log File</button>
+                  <button class="btn btn--ghost btn--sm">Open Containing Folder</button>
+                  <button class="btn btn--ghost btn--sm btn--danger">Delete Log File</button></span>
+              </div>
+              <div class="row row--static srow srow--full">
+                <span class="slabel"><span class="row__lbl">General application log</span></span>
+                <span class="row__sub">Captures high-level runtime events and errors.</span>
+                <div class="card"><p class="card__m">Path <b>~/Library/Logs/day.mnema/</b><br>File
+                  <b>rust.log</b> <span class="subtle">— timestamps are UTC</span></p></div>
+                <span class="acts"><button class="btn btn--sm">Open Log File</button>
+                  <button class="btn btn--ghost btn--sm">Open Containing Folder</button></span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>Completeness — every group, every indexed row</h3>
+  <p class="note">The row index is the authority and it is test-enforced in both directions: every registered
+    setting has an index entry, and every index entry has a row. <b>97 rows, 0 orphans.</b> The table below is the
+    map from the app's registry to this page.</p>
+  <table class="tbl">
+    <tr><th>Tab</th><th>Section</th><th>Groups drawn</th><th class="n">rows</th></tr>
+    <tr><td>General</td><td>appearance</td><td>Appearance</td><td class="n">2</td></tr>
+    <tr><td></td><td>startup</td><td>Startup</td><td class="n">2</td></tr>
+    <tr><td></td><td>shortcuts</td><td>Keyboard Shortcuts, + Recording &amp; window · App · Dashboard · Audio Drawer <i>(21 binding editors, not index rows)</i></td><td class="n">1</td></tr>
+    <tr><td>Capture</td><td>capture</td><td>Capture, Inactivity, Unsaved changes blocked</td><td class="n">14</td></tr>
+    <tr><td></td><td>video</td><td>Video Output, Video Bitrate, Retention</td><td class="n">4</td></tr>
+    <tr><td></td><td>audio</td><td>Microphone Controller <i>(8 row tags, 7 unique labels &mdash; <i>Microphone</i> is rendered twice, once loading, once failed)</i></td><td class="n">7</td></tr>
+    <tr><td></td><td>privacy</td><td>Privacy</td><td class="n">5</td></tr>
+    <tr><td>Intelligence</td><td>intelligence</td><td>Providers, Connected providers, Default model, Status, MCP connectors</td><td class="n">5</td></tr>
+    <tr><td></td><td>askAi</td><td>Ask AI</td><td class="n">4</td></tr>
+    <tr><td></td><td>userContext</td><td>User Context</td><td class="n">5</td></tr>
+    <tr><td></td><td>ocr</td><td>OCR &amp; Previews, Preview Cache</td><td class="n">14</td></tr>
+    <tr><td></td><td>transcription</td><td>Transcription</td><td class="n">11</td></tr>
+    <tr><td></td><td>speakers</td><td>Speaker analysis, Your voice</td><td class="n">5</td></tr>
+    <tr><td></td><td>semanticSearch</td><td>Semantic Search Model</td><td class="n">2</td></tr>
+    <tr><td>Data</td><td>storage</td><td>Storage</td><td class="n">1</td></tr>
+    <tr><td></td><td>access</td><td>Access <i>— agent / CLI grants live here</i></td><td class="n">1</td></tr>
+    <tr><td>About</td><td>license</td><td>License &amp; Trial</td><td class="n">5</td></tr>
+    <tr><td></td><td>about</td><td>About, Updates, Acknowledgements</td><td class="n">5</td></tr>
+    <tr><td></td><td>developer</td><td>Developer &amp; Logs</td><td class="n">4</td></tr>
+    <tr><td><b class="strong">5 tabs</b></td><td><b class="strong">19 sections</b></td><td><b class="strong">35 groups</b></td><td class="n"><b class="strong">97</b></td></tr>
+  </table>
+</section>
+
+<section class="sect">
+  <h3>What this pane deliberately does not do</h3>
+  <table class="tbl">
+    <tr><th>Not drawn</th><th>Why</th></tr>
+    <tr><td>A left rail</td><td>Nineteen sections would make a nineteen-item rail. Five tabs plus ⌘F row-filtering covers the same ground; the sub-section ids survive as ⌘F breadcrumbs and <i>?tab=</i> deeplinks.</td></tr>
+    <tr><td>A bottom save bar</td><td>G7. Autosave is a chip in the top-anchored sticky bar plus a per-row <i>Saved ✓</i> echo. Failure is the only state that persists and it also raises a toast.</td></tr>
+    <tr><td>Settings-Undo</td><td>G7 again — cut for v1. The chip and the row echo answer the anxiety; an undo stack is speculative machinery.</td></tr>
+    <tr><td>Any °C figure</td><td>G8. OCR's duty cycle shows both halves of the cycle and the backlog; it makes no temperature claim.</td></tr>
+    <tr><td>A named external shortcut conflict</td><td>G9. In-app conflicts are named with their owner. External register-failures cannot be — macOS has no API to enumerate another app's hotkeys, so the copy stays honest and vague.</td></tr>
+    <tr><td>A semantic-search coverage meter in the off state</td><td>G10. Off is the shipping default; the meter renders only once it is on. The off row states the price instead, computed from the real frame count.</td></tr>
+    <tr><td>Round model sizes</td><td>G8. Sizes come from the corrected registry — speakrs is <i>419 MB</i>, and the semantic model's <i>~137 MB</i> is marked approximate because the registry genuinely does not pin it.</td></tr>
+  </table>
+</section>
+
+</div>
+<script>
+(function(){
+  var r=document.documentElement,t=document.getElementById('tt'),mq=matchMedia('(prefers-color-scheme: light)');
+  function cur(){return r.dataset.theme||(mq.matches?'light':'dark');}
+  function sync(){var c=cur();t.querySelector('.ttl').textContent=c==='dark'?'Dark':'Light';
+    t.querySelector('use').setAttribute('href',c==='dark'?'#i-moon':'#i-sun');}
+  t.addEventListener('click',function(){r.dataset.theme=cur()==='dark'?'light':'dark';sync();});
+  mq.addEventListener('change',sync); sync();
+})();
+</script>
+</body>
+</html>

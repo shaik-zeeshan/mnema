@@ -22,7 +22,12 @@ open docs/redesign/round4/01-bento-native/01-overview.html
 | `05-settings-general.html` | the new settings shell (toolbar tabs, top-anchored autosave) showing General and Capture |
 | `06-settings-intelligence.html` | Intelligence — the custom-input showcase, plus the scrolled pane and a why-these-five table |
 | `07-components.html` | every control and state, the bento footprint system, type + spacing specimen, the UI/UX self-audit, the nine-point native audit, and stated deviations |
-| `shots/` | rendered verification screenshots, light and dark, for all seven pages |
+| `08-journal.html` | the day Journal — the read, three time-of-day band tiles with the when/spine/card river, and one receipt open as a bento of frame + transcript + filmstrip; plus the expired, audio-only and empty states |
+| `09-subjects.html` | Subjects as four conviction-tier tiles with the sparkline as hero in the top tier, one subject opened (conclusions strip, the pinned conclusion, the story over time), and the movement axis |
+| `10-context.html` | Context — the composer, standing statements with edit/delete, the authored-vs-inferred explainer, what steers the dossier, the dismissed archive, the guardrail, and the outlives-retention disclosure |
+| `11-settings-complete.html` | all five settings tabs unrolled — 35 real groups, all 97 indexed rows, plus the completeness table and what the pane deliberately omits |
+| `shots/` | rendered verification screenshots, light and dark (git-excluded) |
+| `shots-app/` | screenshots of the built app in this direction's skin |
 
 ## What it does with each founder ask
 
@@ -85,3 +90,11 @@ segmented control with a present-tense description line.
   different", "restrained") are comparative and need the comparison rendered.
 - Tile radius 12 and tile inset 14 depart from the converged 10/16; both are justified in
   `07-components.html` under *Deviations, stated*.
+- **Journal, Subjects and Context are destinations, not surfaces.** The main window still holds exactly
+  Timeline and Overview; each of the three opens from an Overview tile's header row and its own title bar
+  swaps the segmented control for a named back chevron (`‹ Overview`). The Insights rail is never drawn.
+- Page 11 draws each settings tab as its pane **unrolled** — the window at its natural height instead of
+  clipped to 720 — so all 35 groups are visible on one page. The shipping window still scrolls.
+- The Overview Context tile on page 10 counts **standing statements** and **inferred conclusions**, not
+  page 01's "142 facts about you · 3 pending". The backend has no pending-review state; page 01's meta is
+  the older, looser wording.

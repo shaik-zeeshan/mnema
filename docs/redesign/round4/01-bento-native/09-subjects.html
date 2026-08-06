@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mnema · Bento Native · 07 Components, specimen + self-audit</title>
+<title>Mnema · Bento Native · 09 Subjects — tiers by conviction</title>
 <style>
 /* ==========================================================================
    MNEMA · round 4 · direction 01 — BENTO NATIVE
@@ -798,355 +798,368 @@ mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;p
 <div class="mock">
 <header class="mh">
   <p class="mh__dir">Mnema · round 4 · direction 01 — Bento Native</p>
-  <h1 class="mh__pg"><em>07</em>Components, specimen + self-audit</h1>
-  <p class="mh__look">Every control in every state, the bento footprint system drawn to scale, the type and spacing specimen at true size, and the UI/UX pattern self-audit — hierarchy, spacing grid, contrast, states, native bar, and a per-window border count against the ~12 ceiling.</p>
+  <h1 class="mh__pg"><em>09</em>Subjects — tiers by conviction</h1>
+  <p class="mh__look">Each conviction tier is a <b>4×1 tile</b>, so the ranking is spatial before it is textual, and
+    the tier's own note ("held firmly", "below display floor") rides in the meta slot every other tile uses. Inside
+    the top tier the <b>sparkline is the hero</b>: a 260-wide trajectory with the display floor drawn as a dashed
+    line, sitting next to a <span class="is-mono">--t-display</span> figure. Lower tiers keep the same row grammar
+    at half the width — one object, quieter.</p>
   <div class="mh__rule"></div>
 </header>
 <style>
-/* ── page 07 · components, specimen, audit ─────────────────────────── */
-.spec { display: flex; flex-wrap: wrap; gap: var(--s-24) var(--s-32); align-items: flex-start; margin-top: var(--s-16); }
-.cell { display: flex; flex-direction: column; gap: var(--s-8); }
-.cell > .wlabel { margin: 0; }
-.crow { display: flex; align-items: center; gap: var(--s-12); flex-wrap: wrap; }
-.strip38 { height: var(--h-titlebar); display: flex; align-items: center; gap: var(--s-12);
-  padding: 0 var(--s-12); background: var(--app-bg); border-radius: var(--r-lg);
-  box-shadow: 0 0 0 var(--hairline) var(--app-border); }
-.tbl { border-collapse: collapse; width: 100%; max-width: 1280px; margin-top: var(--s-16); }
-.tbl th { text-align: left; padding: var(--s-6) var(--s-12) var(--s-6) 0;
-  font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle);
-  border-bottom: var(--hairline) solid var(--app-border); }
-.tbl td { padding: var(--s-8) var(--s-12) var(--s-8) 0; vertical-align: top;
-  font: var(--w-regular) var(--t-ui)/1.4 var(--app-font-sans); color: var(--app-text); }
-.tbl tr + tr td { border-top: var(--hairline) solid var(--app-border); }
-.tbl td.m { font-family: var(--app-font-mono); font-size: var(--t-meta); color: var(--app-text-muted);
+/* ── page 09 · Subjects ─────────────────────────────────────────────── */
+:root {
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --up:#3dffa0; --down:#ff6b7a;
+}
+@media (prefers-color-scheme: light) { html:not([data-theme="dark"]) {
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --up:#1f7a4a; --down:#c43a48;
+} }
+html[data-theme="light"] {
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --up:#1f7a4a; --down:#c43a48;
+}
+
+.sb { position: absolute; inset: 0; overflow: hidden; display: flex; flex-direction: column; }
+.dbar { flex: 0 0 40px; display: flex; align-items: center; gap: var(--s-8); padding: 0 var(--pad-window);
+  background: var(--app-surface); box-shadow: 0 var(--hairline) 0 var(--app-border); position: relative; z-index: 10; }
+.dbar .input { width: 210px; }
+.sbody { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: var(--s-16) var(--pad-window) var(--s-48); }
+.axis { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+
+/* ── the subject row ─────────────────────────────────────────────────── */
+.srow { display: grid; align-items: center; gap: 0 var(--s-16);
+  grid-template-columns: 1fr 150px 56px 62px 12px; padding: var(--s-8) var(--tile-pad); }
+.srow--hero { grid-template-columns: 1fr 260px 78px 66px 12px; padding: var(--s-12) var(--tile-pad); }
+.stop { display: flex; align-items: center; gap: var(--s-6); min-width: 0; }
+.sdot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.sname { font: var(--w-semi) var(--t-ui)/1.2 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong); white-space: nowrap; }
+.srow--hero .sname { font-size: 15px; }
+.spin { color: var(--app-warn); font-size: 11px; }
+.strend { display: inline-flex; align-items: center; gap: 3px;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; }
+.strend--up { color: var(--up); } .strend--down { color: var(--down); }
+.strend--flat { color: var(--app-text-faint); }
+.scount { font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.shead { display: block; margin-top: 4px; font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans);
+  color: var(--app-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* the sparkline — one polyline per conclusion, dashed line at the 0.15 floor */
+.spk { width: 100%; height: 30px; display: block; overflow: visible; }
+.srow--hero .spk { height: 52px; }
+.spk polyline { fill: none; stroke: var(--app-accent); stroke-width: 1.6; stroke-linejoin: round;
+  stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.spk polyline.b { stroke: var(--app-text-faint); opacity: .8; }
+.spk polyline.c { stroke: var(--app-text-faint); opacity: .5; }
+.spk .floor { stroke: var(--app-border-hover); stroke-width: 1; stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke; }
+.spk--faded polyline { stroke: var(--app-text-faint); }
+
+.sconf { text-align: right; font: var(--w-semi) 15px/1 var(--app-font-mono); color: var(--app-text-strong);
   font-variant-numeric: tabular-nums; }
-.tbl td.ok { color: var(--app-accent); }
-.ramp { display: flex; align-items: flex-end; gap: var(--s-8); }
-.ramp div { display: flex; flex-direction: column; align-items: center; gap: var(--s-4); }
-.ramp i { display: block; background: var(--app-accent); opacity: .8; border-radius: 2px; height: 14px; }
-.ramp span { font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle); }
-.typerow { display: flex; align-items: baseline; gap: var(--s-16); padding: var(--s-8) 0; }
-.typerow + .typerow { border-top: var(--hairline) solid var(--app-border); }
-.typerow__k { flex: 0 0 108px; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  color: var(--app-text-subtle); text-transform: uppercase; }
-.typerow__s { flex: 0 0 128px; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
-  color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
-.typerow__u { flex: 1 1 240px; font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans); color: var(--app-text-muted); }
-.swatches { display: flex; gap: var(--s-8); flex-wrap: wrap; }
-.sw2 { width: 92px; }
-.sw2 i { display: block; height: 40px; border-radius: var(--r-md); }
-.sw2 span { display: block; margin-top: 4px; font: var(--w-regular) var(--t-label)/1.3 var(--app-font-mono);
-  color: var(--app-text-subtle); }
-.duty { display: flex; height: 26px; border-radius: var(--r-md); overflow: hidden; width: 260px;
-  background: var(--app-surface-raised); }
-.duty__w { display: inline-flex; align-items: center; justify-content: center; background: var(--app-accent);
-  color: var(--app-accent-contrast); font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; }
-.duty__c { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center;
-  color: var(--app-text-muted); font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; }
-.slider__t { position: relative; height: 4px; border-radius: 2px; background: var(--app-border-strong); width: 220px; }
-.slider__f { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
-.slider__k { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fff;
-  transform: translate(-50%,-50%); box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 0 var(--hairline) rgba(0,0,0,.18); }
-.ladder { display: flex; width: 300px; height: var(--h-md); padding: 2px; border-radius: calc(var(--r-md) + 1px);
-  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent); }
-.ladder span { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-md); font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
-  color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
-.ladder span.on { background: var(--seg-on-bg); color: var(--app-text-strong); box-shadow: var(--seg-on-shadow); }
-.stepper { display: inline-flex; align-items: center; height: var(--h-sm); border-radius: var(--r-md);
-  background: var(--app-surface-raised); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
-.stepper span { min-width: 62px; text-align: center; font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
-  color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
-.stepper button { width: 24px; height: 100%; color: var(--app-text-muted); display: inline-flex;
-  align-items: center; justify-content: center; }
-.stepper button svg { width: 10px; height: 10px; }
-.krec { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-md); padding: 0 var(--s-6);
-  border-radius: var(--r-md); background: var(--app-surface-subtle);
-  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
-.krec--live { background: var(--app-accent-bg); box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--ring); }
-.krec--err { box-shadow: 0 0 0 var(--hairline) var(--app-danger-border); }
-.krec__ph { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); padding: 0 var(--s-4); }
-.help { min-height: 15px; font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
-.help--err { color: var(--app-danger); }
-.radio { width: 15px; height: 15px; border-radius: 50%; flex: 0 0 auto;
-  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover); background: var(--app-surface-raised); }
-.radio.on { background: var(--app-accent); box-shadow: none; position: relative; }
-.radio.on::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-  width: 5px; height: 5px; border-radius: 50%; background: var(--app-accent-contrast); }
-.echo { display: inline-flex; align-items: center; gap: var(--s-4); height: 18px; padding: 0 var(--s-6);
-  border-radius: var(--r-sm); background: var(--app-accent-bg); color: var(--app-accent);
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); text-transform: uppercase; }
-.echo svg { width: 9px; height: 9px; }
-.save { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm); padding: 0 var(--s-8);
-  border-radius: var(--r-pill); background: var(--app-surface-subtle);
+.srow--hero .sconf { font-size: var(--t-display); letter-spacing: var(--ls-display); }
+.swhen { text-align: right; font: var(--w-regular) var(--t-label)/1 var(--app-font-mono);
+  color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+.tierfoot { padding: var(--s-12) var(--tile-pad) 0; max-width: 92ch;
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-subtle); }
+
+/* ── subject detail ──────────────────────────────────────────────────── */
+.pillrow { display: flex; flex-wrap: wrap; gap: var(--s-6); margin-top: var(--s-6); }
+.mpill { display: inline-flex; align-items: center; height: var(--o-badge); padding: 0 var(--s-8);
+  border-radius: var(--r-pill); background: var(--app-surface-hover);
   font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
-.save svg { width: 11px; height: 11px; color: var(--app-accent); }
-.save--err { background: var(--app-danger-bg); color: var(--app-danger); }
-.save--err svg { color: var(--app-danger); }
-.footprint { display: grid; grid-template-columns: repeat(4, 78px); grid-auto-rows: 52px; gap: var(--cell-gutter); }
-.footprint > div { background: var(--tile-fill); border-radius: var(--tile-r); display: flex;
-  align-items: center; justify-content: center;
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle); }
-.modechip { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-sm); padding: 0 var(--s-8);
-  border-radius: var(--r-md); background: var(--app-surface-hover); color: var(--app-text-muted);
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); text-transform: uppercase; }
-.modechip svg { width: 11px; height: 11px; }
-.modechip--ask { background: var(--app-accent); color: var(--app-accent-contrast); }
+.mpill b { font-family: var(--app-font-mono); font-weight: var(--w-medium); color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums; margin-right: 4px; }
+
+.cstrip { display: flex; gap: var(--s-12); height: 100%; }
+.ccard { flex: 0 0 272px; padding: var(--s-12); border-radius: var(--tile-r-in);
+  background: var(--app-surface-subtle); display: flex; flex-direction: column; gap: var(--s-6); }
+.ccard.half { flex: 0 0 110px; }
+.ccard--faded { opacity: .62; }
+.ccard__h { display: flex; align-items: center; gap: var(--s-6); }
+.ccard__h .sdot { width: 7px; height: 7px; }
+.ccard__st { font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans); color: var(--app-text-strong);
+  flex: 1 1 auto; }
+.bar { position: relative; height: 4px; border-radius: 2px; background: var(--app-border-strong); flex: 1 1 auto; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
+.ccard__m { display: flex; align-items: center; gap: var(--s-6);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums; }
+.ccard__d { font: var(--w-regular) var(--t-label)/1.3 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+
+.hero2 { display: flex; align-items: flex-start; gap: var(--s-16); }
+.hero2__n { text-align: right; }
+.hero2__n b { display: block; font: var(--w-semi) 30px/1 var(--app-font-mono); color: var(--app-text-strong);
+  font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.hero2__n i { display: block; margin-top: 3px; font-style: normal;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--up); }
+.hero2__n u { display: block; margin-top: 2px; text-decoration: none;
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint); }
+.area { width: 100%; height: 100%; display: block; }
+.area path.f { fill: var(--app-accent); opacity: .16; }
+.area path.l { fill: none; stroke: var(--app-accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.area line { stroke: var(--app-border-hover); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+
+.legend { display: flex; flex-wrap: wrap; gap: var(--s-12); margin-top: var(--s-6);
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint); }
+.legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+
+.ev { display: grid; grid-template-columns: 58px 1fr; gap: var(--s-8); padding: var(--s-8) var(--tile-pad); }
+.ev time { text-align: right; font: var(--w-regular) var(--t-label)/1.5 var(--app-font-mono);
+  color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+.ev__b { min-width: 0; display: flex; gap: var(--s-8); }
+.ev__t { width: 46px; height: 28px; border-radius: var(--tile-r-in); overflow: hidden; flex: 0 0 auto;
+  position: relative; background: var(--media-void); }
+.ev__x { min-width: 0; }
+.ev__c { display: inline-flex; align-items: center; gap: var(--s-4);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .06em;
+  text-transform: uppercase; }
+.ev__ttl { display: block; margin-top: 3px; font: var(--w-regular) var(--t-ui)/1.3 var(--app-font-sans);
+  color: var(--app-text-strong); }
+.ev__f { display: block; margin-top: 3px; font: var(--w-regular) var(--t-label)/1 var(--app-font-mono);
+  color: var(--app-text-faint); }
+.ev__f b { color: var(--up); font-weight: var(--w-medium); }
+.ev__f b.no { color: var(--down); }
+.ev__f a { color: var(--app-accent); text-decoration: none; margin-left: var(--s-8); }
+.ev--mark .ev__b { align-items: center; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+.ev--mark s { text-decoration: none; }
+
+.spec { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-24); align-items: start; }
+.spec__cap { margin-top: var(--s-8);
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.spec__cap b { color: var(--app-text); font-weight: var(--w-medium); }
+.pane { min-height: 168px; display: flex; flex-direction: column;
+  background: var(--tile-fill); border-radius: var(--tile-r); padding: var(--tile-pad); }
+.mark { position: absolute; z-index: 5; height: 16px; padding: 0 5px; border-radius: var(--r-sm);
+  background: var(--app-accent); color: var(--app-accent-contrast); display: inline-flex; align-items: center;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); white-space: nowrap; }
+.tbl { border-collapse: collapse; margin-top: var(--s-12); }
+.tbl th, .tbl td { text-align: left; padding: var(--s-8) var(--s-16) var(--s-8) 0; vertical-align: top;
+  border-bottom: var(--hairline) solid var(--app-border); font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color: var(--app-text-muted); max-width: 48ch; }
+.tbl th { font-weight: var(--w-medium); color: var(--app-text-strong); }
+.tbl td i { font-style: normal; font-family: var(--app-font-mono); color: var(--app-text); }
 </style>
 
 <section class="sect" style="margin-top:32px">
-  <h3>Controls — every state that exists</h3>
-  <p class="note">Nothing here is bespoke to one screen. Where a control has a state the app can actually reach,
-    it is drawn: rest, hover, pressed, focused, disabled, busy, invalid.</p>
-  <div class="spec">
-    <div class="cell">
-      <span class="wlabel">Buttons — 28px default, 24 dense, 32 primary-in-a-dialog</span>
-      <div class="crow">
-        <button class="btn btn--push">Push</button>
-        <button class="btn btn--default">Default</button>
-        <button class="btn btn--ghost">Ghost</button>
-        <button class="btn btn--danger">Delete Recent…</button>
-        <button class="btn btn--push btn--sm">Small</button>
-        <button class="btn btn--push btn--lg">Large</button>
-        <button class="btn btn--push btn--icon"><svg><use href="#i-more"/></svg></button>
-      </div>
-      <div class="crow">
-        <button class="btn btn--push" style="background:var(--app-surface-hover)">Hover</button>
-        <button class="btn btn--push" style="background:var(--app-surface-active);background-image:none;box-shadow:none">Pressed</button>
-        <button class="btn btn--push is-focused">Focused</button>
-        <button class="btn btn--push is-dis">Disabled</button>
-        <button class="btn btn--push" style="opacity:.6"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>Busy</button>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Fields — the help row exists at rest, so an error never reflows the page</span>
-      <div class="crow">
-        <span class="input" style="width:200px"><svg><use href="#i-search"/></svg><span class="ph">Search settings</span></span>
-        <span class="input is-focused" style="width:200px">webhook<span class="caret" style="height:13px"></span></span>
-      </div>
-      <div style="width:200px">
-        <span class="input" style="box-shadow:0 0 0 var(--hairline) var(--app-danger-border)">whsec_…</span>
-        <p class="help help--err">That key is 3 characters short.</p>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Switch · checkbox · radio</span>
-      <div class="crow">
-        <span class="sw on"><i></i></span><span class="sw"><i></i></span>
-        <span class="sw on is-dis"><i></i></span>
-        <span class="cb on"><svg><use href="#i-check"/></svg></span><span class="cb"></span>
-        <span class="radio on"></span><span class="radio"></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Segmented · popup · stepper</span>
-      <div class="crow">
-        <span class="seg"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span>
-        <span class="seg seg--sm"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span></span>
-      </div>
-      <div class="crow">
-        <span class="pop">claude-sonnet-4 <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="stepper"><button><svg><use href="#i-chevl"/></svg></button><span>3 min</span><button><svg><use href="#i-chevr"/></svg></button></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Chips — scope, verdict, mode</span>
-      <div class="crow">
-        <span class="chip on">All</span><span class="chip">Screen</span><span class="chip">Audio</span>
-        <span class="chip--verdict chip--ok chip">fits easily</span>
-        <span class="chip--verdict chip--warn chip">slow on battery</span>
-        <span class="chip--verdict chip--bad chip">needs consent</span>
-        <span class="chip--verdict chip--flat chip">always kept</span>
-      </div>
-      <div class="crow">
-        <span class="modechip"><svg><use href="#i-search"/></svg>Search</span>
-        <span class="modechip modechip--ask"><svg><use href="#i-spark"/></svg>Ask</span>
-        <span class="kbd">⏎</span><span class="kbd kbd--mod">⌘⌥Space</span>
-        <span class="echo"><svg><use href="#i-check"/></svg>Saved</span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">The five custom inputs</span>
-      <div class="crow">
-        <div>
-          <div class="slider__t"><i class="slider__f" style="width:50%"></i><span class="slider__k" style="left:50%"></span></div>
-          <p class="t-meta is-mono" style="margin-top:8px;color:var(--app-text-strong)">2 fps → ~1.4 GB/day</p>
-        </div>
-        <div class="ladder"><span>7 d</span><span>30 d</span><span class="on">90 d</span><span>1 y</span><span>Forever</span></div>
-      </div>
-      <div class="crow">
-        <span class="duty"><span class="duty__w" style="width:20%">work 20%</span><span class="duty__c">cool 80%</span></span>
-        <span class="krec"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd">Space</span></span>
-        <span class="krec krec--live"><span class="krec__ph">Type a shortcut · esc cancels</span></span>
-        <span class="krec krec--err"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">P</span></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Autosave states</span>
-      <div class="crow">
-        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-mono is-num">14:41:03</span></span>
-        <span class="save"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>Saving…</span>
-        <span class="save save--err"><svg><use href="#i-warn"/></svg>Not saved · retry</span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Small indicators</span>
-      <div class="crow">
-        <span class="conv"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span>
-        <span class="spin"></span>
-        <span style="display:flex;align-items:flex-end;gap:3px;height:20px">
-          <i style="width:6px;height:38%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:70%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:52%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:100%;background:var(--app-accent);border-radius:2px 2px 0 0"></i>
-        </span>
-        <span class="aicon ic-figma">F</span><span class="aicon aicon--lg ic-code">C</span>
-        <span class="srcg srcg--screen"><svg><use href="#i-screen"/></svg></span>
-        <span class="srcg srcg--mic"><svg><use href="#i-mic"/></svg></span>
-        <span class="srcg srcg--sys"><svg><use href="#i-sys"/></svg></span>
-        <span class="srcg srcg--off"><svg><use href="#i-mic"/></svg></span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>The state pill — nine states, the degradation ladder, and the popover</h3>
-  <p class="note">Recording chrome is one capsule. Recording red is a <b>state</b>, never an error: transient
-    liveness tints warn or info, and the fix always lives in the popover. The dot never goes.</p>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">Idle — Record never collapses</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="btn btn--sm btn--default"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block"></span>Record</button></div></div>
-    <div class="cell"><span class="wlabel">Starting</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><span class="spin" style="width:10px;height:10px;border-width:1.5px"></span><span class="pill__w">Starting</span></button></div></div>
-    <div class="cell"><span class="wlabel">Recording — the resting state</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button></div></div>
-    <div class="cell"><span class="wlabel">Paused — manual</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i><span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></button></div></div>
-    <div class="cell"><span class="wlabel">Paused — inactivity, resumes on input</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i><span class="pill__w">Idle 12m</span></button></div></div>
-    <div class="cell"><span class="wlabel">Low disk — liveness, not failure</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i><span class="pill__w">Low disk</span></button></div></div>
-    <div class="cell"><span class="wlabel">Display asleep — mic and system audio keep recording</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-info)">screen asleep</span></button></div></div>
-    <div class="cell"><span class="wlabel">Source degraded — tap rebuilding</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-warn)">mic lost</span></button></div></div>
-    <div class="cell"><span class="wlabel">Permission missing — the fix is the popover's first row</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i><span class="pill__w">screen not allowed</span></button></div></div>
-  </div>
-
-  <div class="spec">
-    <div class="cell" style="position:relative;padding-bottom:250px">
-      <span class="wlabel">Click — the popover (NSMenu anatomy: 24px rows, checkmark gutter, right ⌘ column)</span>
-      <div class="strip38" style="width:420px;justify-content:flex-end">
-        <button class="pill is-focused"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
-      </div>
-      <div class="menu" style="position:absolute;right:0;top:56px;min-width:248px">
-        <div class="menu__hd">Recording · 2:14:07 · 270 MB today</div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg><use href="#i-pause"/></svg></span>Pause Capture<span class="menu__kbd">⌥⌘P</span></div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg><use href="#i-stop"/></svg></span>Stop &amp; Save<span class="menu__kbd">⌥⌘S</span></div>
-        <div class="menu__sep"></div>
-        <div class="menu__hd">Sources</div>
-        <div class="menu__i"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl" style="color:var(--app-src-screen)"><svg><use href="#i-screen"/></svg></span>Screen</div>
-        <div class="menu__i is-hl"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl"><svg><use href="#i-mic"/></svg></span>Microphone</div>
-        <div class="menu__i is-dis"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl"><svg><use href="#i-sys"/></svg></span>System Audio</div>
-        <div class="menu__sep"></div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"></span>Open Timeline at now<span class="menu__kbd">⌘1</span></div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Degradation ladder — cost → timer → glyph → dot</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button></div>
-      <div class="strip38" style="width:240px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
-      <div class="strip38" style="width:190px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__w">Rec</span></button></div>
-      <div class="strip38" style="width:150px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i></button></div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Toasts — bottom-right, never reflow, errors never auto-dismiss</span>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-danger"></span>Transcription failed</div>
-        <div class="toast__m">Deepgram rejected the key. The job is queued, not lost.</div>
-        <div style="display:flex;gap:var(--s-8);margin-top:var(--s-4)">
-          <button class="btn btn--sm btn--push">Open Settings</button><button class="btn btn--sm btn--ghost">Dismiss</button></div>
-      </div>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-info"></span>Screen asleep — audio still recording</div>
-        <div class="toast__m">Capture resumes when the display returns.</div>
-      </div>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-ok"></span>Deleted the last hour</div>
-        <div class="toast__m">412 frames and 3 audio segments. Context notes were kept.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>The bento — footprints, chrome, and the states a tile must have</h3>
-  <div class="spec">
-    <div class="cell">
-      <span class="wlabel">Four legal footprints · one 16px gutter</span>
-      <div class="footprint">
-        <div>1×1</div><div style="grid-column:span 2">2×1</div><div>1×1</div>
-        <div style="grid-column:span 2;grid-row:span 2">2×2</div><div>1×1</div><div>1×1</div>
-        <div style="grid-column:1/-1">4×1</div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Rows inside a tile — rest, hover, selected</span>
-      <div class="tile tile--static" style="width:340px">
-        <div class="tile__h"><span class="t-label">Conversations</span><span class="more is-num">3 today</span></div>
-        <div class="pay pay--rows">
-          <div class="row row--static"><span class="row__txt"><span class="row__lbl">Launch sync</span>
-            <span class="row__sub">38 min · 5 speakers</span></span><span class="row__val is-mono t-meta is-num">13:02</span></div>
-          <div class="row row--static" style="background:var(--tile-fill-hover)"><span class="row__txt"><span class="row__lbl">Design review</span>
-            <span class="row__sub">hover</span></span><span class="row__val is-mono t-meta is-num">10:12</span></div>
-          <div class="row row--static is-sel"><span class="row__txt"><span class="row__lbl">1:1 with Priya</span>
-            <span class="row__sub">full-row accent selection — never an underline</span></span><span class="row__val is-mono t-meta is-num">09:30</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Empty and unavailable are designed states, not accidents</span>
-      <div style="display:flex;gap:var(--cell-gutter)">
-        <div class="tile tile--static" style="width:250px;height:132px">
-          <div class="tile__h"><span class="t-label">Conversations</span></div>
-          <div class="pay" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
-            <svg style="width:18px;height:18px;color:var(--app-text-faint)"><use href="#i-sys"/></svg>
-            <span class="t-meta subtle">No speech recorded today</span>
-            <span class="t-meta subtle">audio is on · nothing to show yet</span>
+  <h3>1100 × 720 — tiers by conviction</h3>
+  <p class="note">Four tiers, four tiles, top to bottom: <b>Strongly held</b> (≥ 0.68), <b>Forming</b> (≥ 0.30),
+    <b>Just taking shape</b>, and <b>Fading · kept for history</b> — everything whose conclusions have all dropped
+    below the 0.15 display floor. Empty tiers are not drawn. Rows carry the subject, its strongest belief verbatim,
+    the trend, the trajectory, the confidence and when it last moved — and nothing else.</p>
+  <div class="fit">
+    <div class="window w1100">
+      <div class="sb">
+        <div class="tbar tbar--seam">
+          <div class="tl"><i></i><i></i><i></i></div>
+          <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg>Overview</button>
+          <span class="tbar__title">Subjects</span>
+          <div class="rec">
+            <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
           </div>
         </div>
-        <div class="tile tile--static" style="width:250px;height:132px">
-          <div class="tile__h"><span class="t-label">Today</span><span class="more">unavailable</span></div>
-          <div class="pay">
-            <div style="height:11px;width:94%;border-radius:3px;background:var(--app-surface-hover);margin-bottom:8px"></div>
-            <div style="height:11px;width:82%;border-radius:3px;background:var(--app-surface-hover);margin-bottom:8px"></div>
-            <div style="height:11px;width:60%;border-radius:3px;background:var(--app-surface-hover)"></div>
-            <p class="t-meta subtle" style="margin-top:10px">No engine configured — set one up in Intelligence</p>
+        <div class="dbar">
+          <span class="input"><svg><use href="#i-search"/></svg><span class="ph">Search subjects…</span></span>
+          <span class="seg seg--sm"><span class="seg__i on">By conviction</span><span class="seg__i">By movement</span></span>
+          <span class="t-meta is-num" style="margin-left:auto">8 active views · 1 fading — 3 warming ▲ · 4 steady · 1 cooling ▼</span>
+        </div>
+
+        <div class="sbody">
+          <p class="axis" style="margin:0 var(--tile-pad) var(--s-12)">Conviction — how firmly the engine holds each view (its confidence).</p>
+          <div class="bento" style="grid-auto-rows:min-content">
+
+            <!-- TIER 1 — the sparkline is the hero here -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Strongly held</span><span class="more">held firmly</span></div>
+              <div class="pay pay--rows">
+
+                <div class="row srow srow--hero" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Mnema licensing</span>
+                      <span class="spin">★</span>
+                      <span class="strend strend--up">▲ warming</span>
+                      <span class="scount">· 4 conclusions</span></span>
+                    <span class="shead">Webhook HMAC is computed over the raw whsec_ string, never the decoded key</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 260 52" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="42.8" x2="260" y2="42.8"/>
+                    <polyline points="0,28.9 32,30.3 65,25 97,22.2 130,23.6 162,18.3 195,15.9 227,16.9 260,12.6"/>
+                    <polyline class="b" points="0,34.2 32,33 65,31.1 97,29.6 130,30.8 162,26.7 195,25.2 227,24.4 260,22"/>
+                    <polyline class="c" points="0,41 32,40.1 65,38.6 97,39.4 130,36.2 162,35 195,33.1 227,32.4 260,30.8"/>
+                  </svg>
+                  <span class="sconf">0.78</span>
+                  <span class="swhen">2h ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+
+                <div class="row srow srow--hero" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Rust async boundaries</span>
+                      <span class="strend strend--flat">– steady</span>
+                      <span class="scount">· 3 conclusions</span></span>
+                    <span class="shead">Blocking work belongs on the blocking pool — an <span class="is-mono">(async)</span> sync command starves a tokio worker</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 260 52" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="42.8" x2="260" y2="42.8"/>
+                    <polyline points="0,18.8 32,17.6 65,19.4 97,17 130,18.2 162,16.4 195,17.2 227,16 260,15.4"/>
+                    <polyline class="b" points="0,28.4 32,27.2 65,28.9 97,26.6 130,27.4 162,26.2 195,25.6 227,26.4 260,25"/>
+                  </svg>
+                  <span class="sconf">0.72</span>
+                  <span class="swhen">6h ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+
+                <div class="row srow srow--hero" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Bun, never pnpm</span>
+                      <span class="strend strend--flat">– steady</span>
+                      <span class="scount">· 2 conclusions</span></span>
+                    <span class="shead">Runs every repo command with Bun; a pnpm invocation has never appeared in the history</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 260 52" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="42.8" x2="260" y2="42.8"/>
+                    <polyline points="0,20.6 32,19.4 65,20.2 97,18.2 130,19 162,17.8 195,18.6 227,17.4 260,16.9"/>
+                    <polyline class="b" points="0,32.6 32,33.4 65,31.4 97,32.2 130,30.6 162,31.4 195,30.2 227,29.4 260,29"/>
+                  </svg>
+                  <span class="sconf">0.69</span>
+                  <span class="swhen">1d ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- TIER 2 -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Forming</span><span class="more">building support</span></div>
+              <div class="pay pay--rows">
+                <div class="row srow" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Deepgram streaming</span>
+                      <span class="strend strend--up">▲ warming</span>
+                      <span class="scount">· 2 conclusions</span></span>
+                    <span class="shead">Reading the WebSocket docs; no decision yet on replacing the local provider</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,22 25,21 50,19.4 75,20.2 100,17.6 125,16.4 150,14.5"/>
+                    <polyline class="b" points="0,26 25,25.4 50,24.6 75,25 100,23.8 125,23.2 150,22.4"/>
+                  </svg>
+                  <span class="sconf">0.51</span>
+                  <span class="swhen">3d ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+                <div class="row srow" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Diarization quality</span>
+                      <span class="strend strend--down">▼ cooling</span>
+                      <span class="scount">· 3 conclusions</span></span>
+                    <span class="shead">Segment length moves the error rate far more than the choice of model does</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,15.4 25,16.2 50,17.8 75,17 100,19.4 125,20.2 150,21.4"/>
+                    <polyline class="b" points="0,20.6 25,21.4 50,21 75,22.2 100,23 125,23.4 150,24.2"/>
+                    <polyline class="c" points="0,24.2 25,24.6 50,25 75,25.4 100,25.8 125,26.2 150,26.6"/>
+                  </svg>
+                  <span class="sconf">0.44</span>
+                  <span class="swhen">5d ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+                <div class="row srow" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Onboarding shape</span>
+                      <span class="strend strend--flat">– steady</span>
+                      <span class="scount">· 1 conclusion</span></span>
+                    <span class="shead">Prefers onboarding that behaves like settings rather than like a plan</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,20.2 25,19.8 50,20.4 75,19.6 100,20 125,19.4 150,19.8"/>
+                  </svg>
+                  <span class="sconf">0.36</span>
+                  <span class="swhen">1w ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- TIER 3 -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Just taking shape</span><span class="more">early</span></div>
+              <div class="pay pay--rows">
+                <div class="row srow" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">Thermal budget</span>
+                      <span class="strend strend--up">▲ warming</span>
+                      <span class="scount">· 1 conclusion</span></span>
+                    <span class="shead">Suspects background embedding work, not capture, is what heats the machine</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,25.4 25,25 50,24.2 75,23.8 100,23 125,22.6 150,21.8"/>
+                  </svg>
+                  <span class="sconf">0.24</span>
+                  <span class="swhen">2d ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+                <div class="row srow" style="color:var(--app-accent)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname">CoreML embeddings</span>
+                      <span class="strend strend--flat">– steady</span>
+                      <span class="scount">· 1 conclusion</span></span>
+                    <span class="shead">Deferred the CoreML path for the embedder; revisits only if CPU cost bites</span>
+                  </span>
+                  <svg class="spk" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,23.4 25,23.8 50,23.4 75,23.8 100,23.4 125,23.8 150,23.4"/>
+                  </svg>
+                  <span class="sconf">0.19</span>
+                  <span class="swhen">1w ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- TIER 4 -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Fading · kept for history</span>
+                <span class="more">below display floor</span></div>
+              <div class="pay pay--rows">
+                <div class="row srow" style="color:var(--app-text-faint)">
+                  <span>
+                    <span class="stop"><i class="sdot"></i><span class="sname" style="color:var(--app-text-muted)">Sortformer</span>
+                      <span class="strend strend--down">▼ cooling</span>
+                      <span class="scount">· 2 conclusions</span></span>
+                    <span class="shead">Weighed sortformer for diarization; its four-speaker ceiling ruled it out</span>
+                  </span>
+                  <svg class="spk spk--faded" viewBox="0 0 150 30" preserveAspectRatio="none" aria-hidden="true">
+                    <line class="floor" x1="0" y1="24.7" x2="150" y2="24.7"/>
+                    <polyline points="0,17 25,18.6 50,20.2 75,22.6 100,24.2 125,25.4 150,26.5"/>
+                    <polyline class="b" points="0,21.4 25,22.6 50,23.8 75,25 100,25.8 125,26.6 150,27.2"/>
+                  </svg>
+                  <span class="sconf" style="color:var(--app-text-muted)">0.11</span>
+                  <span class="swhen">4w ago</span>
+                  <span class="chev"><svg><use href="#i-chevr"/></svg></span>
+                </div>
+                <p class="tierfoot">Confidence is recency-weighted — views warm with fresh evidence and cool on
+                  their own. Faded views are kept for history, never deleted.</p>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
@@ -1155,178 +1168,258 @@ mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;p
 </section>
 
 <section class="sect">
-  <h3>Type specimen — six roles, three weights, at true size</h3>
-  <p class="note">A size is not a choice; it is a consequence of what the text <b>is</b>. Sans is the product speaking;
-    mono is the machine — times, sizes, counts, keys, paths, state. Mono never exceeds <span class="is-mono">--t-title</span>.</p>
-  <div style="max-width:1100px;margin-top:var(--s-16)">
-    <div class="typerow"><span class="typerow__k">t-label</span><span class="typerow__s">10 / 1.4 / +.02 / 510 mono</span>
-      <span class="t-label">MOMENTS · 14 IN ALL</span>
-      <span class="typerow__u">Machine labels, column heads, units, keycaps. Never a sentence.</span></div>
-    <div class="typerow"><span class="typerow__k">t-meta</span><span class="typerow__s">11 / 1.35 / +.01 / 400</span>
-      <span class="t-meta">38 min · 5 speakers · updated 14:40</span>
-      <span class="typerow__u">Timestamps, counts, helper lines, captions under a frame.</span></div>
-    <div class="typerow"><span class="typerow__k">t-ui</span><span class="typerow__s">13 / 1.25 / −.006 / 400</span>
-      <span class="t-ui">Keep recording while the screen sleeps</span>
-      <span class="typerow__u">The default — buttons, rows, labels, menus, chips. macOS Body.</span></div>
-    <div class="typerow"><span class="typerow__k">t-read</span><span class="typerow__s">14 / 1.55 / −.008 / 400</span>
-      <span class="t-read" style="flex:0 0 300px">Mostly a licensing day: the Polar webhook fix landed after the launch sync.</span>
-      <span class="typerow__u">Prose only: transcripts, AI answers, error explanations. Max 70ch.</span></div>
-    <div class="typerow"><span class="typerow__k">t-title</span><span class="typerow__s">17 / 1.3 / −.016 / 590</span>
-      <span class="t-title">Monday, August 3</span>
-      <span class="typerow__u">Screen and section titles, dialog headings. One per region.</span></div>
-    <div class="typerow"><span class="typerow__k">t-display</span><span class="typerow__s">22 / 1.2 / −.02 / 590</span>
-      <span class="t-display is-num">6:42</span>
-      <span class="typerow__u">At most one per screen: the readout clock, or the hours hero.</span></div>
-  </div>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">Tabular numbers — non-negotiable on anything that changes in place</span>
-      <div class="crow">
-        <div><p class="t-meta">with</p><p class="is-mono is-num" style="font-size:15px;color:var(--app-text-strong)">2:14:07<br>1:09:11<br>0:58:03</p></div>
-        <div><p class="t-meta">without</p><p class="is-mono" style="font-size:15px;color:var(--app-text-subtle);font-variant-numeric:proportional-nums">2:14:07<br>1:09:11<br>0:58:03</p></div>
+  <h3>1100 × 720 — one subject, opened</h3>
+  <p class="note">Same grid, four tiles. The <b>conclusions strip</b> is the only horizontally scrolling payload in
+    the app besides the moments strip, and it uses the same signifier — the last card half-cut on the tile radius.
+    Under it the belief splits in two: the <b>conclusion</b> with the controls that change it (Pin exempts it from
+    decay, Dismiss resets it behind a higher resurface bar) and <b>the story over time</b>, newest at top, where
+    every confidence step names the evidence that caused it.</p>
+  <div class="fit">
+    <div class="window w1100">
+      <div class="sb">
+        <div class="tbar tbar--seam">
+          <div class="tl"><i></i><i></i><i></i></div>
+          <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg>Subjects</button>
+          <span class="tbar__title">Mnema licensing</span>
+          <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+        </div>
+        <div class="sbody" style="padding-top:var(--s-16)">
+          <div class="bento" style="grid-template-rows:108px 176px 1fr">
+
+            <div class="tile tile--w4 tile--static">
+              <div class="tile__h"><span class="t-label">Subject</span>
+                <button class="btn btn--sm" style="margin-left:auto"><svg><use href="#i-spark"/></svg>Ask AI about Mnema licensing</button></div>
+              <div>
+                <p class="t-display">Mnema licensing</p>
+                <div class="pillrow">
+                  <span class="mpill"><b>4</b>conclusions</span>
+                  <span class="mpill"><b>1</b>below floor</span>
+                  <span class="mpill">first seen <b style="margin:0 0 0 4px">3w ago</b></span>
+                  <span class="mpill">last evidence <b style="margin:0 0 0 4px">2h ago</b></span>
+                  <span class="mpill"><b>26</b>linked activities</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="tile tile--w4 tile--static">
+              <div class="tile__h"><span class="t-label">Conclusions</span>
+                <span class="more is-num">4</span>
+                <span class="seg seg--sm" style="margin-left:var(--s-8)"><span class="seg__i on">Confidence</span><span class="seg__i">Recent</span><span class="seg__i">Warming</span></span></div>
+              <div class="pay pay--bleedr pay--bleedb">
+                <div class="cstrip">
+                  <div class="ccard" style="color:var(--app-accent)">
+                    <div class="ccard__h"><i class="sdot"></i><span class="spin">★</span>
+                      <span class="scount" style="margin-left:auto">12 snap</span></div>
+                    <p class="ccard__st">Webhook HMAC is computed over the raw whsec_ string, never the decoded key</p>
+                    <div class="ccard__m"><span class="bar"><i style="width:78%"></i></span>78%<span class="strend strend--up">↑</span></div>
+                    <span class="ccard__d">0.44 → 0.78 · 2h ago</span>
+                  </div>
+                  <div class="ccard" style="color:var(--app-accent)">
+                    <div class="ccard__h"><i class="sdot"></i><span class="scount" style="margin-left:auto">9 snap</span></div>
+                    <p class="ccard__st">Verification runs offline against an embedded Ed25519 key — no account, no server round-trip</p>
+                    <div class="ccard__m"><span class="bar"><i style="width:71%"></i></span>71%<span class="strend strend--flat">–</span></div>
+                    <span class="ccard__d">steady near 0.71 · 1d ago</span>
+                  </div>
+                  <div class="ccard" style="color:var(--app-accent)">
+                    <div class="ccard__h"><i class="sdot"></i><span class="scount" style="margin-left:auto">6 snap</span></div>
+                    <p class="ccard__st">The update window, not the license itself, is what expires</p>
+                    <div class="ccard__m"><span class="bar"><i style="width:52%"></i></span>52%<span class="strend strend--up">↑</span></div>
+                    <span class="ccard__d">0.38 → 0.52 · 4d ago</span>
+                  </div>
+                  <div class="ccard ccard--faded" style="color:var(--app-text-faint)">
+                    <div class="ccard__h"><i class="sdot"></i><span class="scount" style="margin-left:auto">faded · 4 snap</span></div>
+                    <p class="ccard__st">Device activation is capped at three machines</p>
+                    <div class="ccard__m"><span class="bar"><i style="width:12%;background:var(--app-text-faint)"></i></span>12%<span class="strend strend--down">↓</span></div>
+                    <span class="ccard__d">0.41 → 0.12 · below floor</span>
+                  </div>
+                  <div class="ccard half"><div class="ccard__h"><span class="scount">2 snap</span></div></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tile tile--w2 tile--static">
+              <div class="tile__h"><span class="t-label">Conclusion</span>
+                <span class="chip chip--verdict chip--ok" style="margin-left:auto">pinned</span>
+                <span class="chip chip--verdict chip--flat">visible</span></div>
+              <div class="hero2">
+                <div style="flex:1 1 auto;min-width:0">
+                  <p class="t-read" style="margin:0">Webhook HMAC is computed over the raw
+                    <span class="is-mono">whsec_</span> string, never the decoded key.</p>
+                  <div style="display:flex;gap:var(--s-6);margin-top:var(--s-12)">
+                    <button class="btn btn--sm"><svg><use href="#i-pin"/></svg>Pinned — protected from decay</button>
+                    <button class="btn btn--sm btn--ghost">Dismiss</button>
+                  </div>
+                </div>
+                <div class="hero2__n"><b>78%</b><i>rising</i><u>confidence</u></div>
+              </div>
+              <p class="ccard__d" style="margin-top:var(--s-12)">12 snapshots · rose 0.44 → 0.78 · over 21 days</p>
+              <div class="pay pay--bleed" style="margin-top:var(--s-8)">
+                <svg class="area" viewBox="0 0 300 74" preserveAspectRatio="none" aria-hidden="true">
+                  <line x1="0" y1="61.4" x2="300" y2="61.4"/>
+                  <path class="f" d="M0,41.1 L37,43.1 L75,35.6 L112,31.6 L150,33.5 L187,26.1 L225,22.7 L262,24.1 L300,17.9 L300,74 L0,74 Z"/>
+                  <path class="l" d="M0,41.1 L37,43.1 L75,35.6 L112,31.6 L150,33.5 L187,26.1 L225,22.7 L262,24.1 L300,17.9"/>
+                </svg>
+              </div>
+            </div>
+
+            <div class="tile tile--w2">
+              <div class="tile__h"><span class="t-label">The story over time</span>
+                <span class="more">newest first</span></div>
+              <p class="t-meta" style="margin:0 0 var(--s-4)">Most recent at top. The line is this belief's
+                confidence journey — evidence events feed it, quiet stretches let it decay.</p>
+              <div class="legend">
+                <span><i style="background:var(--app-accent)"></i>confidence trajectory</span>
+                <span><i style="background:var(--app-text-faint)"></i>evidence event</span>
+                <span style="color:var(--up)">↑ reinforced</span>
+                <span style="color:var(--down)">↓ decayed / contradicted</span>
+              </div>
+              <div class="pay pay--rows" style="margin-top:var(--s-8)">
+                <div class="row row--static ev ev--mark" style="min-height:0">
+                  <time>2h ago</time>
+                  <span class="ev__b"><s style="color:var(--up)">↑</s>&nbsp;confidence 0.71 → 0.78 · reinforced</span>
+                </div>
+                <div class="row ev" style="min-height:0">
+                  <time>2h ago<br>1:02 PM</time>
+                  <span class="ev__b">
+                    <span class="ev__t"><span class="shot shot--call"><span class="tiles"><span class="t on"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span></span></span>
+                    <span class="ev__x">
+                      <span class="ev__c" style="color:var(--cat-meetings)"><i class="sdot"></i>Meetings</span>
+                      <span class="ev__ttl">Launch sync</span>
+                      <span class="ev__f"><b>supports</b><a href="#">view in Timeline →</a></span>
+                    </span>
+                  </span>
+                </div>
+                <div class="row ev" style="min-height:0">
+                  <time>5h ago<br>10:38 AM</time>
+                  <span class="ev__b">
+                    <span class="ev__t"><span class="shot shot--figma"><i class="top"></i><i class="lp"></i><i class="art1"></i><i class="sq"></i></span></span>
+                    <span class="ev__x">
+                      <span class="ev__c" style="color:var(--cat-creating)"><i class="sdot"></i>Creating</span>
+                      <span class="ev__ttl">Checkout flow — webhook states</span>
+                      <span class="ev__f"><b>supports</b><a href="#">view frame →</a></span>
+                    </span>
+                  </span>
+                </div>
+                <div class="row row--static ev ev--mark" style="min-height:0">
+                  <time>2d ago</time>
+                  <span class="ev__b"><s style="color:var(--down)">↓</s>&nbsp;confidence 0.66 → 0.62 · decayed</span>
+                </div>
+                <div class="row row--static ev" style="min-height:0">
+                  <time>1w ago</time>
+                  <span class="ev__b"><span class="ev__x">
+                    <span class="ev__c" style="color:var(--app-text-subtle)">Replaced an earlier take</span>
+                    <span class="ev__ttl" style="color:var(--app-text-muted)">“The signature is verified over the decoded secret”</span>
+                  </span></span>
+                </div>
+                <div class="row row--static ev" style="min-height:0">
+                  <time>3w ago</time>
+                  <span class="ev__b"><span class="ev__x">
+                    <span class="ev__c" style="color:var(--app-accent)"><svg style="width:9px;height:9px"><use href="#i-spark"/></svg>formed</span>
+                    <span class="ev__ttl">Conclusion first formed</span>
+                    <span class="ev__f">Started at 30%.</span>
+                  </span></span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
       </div>
     </div>
-    <div class="cell"><span class="wlabel">Colour — one accent, one record red, three semantics</span>
-      <div class="swatches">
-        <div class="sw2"><i style="background:var(--app-accent)"></i><span>accent</span></div>
-        <div class="sw2"><i style="background:var(--app-record)"></i><span>record</span></div>
-        <div class="sw2"><i style="background:var(--app-danger)"></i><span>danger</span></div>
-        <div class="sw2"><i style="background:var(--app-warn)"></i><span>warn</span></div>
-        <div class="sw2"><i style="background:var(--app-info)"></i><span>info</span></div>
-        <div class="sw2"><i style="background:var(--app-src-screen)"></i><span>screen</span></div>
-        <div class="sw2"><i style="background:var(--app-src-mic)"></i><span>mic</span></div>
-        <div class="sw2"><i style="background:var(--app-src-sys)"></i><span>sys</span></div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>The way in, the other axis, and the states with nothing to show</h3>
+  <p class="note">Subjects is opened from Overview's Subjects tile — the same rows, three of them, with the
+    conviction dots the tile already draws. The chevron in the title bar reads <i>‹ Overview</i>; from a subject it
+    reads <i>‹ Subjects</i>. There is no rail and no third top-level segment.</p>
+  <div class="fit">
+    <div class="spec">
+
+      <div>
+        <div style="position:relative;padding-top:22px">
+          <span class="mark" style="left:0;top:0">the affordance — Overview 01</span>
+          <div class="tile" style="min-height:130px">
+            <div class="tile__h"><span class="t-label">Subjects</span>
+              <span class="more" style="color:var(--app-accent)"><span class="is-num">12</span> active&nbsp;<svg><use href="#i-chevr"/></svg></span></div>
+            <div class="pay pay--rows">
+              <div class="row">
+                <span class="aicon ic-mnema"><svg style="width:11px;height:11px"><use href="#i-spark"/></svg></span>
+                <span class="row__txt"><span class="row__lbl">Mnema licensing</span>
+                  <span class="row__sub">Webhook HMAC uses the raw whsec_ string</span></span>
+                <span class="row__val"><span class="conv"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="chev"><svg><use href="#i-chevr"/></svg></span></span>
+              </div>
+              <div class="row">
+                <span class="aicon ic-mnema"><svg style="width:11px;height:11px"><use href="#i-spark"/></svg></span>
+                <span class="row__txt"><span class="row__lbl">Deepgram streaming</span>
+                  <span class="row__sub">Reading the WS docs; no decision yet</span></span>
+                <span class="row__val"><span class="conv"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span><span class="chev"><svg><use href="#i-chevr"/></svg></span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="spec__cap"><b>In:</b> the tile's <i>12 active</i> count and chevron. The five conviction dots on
+          each row are the same number the full page renders as <span class="is-mono">0.78</span> — rounded to
+          fifths because a tile row has no space for a trajectory.</p>
       </div>
+
+      <div>
+        <div class="pane">
+          <div class="tile__h"><span class="t-label">By movement</span><span class="more">the other axis</span></div>
+          <p class="axis" style="margin-bottom:var(--s-8)">Movement — which way each view is trending: warming,
+            steady, or cooling.</p>
+          <div class="pay pay--rows">
+            <div class="row row--static" style="min-height:26px;padding:var(--s-4) var(--tile-pad)">
+              <span class="t-label" style="color:var(--app-text-subtle)">Warming</span>
+              <span class="row__val t-meta">▲ gaining support</span></div>
+            <div class="row row--static" style="min-height:26px;padding:var(--s-4) var(--tile-pad)">
+              <span class="t-label" style="color:var(--app-text-subtle)">Steady</span>
+              <span class="row__val t-meta">holding</span></div>
+            <div class="row row--static" style="min-height:26px;padding:var(--s-4) var(--tile-pad)">
+              <span class="t-label" style="color:var(--app-text-subtle)">Cooling</span>
+              <span class="row__val t-meta">▼ losing support</span></div>
+            <div class="row row--static" style="min-height:26px;padding:var(--s-4) var(--tile-pad)">
+              <span class="t-label" style="color:var(--app-text-subtle)">Fading · kept for history</span>
+              <span class="row__val t-meta">below display floor</span></div>
+          </div>
+        </div>
+        <p class="spec__cap">The segmented control swaps which four tiles are on screen and how rows sort — it never
+          changes the row. Movement sorts by last moved; conviction sorts by confidence. Under five subjects the
+          tiers collapse to one flat list.</p>
+      </div>
+
+      <div>
+        <div class="pane">
+          <div class="tile__h"><span class="t-label">Subjects</span><span class="more">engine off</span></div>
+          <div class="pay" style="display:flex;flex-direction:column;justify-content:center;gap:var(--s-6)">
+            <span class="t-ui strong">The Reasoning Engine is off.</span>
+            <span class="t-meta">Subjects appear as the engine forms views about you — each with its own confidence
+              trajectory. Turn it on to begin.</span>
+            <button class="btn btn--sm" style="align-self:flex-start;margin-top:var(--s-4)">Open engine settings</button>
+          </div>
+        </div>
+        <p class="spec__cap">Two more empties this direction inherits verbatim: <i>No subjects yet.</i> when the
+          engine is on but has concluded nothing, and <i>No subjects match “…”</i> from the search field.</p>
+      </div>
+
     </div>
   </div>
 </section>
 
 <section class="sect">
-  <h3>Spacing specimen — one ramp, named constants, one grid</h3>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">The ramp — finer under 8, coarser above</span>
-      <div class="ramp">
-        <div><i style="width:1px"></i><span>1</span></div><div><i style="width:2px"></i><span>2</span></div>
-        <div><i style="width:4px"></i><span>4</span></div><div><i style="width:6px"></i><span>6</span></div>
-        <div><i style="width:8px"></i><span>8</span></div><div><i style="width:12px"></i><span>12</span></div>
-        <div><i style="width:16px"></i><span>16</span></div><div><i style="width:24px"></i><span>24</span></div>
-        <div><i style="width:32px"></i><span>32</span></div><div><i style="width:48px"></i><span>48</span></div>
-      </div>
-    </div>
-    <div class="cell"><span class="wlabel">Named constants — a designer picks the relationship, not the number</span>
-      <table class="tbl" style="max-width:520px;margin-top:0">
-        <tr><td class="m">--gap-inline</td><td class="m">6</td><td>icon → its label</td></tr>
-        <tr><td class="m">--gap-row</td><td class="m">8</td><td>between rows in a list</td></tr>
-        <tr><td class="m">--gap-group</td><td class="m">16</td><td>between related groups</td></tr>
-        <tr><td class="m">--gap-section</td><td class="m">24</td><td>between sections of a surface</td></tr>
-        <tr><td class="m">--tile-pad</td><td class="m">14</td><td>every tile, all four sides</td></tr>
-        <tr><td class="m">--cell-gutter</td><td class="m">16</td><td>the one bento gutter, everywhere</td></tr>
-        <tr><td class="m">--tile-r / -in</td><td class="m">12 / 6</td><td>tile radius, and the derived inner radius</td></tr>
-      </table>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>UI/UX pattern self-audit</h3>
-  <p class="note">Per page, against the patterns this direction is accountable to. <b>Border count</b> counts bordered
-    <i>containers</i>, not control rings — a pill, a field bezel or a segmented control's outline is free. The
-    carried-over ceiling is ~12 per window.</p>
+  <h3>What every number on this page is</h3>
+  <p class="note">G8 again. Two traps this surface sets, both avoided here.</p>
   <table class="tbl">
-    <tr>
-      <th>Page</th><th>Hierarchy</th><th>Spacing grid</th><th>Colour / contrast</th>
-      <th>States drawn</th><th>Native bar</th><th>Bordered containers</th>
-    </tr>
-    <tr>
-      <td>01 Overview</td>
-      <td>One <span class="m">--t-display</span> (6:42) · title → tile eyebrows → payload. Squint test: the hours hero and the moments strip win.</td>
-      <td>16 gutter = 16 inset · 4 row heights on the ramp · tile pad 14 held everywhere</td>
-      <td>Accent only on the live week bar + citation marks; record red only on the recording dot. Text-over-frame uses the measured scrim.</td>
-      <td>Live tile tinted; empty + unavailable tiles drawn on page 07</td>
-      <td>Material toolbar, content scrolls under · 38px bar · segmented switcher · tabular-nums throughout</td>
-      <td class="ok">0 <span class="m">(1 toolbar seam hairline)</span></td>
-    </tr>
-    <tr>
-      <td>02 Timeline</td>
-      <td>Stage 514px = 71% of the window · readout is the one display-size element in the rail area</td>
-      <td>Shipping rail metrics kept (8px per frame, 132px rail-wrap) · bar clusters on the 6/8/12 ramp</td>
-      <td>Record red on the now-tick and the selected segment only (surface wins over the rule) · mic/sys keep their source colours</td>
-      <td>Hover ghost + position readout · disabled day tiles · re-run in progress · drawer open</td>
-      <td>Frozen shipping layout · NSMenu overflow · overlay scrollbars · full-row menu highlight</td>
-      <td class="ok">0 <span class="m">(rail and lane are fills)</span></td>
-    </tr>
-    <tr>
-      <td>03 Quick Access · Search</td>
-      <td>Grid dominates; chrome is two 36–52px rows; the ask bridge is the only accent object</td>
-      <td>20 inset / 16 gutter — the one allowed exemption, because 1120 must divide exactly</td>
-      <td>Match highlight is accent at 26% + a hairline; captions on an opaque plate, never a soft scrim</td>
-      <td>Results · selected · empty · no-match · hover affordance badge</td>
-      <td>Fixed 1120×720 · bottom action bar always states what ⏎ does · mono counts</td>
-      <td class="ok">1 <span class="m">(the ask bridge's accent ring)</span></td>
-    </tr>
-    <tr>
-      <td>04 Quick Access · Ask</td>
-      <td>Answer tile spans 2 cells and holds the only prose; citations are subordinate at 1 cell</td>
-      <td>Same 3-column cell unit as Search, so the two modes are the same grid seen differently</td>
-      <td>Accent carries mode identity (field fill, mode chip, capture outline) and nothing else</td>
-      <td>Streaming · armed · frame attached · answering · model chip</td>
-      <td>Overlay is a floating HUD: material + shadow, the only place a shadow is allowed</td>
-      <td class="ok">0 <span class="m">(HUD panels float; they are not boxes)</span></td>
-    </tr>
-    <tr>
-      <td>05 Settings · General + Capture</td>
-      <td>Tabs → groups → rows. No group is nested inside another group.</td>
-      <td>2 columns × 16 gutter · 40px rows · inset separators at 14px</td>
-      <td>Accent on the selected tab, switches and the saved echo. Danger only on Delete Recent.</td>
-      <td>Saved · saving · failed · row echo · shortcut recording · shortcut conflict · disabled stepper end</td>
-      <td>28px controls, 13px type · NSSwitch and popup drawn to AppKit metrics · scoped ⌘F search</td>
-      <td class="ok">1 <span class="m">(the sticky bar's hairline)</span></td>
-    </tr>
-    <tr>
-      <td>06 Settings · Intelligence</td>
-      <td>Each group leads with the decision, not the plumbing (verdict before parameters)</td>
-      <td>Same grid; the duty bar and meter sit inside a row's payload, not in their own box</td>
-      <td>Verdict chips are the only place three semantic colours appear together — and they are text, not decoration</td>
-      <td>Verified · unverified · downloadable · consent-gated · indexing · scrolled</td>
-      <td>Same shell; provider rows behave like a source list</td>
-      <td class="ok">1 <span class="m">(the sticky bar's hairline)</span></td>
-    </tr>
-    <tr>
-      <td>07 Components</td>
-      <td>n/a — specimen sheet</td><td>Ramp and constants drawn to scale</td>
-      <td>Every semantic colour shown once, in context</td>
-      <td>All of them; that is the page</td><td>Nine-point audit below</td><td class="ok">0</td>
-    </tr>
-  </table>
-</section>
-
-<section class="sect">
-  <h3>Native bar — where each of the nine points is proven</h3>
-  <table class="tbl">
-    <tr><th>Point</th><th>Where</th></tr>
-    <tr><td>HIG window anatomy</td><td>38px unified title bar, real traffic lights, 10px window corner drawn by the page only because this is a mockup — 01–06</td></tr>
-    <tr><td>AppKit controls drawn accurately</td><td>Accent-filled default button, push bezel with top-light gradient, NSSwitch 38×22 with a 18px knob, popup button with the accent chevron capsule, stepper — 05, 07</td></tr>
-    <tr><td>NSMenu anatomy</td><td>24px rows, 20px checkmark gutter, right-aligned ⌘ column, separators inset 8 — the pill popover and the timeline overflow menu</td></tr>
-    <tr><td>Materials only where macOS uses them</td><td>Toolbar, menus, the jump popover and the screen HUD. Content surfaces are opaque.</td></tr>
-    <tr><td>Full-row accent selection</td><td>Menu highlight, the selected conversation row, the selected day tile in the jump panel. No underlines anywhere.</td></tr>
-    <tr><td>Native density</td><td>28px controls, 40px settings rows, 24px menu rows, 13px default type</td></tr>
-    <tr><td>One accent tint</td><td><span class="m">--app-accent</span> only. Record red is a state, source colours are identity, semantics are text.</td></tr>
-    <tr><td>Overlay scrollbars, tabular-nums</td><td>8px overlay thumbs on every scroller; <span class="m">is-num</span> on every number that changes in place</td></tr>
-    <tr><td>Nothing web-shaped</td><td>No 1.5 line-height on UI text, no pointer cursor on lists, no card shadows — depth is a surface step; shadows are reserved for things that float</td></tr>
-  </table>
-</section>
-
-<section class="sect">
-  <h3>Deviations, stated</h3>
-  <table class="tbl">
-    <tr><th>What</th><th>Why</th></tr>
-    <tr><td>Tile radius is 12, not the group idiom's 10</td><td>The bento clips media at every tile edge; 10 read tight against a full-bleed frame. The inner radius is then <i>derived</i> (12 − 6 inset = 6) rather than picked.</td></tr>
-    <tr><td>Tile inset is 14, not 16</td><td>One optical correction so a 349px result tile keeps a 16:9 frame at the full cell width. It is held on <i>every</i> tile, so it is a constant, not a one-off.</td></tr>
-    <tr><td>The AudioDrawer floats above the rail-wrap instead of over it</td><td>The shipping drawer covers the tick rail, so you cannot scrub while listening. Same drawer, same anatomy, anchored 132px up. Order is unchanged.</td></tr>
-    <tr><td>Search and Ask have no segmented control</td><td>A segmented control makes them peers competing for one field. Ask is reachable as the first result row and by ⌘⏎, and once you are in it the whole chrome changes. Mode identity without a mode switch.</td></tr>
-    <tr><td>Journal / Subjects / Context are destinations opened from Overview, not top-level surfaces</td><td>The main window keeps exactly two surfaces. Each destination's title bar swaps the Timeline/Overview segmented control for a named back chevron, so the way back is stated rather than guessed. Pages 08&ndash;10.</td></tr>
-    <tr><td>Page 11 draws each settings tab <i>unrolled</i> &mdash; the window at its natural height</td><td>A documentation device, not a shipping layout: it is the only way to show all 35 groups and 97 indexed rows at once. The shipping window is 720 tall and scrolls under the sticky bar.</td></tr>
-    <tr><td>The Overview Context tile counts <i>standing statements</i> and <i>inferred conclusions</i></td><td>Page 01 wrote &ldquo;142 facts about you &middot; 3 pending&rdquo;. There is no pending-review state in the backend, and authored context and inferred conclusions are different objects with different lifetimes. Page 10 states both numbers.</td></tr>
-    <tr><td>Retention lives under Capture, not Data</td><td>It is the second half of the frame-rate decision; keeping the cost and the keep-window on one pane is worth the IA move. Data keeps storage location, export and access.</td></tr>
+    <tr><th>On the page</th><th>Where it comes from</th></tr>
+    <tr><td><i>0.78</i></td><td><i>Conclusion.confidence</i> — a 0–1 float, printed to two places exactly as the shipping row does. The detail page shows the same value as <i>78%</i>.</td></tr>
+    <tr><td>The four tier titles and notes</td><td>Verbatim from the tier table: <i>Strongly held / held firmly</i>, <i>Forming / building support</i>, <i>Just taking shape / early</i>, <i>Fading · kept for history / below display floor</i>. Thresholds 0.68 and 0.30; the floor is 0.15.</td></tr>
+    <tr><td>▲ warming · – steady · ▼ cooling</td><td>The averaged first→last change across the subject's trajectories, with a ±0.04 deadband. Not a per-day slope.</td></tr>
+    <tr><td>The sparkline</td><td>One polyline per conclusion over its <i>ConfidenceSnapshot</i> history, X = <b>point index, not time</b>. <b>It carries no window label</b> — "last 30 days" would be a fiction; the cadence is the engine's own decay beat.</td></tr>
+    <tr><td><i>· 4 conclusions</i></td><td>Conclusions grouped under this subject. There is <b>no per-subject evidence count</b> on a row — <i>26 linked activities</i> exists only on the detail page, computed as distinct activity ids across all conclusions.</td></tr>
+    <tr><td><i>12 snap</i> · <i>0.44 → 0.78</i></td><td>Snapshot count and the first/last confidence in that conclusion's history.</td></tr>
+    <tr><td><i>Started at 30%.</i></td><td>The formation base. A conclusion needs two supporting activities to form at all.</td></tr>
+    <tr><td>Pinned · Dismiss</td><td>Real writes. Pin exempts a conclusion from decay; Dismiss resets it behind a 2× resurface bar — neither is a delete, and the tier footer says so.</td></tr>
   </table>
 </section>
 

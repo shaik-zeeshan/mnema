@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mnema · Bento Native · 07 Components, specimen + self-audit</title>
+<title>Mnema · Bento Native · 08 Journal — the day, written down</title>
 <style>
 /* ==========================================================================
    MNEMA · round 4 · direction 01 — BENTO NATIVE
@@ -798,355 +798,480 @@ mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;p
 <div class="mock">
 <header class="mh">
   <p class="mh__dir">Mnema · round 4 · direction 01 — Bento Native</p>
-  <h1 class="mh__pg"><em>07</em>Components, specimen + self-audit</h1>
-  <p class="mh__look">Every control in every state, the bento footprint system drawn to scale, the type and spacing specimen at true size, and the UI/UX pattern self-audit — hierarchy, spacing grid, contrast, states, native bar, and a per-window border count against the ~12 ceiling.</p>
+  <h1 class="mh__pg"><em>08</em>Journal — the day, written down</h1>
+  <p class="mh__look">A destination, not a third surface: you get here from Overview's <b>Moments</b> tile and the
+    title-bar chevron takes you back. The river keeps the bento's one rule — each time-of-day band is a
+    <b>4×1 tile with the same 18px header row</b>, and the payload under it is a free composition (when-column,
+    spine, card) that bleeds to both tile edges. The receipt is not a form either: it is a bento of its own,
+    the frame bleeding to three edges and the filmstrip clipping on the bottom radius.</p>
   <div class="mh__rule"></div>
 </header>
 <style>
-/* ── page 07 · components, specimen, audit ─────────────────────────── */
-.spec { display: flex; flex-wrap: wrap; gap: var(--s-24) var(--s-32); align-items: flex-start; margin-top: var(--s-16); }
-.cell { display: flex; flex-direction: column; gap: var(--s-8); }
-.cell > .wlabel { margin: 0; }
-.crow { display: flex; align-items: center; gap: var(--s-12); flex-wrap: wrap; }
-.strip38 { height: var(--h-titlebar); display: flex; align-items: center; gap: var(--s-12);
-  padding: 0 var(--s-12); background: var(--app-bg); border-radius: var(--r-lg);
-  box-shadow: 0 0 0 var(--hairline) var(--app-border); }
-.tbl { border-collapse: collapse; width: 100%; max-width: 1280px; margin-top: var(--s-16); }
-.tbl th { text-align: left; padding: var(--s-6) var(--s-12) var(--s-6) 0;
-  font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle);
-  border-bottom: var(--hairline) solid var(--app-border); }
-.tbl td { padding: var(--s-8) var(--s-12) var(--s-8) 0; vertical-align: top;
-  font: var(--w-regular) var(--t-ui)/1.4 var(--app-font-sans); color: var(--app-text); }
-.tbl tr + tr td { border-top: var(--hairline) solid var(--app-border); }
-.tbl td.m { font-family: var(--app-font-mono); font-size: var(--t-meta); color: var(--app-text-muted);
+/* ── page 08 · Journal ──────────────────────────────────────────────── */
+/* the app's real activity-category + focus tokens, both themes */
+:root {
+  --cat-creating:#5fe07a; --cat-communication:#c0b0ff; --cat-meetings:#ff9fd0;
+  --cat-research:#60b0ff; --cat-learning:#4fd8c8; --cat-organizing:#b0c080;
+  --cat-personal:#d6a14a; --cat-entertainment:#ff7a4d;
+  --focus-deep:#3dffa0; --focus-mid:#d6a14a; --focus-distracted:#ff6b7a;
+}
+@media (prefers-color-scheme: light) { html:not([data-theme="dark"]) {
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --focus-deep:#1f7a4a; --focus-mid:#9a5a12; --focus-distracted:#c43a48;
+} }
+html[data-theme="light"] {
+  --cat-creating:#2f8a3f; --cat-communication:#5949b8; --cat-meetings:#c2407f;
+  --cat-research:#2b78c5; --cat-learning:#1f8579; --cat-organizing:#6f7a2e;
+  --cat-personal:#9a5a12; --cat-entertainment:#c2542b;
+  --focus-deep:#1f7a4a; --focus-mid:#9a5a12; --focus-distracted:#c43a48;
+}
+
+.jn { position: absolute; inset: 0; overflow: hidden; display: flex; flex-direction: column; }
+/* the destination sub-bar: date stepper left, the day's real lede stats right */
+.dbar { flex: 0 0 40px; display: flex; align-items: center; gap: var(--s-8); padding: 0 var(--pad-window);
+  background: var(--app-surface); box-shadow: 0 var(--hairline) 0 var(--app-border); position: relative; z-index: 10; }
+.step { display: inline-flex; align-items: center; gap: var(--s-2); }
+.step .btn--icon { border-color: transparent; background: transparent; color: var(--app-text-muted); }
+.step__d { min-width: 108px; text-align: center; font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color: var(--app-text-strong); }
+.lstat { display: inline-flex; align-items: baseline; gap: var(--s-4); }
+.lstat b { font: var(--w-medium) var(--t-ui)/1 var(--app-font-mono); color: var(--app-text-strong);
   font-variant-numeric: tabular-nums; }
-.tbl td.ok { color: var(--app-accent); }
-.ramp { display: flex; align-items: flex-end; gap: var(--s-8); }
-.ramp div { display: flex; flex-direction: column; align-items: center; gap: var(--s-4); }
-.ramp i { display: block; background: var(--app-accent); opacity: .8; border-radius: 2px; height: 14px; }
-.ramp span { font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle); }
-.typerow { display: flex; align-items: baseline; gap: var(--s-16); padding: var(--s-8) 0; }
-.typerow + .typerow { border-top: var(--hairline) solid var(--app-border); }
-.typerow__k { flex: 0 0 108px; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  color: var(--app-text-subtle); text-transform: uppercase; }
-.typerow__s { flex: 0 0 128px; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+.lstat span { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.lsep { width: var(--hairline); height: 14px; background: var(--app-border-strong); }
+
+.jbody { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: var(--s-16) var(--pad-window) var(--s-48); }
+
+/* the read (digest) tile */
+.read__h { font: var(--w-semi) 20px/1.25 var(--app-font-sans); letter-spacing: -.018em; color: var(--app-text-strong); }
+.read__n { margin-top: var(--s-6); font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  color: var(--app-text); max-width: 88ch; }
+
+/* ── the river row: when · spine · card. Same .row hover, new payload shape. */
+.jrow { display: grid; grid-template-columns: 68px 18px 1fr; gap: 0 10px; align-items: start;
+  padding: var(--s-8) var(--tile-pad); min-height: 0; }
+.jwhen { text-align: right; padding-top: 2px; }
+.jwhen b { display: block; font: var(--w-regular) var(--t-meta)/1.2 var(--app-font-mono);
+  color: var(--app-text); font-variant-numeric: tabular-nums; }
+.jwhen i { display: block; margin-top: 2px; font-style: normal;
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+.jspine { position: relative; align-self: stretch; }
+.jspine::before { content: ""; position: absolute; left: 50%; top: -10px; bottom: -10px; width: var(--hairline);
+  background: var(--tile-sep); transform: translateX(-50%); }
+.jspine u { position: absolute; left: 50%; top: 5px; width: 9px; height: 9px; border-radius: 50%;
+  transform: translateX(-50%); background: currentColor; box-shadow: 0 0 0 2px var(--tile-fill); }
+.jspine--dash::before { background: repeating-linear-gradient(to bottom,
+  var(--app-border-strong) 0 3px, transparent 3px 7px); }
+.jcard { min-width: 0; padding-left: var(--s-8); border-left: 3px solid currentColor; }
+.jtop { display: flex; align-items: center; gap: var(--s-8); }
+.jcat { display: inline-flex; align-items: center; gap: var(--s-4);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--app-text-subtle); }
+.jcat i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.jfoc { margin-left: auto; display: inline-flex; align-items: center; gap: var(--s-4);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .06em;
+  text-transform: uppercase; }
+.jfoc i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.jttl { display: block; margin-top: 5px; font: var(--w-semi) var(--t-ui)/1.3 var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-strong); }
+.jsum { display: block; margin-top: 3px; font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans);
+  color: var(--app-text-muted); }
+.jfoot { display: block; margin-top: var(--s-8); padding-top: var(--s-6);
+  border-top: var(--hairline) dashed var(--tile-sep); text-align: right;
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
   color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
-.typerow__u { flex: 1 1 240px; font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans); color: var(--app-text-muted); }
-.swatches { display: flex; gap: var(--s-8); flex-wrap: wrap; }
-.sw2 { width: 92px; }
-.sw2 i { display: block; height: 40px; border-radius: var(--r-md); }
-.sw2 span { display: block; margin-top: 4px; font: var(--w-regular) var(--t-label)/1.3 var(--app-font-mono);
-  color: var(--app-text-subtle); }
-.duty { display: flex; height: 26px; border-radius: var(--r-md); overflow: hidden; width: 260px;
-  background: var(--app-surface-raised); }
-.duty__w { display: inline-flex; align-items: center; justify-content: center; background: var(--app-accent);
-  color: var(--app-accent-contrast); font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; }
-.duty__c { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center;
-  color: var(--app-text-muted); font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
-  letter-spacing: var(--ls-label); text-transform: uppercase; }
-.slider__t { position: relative; height: 4px; border-radius: 2px; background: var(--app-border-strong); width: 220px; }
-.slider__f { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-accent); }
-.slider__k { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%; background: #fff;
-  transform: translate(-50%,-50%); box-shadow: 0 1px 3px rgba(0,0,0,.4), 0 0 0 var(--hairline) rgba(0,0,0,.18); }
-.ladder { display: flex; width: 300px; height: var(--h-md); padding: 2px; border-radius: calc(var(--r-md) + 1px);
-  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent); }
-.ladder span { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-md); font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
-  color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
-.ladder span.on { background: var(--seg-on-bg); color: var(--app-text-strong); box-shadow: var(--seg-on-shadow); }
-.stepper { display: inline-flex; align-items: center; height: var(--h-sm); border-radius: var(--r-md);
-  background: var(--app-surface-raised); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
-.stepper span { min-width: 62px; text-align: center; font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
-  color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
-.stepper button { width: 24px; height: 100%; color: var(--app-text-muted); display: inline-flex;
-  align-items: center; justify-content: center; }
-.stepper button svg { width: 10px; height: 10px; }
-.krec { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-md); padding: 0 var(--s-6);
-  border-radius: var(--r-md); background: var(--app-surface-subtle);
-  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
-.krec--live { background: var(--app-accent-bg); box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--ring); }
-.krec--err { box-shadow: 0 0 0 var(--hairline) var(--app-danger-border); }
-.krec__ph { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); padding: 0 var(--s-4); }
-.help { min-height: 15px; font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
-.help--err { color: var(--app-danger); }
-.radio { width: 15px; height: 15px; border-radius: 50%; flex: 0 0 auto;
-  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover); background: var(--app-surface-raised); }
-.radio.on { background: var(--app-accent); box-shadow: none; position: relative; }
-.radio.on::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-  width: 5px; height: 5px; border-radius: 50%; background: var(--app-accent-contrast); }
-.echo { display: inline-flex; align-items: center; gap: var(--s-4); height: 18px; padding: 0 var(--s-6);
-  border-radius: var(--r-sm); background: var(--app-accent-bg); color: var(--app-accent);
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); text-transform: uppercase; }
-.echo svg { width: 9px; height: 9px; }
-.save { display: inline-flex; align-items: center; gap: var(--s-6); height: var(--h-sm); padding: 0 var(--s-8);
-  border-radius: var(--r-pill); background: var(--app-surface-subtle);
-  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
-.save svg { width: 11px; height: 11px; color: var(--app-accent); }
-.save--err { background: var(--app-danger-bg); color: var(--app-danger); }
-.save--err svg { color: var(--app-danger); }
-.footprint { display: grid; grid-template-columns: repeat(4, 78px); grid-auto-rows: 52px; gap: var(--cell-gutter); }
-.footprint > div { background: var(--tile-fill); border-radius: var(--tile-r); display: flex;
-  align-items: center; justify-content: center;
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-subtle); }
-.modechip { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-sm); padding: 0 var(--s-8);
-  border-radius: var(--r-md); background: var(--app-surface-hover); color: var(--app-text-muted);
-  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); text-transform: uppercase; }
-.modechip svg { width: 11px; height: 11px; }
-.modechip--ask { background: var(--app-accent); color: var(--app-accent-contrast); }
+.jfoot.is-gone { color: var(--app-text-faint); }
+/* compact row — activities under 5 minutes never get a summary or a footer */
+.jrow--min .jcard { border-left: 0; padding-left: 0; display: flex; align-items: center; gap: var(--s-6); }
+.jrow--min .jspine u { top: 1px; }
+.jmin { font: var(--w-regular) var(--t-ui)/1.3 var(--app-font-sans); color: var(--app-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* gap row */
+.jgap { grid-column: 3; font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); font-style: italic;
+  color: var(--app-text-faint); padding: var(--s-4) 0; }
+/* the live edge */
+.jrow--pend .jcard { border-left: 3px dashed var(--app-border-strong); }
+.jpend { display: flex; align-items: center; gap: var(--s-6);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.jpend i { width: 7px; height: 7px; border-radius: 50%; background: var(--app-accent);
+  animation: recpulse 2s var(--ease) infinite; }
+.jnow { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 30; }
+
+/* ══ THE RECEIPT — a bento, not a form ═════════════════════════════════ */
+.dim { position: absolute; inset: 0; background: var(--mat-dim); z-index: 40; }
+.rcp { position: absolute; z-index: 41; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 900px; height: 620px; border-radius: var(--r-xl); background: var(--app-bg);
+  box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) var(--app-border-strong);
+  display: flex; flex-direction: column; overflow: hidden; }
+.rcp__h { flex: 0 0 44px; display: flex; align-items: center; gap: var(--s-8);
+  padding: 0 var(--s-12) 0 var(--pad-window); box-shadow: 0 var(--hairline) 0 var(--app-border); }
+.rcp__b { flex: 1 1 auto; min-height: 0; padding: var(--s-12) var(--pad-window) var(--pad-window);
+  display: flex; flex-direction: column; gap: var(--cell-gutter); }
+.rcp__sum { font: var(--w-regular) var(--t-meta)/1.55 var(--app-font-sans); color: var(--app-text-muted); }
+
+/* the frame viewport: media bleeds to three edges, clipped by the tile radius */
+.vp { position: absolute; inset: 0; background: var(--media-void); }
+.vpchips { position: absolute; left: var(--s-8); bottom: var(--s-8); z-index: 3; display: flex; gap: var(--s-4); }
+.vpchip { display: inline-flex; align-items: center; height: 18px; padding: 0 var(--s-6); border-radius: var(--r-sm);
+  background: var(--mat-hud); backdrop-filter: blur(12px); color: var(--app-text-strong);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  font-variant-numeric: tabular-nums; box-shadow: 0 0 0 var(--hairline) var(--menu-edge); }
+.vpred { position: absolute; right: var(--s-8); top: var(--s-8); z-index: 3; }
+
+/* scrub bar with per-frame evidence ticks */
+.trk { position: relative; height: 6px; border-radius: 3px; background: var(--app-border-strong); }
+.trk__f { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent); }
+.trk__ev { position: absolute; top: -4px; width: 2px; height: 14px; border-radius: 1px;
+  background: var(--app-accent); opacity: .5; }
+.trk__ev.hd { opacity: 1; box-shadow: 0 0 6px var(--app-accent-glow); }
+.trk__head { position: absolute; top: -9px; transform: translateX(-50%); height: 20px; padding: 0 var(--s-6);
+  border-radius: var(--r-pill); background: var(--app-accent); color: var(--app-accent-contrast);
+  display: inline-flex; align-items: center; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.trkcaps { display: flex; justify-content: space-between; margin-top: var(--s-8);
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+
+/* transcript reader */
+.turn { display: grid; grid-template-columns: 42px 1fr; gap: var(--s-8); padding: 5px var(--tile-pad);
+  font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: var(--app-text-muted); opacity: .7; }
+.turn time { font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
+.turn b { font-weight: var(--w-semi); }
+.turn.on { opacity: 1; color: var(--app-text); background: color-mix(in srgb, currentColor 10%, transparent);
+  box-shadow: inset 2px 0 0 currentColor; }
+
+/* filmstrip — bleeds and clips on the bottom radius, last cell half-cut */
+.film { display: flex; gap: 5px; height: 100%; }
+.film > i { flex: 0 0 122px; position: relative; border-radius: var(--tile-r-in); overflow: hidden;
+  background: var(--media-void); }
+.film > i.cur { box-shadow: 0 0 0 2px var(--app-accent); }
+.film > i.cited::after { content: ""; position: absolute; right: 4px; top: 4px; width: 5px; height: 5px;
+  border-radius: 50%; background: var(--app-accent); z-index: 4; }
+.film > i.half { flex: 0 0 56px; }
+
+.ctl { display: flex; align-items: center; gap: var(--s-12); }
+.ctl__c { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums; }
+.rfoot { display: flex; gap: var(--s-8); padding-top: var(--s-8); border-top: var(--hairline) dashed var(--tile-sep);
+  font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-faint);
+  font-variant-numeric: tabular-nums; }
+
+/* page furniture */
+.spec { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-24); align-items: start; }
+.spec__cap { margin-top: var(--s-8);
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans); color: var(--app-text-muted); }
+.spec__cap b { color: var(--app-text); font-weight: var(--w-medium); }
+.pane { min-height: 168px; display: flex; flex-direction: column; background: var(--tile-fill); border-radius: var(--tile-r); padding: var(--tile-pad); }
+.mark { position: absolute; z-index: 5; height: 16px; padding: 0 5px; border-radius: var(--r-sm);
+  background: var(--app-accent); color: var(--app-accent-contrast); display: inline-flex; align-items: center;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); white-space: nowrap; }
+.tbl { border-collapse: collapse; margin-top: var(--s-12); }
+.tbl th, .tbl td { text-align: left; padding: var(--s-8) var(--s-16) var(--s-8) 0; vertical-align: top;
+  border-bottom: var(--hairline) solid var(--app-border); font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans);
+  color: var(--app-text-muted); max-width: 46ch; }
+.tbl th { font-weight: var(--w-medium); color: var(--app-text-strong); }
+.tbl td i { font-style: normal; font-family: var(--app-font-mono); color: var(--app-text); }
 </style>
 
 <section class="sect" style="margin-top:32px">
-  <h3>Controls — every state that exists</h3>
-  <p class="note">Nothing here is bespoke to one screen. Where a control has a state the app can actually reach,
-    it is drawn: rest, hover, pressed, focused, disabled, busy, invalid.</p>
-  <div class="spec">
-    <div class="cell">
-      <span class="wlabel">Buttons — 28px default, 24 dense, 32 primary-in-a-dialog</span>
-      <div class="crow">
-        <button class="btn btn--push">Push</button>
-        <button class="btn btn--default">Default</button>
-        <button class="btn btn--ghost">Ghost</button>
-        <button class="btn btn--danger">Delete Recent…</button>
-        <button class="btn btn--push btn--sm">Small</button>
-        <button class="btn btn--push btn--lg">Large</button>
-        <button class="btn btn--push btn--icon"><svg><use href="#i-more"/></svg></button>
-      </div>
-      <div class="crow">
-        <button class="btn btn--push" style="background:var(--app-surface-hover)">Hover</button>
-        <button class="btn btn--push" style="background:var(--app-surface-active);background-image:none;box-shadow:none">Pressed</button>
-        <button class="btn btn--push is-focused">Focused</button>
-        <button class="btn btn--push is-dis">Disabled</button>
-        <button class="btn btn--push" style="opacity:.6"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>Busy</button>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Fields — the help row exists at rest, so an error never reflows the page</span>
-      <div class="crow">
-        <span class="input" style="width:200px"><svg><use href="#i-search"/></svg><span class="ph">Search settings</span></span>
-        <span class="input is-focused" style="width:200px">webhook<span class="caret" style="height:13px"></span></span>
-      </div>
-      <div style="width:200px">
-        <span class="input" style="box-shadow:0 0 0 var(--hairline) var(--app-danger-border)">whsec_…</span>
-        <p class="help help--err">That key is 3 characters short.</p>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Switch · checkbox · radio</span>
-      <div class="crow">
-        <span class="sw on"><i></i></span><span class="sw"><i></i></span>
-        <span class="sw on is-dis"><i></i></span>
-        <span class="cb on"><svg><use href="#i-check"/></svg></span><span class="cb"></span>
-        <span class="radio on"></span><span class="radio"></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Segmented · popup · stepper</span>
-      <div class="crow">
-        <span class="seg"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span>
-        <span class="seg seg--sm"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span></span>
-      </div>
-      <div class="crow">
-        <span class="pop">claude-sonnet-4 <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="stepper"><button><svg><use href="#i-chevl"/></svg></button><span>3 min</span><button><svg><use href="#i-chevr"/></svg></button></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Chips — scope, verdict, mode</span>
-      <div class="crow">
-        <span class="chip on">All</span><span class="chip">Screen</span><span class="chip">Audio</span>
-        <span class="chip--verdict chip--ok chip">fits easily</span>
-        <span class="chip--verdict chip--warn chip">slow on battery</span>
-        <span class="chip--verdict chip--bad chip">needs consent</span>
-        <span class="chip--verdict chip--flat chip">always kept</span>
-      </div>
-      <div class="crow">
-        <span class="modechip"><svg><use href="#i-search"/></svg>Search</span>
-        <span class="modechip modechip--ask"><svg><use href="#i-spark"/></svg>Ask</span>
-        <span class="kbd">⏎</span><span class="kbd kbd--mod">⌘⌥Space</span>
-        <span class="echo"><svg><use href="#i-check"/></svg>Saved</span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">The five custom inputs</span>
-      <div class="crow">
-        <div>
-          <div class="slider__t"><i class="slider__f" style="width:50%"></i><span class="slider__k" style="left:50%"></span></div>
-          <p class="t-meta is-mono" style="margin-top:8px;color:var(--app-text-strong)">2 fps → ~1.4 GB/day</p>
-        </div>
-        <div class="ladder"><span>7 d</span><span>30 d</span><span class="on">90 d</span><span>1 y</span><span>Forever</span></div>
-      </div>
-      <div class="crow">
-        <span class="duty"><span class="duty__w" style="width:20%">work 20%</span><span class="duty__c">cool 80%</span></span>
-        <span class="krec"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd">Space</span></span>
-        <span class="krec krec--live"><span class="krec__ph">Type a shortcut · esc cancels</span></span>
-        <span class="krec krec--err"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">P</span></span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Autosave states</span>
-      <div class="crow">
-        <span class="save"><svg><use href="#i-check"/></svg>Saved <span class="is-mono is-num">14:41:03</span></span>
-        <span class="save"><span class="spin" style="width:11px;height:11px;border-width:1.5px"></span>Saving…</span>
-        <span class="save save--err"><svg><use href="#i-warn"/></svg>Not saved · retry</span>
-      </div>
-    </div>
-
-    <div class="cell">
-      <span class="wlabel">Small indicators</span>
-      <div class="crow">
-        <span class="conv"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span>
-        <span class="spin"></span>
-        <span style="display:flex;align-items:flex-end;gap:3px;height:20px">
-          <i style="width:6px;height:38%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:70%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:52%;background:var(--app-accent);opacity:.34;border-radius:2px 2px 0 0"></i>
-          <i style="width:6px;height:100%;background:var(--app-accent);border-radius:2px 2px 0 0"></i>
-        </span>
-        <span class="aicon ic-figma">F</span><span class="aicon aicon--lg ic-code">C</span>
-        <span class="srcg srcg--screen"><svg><use href="#i-screen"/></svg></span>
-        <span class="srcg srcg--mic"><svg><use href="#i-mic"/></svg></span>
-        <span class="srcg srcg--sys"><svg><use href="#i-sys"/></svg></span>
-        <span class="srcg srcg--off"><svg><use href="#i-mic"/></svg></span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>The state pill — nine states, the degradation ladder, and the popover</h3>
-  <p class="note">Recording chrome is one capsule. Recording red is a <b>state</b>, never an error: transient
-    liveness tints warn or info, and the fix always lives in the popover. The dot never goes.</p>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">Idle — Record never collapses</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="btn btn--sm btn--default"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block"></span>Record</button></div></div>
-    <div class="cell"><span class="wlabel">Starting</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><span class="spin" style="width:10px;height:10px;border-width:1.5px"></span><span class="pill__w">Starting</span></button></div></div>
-    <div class="cell"><span class="wlabel">Recording — the resting state</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button></div></div>
-    <div class="cell"><span class="wlabel">Paused — manual</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i><span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></button></div></div>
-    <div class="cell"><span class="wlabel">Paused — inactivity, resumes on input</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i><span class="pill__w">Idle 12m</span></button></div></div>
-    <div class="cell"><span class="wlabel">Low disk — liveness, not failure</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i><span class="pill__w">Low disk</span></button></div></div>
-    <div class="cell"><span class="wlabel">Display asleep — mic and system audio keep recording</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-info)">screen asleep</span></button></div></div>
-    <div class="cell"><span class="wlabel">Source degraded — tap rebuilding</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-warn)">mic lost</span></button></div></div>
-    <div class="cell"><span class="wlabel">Permission missing — the fix is the popover's first row</span>
-      <div class="strip38" style="width:340px;justify-content:flex-end">
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i><span class="pill__w">screen not allowed</span></button></div></div>
-  </div>
-
-  <div class="spec">
-    <div class="cell" style="position:relative;padding-bottom:250px">
-      <span class="wlabel">Click — the popover (NSMenu anatomy: 24px rows, checkmark gutter, right ⌘ column)</span>
-      <div class="strip38" style="width:420px;justify-content:flex-end">
-        <button class="pill is-focused"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
-      </div>
-      <div class="menu" style="position:absolute;right:0;top:56px;min-width:248px">
-        <div class="menu__hd">Recording · 2:14:07 · 270 MB today</div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg><use href="#i-pause"/></svg></span>Pause Capture<span class="menu__kbd">⌥⌘P</span></div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg><use href="#i-stop"/></svg></span>Stop &amp; Save<span class="menu__kbd">⌥⌘S</span></div>
-        <div class="menu__sep"></div>
-        <div class="menu__hd">Sources</div>
-        <div class="menu__i"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl" style="color:var(--app-src-screen)"><svg><use href="#i-screen"/></svg></span>Screen</div>
-        <div class="menu__i is-hl"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl"><svg><use href="#i-mic"/></svg></span>Microphone</div>
-        <div class="menu__i is-dis"><span class="menu__ck"><svg><use href="#i-check"/></svg></span><span class="menu__gl"><svg><use href="#i-sys"/></svg></span>System Audio</div>
-        <div class="menu__sep"></div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"></span>Open Timeline at now<span class="menu__kbd">⌘1</span></div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Degradation ladder — cost → timer → glyph → dot</span>
-      <div class="strip38" style="width:300px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button></div>
-      <div class="strip38" style="width:240px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
-      <div class="strip38" style="width:190px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__w">Rec</span></button></div>
-      <div class="strip38" style="width:150px;justify-content:flex-end">
-        <button class="pill"><i class="rec__dot"></i></button></div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Toasts — bottom-right, never reflow, errors never auto-dismiss</span>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-danger"></span>Transcription failed</div>
-        <div class="toast__m">Deepgram rejected the key. The job is queued, not lost.</div>
-        <div style="display:flex;gap:var(--s-8);margin-top:var(--s-4)">
-          <button class="btn btn--sm btn--push">Open Settings</button><button class="btn btn--sm btn--ghost">Dismiss</button></div>
-      </div>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-info"></span>Screen asleep — audio still recording</div>
-        <div class="toast__m">Capture resumes when the display returns.</div>
-      </div>
-      <div class="toast">
-        <div class="toast__t"><span class="dot-ok"></span>Deleted the last hour</div>
-        <div class="toast__m">412 frames and 3 audio segments. Context notes were kept.</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>The bento — footprints, chrome, and the states a tile must have</h3>
-  <div class="spec">
-    <div class="cell">
-      <span class="wlabel">Four legal footprints · one 16px gutter</span>
-      <div class="footprint">
-        <div>1×1</div><div style="grid-column:span 2">2×1</div><div>1×1</div>
-        <div style="grid-column:span 2;grid-row:span 2">2×2</div><div>1×1</div><div>1×1</div>
-        <div style="grid-column:1/-1">4×1</div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Rows inside a tile — rest, hover, selected</span>
-      <div class="tile tile--static" style="width:340px">
-        <div class="tile__h"><span class="t-label">Conversations</span><span class="more is-num">3 today</span></div>
-        <div class="pay pay--rows">
-          <div class="row row--static"><span class="row__txt"><span class="row__lbl">Launch sync</span>
-            <span class="row__sub">38 min · 5 speakers</span></span><span class="row__val is-mono t-meta is-num">13:02</span></div>
-          <div class="row row--static" style="background:var(--tile-fill-hover)"><span class="row__txt"><span class="row__lbl">Design review</span>
-            <span class="row__sub">hover</span></span><span class="row__val is-mono t-meta is-num">10:12</span></div>
-          <div class="row row--static is-sel"><span class="row__txt"><span class="row__lbl">1:1 with Priya</span>
-            <span class="row__sub">full-row accent selection — never an underline</span></span><span class="row__val is-mono t-meta is-num">09:30</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="cell">
-      <span class="wlabel">Empty and unavailable are designed states, not accidents</span>
-      <div style="display:flex;gap:var(--cell-gutter)">
-        <div class="tile tile--static" style="width:250px;height:132px">
-          <div class="tile__h"><span class="t-label">Conversations</span></div>
-          <div class="pay" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
-            <svg style="width:18px;height:18px;color:var(--app-text-faint)"><use href="#i-sys"/></svg>
-            <span class="t-meta subtle">No speech recorded today</span>
-            <span class="t-meta subtle">audio is on · nothing to show yet</span>
+  <h3>1100 × 720 — the day</h3>
+  <p class="note">The read sits on top as a 4×1 tile; under it each time-of-day band is its own 4×1 tile.
+    <b>Constant chrome</b>: every band opens with the same 18px header row. <b>Free payload</b>: a 68px when-column,
+    an 18px spine with a category-tinted node, then the card — a shape no other tile in the app uses. Activities
+    under five minutes collapse to a one-line row, and a gap of five minutes or more between covered frames
+    renders as its own dashed row. The live edge is a dashed <i>pending</i> card, never a fake summary.</p>
+  <div class="fit">
+    <div class="window w1100">
+      <div class="jn">
+        <div class="tbar tbar--seam">
+          <div class="tl"><i></i><i></i><i></i></div>
+          <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg>Overview</button>
+          <span class="tbar__title">Journal</span>
+          <div class="rec">
+            <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
           </div>
         </div>
-        <div class="tile tile--static" style="width:250px;height:132px">
-          <div class="tile__h"><span class="t-label">Today</span><span class="more">unavailable</span></div>
-          <div class="pay">
-            <div style="height:11px;width:94%;border-radius:3px;background:var(--app-surface-hover);margin-bottom:8px"></div>
-            <div style="height:11px;width:82%;border-radius:3px;background:var(--app-surface-hover);margin-bottom:8px"></div>
-            <div style="height:11px;width:60%;border-radius:3px;background:var(--app-surface-hover)"></div>
-            <p class="t-meta subtle" style="margin-top:10px">No engine configured — set one up in Intelligence</p>
+        <div class="dbar">
+          <span class="step">
+            <button class="btn btn--icon btn--sm"><svg><use href="#i-chevl"/></svg></button>
+            <span class="step__d">Mon, Aug 3</span>
+            <button class="btn btn--icon btn--sm is-dis"><svg><use href="#i-chevr"/></svg></button>
+          </span>
+          <button class="btn btn--ghost btn--sm">Today</button>
+          <span class="lstat" style="margin-left:auto"><b>6.7h</b><span>tracked</span></span>
+          <span class="lsep"></span>
+          <span class="lstat"><b>61%</b><span>deep focus</span></span>
+          <span class="lsep"></span>
+          <span class="lstat"><i style="width:8px;height:8px;border-radius:50%;background:var(--cat-creating);display:inline-block"></i><span>Creating</span></span>
+          <span class="lsep"></span>
+          <span class="lstat"><b>7</b><span>activities</span></span>
+        </div>
+
+        <div class="jbody">
+          <div class="bento" style="grid-auto-rows:min-content">
+
+            <!-- the read: the digest, verbatim, with its own re-read control -->
+            <div class="tile tile--w4 tile--static">
+              <div class="tile__h">
+                <span class="t-label">The read</span>
+                <span class="more">Mon, Aug 3 · <span class="is-num">7 min ago</span></span>
+                <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-8)"><svg><use href="#i-refresh"/></svg>re-read</button>
+              </div>
+              <p class="read__h">A licensing day that ended in the answer view.</p>
+              <p class="read__n">Mostly a licensing day: the Polar webhook fix landed after the launch sync, and the
+                afternoon went to <b class="strong" style="font-weight:510">answer_view.rs</b>. One open thread —
+                Tom wants delivery ids in the webhook log.</p>
+            </div>
+
+            <!-- band 1 -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Morning</span>
+                <span class="more is-num">3 activities · 9:04 – 11:44</span></div>
+              <div class="pay pay--rows">
+
+                <div class="row jrow" style="color:var(--cat-organizing)">
+                  <span class="jwhen"><b>9:04 AM</b><i>38m</i></span>
+                  <span class="jspine"><u></u></span>
+                  <span class="jcard">
+                    <span class="jtop"><span class="jcat"><i></i>Organizing</span>
+                      <span class="jfoc" style="color:var(--focus-mid)"><i></i>Mixed</span></span>
+                    <span class="jttl">Q3 launch checklist</span>
+                    <span class="jsum">Worked the launch checklist in Notion and reconciled it against the open
+                      licensing issues — cut four items, moved the CRL cache row to next week.</span>
+                    <span class="jfoot">▸ 214 frames · receipt</span>
+                  </span>
+                </div>
+
+                <div class="row jrow jrow--min" style="color:var(--cat-research)">
+                  <span class="jwhen"><b>9:46 AM</b><i>4m</i></span>
+                  <span class="jspine"><u></u></span>
+                  <span class="jcard"><span class="jmin">Triaged the overnight crash digest</span></span>
+                </div>
+
+                <div class="row row--static jrow" style="min-height:0">
+                  <span class="jwhen"></span>
+                  <span class="jspine jspine--dash"></span>
+                  <span class="jgap">9:50 AM – 10:38 AM · away — no capture</span>
+                </div>
+
+                <div class="row jrow" style="color:var(--cat-creating)">
+                  <span class="jwhen"><b>10:38 AM</b><i>1h 6m</i></span>
+                  <span class="jspine"><u></u></span>
+                  <span class="jcard">
+                    <span class="jtop"><span class="jcat"><i></i>Creating</span>
+                      <span class="jfoc" style="color:var(--focus-deep)"><i></i>Deep</span></span>
+                    <span class="jttl">Checkout flow — webhook states</span>
+                    <span class="jsum">Redrew the webhook state machine in Figma, then wrote the three failure
+                      branches the diagram exposed straight into the verifier.</span>
+                    <span class="jfoot">▸ 812 frames · receipt</span>
+                  </span>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- band 2 -->
+            <div class="tile tile--w4">
+              <div class="tile__h"><span class="t-label">Afternoon</span>
+                <span class="more is-num">4 activities · 1:02 – now</span></div>
+              <div class="pay pay--rows">
+
+                <div class="row jrow" style="color:var(--cat-meetings)">
+                  <span class="jwhen"><b>1:02 PM</b><i>38m</i></span>
+                  <span class="jspine"><u></u></span>
+                  <span class="jcard">
+                    <span class="jtop"><span class="jcat"><i></i>Meetings</span>
+                      <span class="jfoc" style="color:var(--focus-mid)"><i></i>Mixed</span></span>
+                    <span class="jttl">Launch sync</span>
+                    <span class="jsum">Five people. The webhook was still 400-ing in staging; Priya traced it to the
+                      HMAC being computed over the decoded key rather than the raw string.</span>
+                    <span class="jfoot">▸ 402 frames · receipt</span>
+                  </span>
+                </div>
+
+                <div class="row jrow" style="color:var(--cat-creating)">
+                  <span class="jwhen"><b>2:32 PM</b><i>1h 14m</i></span>
+                  <span class="jspine"><u></u></span>
+                  <span class="jcard">
+                    <span class="jtop"><span class="jcat"><i></i>Creating</span>
+                      <span class="jfoc" style="color:var(--focus-deep)"><i></i>Deep</span></span>
+                    <span class="jttl">answer_view.rs — parsing the answer into blocks</span>
+                    <span class="jsum">Moved fence parsing off the frontend and into the backend's typed blocks,
+                      then chased the serde round-trip test until it went green.</span>
+                    <span class="jfoot">▸ 940 frames · receipt</span>
+                  </span>
+                </div>
+
+                <div class="row jrow jrow--pend row--static" style="color:var(--app-text-muted)">
+                  <span class="jwhen"><b>3:46 PM</b><i>now</i></span>
+                  <span class="jspine"><u style="background:var(--app-border-strong);box-shadow:0 0 0 2px var(--tile-fill)"></u></span>
+                  <span class="jcard">
+                    <span class="jpend"><i></i>Summarizing this window…</span>
+                    <span class="jsum">The journal trails live capture by up to 30 minutes — the footage itself is
+                      already on the Timeline.</span>
+                  </span>
+                </div>
+
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <button class="btn btn--sm jnow" style="box-shadow:var(--shadow-popover)"><svg><use href="#i-chevd"/></svg>now</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sect">
+  <h3>1100 × 720 — one receipt, open</h3>
+  <p class="note">The receipt is a bento too. Three tiles: the <b>frame</b> (2×2, media bleeding to all four edges,
+    app / window / clock / OCR chips floating on it), the <b>transcript</b> (the turns that fall inside this
+    activity, the one under the playhead lit in its speaker's colour), and the <b>filmstrip</b> (bleeding into the
+    bottom radius with the last cell half-cut). The scrub track carries one tick per cited frame, the headline
+    tick full-strength — releasing over a turn plays that turn's real audio.</p>
+  <div class="fit">
+    <div class="window w1100">
+      <div class="jn">
+        <div class="tbar tbar--seam">
+          <div class="tl"><i></i><i></i><i></i></div>
+          <button class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg><use href="#i-chevl"/></svg>Overview</button>
+          <span class="tbar__title">Journal</span>
+          <div class="rec"><button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button></div>
+        </div>
+        <div class="dbar">
+          <span class="step">
+            <button class="btn btn--icon btn--sm"><svg><use href="#i-chevl"/></svg></button>
+            <span class="step__d">Mon, Aug 3</span>
+            <button class="btn btn--icon btn--sm is-dis"><svg><use href="#i-chevr"/></svg></button>
+          </span>
+          <button class="btn btn--ghost btn--sm">Today</button>
+          <span class="lstat" style="margin-left:auto"><b>6.7h</b><span>tracked</span></span>
+          <span class="lsep"></span><span class="lstat"><b>7</b><span>activities</span></span>
+        </div>
+        <div class="jbody">
+          <div class="bento" style="grid-auto-rows:min-content">
+            <div class="tile tile--w4 tile--static">
+              <div class="tile__h"><span class="t-label">The read</span><span class="more">Mon, Aug 3</span></div>
+              <p class="read__h">A licensing day that ended in the answer view.</p>
+            </div>
+            <div class="tile tile--w4"><div class="tile__h"><span class="t-label">Afternoon</span></div>
+              <div class="pay pay--rows"><div class="row jrow" style="color:var(--cat-creating)">
+                <span class="jwhen"><b>2:32 PM</b><i>1h 14m</i></span><span class="jspine"><u></u></span>
+                <span class="jcard"><span class="jtop"><span class="jcat"><i></i>Creating</span></span>
+                  <span class="jttl">answer_view.rs — parsing the answer into blocks</span></span>
+              </div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dim"></div>
+        <div class="rcp">
+          <div class="rcp__h">
+            <span style="width:8px;height:8px;border-radius:50%;background:var(--cat-creating);flex:0 0 auto"></span>
+            <span class="t-label" style="color:var(--app-text-subtle)">Creating</span>
+            <span class="t-ui strong" style="font-weight:var(--w-semi)">answer_view.rs — parsing the answer into blocks</span>
+            <span class="t-meta is-mono is-num" style="margin-left:auto">2:32 PM – 3:46 PM · 1h 14m</span>
+            <button class="btn btn--ghost btn--icon btn--sm"><svg><use href="#i-x"/></svg></button>
+          </div>
+          <div class="rcp__b">
+            <p class="rcp__sum">Moved fence parsing off the frontend and into the backend's typed blocks, then chased
+              the serde round-trip test until it went green.</p>
+
+            <div class="bento bento--3" style="flex:1 1 auto;min-height:0;grid-template-rows:1fr 1fr 116px">
+              <!-- the frame: 2 wide, 2 tall, media bleeding all four edges -->
+              <div class="tile tile--w2 tile--h2 tile--static" style="padding:0">
+                <div class="vp">
+                  <span class="shot shot--editor shot--dense">
+                    <i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i><i class="tab b"></i><i class="tab c"></i>
+                    <span class="files"><i class="w70"></i><i class="w52 on"></i><i class="w64"></i><i class="w44"></i><i class="w76"></i><i class="w58"></i><i class="w48"></i></span>
+                    <i class="gut"></i>
+                    <span class="code stack">
+                      <p class="ln"><s class="tk tk--kw w8"></s><s class="tk tk--fn w20"></s><s class="tk tk--dim w6"></s><s class="tk tk--str w18"></s></p>
+                      <p class="ln"><s class="tk tk--dim w6"></s><s class="tk tk--str w30"></s></p>
+                      <p class="ln"><s class="tk tk--cm w26"></s></p>
+                      <p class="ln"><s class="tk tk--kw w10"></s><s class="tk w22"></s><s class="tk tk--num w6"></s></p>
+                      <p class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--fn w26"></s></p>
+                      <p class="ln"><s class="tk tk--str w36"></s></p>
+                      <p class="ln"><s class="tk tk--dim w6"></s><s class="tk w40"></s></p>
+                      <p class="ln"><s class="tk tk--kw w12"></s><s class="tk tk--fn w18"></s></p>
+                      <p class="ln"><s class="tk tk--cm w22"></s></p>
+                      <p class="ln"><s class="tk w30"></s><s class="tk tk--num w4"></s></p>
+                    </span>
+                    <i class="caret"></i>
+                  </span>
+                  <span class="vpred"><span class="chip chip--verdict chip--warn">2 redactions</span></span>
+                  <span class="vpchips">
+                    <span class="vpchip">Zed</span>
+                    <span class="vpchip">answer_view.rs — mnema</span>
+                    <span class="vpchip">3:11:04 PM</span>
+                    <span class="vpchip">OCR</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- transcript -->
+              <div class="tile tile--h2 tile--static">
+                <div class="tile__h"><span class="t-label">Transcript</span><span class="more is-num">6 turns</span></div>
+                <div class="pay pay--rows scroll" style="overflow:hidden">
+                  <span class="turn" style="color:var(--cat-communication)"><time>3:04</time><span><b>You</b>: the fence parser has to move, the frontend keeps drifting</span></span>
+                  <span class="turn on" style="color:var(--cat-meetings)"><time>3:11</time><span><b>Priya</b>: then the block type is the contract — mirror it by hand and keep the round-trip test</span></span>
+                  <span class="turn" style="color:var(--cat-communication)"><time>3:14</time><span><b>You</b>: agreed, no codegen</span></span>
+                  <span class="turn" style="color:var(--cat-research)"><time>3:19</time><span><b>Speaker 3</b>: does that persist, or is it parsed on read every time</span></span>
+                  <span class="turn" style="color:var(--cat-communication)"><time>3:22</time><span><b>You</b>: persisted — parse-on-read is only the cold path</span></span>
+                  <span class="turn" style="color:var(--cat-meetings)"><time>3:29</time><span><b>Priya</b>: ship it behind the versioned event and keep the snapshot command</span></span>
+                </div>
+              </div>
+
+              <!-- filmstrip: bleeds into the bottom radius, last cell half-cut -->
+              <div class="tile tile--w3 tile--static">
+                <div class="tile__h"><span class="t-label">Frames</span>
+                  <span class="more is-num">940 · 18 cited</span></div>
+                <div class="pay pay--bleed">
+                  <div class="film">
+                    <i class="cited"><span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i></span></i>
+                    <i><span class="shot shot--terminal"><span class="code stack"><p class="ln"><s class="tk tk--g w8"></s><s class="tk tk--t w34"></s></p><p class="ln"><s class="tk tk--r w44"></s></p></span></span></i>
+                    <i class="cur cited"><span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i><i class="tab b"></i></span></i>
+                    <i><span class="shot shot--browser"><i class="bar"></i><i class="url"></i><i class="pg"></i><span class="art"><i class="h"></i><p class="ln"><s class="tk tk--pi2 w88"></s></p><p class="ln"><s class="tk tk--pi2 w70"></s></p></span></span></i>
+                    <i class="cited"><span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i></span></i>
+                    <i><span class="shot shot--terminal"><span class="code stack"><p class="ln"><s class="tk tk--g w6"></s><s class="tk tk--t w40"></s></p><p class="ln"><s class="tk tk--t w60"></s></p></span></span></i>
+                    <i><span class="shot shot--figma"><i class="top"></i><i class="lp"></i><i class="art1"></i><i class="sq"></i></span></i>
+                    <i class="cited"><span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i></span></i>
+                    <i class="half"><span class="shot shot--chat"><span class="rail"><i class="on"></i><i></i></span><span class="chans"><i class="w70"></i><i class="w52 on"></i></span></span></i>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- scrub -->
+            <div>
+              <div class="trk">
+                <span class="trk__f" style="width:52%"></span>
+                <span class="trk__ev" style="left:6%"></span><span class="trk__ev" style="left:11%"></span>
+                <span class="trk__ev" style="left:17%"></span><span class="trk__ev" style="left:24%"></span>
+                <span class="trk__ev" style="left:31%"></span><span class="trk__ev" style="left:38%"></span>
+                <span class="trk__ev" style="left:44%"></span><span class="trk__ev hd" style="left:52%"></span>
+                <span class="trk__ev" style="left:58%"></span><span class="trk__ev" style="left:63%"></span>
+                <span class="trk__ev" style="left:71%"></span><span class="trk__ev" style="left:78%"></span>
+                <span class="trk__ev" style="left:84%"></span><span class="trk__ev" style="left:91%"></span>
+                <span class="trk__head" style="left:52%">3:11 PM</span>
+              </div>
+              <div class="trkcaps"><span>2:32 PM</span><span>3:46 PM</span></div>
+            </div>
+
+            <div class="ctl">
+              <button class="btn btn--icon"><svg><use href="#i-play"/></svg></button>
+              <span class="seg seg--sm"><span class="seg__i">1×</span><span class="seg__i">2×</span><span class="seg__i on">8×</span><span class="seg__i">16×</span></span>
+              <span class="ctl__c">frame 128 / 940 · 3:11:04 PM</span>
+              <button class="btn btn--sm" style="margin-left:auto">Open in Timeline <svg><use href="#i-chevr"/></svg></button>
+            </div>
+            <div class="rfoot">
+              <span>940 frames across 7 capture segments</span><span>·</span>
+              <span>18 frames + 3 spoken segments cited</span>
+            </div>
           </div>
         </div>
       </div>
@@ -1155,178 +1280,97 @@ mark{background:var(--app-accent-bg);color:var(--app-accent);border-radius:2px;p
 </section>
 
 <section class="sect">
-  <h3>Type specimen — six roles, three weights, at true size</h3>
-  <p class="note">A size is not a choice; it is a consequence of what the text <b>is</b>. Sans is the product speaking;
-    mono is the machine — times, sizes, counts, keys, paths, state. Mono never exceeds <span class="is-mono">--t-title</span>.</p>
-  <div style="max-width:1100px;margin-top:var(--s-16)">
-    <div class="typerow"><span class="typerow__k">t-label</span><span class="typerow__s">10 / 1.4 / +.02 / 510 mono</span>
-      <span class="t-label">MOMENTS · 14 IN ALL</span>
-      <span class="typerow__u">Machine labels, column heads, units, keycaps. Never a sentence.</span></div>
-    <div class="typerow"><span class="typerow__k">t-meta</span><span class="typerow__s">11 / 1.35 / +.01 / 400</span>
-      <span class="t-meta">38 min · 5 speakers · updated 14:40</span>
-      <span class="typerow__u">Timestamps, counts, helper lines, captions under a frame.</span></div>
-    <div class="typerow"><span class="typerow__k">t-ui</span><span class="typerow__s">13 / 1.25 / −.006 / 400</span>
-      <span class="t-ui">Keep recording while the screen sleeps</span>
-      <span class="typerow__u">The default — buttons, rows, labels, menus, chips. macOS Body.</span></div>
-    <div class="typerow"><span class="typerow__k">t-read</span><span class="typerow__s">14 / 1.55 / −.008 / 400</span>
-      <span class="t-read" style="flex:0 0 300px">Mostly a licensing day: the Polar webhook fix landed after the launch sync.</span>
-      <span class="typerow__u">Prose only: transcripts, AI answers, error explanations. Max 70ch.</span></div>
-    <div class="typerow"><span class="typerow__k">t-title</span><span class="typerow__s">17 / 1.3 / −.016 / 590</span>
-      <span class="t-title">Monday, August 3</span>
-      <span class="typerow__u">Screen and section titles, dialog headings. One per region.</span></div>
-    <div class="typerow"><span class="typerow__k">t-display</span><span class="typerow__s">22 / 1.2 / −.02 / 590</span>
-      <span class="t-display is-num">6:42</span>
-      <span class="typerow__u">At most one per screen: the readout clock, or the hours hero.</span></div>
-  </div>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">Tabular numbers — non-negotiable on anything that changes in place</span>
-      <div class="crow">
-        <div><p class="t-meta">with</p><p class="is-mono is-num" style="font-size:15px;color:var(--app-text-strong)">2:14:07<br>1:09:11<br>0:58:03</p></div>
-        <div><p class="t-meta">without</p><p class="is-mono" style="font-size:15px;color:var(--app-text-subtle);font-variant-numeric:proportional-nums">2:14:07<br>1:09:11<br>0:58:03</p></div>
+  <h3>The way in, the way back, and the states that are not a happy day</h3>
+  <p class="note">Journal is <b>not</b> a third top-level surface. The main window still holds exactly Timeline and
+    Overview; Journal is opened from Overview's Moments tile — those fourteen moments <i>are</i> this day's
+    activities — and the title-bar chevron says where it goes back to. Everything below is a real state with
+    real copy, not a decoration.</p>
+  <div class="fit">
+    <div class="spec">
+
+      <div>
+        <div style="position:relative;padding-top:22px">
+          <span class="mark" style="left:0;top:0">the affordance — Overview 01</span>
+          <div class="tile tile--static" style="height:132px">
+            <div class="tile__h"><span class="t-label">Moments</span>
+              <span class="more" style="color:var(--app-accent)">the day's main things · <span class="is-num">14</span> in all&nbsp;<svg><use href="#i-chevr"/></svg></span></div>
+            <div class="pay pay--bleed">
+              <div class="strip">
+                <i><span class="shot shot--docs"><span class="nav"><i class="w88"></i><i class="w60 on"></i><i class="w76"></i></span><span class="pg"><i class="h"></i><p class="ln"><s class="tk tk--pi2 w94"></s></p><p class="ln"><s class="tk tk--pi2 w70"></s></p></span></span><span class="strip__t">09:04</span></i>
+                <i><span class="shot shot--figma"><i class="top"></i><i class="lp"></i><i class="art1"></i><i class="sq"></i><i class="ci"></i></span><span class="strip__t">10:38</span></i>
+                <i class="half"><span class="shot shot--call"><span class="tiles"><span class="t on"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span></span><span class="strip__t">13:02</span></i>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="spec__cap"><b>In:</b> the Moments header row is the link — the count and the chevron were already
+          there. <b>Back:</b> the Journal title bar's chevron reads <i>‹ Overview</i>, so the return is named, not
+          guessed. No rail, no third segment.</p>
       </div>
-    </div>
-    <div class="cell"><span class="wlabel">Colour — one accent, one record red, three semantics</span>
-      <div class="swatches">
-        <div class="sw2"><i style="background:var(--app-accent)"></i><span>accent</span></div>
-        <div class="sw2"><i style="background:var(--app-record)"></i><span>record</span></div>
-        <div class="sw2"><i style="background:var(--app-danger)"></i><span>danger</span></div>
-        <div class="sw2"><i style="background:var(--app-warn)"></i><span>warn</span></div>
-        <div class="sw2"><i style="background:var(--app-info)"></i><span>info</span></div>
-        <div class="sw2"><i style="background:var(--app-src-screen)"></i><span>screen</span></div>
-        <div class="sw2"><i style="background:var(--app-src-mic)"></i><span>mic</span></div>
-        <div class="sw2"><i style="background:var(--app-src-sys)"></i><span>sys</span></div>
+
+      <div>
+        <div class="pane">
+          <div class="tile__h"><span class="t-label">Receipt</span><span class="more">footage expired</span></div>
+          <div class="pay" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:var(--s-6)">
+            <span class="chev" style="color:var(--app-text-faint)"><svg style="width:20px;height:20px"><use href="#i-clock"/></svg></span>
+            <span class="t-ui strong">Footage expired</span>
+            <span class="t-meta" style="max-width:34ch">The raw frames behind this card were removed by Retention
+              Cleanup. The card, its summary, and its evidence list are kept — only the pixels age out.</span>
+          </div>
+        </div>
+        <p class="spec__cap">Retention removes pixels, never cards. The receipt says so in the app's own words and
+          the row's footer reads <i>footage expired</i> instead of a frame count.</p>
       </div>
+
+      <div>
+        <div class="pane">
+          <div class="tile__h"><span class="t-label">Receipt</span><span class="more">audio only</span></div>
+          <div class="pay" style="display:flex;flex-direction:column;gap:var(--s-8);justify-content:center">
+            <div style="display:flex;align-items:center;gap:var(--s-8)">
+              <button class="btn btn--icon"><svg><use href="#i-play"/></svg></button>
+              <span><span class="t-ui strong">Priya</span>
+                <span class="t-label" style="margin-left:6px">via microphone</span></span>
+            </div>
+            <span class="t-meta">spoken segment · 1:14 PM–1:21 PM · captured as audio</span>
+            <span class="t-label" style="color:var(--app-text-faint)">0 screen frames — captured as audio</span>
+          </div>
+        </div>
+        <p class="spec__cap">An activity can be grounded in audio with no frames at all — system audio and the
+          microphone are independent of screen capture. The receipt drops the filmstrip rather than faking one.</p>
+      </div>
+
+      <div>
+        <div class="pane">
+          <div class="tile__h"><span class="t-label">Journal</span><span class="more">no cards yet</span></div>
+          <div class="pay" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:var(--s-6)">
+            <span style="font-size:20px;color:var(--app-text-faint)">◇</span>
+            <span class="t-ui strong">Your day is being written</span>
+            <span class="t-meta" style="max-width:34ch">Capture is landing. The first journal card appears once the
+              first half-hour window has been summarized.</span>
+          </div>
+        </div>
+        <p class="spec__cap">Two different empties, and they are not interchangeable: this one when the day
+          <i>has</i> capture, and <i>Nothing captured on Wed, Aug 5</i> when it does not.</p>
+      </div>
+
     </div>
   </div>
 </section>
 
 <section class="sect">
-  <h3>Spacing specimen — one ramp, named constants, one grid</h3>
-  <div class="spec">
-    <div class="cell"><span class="wlabel">The ramp — finer under 8, coarser above</span>
-      <div class="ramp">
-        <div><i style="width:1px"></i><span>1</span></div><div><i style="width:2px"></i><span>2</span></div>
-        <div><i style="width:4px"></i><span>4</span></div><div><i style="width:6px"></i><span>6</span></div>
-        <div><i style="width:8px"></i><span>8</span></div><div><i style="width:12px"></i><span>12</span></div>
-        <div><i style="width:16px"></i><span>16</span></div><div><i style="width:24px"></i><span>24</span></div>
-        <div><i style="width:32px"></i><span>32</span></div><div><i style="width:48px"></i><span>48</span></div>
-      </div>
-    </div>
-    <div class="cell"><span class="wlabel">Named constants — a designer picks the relationship, not the number</span>
-      <table class="tbl" style="max-width:520px;margin-top:0">
-        <tr><td class="m">--gap-inline</td><td class="m">6</td><td>icon → its label</td></tr>
-        <tr><td class="m">--gap-row</td><td class="m">8</td><td>between rows in a list</td></tr>
-        <tr><td class="m">--gap-group</td><td class="m">16</td><td>between related groups</td></tr>
-        <tr><td class="m">--gap-section</td><td class="m">24</td><td>between sections of a surface</td></tr>
-        <tr><td class="m">--tile-pad</td><td class="m">14</td><td>every tile, all four sides</td></tr>
-        <tr><td class="m">--cell-gutter</td><td class="m">16</td><td>the one bento gutter, everywhere</td></tr>
-        <tr><td class="m">--tile-r / -in</td><td class="m">12 / 6</td><td>tile radius, and the derived inner radius</td></tr>
-      </table>
-    </div>
-  </div>
-</section>
-
-<section class="sect">
-  <h3>UI/UX pattern self-audit</h3>
-  <p class="note">Per page, against the patterns this direction is accountable to. <b>Border count</b> counts bordered
-    <i>containers</i>, not control rings — a pill, a field bezel or a segmented control's outline is free. The
-    carried-over ceiling is ~12 per window.</p>
+  <h3>What every number on this page is</h3>
+  <p class="note">G8 discipline. Each figure below resolves to a field the backend already serves — nothing is a
+    round number chosen because it looked plausible.</p>
   <table class="tbl">
-    <tr>
-      <th>Page</th><th>Hierarchy</th><th>Spacing grid</th><th>Colour / contrast</th>
-      <th>States drawn</th><th>Native bar</th><th>Bordered containers</th>
-    </tr>
-    <tr>
-      <td>01 Overview</td>
-      <td>One <span class="m">--t-display</span> (6:42) · title → tile eyebrows → payload. Squint test: the hours hero and the moments strip win.</td>
-      <td>16 gutter = 16 inset · 4 row heights on the ramp · tile pad 14 held everywhere</td>
-      <td>Accent only on the live week bar + citation marks; record red only on the recording dot. Text-over-frame uses the measured scrim.</td>
-      <td>Live tile tinted; empty + unavailable tiles drawn on page 07</td>
-      <td>Material toolbar, content scrolls under · 38px bar · segmented switcher · tabular-nums throughout</td>
-      <td class="ok">0 <span class="m">(1 toolbar seam hairline)</span></td>
-    </tr>
-    <tr>
-      <td>02 Timeline</td>
-      <td>Stage 514px = 71% of the window · readout is the one display-size element in the rail area</td>
-      <td>Shipping rail metrics kept (8px per frame, 132px rail-wrap) · bar clusters on the 6/8/12 ramp</td>
-      <td>Record red on the now-tick and the selected segment only (surface wins over the rule) · mic/sys keep their source colours</td>
-      <td>Hover ghost + position readout · disabled day tiles · re-run in progress · drawer open</td>
-      <td>Frozen shipping layout · NSMenu overflow · overlay scrollbars · full-row menu highlight</td>
-      <td class="ok">0 <span class="m">(rail and lane are fills)</span></td>
-    </tr>
-    <tr>
-      <td>03 Quick Access · Search</td>
-      <td>Grid dominates; chrome is two 36–52px rows; the ask bridge is the only accent object</td>
-      <td>20 inset / 16 gutter — the one allowed exemption, because 1120 must divide exactly</td>
-      <td>Match highlight is accent at 26% + a hairline; captions on an opaque plate, never a soft scrim</td>
-      <td>Results · selected · empty · no-match · hover affordance badge</td>
-      <td>Fixed 1120×720 · bottom action bar always states what ⏎ does · mono counts</td>
-      <td class="ok">1 <span class="m">(the ask bridge's accent ring)</span></td>
-    </tr>
-    <tr>
-      <td>04 Quick Access · Ask</td>
-      <td>Answer tile spans 2 cells and holds the only prose; citations are subordinate at 1 cell</td>
-      <td>Same 3-column cell unit as Search, so the two modes are the same grid seen differently</td>
-      <td>Accent carries mode identity (field fill, mode chip, capture outline) and nothing else</td>
-      <td>Streaming · armed · frame attached · answering · model chip</td>
-      <td>Overlay is a floating HUD: material + shadow, the only place a shadow is allowed</td>
-      <td class="ok">0 <span class="m">(HUD panels float; they are not boxes)</span></td>
-    </tr>
-    <tr>
-      <td>05 Settings · General + Capture</td>
-      <td>Tabs → groups → rows. No group is nested inside another group.</td>
-      <td>2 columns × 16 gutter · 40px rows · inset separators at 14px</td>
-      <td>Accent on the selected tab, switches and the saved echo. Danger only on Delete Recent.</td>
-      <td>Saved · saving · failed · row echo · shortcut recording · shortcut conflict · disabled stepper end</td>
-      <td>28px controls, 13px type · NSSwitch and popup drawn to AppKit metrics · scoped ⌘F search</td>
-      <td class="ok">1 <span class="m">(the sticky bar's hairline)</span></td>
-    </tr>
-    <tr>
-      <td>06 Settings · Intelligence</td>
-      <td>Each group leads with the decision, not the plumbing (verdict before parameters)</td>
-      <td>Same grid; the duty bar and meter sit inside a row's payload, not in their own box</td>
-      <td>Verdict chips are the only place three semantic colours appear together — and they are text, not decoration</td>
-      <td>Verified · unverified · downloadable · consent-gated · indexing · scrolled</td>
-      <td>Same shell; provider rows behave like a source list</td>
-      <td class="ok">1 <span class="m">(the sticky bar's hairline)</span></td>
-    </tr>
-    <tr>
-      <td>07 Components</td>
-      <td>n/a — specimen sheet</td><td>Ramp and constants drawn to scale</td>
-      <td>Every semantic colour shown once, in context</td>
-      <td>All of them; that is the page</td><td>Nine-point audit below</td><td class="ok">0</td>
-    </tr>
-  </table>
-</section>
-
-<section class="sect">
-  <h3>Native bar — where each of the nine points is proven</h3>
-  <table class="tbl">
-    <tr><th>Point</th><th>Where</th></tr>
-    <tr><td>HIG window anatomy</td><td>38px unified title bar, real traffic lights, 10px window corner drawn by the page only because this is a mockup — 01–06</td></tr>
-    <tr><td>AppKit controls drawn accurately</td><td>Accent-filled default button, push bezel with top-light gradient, NSSwitch 38×22 with a 18px knob, popup button with the accent chevron capsule, stepper — 05, 07</td></tr>
-    <tr><td>NSMenu anatomy</td><td>24px rows, 20px checkmark gutter, right-aligned ⌘ column, separators inset 8 — the pill popover and the timeline overflow menu</td></tr>
-    <tr><td>Materials only where macOS uses them</td><td>Toolbar, menus, the jump popover and the screen HUD. Content surfaces are opaque.</td></tr>
-    <tr><td>Full-row accent selection</td><td>Menu highlight, the selected conversation row, the selected day tile in the jump panel. No underlines anywhere.</td></tr>
-    <tr><td>Native density</td><td>28px controls, 40px settings rows, 24px menu rows, 13px default type</td></tr>
-    <tr><td>One accent tint</td><td><span class="m">--app-accent</span> only. Record red is a state, source colours are identity, semantics are text.</td></tr>
-    <tr><td>Overlay scrollbars, tabular-nums</td><td>8px overlay thumbs on every scroller; <span class="m">is-num</span> on every number that changes in place</td></tr>
-    <tr><td>Nothing web-shaped</td><td>No 1.5 line-height on UI text, no pointer cursor on lists, no card shadows — depth is a surface step; shadows are reserved for things that float</td></tr>
-  </table>
-</section>
-
-<section class="sect">
-  <h3>Deviations, stated</h3>
-  <table class="tbl">
-    <tr><th>What</th><th>Why</th></tr>
-    <tr><td>Tile radius is 12, not the group idiom's 10</td><td>The bento clips media at every tile edge; 10 read tight against a full-bleed frame. The inner radius is then <i>derived</i> (12 − 6 inset = 6) rather than picked.</td></tr>
-    <tr><td>Tile inset is 14, not 16</td><td>One optical correction so a 349px result tile keeps a 16:9 frame at the full cell width. It is held on <i>every</i> tile, so it is a constant, not a one-off.</td></tr>
-    <tr><td>The AudioDrawer floats above the rail-wrap instead of over it</td><td>The shipping drawer covers the tick rail, so you cannot scrub while listening. Same drawer, same anatomy, anchored 132px up. Order is unchanged.</td></tr>
-    <tr><td>Search and Ask have no segmented control</td><td>A segmented control makes them peers competing for one field. Ask is reachable as the first result row and by ⌘⏎, and once you are in it the whole chrome changes. Mode identity without a mode switch.</td></tr>
-    <tr><td>Journal / Subjects / Context are destinations opened from Overview, not top-level surfaces</td><td>The main window keeps exactly two surfaces. Each destination's title bar swaps the Timeline/Overview segmented control for a named back chevron, so the way back is stated rather than guessed. Pages 08&ndash;10.</td></tr>
-    <tr><td>Page 11 draws each settings tab <i>unrolled</i> &mdash; the window at its natural height</td><td>A documentation device, not a shipping layout: it is the only way to show all 35 groups and 97 indexed rows at once. The shipping window is 720 tall and scrolls under the sticky bar.</td></tr>
-    <tr><td>The Overview Context tile counts <i>standing statements</i> and <i>inferred conclusions</i></td><td>Page 01 wrote &ldquo;142 facts about you &middot; 3 pending&rdquo;. There is no pending-review state in the backend, and authored context and inferred conclusions are different objects with different lifetimes. Page 10 states both numbers.</td></tr>
-    <tr><td>Retention lives under Capture, not Data</td><td>It is the second half of the frame-rate decision; keeping the cost and the keep-window on one pane is worth the IA move. Data keeps storage location, export and access.</td></tr>
+    <tr><th>On the page</th><th>Where it comes from</th></tr>
+    <tr><td><i>9:04 AM</i> · <i>38m</i></td><td><i>Activity.startedAtMs</i>, and <i>endedAtMs − startedAtMs</i> run through the app's own <i>humanizeMs</i> (45s / 18m / 1h 20m).</td></tr>
+    <tr><td>Organizing · Creating · Meetings</td><td><i>Activity.category</i> — the eight-value enum, tinted with the app's real <i>--cat-*</i> tokens. Absent category renders <i>Uncategorized</i>.</td></tr>
+    <tr><td>Deep · Mixed</td><td><i>Activity.focus</i> — a three-value enum, <b>not</b> a score. <i>distracted</i> is labelled <i>Scattered</i>.</td></tr>
+    <tr><td><i>▸ 214 frames · receipt</i></td><td>Frames whose <i>capturedAt</i> falls inside the activity's span. Zero frames is the expired state, never "0 frames".</td></tr>
+    <tr><td><i>9:50 AM – 10:38 AM · away — no capture</i></td><td>A gap of ≥ 5 minutes between covered frames, below the derivation watermark. Pending silence at the live edge is never drawn as a gap.</td></tr>
+    <tr><td><i>6.7h</i> · <i>61%</i> · Creating · <i>7</i></td><td>Summed per-app active time, the deep-focus share of activities, the top category, and the day's activity count.</td></tr>
+    <tr><td><i>940 frames across 7 capture segments</i></td><td>Frame count, and segment boundaries inferred from inter-frame gaps over 90 s — the same heuristic the shipping receipt uses.</td></tr>
+    <tr><td><i>3:46 PM · now</i></td><td>The derivation watermark, not the clock. The 30-minute figure in the copy is the engine's real window.</td></tr>
   </table>
 </section>
 
