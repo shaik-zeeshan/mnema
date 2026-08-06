@@ -2656,14 +2656,26 @@ pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> 
         .map_err(|error| format!("failed to open accessibility settings: {error}"))
 }
 
-/// `(async)` because this takes the lifecycle mutex and the frontend polls it
-/// every 2 s for the whole of a recording: on the main thread it would stall the
-/// window every time a *worker* holds that mutex (a start, a pause, or a
-/// mid-session source toggle — all seconds long). Reading off-main costs nothing
-/// and removes the contention entirely.
-#[tauri::command(async)]
-pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
-    activity::get_idle_debug(state)
+/// Off the main thread because this takes the lifecycle mutex and the frontend
+/// polls it every 2 s for the whole of a recording: on the main thread it would
+/// stall the window every time a *worker* holds that mutex (a start, a pause, or
+/// a mid-session source toggle — all seconds long).
+///
+/// It is `async fn` + `spawn_blocking`, NOT `#[tauri::command(async)]`. On a
+/// *sync* fn that attribute does not move the body to the blocking pool: the
+/// macro's `body_async` calls the function inline inside the task Tauri hands to
+/// `async_runtime::spawn`, so the body runs on — and blocks — a tokio **worker**
+/// thread. Waiting on a mutex there is not free: it parks the same threads that
+/// must poll and deliver every other command's IPC response, and a 2 s poll
+/// against a seconds-long mutex hold parks one after another until none is left
+/// to answer the `start_native_capture` the user is waiting on.
+#[tauri::command]
+pub async fn get_idle_debug(app_handle: tauri::AppHandle) -> Result<IdleDebugInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        activity::get_idle_debug(app_handle.state::<NativeCaptureState>())
+    })
+    .await
+    .map_err(|error| format!("get_idle_debug task failed: {error}"))
 }
 
 #[tauri::command]
@@ -3649,18 +3661,29 @@ pub async fn resume_native_capture(
 /// sources the session never requested are ignored (the mask works inside
 /// `requested_sources` — adding one needs a fresh start).
 ///
-/// `(async)` is load-bearing, not decoration: masking a source runs the same
-/// stop/finalize (and unmasking the same stream restart) an inactivity pause
-/// runs, which takes hundreds of ms to seconds, and a *synchronous* command
-/// runs on the main thread — the whole UI would freeze for the duration. The
-/// inactivity tick already drives this exact code from a worker thread, so
-/// off-main is the norm here, not a new risk.
-#[tauri::command(async)]
-pub fn set_native_capture_live_sources(
+/// Off the main thread is load-bearing, not decoration: masking a source runs
+/// the same stop/finalize (and unmasking the same stream restart) an inactivity
+/// pause runs, which takes hundreds of ms to seconds under the lifecycle mutex,
+/// and a *synchronous* command runs on the main thread — the whole UI would
+/// freeze for the duration. The inactivity tick already drives this exact code
+/// from a worker thread, so off-main is the norm here, not a new risk.
+///
+/// `#[tauri::command(async)]` on this *sync* fn was not off-main enough: that
+/// attribute runs the body inline inside the task Tauri spawns on the async
+/// runtime, i.e. on a tokio **worker** thread. Holding the lifecycle mutex for
+/// seconds there parks a thread the runtime needs to poll and answer every other
+/// command — including the `start_native_capture` whose reply the recording pill
+/// waits on. Same treatment as start/stop/pause/resume: blocking pool, awaited.
+#[tauri::command]
+pub async fn set_native_capture_live_sources(
     sources: CaptureSources,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    set_native_capture_live_sources_from_app_handle(&app_handle, sources)
+    tauri::async_runtime::spawn_blocking(move || {
+        set_native_capture_live_sources_from_app_handle(&app_handle, sources)
+    })
+    .await
+    .map_err(|error| lifecycle_join_error("set_native_capture_live_sources", error))?
 }
 
 fn stop_native_capture_with_state(
