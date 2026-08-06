@@ -29,10 +29,19 @@
 | `05-settings-general.html` | The settings shell: tabs + ⌘F filter navigation, deck autosave, General & Capture |
 | `06-settings-intelligence.html` | Intelligence — the six custom inputs, each with a consequence denominator |
 | `07-components.html` | Component sheet, type/spacing specimen, per-page UI/UX self-audit, deviations |
+| `08-journal.html` | The day as a keyboard-navigable river (bands, compact rows, away gaps, the live edge) + the receipt as a transport — scrub ticks per cited frame, filmstrip, transcript, ␣/←→/esc |
+| `09-subjects.html` | Tiers by conviction with the sparkline as the row's hero, one row expanded to its conclusions and evidence, plus the subject detail: hero counts, conclusion strip, the story-over-time spine |
+| `10-context.html` | The two kinds of knowing — standing statements you write on the left, the engine's counted side on the right — plus the dismissal archive and a wipe sheet that names everything it clears |
+| `11-settings-complete.html` | The census: all 96 indexed rows across the five ⌃-tabs, every group drawn, conditional rows badged, and the five places a G-decision outranked pages 05/06 |
 
 Each page is self-contained (inline CSS, inline SVG), designed in both themes, and responds to
 `prefers-color-scheme` **and** the `[data-theme]` toggle top-right. Renders of every page in both
-themes are in `shots/`.
+themes are in `shots/` (uncommitted, like `shots-app/` — artifacts, not deliverables).
+
+**IA for 08–10.** The main window still has exactly two surfaces, Timeline ⌘1 and Overview ⌘2.
+Journal, Subjects and Context are **destinations opened from Overview** — the tile carries the key
+(⌃D, ⌃J, ⌃K), the title bar grows one breadcrumb chip, and `esc` returns. Each page draws its own
+Overview inset as the way in. There is no Insights rail and no Chat; asking happens in Quick Access.
 
 ## What it does with each founder ask
 
@@ -103,3 +112,11 @@ AppKit on purpose.
   outside the app window; nothing inside a rendered window leaves the ramp.
 - Settings section keys are **⌃1–⌃5** (not ⌘1–⌘5) so they cannot collide with the ⌘1/⌘2 surface
   switcher, which stays global.
+- **Page 11 draws each settings tab at its natural height**, not at 1100×720. It is a census, not a
+  viewport study — pages 05 and 06 already show the real viewport. The chrome (tab strip, deck) is
+  real; the height is the whole scroll unrolled so nothing can hide below a fold.
+- **Page 09 does not copy four shipping behaviours** (the always-accent category dot, `0.82` vs
+  `82%`, the index-spaced sparkline, the silent five-chip evidence cap) and **page 10 does not draw
+  the "Steering your dossier" rail**. Each is argued on its own page and listed in `07-components.html`.
+- **Page 10 corrects page 01's Context tile.** "142 facts about you" names an entity the backend does
+  not have; the real counts are Activities, Conclusions, Subjects and standing statements.

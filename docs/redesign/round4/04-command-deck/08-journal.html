@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Command Deck · 07 Components, specimen & audit</title>
+<title>Command Deck · 08 Journal</title>
 <style>
 /* ══════════════════════════════════════════════════════════════════════════
    Mnema — round 4, direction 04 "Command Deck"
@@ -926,533 +926,514 @@ mark { background: var(--app-accent-bg); color: var(--app-accent); border-radius
   <svg><use href="#i-sun"/></svg><span>Theme</span>
 </button>
 <style>
-  .type-row { display: flex; align-items: baseline; gap: var(--s-24); padding: var(--s-12) 0; }
-  .type-row + .type-row { box-shadow: inset 0 var(--hairline) 0 var(--app-border); }
-  .type-row__k { width: 96px; flex: 0 0 96px; }
-  .type-row__s { flex: 1 1 auto; min-width: 0; }
-  .type-row__m { width: 300px; flex: 0 0 300px; }
-  .sp { display: flex; align-items: flex-end; gap: var(--s-12); }
-  .sp__i { display: flex; flex-direction: column; align-items: center; gap: var(--s-6); }
-  .sp__b { background: var(--app-accent); opacity: .7; border-radius: 1px; height: 28px; }
-  .metric { display: flex; align-items: flex-end; gap: var(--s-16); }
-  .metric__i { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
-  .metric__b { background: var(--app-surface-hover); box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
-    border-radius: var(--r-md); width: 64px; }
-  .rad { display: flex; gap: var(--s-16); }
-  .rad__i { display: flex; flex-direction: column; align-items: center; gap: 5px; }
-  .rad__b { width: 52px; height: 40px; background: var(--app-surface-hover);
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); }
-  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--s-16); }
-  .pillrow { display: flex; align-items: center; gap: var(--s-12); }
-  .pillrow__k { width: 210px; flex: 0 0 210px; }
-  .wrap { display: flex; align-items: center; gap: var(--s-12); flex-wrap: wrap; }
-  .swatch { display: flex; flex-direction: column; gap: var(--s-4); }
-  .swatch__c { width: 100%; height: 40px; border-radius: var(--r-md);
-    box-shadow: inset 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.12), rgba(255,255,255,.08)); }
-  .swatches { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: var(--s-12); }
-  .tblwrap { overflow-x: auto; }
-  .tbl td.ok { color: var(--app-accent); }
+  /* ── page 08 · Journal ─────────────────────────────────────────────────── */
+  /* the eight real ActivityCategory values, in the app's own order */
+  .jnl-scope {
+    --cat-creating:      light-dark(#6f5ed1, #c0b0ff);
+    --cat-communication: light-dark(#2b78c5, #60b0ff);
+    --cat-meetings:      light-dark(#9a5a12, #d6a14a);
+    --cat-research:      light-dark(#2f8e59, #80d0a8);
+    --cat-learning:      light-dark(#8b7a2c, #b0c080);
+    --cat-organizing:    light-dark(#5a6a80, #8fa2bd);
+    --cat-personal:      light-dark(#a8517a, #e08ab0);
+    --cat-entertainment: light-dark(#9a4aa0, #d08ad6);
+    --cat-none:          light-dark(#9a9aa4, #6c6c88);
+  }
+  .jnl { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+  /* lede — the digest + the four counted stats */
+  .lede { flex: 0 0 auto; padding: var(--s-12) var(--s-16) var(--s-8);
+    display: flex; gap: var(--s-24); align-items: flex-start; }
+  .lede__main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--s-6); }
+  .lede__hd { display: flex; align-items: baseline; gap: var(--s-8); }
+  .lede__n { margin: 0; font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read); color: var(--app-text); max-width: 74ch; }
+  .lede__n b { font-weight: var(--w-medium); color: var(--app-text-strong); }
+  .stats { flex: 0 0 auto; display: flex; gap: var(--s-16); }
+  .stat { display: flex; flex-direction: column; gap: 1px; min-width: 62px; }
+  .stat b { font: var(--w-semi) var(--t-display)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+
+  /* the river */
+  .river { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative;
+    padding: 0 var(--s-16); }
+  .band-h { position: sticky; top: 0; z-index: 3; display: flex; align-items: baseline; gap: var(--s-8);
+    padding: var(--s-8) 0 var(--s-6) 62px; background: linear-gradient(var(--app-bg) 74%, transparent); }
+  .jrow { display: flex; gap: var(--s-8); align-items: stretch; padding: 2px var(--s-8) 2px 0;
+    border-radius: var(--r-md); position: relative; }
+  .jrow.is-key { background: var(--app-accent); }
+  .jrow__t { flex: 0 0 54px; width: 54px; padding-top: 9px; text-align: right;
+    display: flex; flex-direction: column; gap: 1px; }
+  .jrow__t span { font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-mono);
+    font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+  .jrow__t span.big { color: var(--app-text-muted); font-weight: var(--w-medium); }
+  .jrow.is-key .jrow__t span { color: var(--app-accent-contrast); opacity: .8; }
+  .jrow__n { flex: 0 0 10px; width: 10px; position: relative; }
+  .jrow__n i { position: absolute; left: 2px; top: 12px; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--cat); }
+  .jrow__n u { position: absolute; left: 5px; top: 21px; bottom: -4px; width: var(--hairline);
+    background: var(--app-border-strong); }
+  .jrow:last-child .jrow__n u { display: none; }
+  .jcard { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+    padding: var(--s-6) var(--s-8) var(--s-8); border-radius: var(--r-md);
+    background: var(--app-surface); box-shadow: inset 2px 0 0 var(--cat); }
+  .jrow.is-key .jcard { background: light-dark(rgba(255,255,255,.14), rgba(7,18,12,.16)); }
+  .jcard__h { display: flex; align-items: center; gap: var(--s-8); }
+  .jchip { display: inline-flex; align-items: center; gap: 4px;
+    font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .06em;
+    text-transform: uppercase; color: var(--cat); }
+  .jchip i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .jfocus { display: inline-flex; align-items: center; gap: 4px;
+    font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+  .jfocus i { width: 5px; height: 5px; border-radius: 50%; background: var(--fdot, var(--app-text-faint)); }
+  .f-deep { --fdot: var(--app-accent); } .f-mid { --fdot: var(--app-warn); }
+  .f-scat { --fdot: var(--app-text-subtle); }
+  .jcard__ttl { font: var(--w-medium) var(--t-ui)/1.3 var(--app-font-sans); letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong); }
+  .jcard__sum { font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); color: var(--app-text-muted);
+    max-width: 78ch; }
+  .jcard__ft { display: flex; align-items: center; gap: var(--gap-inline); margin-top: 2px;
+    font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle); }
+  .jrow.is-key .jcard__ttl, .jrow.is-key .jchip { color: var(--app-accent-contrast); }
+  .jrow.is-key .jcard__sum, .jrow.is-key .jcard__ft, .jrow.is-key .jfocus { color: var(--app-accent-contrast); opacity: .82; }
+  .jrow.is-key .kbd { background: light-dark(rgba(255,255,255,.2), rgba(7,18,12,.24));
+    color: var(--app-accent-contrast); box-shadow: none; }
+  /* compact row — activities under 5 minutes get a swatch + a title, nothing else */
+  .jrow--sm .jcard { flex-direction: row; align-items: center; gap: var(--s-8); padding: 5px var(--s-8);
+    background: transparent; box-shadow: none; }
+  .jrow--sm .jrow__n i { top: 8px; }
+  .jrow--sm .jrow__t { padding-top: 5px; }
+  /* away gap */
+  .jgap { display: flex; gap: var(--s-8); padding: 2px 0; }
+  .jgap__x { flex: 1 1 auto; margin-left: 62px; padding: 5px var(--s-8);
+    font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-sans); font-style: italic;
+    color: var(--app-text-subtle); }
+  /* pending slot at the live edge */
+  .jpend { display: flex; gap: var(--s-8); padding: 2px 0; }
+  .jpend__b { flex: 1 1 auto; margin-left: 62px; padding: var(--s-8); border-radius: var(--r-md);
+    border: var(--hairline) dashed var(--app-border-strong);
+    display: flex; flex-direction: column; gap: 2px; }
+  .dotpulse { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent);
+    animation: pul 1.6s ease-in-out infinite; }
+  @keyframes pul { 50% { opacity: .3; } }
+
+  /* the receipt — a modal over the day */
+  .scrim { position: absolute; inset: 0; z-index: 20;
+    background: light-dark(rgba(21,28,38,.28), rgba(0,0,0,.5)); }
+  .rcpt { position: absolute; z-index: 21; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 900px; height: 648px; display: flex; flex-direction: column;
+    border-radius: var(--r-xl); overflow: hidden; background: var(--app-surface);
+    box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) var(--app-border-strong); }
+  .rcpt__h { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-8);
+    padding: var(--s-12) var(--s-12) var(--s-8); }
+  .rcpt__sum { flex: 0 0 auto; padding: 0 var(--s-12) var(--s-12);
+    font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: var(--app-text-muted);
+    max-width: 92ch; }
+  .rcpt__view { flex: 1 1 auto; min-height: 0; position: relative; margin: 0 var(--s-12);
+    border-radius: var(--r-lg); overflow: hidden; background: var(--app-surface-subtle);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+  .vchips { position: absolute; left: var(--s-8); bottom: var(--s-8); display: flex; gap: var(--s-4);
+    flex-wrap: wrap; z-index: 3; }
+  .vchip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px;
+    border-radius: var(--r-sm); background: rgba(10,12,16,.62); backdrop-filter: blur(8px);
+    color: rgba(255,255,255,.92);
+    font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; }
+  .vchip--redact { position: absolute; right: var(--s-8); top: var(--s-8); left: auto; bottom: auto; z-index: 3;
+    background: rgba(196,58,72,.78); }
+  .rcpt__scrub { flex: 0 0 auto; padding: var(--s-12) var(--s-12) 0; }
+  .scrub { position: relative; height: 6px; border-radius: 3px; background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+  .scrub__f { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent); }
+  .scrub .ev { position: absolute; top: -3px; bottom: -3px; width: 2px; border-radius: 1px;
+    background: light-dark(rgba(21,28,38,.5), rgba(255,255,255,.7)); }
+  .scrub .ev--hl { width: 3px; background: light-dark(#14141a, #ffffff);
+    box-shadow: 0 0 0 2px var(--app-accent), 0 0 0 4px var(--app-accent-glow); }
+  .scrub__head { position: absolute; top: -22px; transform: translateX(-50%); padding: 2px 6px;
+    border-radius: var(--r-sm); background: var(--app-surface-raised);
+    box-shadow: 0 1px 3px light-dark(rgba(21,28,38,.16), rgba(0,0,0,.5)), 0 0 0 var(--hairline) var(--app-border-strong);
+    font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong); white-space: nowrap; }
+  .scrub__caps { display: flex; margin-top: 5px;
+    font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle); }
+  .film { flex: 0 0 auto; display: flex; gap: var(--s-4); padding: var(--s-8) var(--s-12) 0; }
+  .film i { position: relative; flex: 1 1 0; aspect-ratio: 16/10; border-radius: var(--r-sm); overflow: hidden;
+    display: block; background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+  .film i.on { box-shadow: 0 0 0 1.5px var(--app-accent); }
+  .film i.cited::before { content: ""; position: absolute; left: 4px; top: 4px; width: 4px; height: 4px;
+    border-radius: 50%; background: var(--app-accent); z-index: 3; }
+  .rcpt__ctrl { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-8);
+    padding: var(--s-8) var(--s-12); }
+  .rcpt__tr { flex: 0 0 auto; max-height: 110px; overflow: hidden; padding: 0 var(--s-12) var(--s-8);
+    display: flex; flex-direction: column; gap: var(--s-4); }
+  .trn { display: flex; gap: var(--s-8); align-items: baseline; padding-left: var(--s-6); }
+  .trn.on { box-shadow: inset 2px 0 0 var(--spk); }
+  .trn__t { flex: 0 0 44px; font: var(--w-regular) var(--t-label)/1.5 var(--app-font-mono);
+    font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+  .trn__s { flex: 0 0 auto; font: var(--w-medium) var(--t-meta)/1.5 var(--app-font-sans); color: var(--spk); }
+  .trn__x { flex: 1 1 auto; font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: var(--app-text-muted); }
+  .trn.on .trn__x { color: var(--app-text-strong); }
+  .rcpt__ft { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-8);
+    padding: var(--s-8) var(--s-12); box-shadow: inset 0 1px 0 var(--app-border); }
+
+  /* the way in — a crop of the Overview tile that opens this */
+  .inset { width: 380px; border-radius: 10px; overflow: hidden; padding: var(--s-12);
+    background: var(--app-bg); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+  .states { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--s-16); }
+  .emptybox { display: flex; flex-direction: column; align-items: center; gap: var(--s-6);
+    padding: var(--s-20) var(--s-12); border-radius: var(--r-lg); text-align: center;
+    background: var(--app-surface); }
+  .emptybox .gl { font-size: 20px; color: var(--app-text-faint); line-height: 1; }
+  .tblwrap { max-width: 1120px; overflow-x: auto; }
+  .digest { margin: 0; font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read); color: var(--app-text); }
+  .digest b { font-weight: var(--w-medium); color: var(--app-text-strong); }
 </style>
 
 <div class="mast">
   <div class="mast__eyebrow">
     <span class="mast__dir">04 · Command Deck</span>
-    <span class="mast__pg">Page 07 — Components, specimen &amp; self-audit</span>
+    <span class="mast__pg">Page 08 — Journal (the day, and one receipt)</span>
   </div>
-  <h1>One keycap, six type roles, twelve controls.</h1>
-  <p>Everything the five app pages are built from, in every state, plus the type and spacing specimen and an
-    honest UI/UX audit of each page. The direction's one added primitive is the <b>keycap</b>; everything else
-    is the shared system rendered natively.</p>
+  <h1>The day is a river. Every card keeps its receipt, and the receipt is a transport.</h1>
+  <p>Look at: the <b>river is a keyboard list</b> — the same idiom as the settings rows on page 05, full-row
+    accent selection, ↑↓ to move, ⏎ to open the receipt. The <b>receipt is the one modal in the app</b>, and
+    because it is a transport it earns a real control row: ␣ plays, ←→ steps a frame, the scrub bar carries a
+    tick for every cited frame. The <b>deck re-labels itself</b> — “Journal · Mon, Aug 3” going in, and while
+    the receipt is open it swaps to the transport's own keys, which is how you know the modal owns the
+    keyboard. Journal is <b>not a third surface</b>: it opens from Overview's Today tile (⌃D) and <span
+    class="is-mono">esc</span> puts you back.</p>
 </div>
 
-<!-- ═══════════════ TYPE ═══════════════ -->
-<div class="sect"><div class="sect__k">Specimen 1</div><p class="sect__t">Type — six roles, three weights, no other sizes</p></div>
-<div class="cell">
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-label</span>
-    <span class="type-row__s"><span class="t-label">TODAY · MIC · 270 MB · ⌘⌥SPACE</span></span>
-    <span class="type-row__m t-meta">10 / 1.4 / +.02em / 510 / mono. Machine labels, column heads, keycaps, units, section eyebrows. Never a sentence.</span>
+<div class="sect" style="margin-top:0"><div class="sect__k">The way in</div>
+  <p class="sect__t">Overview's Today tile is the door — the digest you read is the journal's lede</p></div>
+<div class="rowfit">
+  <div class="inset jnl-scope">
+    <div class="tile tile--2" style="background:var(--app-surface)">
+      <div class="tile-h"><span class="t-label">Today</span><span class="more t-meta is-mono is-num">12 min ago</span><span class="kbd kbd--on">⌃D</span></div>
+      <p class="digest" style="font-size:var(--t-meta);line-height:1.5">Mostly a licensing day: the Polar webhook
+        fix landed after the launch sync, and the afternoon went to <b>answer_view.rs</b>.</p>
+      <div class="tile-row" style="margin-top:var(--s-6)"><span class="t-meta" style="color:var(--app-accent)">Open the journal</span><span class="kbd" style="margin-left:auto">⏎</span></div>
+    </div>
   </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-meta</span>
-    <span class="type-row__s"><span class="t-meta">38 min · 5 speakers · updated 14:40</span></span>
-    <span class="type-row__m t-meta">11 / 1.35 / +.01em / 400. Timestamps, counts, helper lines under a control, frame captions.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-ui</span>
-    <span class="type-row__s"><span class="t-ui">Start recording when Mnema launches</span></span>
-    <span class="type-row__m t-meta">13 / 1.25 / −.006em / 400. <b>The default.</b> Rows, buttons, menus, tabs, chips, labels. macOS Body.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-read</span>
-    <span class="type-row__s"><span class="t-read">The webhook verifier was the week's one real licensing change.</span></span>
-    <span class="type-row__m t-meta">14 / 1.55 / −.008em / 400. Prose only: answers, transcripts, empty-state body. Max 70ch.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-title</span>
-    <span class="type-row__s"><span class="t-title">Monday, August 3</span></span>
-    <span class="type-row__m t-meta">17 / 1.3 / −.016em / 590. Screen and section titles, dialog headings. One per region.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-display</span>
-    <span class="type-row__s"><span class="t-display is-mono is-num">13:07:24</span></span>
-    <span class="type-row__m t-meta">22 / 1.2 / −.02em / 590. <b>At most one per screen</b> — the readout clock (02), the hours hero (01), the empty-state lead (03C).</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">mono rule</span>
-    <span class="type-row__s"><span class="t-ui">Recording <span class="is-mono is-num">2:14:07</span> · <span class="is-mono is-num">270 MB</span> · <span class="is-mono">apple-vision</span></span></span>
-    <span class="type-row__m t-meta">Mono is the machine voice: times, sizes, counts, ids, engine names, keys. Sans is the product speaking. <span class="is-mono">tabular-nums</span> on every number that changes in place.</span>
+  <div style="max-width:52ch;padding-top:var(--s-8)">
+    <p class="t-meta" style="margin:0 0 8px">The main window still has exactly two surfaces — Timeline&nbsp;⌘1 and
+      Overview&nbsp;⌘2. Journal, Subjects and Context are <b>destinations</b>: the Overview tile carries the key
+      that opens them, the title bar grows one breadcrumb, and <span class="is-mono">esc</span> returns.</p>
+    <p class="t-meta" style="margin:0">The digest in the tile and the digest in the journal's lede are the
+      <b>same record</b> — one <span class="is-mono">UserContextDigest</span> per day range. Opening the journal
+      does not re-run the model; <span class="is-mono">↻ re-read</span> is the only thing that does.</p>
   </div>
 </div>
 
-<!-- ═══════════════ SPACING ═══════════════ -->
-<div class="sect"><div class="sect__k">Specimen 2</div><p class="sect__t">Spacing, control metrics, radii</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Spacing ramp — finer under 8, coarser above</span>
-    <div class="sp">
-      <span class="sp__i"><span class="sp__b" style="width:2px"></span><span class="t-label">2</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:4px"></span><span class="t-label">4</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:6px"></span><span class="t-label">6</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:8px"></span><span class="t-label">8</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:12px"></span><span class="t-label">12</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:16px"></span><span class="t-label">16</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:20px"></span><span class="t-label">20</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:24px"></span><span class="t-label">24</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:32px"></span><span class="t-label">32</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:40px"></span><span class="t-label">40</span></span>
-    </div>
-    <span class="t-meta">Named constants do the work: <span class="is-mono">gap-inline 6</span> (icon → label),
-      <span class="is-mono">gap-row 8</span>, <span class="is-mono">gap-group 16</span>,
-      <span class="is-mono">gap-section 24</span>, <span class="is-mono">pad-panel 16</span>.
-      One inset per surface, and the grid gutter equals it — the bento is 12/12, Quick Access is the
-      documented exception at 20 inset / 16 gutter so 3 × 349 divides the fixed 1120.</span>
+<p class="caption" style="margin-top:32px"><b>A · 1100 × 720</b> — the day. Lede is the day digest plus the four numbers that are actually
+  counted; the river below is banded <b>Morning / Afternoon / Evening</b> exactly as the model bands it.
+  Activities under five minutes collapse to a one-line row. The selected card is full-row accent — the same
+  selection idiom the settings rows use.</p>
+<div class="win win--1100 jnl-scope">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
+    <span class="chip on" style="margin-left:var(--s-8)"><svg style="width:11px;height:11px"><use href="#i-chevr"/></svg>Journal <span class="kbd">esc</span></span>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
   </div>
-  <div class="cell">
-    <span class="cell__k">Control heights — 28 is the default and the hit floor</span>
-    <div class="metric">
-      <span class="metric__i"><span class="metric__b" style="height:20px"></span><span class="t-label">20 badge</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:24px"></span><span class="t-label">24 sm</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:28px"></span><span class="t-label">28 md</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:32px"></span><span class="t-label">32 lg</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:38px"></span><span class="t-label">38 titlebar</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:44px"></span><span class="t-label">44 srow</span></span>
-    </div>
-    <span class="cell__k" style="margin-top:var(--s-8)">Radii — 4/6 controls · 8 panels · 12 floating · 10 window (drawn by macOS)</span>
-    <div class="rad">
-      <span class="rad__i"><span class="rad__b" style="border-radius:4px"></span><span class="t-label">4</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:6px"></span><span class="t-label">6</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:8px"></span><span class="t-label">8</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:12px"></span><span class="t-label">12</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:999px"></span><span class="t-label">pill</span></span>
-    </div>
-  </div>
-</div>
 
-<div class="cell" style="margin-top:var(--s-16)">
-  <span class="cell__k">Colour — one accent, semantics that never decorate, recording red is a state</span>
-  <div class="swatches">
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-bg)"></span><span class="t-label">bg</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface)"></span><span class="t-label">surface</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface-raised)"></span><span class="t-label">raised</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface-hover)"></span><span class="t-label">hover</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-accent)"></span><span class="t-label">accent</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-accent-bg)"></span><span class="t-label">accent bg</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-record)"></span><span class="t-label">record</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-danger)"></span><span class="t-label">danger</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-warn)"></span><span class="t-label">warn</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-screen)"></span><span class="t-label">screen</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-mic)"></span><span class="t-label">mic</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-sys)"></span><span class="t-label">sys</span></span>
-  </div>
-</div>
-
-<!-- ═══════════════ KEYCAP ═══════════════ -->
-<div class="sect"><div class="sect__k">The direction's primitive</div><p class="sect__t">The keycap — one style, five contexts, never decorative</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Sizes &amp; states</span>
-    <div class="wrap">
-      <span class="kbd">⏎</span><span class="kbd">⌘K</span><span class="kbd">⌘⌥Space</span>
-      <span class="kbd kbd--wide">Space</span><span class="kbd kbd--lg">⌘⌥Space</span>
-      <span class="kbd kbd--on">⌘⏎</span>
-    </div>
-    <span class="t-meta">10px mono, 17px tall, 1px inset edge + a 1px bottom shadow so it reads as a cap and
-      not a chip. <span class="is-mono">--kbd--on</span> is the accent variant used on a selected row.
-      A keycap is <b>never</b> used for anything that is not literally a key you can press.</span>
-  </div>
-  <div class="cell">
-    <span class="cell__k">In context</span>
-    <div class="wrap">
-      <span class="seg"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></span>
-      <span class="hint"><span class="kbd">⌥⏎</span><span>Copy text</span></span>
-      <span class="chip">Today <span class="kbd" style="background:transparent;box-shadow:none;min-width:0;padding:0">⌥T</span></span>
-      <span class="rec-field"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd kbd--wide">Space</span></span>
-    </div>
-    <span class="t-meta">Switcher, deck hint, scope chip, shortcut recorder. Inside a chip the cap loses its
-      bezel — two nested bezels is the box-in-box rule applied to controls.</span>
-  </div>
-</div>
-
-<!-- ═══════════════ CONTROLS ═══════════════ -->
-<div class="sect"><div class="sect__k">Components</div><p class="sect__t">Controls — every variant, every state</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Button — default · rest / hover / pressed / focus / disabled / busy</span>
-    <div class="cell__r">
-      <span class="btn">Rerun OCR</span>
-      <span class="btn is-hover">Rerun OCR</span>
-      <span class="btn is-active">Rerun OCR</span>
-      <span class="btn is-focus">Rerun OCR</span>
-      <span class="btn is-disabled">Rerun OCR</span>
-      <span class="btn"><span class="spin"></span>Rerunning</span>
-    </div>
-    <span class="cell__k">Primary · ghost · danger · small · icon</span>
-    <div class="cell__r">
-      <span class="btn btn--primary">Continue in Overview <span class="kbd" style="background:light-dark(rgba(255,255,255,.24),rgba(7,18,12,.22));color:inherit;box-shadow:none">⌘O</span></span>
-      <span class="btn btn--ghost">refresh</span>
-      <span class="btn btn--danger">Delete Recent…</span>
-      <span class="btn btn--sm">Test</span>
-      <span class="btn btn--icon btn--sm">⋯</span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">Segmented · chips · switch · popup · radio</span>
-    <div class="cell__r">
-      <span class="seg"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span>
-      <span class="chip on">All</span><span class="chip">Audio</span>
-      <span class="sw on"><i></i></span><span class="sw"><i></i></span>
-      <span class="pop">90 days <svg><use href="#i-chevud"/></svg></span>
-      <span class="radio on"></span><span class="radio"></span>
-    </div>
-    <span class="cell__k">Input · filter field · shortcut recorder (rest &amp; recording)</span>
-    <div class="cell__r">
-      <span class="input" style="width:170px"><svg><use href="#i-search"/></svg><span class="ph">Filter settings</span></span>
-      <span class="input" style="width:170px;box-shadow:var(--ring);border-color:var(--app-accent-border)"><svg><use href="#i-search"/></svg>audio<span class="caret"></span></span>
-      <span class="rec-field"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">P</span></span>
-      <span class="rec-field is-rec"><span class="t-meta is-mono" style="color:var(--app-accent)">Type shortcut…</span></span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">Custom inputs — cost slider · retention ladder · duty bar · coverage meter</span>
-    <div class="cell__r" style="align-items:flex-start;gap:var(--s-24)">
-      <span class="cost">
-        <span class="track"><span class="track__r"></span><span class="track__f" style="width:38%"></span><span class="track__k" style="left:38%"></span>
-          <span class="track__t" style="left:0"></span><span class="track__t" style="left:19%"></span><span class="track__t" style="left:38%"></span>
-          <span class="track__t" style="left:57%"></span><span class="track__t" style="left:76%"></span><span class="track__t" style="left:100%"></span></span>
-        <span class="costout"><b>2 fps</b><span>→ ≈ 1.4 GB / day</span></span>
-      </span>
-      <span class="ladder">
-        <span class="ladder__seg"><span>7d</span><span>30d</span><span class="on">90d</span><span>1y</span><span>∞</span></span>
-        <span class="ladder__bar"><i style="width:38%"></i><u style="left:38%"></u></span>
-        <span class="costout"><b>90 days</b><span>≈ 126 GB · 34.2 GB now</span></span>
-      </span>
-    </div>
-    <div class="cell__r" style="align-items:flex-start;gap:var(--s-24)">
-      <span class="duty">
-        <span class="duty__bar"><i class="duty__work" style="width:20%">20%</i><i class="duty__cool" style="width:80%">COOL 80%</i></span>
-        <span class="t-meta">12 s work / 48 s idle → fans stay off</span>
-      </span>
-      <span class="cost">
-        <span class="meter"><i style="width:41%"></i></span>
-        <span class="costout"><b>41%</b><span>508k of 1.24M frames</span></span>
-      </span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">Badges &amp; status</span>
-    <div class="cell__r">
-      <span class="badge">4.7 GB</span><span class="badge">Q4_K_M</span><span class="badge">CLOUD</span>
-      <span class="badge badge--ok">FITS — 4.7 OF 16 GB</span>
-      <span class="badge badge--warn">TIGHT — 3.0 GB PEAK</span>
-      <span class="badge badge--bad">TOO LARGE</span>
-    </div>
-    <span class="cell__k">Settings row — rest · keyboard-focused · saved echo</span>
-    <div class="grp">
-      <div class="srow"><span class="srow__txt"><span class="srow__l">Launch Mnema at login</span></span><span class="srow__v"><span class="sw on"><i></i></span></span></div>
-      <div class="srow is-key"><span class="srow__txt"><span class="srow__l">System audio</span><span class="srow__s">Being recorded for every app except the 2 you excluded</span></span><span class="srow__v"><span class="sw on"><i></i></span></span></div>
-      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone</span></span><span class="srow__v"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span><span class="pop">MacBook Pro Microphone <svg><use href="#i-chevud"/></svg></span></span></div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════ CHROME ═══════════════ -->
-<div class="sect"><div class="sect__k">Chrome</div><p class="sect__t">The state pill — nine states and the degradation ladder</p></div>
-<div class="grid2">
-  <div class="cell">
-    <div class="pillrow"><span class="pillrow__k t-meta">Idle — a pill needs a session</span><span class="btn btn--primary"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block"></span>Record <span class="kbd" style="background:light-dark(rgba(255,255,255,.24),rgba(7,18,12,.22));color:inherit;box-shadow:none">⌥⌘R</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Starting</span><span class="pill pill--quiet"><span class="spin" style="width:10px;height:10px"></span><span class="pill__w">Starting</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Recording — resting state</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Paused — manual</span><span class="pill pill--quiet"><i class="rdot" style="background:var(--app-text-subtle)"></i><span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Paused — inactivity</span><span class="pill pill--quiet"><i class="rdot" style="background:var(--app-text-subtle)"></i><span class="pill__w">Idle 12m</span></span></div>
-  </div>
-  <div class="cell">
-    <div class="pillrow"><span class="pillrow__k t-meta">Low disk — liveness, not error</span><span class="pill pill--warn"><i class="rdot" style="background:var(--app-warn)"></i><span class="pill__w">Low disk</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Display asleep — mic + sys keep going</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-info)">screen asleep</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Source degraded — tap rebuilding</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-warn)">mic lost</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Permission missing</span><span class="pill pill--warn"><i class="rdot" style="background:var(--app-warn)"></i><span class="pill__w">screen not allowed</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Ladder → cost, timer, glyph, dot</span>
-      <span class="wrap"><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span></span>
-      <span class="pill"><i class="rdot"></i><span class="pill__w">Rec</span></span>
-      <span class="pill"><i class="rdot"></i></span></span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">The deck — three configurations, always inside the window frame</span>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-clock"/></svg>Timeline · Mon, Aug 3 · 13:07:24</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">←</span><span class="kbd">→</span><span>frame</span></span><span class="hint"><span class="kbd">⌘⏎</span><span>Ask</span></span></span>
-    </div>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-spark"/></svg>Settings · General</span>
-      <span class="savestate" style="display:inline-flex;align-items:center;gap:5px;margin-left:var(--s-16);font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);color:var(--app-accent)"><svg style="width:12px;height:12px"><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">⌘Z</span><span>Undo</span></span></span>
-    </div>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-alert"/></svg>Settings · General</span>
-      <span style="display:inline-flex;align-items:center;gap:5px;margin-left:var(--s-16);font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);color:var(--app-danger)"><svg style="width:12px;height:12px"><use href="#i-alert"/></svg>1 change not saved — keychain locked</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">⌘S</span><span>Retry</span></span></span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">NSMenu · toast (error, never auto-dismissed) · toast (undo)</span>
-    <div class="cell__r" style="align-items:flex-start">
-      <span class="menu" style="min-width:190px">
-        <span class="menu__i is-hl" style="display:flex"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>Today<span class="menu__kbd">⌘T</span></span>
-        <span class="menu__i" style="display:flex"><span class="menu__ck"></span>Yesterday<span class="menu__sub">4h 12m</span></span>
-        <span class="menu__i is-off" style="display:flex"><span class="menu__ck"></span>Sat, Aug 1<span class="menu__sub" style="color:inherit">no recording</span></span>
-        <span class="menu__sep"></span>
-        <span class="menu__i" style="display:flex"><span class="menu__ck"></span>Jump to latest<span class="menu__kbd">⌥⌘→</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-8)">
-        <span class="toast" style="width:290px">
-          <span class="t-ui strong">Transcription failed</span>
-          <span class="t-meta">Deepgram returned 401 — the key in the vault was rejected. 3 segments are queued.</span>
-          <span style="display:flex;gap:var(--s-6);margin-top:var(--s-4)"><span class="btn btn--sm">Open Settings</span><span class="btn btn--sm btn--ghost">Dismiss</span></span>
-        </span>
-        <span class="toast" style="width:290px">
-          <span class="t-ui strong">Frame rate set to 4 fps</span>
-          <span class="t-meta">≈ 2.8 GB / day — double yesterday's pace.</span>
-          <span style="display:flex;gap:var(--s-6);margin-top:var(--s-4)"><span class="btn btn--sm">Undo <span class="kbd">⌘Z</span></span></span>
-        </span>
-      </span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">Quick Access rows — ask row (rest · selected) · list row · result cell selection</span>
-    <div style="background:var(--app-bg);border-radius:var(--r-md);padding:var(--s-8) 0">
-      <div class="askrow" style="margin:0 var(--s-8) var(--s-4)">
-        <span class="askrow__ic"><svg><use href="#i-spark"/></svg></span>
-        <span class="askrow__t"><span class="askrow__l">Ask AI — “webhook 400”</span><span class="askrow__s">Answer from 6 weeks, with citations</span></span>
-        <span class="askrow__k"><span class="kbd">⌘⏎</span></span>
+  <div class="jnl">
+    <div class="lede">
+      <div class="lede__main">
+        <div class="lede__hd">
+          <p class="t-title" style="margin:0">Monday, August 3</p>
+          <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">read written 12 min ago</span>
+          <span class="btn btn--ghost btn--sm" style="margin-left:var(--s-4)"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg>re-read</span>
+        </div>
+        <p class="lede__n"><b>Licensing took the morning and the editor took the afternoon.</b> The Polar
+          webhook verifier was the day's spine. One open thread: Tom wants delivery ids in the webhook log.</p>
       </div>
-      <div class="askrow is-sel" style="margin:0 var(--s-8) var(--s-4)">
-        <span class="askrow__ic"><svg><use href="#i-spark"/></svg></span>
-        <span class="askrow__t"><span class="askrow__l">Ask AI — “webhook 400”</span><span class="askrow__s">Answer from 6 weeks, with citations</span></span>
-        <span class="askrow__k"><span class="kbd">⏎</span></span>
+      <div class="stats">
+        <div class="stat"><b>6.4h</b><span class="t-label">tracked</span></div>
+        <div class="stat"><b>62%</b><span class="t-label">deep focus</span></div>
+        <div class="stat"><b>9</b><span class="t-label">activities</span></div>
+        <div class="stat"><b class="t-title" style="font-family:var(--app-font-sans);font-size:var(--t-title)">Creating</b><span class="t-label">top category</span></div>
       </div>
     </div>
-    <span class="t-meta">Selection is full-row accent fill — the native list idiom — and the row's key changes
-      with it (<span class="is-mono">⌘⏎</span> when it rests, <span class="is-mono">⏎</span> when it's selected),
-      because the deck must always be able to name what Return does.</span>
-  </div>
-  <div class="cell">
-    <span class="cell__k">Media — result cell (rest · selected) at 1/2 scale · citation pills</span>
-    <div class="cell__r" style="align-items:flex-start">
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="qcell__f" style="width:174px;height:98px">
-          <span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i>
-            <span class="code"><s class="ln"><s class="tk tk--cm w44"></s></s><s class="ln"><s class="tk tk--kw w10"></s><s class="tk tk--fn w22"></s></s><s class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--str w34"></s></s></span></span>
-          <span class="hitbox" style="left:34%;top:34%;width:24%;height:9%"></span>
-        </span>
-        <span class="qcell__l1" style="width:174px"><span class="qcell__app">VS Code</span><span class="qcell__ttl"><mark>webhook</mark>.rs</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="qcell__f" style="width:174px;height:98px;box-shadow:0 0 0 2px var(--app-accent)">
-          <span class="shot shot--wave"><i style="height:30%"></i><i class="hi" style="height:72%"></i><i style="height:48%"></i><i class="hi" style="height:88%"></i><i style="height:40%"></i><i class="sy" style="height:64%"></i><i style="height:34%"></i><i class="hi" style="height:56%"></i><i style="height:44%"></i><i style="height:62%"></i></span>
-          <span class="qcell__dur">04:58</span>
-          <span class="qcell__aff"><span class="kbd">⏎</span></span>
-        </span>
-        <span class="qcell__l1" style="width:174px"><span class="qcell__app">Mic</span><span class="qcell__ttl">Launch sync</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="srcpill" style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 var(--s-6);border-radius:var(--r-sm);background:var(--app-surface-hover);font:var(--w-regular) var(--t-meta)/1 var(--app-font-sans);color:var(--app-text-muted)">
-          <i style="width:20px;height:13px;border-radius:2px;overflow:hidden;position:relative;display:block"><span class="shot shot--chat"><span class="rail"><i class="on"></i><i></i></span><span class="chans"><i class="w70"></i><i class="w52 on"></i></span></span></i>this screen · 15:41:02</span>
-        <span class="cite"><i><span class="shot shot--wave"><i style="height:30%"></i><i class="hi" style="height:70%"></i><i style="height:45%"></i><i class="hi" style="height:85%"></i></span></i>13:02</span>
-      </span>
+
+    <div class="river">
+      <div class="band-h"><span class="t-label">Morning</span><span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">4 activities · 3h 12m</span></div>
+
+      <div class="jrow" style="--cat:var(--cat-research)">
+        <span class="jrow__t"><span class="big">9:42 AM</span><span>49m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard">
+          <div class="jcard__h"><span class="jchip"><i></i>Research</span><span class="jfocus f-deep"><i></i>Deep</span></div>
+          <div class="jcard__ttl">Reading Polar's webhook signature docs</div>
+          <div class="jcard__sum">Worked the signature scheme end to end and landed on the raw
+            <b class="med">whsec_</b> string being the HMAC key.</div>
+          <div class="jcard__ft">▸ 902 frames · receipt</div>
+        </div>
+      </div>
+
+      <div class="jrow jrow--sm" style="--cat:var(--cat-organizing)">
+        <span class="jrow__t"><span class="big">10:33 AM</span><span>4m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard"><span class="jcard__ttl">Triaging the licensing issues board</span></div>
+      </div>
+
+      <div class="jgap"><span class="jgap__x">10:37 AM – 10:52 AM · away — no capture</span></div>
+
+      <div class="jrow is-key" style="--cat:var(--cat-meetings)">
+        <span class="jrow__t"><span class="big">10:52 AM</span><span>38m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard">
+          <div class="jcard__h"><span class="jchip"><i></i>Meetings</span><span class="jfocus f-mid"><i></i>Mixed</span>
+            <span class="kbd" style="margin-left:auto">⏎</span></div>
+          <div class="jcard__ttl">Launch sync — the webhook is still 400-ing</div>
+          <div class="jcard__sum">Five people. Priya walked the failing deliveries, you took the fix, Tom asked for delivery ids.</div>
+          <div class="jcard__ft">▸ 704 frames · receipt <span class="kbd">⏎</span></div>
+        </div>
+      </div>
+
+      <div class="jrow" style="--cat:var(--cat-creating)">
+        <span class="jrow__t"><span class="big">11:34 AM</span><span>1h 06m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard">
+          <div class="jcard__h"><span class="jchip"><i></i>Creating</span><span class="jfocus f-deep"><i></i>Deep</span></div>
+          <div class="jcard__ttl">Patching the webhook verifier</div>
+          <div class="jcard__sum">Rewrote the HMAC path to sign the raw secret, then reran the fixture.</div>
+          <div class="jcard__ft">▸ 1,188 frames · receipt</div>
+        </div>
+      </div>
+
+      <div class="band-h" style="margin-top:var(--s-8)"><span class="t-label">Afternoon</span><span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">5 activities · 3h 10m</span></div>
+
+      <div class="jrow" style="--cat:var(--cat-creating)">
+        <span class="jrow__t"><span class="big">2:18 PM</span><span>52m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard">
+          <div class="jcard__h"><span class="jchip"><i></i>Creating</span><span class="jfocus f-scat"><i></i>Scattered</span></div>
+          <div class="jcard__ttl">answer_view.rs — block parsing</div>
+          <div class="jcard__ft" style="color:var(--app-text-subtle)">footage expired</div>
+        </div>
+      </div>
+
+      <div class="jrow jrow--sm" style="--cat:var(--cat-none)">
+        <span class="jrow__t"><span class="big">3:11 PM</span><span>2m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard"><span class="jcard__ttl" style="color:var(--app-text-muted)">Uncategorized</span><span class="t-meta" style="color:var(--app-text-subtle)">— a short window the model could not place</span></div>
+      </div>
+
+      <div class="jpend">
+        <div class="jpend__b">
+          <div style="display:flex;align-items:center;gap:var(--gap-inline)">
+            <span class="dotpulse"></span><span class="t-ui strong">Summarizing this window…</span>
+            <span class="t-meta is-mono" style="margin-left:auto;color:var(--app-text-subtle)">now</span>
+          </div>
+          <span class="t-meta">The journal trails live capture by up to 30 minutes — the footage itself is
+            already on the Timeline.</span>
+        </div>
+      </div>
     </div>
   </div>
+
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-book"/></svg>Journal · Monday, August 3 · 9 activities</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+      <span class="hint"><span class="kbd">⏎</span><span>Open receipt</span></span>
+      <span class="hint"><span class="kbd">⌘⌥Space</span><span>Quick Access</span></span>
+      <span class="deck__sep"></span>
+      <span class="hint"><span class="kbd">esc</span><span>Back to Overview</span></span>
+    </span>
+  </div>
 </div>
 
-<!-- ═══════════════ AUDIT ═══════════════ -->
-<div class="sect"><div class="sect__k">Self-audit</div><p class="sect__t">Every page against the pattern rules — and where it bends them</p></div>
-<div class="tblwrap">
-  <table class="tbl">
-    <thead>
-      <tr>
-        <th style="width:132px">Page</th>
-        <th>Hierarchy — one thing wins</th>
-        <th>Spacing grid</th>
-        <th>Colour &amp; contrast</th>
-        <th>States designed</th>
-        <th>Native bar</th>
-        <th style="width:112px">Bordered<br>containers</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><b>01 Overview</b></td>
-        <td>The <span class="is-mono">6:42</span> hours hero is the only <span class="is-mono">--t-display</span>; the moments strip is the only full-bleed media. Tile headers are all one label size, so nothing competes.</td>
-        <td>12px inset = 12px gutter. Four tile footprints (4/2/1 wide), four fixed rows.</td>
-        <td>Accent appears 4× (today's bar, conviction dots, hero week bar, ask key). App icons keep true colour — identity, not decoration.</td>
-        <td>Recording · idle · empty tile (redacted line) · hover row · 800×600 drop order.</td>
-        <td>38px title bar, 28px rows, 13px default, overlay scrollbar, tabular-nums on every count.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>02 Timeline</b></td>
-        <td><span class="is-mono">13:07:24</span> readout is the display type; the stage owns 64% of the height; the pill sits on the playhead so position beats everything else in the rail.</td>
-        <td>12px window inset; rail 52 / lane 28 / readout 26 / pill band 26 — the shipping fixed heights.</td>
-        <td>Record red is reserved for the playhead + selected segment. Mic/sys keep their source hues. Menu disabled row is 45% — legible, clearly dead.</td>
-        <td>Drawer open · jump menu open · hover ghost + bubble · disabled day · zoom levels · playing.</td>
-        <td>Real NSMenu anatomy (24px rows, checkmark gutter, right key column), AppKit segmented, material popover.</td>
-        <td class="n ok">3</td>
-      </tr>
-      <tr>
-        <td><b>03 Search</b></td>
-        <td>The grid is the content; chrome is 88px of it. Ask row is the only accent-capable row above the fold.</td>
-        <td>20px inset / 16px gutter — the documented fixed-window exemption so 3 × 349 divides 1120 exactly.</td>
-        <td>Match highlight is accent at 16% + accent text; selection is a 2px accent ring on the image, never a tint over the frame.</td>
-        <td>Results · empty · no-match · selected cell · scope on/off · ask row rest/selected/promoted.</td>
-        <td>Full-row accent selection, no underlines; overlay scrollbar; captions in native two-line list style.</td>
-        <td class="n ok">1</td>
-      </tr>
-      <tr>
-        <td><b>04 Ask + frame</b></td>
-        <td>One reading column at 66ch; the rail is 280px and never competes. On the overlay, the answer panel is the only thing with real weight.</td>
-        <td>20/24 inside the window; the HUD is a 640px column with 14px panel padding — a floating thing, so it gets its own inset.</td>
-        <td>Accent-bg header band + accent underline is the whole mode signal — no second hue introduced. Green outline on the display is the accent again.</td>
-        <td>Streaming · stopped · frame attached · not-yet-sent · answering · dismissed answer · follow-up.</td>
-        <td>Material blur on the HUD only (macOS uses material for floating chrome), opaque content elsewhere.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>05 Settings</b></td>
-        <td>Sticky section title is the only <span class="is-mono">--t-title</span> on screen at a time; the focused row wins by accent fill.</td>
-        <td>660px column, 44px rows, 24px between sections, 16px inside a group.</td>
-        <td>Accent = selection + saved state. Danger only on the conflict line. No colour used to group.</td>
-        <td>Rest · keyboard-focused · saved echo · recording a shortcut · conflict · filtered · unsaved failure.</td>
-        <td>System-Settings grouped fills, AppKit switch/popup/segmented, 28px controls in 44px rows.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>06 Intelligence</b></td>
-        <td>Verdict chips are the loudest thing in a model row — the control's real output, not its name.</td>
-        <td>Same 660px column; instruments are 260–300px so every consequence line fits on one line.</td>
-        <td>Green/amber/red verdicts are the one semantic triple; they never appear anywhere decorative.</td>
-        <td>Key works · reachable · downloaded · download · disabled (too large) · cloud consent needed.</td>
-        <td>Radio group is a real radio list, not cards; popup buttons for enums; no web-shaped toggles.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>07 This page</b></td>
-        <td>Documentation, not app chrome: spec cells are allowed to nest a demo group inside a cell.</td>
-        <td>16px between cells, 16px inside; two-column grid.</td>
-        <td>Swatches are the only place raw tokens are shown as colour.</td>
-        <td>Every control state on the sheet is a state used by pages 01–06 — nothing invented for the sheet.</td>
-        <td>n/a — no window is rendered here.</td>
-        <td class="n">n/a</td>
-      </tr>
-    </tbody>
-  </table>
+<p class="caption" style="margin-top:32px"><b>B · 1100 × 720</b> — the receipt, open on the 10:52 launch sync. It is a transport, not a
+  dialog: the scrub bar carries a tick per cited frame with the <b>headline frame glowing</b>, the filmstrip
+  marks cited cells, and the counter reads the real one — <span class="is-mono">frame 128 / 704</span>. The
+  <b>deck has handed the keyboard over</b>: while the receipt is open it lists ␣ / ←→ / esc and nothing else.</p>
+<div class="win win--1100 jnl-scope">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
+    <span class="chip on" style="margin-left:var(--s-8)"><svg style="width:11px;height:11px"><use href="#i-chevr"/></svg>Journal <span class="kbd">esc</span></span>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+
+  <div class="jnl" style="position:relative">
+    <div class="lede" style="opacity:.5">
+      <div class="lede__main">
+        <div class="lede__hd"><p class="t-title" style="margin:0">Monday, August 3</p>
+          <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">read written 12 min ago</span></div>
+        <p class="lede__n"><b>Licensing took the morning and the editor took the afternoon.</b> The Polar webhook
+          verifier was the day's spine — read the docs, sat the launch sync, patched the raw-secret HMAC.</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><b>6.4h</b><span class="t-label">tracked</span></div>
+        <div class="stat"><b>62%</b><span class="t-label">deep focus</span></div>
+        <div class="stat"><b>9</b><span class="t-label">activities</span></div>
+      </div>
+    </div>
+    <div class="river" style="opacity:.5">
+      <div class="jrow" style="--cat:var(--cat-research)">
+        <span class="jrow__t"><span class="big">9:42 AM</span><span>49m</span></span>
+        <span class="jrow__n"><i></i><u></u></span>
+        <div class="jcard">
+          <div class="jcard__h"><span class="jchip"><i></i>Research</span><span class="jfocus f-deep"><i></i>Deep</span></div>
+          <div class="jcard__ttl">Reading Polar's webhook signature docs</div>
+          <div class="jcard__ft">▸ 902 frames · receipt</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="scrim"></div>
+    <div class="rcpt">
+      <div class="rcpt__h">
+        <span class="jchip" style="--cat:var(--cat-meetings)"><i></i>Meetings</span>
+        <span class="t-title" style="font-size:var(--t-ui);font-weight:var(--w-semi)">Launch sync — the webhook is still 400-ing</span>
+        <span class="t-meta is-mono is-num">10:52 AM – 11:30 AM · 38m</span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:var(--s-8)">
+          <span class="hint"><span class="kbd">esc</span><span>close</span></span>
+          <span class="btn btn--icon btn--sm"><svg style="width:11px;height:11px"><use href="#i-x"/></svg></span>
+        </span>
+      </div>
+      <p class="rcpt__sum">Five people. Priya walked through the failing deliveries, you took the fix, Tom asked
+        for delivery ids in the log. Ended with the rerun agreed for the afternoon.</p>
+
+      <div class="rcpt__view">
+        <span class="shot shot--docs">
+          <span class="nav"><i class="w88"></i><i class="w60 on"></i><i class="w76"></i><i class="w52"></i><i class="w70"></i><i class="w44"></i><i class="w64"></i><i class="w56"></i></span>
+          <span class="pg"><i class="h"></i>
+            <s class="ln"><s class="tk tk--pi w94"></s></s><s class="ln"><s class="tk tk--pi w88"></s></s>
+            <s class="ln"><s class="tk tk--pi w76"></s></s><s class="ln"><s class="tk tk--pi w94"></s></s>
+            <s class="ln"><s class="tk tk--pi w82"></s></s><s class="ln"><s class="tk tk--pi w56"></s></s>
+            <s class="ln"><s class="tk tk--pi w90"></s></s><s class="ln"><s class="tk tk--pi w68"></s></s>
+            <s class="ln"><s class="tk tk--pi w84"></s></s><s class="ln"><s class="tk tk--pi w48"></s></s>
+          </span>
+          <span class="cmt"><i></i><i></i><i></i></span>
+        </span>
+        <span class="vchips">
+          <span class="vchip">Zoom</span>
+          <span class="vchip">Polar webhook signatures — docs (Priya sharing)</span>
+          <span class="vchip">11:14:03 AM</span>
+          <span class="vchip">OCR</span>
+        </span>
+        <span class="vchip vchip--redact">3 redactions</span>
+      </div>
+
+      <div class="rcpt__scrub">
+        <div class="scrub">
+          <span class="scrub__f" style="width:58%"></span>
+          <span class="ev" style="left:9%"></span><span class="ev" style="left:21%"></span>
+          <span class="ev ev--hl" style="left:34%"></span><span class="ev" style="left:47%"></span>
+          <span class="ev" style="left:58%"></span><span class="ev" style="left:71%"></span>
+          <span class="ev" style="left:88%"></span>
+          <span class="scrub__head" style="left:58%">11:14 AM</span>
+        </div>
+        <div class="scrub__caps"><span>10:52 AM</span><span style="margin-left:auto">11:30 AM</span></div>
+      </div>
+
+      <div class="film">
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span></span></i>
+        <i class="cited"><span class="shot shot--docs"><span class="nav"><i class="w88"></i><i class="w60 on"></i><i class="w76"></i></span><span class="pg"><i class="h"></i><s class="ln"><s class="tk tk--pi w94"></s></s><s class="ln"><s class="tk tk--pi w76"></s></s></span></span></i>
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t on"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span></span></i>
+        <i class="cited"><span class="shot shot--browser"><i class="bar"></i><i class="url"></i><i class="pg"></i><span class="art"><i class="h"></i><s class="ln"><s class="tk tk--pi w88"></s></s></span></span></i>
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t"><i></i></span><span class="t on"><i></i></span><span class="t"><i></i></span></span></span></i>
+        <i class="on cited"><span class="shot shot--call"><span class="ctiles"><span class="t on"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span><span class="ctrl"><i></i><i class="r"></i></span></span></i>
+        <i><span class="shot shot--editor"><i class="act"></i><i class="side"></i><span class="code" style="left:32%;right:6%;top:14%;bottom:12%"><s class="ln"><s class="tk tk--kw w14"></s><s class="tk tk--fn w30"></s></s><s class="ln"><s class="tk tk--str w44"></s></s></span></span></i>
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t"><i></i></span><span class="t"><i></i></span><span class="t on"><i></i></span></span></span></i>
+        <i class="cited"><span class="shot shot--chat"><span class="rail"><i class="on"></i><i></i></span><span class="chans"><i class="w70"></i><i class="w52 on"></i><i class="w64"></i></span></span></i>
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t"><i></i></span><span class="t"><i></i></span><span class="t"><i></i></span></span></span></i>
+        <i><span class="shot shot--terminal"><span class="code" style="left:8%;right:8%;top:12%;bottom:12%"><s class="ln"><s class="tk tk--g w8"></s><s class="tk tk--t w40"></s></s><s class="ln"><s class="tk tk--r w52"></s></s></span></span></i>
+        <i><span class="shot shot--call"><span class="ctiles"><span class="t"><i></i></span><span class="t on"><i></i></span><span class="t"><i></i></span></span></span></i>
+      </div>
+
+      <div class="rcpt__ctrl">
+        <span class="btn btn--icon btn--sm"><svg><use href="#i-pause"/></svg></span>
+        <span class="hint"><span class="kbd">␣</span></span>
+        <div class="seg" style="margin-left:var(--s-4)">
+          <span class="seg__i on">1×</span><span class="seg__i">2×</span><span class="seg__i">8×</span><span class="seg__i">16×</span>
+        </div>
+        <span class="t-meta is-mono is-num" style="margin-left:var(--s-8);color:var(--app-text-muted)">frame 128 / 704 · 11:14:03 AM</span>
+        <span class="hint" style="margin-left:auto"><span class="kbd">←</span><span class="kbd">→</span><span>step frame</span></span>
+        <span class="btn btn--sm">Open in Timeline <svg style="width:11px;height:11px"><use href="#i-chevr"/></svg></span>
+      </div>
+
+      <div class="rcpt__tr">
+        <div class="trn" style="--spk:var(--app-src-mic)">
+          <span class="trn__t">11:12</span><span class="trn__s">Priya</span>
+          <span class="trn__x">The Stripe webhook is still 400-ing on the raw secret — Polar signs on the whole whsec_ string, not the decoded key.</span>
+        </div>
+        <div class="trn on" style="--spk:var(--app-info)">
+          <span class="trn__t">11:14</span><span class="trn__s">You</span>
+          <span class="trn__x">Right, so we HMAC the raw string. I'll patch the verifier after this call and rerun the fixture.</span>
+        </div>
+        <div class="trn" style="--spk:var(--app-warn)">
+          <span class="trn__t">11:16</span><span class="trn__s">Tom</span>
+          <span class="trn__x">Can we also log the delivery id? Debugging blind deliveries last week was painful.</span>
+        </div>
+      </div>
+
+      <div class="rcpt__ft">
+        <span class="t-meta is-mono is-num">704 frames across 4 capture segments</span>
+        <span class="deck__sep"></span>
+        <span class="t-meta is-mono is-num">7 frames + 2 spoken segments cited</span>
+        <span class="t-meta" style="margin-left:auto;color:var(--app-text-subtle)">Priya · You · Tom · Speaker 4 (unnamed → name in Timeline)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-frame"/></svg>Receipt · Launch sync · 10:52 AM</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">␣</span><span>Play</span></span>
+      <span class="hint"><span class="kbd">←</span><span class="kbd">→</span><span>Step frame</span></span>
+      <span class="deck__sep"></span>
+      <span class="hint"><span class="kbd">esc</span><span>Close receipt</span></span>
+    </span>
+  </div>
 </div>
 
-<div class="sect"><div class="sect__k">Deviations</div><p class="sect__t">Where this direction bends a rule, on purpose</p></div>
+<div class="sect"><div class="sect__k">The other three viewports</div>
+  <p class="sect__t">What the receipt shows when there are no pixels, and what the river shows when there is no day</p></div>
+<div class="states jnl-scope">
+  <div class="emptybox">
+    <span class="gl">◇</span>
+    <span class="t-ui strong">Footage expired</span>
+    <span class="t-meta">The raw frames behind this card were removed by Retention Cleanup. The card, its summary,
+      and its evidence list are kept — only the pixels age out.</span>
+    <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">0 frames still on disk · summary retained</span>
+  </div>
+  <div class="emptybox">
+    <span class="gl">◇</span>
+    <span class="t-ui strong">Nothing captured on Tue, Aug 5</span>
+    <span class="t-meta">There's no capture on this day, so there's no journal to show.</span>
+    <span class="hint" style="margin-top:var(--s-4)"><span class="kbd">⌘1</span><span>Timeline</span></span>
+  </div>
+  <div class="emptybox">
+    <span class="gl">◇</span>
+    <span class="t-ui strong">Your day is being written</span>
+    <span class="t-meta">Capture is landing. The first journal card appears once the first half-hour window has
+      been summarized.</span>
+    <span class="t-meta is-mono" style="color:var(--app-text-subtle)">summaries paused — no default model is chosen</span>
+  </div>
+</div>
+
+<div class="sect"><div class="sect__k">Honesty notes</div>
+  <p class="sect__t">What is drawn here because the backend really serves it</p></div>
 <div class="tblwrap">
   <table class="tbl">
-    <thead><tr><th style="width:230px">Rule</th><th>What this direction does</th><th style="width:300px">Why it is defensible</th></tr></thead>
+    <thead><tr><th style="width:240px">Drawn</th><th>Where the fact comes from</th></tr></thead>
     <tbody>
-      <tr>
-        <td><b>“Six type sizes exist”</b></td>
-        <td>The <b>masthead</b> outside every app window uses 26px for its headline.</td>
-        <td>The masthead is presentation furniture for reviewing the mockups; nothing inside a rendered window
-          leaves the six roles.</td>
-      </tr>
-      <tr>
-        <td><b>Quick Access is 1120×720 with Search and Ask inside</b></td>
-        <td>Held. But <b>“ask about this screen”</b> renders as a 640px floating bar over the desktop instead of
-          the window.</td>
-        <td>It is the same Quick Access window collapsing, not a new window: the same process, the same
-          conversation, and ⌘O restores it to full size. The feature's whole point is that the window gets out
-          of the way.</td>
-      </tr>
-      <tr>
-        <td><b>Search and Ask both live in Quick Access</b></td>
-        <td>Held, but there is <b>no segmented control</b> — Ask is the top-ranked row and taking it retitles the
-          surface.</td>
-        <td>The founder asked for them to be clearly different. A segment makes them look like two tabs of one
-          thing; a ranked row plus a full surface transform makes them two different answers to two different
-          questions.</td>
-      </tr>
-      <tr>
-        <td><b>Settings sidebar</b></td>
-        <td>Removed entirely — five horizontal tabs, one scroll, ⌘F filter.</td>
-        <td>The founder called the rail “a bit weird”. Raycast ships exactly this shape natively
-          (NSToolbar tabs, no rail) and it removes the “which bucket is this in?” problem instead of
-          re-decorating it.</td>
-      </tr>
-      <tr>
-        <td><b>Context attachment should be one muted label, no thumbnail</b></td>
-        <td>A <b>42 × 26</b> thumb sits beside the label in the HUD.</td>
-        <td>The rule targets hero thumbnails that cost the panel's width. At 42px it costs 6% of the bar and
-          answers “which screen?” on a multi-display Mac, which a text label cannot.</td>
-      </tr>
-      <tr>
-        <td><b>~12 bordered containers per window</b></td>
-        <td>Every page lands at 1–3.</td>
-        <td>Depth is carried by surface steps and the two chrome bars; the only true borders are the window
-          itself, floating things (menu, drawer, HUD) and media frames.</td>
-      </tr>
-      <tr>
-        <td><b>Every rendered surface is one of the two documented window sizes</b></td>
-        <td>Held on 08–10. <b>Page 11 draws each settings tab at its natural height</b> — the whole scroll
-          unrolled inside real chrome.</td>
-        <td>Page 11 is a census of all 96 rows; a 720px viewport would hide most of it below a fold and make
-          the completeness claim unverifiable. Pages 05 and 06 already show the real viewport at both sizes.</td>
-      </tr>
-      <tr>
-        <td><b>The mockup shows what the app shows</b></td>
-        <td><b>Page 09 refuses four shipping behaviours</b>: the category dot (always resolves to the accent),
-          <span class="is-mono">0.82</span> on the row against <span class="is-mono">82%</span> one click
-          deeper, the index-spaced sparkline, and the silent five-chip evidence cap.</td>
-        <td>G8 is about invented facts, and a mark that always says the same thing is an invented fact in
-          colour. The sparkline fix costs nothing — snapshot timestamps are already on the wire.</td>
-      </tr>
-      <tr>
-        <td><b>Draw the surface as built</b></td>
-        <td><b>Page 10 does not draw the “Steering your dossier” rail</b>, and it corrects page 01's Context
-          tile from “142 facts about you”.</td>
-        <td>The rail stages the three highest-confidence conclusions beside your writing and labels the
-          relationship <span class="is-mono">supports</span>; no such link is stored. And there is no
-          <i>fact</i> entity anywhere — the real counts are Activities, Conclusions, Subjects and standing
-          statements.</td>
-      </tr>
-      <tr>
-        <td><b>No modal windows</b></td>
-        <td>The journal <b>receipt</b> (08) and the <b>wipe sheet</b> (10) are modal.</td>
-        <td>Both take the keyboard whole — the receipt is a transport (␣, ←→, esc) and the wipe sheet is a
-          destructive confirmation. The deck says so: while either is open it swaps to that surface's keys and
-          nothing else, which is how the modal announces it owns input.</td>
-      </tr>
+      <tr><td><b>Deep / Mixed / Scattered</b></td><td>A three-value enum on <span class="is-mono">Activity.focus</span>, nullable. There is <b>no focus score</b>, so nothing here shows a focus percentage per card — only the day's <span class="is-mono">62%</span>, which is the share of categorised activities that came back <span class="is-mono">deep</span>.</td></tr>
+      <tr><td><b>The eight category chips</b></td><td>The whole taxonomy: creating, communication, meetings, research, learning, organizing, personal, entertainment — plus the literal <b>Uncategorized</b> for a null.</td></tr>
+      <tr><td><b>▸ 902 frames · receipt</b></td><td>Counted per card by spanning the day's frame timestamps. <b>“footage expired”</b> is the same count at zero.</td></tr>
+      <tr><td><b>6.4h tracked · 9 activities · Creating</b></td><td>Summed from per-app active time, the card count and the argmax category. All four lede numbers are counted, none estimated.</td></tr>
+      <tr><td><b>704 frames across 4 capture segments</b></td><td>The frame count is real; the <b>segment count is a 90-second-gap heuristic</b> — frame summaries carry no segment id. Drawn because the app draws it, flagged because it is not a stored fact.</td></tr>
+      <tr><td><b>1× 2× 8× 16×</b></td><td>The real speed picker. It advances N source frames per second — 1× is the audio-clocked pass, the rest are frame-stepping rates.</td></tr>
+      <tr><td><b>No OCR excerpt</b></td><td>The viewer chip <span class="is-mono">OCR</span> is a presence flag; the app never renders recognised text in the receipt, so neither does this page.</td></tr>
+      <tr><td><b>No speaker lane</b></td><td>A speaker-turn lane is named in the code's comments but has never existed as UI. Only the transcript reader is drawn.</td></tr>
     </tbody>
   </table>
 </div>

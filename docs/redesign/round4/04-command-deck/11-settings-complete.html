@@ -1,0 +1,1742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Command Deck · 11 Settings, complete</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════════════
+   Mnema — round 4, direction 04 "Command Deck"
+   Core system. Tokens are docs/redesign/system.css verbatim in value, with
+   light/dark carried by light-dark() so BOTH prefers-color-scheme and the
+   [data-theme] override drive the same one token block.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-font-smoothing: antialiased; }
+
+:root {
+  color-scheme: light dark;
+
+  --app-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --app-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+
+  /* ── surfaces ─────────────────────────────────────────────────────────── */
+  --app-bg:             light-dark(#f6f6f4, #0c0c0e);
+  --app-surface:        light-dark(#ffffff, #17171f);
+  --app-surface-subtle: light-dark(#f6f6f4, #1c1c26);
+  --app-surface-raised: light-dark(#fbfbfa, #22222e);
+  --app-surface-hover:  light-dark(#eeeeec, #2e2e40);
+  --app-surface-active: light-dark(#e8f1ea, #282836);
+
+  /* ── text ─────────────────────────────────────────────────────────────── */
+  --app-text-strong: light-dark(#14141a, #e2e2e8);
+  --app-text:        light-dark(#2a2a32, #c0c0d0);
+  --app-text-muted:  light-dark(#5a5a6a, #9696ae);
+  --app-text-subtle: light-dark(#5e5e6a, #7e7e98);
+  --app-text-faint:  light-dark(#9a9aa4, #33334a);
+
+  /* ── borders ──────────────────────────────────────────────────────────── */
+  --app-border:        light-dark(#d8d8d4, #1e1e2e);
+  --app-border-strong: light-dark(#c4c4c0, #2a2a3a);
+  --app-border-hover:  light-dark(#a4a4a0, #3a3a5a);
+
+  /* ── one accent ───────────────────────────────────────────────────────── */
+  --app-accent:          light-dark(#1f7a4a, #3dffa0);
+  --app-accent-strong:   light-dark(#155a36, #2a8a60);
+  --app-accent-bg:       light-dark(#e6f4ec, #0d1f15);
+  --app-accent-border:   light-dark(#9bd3b4, #1a4a30);
+  --app-accent-contrast: light-dark(#ffffff, #07120c);
+  --app-accent-glow:     light-dark(rgba(31,122,74,.16), rgba(61,255,160,.18));
+
+  /* ── semantic ─────────────────────────────────────────────────────────── */
+  --app-danger:        light-dark(#c43a48, #ff6b7a);
+  --app-danger-bg:     light-dark(#fff0f2, #2e0f14);
+  --app-danger-border: light-dark(#e4b6be, #4a1a20);
+  --app-warn:          light-dark(#9a5a12, #d6a14a);
+  --app-warn-bg:       light-dark(#fff1df, #1a1208);
+  --app-warn-border:   light-dark(#dfbc8a, #7a4a18);
+  --app-info:          light-dark(#2b78c5, #60b0ff);
+  --app-info-bg:       light-dark(#eef5ff, #0c1a2e);
+  --app-info-border:   light-dark(#bdd3ef, #1a3050);
+
+  /* recording red is a STATE, never an error */
+  --app-record:        light-dark(#d62236, #ff3148);
+  --app-record-bg:     light-dark(#ffffff, #1a0f12);
+  --app-record-border: light-dark(#ecbcc2, #3a1820);
+
+  /* capture sources */
+  --app-src-screen: light-dark(#6f5ed1, #c0b0ff);
+  --app-src-mic:    light-dark(#2f8e59, #80d0a8);
+  --app-src-sys:    light-dark(#8b7a2c, #b0c080);
+  --app-src-screen-bg: light-dark(#f1edff, #1a1a3a);
+  --app-src-mic-bg:    light-dark(#e8f5ec, #0f2e1f);
+  --app-src-sys-bg:    light-dark(#faf4df, #2a2010);
+
+  /* ── type ramp — six roles, three weights ─────────────────────────────── */
+  --t-label: 10px;   --lh-label: 1.4;   --ls-label: .02em;
+  --t-meta: 11px;    --lh-meta: 1.35;   --ls-meta: .01em;
+  --t-ui: 13px;      --lh-ui: 1.25;     --ls-ui: -.006em;
+  --t-read: 14px;    --lh-read: 1.55;   --ls-read: -.008em;
+  --t-title: 17px;   --lh-title: 1.3;   --ls-title: -.016em;
+  --t-display: 22px; --lh-display: 1.2; --ls-display: -.02em;
+  --w-regular: 400; --w-medium: 510; --w-semi: 590;
+
+  /* ── spacing ──────────────────────────────────────────────────────────── */
+  --s-1:1px; --s-2:2px; --s-3:3px; --s-4:4px; --s-6:6px; --s-8:8px;
+  --s-12:12px; --s-16:16px; --s-20:20px; --s-24:24px; --s-32:32px; --s-40:40px;
+  --gap-inline: var(--s-6);
+  --gap-label: var(--s-4);
+  --gap-row: var(--s-8);
+  --gap-group: var(--s-16);
+  --gap-section: var(--s-24);
+  --pad-window: var(--s-16);
+  --pad-control: var(--s-8);
+  --pad-panel: var(--s-16);
+
+  /* ── control metrics ──────────────────────────────────────────────────── */
+  --h-sm: 24px; --h-md: 28px; --h-lg: 32px; --h-row: 28px; --h-titlebar: 38px;
+  --o-icon-sm: 14px; --o-icon: 20px; --o-icon-lg: 24px;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 999px;
+  --shadow-popover: light-dark(0 8px 24px rgba(21,28,38,.14), 0 8px 24px rgba(0,0,0,.32));
+  --shadow-modal:   light-dark(0 24px 64px rgba(21,28,38,.22), 0 24px 64px rgba(0,0,0,.48));
+  --shadow-window:  light-dark(0 18px 44px rgba(21,28,38,.16), 0 18px 54px rgba(0,0,0,.55));
+  --ring: 0 0 0 2px var(--app-accent-glow);
+  --opacity-disabled: .4;
+  --dur-quick: 100ms; --dur-regular: 250ms;
+  --ease: cubic-bezier(.4,0,.2,1);
+  --hairline: .5px;
+
+  /* ── direction-specific: the deck ─────────────────────────────────────── */
+  --deck-h: 28px;
+  --kbd-bg: light-dark(#f0f0ee, #23232f);
+  --kbd-fg: light-dark(#5a5a6a, #9696ae);
+  --kbd-edge: light-dark(#d3d3cf, #33333f);
+}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+/* ── type roles ─────────────────────────────────────────────────────────── */
+.t-label { font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-muted); }
+.t-meta { font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta); color: var(--app-text-muted); }
+.t-ui { font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text); }
+.t-read { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 70ch; }
+.t-title { font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.t-display { font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); }
+.is-mono { font-family: var(--app-font-mono); }
+.is-num, .is-mono { font-variant-numeric: tabular-nums; }
+.strong { color: var(--app-text-strong); }
+.med { font-weight: var(--w-medium); }
+
+/* ══ page shell (outside the app windows) ═════════════════════════════════ */
+body {
+  margin: 0; padding: 40px 40px 72px;
+  background: var(--app-bg);
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text);
+}
+.mast { max-width: 1120px; margin: 0 0 32px; }
+.mast__eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.mast__dir {
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: .12em; text-transform: uppercase;
+  color: var(--app-accent-contrast); background: var(--app-accent);
+  padding: 5px 8px; border-radius: var(--r-sm);
+}
+.mast__pg { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: .12em; text-transform: uppercase; color: var(--app-text-subtle); }
+.mast h1 { margin: 0 0 8px; font: var(--w-semi) 26px/1.15 var(--app-font-sans);
+  letter-spacing: -.02em; color: var(--app-text-strong); }
+.mast p { margin: 0; max-width: 74ch; font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text-muted); }
+.mast p b { font-weight: var(--w-medium); color: var(--app-text-strong); }
+
+.themetog {
+  position: fixed; top: 20px; right: 20px; z-index: 90;
+  display: inline-flex; align-items: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 10px;
+  border: var(--hairline) solid var(--app-border-strong); border-radius: var(--r-pill);
+  background: var(--app-surface); color: var(--app-text);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+  cursor: pointer; box-shadow: var(--shadow-popover);
+}
+.themetog svg { width: 13px; height: 13px; }
+
+.caption { margin: 0 0 10px; font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans);
+  color: var(--app-text-subtle); letter-spacing: var(--ls-meta); }
+.caption b { font-weight: var(--w-medium); color: var(--app-text-muted); }
+.sect { margin: 40px 0 12px; }
+.sect__k { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--app-text-subtle); }
+.sect__t { margin: 8px 0 0; font: var(--w-semi) var(--t-title)/1.25 var(--app-font-sans);
+  letter-spacing: var(--ls-title); color: var(--app-text-strong); }
+.rowfit { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+.stack24 > * + * { margin-top: 24px; }
+
+/* ══ the app window ═══════════════════════════════════════════════════════ */
+.win {
+  position: relative; display: flex; flex-direction: column;
+  border-radius: 10px; overflow: hidden;
+  background: var(--app-bg);
+  box-shadow: var(--shadow-window), 0 0 0 var(--hairline) var(--app-border-strong);
+}
+.win--1100 { width: 1100px; height: 720px; }
+.win--800  { width: 800px;  height: 600px; }
+.win--ql   { width: 1120px; height: 720px; }
+
+/* title bar */
+.tbar {
+  flex: 0 0 var(--h-titlebar); height: var(--h-titlebar);
+  display: flex; align-items: center; gap: var(--s-12);
+  padding: 0 var(--s-12);
+  background: var(--app-surface);
+  box-shadow: inset 0 -1px 0 var(--app-border);
+}
+.tl { display: flex; gap: 8px; flex: 0 0 auto; padding-right: var(--s-4); }
+.tl i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.tl i:nth-child(1) { background: #ff5f57; }
+.tl i:nth-child(2) { background: #febc2e; }
+.tl i:nth-child(3) { background: #28c840; }
+.tbar__title { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  color: var(--app-text-strong); letter-spacing: var(--ls-ui); }
+.tbar__sp { margin-left: auto; }
+
+/* segmented control (AppKit) */
+.seg {
+  display: inline-flex; align-items: center; height: var(--h-sm);
+  padding: 1.5px; border-radius: var(--r-md);
+  background: var(--app-surface-hover);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+}
+.seg__i {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 100%; padding: 0 9px; border-radius: 4.5px;
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text-muted); white-space: nowrap;
+}
+.seg__i.on {
+  background: var(--app-surface); color: var(--app-text-strong);
+  box-shadow: 0 1px 2px light-dark(rgba(21,28,38,.14), rgba(0,0,0,.4)),
+              0 0 0 var(--hairline) light-dark(rgba(21,28,38,.09), rgba(255,255,255,.06));
+}
+.seg--acc .seg__i.on { background: var(--app-accent); color: var(--app-accent-contrast); }
+.seg--acc .seg__i.on .kbd { background: light-dark(rgba(255,255,255,.22), rgba(0,0,0,.22)); color: inherit; box-shadow: none; }
+
+/* keycap — the direction's signature element */
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: var(--r-sm);
+  background: var(--kbd-bg); color: var(--kbd-fg);
+  box-shadow: inset 0 0 0 var(--hairline) var(--kbd-edge),
+              0 1px 0 light-dark(rgba(21,28,38,.06), rgba(0,0,0,.3));
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: .02em; white-space: nowrap;
+}
+.kbd--wide { min-width: 40px; }
+.kbd--lg { height: 20px; min-width: 20px; font-size: var(--t-meta); }
+.kbd--on { background: var(--app-accent); color: var(--app-accent-contrast);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-strong); }
+.hint { display: inline-flex; align-items: center; gap: 5px; }
+.hint span { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+
+/* the deck — persistent bottom action bar. Always inside the window frame,
+   so no state it carries can ever clip off-screen. */
+.deck {
+  flex: 0 0 var(--deck-h); height: var(--deck-h);
+  display: flex; align-items: center; gap: var(--s-12);
+  padding: 0 var(--s-12);
+  background: var(--app-surface);
+  box-shadow: inset 0 1px 0 var(--app-border);
+}
+.deck__ctx { display: inline-flex; align-items: center; gap: var(--gap-inline);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.deck__ctx svg { width: 12px; height: 12px; color: var(--app-text-subtle); }
+.deck__hints { margin-left: auto; display: inline-flex; align-items: center; gap: var(--s-12); }
+.deck__sep { width: var(--hairline); height: 14px; background: var(--app-border-strong); }
+
+/* buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 var(--pad-control);
+  border: var(--hairline) solid var(--app-border-strong); border-radius: var(--r-md);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+  white-space: nowrap; background: var(--app-surface-raised); color: var(--app-text-strong);
+  cursor: default;
+}
+.btn svg { width: 13px; height: 13px; }
+.btn--primary { background: var(--app-accent); color: var(--app-accent-contrast); border-color: transparent; }
+.btn--ghost { background: transparent; border-color: transparent; color: var(--app-text-muted); }
+.btn--danger { background: var(--app-danger-bg); color: var(--app-danger); border-color: var(--app-danger-border); }
+.btn--sm { height: var(--h-sm); padding: 0 var(--s-6); }
+.btn--lg { height: var(--h-lg); padding: 0 var(--s-12); }
+.btn--icon { width: var(--h-md); padding: 0; }
+.btn--icon.btn--sm { width: var(--h-sm); }
+.is-hover { background: var(--app-surface-hover); }
+.is-active { background: var(--app-surface-active); transform: translateY(.5px); }
+.is-focus { box-shadow: var(--ring); }
+.is-disabled { opacity: var(--opacity-disabled); }
+.btn .kbd { margin-left: 2px; }
+
+/* chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; height: var(--h-sm); padding: 0 9px;
+  border-radius: var(--r-pill); background: var(--app-surface-hover);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted);
+}
+.chip.on { background: var(--app-accent-bg); color: var(--app-accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border); }
+
+/* state pill */
+.pill {
+  display: inline-flex; align-items: center; gap: var(--gap-inline);
+  height: var(--h-sm); padding: 0 var(--s-8); border-radius: var(--r-pill);
+  background: var(--app-record-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+}
+.pill__t { font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text); }
+.pill__gb { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+.pill__w { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.pill--quiet { background: var(--app-surface-hover); box-shadow: none; }
+.pill--warn { background: var(--app-warn-bg); box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); }
+.rdot { width: 8px; height: 8px; border-radius: 50%; background: var(--app-record); flex: 0 0 auto; }
+
+/* NSMenu anatomy */
+.menu {
+  min-width: 200px; padding: var(--s-4); border-radius: var(--r-lg);
+  background: light-dark(rgba(252,252,251,.92), rgba(40,40,52,.92));
+  backdrop-filter: blur(28px) saturate(160%);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.14), rgba(255,255,255,.09));
+}
+.menu__i {
+  display: flex; align-items: center; gap: var(--gap-inline);
+  height: 24px; padding: 0 var(--s-8) 0 var(--s-4); border-radius: var(--r-sm);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong);
+  letter-spacing: var(--ls-ui);
+}
+.menu__i.is-hl { background: var(--app-accent); color: var(--app-accent-contrast); }
+.menu__i.is-hl .menu__kbd, .menu__i.is-hl .menu__sub { color: light-dark(rgba(255,255,255,.8), rgba(7,18,12,.7)); }
+.menu__i.is-off { color: var(--app-text-subtle); opacity: .45; }
+.menu__ck { width: 14px; flex: 0 0 14px; display: inline-flex; justify-content: center; }
+.menu__ck svg { width: 11px; height: 11px; }
+.menu__gl { width: 15px; flex: 0 0 15px; display: inline-flex; justify-content: center; color: var(--app-text-muted); }
+.menu__gl svg { width: 13px; height: 13px; }
+.menu__kbd { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color: var(--app-text-subtle); font-variant-numeric: tabular-nums; padding-left: var(--s-16); }
+.menu__sub { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color: var(--app-text-subtle); font-variant-numeric: tabular-nums; padding-left: var(--s-16); }
+.menu__hd { padding: 6px var(--s-8) 4px; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle); }
+.menu__sep { height: var(--hairline); margin: var(--s-4) var(--s-8); background: var(--app-border-strong); }
+
+/* inputs */
+.input {
+  display: flex; align-items: center; gap: var(--gap-inline);
+  height: var(--h-md); padding: 0 var(--pad-control);
+  border: var(--hairline) solid var(--app-border-strong); border-radius: var(--r-md);
+  background: var(--app-surface-subtle); color: var(--app-text-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui);
+}
+.input svg { width: 13px; height: 13px; color: var(--app-text-subtle); flex: 0 0 auto; }
+.input .ph { color: var(--app-text-subtle); }
+.caret { display: inline-block; width: 1.5px; height: 1.05em; background: var(--app-accent);
+  vertical-align: text-bottom; animation: blink 1.06s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* switch + popup (AppKit) */
+.sw { width: 34px; height: 20px; border-radius: var(--r-pill); background: var(--app-surface-hover);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); position: relative; flex: 0 0 auto; }
+.sw i { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.sw.on { background: var(--app-accent); box-shadow: none; }
+.sw.on i { left: 16px; }
+.pop { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-sm);
+  padding: 0 var(--s-6) 0 var(--s-8); border-radius: var(--r-md); background: var(--app-surface-raised);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), 0 1px 1px light-dark(rgba(21,28,38,.05),transparent);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); white-space: nowrap; }
+.pop svg { width: 9px; height: 13px; color: var(--app-text-subtle); }
+
+/* ══ settings ═════════════════════════════════════════════════════════════ */
+.stabs { flex: 0 0 40px; height: 40px; display: flex; align-items: center; gap: var(--s-8);
+  padding: 0 var(--s-12); background: var(--app-surface); box-shadow: inset 0 -1px 0 var(--app-border); }
+.stab { display: inline-flex; align-items: center; gap: var(--gap-inline); height: var(--h-md);
+  padding: 0 10px; border-radius: var(--r-md); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); letter-spacing: var(--ls-ui); white-space: nowrap; }
+.stab svg { width: 14px; height: 14px; }
+.stab.on { background: var(--app-accent); color: var(--app-accent-contrast); }
+.stab.on .kbd { background: light-dark(rgba(255,255,255,.22), rgba(0,0,0,.24)); color: inherit; box-shadow: none; }
+.spane { flex: 1 1 auto; overflow: hidden; position: relative; background: var(--app-bg); }
+.scol { width: 660px; margin: 0 auto; padding: var(--s-20) 0 var(--s-24); }
+.ghd { display: flex; align-items: baseline; gap: var(--s-8); padding: 0 var(--s-4) var(--s-8); }
+.ghd--sticky { position: sticky; top: 0; z-index: 3; padding-top: var(--s-12);
+  background: linear-gradient(var(--app-bg) 72%, transparent); }
+.grp { background: var(--app-surface); border-radius: var(--r-lg); overflow: hidden; }
+.grp + .ghd { margin-top: var(--gap-section); }
+.srow { display: flex; align-items: center; gap: var(--s-12); min-height: 44px; padding: 10px var(--s-12);
+  position: relative; }
+.srow + .srow { box-shadow: inset 0 var(--hairline) 0 var(--app-border); }
+.srow__txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.srow__l { font: var(--w-regular) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong);
+  letter-spacing: var(--ls-ui); }
+.srow__s { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+.srow__v { margin-left: auto; display: inline-flex; align-items: center; gap: var(--s-8); flex: 0 0 auto; }
+.srow.is-key { background: var(--app-accent); border-radius: var(--r-sm); }
+.srow.is-key .srow__l, .srow.is-key .srow__s { color: var(--app-accent-contrast); }
+.srow.is-key .srow__s { opacity: .8; }
+.srow.is-key + .srow { box-shadow: none; }
+.srow.is-key .sw.on { background: light-dark(rgba(255,255,255,.26), rgba(7,18,12,.30));
+  box-shadow: inset 0 0 0 var(--hairline) light-dark(rgba(255,255,255,.55), rgba(7,18,12,.50)); }
+.saved { display: inline-flex; align-items: center; gap: 4px;
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); }
+.saved svg { width: 11px; height: 11px; }
+
+/* ══ custom inputs ════════════════════════════════════════════════════════ */
+.cost { display: flex; flex-direction: column; gap: var(--s-6); width: 268px; }
+.track { position: relative; height: 20px; display: flex; align-items: center; }
+.track__r { position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px;
+  background: var(--app-surface-hover); box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+.track__f { position: absolute; left: 0; height: 4px; border-radius: 2px; background: var(--app-accent); }
+.track__k { position: absolute; width: 15px; height: 15px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3), 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.16), rgba(0,0,0,.5));
+  transform: translateX(-50%); }
+.track__t { position: absolute; top: 15px; width: var(--hairline); height: 4px; background: var(--app-border-strong); }
+.costout { display: flex; align-items: baseline; gap: var(--gap-inline); }
+.costout b { font: var(--w-medium) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); }
+.costout span { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+
+.ladder { display: flex; flex-direction: column; gap: var(--s-6); width: 300px; }
+.ladder__seg { display: flex; height: var(--h-sm); padding: 1.5px; border-radius: var(--r-md);
+  background: var(--app-surface-hover); box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+.ladder__seg span { flex: 1; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4.5px; font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+.ladder__seg span.on { background: var(--app-surface); color: var(--app-text-strong);
+  box-shadow: 0 1px 2px light-dark(rgba(21,28,38,.14), rgba(0,0,0,.4)); }
+.ladder__bar { position: relative; height: 6px; border-radius: 3px; background: var(--app-surface-hover);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border); overflow: hidden; }
+.ladder__bar i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--app-accent); opacity: .75; }
+.ladder__bar u { position: absolute; top: -2px; bottom: -2px; width: var(--hairline);
+  background: var(--app-text-strong); }
+
+.duty { display: flex; flex-direction: column; gap: var(--s-6); width: 300px; }
+.duty__bar { display: flex; height: 18px; border-radius: var(--r-sm); overflow: hidden;
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+.duty__bar i { display: flex; align-items: center; justify-content: center;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-style: normal; letter-spacing: var(--ls-label); }
+.duty__work { background: var(--app-accent-bg); color: var(--app-accent); }
+.duty__cool { background: var(--app-surface-hover); color: var(--app-text-subtle); }
+
+.mrow { display: flex; align-items: center; gap: var(--s-8); }
+.mrow__n { font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.badge { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: var(--r-sm);
+  background: var(--app-surface-hover); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  letter-spacing: var(--ls-label); }
+.badge--ok { background: var(--app-accent-bg); color: var(--app-accent); }
+.badge--warn { background: var(--app-warn-bg); color: var(--app-warn); }
+.badge--bad { background: var(--app-danger-bg); color: var(--app-danger); }
+.rec-field { display: inline-flex; align-items: center; gap: var(--s-4); height: var(--h-md);
+  padding: 0 var(--s-6); border-radius: var(--r-md); background: var(--app-surface-subtle);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); }
+.rec-field.is-rec { box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring);
+  background: var(--app-accent-bg); }
+
+/* ══ bento ════════════════════════════════════════════════════════════════ */
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-12); }
+.tile { background: var(--app-surface); border-radius: 10px; padding: var(--s-12);
+  display: flex; flex-direction: column; gap: var(--s-6); min-width: 0; overflow: hidden; position: relative; }
+.tile--2 { grid-column: span 2; }
+.tile--3 { grid-column: span 3; }
+.tile--4 { grid-column: span 4; }
+.tile--media { padding: 0; }
+.tile-h { display: flex; align-items: center; gap: var(--gap-inline); margin-bottom: 2px; }
+.tile-h .more { margin-left: auto; }
+.tile-row { display: flex; align-items: center; gap: var(--gap-inline); min-height: 18px; }
+.grow { display: flex; align-items: center; gap: var(--s-8); padding: 5px 0; min-width: 0; }
+.grow__txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.grow__lbl { font: var(--w-regular) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong);
+  letter-spacing: var(--ls-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow__sub { font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-sans); color: var(--app-text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grow__val { margin-left: auto; display: inline-flex; align-items: center; gap: var(--gap-inline); flex: 0 0 auto; }
+.chev { display: inline-flex; color: var(--app-text-faint); }
+.chev svg { width: 11px; height: 11px; }
+.conv { display: inline-flex; gap: 2px; }
+.conv i { width: 4px; height: 4px; border-radius: 50%; background: var(--app-text-faint); }
+.conv i.on { background: var(--app-accent); }
+.spark { display: flex; align-items: flex-end; }
+.spark i { display: block; background: var(--app-accent); opacity: .4; border-radius: 1px; }
+.strip { display: flex; gap: var(--s-4); height: 100%; }
+.strip > i { position: relative; flex: 1 1 0; min-width: 0; overflow: hidden; display: block; }
+.strip > i:first-child { border-radius: 10px 0 0 10px; }
+.strip > i:last-child { border-radius: 0 10px 10px 0; }
+.strip__t { position: absolute; left: 6px; bottom: 5px; z-index: 2;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: #fff; padding: 3px 5px; border-radius: var(--r-sm); background: rgba(10,12,16,.6);
+  backdrop-filter: blur(6px); }
+.strip__k { position: absolute; right: 6px; bottom: 5px; z-index: 2; }
+.cite { display: inline-flex; align-items: center; gap: 4px; padding: 1px 5px 1px 3px; border-radius: var(--r-sm);
+  background: var(--app-surface-hover); font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-muted); vertical-align: baseline; }
+.cite > i { display: block; width: 20px; height: 13px; border-radius: 2px; overflow: hidden; position: relative; }
+
+/* ══ timeline ═════════════════════════════════════════════════════════════ */
+.tline { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; background: var(--app-bg); }
+.thin { flex: 0 0 36px; height: 36px; display: flex; align-items: center; gap: var(--s-8);
+  padding: 0 var(--s-12); box-shadow: inset 0 -1px 0 var(--app-border); }
+.thin__g { display: inline-flex; align-items: center; gap: var(--s-6); }
+.ocrchip { display: inline-flex; align-items: center; height: var(--h-sm); padding: 0 var(--s-8);
+  border-radius: var(--r-pill); background: var(--app-surface-hover);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); color: var(--app-text-muted); }
+.stage { flex: 1 1 auto; position: relative; min-height: 0; padding: var(--s-12) var(--s-12) 0;
+  display: flex; }
+.stage__shot { position: relative; flex: 1 1 auto; border-radius: var(--r-lg); overflow: hidden;
+  background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+.stage__acts { position: absolute; right: var(--s-20); top: var(--s-20); display: flex; gap: var(--s-4); z-index: 4; }
+.railwrap { flex: 0 0 auto; padding: var(--s-8) var(--s-12) var(--s-12); position: relative; }
+.readout { display: flex; align-items: center; gap: var(--s-8); height: 26px; }
+.readout__ic { width: 22px; height: 22px; border-radius: 5px; display: inline-flex; align-items: center;
+  justify-content: center; font: var(--w-semi) 10px/1 var(--app-font-sans); color: #fff; }
+.readout__app { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+.readout__t { font: var(--w-semi) var(--t-display)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); letter-spacing: var(--ls-display); margin-left: var(--s-4); }
+.readout__d { font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.nowband { position: relative; height: 26px; }
+.nowpill { position: absolute; bottom: 0; transform: translateX(-50%); display: inline-flex;
+  align-items: center; gap: var(--gap-inline); height: 22px; padding: 0 var(--s-6) 0 var(--s-8);
+  border-radius: var(--r-pill); background: var(--app-surface-raised);
+  box-shadow: 0 1px 3px light-dark(rgba(21,28,38,.14), rgba(0,0,0,.45)),
+              0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); white-space: nowrap; z-index: 5; }
+.nowpill svg { width: 9px; height: 12px; color: var(--app-text-subtle); }
+.rail { position: relative; height: 52px; border-radius: var(--r-md); background: var(--app-surface);
+  overflow: hidden; }
+.band { position: absolute; top: 0; bottom: 0; background: var(--app-surface-raised);
+  display: flex; align-items: center; justify-content: flex-start; padding-left: var(--s-8); }
+.band--single { background: var(--app-surface-hover); }
+.gicon { width: 18px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center;
+  justify-content: center; font: var(--w-semi) 9px/1 var(--app-font-sans); color: #fff; flex: 0 0 auto; }
+.tickM { position: absolute; top: 0; bottom: 0; width: var(--hairline); background: var(--app-bg); }
+.tickA { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--app-record); z-index: 4;
+  border-radius: 1px; }
+.playline { position: absolute; width: var(--hairline); background: var(--app-text-strong); opacity: .5; z-index: 4; }
+.lane { display: flex; gap: var(--s-8); margin-top: var(--s-6); }
+.lane__labs { display: flex; flex-direction: column; gap: 2px; width: 22px; flex: 0 0 22px; }
+.lane__labs span { height: 13px; display: inline-flex; align-items: center;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); text-transform: uppercase; }
+.lmic { color: var(--app-src-mic); } .lsys { color: var(--app-src-sys); }
+.lane__vp { position: relative; flex: 1 1 auto; height: 28px; }
+.abar { position: absolute; height: 13px; border-radius: 2px; }
+.abar--mic { top: 0; background: var(--app-src-mic); opacity: .45; }
+.abar--sys { top: 15px; background: var(--app-src-sys); opacity: .45; }
+.abar.is-sel { background: var(--app-record); opacity: 1; }
+
+/* audio drawer */
+.drawer { position: absolute; left: var(--s-12); right: var(--s-12); bottom: 0; z-index: 6;
+  border-radius: var(--r-xl) var(--r-xl) 0 0; background: var(--app-surface);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border-strong);
+  overflow: hidden; }
+.drawer__h { display: flex; align-items: center; gap: var(--s-8); height: 36px; padding: 0 var(--s-12);
+  box-shadow: inset 0 -1px 0 var(--app-border); }
+.drawer__w { display: flex; align-items: center; gap: 2px; height: 34px; padding: 0 var(--s-12); }
+.drawer__w i { flex: 1; border-radius: 1px; background: var(--app-src-mic); opacity: .3; }
+.drawer__w i.done { opacity: .75; }
+.drawer__b { padding: var(--s-8) var(--s-12) var(--s-12); display: flex; flex-direction: column; gap: var(--s-6); }
+.turn { display: flex; gap: var(--s-8); align-items: baseline; }
+.turn__w { flex: 0 0 62px; font: var(--w-medium) var(--t-label)/1.5 var(--app-font-mono);
+  text-transform: uppercase; text-align: right; }
+.turn__x { flex: 1 1 auto; font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  color: var(--app-text); letter-spacing: var(--ls-read); }
+.turn__t { flex: 0 0 auto; font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-mono);
+  font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+
+/* ══ quick access ═════════════════════════════════════════════════════════ */
+.qa { display: flex; flex-direction: column; height: 100%; background: var(--app-bg); }
+.qa__top { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-12);
+  height: 54px; padding: 0 var(--s-20); background: var(--app-surface);
+  box-shadow: inset 0 -1px 0 var(--app-border); }
+.qa__top--ask { background: var(--app-accent-bg);
+  box-shadow: inset 0 -1px 0 var(--app-accent-border), inset 0 -2px 0 var(--app-accent); }
+.qa__q { flex: 1 1 auto; display: flex; align-items: center; gap: var(--s-8); min-width: 0; }
+.qa__q > svg { width: 17px; height: 17px; color: var(--app-text-subtle); flex: 0 0 auto; }
+.qa__q--ask > svg { color: var(--app-accent); }
+.qa__txt { font: var(--w-regular) var(--t-title)/1.2 var(--app-font-sans); letter-spacing: var(--ls-title);
+  color: var(--app-text-strong); white-space: nowrap; }
+.qa__txt.ph { color: var(--app-text-subtle); }
+.qa__tok { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 var(--s-8);
+  border-radius: var(--r-sm); background: var(--app-accent); color: var(--app-accent-contrast);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .08em; flex: 0 0 auto; }
+.qa__tok svg { width: 11px; height: 11px; }
+.qa__scopes { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s-6);
+  height: 34px; padding: 0 var(--s-20); }
+.qa__body { flex: 1 1 auto; min-height: 0; overflow: hidden; position: relative; }
+.qa__pad { padding: 0 var(--s-20); }
+
+.askrow { display: flex; align-items: center; gap: var(--s-12); height: 46px; margin: var(--s-8) var(--s-12);
+  padding: 0 var(--s-8); border-radius: var(--r-md); }
+.askrow.is-sel { background: var(--app-accent); }
+.askrow__ic { width: 30px; height: 30px; border-radius: var(--r-md); flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--app-accent-bg); color: var(--app-accent); }
+.askrow.is-sel .askrow__ic { background: light-dark(rgba(255,255,255,.22), rgba(7,18,12,.22)); color: var(--app-accent-contrast); }
+.askrow__ic svg { width: 15px; height: 15px; }
+.askrow__t { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.askrow__l { font: var(--w-medium) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong); }
+.askrow__s { font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-sans); color: var(--app-text-muted); }
+.askrow.is-sel .askrow__l { color: var(--app-accent-contrast); }
+.askrow.is-sel .askrow__s { color: var(--app-accent-contrast); opacity: .78; }
+.askrow__k { margin-left: auto; display: inline-flex; align-items: center; gap: var(--s-6); }
+.askrow.is-sel .kbd { background: light-dark(rgba(255,255,255,.2), rgba(7,18,12,.24));
+  color: var(--app-accent-contrast); box-shadow: none; }
+
+.qsec { display: flex; align-items: baseline; gap: var(--s-8); padding: var(--s-12) var(--s-4) var(--s-8); }
+.qgrid { display: grid; grid-template-columns: repeat(3, 349px); gap: var(--s-16); }
+.qcell { display: flex; flex-direction: column; gap: var(--s-6); }
+.qcell__f { position: relative; width: 349px; height: 196px; border-radius: var(--r-lg); overflow: hidden;
+  background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+.qcell.is-sel .qcell__f { box-shadow: 0 0 0 2px var(--app-accent); }
+.qcell__cap { display: flex; flex-direction: column; gap: 2px; width: 349px; }
+.qcell__l1 { display: flex; align-items: baseline; gap: var(--gap-inline); min-width: 0; }
+.qcell__app { font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono); text-transform: uppercase;
+  color: var(--app-text-subtle); flex: 0 0 auto; }
+.qcell__ttl { font: var(--w-regular) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qcell__l2 { display: flex; align-items: center; gap: 5px;
+  font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-subtle); overflow: hidden; white-space: nowrap; }
+.qcell__l2 .q { font-family: var(--app-font-sans); color: var(--app-text-muted); overflow: hidden;
+  text-overflow: ellipsis; }
+mark { background: var(--app-accent-bg); color: var(--app-accent); border-radius: 2px; padding: 0 2px; }
+.hitbox { position: absolute; border-radius: 2px; background: var(--app-accent-glow);
+  box-shadow: 0 0 0 var(--hairline) var(--app-accent); }
+.qcell__dur { position: absolute; right: 8px; bottom: 8px; padding: 3px 5px; border-radius: var(--r-sm);
+  background: rgba(10,12,16,.62); backdrop-filter: blur(6px); color: #fff;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; }
+.qcell__aff { position: absolute; left: 8px; bottom: 8px; display: inline-flex; gap: 4px; }
+
+/* ask surface */
+.ask { display: grid; grid-template-columns: 1fr 280px; gap: var(--s-24);
+  padding: var(--s-16) var(--s-20) var(--s-12); height: 100%; min-height: 0; }
+.ask__main { display: flex; flex-direction: column; min-height: 0; }
+.ask__turns { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  justify-content: flex-end; gap: var(--s-20); }
+.askq { display: flex; align-items: baseline; gap: var(--s-8); }
+.askq__l { font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--app-text-subtle); flex: 0 0 auto; }
+.askq__q { font: var(--w-medium) var(--t-read)/1.4 var(--app-font-sans); color: var(--app-text-strong); }
+.followup { display: flex; align-items: center; gap: var(--s-8); height: var(--h-lg); margin-top: var(--s-12);
+  padding: 0 var(--s-8) 0 var(--s-12); border-radius: var(--r-md); background: var(--app-surface);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); }
+.followup svg { width: 14px; height: 14px; color: var(--app-text-subtle); }
+.ask__ans p { margin: 0 0 var(--s-12); font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read); color: var(--app-text); max-width: 66ch; }
+.ask__ans p b { font-weight: var(--w-medium); color: var(--app-text-strong); }
+.ask__rail { display: flex; flex-direction: column; gap: var(--s-8); }
+.mcard { display: flex; flex-direction: column; gap: var(--s-4); }
+.mcard__f { position: relative; height: 96px; border-radius: var(--r-md); overflow: hidden;
+  background: var(--app-surface-subtle); box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+.spin { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--app-border-hover);
+  border-top-color: var(--app-accent); animation: sp .8s linear infinite; flex: 0 0 auto; }
+@keyframes sp { to { transform: rotate(360deg); } }
+
+/* ══ current-frame overlay (desktop behind) ═══════════════════════════════ */
+.desk { position: relative; width: 1120px; height: 720px; border-radius: 10px; overflow: hidden;
+  box-shadow: var(--shadow-window), 0 0 0 var(--hairline) var(--app-border-strong); background: #1b1d24; }
+.desk__wall { position: absolute; inset: 0;
+  background: light-dark(linear-gradient(150deg,#c4cfdd,#93a1b8 46%,#74809a),
+                         linear-gradient(150deg,#33405c,#212940 46%,#141926)); }
+.desk__mb { position: absolute; top: 0; left: 0; right: 0; height: 24px; z-index: 3;
+  display: flex; align-items: center; gap: 14px; padding: 0 12px;
+  background: rgba(20,22,30,.36); backdrop-filter: blur(18px);
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: rgba(255,255,255,.86); }
+.desk__mb .r { margin-left: auto; display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+.desk__win { position: absolute; border-radius: 9px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.42), 0 0 0 var(--hairline) rgba(255,255,255,.14); }
+.grabout { position: absolute; z-index: 4; border-radius: 9px;
+  box-shadow: 0 0 0 1.5px var(--app-accent), 0 0 0 5px var(--app-accent-glow); pointer-events: none; }
+.grabout i { position: absolute; width: 9px; height: 9px; border: 1.5px solid var(--app-accent); }
+.grabout i:nth-child(1) { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.grabout i:nth-child(2) { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+.grabout i:nth-child(3) { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+.grabout i:nth-child(4) { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+.grabout__tag { position: absolute; bottom: -11px; left: 12px; display: inline-flex; align-items: center;
+  gap: 5px; height: 20px; padding: 0 var(--s-8); border-radius: var(--r-sm);
+  background: var(--app-accent); color: var(--app-accent-contrast);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .06em; }
+
+.hud { position: absolute; z-index: 8; left: 50%; transform: translateX(-50%); display: flex;
+  flex-direction: column; align-items: center; gap: 12px; }
+.hudpill { display: inline-flex; align-items: center; gap: var(--s-8); height: 34px; padding: 0 6px 0 10px;
+  border-radius: var(--r-pill);
+  background: light-dark(rgba(250,250,249,.82), rgba(30,30,40,.8)); backdrop-filter: blur(28px) saturate(160%);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.16), rgba(255,255,255,.1)); }
+.hudbar { width: 640px; border-radius: 14px; overflow: visible; position: relative;
+  background: light-dark(rgba(250,250,249,.86), rgba(28,28,38,.86)); backdrop-filter: blur(30px) saturate(170%);
+  box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.16), rgba(255,255,255,.1)); }
+.hudbar__mode { position: absolute; top: -11px; right: 14px; z-index: 2; display: inline-flex;
+  align-items: center; gap: 5px; height: 22px; padding: 0 var(--s-8); border-radius: var(--r-md);
+  background: var(--app-accent); color: var(--app-accent-contrast);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .08em; }
+.hudbar__ctx { display: flex; align-items: center; gap: var(--gap-inline); padding: 10px 14px 0; }
+.hudbar__thumb { width: 42px; height: 26px; border-radius: var(--r-sm); overflow: hidden; position: relative;
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); flex: 0 0 auto; }
+.hudbar__in { display: flex; align-items: center; gap: var(--s-8); padding: 8px 10px 10px 14px; }
+.hudbar__ans { padding: 4px 14px 12px; }
+.hudbar__ft { display: flex; align-items: center; gap: var(--s-8); padding: 0 12px 10px 14px; flex-wrap: wrap; }
+.hudbar__ft2 { display: flex; align-items: center; gap: var(--s-12); padding: 8px 12px 10px 14px;
+  box-shadow: inset 0 1px 0 light-dark(rgba(21,28,38,.08), rgba(255,255,255,.07)); }
+.qchips { display: flex; align-items: center; gap: var(--gap-inline); padding: 8px 14px 0; flex-wrap: wrap; }
+.qchips .dot { color: var(--app-text-faint); }
+.qchip { display: inline-flex; align-items: center; gap: 5px;
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+.qchip svg { width: 11px; height: 11px; }
+
+/* ══ toast ════════════════════════════════════════════════════════════════ */
+.toast { width: 320px; padding: var(--s-12); border-radius: var(--r-xl);
+  background: var(--app-surface-raised); box-shadow: var(--shadow-popover),
+  0 0 0 var(--hairline) var(--app-border-strong); display: flex; flex-direction: column; gap: var(--s-4); }
+
+/* ══ component-sheet scaffolding (07) ════════════════════════════════════ */
+.spec { display: grid; gap: var(--s-16); }
+.spec--2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.spec--3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.cell { background: var(--app-surface); border-radius: var(--r-lg); padding: var(--s-16);
+  display: flex; flex-direction: column; gap: var(--s-12); min-width: 0; }
+.cell__k { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label);
+  text-transform: uppercase; color: var(--app-text-subtle); }
+.cell__r { display: flex; align-items: center; gap: var(--s-12); flex-wrap: wrap; }
+.tbl { width: 100%; border-collapse: collapse; background: var(--app-surface); border-radius: var(--r-lg);
+  overflow: hidden; }
+.tbl th { text-align: left; padding: 10px var(--s-12); font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono);
+  letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-subtle);
+  box-shadow: inset 0 -1px 0 var(--app-border); white-space: nowrap; }
+.tbl td { padding: 10px var(--s-12); font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans);
+  color: var(--app-text-muted); box-shadow: inset 0 -1px 0 var(--app-border); vertical-align: top; }
+.tbl td.n { font-family: var(--app-font-mono); font-variant-numeric: tabular-nums; text-align: right;
+  color: var(--app-text-strong); }
+.tbl td b { font-weight: var(--w-medium); color: var(--app-text-strong); }
+.tbl tr:last-child td { box-shadow: none; }
+
+/* ══ fake screenshots ═════════════════════════════════════════════════════ */
+.shot { position: relative; width: 100%; height: 100%; overflow: hidden;
+  background: light-dark(#ececeb, #101018); display: block;
+  --f1: light-dark(#dcdcd9, #20202e);
+  --f2: light-dark(#c6c6c2, #34344a);
+  --f3: light-dark(#aeaeaa, #4b4b66);
+  --f4: light-dark(#f7f7f6, #17171f); }
+.shot i, .shot s, .shot u, .shot b, .shot em { position: absolute; display: block; background: var(--f2);
+  border-radius: 1.5px; }
+.code { position: absolute; display: flex; flex-direction: column; justify-content: flex-start; gap: 6.2%; }
+.shot .ln { position: static !important; display: flex; gap: 4px; height: 4px; margin: 0; background: none !important; flex: 0 0 auto; }
+.tk { position: static !important; height: 100%; border-radius: 1px; background: var(--f2); }
+.tk--kw { background: light-dark(#9b7fd4, #7f68b8); }
+.tk--str { background: light-dark(#4f9a6a, #3f7a55); }
+.tk--fn { background: light-dark(#5b8fd0, #4a72a8); }
+.tk--num { background: light-dark(#c58a4a, #a06f3a); }
+.tk--cm { background: var(--f3); opacity: .55; }
+.tk--dim { background: var(--f3); opacity: .4; }
+.tk--t { background: light-dark(#7f8a80, #55705d); }
+.tk--g { background: light-dark(#4f9a6a, #3f7a55); }
+.tk--r { background: light-dark(#c05a62, #8a4048); }
+.tk--pi { background: var(--f2); }
+
+/* editor */
+.shot--editor { background: light-dark(#f3f3f2, #131320); }
+.shot--editor .act { left: 0; top: 0; bottom: 0; width: 6%; background: var(--f1); border-radius: 0; }
+.shot--editor .side { left: 6%; top: 0; bottom: 0; width: 20%; background: var(--f4); border-radius: 0; }
+.shot--editor .tabs { left: 26%; right: 0; top: 0; height: 9%; background: var(--f1); border-radius: 0; }
+.shot--editor .tab { top: 2.4%; height: 4.4%; border-radius: 2px; background: var(--f2); }
+.shot--editor .tab.a { left: 28%; width: 12%; background: var(--f3); }
+.shot--editor .tab.b { left: 41.5%; width: 10%; }
+.shot--editor .tab.c { left: 53%; width: 11%; }
+.shot--editor .files { position: absolute; left: 9%; top: 12%; width: 15%; display: flex;
+  flex-direction: column; gap: 5.5%; }
+.shot--editor .files i { position: static; height: 4px; background: var(--f2); }
+.shot--editor .files i.on { background: var(--f3); }
+.shot--editor .gut { left: 27.5%; top: 12%; bottom: 4%; width: 1.5%; background: var(--f1); }
+.shot--editor .code { left: 31%; right: 5%; top: 13%; bottom: 6%; }
+.shot--editor .caret { position: absolute; left: 44%; top: 28%; width: 1.5px; height: 5px;
+  background: light-dark(#4d7fc4,#7fa8e0); animation: blink 1.06s steps(1) infinite; border-radius: 0; }
+
+/* browser */
+.shot--browser { background: light-dark(#fbfbfa, #12121b); }
+.shot--browser .bar { left: 0; right: 0; top: 0; height: 11%; background: var(--f1); border-radius: 0; }
+.shot--browser .dots { position: absolute; left: 3%; top: 4%; display: flex; gap: 4px; }
+.shot--browser .dots i { position: static; width: 5px; height: 5px; border-radius: 50%; background: var(--f3); }
+.shot--browser .url { left: 16%; top: 3.4%; width: 52%; height: 4.4%; border-radius: 3px; background: var(--f2); }
+.shot--browser .pg { left: 0; right: 0; top: 11%; bottom: 0; background: var(--f4); border-radius: 0; }
+.shot--browser .art { position: absolute; left: 8%; top: 17%; width: 56%; display: flex; flex-direction: column; gap: 8px; }
+.shot--browser .art .h { position: static; height: 9px; width: 60%; background: var(--f3); margin-bottom: 4px; }
+.shot--browser .aside { position: absolute; right: 6%; top: 17%; width: 24%; display: flex;
+  flex-direction: column; gap: 8%; }
+.shot--browser .aside i { position: static; height: 16px; background: var(--f2); border-radius: 3px; }
+.shot--browser .aside i.hi { background: var(--f3); }
+
+/* terminal */
+.shot--terminal { background: light-dark(#1d1f24, #0a0a10); --f2: #3a4048; --f3: #4a525c; --f4: #16181d; }
+.shot--terminal .code { left: 5%; right: 5%; top: 8%; bottom: 8%; gap: 7.4%; }
+.shot--terminal .cur { left: 10%; bottom: 12%; width: 5px; height: 5px;
+  background: light-dark(#8fd6a3,#6fbf8a); animation: blink 1.06s steps(1) infinite; }
+
+/* chat */
+.shot--chat { background: light-dark(#faf9f8, #12121a); }
+.shot--chat .rail { position: absolute; left: 0; top: 0; bottom: 0; width: 8%; background: light-dark(#4a2d52,#2a1a30);
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 8px; border-radius: 0; }
+.shot--chat .rail i { position: static; width: 12px; height: 12px; border-radius: 4px; background: rgba(255,255,255,.16); }
+.shot--chat .rail i.on { background: rgba(255,255,255,.5); }
+.shot--chat .chans { position: absolute; left: 8%; top: 0; bottom: 0; width: 24%;
+  background: light-dark(#5c3a63,#33203a); display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 8px; border-radius: 0; }
+.shot--chat .chans i { position: static; height: 5px; border-radius: 2px; background: rgba(255,255,255,.2); }
+.shot--chat .chans i.on { background: rgba(255,255,255,.42); }
+.shot--chat .msgs { position: absolute; left: 36%; right: 4%; top: 10%; display: flex;
+  flex-direction: column; gap: 9px; }
+.shot--chat .msg { position: static; display: flex; gap: 6px; background: none; }
+.shot--chat .av { position: static; width: 14px; height: 14px; border-radius: 4px; background: var(--f3); flex: 0 0 auto; }
+.shot--chat .bd { position: static; flex: 1; display: flex; flex-direction: column; gap: 4px; background: none; }
+.shot--chat .bd i { position: static; height: 4px; background: var(--f2); }
+.shot--chat .bd i.n { background: var(--f3); }
+.shot--chat .cmp { left: 36%; right: 4%; bottom: 5%; height: 10%; border-radius: 4px; background: var(--f1);
+  box-shadow: inset 0 0 0 .5px var(--f2); }
+
+/* docs */
+.shot--docs { background: light-dark(#fdfdfc, #101018); }
+.shot--docs .nav { position: absolute; left: 0; top: 0; bottom: 0; width: 22%; background: var(--f4);
+  display: flex; flex-direction: column; gap: 8%; padding: 10px 8px; border-radius: 0; }
+.shot--docs .nav i { position: static; height: 4px; background: var(--f2); }
+.shot--docs .nav i.on { background: var(--f3); }
+.shot--docs .pg { position: absolute; left: 28%; right: 8%; top: 12%; display: flex;
+  flex-direction: column; gap: 5.6%; }
+.shot--docs .pg .h { position: static; height: 9px; width: 54%; background: var(--f3); margin-bottom: 5px; }
+.shot--docs .cmt { position: absolute; right: 2%; top: 20%; width: 5%; display: flex; flex-direction: column; gap: 6px; }
+.shot--docs .cmt i { position: static; height: 14px; border-radius: 3px; background: var(--f2); }
+
+/* design tool */
+.shot--figma { background: light-dark(#e8e8e7, #16161e); }
+.shot--figma .top { left: 0; right: 0; top: 0; height: 8%; background: var(--f1); border-radius: 0; }
+.shot--figma .lp { left: 0; top: 8%; bottom: 0; width: 18%; background: var(--f4); border-radius: 0; }
+.shot--figma .rp { left: auto; right: 0; top: 8%; bottom: 0; width: 18%; background: var(--f4); border-radius: 0; }
+.shot--figma .art1 { left: 26%; top: 20%; width: 26%; height: 42%; background: light-dark(#c9d6ea,#22314a); border-radius: 3px; }
+.shot--figma .art2 { left: 56%; top: 20%; width: 20%; height: 24%; background: light-dark(#dcd0ea,#2c2440); border-radius: 3px; }
+.shot--figma .sq { left: 56%; top: 50%; width: 12%; height: 18%; background: light-dark(#e6d6c4,#3a2e22); border-radius: 3px; }
+.shot--figma .ci { left: 72%; top: 52%; width: 9%; height: 14%; background: light-dark(#cfe3d3,#22382a); border-radius: 50%; }
+.shot--figma .lbl { left: 26%; top: 15%; width: 10%; height: 3%; background: light-dark(#6b8fd4,#4a6a9e); }
+
+/* call */
+.shot--call { background: light-dark(#22242c, #0b0b12); }
+.shot--call .ctiles { position: absolute; inset: 6% 5% 18%; display: grid;
+  grid-template-columns: repeat(3, 1fr); grid-auto-rows: 1fr; gap: 5px; }
+.shot--call .t { position: static; border-radius: 4px; background: #2f333d; display: flex;
+  align-items: center; justify-content: center; flex-direction: column; gap: 4px; }
+.shot--call .t.on { box-shadow: inset 0 0 0 1.5px #4a9a6a; }
+.shot--call .t i { position: static; width: 18%; aspect-ratio: 1; border-radius: 50%; background: #454c58; }
+.shot--call .t u { position: static; width: 34%; height: 5%; border-radius: 2px; background: #3d434e; }
+.shot--call .ctrl { position: absolute; left: 50%; transform: translateX(-50%); bottom: 5%;
+  display: flex; gap: 6px; }
+.shot--call .ctrl i { position: static; width: min(3.4cqw, 15px); height: min(3.4cqw, 15px); min-width: 9px; min-height: 9px;
+  border-radius: 50%; background: #3a3f4a; }
+.shot--call .ctrl i.r { background: #b8434f; }
+
+/* waveform */
+.shot--wave { background: light-dark(#f2f2f0, #14141c); display: flex; align-items: center;
+  justify-content: center; gap: 2px; padding: 0 6%; }
+.shot--wave i { position: static; flex: 1; border-radius: 1px; background: var(--app-src-mic); opacity: .42; }
+.shot--wave i.hi { opacity: .85; }
+.shot--wave i.sy { background: var(--app-src-sys); opacity: .6; }
+
+/* mail / sheet */
+.shot--sheet { background: light-dark(#fdfdfc, #101018); }
+.shot--sheet .hd { left: 0; right: 0; top: 0; height: 9%; background: var(--f1); border-radius: 0; }
+.shot--sheet .colh { position: absolute; left: 0; right: 0; top: 9%; height: 7%; display: flex; }
+.shot--sheet .colh i { position: static; flex: 1; background: var(--f1); box-shadow: inset -.5px 0 0 var(--f2); }
+.shot--sheet .g { position: absolute; left: 0; right: 0; top: 16%; bottom: 0; display: flex;
+  flex-direction: column; }
+.shot--sheet .r { position: static; display: flex; flex: 1; background: none; }
+.shot--sheet .c { position: static; flex: 1; display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 5px; box-shadow: inset -.5px -.5px 0 var(--f1); background: none; }
+.shot--sheet .c.l { justify-content: flex-start; }
+.shot--sheet .c b { position: static; height: 4px; background: var(--f2); }
+.shot--sheet .c.pos b { background: light-dark(#4f9a6a,#3f7a55); }
+.shot--sheet .c.sel { box-shadow: inset 0 0 0 1.5px light-dark(#4d7fc4,#4a72a8); }
+
+/* app icon tints (real third-party identity keeps its colours) */
+.ic-code { background: #2c7fd0; } .ic-figma { background: #2b2b2f; }
+.ic-slack { background: #4a154b; } .ic-notion { background: #303030; }
+.ic-safari { background: #1a8fe3; } .ic-term { background: #2f3338; }
+.ic-zoom { background: #2d8cff; } .ic-mail { background: #1f7ae0; }
+.ic-mnema { background: var(--app-accent); color: var(--app-accent-contrast); }
+
+.w4{width:4%}.w6{width:6%}.w8{width:8%}.w10{width:10%}.w12{width:12%}.w14{width:14%}.w16{width:16%}.w18{width:18%}.w20{width:20%}.w22{width:22%}.w24{width:24%}.w26{width:26%}.w28{width:28%}.w30{width:30%}.w32{width:32%}.w34{width:34%}.w36{width:36%}.w38{width:38%}.w40{width:40%}.w44{width:44%}.w48{width:48%}.w52{width:52%}.w56{width:56%}.w60{width:60%}.w64{width:64%}.w70{width:70%}.w76{width:76%}.w82{width:82%}.w88{width:88%}.w94{width:94%}.w100{width:100%}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="ic" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></g>
+  </defs>
+  <symbol id="i-search" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8 9.5 6 13.8 7.5 9.5 9 8 13.2 6.5 9 2.2 7.5 6.5 6z"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2.2" y="3.2" width="11.6" height="10.6" rx="2"/><path d="M2.2 6.4h11.6M5.4 1.8v2.6M10.6 1.8v2.6"/></symbol>
+  <symbol id="i-chevr" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></symbol>
+  <symbol id="i-chevd" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 6 8 10.5 12.5 6"/></symbol>
+  <symbol id="i-chevud" viewBox="0 0 10 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 5.6 5 3l2.6 2.6M2.4 8.4 5 11l2.6-2.6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.4 6.4 11.8 13 5"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="6" y="1.8" width="4" height="7.4" rx="2"/><path d="M3.6 7.4a4.4 4.4 0 0 0 8.8 0M8 11.8v2.4"/></symbol>
+  <symbol id="i-sys" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.2v3.6M6 4v8M9 5.4v5.2M12 7v2"/></symbol>
+  <symbol id="i-screen" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="3" width="12.4" height="8.4" rx="1.6"/><path d="M5.6 13.8h4.8"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16" fill="currentColor"><path d="M4.6 3.2 12.4 8l-7.8 4.8z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 16 16" fill="currentColor"><rect x="4.4" y="3.4" width="2.6" height="9.2" rx=".8"/><rect x="9" y="3.4" width="2.6" height="9.2" rx=".8"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+  <symbol id="i-scan" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 5.6V3.8a1.4 1.4 0 0 1 1.4-1.4h1.8M10.4 2.4h1.8a1.4 1.4 0 0 1 1.4 1.4v1.8M13.6 10.4v1.8a1.4 1.4 0 0 1-1.4 1.4h-1.8M5.6 13.6H3.8a1.4 1.4 0 0 1-1.4-1.4v-1.8M5 8h6"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 14v-4M5 2h6l-.7 4.2 2 2.3H3.7l2-2.3z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.6"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 3.6h11.2L9.4 8.4v4.4l-2.8 1.2V8.4z"/></symbol>
+  <symbol id="i-hdd" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2"/><path d="M2 9.4h12"/><circle cx="11.4" cy="11.2" r=".6" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-cpu" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4.4" y="4.4" width="7.2" height="7.2" rx="1.6"/><path d="M6.6 1.8v2.6M9.4 1.8v2.6M6.6 11.6v2.6M9.4 11.6v2.6M1.8 6.6h2.6M1.8 9.4h2.6M11.6 6.6h2.6M11.6 9.4h2.6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.6 8S4.2 3.6 8 3.6 14.4 8 14.4 8 11.8 12.4 8 12.4 1.6 8 1.6 8z"/><circle cx="8" cy="8" r="1.9"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.2h10.4M6.4 4.2V2.8h3.2v1.4M4.2 4.2l.7 8.4a1.2 1.2 0 0 0 1.2 1.1h3.8a1.2 1.2 0 0 0 1.2-1.1l.7-8.4"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.4v9.2M3.4 8h9.2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.4 14.6 13.4H1.4z"/><path d="M8 6.4v3.2M8 11.6v.1"/></symbol>
+  <symbol id="i-key" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.4" cy="10.6" r="2.8"/><path d="M7.4 8.6 13 3M11 5l1.4 1.4M9.6 6.4 11 7.8"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8 14.4 5 8 8.2 1.6 5zM1.6 8.6 8 11.8l6.4-3.2M1.6 11.4 8 14.6l6.4-3.2"/></symbol>
+  <symbol id="i-book" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 3a1 1 0 0 1 1-1H7a2 2 0 0 1 2 2v9a1.6 1.6 0 0 0-1.6-1.6H2.4z"/><path d="M13.6 3a1 1 0 0 0-1-1H9.4A2 2 0 0 0 7.4 4v9A1.6 1.6 0 0 1 9 11.4h4.6z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.4v1.6M8 13v1.6M1.4 8h1.6M13 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 9.6A5.8 5.8 0 0 1 6.4 2.6a5.9 5.9 0 1 0 7 7z"/></symbol>
+  <symbol id="i-return" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3.6v4.2a1.6 1.6 0 0 1-1.6 1.6H3.6M6.4 6.8 3.4 9.4l3 2.6"/></symbol>
+  <symbol id="i-frame" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.2" y="2.2" width="11.6" height="11.6" rx="1.8"/><path d="M2.2 6h11.6M6 2.2v11.6"/></symbol>
+  <symbol id="i-msg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.8 8.4a5.2 5.2 0 0 1-5.6 5.2L3 14.4l1-3.6A5.2 5.2 0 1 1 13.8 8.4z"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 5.4h5.2a4.2 4.2 0 0 1 0 8.4H5.4M2.6 5.4 5.2 2.8M2.6 5.4 5.2 8"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 7A5.5 5.5 0 0 0 3.6 4.6M2.6 9a5.5 5.5 0 0 0 9.8 2.4"/><path d="M13.6 3.6V7h-3.4M2.4 12.4V9h3.4"/></symbol>
+  <symbol id="i-target" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2"/><path d="M8 .8v2M8 13.2v2M.8 8h2M13.2 8h2"/></symbol>
+</svg>
+
+<button class="themetog" id="themetog" type="button" aria-label="Toggle light and dark theme">
+  <svg><use href="#i-sun"/></svg><span>Theme</span>
+</button>
+<style>
+  /* ── page 11 · Settings, complete ──────────────────────────────────────── */
+  .win--tall { height: auto; }
+  .p11 .spane { overflow: visible; }
+  .p11 .scol { width: 760px; padding: var(--s-16) 0 var(--s-20); }
+  .p11 .srow { min-height: 34px; padding: 7px var(--s-12); }
+  .p11 .srow__s { line-height: 1.35; }
+  .p11 .ghd { padding: 0 var(--s-4) var(--s-6); }
+  .p11 .grp + .ghd { margin-top: var(--s-16); }
+  .cond { display: inline-flex; align-items: center; height: 15px; padding: 0 4px; border-radius: 3px;
+    background: var(--app-surface-hover); color: var(--app-text-subtle);
+    font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .02em; flex: 0 0 auto; }
+  .rov { font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted); }
+  .den { font: var(--w-medium) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-accent); }
+  .tabmap { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: var(--s-12); }
+  .tabmap__c { background: var(--app-surface); border-radius: var(--r-lg); padding: var(--s-12);
+    display: flex; flex-direction: column; gap: var(--s-6); }
+  .tabmap__c ul { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+  .tabmap__c li { font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans); color: var(--app-text-muted); }
+  .stepper { display: inline-flex; align-items: center; height: var(--h-sm); border-radius: var(--r-md);
+    background: var(--app-surface-raised); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong); }
+  .stepper span { padding: 0 var(--s-8); }
+  .stepper i { width: 20px; height: 100%; display: inline-flex; align-items: center; justify-content: center;
+    font-style: normal; color: var(--app-text-muted);
+    box-shadow: inset var(--hairline) 0 0 var(--app-border-strong); }
+  .txtf { display: inline-flex; align-items: center; height: var(--h-sm); padding: 0 var(--s-8);
+    border-radius: var(--r-md); background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+    font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong);
+    white-space: nowrap; overflow: hidden; }
+  .txtf.ph { color: var(--app-text-subtle); }
+  .radios { display: flex; flex-direction: column; gap: var(--s-6); width: 340px; }
+  .radio { display: flex; align-items: flex-start; gap: var(--s-8); }
+  .radio > i { flex: 0 0 14px; width: 14px; height: 14px; margin-top: 1px; border-radius: 50%;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover); }
+  .radio > i.on { background: var(--app-accent); box-shadow: inset 0 0 0 3.5px var(--app-accent-contrast),
+    inset 0 0 0 var(--hairline) var(--app-accent); }
+  .radio__t { display: flex; flex-direction: column; gap: 1px; }
+  .radio__l { font: var(--w-regular) var(--t-ui)/1.2 var(--app-font-sans); color: var(--app-text-strong); }
+  .radio__s { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+  .repeat { display: flex; flex-direction: column; gap: var(--s-6); width: 100%; }
+  .rep { display: flex; align-items: center; gap: var(--s-8); padding: var(--s-6) var(--s-8);
+    border-radius: var(--r-md); background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border); }
+  .rep__n { font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong); }
+  .callout { display: flex; gap: var(--s-8); padding: var(--s-8) var(--s-12); margin: 0 var(--s-12) var(--s-8);
+    border-radius: var(--r-md); background: var(--app-warn-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border); }
+  .callout svg { width: 13px; height: 13px; color: var(--app-warn); flex: 0 0 auto; margin-top: 1px; }
+  .callout--info { background: var(--app-info-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border); }
+  .callout--info svg { color: var(--app-info); }
+  .callout--danger { background: var(--app-danger-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border); }
+  .callout--danger svg { color: var(--app-danger); }
+  .idhero { display: flex; align-items: center; gap: var(--s-12); padding: var(--s-12);
+    border-bottom: var(--hairline) solid var(--app-border); }
+  .idhero__ic { width: 40px; height: 40px; border-radius: 9px; background: var(--app-accent);
+    color: var(--app-accent-contrast); display: inline-flex; align-items: center; justify-content: center; }
+  .idhero__ic svg { width: 20px; height: 20px; }
+  .savestate { display: inline-flex; align-items: center; gap: 5px; margin-left: var(--s-16);
+    font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); }
+  .savestate svg { width: 12px; height: 12px; flex: 0 0 auto; }
+  .tblwrap { max-width: 1120px; overflow-x: auto; }
+</style>
+
+<div class="mast">
+  <div class="mast__eyebrow">
+    <span class="mast__dir">04 · Command Deck</span>
+    <span class="mast__pg">Page 11 — Settings, complete</span>
+  </div>
+  <h1>All 96 rows, five tabs, one scroll each — and nothing invented to fill a gap.</h1>
+  <p>Pages 05 and 06 showed the settings <i>shape</i>. This page is the <b>census</b>: every real group and every
+    real row the app registers, in the five ⌃-tabs this direction replaced the sidebar with. Each tab below is
+    its <b>full scroll unrolled</b> — one 1100px-wide window with its tab strip on top and its deck on the
+    bottom, drawn at whatever height its content needs. Conditional rows carry a <span class="cond">when …</span>
+    badge naming what gates them, and the rows the app can compute a real quantity for carry that quantity in
+    the accent colour. The count in the deck is real: the row index has exactly 96 entries and a test fails the
+    build when a registered setting is missing from it.</p>
+</div>
+
+<div class="sect" style="margin-top:0"><div class="sect__k">The map</div>
+  <p class="sect__t">Five tabs, thirty groups, ninety-six rows</p></div>
+<div class="tabmap">
+  <div class="tabmap__c">
+    <div style="display:flex;align-items:center;gap:var(--gap-inline)"><span class="t-label">⌃1 General</span><span class="t-meta is-mono is-num" style="margin-left:auto">5</span></div>
+    <ul><li>Appearance</li><li>Startup</li><li>Keyboard Shortcuts</li></ul>
+    <span class="t-meta" style="color:var(--app-text-subtle);margin-top:auto">Per-action shortcut recorders sit
+      under the fifth row and are deliberately outside the index.</span>
+  </div>
+  <div class="tabmap__c">
+    <div style="display:flex;align-items:center;gap:var(--gap-inline)"><span class="t-label">⌃2 Capture</span><span class="t-meta is-mono is-num" style="margin-left:auto">29</span></div>
+    <ul><li>Capture</li><li>Inactivity</li><li>Unsaved changes blocked</li><li>Video Output</li><li>Video Bitrate</li><li>Microphone Controller</li><li>Privacy</li></ul>
+  </div>
+  <div class="tabmap__c">
+    <div style="display:flex;align-items:center;gap:var(--gap-inline)"><span class="t-label">⌃3 Intelligence</span><span class="t-meta is-mono is-num" style="margin-left:auto">46</span></div>
+    <ul><li>Providers · Connected providers · Default model · Status</li><li>MCP connectors</li><li>Ask AI</li><li>User Context</li><li>OCR &amp; Previews · Preview Cache</li><li>Transcription</li><li>Speaker analysis · Your voice</li><li>Semantic Search Model</li></ul>
+  </div>
+  <div class="tabmap__c">
+    <div style="display:flex;align-items:center;gap:var(--gap-inline)"><span class="t-label">⌃4 Data</span><span class="t-meta is-mono is-num" style="margin-left:auto">3</span></div>
+    <ul><li>Storage</li><li>Access</li></ul>
+    <span class="t-meta" style="color:var(--app-text-subtle);margin-top:auto">Three rows, and two of them are the
+      most consequential in the app. Small tab, not a thin one.</span>
+  </div>
+  <div class="tabmap__c">
+    <div style="display:flex;align-items:center;gap:var(--gap-inline)"><span class="t-label">⌃5 About</span><span class="t-meta is-mono is-num" style="margin-left:auto">13</span></div>
+    <ul><li>License &amp; Trial</li><li>About</li><li>Updates</li><li>Acknowledgements</li><li>Developer &amp; Logs</li></ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ ⌃1 GENERAL ═══════════════════════════ -->
+<p class="caption" style="margin-top:40px"><b>⌃1 · General</b> — five indexed rows, then the shortcut recorders. The recorder rows are real UI
+  and deliberately <i>not</i> in the 96: they are one per registered action across four categories, so indexing
+  them would make the count a moving target. In-app conflicts name their owner; an external one cannot be named
+  at all, and says so.</p>
+<div class="win win--1100 win--tall p11">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <span class="tbar__title">Settings</span>
+    <div class="seg" style="margin-left:var(--s-8)"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+  <div class="stabs">
+    <span class="stab on"><svg><use href="#i-spark"/></svg>General <span class="kbd">⌃1</span></span>
+    <span class="stab"><svg><use href="#i-screen"/></svg>Capture <span class="kbd">⌃2</span></span>
+    <span class="stab"><svg><use href="#i-cpu"/></svg>Intelligence <span class="kbd">⌃3</span></span>
+    <span class="stab"><svg><use href="#i-hdd"/></svg>Data <span class="kbd">⌃4</span></span>
+    <span class="stab"><svg><use href="#i-book"/></svg>About <span class="kbd">⌃5</span></span>
+    <span class="ffield" style="margin-left:auto;display:flex;align-items:center;gap:var(--gap-inline);width:220px;height:var(--h-md);padding:0 var(--s-8);border-radius:var(--r-md);background:var(--app-surface-subtle);box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)"><svg style="width:13px;height:13px;color:var(--app-text-subtle)"><use href="#i-search"/></svg><span class="t-ui" style="color:var(--app-text-subtle)">Filter settings</span><span class="kbd" style="margin-left:auto">⌘F</span></span>
+  </div>
+  <div class="spane"><div class="scol">
+    <div class="ghd"><span class="t-title" style="font-size:var(--t-title)">General</span></div>
+
+    <div class="ghd"><span class="t-label">Appearance</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Theme</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Follow live recording</span><span class="srow__s">The Timeline playhead tracks the newest frame as it lands</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Startup</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Open Mnema on</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Auto-start recording on launch</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Keyboard Shortcuts</span><span class="t-meta">global — they work while Mnema is in the background</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span><span class="btn btn--ghost btn--sm">Restore all defaults</span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Global shortcuts</span><span class="srow__s">Off means Mnema only responds while it is the active app</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="callout"><svg><use href="#i-alert"/></svg>
+        <span class="t-meta"><b class="med">1 shortcut conflict.</b> Recording settings still save; the
+          conflicting shortcut will not fire until you change one of them.
+          <span class="btn btn--sm" style="margin-left:var(--s-8)">Jump to conflict</span></span></div>
+
+      <div class="ghd" style="padding-left:var(--s-12)"><span class="t-label">Global</span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Quick Access</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd kbd--wide">Space</span></span><span class="btn btn--ghost btn--sm">↺</span><span class="btn btn--ghost btn--sm">✕</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Ask about this screen</span>
+          <span class="conflict" style="display:flex;align-items:center;gap:5px;margin-top:3px;font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans);color:var(--app-danger)"><svg style="width:11px;height:11px"><use href="#i-alert"/></svg>This shortcut is taken by another app — try a different combination</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">⌘</span><span class="kbd">⇧</span><span class="kbd">A</span></span><span class="btn btn--ghost btn--sm">↺</span><span class="btn btn--ghost btn--sm">✕</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Start / stop recording</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="t-meta" style="color:var(--app-text-subtle)">Set shortcut</span></span><span class="btn btn--ghost btn--sm">↺</span></span></div>
+
+      <div class="ghd" style="padding-left:var(--s-12)"><span class="t-label">App</span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Settings</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">⌘</span><span class="kbd">,</span></span><span class="btn btn--ghost btn--sm">↺</span><span class="btn btn--ghost btn--sm">✕</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Switch surface</span>
+          <span class="conflict" style="display:flex;align-items:center;gap:5px;margin-top:3px;font:var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans);color:var(--app-danger)"><svg style="width:11px;height:11px"><use href="#i-alert"/></svg>Already used by the Timeline / Overview switcher — ⌘1 and ⌘2</span></span>
+        <span class="srow__v"><span class="rec-field is-rec"><span class="t-meta is-mono" style="color:var(--app-accent)">Press keys…</span></span><span class="btn btn--ghost btn--sm">esc</span></span></div>
+
+      <div class="ghd" style="padding-left:var(--s-12)"><span class="t-label">Dashboard</span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Jump to now</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">N</span></span><span class="btn btn--ghost btn--sm">↺</span><span class="btn btn--ghost btn--sm">✕</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Zoom Hour / Day / Week</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">⌥1</span><span class="kbd">⌥2</span><span class="kbd">⌥3</span></span><span class="btn btn--ghost btn--sm">↺</span></span></div>
+
+      <div class="ghd" style="padding-left:var(--s-12)"><span class="t-label">Audio drawer</span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Open / close the drawer</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd">⌥</span><span class="kbd">A</span></span><span class="btn btn--ghost btn--sm">↺</span><span class="btn btn--ghost btn--sm">✕</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Play / pause</span></span>
+        <span class="srow__v"><span class="rec-field"><span class="kbd kbd--wide">Space</span></span><span class="btn btn--ghost btn--sm">↺</span></span></div>
+    </div>
+  </div></div>
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-spark"/></svg>Settings · General</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘F</span><span>Filter</span></span>
+      <span class="hint"><span class="kbd">⌃1–5</span><span>Sections</span></span>
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+      <span class="hint"><span class="kbd">␣</span><span>Toggle</span></span>
+      <span class="deck__sep"></span>
+      <span class="hint"><span class="kbd">⌘1</span><span>Back to Timeline</span></span>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ ⌃2 CAPTURE ═══════════════════════════ -->
+<p class="caption" style="margin-top:40px"><b>⌃2 · Capture</b> — twenty-nine rows across seven groups, eleven of them conditional. Two rows carry
+  computed consequences: the capture rate in GB per day against this Mac's measured bytes, and the notice that
+  turns on when the volume is short. The <b>Inactivity</b> group is the direction's clearest case for the
+  <span class="cond">when …</span> badge: six of its seven rows only exist because “Pause capture when idle” is on.</p>
+<div class="win win--1100 win--tall p11">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <span class="tbar__title">Settings</span>
+    <div class="seg" style="margin-left:var(--s-8)"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+  <div class="stabs">
+    <span class="stab"><svg><use href="#i-spark"/></svg>General <span class="kbd">⌃1</span></span>
+    <span class="stab on"><svg><use href="#i-screen"/></svg>Capture <span class="kbd">⌃2</span></span>
+    <span class="stab"><svg><use href="#i-cpu"/></svg>Intelligence <span class="kbd">⌃3</span></span>
+    <span class="stab"><svg><use href="#i-hdd"/></svg>Data <span class="kbd">⌃4</span></span>
+    <span class="stab"><svg><use href="#i-book"/></svg>About <span class="kbd">⌃5</span></span>
+    <span class="ffield" style="margin-left:auto;display:flex;align-items:center;gap:var(--gap-inline);width:220px;height:var(--h-md);padding:0 var(--s-8);border-radius:var(--r-md);background:var(--app-surface-subtle);box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)"><svg style="width:13px;height:13px;color:var(--app-text-subtle)"><use href="#i-search"/></svg><span class="t-ui" style="color:var(--app-text-subtle)">Filter settings</span><span class="kbd" style="margin-left:auto">⌘F</span></span>
+  </div>
+  <div class="spane"><div class="scol">
+    <div class="ghd"><span class="t-title" style="font-size:var(--t-title)">Capture</span>
+      <span class="t-meta">Video, audio, privacy · <span class="is-mono is-num">270 MB</span> today</span></div>
+
+    <div class="ghd"><span class="t-label">Capture</span><span class="t-meta">What gets recorded and how often segments roll over.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Capture</span><span class="srow__s">Loading settings…</span></span>
+        <span class="srow__v"><span class="cond">while loading</span><span class="spin"></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Screen</span><span class="srow__s">Recording every window except the 2 apps you excluded</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone</span><span class="srow__s">Keeps recording while the screen is asleep or locked</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">System Audio</span><span class="srow__s">Everything the Mac plays, minus Mnema itself and the privacy list</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">System audio access</span>
+          <span class="srow__s">macOS gives no way to read this permission — Mnema infers it from whether sound has arrived</span></span>
+        <span class="srow__v"><span class="cond">when possibly blocked</span><span class="btn btn--sm">Open System Settings</span><span class="btn btn--ghost btn--sm">Dismiss</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Segment Duration</span><span class="srow__s">Shorter segments recover more cleanly from a crash; capped at 5 minutes</span></span>
+        <span class="srow__v"><span class="cost"><span class="track"><span class="track__r"></span><span class="track__f" style="width:100%"></span><span class="track__k" style="left:100%"></span></span><span class="costout"><b>5m 00s</b><span>10 s – 300 s</span></span></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Inactivity</span><span class="t-meta">Pause &amp; resume rules when you step away.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Pause capture when idle</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Idle timeout</span></span>
+        <span class="srow__v"><span class="cond">when idle-pause on</span><span class="cost" style="width:210px"><span class="track"><span class="track__r"></span><span class="track__f" style="width:19%"></span><span class="track__k" style="left:19%"></span></span><span class="costout"><b>60 s</b><span>5 – 300 s</span></span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Activity sources</span><span class="srow__s">Keyboard, mouse and audio all count as activity</span></span>
+        <span class="srow__v"><span class="cond">when idle-pause on</span><span class="rov">read-only</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone Voice Detection</span></span>
+        <span class="srow__v"><span class="cond">when idle-pause on</span>
+          <span class="radios" style="width:260px">
+            <span class="radio"><i class="on"></i><span class="radio__t"><span class="radio__l">Silero</span><span class="radio__s">Neural VAD — most accurate, small CPU cost</span></span></span>
+            <span class="radio"><i></i><span class="radio__t"><span class="radio__l">WebRTC</span><span class="radio__s">Cheap energy-based detection</span></span></span>
+            <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Off</span><span class="radio__s">Use the raw sensitivity threshold instead</span></span></span>
+          </span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone Activity Sensitivity</span></span>
+        <span class="srow__v"><span class="cond">when VAD is Off</span><span class="cost" style="width:180px"><span class="track"><span class="track__r"></span><span class="track__f" style="width:35%"></span><span class="track__k" style="left:35%"></span></span><span class="costout"><b>35 %</b></span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">System Audio Activity Sensitivity</span></span>
+        <span class="srow__v"><span class="cond">when idle-pause on</span><span class="cost" style="width:180px"><span class="track"><span class="track__r"></span><span class="track__f" style="width:28%"></span><span class="track__k" style="left:28%"></span></span><span class="costout"><b>28 %</b></span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Audio Activity Monitoring</span><span class="srow__s">Sound on either audio source counts as activity and resumes capture</span></span>
+        <span class="srow__v"><span class="cond">when idle-pause on</span><span class="rov">read-only</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Unsaved changes blocked</span><span class="t-meta">Resolve these before recording settings can save.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Validation</span>
+          <span class="srow__s" style="color:var(--app-danger)">Idle timeout must be at least 5 seconds · Custom resolution height is required</span></span>
+        <span class="srow__v"><span class="cond">when invalid</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Video Output</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Screen Capture Rate</span><span class="srow__s">How often the screen is sampled while you're active</span></span>
+        <span class="srow__v">
+          <span class="cost">
+            <span class="track"><span class="track__r"></span><span class="track__f" style="width:27%"></span><span class="track__k" style="left:27%"></span>
+              <span class="track__t" style="left:0"></span><span class="track__t" style="left:9%"></span><span class="track__t" style="left:18%"></span><span class="track__t" style="left:27%"></span><span class="track__t" style="left:36%"></span><span class="track__t" style="left:45%"></span><span class="track__t" style="left:55%"></span><span class="track__t" style="left:64%"></span><span class="track__t" style="left:73%"></span><span class="track__t" style="left:82%"></span><span class="track__t" style="left:100%"></span></span>
+            <span class="costout"><b>every 2 s</b><span>→ <span class="den">≈ 1.4 GB / day · ≈ 42 GB / month</span></span></span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">About 1.4 GB a day at this rate — about 15 weeks of free space left</span>
+          </span>
+          <span class="btn btn--sm">Take a snapshot</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Screen Resolution</span>
+          <span class="srow__s">Downscaling below Original needs macOS 15 — this Mac supports it</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i on">Original</span><span class="seg__i">1080p</span><span class="seg__i">720p</span><span class="seg__i">540p</span><span class="seg__i">Custom</span></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Video Bitrate</span><span class="t-meta">ScreenCaptureKit encodes at capture time; this is the ceiling it targets.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Bitrate</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i">Low · ~3 Mbps</span><span class="seg__i on">Medium · ~8 Mbps</span><span class="seg__i">High · ~20 Mbps</span><span class="seg__i">Custom</span></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Microphone Controller</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone</span><span class="srow__s">Loading microphone state…</span></span>
+        <span class="srow__v"><span class="cond">while loading</span><span class="btn btn--ghost btn--sm">Retry</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Active Device</span></span>
+        <span class="srow__v"><span class="rov">MacBook Pro Microphone</span><span class="badge">default</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Available Devices</span>
+          <span class="rov">MacBook Pro Microphone · AirPods Pro · Scarlett Solo USB</span></span>
+        <span class="srow__v"><span class="badge">3</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Preference</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i on">System Default</span><span class="seg__i">Specific Device</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Device</span></span>
+        <span class="srow__v"><span class="cond">when Specific Device</span>
+          <span class="radios" style="width:230px">
+            <span class="radio"><i class="on"></i><span class="radio__t"><span class="radio__l">MacBook Pro Microphone</span></span></span>
+            <span class="radio"><i></i><span class="radio__t"><span class="radio__l">AirPods Pro</span></span></span>
+            <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Scarlett Solo USB</span></span></span>
+          </span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">On Disconnect</span></span>
+        <span class="srow__v"><span class="cond">when Specific Device</span><span class="seg"><span class="seg__i on">Fallback to Default</span><span class="seg__i">Wait for Same Device</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Error</span>
+          <span class="srow__s" style="color:var(--app-danger)">The selected device disappeared mid-session — recording continued on the default input</span></span>
+        <span class="srow__v"><span class="cond">when a device error</span><span class="btn btn--ghost btn--sm">Dismiss</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Privacy</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Capture frame context</span><span class="srow__s">App name and window title alongside each frame — this is what search matches on</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Browser URL mode</span></span>
+        <span class="srow__v"><span class="radios" style="width:300px">
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Off</span><span class="radio__s">No address is read from any browser</span></span></span>
+          <span class="radio"><i class="on"></i><span class="radio__t"><span class="radio__l">Sanitized</span><span class="radio__s">Host and path, query strings and fragments dropped</span></span></span>
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Full</span><span class="radio__s">The whole address, tokens included</span></span></span>
+        </span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Browser URL access (Firefox / Zen)</span>
+          <span class="srow__s">Gecko browsers expose the address only through Accessibility</span></span>
+        <span class="srow__v"><span class="cond">when Gecko installed</span><span class="btn btn--sm">Grant access</span><span class="btn btn--ghost btn--sm">Recheck</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Excluded Apps</span><span class="srow__s">Never recorded on screen, and muted in the system-audio tap — one list, both sources</span></span>
+        <span class="srow__v" style="flex-wrap:wrap;justify-content:flex-end;max-width:320px">
+          <span class="chip">1Password <svg style="width:9px;height:9px"><use href="#i-x"/></svg></span>
+          <span class="chip">Messages <svg style="width:9px;height:9px"><use href="#i-x"/></svg></span>
+          <span class="btn btn--sm"><svg style="width:11px;height:11px"><use href="#i-plus"/></svg>Add app</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Filter system audio</span><span class="srow__s">Excluded apps are removed from the tap, not just from the screen</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+    </div>
+  </div></div>
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-screen"/></svg>Settings · Capture</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘F</span><span>Filter</span></span>
+      <span class="hint"><span class="kbd">⌃1–5</span><span>Sections</span></span>
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+      <span class="hint"><span class="kbd">␣</span><span>Toggle</span></span>
+    </span>
+  </div>
+</div>
+
+<!-- ══════════════════════════ ⌃3 INTELLIGENCE ══════════════════════════ -->
+<p class="caption" style="margin-top:40px"><b>⌃3 · Intelligence</b> — forty-six rows, half the app's settings surface, and every model row carries a
+  real size against this Mac's real RAM. <b>MCP lives here</b>, as one row that opens the connector list — the
+  agent-facing surface is a connector catalogue, not a settings pane. The OCR pacing row is <i>reported, not
+  configurable</i>: it states the shipped duty cycle and says nothing about temperature.</p>
+<div class="win win--1100 win--tall p11">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <span class="tbar__title">Settings</span>
+    <div class="seg" style="margin-left:var(--s-8)"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+  <div class="stabs">
+    <span class="stab"><svg><use href="#i-spark"/></svg>General <span class="kbd">⌃1</span></span>
+    <span class="stab"><svg><use href="#i-screen"/></svg>Capture <span class="kbd">⌃2</span></span>
+    <span class="stab on"><svg><use href="#i-cpu"/></svg>Intelligence <span class="kbd">⌃3</span></span>
+    <span class="stab"><svg><use href="#i-hdd"/></svg>Data <span class="kbd">⌃4</span></span>
+    <span class="stab"><svg><use href="#i-book"/></svg>About <span class="kbd">⌃5</span></span>
+    <span class="ffield" style="margin-left:auto;display:flex;align-items:center;gap:var(--gap-inline);width:220px;height:var(--h-md);padding:0 var(--s-8);border-radius:var(--r-md);background:var(--app-surface-subtle);box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)"><svg style="width:13px;height:13px;color:var(--app-text-subtle)"><use href="#i-search"/></svg><span class="t-ui" style="color:var(--app-text-subtle)">Filter settings</span><span class="kbd" style="margin-left:auto">⌘F</span></span>
+  </div>
+  <div class="spane"><div class="scol">
+    <div class="ghd"><span class="t-title" style="font-size:var(--t-title)">Intelligence</span>
+      <span class="t-meta">Providers, Ask AI, understanding, and the four on-device model families</span></div>
+
+    <div class="ghd"><span class="t-label">Providers</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable AI features</span><span class="srow__s">Master switch — Ask AI, the journal's read, and Subjects all stop without it</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Connected providers</span></div>
+    <div class="grp">
+      <div class="srow" style="align-items:flex-start"><span class="srow__txt"><span class="srow__l">Providers</span><span class="srow__s">Two providers of the same kind can coexist — identity is per instance, not per kind</span></span>
+        <span class="srow__v" style="flex:1 1 auto;max-width:420px"><span class="repeat">
+          <span class="rep"><span class="rep__n">Anthropic</span><span class="badge badge--ok">key saved</span><span class="txtf" style="width:120px;margin-left:auto">Work account</span><span class="btn btn--ghost btn--sm">Remove</span></span>
+          <span class="rep"><span class="rep__n">Ollama</span><span class="txtf ph" style="width:170px;margin-left:auto">http://localhost:11434</span><span class="btn btn--ghost btn--sm">Remove</span></span>
+          <span class="rep" style="background:transparent;box-shadow:none;padding-left:0;flex-wrap:wrap">
+            <span class="btn btn--sm">+ Anthropic</span><span class="btn btn--sm">+ OpenAI</span><span class="btn btn--sm">+ OpenAI-compatible</span><span class="btn btn--sm">+ Ollama</span><span class="btn btn--sm">+ Llamafile</span></span>
+        </span></span></div>
+      <div class="callout callout--info"><svg><use href="#i-alert"/></svg>
+        <span class="t-meta">A cloud provider is connected. Text from your frames and transcripts leaves this
+          Mac when you use a cloud model.</span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Default model</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Global default model</span><span class="srow__s">Used by every feature that has no override of its own</span></span>
+        <span class="srow__v"><span class="pop">Anthropic · claude-sonnet-4-5 <svg><use href="#i-chevud"/></svg></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Status</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">AI runtime</span><span class="rov">enabled · configured · reachable</span></span>
+        <span class="srow__v"><span class="chip on">Ready</span><span class="btn btn--sm">Test connection</span><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">MCP connectors</span><span class="t-meta">Tools the Reasoning Engine may call while answering.</span></div>
+    <div class="grp">
+      <div class="srow" style="align-items:flex-start"><span class="srow__txt"><span class="srow__l">Connectors</span><span class="srow__s">Each connector's tools can be curated individually</span></span>
+        <span class="srow__v" style="flex:1 1 auto;max-width:420px"><span class="repeat">
+          <span class="rep"><span class="rep__n">Linear</span><span class="badge badge--ok">authorized</span><span class="btn btn--ghost btn--sm">14 tools</span><span class="btn btn--ghost btn--sm">Disconnect</span><span class="sw on"><i></i></span></span>
+          <span class="rep"><span class="rep__n">GitHub</span><span class="badge">not connected</span><span class="btn btn--ghost btn--sm">Connect</span><span class="sw"><i></i></span></span>
+          <span class="rep"><span class="rep__n">filesystem (custom)</span><span class="badge badge--warn">reconnect</span><span class="btn btn--ghost btn--sm">Configure</span><span class="sw on"><i></i></span></span>
+          <span class="rep" style="background:transparent;box-shadow:none;padding-left:0"><span class="btn btn--sm"><svg style="width:11px;height:11px"><use href="#i-plus"/></svg>Add a connector</span></span>
+        </span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Ask AI</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable Ask AI</span><span class="srow__s">Quick Access keeps searching when this is off — only the ask row disappears</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Fetch pages you visited</span><span class="srow__s">Re-reads a page you had open when the recorded frame is not enough</span></span>
+        <span class="srow__v"><span class="sw"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Limit tool calls per question</span><span class="srow__s">Off means a single question can keep calling tools until it finishes</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span><span class="stepper"><span>12</span><i>−</i><i>+</i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Model override</span><span class="srow__s">Leave unset to follow the global default</span></span>
+        <span class="srow__v"><span class="pop">Follow default <svg><use href="#i-chevud"/></svg></span><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">User Context</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Derive context continuously</span><span class="srow__s">Summarizes each half-hour window into an Activity, then into Conclusions</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Derivation status</span>
+          <span class="rov">Deriving Activities · 412 Activities · 38 Conclusions · last run 12 min ago<br>≈ 1.9M tokens across 214 passes — estimated from text length, not a billed count</span></span>
+        <span class="srow__v"><span class="chip on">active</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Derivation Budget</span><span class="srow__s">How much of each window the model is given to read</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i">Light</span><span class="seg__i on">Balanced</span><span class="seg__i">Thorough</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">History Backfill</span><span class="rov">Reaches back about 14 days</span></span>
+        <span class="srow__v"><span class="t-meta">Go deeper — derive all of history</span><span class="sw"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Run derivation</span><span class="srow__s">Wiping clears activities, conclusions, dismissals, standing context and ask history</span></span>
+        <span class="srow__v"><span class="btn btn--sm">Run derivation now</span><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span><span class="btn btn--danger btn--sm">Wipe User Context</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">OCR &amp; Previews</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable OCR</span><span class="srow__s">Text recognised on every frame — this is what makes search find words on screen</span></span>
+        <span class="srow__v"><span class="den">18,402 frames waiting</span><span class="sw on"><i></i></span></span></div>
+      <div class="srow" style="align-items:flex-start"><span class="srow__txt"><span class="srow__l">Pacing</span><span class="srow__s">Reported, not configurable — the governor ships with these two duty cycles</span></span>
+        <span class="srow__v" style="flex-direction:column;align-items:flex-end;gap:var(--s-6)">
+          <span class="duty" style="width:280px"><span class="t-label">While recording</span>
+            <span class="duty__bar"><i class="duty__work" style="width:20%">20%</i><i class="duty__cool" style="width:80%">idle 80%</i></span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">2 s of work, then 8 s idle</span></span>
+          <span class="duty" style="width:280px"><span class="t-label">While paused</span>
+            <span class="duty__bar"><i class="duty__work" style="width:40%">40%</i><i class="duty__cool" style="width:60%">idle 60%</i></span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">4 s of work, then 6 s idle</span></span>
+        </span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Provider</span></span>
+        <span class="srow__v"><span class="radios" style="width:300px">
+          <span class="radio"><i class="on"></i><span class="radio__t"><span class="radio__l">Apple Vision</span><span class="radio__s">Managed by macOS — nothing to download</span></span></span>
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Tesseract</span><span class="radio__s">Downloadable language models, more knobs</span></span></span>
+        </span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Model</span></span>
+        <span class="srow__v"><span class="pop">Managed by macOS <svg><use href="#i-chevud"/></svg></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Language</span></span>
+        <span class="srow__v"><span class="cond">when Tesseract</span><span class="input" style="width:200px"><svg><use href="#i-search"/></svg><span>English (eng)</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Recognition mode</span></span>
+        <span class="srow__v"><span class="cond">when Apple Vision</span><span class="seg"><span class="seg__i">Fast</span><span class="seg__i on">Accurate</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Language correction</span></span>
+        <span class="srow__v"><span class="cond">when Apple Vision</span><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Page segmentation</span></span>
+        <span class="srow__v"><span class="cond">when Tesseract</span><span class="pop">Auto <svg><use href="#i-chevud"/></svg></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Image preprocessing</span></span>
+        <span class="srow__v"><span class="cond">when Tesseract</span><span class="seg"><span class="seg__i on">None</span><span class="seg__i">Grayscale</span><span class="seg__i">Thresholded</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Upscale before OCR</span></span>
+        <span class="srow__v"><span class="cond">when Tesseract</span><span class="seg"><span class="seg__i on">1×</span><span class="seg__i">2×</span><span class="seg__i">3×</span><span class="seg__i">4×</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Character whitelist</span></span>
+        <span class="srow__v"><span class="cond">when Tesseract</span><span class="txtf ph" style="width:220px">Any character</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">OCR availability</span><span class="rov">Apple Vision available · 17 languages installed</span></span>
+        <span class="srow__v"><span class="chip on">Ready</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Selected model status</span><span class="rov">Managed by macOS · no separate download · Apple system licence</span></span>
+        <span class="srow__v"><span class="btn btn--ghost btn--sm">Delete unused OCR models</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Preview Cache</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Cache duration</span><span class="srow__s">How long decoded frame previews stay in memory after you look at them</span></span>
+        <span class="srow__v"><span class="pop">1 hour <svg><use href="#i-chevud"/></svg></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Transcription</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable audio transcription</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Transcribe microphone</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Transcribe system audio</span><span class="srow__s">Meeting audio from other people comes through this source</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Provider</span></span>
+        <span class="srow__v"><span class="radios" style="width:320px">
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Local Whisper</span><span class="radio__s">On-device, slowest, widest language coverage</span></span></span>
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Apple Speech</span><span class="radio__s">On-device, needs a macOS permission</span></span></span>
+          <span class="radio"><i class="on"></i><span class="radio__t"><span class="radio__l">Parakeet</span><span class="radio__s">On-device, fastest — three memory modes</span></span></span>
+          <span class="radio"><i></i><span class="radio__t"><span class="radio__l">Deepgram</span><span class="radio__s">Cloud — audio is uploaded to your own Deepgram account</span></span></span>
+        </span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Model</span></span>
+        <span class="srow__v"><span class="pop">parakeet-tdt-0.6b-v3 <svg><use href="#i-chevud"/></svg></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Language</span></span>
+        <span class="srow__v"><span class="input" style="width:200px"><svg><use href="#i-search"/></svg><span>Detect automatically</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Deepgram API key</span><span class="srow__s">Stored in the app vault, never in a config file</span></span>
+        <span class="srow__v"><span class="cond">when Deepgram</span><span class="txtf ph" style="width:150px">••••••••</span><span class="btn btn--sm">Save key</span><span class="btn btn--ghost btn--sm">Check connection</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Parakeet memory mode</span></span>
+        <span class="srow__v"><span class="cond">when Parakeet</span><span class="seg"><span class="seg__i on">Balanced</span><span class="seg__i">Low memory</span><span class="seg__i">Performance</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Idle unload seconds</span><span class="srow__s">Releases the model's memory after this long with no work</span></span>
+        <span class="srow__v"><span class="cond">when Balanced</span><span class="stepper"><span>120 s</span><i>−</i><i>+</i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Chunk seconds</span><span class="srow__s">0 disables chunking</span></span>
+        <span class="srow__v"><span class="cond">when Parakeet</span><span class="stepper"><span>60 s</span><i>−</i><i>+</i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Selected model status</span><span class="rov">Not installed · Apache-2.0 · NVIDIA NeMo</span></span>
+        <span class="srow__v"><span class="badge badge--ok">FITS — 0.6 OF 16 GB</span><span class="btn btn--sm">Download (615 MB)</span><span class="btn btn--ghost btn--sm">Delete unused transcription models</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Speaker analysis</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Speaker separation</span><span class="srow__s">Separate speakers in transcripts · Recognize saved people</span></span>
+        <span class="srow__v" style="flex-direction:column;align-items:flex-end;gap:var(--s-6)"><span class="sw on"><i></i></span><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Helper timeout</span><span class="srow__s">How long one diarization pass may run before it is abandoned</span></span>
+        <span class="srow__v"><span class="cost" style="width:200px"><span class="track"><span class="track__r"></span><span class="track__f" style="width:24%"></span><span class="track__k" style="left:24%"></span></span><span class="costout"><b>15 m</b><span>1 – 60 m</span></span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Speaker model</span><span class="rov">speakrs · pyannote-community-1 + WeSpeaker on CoreML</span></span>
+        <span class="srow__v"><span class="badge badge--ok">FITS — 0.4 OF 16 GB</span><span class="btn btn--sm">Download (419 MB)</span><span class="btn btn--ghost btn--sm">Delete speaker model</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Your voice</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Voiceprint</span><span class="srow__s">Read one short paragraph — it is what lets “You” be labelled instead of “Speaker 2”</span></span>
+        <span class="srow__v"><span class="btn btn--sm"><i class="rdot"></i>Record</span><span class="btn btn--ghost btn--sm">Delete voiceprint</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Label my voice automatically</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Semantic Search Model</span>
+      <span class="srow__v" style="margin-left:auto"><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable semantic search</span>
+          <span class="srow__s">Off by default. Turning it on indexes <span class="den">184,220 frames</span> — about
+            <span class="den">1.1 GB</span> of index and a few hours of background work.</span></span>
+        <span class="srow__v"><span class="sw"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Model</span><span class="rov">nomic-embed-text-v1.5 · Apache-2.0 · approximate size</span></span>
+        <span class="srow__v"><span class="badge badge--ok">FITS — 0.3 OF 16 GB</span><span class="btn btn--sm">Download (274 MB)</span><span class="btn btn--ghost btn--sm">Delete</span></span></div>
+    </div>
+  </div></div>
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-cpu"/></svg>Settings · Intelligence</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘F</span><span>Filter</span></span>
+      <span class="hint"><span class="kbd">⌃1–5</span><span>Sections</span></span>
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+      <span class="hint"><span class="kbd">␣</span><span>Toggle</span></span>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ ⌃4 DATA ══════════════════════════════ -->
+<p class="caption" style="margin-top:40px"><b>⌃4 · Data</b> — three rows. Retention's ladder shows <b>the app's real four values</b> — 7 / 14 / 30 days
+  and Forever — not the mockups' 7·30·90·1y·∞, which never existed in the policy type. <b>Agent access lives
+  here</b>, not under Intelligence: what a local agent can read is a data question, and every grant shows its
+  scope, its expiry and its revoke button.</p>
+<div class="win win--1100 win--tall p11">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <span class="tbar__title">Settings</span>
+    <div class="seg" style="margin-left:var(--s-8)"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+  <div class="stabs">
+    <span class="stab"><svg><use href="#i-spark"/></svg>General <span class="kbd">⌃1</span></span>
+    <span class="stab"><svg><use href="#i-screen"/></svg>Capture <span class="kbd">⌃2</span></span>
+    <span class="stab"><svg><use href="#i-cpu"/></svg>Intelligence <span class="kbd">⌃3</span></span>
+    <span class="stab on"><svg><use href="#i-hdd"/></svg>Data <span class="kbd">⌃4</span></span>
+    <span class="stab"><svg><use href="#i-book"/></svg>About <span class="kbd">⌃5</span></span>
+    <span class="ffield" style="margin-left:auto;display:flex;align-items:center;gap:var(--gap-inline);width:220px;height:var(--h-md);padding:0 var(--s-8);border-radius:var(--r-md);background:var(--app-surface-subtle);box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)"><svg style="width:13px;height:13px;color:var(--app-text-subtle)"><use href="#i-search"/></svg><span class="t-ui" style="color:var(--app-text-subtle)">Filter settings</span><span class="kbd" style="margin-left:auto">⌘F</span></span>
+  </div>
+  <div class="spane"><div class="scol">
+    <div class="ghd"><span class="t-title" style="font-size:var(--t-title)">Data</span>
+      <span class="t-meta"><span class="is-mono is-num">34.2 GB</span> captured · <span class="is-mono is-num">312 GB</span> free on this volume</span></div>
+
+    <div class="ghd"><span class="t-label">Storage</span><span class="t-meta">Where capture files live on disk and how long they are kept.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Save Directory</span><span class="srow__s">Changing this needs a restart — existing captures are not moved</span></span>
+        <span class="srow__v"><span class="txtf" style="width:260px">~/Library/Application Support/day.mnema</span><span class="btn btn--sm">Browse</span></span></div>
+      <div class="srow" style="align-items:flex-start"><span class="srow__txt"><span class="srow__l">Retention</span><span class="srow__s">Ages out frames, video and audio. It never touches what Mnema has concluded.</span></span>
+        <span class="srow__v" style="flex-direction:column;align-items:flex-end;gap:var(--s-6)">
+          <span class="ladder">
+            <span class="ladder__seg"><span>7 days</span><span>14 days</span><span class="on">30 days</span><span>Forever</span></span>
+            <span class="ladder__bar"><i style="width:38%"></i><u style="left:38%"></u></span>
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">keeps ≈ 42 GB · you have 34.2 GB today</span>
+          </span>
+          <span style="display:flex;gap:var(--s-6);align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:380px">
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">last cleanup: 118 segments, 41,206 frames, 96 audio segments deleted</span>
+            <span class="btn btn--sm">Run cleanup now</span></span>
+        </span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Access</span><span class="t-meta">Let local tools request time-bounded, redacted access to your Mnema history.</span></div>
+    <div class="grp">
+      <div class="srow" style="align-items:flex-start"><span class="srow__txt"><span class="srow__l">CLI Access</span>
+          <span class="srow__s">An agent never reads the database directly — it asks <span class="is-mono">mnema-cli</span>, which asks you</span>
+          <span class="rov" style="margin-top:3px">mnema-cli installed · /usr/local/bin/mnema</span></span>
+        <span class="srow__v" style="flex:1 1 auto;max-width:440px;flex-direction:column;align-items:stretch;gap:var(--s-6)">
+          <span style="display:flex;gap:var(--s-6);justify-content:flex-end"><span class="btn btn--sm">Reinstall CLI</span><span class="btn btn--ghost btn--sm"><svg style="width:11px;height:11px"><use href="#i-refresh"/></svg></span></span>
+          <span class="repeat">
+            <span class="rep"><span class="rep__n">Claude Code</span><span class="t-meta">search + OCR text</span><span class="t-meta is-mono is-num" style="margin-left:auto">expires in 4d</span><span class="btn btn--ghost btn--sm">Revoke</span></span>
+            <span class="rep"><span class="rep__n">Raycast</span><span class="t-meta">timeline windows</span><span class="t-meta is-mono is-num" style="margin-left:auto">expires in 22h</span><span class="btn btn--ghost btn--sm">Revoke</span></span>
+          </span>
+          <span class="callout callout--info" style="margin:0"><svg><use href="#i-key"/></svg>
+            <span class="t-meta"><b class="med">Claude Code</b> is asking for 7 days of frame text and transcripts.
+              <span class="btn btn--sm" style="margin-left:var(--s-6)">Review</span></span></span>
+        </span></div>
+    </div>
+  </div></div>
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-hdd"/></svg>Settings · Data</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘F</span><span>Filter</span></span>
+      <span class="hint"><span class="kbd">⌃1–5</span><span>Sections</span></span>
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+    </span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ ⌃5 ABOUT ═════════════════════════════ -->
+<p class="caption" style="margin-top:40px"><b>⌃5 · About</b> — thirteen rows: the licence and its trial, the identity block, the update channel, the
+  acknowledgements, and the developer logs. The licence <b>Status</b> row is one row with eight states behind it;
+  the licensed-with-refused-activation branch is drawn because it is the only one that asks the user to do
+  something.</p>
+<div class="win win--1100 win--tall p11">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <span class="tbar__title">Settings</span>
+    <div class="seg" style="margin-left:var(--s-8)"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+  <div class="stabs">
+    <span class="stab"><svg><use href="#i-spark"/></svg>General <span class="kbd">⌃1</span></span>
+    <span class="stab"><svg><use href="#i-screen"/></svg>Capture <span class="kbd">⌃2</span></span>
+    <span class="stab"><svg><use href="#i-cpu"/></svg>Intelligence <span class="kbd">⌃3</span></span>
+    <span class="stab"><svg><use href="#i-hdd"/></svg>Data <span class="kbd">⌃4</span></span>
+    <span class="stab on"><svg><use href="#i-book"/></svg>About <span class="kbd">⌃5</span></span>
+    <span class="ffield" style="margin-left:auto;display:flex;align-items:center;gap:var(--gap-inline);width:220px;height:var(--h-md);padding:0 var(--s-8);border-radius:var(--r-md);background:var(--app-surface-subtle);box-shadow:inset 0 0 0 var(--hairline) var(--app-border-strong)"><svg style="width:13px;height:13px;color:var(--app-text-subtle)"><use href="#i-search"/></svg><span class="t-ui" style="color:var(--app-text-subtle)">Filter settings</span><span class="kbd" style="margin-left:auto">⌘F</span></span>
+  </div>
+  <div class="spane"><div class="scol">
+    <div class="ghd"><span class="t-title" style="font-size:var(--t-title)">About</span></div>
+
+    <div class="ghd"><span class="t-label">License &amp; Trial</span><span class="t-meta">Buy once, keep it forever — verified offline.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Status</span>
+          <span class="rov">Licensed · 2 of 3 devices · updates included until 14 Mar 2027</span></span>
+        <span class="srow__v"><span class="chip on">Licensed</span><span class="btn btn--ghost btn--sm">Free up my devices</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Refresh license status</span><span class="srow__s">Checks the revocation list; works offline against the cached copy</span></span>
+        <span class="srow__v"><span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">last checked 2h ago</span><span class="btn btn--sm">Refresh</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Buy Mnema</span></span>
+        <span class="srow__v"><span class="cond">when unlicensed or out of window</span><span class="btn btn--primary btn--sm">Buy</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Activate license</span></span>
+        <span class="srow__v"><span class="txtf ph" style="width:240px">MNEMA-XXXX-XXXX-XXXX-XXXX</span><span class="btn btn--sm">Activate</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">About</span><span class="t-meta">Version, build details, and the projects Mnema is built on.</span></div>
+    <div class="grp">
+      <div class="idhero">
+        <span class="idhero__ic"><svg><use href="#i-layers"/></svg></span>
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span style="display:flex;align-items:baseline;gap:var(--gap-inline)">
+            <span class="t-title" style="font-size:var(--t-ui)">Mnema</span>
+            <span class="t-meta is-mono is-num">v0.1.9</span><span class="badge">stable channel</span></span>
+          <span class="t-meta">Everything you saw, kept on your Mac.</span>
+          <span class="rov">macOS 26.1 · arm64 &nbsp;·&nbsp; day.mnema</span>
+        </span>
+      </div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Copy details</span><span class="srow__s">Version, build, OS and identifier as one block for a bug report</span></span>
+        <span class="srow__v"><span class="btn btn--sm">Copy details</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Updates</span><span class="t-meta">Mnema checks the selected channel at startup after onboarding.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Update channel</span></span>
+        <span class="srow__v"><span class="seg"><span class="seg__i on">Stable</span><span class="seg__i">Preview</span></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Confirm preview channel</span><span class="srow__s">Preview builds are opt-in prereleases and can be rolled back only by reinstalling</span></span>
+        <span class="srow__v"><span class="cond">when switching to Preview</span><span class="btn btn--sm">Switch to Preview</span><span class="btn btn--ghost btn--sm">Cancel</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Status</span>
+          <span class="rov">v0.2.0 available · released 2 Aug 2026</span>
+          <span class="srow__s">Recording is running — Mnema will finish the current segment before restarting</span></span>
+        <span class="srow__v" style="flex-direction:column;align-items:flex-end;gap:var(--s-6)">
+          <span class="ladder__bar" style="width:180px"><i style="width:64%"></i></span>
+          <span style="display:flex;gap:var(--s-6)"><span class="btn btn--ghost btn--sm">Check for Updates</span><span class="btn btn--primary btn--sm">Install Update</span></span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Acknowledgements</span><span class="t-meta">Mnema's on-device models are built on these open projects.</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Third-party notices</span>
+          <span class="rov">412 packages · Apache-2.0, MIT, BSD-3-Clause, MPL-2.0, ISC</span></span>
+        <span class="srow__v"><span class="btn btn--sm">Copy</span></span></div>
+    </div>
+
+    <div class="ghd"><span class="t-label">Developer &amp; Logs</span></div>
+    <div class="grp">
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Enable developer options</span></span>
+        <span class="srow__v"><span class="sw on"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Native capture debug logging</span><span class="srow__s">Verbose ScreenCaptureKit and Core Audio events — grows quickly</span></span>
+        <span class="srow__v"><span class="sw"><i></i></span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">Native capture log</span>
+          <span class="rov">~/Library/Logs/day.mnema/native-capture.log · exists · 4.1 MB</span></span>
+        <span class="srow__v"><span class="cond">when a log exists</span><span class="btn btn--sm">Reveal</span><span class="btn btn--danger btn--sm">Delete Log File</span></span></div>
+      <div class="srow"><span class="srow__txt"><span class="srow__l">General application log</span>
+          <span class="rov">~/Library/Logs/day.mnema/rust.log · exists · 812 KB · timestamps are UTC</span></span>
+        <span class="srow__v"><span class="btn btn--sm">Open Log</span><span class="btn btn--danger btn--sm">Delete Log File</span></span></div>
+    </div>
+  </div></div>
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-book"/></svg>Settings · About</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘F</span><span>Filter</span></span>
+      <span class="hint"><span class="kbd">⌃1–5</span><span>Sections</span></span>
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+    </span>
+  </div>
+</div>
+
+<div class="sect"><div class="sect__k">Where the G-decisions outranked the mockups</div>
+  <p class="sect__t">Five places this census deliberately does not match pages 05 and 06</p></div>
+<div class="tblwrap">
+  <table class="tbl">
+    <thead><tr><th style="width:260px">Pages 05 / 06 draw</th><th style="width:250px">This page</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td>Retention ladder <span class="is-mono">7d · 30d · 90d · 1y · ∞</span></td>
+        <td><span class="is-mono">7 days · 14 days · 30 days · Forever</span></td>
+        <td><b>G8.</b> 90d and 1y do not exist in the retention policy type. A denominator over an option that
+          cannot be chosen is worse than no denominator.</td></tr>
+      <tr><td>A <span class="is-mono">⌘Z Undo</span> hint in the settings deck</td><td>Not drawn.</td>
+        <td><b>G7.</b> Settings-Undo is out for v1. The row echo and the deck's timestamped state answer the
+          anxiety; an undo stack is speculative machinery.</td></tr>
+      <tr><td>“⌘⇧A is taken by <b>CleanShot X</b>”</td><td>“This shortcut is taken by another app — try a different combination”</td>
+        <td><b>G9.</b> macOS has no API to enumerate another app's hotkeys. Naming one would be a guess printed
+          as a fact. In-app conflicts <i>are</i> named, and this page draws that case too.</td></tr>
+      <tr><td>OCR duty bar with a thermal claim</td><td>Both duty halves, split in seconds, and the real backlog count.</td>
+        <td><b>G8.</b> No °C claims anywhere. The row also states it is reported, not configurable — the two
+          duty cycles are governor constants.</td></tr>
+      <tr><td>A semantic coverage meter, always on</td><td>Off state states the price; the meter only exists once it is enabled.</td>
+        <td><b>G10.</b> Shipping default is off with zero embeddings, so a coverage bar reading 0% would be a
+          meter of nothing. The price is computed from the real frame count.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="sect"><div class="sect__k">Structural notes</div>
+  <p class="sect__t">Four things the census turned up that are worth deciding on, not just drawing</p></div>
+<div class="tblwrap">
+  <table class="tbl">
+    <thead><tr><th style="width:280px">Finding</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td><b>Intelligence carries 46 of 96 rows</b></td>
+        <td>Nearly half the settings surface behind one tab, and ⌘F is doing most of the work of finding
+          anything inside it. The tab is honest — these things really are one family — but it is the strongest
+          argument this direction has for the filter being the real navigation rather than a convenience.</td></tr>
+      <tr><td><b>Eleven Capture rows are conditional</b></td>
+        <td>Six of them on one toggle. The <span class="cond">when …</span> badge is drawn here as spec
+          annotation; in the app they simply are not rendered. Worth keeping that way — a greyed row you cannot
+          reach is worse than a row that is not there.</td></tr>
+      <tr><td><b>Deletes are scattered across four tabs</b></td>
+        <td>Retention and cleanup in Data; Wipe User Context in Intelligence; delete-unused-model in three
+          separate groups; delete voiceprint in a fourth; two log deletes in About; revoke-grant in Data.
+          Nothing here proposes a “delete everything” pane — but a user asking “what does Mnema still have of
+          mine?” has seven places to look.</td></tr>
+      <tr><td><b>The shortcut recorders are outside the index</b></td>
+        <td>Deliberate: they are one row per registered action across four categories, so indexing them makes
+          the 96 a moving number and the completeness test unfalsifiable. The cost is that ⌘F cannot find
+          “Quick Access” by name — which is exactly the row a user is most likely to search for.</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+(function () {
+  var r = document.documentElement, b = document.getElementById("themetog");
+  function cur() {
+    return r.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  }
+  function paint() {
+    var d = cur() === "dark";
+    b.querySelector("use").setAttribute("href", d ? "#i-moon" : "#i-sun");
+    b.querySelector("span").textContent = d ? "Dark" : "Light";
+  }
+  b.addEventListener("click", function () { r.dataset.theme = cur() === "dark" ? "light" : "dark"; paint(); });
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", paint);
+  paint();
+})();
+</script>
+</body>
+</html>

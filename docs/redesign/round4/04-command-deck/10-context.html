@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Command Deck · 07 Components, specimen & audit</title>
+<title>Command Deck · 10 Context</title>
 <style>
 /* ══════════════════════════════════════════════════════════════════════════
    Mnema — round 4, direction 04 "Command Deck"
@@ -926,533 +926,477 @@ mark { background: var(--app-accent-bg); color: var(--app-accent); border-radius
   <svg><use href="#i-sun"/></svg><span>Theme</span>
 </button>
 <style>
-  .type-row { display: flex; align-items: baseline; gap: var(--s-24); padding: var(--s-12) 0; }
-  .type-row + .type-row { box-shadow: inset 0 var(--hairline) 0 var(--app-border); }
-  .type-row__k { width: 96px; flex: 0 0 96px; }
-  .type-row__s { flex: 1 1 auto; min-width: 0; }
-  .type-row__m { width: 300px; flex: 0 0 300px; }
-  .sp { display: flex; align-items: flex-end; gap: var(--s-12); }
-  .sp__i { display: flex; flex-direction: column; align-items: center; gap: var(--s-6); }
-  .sp__b { background: var(--app-accent); opacity: .7; border-radius: 1px; height: 28px; }
-  .metric { display: flex; align-items: flex-end; gap: var(--s-16); }
-  .metric__i { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
-  .metric__b { background: var(--app-surface-hover); box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
-    border-radius: var(--r-md); width: 64px; }
-  .rad { display: flex; gap: var(--s-16); }
-  .rad__i { display: flex; flex-direction: column; align-items: center; gap: 5px; }
-  .rad__b { width: 52px; height: 40px; background: var(--app-surface-hover);
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong); }
-  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: var(--s-16); }
-  .pillrow { display: flex; align-items: center; gap: var(--s-12); }
-  .pillrow__k { width: 210px; flex: 0 0 210px; }
-  .wrap { display: flex; align-items: center; gap: var(--s-12); flex-wrap: wrap; }
-  .swatch { display: flex; flex-direction: column; gap: var(--s-4); }
-  .swatch__c { width: 100%; height: 40px; border-radius: var(--r-md);
-    box-shadow: inset 0 0 0 var(--hairline) light-dark(rgba(21,28,38,.12), rgba(255,255,255,.08)); }
-  .swatches { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: var(--s-12); }
-  .tblwrap { overflow-x: auto; }
-  .tbl td.ok { color: var(--app-accent); }
+  /* ── page 10 · Context ─────────────────────────────────────────────────── */
+  .ctx { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .ctx__hd { flex: 0 0 auto; padding: var(--s-12) var(--s-16) var(--s-8);
+    display: flex; align-items: center; gap: var(--s-12); }
+  .ctx__body { flex: 1 1 auto; min-height: 0; overflow: hidden;
+    display: grid; grid-template-columns: 1fr 300px; gap: var(--s-16); padding: 0 var(--s-16); }
+  .ctx__main { min-width: 0; display: flex; flex-direction: column; gap: var(--s-8); }
+  .ctx__rail { min-width: 0; display: flex; flex-direction: column; gap: var(--s-8); overflow: hidden; }
+  .ctx__rail > * { flex: 0 0 auto; }
+
+  /* composer */
+  .comp { border-radius: var(--r-lg); background: var(--app-surface); padding: var(--s-8) var(--s-12) var(--s-12); }
+  .comp__h { display: flex; align-items: center; gap: var(--s-8); padding-bottom: var(--s-6); }
+  .comp__ta { min-height: 52px; padding: var(--s-8); border-radius: var(--r-md);
+    background: var(--app-surface-subtle); box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--ring);
+    font: var(--w-regular) var(--t-read)/1.5 var(--app-font-sans); letter-spacing: var(--ls-read);
+    color: var(--app-text-strong); }
+  .comp__ft { display: flex; align-items: center; gap: var(--s-6); margin-top: var(--s-8); flex-wrap: wrap; }
+  .prefill { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--r-pill);
+    background: var(--app-surface-hover); color: var(--app-text-muted);
+    font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); }
+
+  /* standing statements */
+  .stlist { flex: 0 0 auto; overflow: hidden; border-radius: var(--r-lg);
+    background: var(--app-surface); }
+  .strow { display: flex; align-items: flex-start; gap: var(--s-8); padding: var(--s-8) var(--s-12); }
+  .strow + .strow { box-shadow: inset 0 var(--hairline) 0 var(--app-border); }
+  .strow.is-key { background: var(--app-accent); }
+  .strow.is-key + .strow { box-shadow: none; }
+  .strow__q { flex: 0 0 auto; width: 14px; text-align: center; padding-top: 2px;
+    font: var(--w-regular) 12px/1 var(--app-font-sans); color: var(--app-accent); }
+  .strow.is-key .strow__q { color: var(--app-accent-contrast); }
+  .strow__t { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .strow__x { font: var(--w-regular) var(--t-ui)/1.45 var(--app-font-sans); letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong); }
+  .strow__m { display: flex; align-items: center; gap: var(--gap-inline);
+    font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle); }
+  .strow.is-key .strow__x { color: var(--app-accent-contrast); }
+  .strow.is-key .strow__m { color: var(--app-accent-contrast); opacity: .78; }
+  .strow.is-key .kbd { background: light-dark(rgba(255,255,255,.2), rgba(7,18,12,.24));
+    color: var(--app-accent-contrast); box-shadow: none; }
+  .topic { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: var(--r-sm);
+    background: var(--app-surface-hover); color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .04em; text-transform: uppercase; }
+  .strow.is-key .topic { background: light-dark(rgba(255,255,255,.2), rgba(7,18,12,.22));
+    color: var(--app-accent-contrast); }
+  .strow.is-key .btn { color: var(--app-accent-contrast); border-color: transparent;
+    background: light-dark(rgba(255,255,255,.16), rgba(7,18,12,.18)); }
+
+  /* rail cards */
+  .rcard { border-radius: var(--r-lg); background: var(--app-surface); padding: var(--s-8) var(--s-12) var(--s-12);
+    display: flex; flex-direction: column; gap: var(--s-6); }
+  .rcard__h { display: flex; align-items: center; gap: var(--gap-inline); }
+  .kv { display: flex; align-items: baseline; gap: var(--gap-inline); }
+  .kv b { font: var(--w-semi) var(--t-ui)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong); min-width: 34px; text-align: right; }
+  .kv span { font: var(--w-regular) var(--t-meta)/1.3 var(--app-font-sans); color: var(--app-text-muted); }
+  .evchips { display: flex; align-items: center; gap: var(--s-4); flex-wrap: wrap; }
+  .evchip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px 0 3px;
+    border-radius: var(--r-sm); background: var(--app-surface-hover);
+    font: var(--w-regular) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted); }
+  .evchip > i { display: block; width: 22px; height: 14px; border-radius: 2px; overflow: hidden; position: relative; }
+  .evsrc { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .04em;
+    padding: 2px 3px; border-radius: 2px; }
+  .evsrc--scr { background: var(--app-src-screen-bg); color: var(--app-src-screen); }
+  .evsrc--mic { background: var(--app-src-mic-bg); color: var(--app-src-mic); }
+  .cbar { height: 5px; border-radius: 3px; background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border); position: relative; overflow: hidden; }
+  .cbar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--app-accent); }
+
+  /* callout */
+  .callout { display: flex; gap: var(--s-8); padding: var(--s-8) var(--s-12); border-radius: var(--r-lg);
+    background: var(--app-info-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border); }
+  .callout svg { width: 14px; height: 14px; color: var(--app-info); flex: 0 0 auto; margin-top: 1px; }
+  .callout--warn { background: var(--app-warn-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border); }
+  .callout--warn svg { color: var(--app-warn); }
+
+  /* archive rows */
+  .arow { display: flex; align-items: center; gap: var(--s-8); padding: var(--s-8) var(--s-12); }
+  .arow + .arow { box-shadow: inset 0 var(--hairline) 0 var(--app-border); }
+  .arow__x { flex: 1 1 auto; min-width: 0;
+    font: var(--w-regular) var(--t-ui)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+  .arow__s { flex: 0 0 auto; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+    letter-spacing: .04em; text-transform: uppercase; color: var(--app-text-subtle); }
+
+  /* wipe sheet */
+  .scrim { position: absolute; inset: 0; z-index: 20;
+    background: light-dark(rgba(21,28,38,.28), rgba(0,0,0,.5)); }
+  .sheet { position: absolute; z-index: 21; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    width: 520px; border-radius: var(--r-xl); overflow: hidden; background: var(--app-surface);
+    box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) var(--app-border-strong);
+    padding: var(--s-16); display: flex; flex-direction: column; gap: var(--s-8); }
+  .sheet ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+  .sheet li { font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); color: var(--app-text-muted); }
+  .sheet li b { font-weight: var(--w-medium); color: var(--app-text-strong); }
+
+  .inset { width: 380px; border-radius: 10px; overflow: hidden; padding: var(--s-12);
+    background: var(--app-bg); box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+  .savestate { display: inline-flex; align-items: center; gap: 5px; margin-left: var(--s-16);
+    font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-accent); }
+  .savestate svg { width: 12px; height: 12px; flex: 0 0 auto; }
+  .tblwrap { max-width: 1120px; overflow-x: auto; }
 </style>
 
 <div class="mast">
   <div class="mast__eyebrow">
     <span class="mast__dir">04 · Command Deck</span>
-    <span class="mast__pg">Page 07 — Components, specimen &amp; self-audit</span>
+    <span class="mast__pg">Page 10 — Context (what it knows, and how you steer it)</span>
   </div>
-  <h1>One keycap, six type roles, twelve controls.</h1>
-  <p>Everything the five app pages are built from, in every state, plus the type and spacing specimen and an
-    honest UI/UX audit of each page. The direction's one added primitive is the <b>keycap</b>; everything else
-    is the shared system rendered natively.</p>
+  <h1>Two columns, because there are two kinds of knowing: what you told it, and what it worked out.</h1>
+  <p>Look at: the left column is <b>yours and never fades</b> — statements you write, editable and deletable,
+    with real add/edit timestamps. The right rail is <b>the engine's side, counted not narrated</b>: how many
+    activities and conclusions exist, how far derivation has actually covered, and one live conclusion with its
+    evidence and the only two corrections that exist. Every row is a keyboard row with its key — ⏎ edits, ⌘⏎
+    saves, ⌘⌫ deletes — and the <b>deck carries the save state</b>, exactly as it does in settings. Opened from
+    Overview's Context tile (⌃K); <span class="is-mono">esc</span> returns.</p>
 </div>
 
-<!-- ═══════════════ TYPE ═══════════════ -->
-<div class="sect"><div class="sect__k">Specimen 1</div><p class="sect__t">Type — six roles, three weights, no other sizes</p></div>
-<div class="cell">
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-label</span>
-    <span class="type-row__s"><span class="t-label">TODAY · MIC · 270 MB · ⌘⌥SPACE</span></span>
-    <span class="type-row__m t-meta">10 / 1.4 / +.02em / 510 / mono. Machine labels, column heads, keycaps, units, section eyebrows. Never a sentence.</span>
+<div class="sect" style="margin-top:0"><div class="sect__k">The way in</div>
+  <p class="sect__t">Overview's Context tile — corrected, because “142 facts” is a thing the backend does not have</p></div>
+<div class="rowfit">
+  <div class="inset">
+    <div class="tile" style="background:var(--app-surface);width:220px">
+      <div class="tile-h"><span class="t-label">Context</span><span class="kbd kbd--on" style="margin-left:auto">⌃K</span></div>
+      <div class="tile-row"><span class="t-ui strong is-mono is-num">38</span><span class="t-meta">conclusions</span></div>
+      <div class="tile-row"><span class="t-ui strong is-mono is-num">6</span><span class="t-meta">standing statements</span></div>
+      <div class="tile-row" style="margin-top:auto"><span class="t-meta" style="color:var(--app-text-subtle)">covered to 14:10</span><span class="chev" style="margin-left:auto"><svg><use href="#i-chevr"/></svg></span></div>
+    </div>
   </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-meta</span>
-    <span class="type-row__s"><span class="t-meta">38 min · 5 speakers · updated 14:40</span></span>
-    <span class="type-row__m t-meta">11 / 1.35 / +.01em / 400. Timestamps, counts, helper lines under a control, frame captions.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-ui</span>
-    <span class="type-row__s"><span class="t-ui">Start recording when Mnema launches</span></span>
-    <span class="type-row__m t-meta">13 / 1.25 / −.006em / 400. <b>The default.</b> Rows, buttons, menus, tabs, chips, labels. macOS Body.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-read</span>
-    <span class="type-row__s"><span class="t-read">The webhook verifier was the week's one real licensing change.</span></span>
-    <span class="type-row__m t-meta">14 / 1.55 / −.008em / 400. Prose only: answers, transcripts, empty-state body. Max 70ch.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-title</span>
-    <span class="type-row__s"><span class="t-title">Monday, August 3</span></span>
-    <span class="type-row__m t-meta">17 / 1.3 / −.016em / 590. Screen and section titles, dialog headings. One per region.</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">--t-display</span>
-    <span class="type-row__s"><span class="t-display is-mono is-num">13:07:24</span></span>
-    <span class="type-row__m t-meta">22 / 1.2 / −.02em / 590. <b>At most one per screen</b> — the readout clock (02), the hours hero (01), the empty-state lead (03C).</span>
-  </div>
-  <div class="type-row">
-    <span class="type-row__k t-label">mono rule</span>
-    <span class="type-row__s"><span class="t-ui">Recording <span class="is-mono is-num">2:14:07</span> · <span class="is-mono is-num">270 MB</span> · <span class="is-mono">apple-vision</span></span></span>
-    <span class="type-row__m t-meta">Mono is the machine voice: times, sizes, counts, ids, engine names, keys. Sans is the product speaking. <span class="is-mono">tabular-nums</span> on every number that changes in place.</span>
+  <div style="max-width:52ch;padding-top:var(--s-8)">
+    <p class="t-meta" style="margin:0 0 8px">Page 01 draws this tile as <b>“142 facts about you”</b>. There is no
+      <i>fact</i> entity anywhere in the backend — the real counts are Activities, Conclusions, Subjects and
+      standing statements. The tile is corrected here and in the deviations list; a count with a made-up noun
+      on it is the same G8 violation as a made-up number.</p>
+    <p class="t-meta" style="margin:0"><b>“Covered to 14:10”</b> is the derivation watermark, a real value —
+      the one honest way to say “this is how current the understanding is”.</p>
   </div>
 </div>
 
-<!-- ═══════════════ SPACING ═══════════════ -->
-<div class="sect"><div class="sect__k">Specimen 2</div><p class="sect__t">Spacing, control metrics, radii</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Spacing ramp — finer under 8, coarser above</span>
-    <div class="sp">
-      <span class="sp__i"><span class="sp__b" style="width:2px"></span><span class="t-label">2</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:4px"></span><span class="t-label">4</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:6px"></span><span class="t-label">6</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:8px"></span><span class="t-label">8</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:12px"></span><span class="t-label">12</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:16px"></span><span class="t-label">16</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:20px"></span><span class="t-label">20</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:24px"></span><span class="t-label">24</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:32px"></span><span class="t-label">32</span></span>
-      <span class="sp__i"><span class="sp__b" style="width:40px"></span><span class="t-label">40</span></span>
-    </div>
-    <span class="t-meta">Named constants do the work: <span class="is-mono">gap-inline 6</span> (icon → label),
-      <span class="is-mono">gap-row 8</span>, <span class="is-mono">gap-group 16</span>,
-      <span class="is-mono">gap-section 24</span>, <span class="is-mono">pad-panel 16</span>.
-      One inset per surface, and the grid gutter equals it — the bento is 12/12, Quick Access is the
-      documented exception at 20 inset / 16 gutter so 3 × 349 divides the fixed 1120.</span>
+<p class="caption" style="margin-top:32px"><b>A · 1100 × 720</b> — the two columns. Composer focused mid-sentence, six standing statements
+  below it, the engine's counted side on the right with one conclusion's evidence and its two corrections. The
+  deck shows the autosave state, the same slot page 05 uses.</p>
+<div class="win win--1100">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
+    <span class="chip on" style="margin-left:var(--s-8)"><svg style="width:11px;height:11px"><use href="#i-chevr"/></svg>Context <span class="kbd">esc</span></span>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
   </div>
-  <div class="cell">
-    <span class="cell__k">Control heights — 28 is the default and the hit floor</span>
-    <div class="metric">
-      <span class="metric__i"><span class="metric__b" style="height:20px"></span><span class="t-label">20 badge</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:24px"></span><span class="t-label">24 sm</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:28px"></span><span class="t-label">28 md</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:32px"></span><span class="t-label">32 lg</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:38px"></span><span class="t-label">38 titlebar</span></span>
-      <span class="metric__i"><span class="metric__b" style="height:44px"></span><span class="t-label">44 srow</span></span>
-    </div>
-    <span class="cell__k" style="margin-top:var(--s-8)">Radii — 4/6 controls · 8 panels · 12 floating · 10 window (drawn by macOS)</span>
-    <div class="rad">
-      <span class="rad__i"><span class="rad__b" style="border-radius:4px"></span><span class="t-label">4</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:6px"></span><span class="t-label">6</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:8px"></span><span class="t-label">8</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:12px"></span><span class="t-label">12</span></span>
-      <span class="rad__i"><span class="rad__b" style="border-radius:999px"></span><span class="t-label">pill</span></span>
-    </div>
-  </div>
-</div>
 
-<div class="cell" style="margin-top:var(--s-16)">
-  <span class="cell__k">Colour — one accent, semantics that never decorate, recording red is a state</span>
-  <div class="swatches">
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-bg)"></span><span class="t-label">bg</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface)"></span><span class="t-label">surface</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface-raised)"></span><span class="t-label">raised</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-surface-hover)"></span><span class="t-label">hover</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-accent)"></span><span class="t-label">accent</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-accent-bg)"></span><span class="t-label">accent bg</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-record)"></span><span class="t-label">record</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-danger)"></span><span class="t-label">danger</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-warn)"></span><span class="t-label">warn</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-screen)"></span><span class="t-label">screen</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-mic)"></span><span class="t-label">mic</span></span>
-    <span class="swatch"><span class="swatch__c" style="background:var(--app-src-sys)"></span><span class="t-label">sys</span></span>
-  </div>
-</div>
+  <div class="ctx">
+    <div class="ctx__hd">
+      <p class="t-title" style="margin:0">Context</p>
+      <span class="t-meta" style="max-width:56ch">What Mnema works from — the standing statements you write, and
+        the conclusions it forms from your activity.</span>
+      <span class="chip" style="margin-left:auto"><i style="width:6px;height:6px;border-radius:50%;background:var(--app-accent)"></i>Balanced</span>
+    </div>
 
-<!-- ═══════════════ KEYCAP ═══════════════ -->
-<div class="sect"><div class="sect__k">The direction's primitive</div><p class="sect__t">The keycap — one style, five contexts, never decorative</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Sizes &amp; states</span>
-    <div class="wrap">
-      <span class="kbd">⏎</span><span class="kbd">⌘K</span><span class="kbd">⌘⌥Space</span>
-      <span class="kbd kbd--wide">Space</span><span class="kbd kbd--lg">⌘⌥Space</span>
-      <span class="kbd kbd--on">⌘⏎</span>
-    </div>
-    <span class="t-meta">10px mono, 17px tall, 1px inset edge + a 1px bottom shadow so it reads as a cap and
-      not a chip. <span class="is-mono">--kbd--on</span> is the accent variant used on a selected row.
-      A keycap is <b>never</b> used for anything that is not literally a key you can press.</span>
-  </div>
-  <div class="cell">
-    <span class="cell__k">In context</span>
-    <div class="wrap">
-      <span class="seg"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span><span class="seg__i">Overview <span class="kbd">⌘2</span></span></span>
-      <span class="hint"><span class="kbd">⌥⏎</span><span>Copy text</span></span>
-      <span class="chip">Today <span class="kbd" style="background:transparent;box-shadow:none;min-width:0;padding:0">⌥T</span></span>
-      <span class="rec-field"><span class="kbd">⌘</span><span class="kbd">⌥</span><span class="kbd kbd--wide">Space</span></span>
-    </div>
-    <span class="t-meta">Switcher, deck hint, scope chip, shortcut recorder. Inside a chip the cap loses its
-      bezel — two nested bezels is the box-in-box rule applied to controls.</span>
-  </div>
-</div>
+    <div class="ctx__body">
+      <div class="ctx__main">
+        <div class="comp">
+          <div class="comp__h"><span class="t-label">Standing context</span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">yours · never fades</span>
+            <span class="hint" style="margin-left:auto"><span class="kbd">⌘⏎</span><span>add</span></span></div>
+          <div class="comp__ta">I run the repo with Bun, never pnpm — every command goes through <span class="is-mono">bun run</span><span class="caret"></span></div>
+          <div class="comp__ft">
+            <span class="t-meta" style="color:var(--app-text-subtle)">prefill:</span>
+            <span class="prefill">Your role</span>
+            <span class="prefill">What you're working on</span>
+            <span class="prefill">How you work</span>
+            <span class="prefill">What you care about</span>
+            <span class="prefill">Goals this quarter</span>
+          </div>
+        </div>
 
-<!-- ═══════════════ CONTROLS ═══════════════ -->
-<div class="sect"><div class="sect__k">Components</div><p class="sect__t">Controls — every variant, every state</p></div>
-<div class="grid2">
-  <div class="cell">
-    <span class="cell__k">Button — default · rest / hover / pressed / focus / disabled / busy</span>
-    <div class="cell__r">
-      <span class="btn">Rerun OCR</span>
-      <span class="btn is-hover">Rerun OCR</span>
-      <span class="btn is-active">Rerun OCR</span>
-      <span class="btn is-focus">Rerun OCR</span>
-      <span class="btn is-disabled">Rerun OCR</span>
-      <span class="btn"><span class="spin"></span>Rerunning</span>
-    </div>
-    <span class="cell__k">Primary · ghost · danger · small · icon</span>
-    <div class="cell__r">
-      <span class="btn btn--primary">Continue in Overview <span class="kbd" style="background:light-dark(rgba(255,255,255,.24),rgba(7,18,12,.22));color:inherit;box-shadow:none">⌘O</span></span>
-      <span class="btn btn--ghost">refresh</span>
-      <span class="btn btn--danger">Delete Recent…</span>
-      <span class="btn btn--sm">Test</span>
-      <span class="btn btn--icon btn--sm">⋯</span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">Segmented · chips · switch · popup · radio</span>
-    <div class="cell__r">
-      <span class="seg"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span>
-      <span class="chip on">All</span><span class="chip">Audio</span>
-      <span class="sw on"><i></i></span><span class="sw"><i></i></span>
-      <span class="pop">90 days <svg><use href="#i-chevud"/></svg></span>
-      <span class="radio on"></span><span class="radio"></span>
-    </div>
-    <span class="cell__k">Input · filter field · shortcut recorder (rest &amp; recording)</span>
-    <div class="cell__r">
-      <span class="input" style="width:170px"><svg><use href="#i-search"/></svg><span class="ph">Filter settings</span></span>
-      <span class="input" style="width:170px;box-shadow:var(--ring);border-color:var(--app-accent-border)"><svg><use href="#i-search"/></svg>audio<span class="caret"></span></span>
-      <span class="rec-field"><span class="kbd">⌥</span><span class="kbd">⌘</span><span class="kbd">P</span></span>
-      <span class="rec-field is-rec"><span class="t-meta is-mono" style="color:var(--app-accent)">Type shortcut…</span></span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">Custom inputs — cost slider · retention ladder · duty bar · coverage meter</span>
-    <div class="cell__r" style="align-items:flex-start;gap:var(--s-24)">
-      <span class="cost">
-        <span class="track"><span class="track__r"></span><span class="track__f" style="width:38%"></span><span class="track__k" style="left:38%"></span>
-          <span class="track__t" style="left:0"></span><span class="track__t" style="left:19%"></span><span class="track__t" style="left:38%"></span>
-          <span class="track__t" style="left:57%"></span><span class="track__t" style="left:76%"></span><span class="track__t" style="left:100%"></span></span>
-        <span class="costout"><b>2 fps</b><span>→ ≈ 1.4 GB / day</span></span>
-      </span>
-      <span class="ladder">
-        <span class="ladder__seg"><span>7d</span><span>30d</span><span class="on">90d</span><span>1y</span><span>∞</span></span>
-        <span class="ladder__bar"><i style="width:38%"></i><u style="left:38%"></u></span>
-        <span class="costout"><b>90 days</b><span>≈ 126 GB · 34.2 GB now</span></span>
-      </span>
-    </div>
-    <div class="cell__r" style="align-items:flex-start;gap:var(--s-24)">
-      <span class="duty">
-        <span class="duty__bar"><i class="duty__work" style="width:20%">20%</i><i class="duty__cool" style="width:80%">COOL 80%</i></span>
-        <span class="t-meta">12 s work / 48 s idle → fans stay off</span>
-      </span>
-      <span class="cost">
-        <span class="meter"><i style="width:41%"></i></span>
-        <span class="costout"><b>41%</b><span>508k of 1.24M frames</span></span>
-      </span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">Badges &amp; status</span>
-    <div class="cell__r">
-      <span class="badge">4.7 GB</span><span class="badge">Q4_K_M</span><span class="badge">CLOUD</span>
-      <span class="badge badge--ok">FITS — 4.7 OF 16 GB</span>
-      <span class="badge badge--warn">TIGHT — 3.0 GB PEAK</span>
-      <span class="badge badge--bad">TOO LARGE</span>
-    </div>
-    <span class="cell__k">Settings row — rest · keyboard-focused · saved echo</span>
-    <div class="grp">
-      <div class="srow"><span class="srow__txt"><span class="srow__l">Launch Mnema at login</span></span><span class="srow__v"><span class="sw on"><i></i></span></span></div>
-      <div class="srow is-key"><span class="srow__txt"><span class="srow__l">System audio</span><span class="srow__s">Being recorded for every app except the 2 you excluded</span></span><span class="srow__v"><span class="sw on"><i></i></span></span></div>
-      <div class="srow"><span class="srow__txt"><span class="srow__l">Microphone</span></span><span class="srow__v"><span class="saved"><svg><use href="#i-check"/></svg>Saved</span><span class="pop">MacBook Pro Microphone <svg><use href="#i-chevud"/></svg></span></span></div>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════ CHROME ═══════════════ -->
-<div class="sect"><div class="sect__k">Chrome</div><p class="sect__t">The state pill — nine states and the degradation ladder</p></div>
-<div class="grid2">
-  <div class="cell">
-    <div class="pillrow"><span class="pillrow__k t-meta">Idle — a pill needs a session</span><span class="btn btn--primary"><span style="width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block"></span>Record <span class="kbd" style="background:light-dark(rgba(255,255,255,.24),rgba(7,18,12,.22));color:inherit;box-shadow:none">⌥⌘R</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Starting</span><span class="pill pill--quiet"><span class="spin" style="width:10px;height:10px"></span><span class="pill__w">Starting</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Recording — resting state</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Paused — manual</span><span class="pill pill--quiet"><i class="rdot" style="background:var(--app-text-subtle)"></i><span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Paused — inactivity</span><span class="pill pill--quiet"><i class="rdot" style="background:var(--app-text-subtle)"></i><span class="pill__w">Idle 12m</span></span></div>
-  </div>
-  <div class="cell">
-    <div class="pillrow"><span class="pillrow__k t-meta">Low disk — liveness, not error</span><span class="pill pill--warn"><i class="rdot" style="background:var(--app-warn)"></i><span class="pill__w">Low disk</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Display asleep — mic + sys keep going</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-info)">screen asleep</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Source degraded — tap rebuilding</span><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__w" style="color:var(--app-warn)">mic lost</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Permission missing</span><span class="pill pill--warn"><i class="rdot" style="background:var(--app-warn)"></i><span class="pill__w">screen not allowed</span></span></div>
-    <div class="pillrow"><span class="pillrow__k t-meta">Ladder → cost, timer, glyph, dot</span>
-      <span class="wrap"><span class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span></span>
-      <span class="pill"><i class="rdot"></i><span class="pill__w">Rec</span></span>
-      <span class="pill"><i class="rdot"></i></span></span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">The deck — three configurations, always inside the window frame</span>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-clock"/></svg>Timeline · Mon, Aug 3 · 13:07:24</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">←</span><span class="kbd">→</span><span>frame</span></span><span class="hint"><span class="kbd">⌘⏎</span><span>Ask</span></span></span>
-    </div>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-spark"/></svg>Settings · General</span>
-      <span class="savestate" style="display:inline-flex;align-items:center;gap:5px;margin-left:var(--s-16);font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);color:var(--app-accent)"><svg style="width:12px;height:12px"><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">⌘Z</span><span>Undo</span></span></span>
-    </div>
-    <div class="deck" style="border-radius:var(--r-md);box-shadow:inset 0 0 0 var(--hairline) var(--app-border)">
-      <span class="deck__ctx"><svg><use href="#i-alert"/></svg>Settings · General</span>
-      <span style="display:inline-flex;align-items:center;gap:5px;margin-left:var(--s-16);font:var(--w-medium) var(--t-meta)/1 var(--app-font-sans);color:var(--app-danger)"><svg style="width:12px;height:12px"><use href="#i-alert"/></svg>1 change not saved — keychain locked</span>
-      <span class="deck__hints"><span class="hint"><span class="kbd">⌘S</span><span>Retry</span></span></span>
-    </div>
-  </div>
-  <div class="cell">
-    <span class="cell__k">NSMenu · toast (error, never auto-dismissed) · toast (undo)</span>
-    <div class="cell__r" style="align-items:flex-start">
-      <span class="menu" style="min-width:190px">
-        <span class="menu__i is-hl" style="display:flex"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>Today<span class="menu__kbd">⌘T</span></span>
-        <span class="menu__i" style="display:flex"><span class="menu__ck"></span>Yesterday<span class="menu__sub">4h 12m</span></span>
-        <span class="menu__i is-off" style="display:flex"><span class="menu__ck"></span>Sat, Aug 1<span class="menu__sub" style="color:inherit">no recording</span></span>
-        <span class="menu__sep"></span>
-        <span class="menu__i" style="display:flex"><span class="menu__ck"></span>Jump to latest<span class="menu__kbd">⌥⌘→</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-8)">
-        <span class="toast" style="width:290px">
-          <span class="t-ui strong">Transcription failed</span>
-          <span class="t-meta">Deepgram returned 401 — the key in the vault was rejected. 3 segments are queued.</span>
-          <span style="display:flex;gap:var(--s-6);margin-top:var(--s-4)"><span class="btn btn--sm">Open Settings</span><span class="btn btn--sm btn--ghost">Dismiss</span></span>
-        </span>
-        <span class="toast" style="width:290px">
-          <span class="t-ui strong">Frame rate set to 4 fps</span>
-          <span class="t-meta">≈ 2.8 GB / day — double yesterday's pace.</span>
-          <span style="display:flex;gap:var(--s-6);margin-top:var(--s-4)"><span class="btn btn--sm">Undo <span class="kbd">⌘Z</span></span></span>
-        </span>
-      </span>
-    </div>
-  </div>
-</div>
-
-<div class="grid2" style="margin-top:var(--s-16)">
-  <div class="cell">
-    <span class="cell__k">Quick Access rows — ask row (rest · selected) · list row · result cell selection</span>
-    <div style="background:var(--app-bg);border-radius:var(--r-md);padding:var(--s-8) 0">
-      <div class="askrow" style="margin:0 var(--s-8) var(--s-4)">
-        <span class="askrow__ic"><svg><use href="#i-spark"/></svg></span>
-        <span class="askrow__t"><span class="askrow__l">Ask AI — “webhook 400”</span><span class="askrow__s">Answer from 6 weeks, with citations</span></span>
-        <span class="askrow__k"><span class="kbd">⌘⏎</span></span>
+        <div class="stlist">
+          <div class="strow is-key">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">I'm the sole developer on Mnema — a local-first macOS recall app.</span>
+              <span class="strow__m"><span class="topic">role</span>added 12d ago</span>
+            </span>
+            <span style="display:inline-flex;gap:var(--s-4);align-items:center">
+              <span class="btn btn--ghost btn--sm">Edit <span class="kbd">⏎</span></span>
+              <span class="btn btn--ghost btn--sm">Delete <span class="kbd">⌘⌫</span></span>
+            </span>
+          </div>
+          <div class="strow">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">Shipping licensing this quarter: one-time purchase, offline verification, Polar as merchant of record.</span>
+              <span class="strow__m"><span class="topic">goals</span>edited 3d ago</span>
+            </span>
+          </div>
+          <div class="strow">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">I care more about a small honest surface than a feature list — cut before adding.</span>
+              <span class="strow__m"><span class="topic">how i work</span>added 9d ago</span>
+            </span>
+          </div>
+          <div class="strow">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">Rust for anything touching capture; Svelte 5 runes on the frontend.</span>
+              <span class="strow__m"><span class="topic">how i work</span>added 9d ago</span>
+            </span>
+          </div>
+          <div class="strow">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">Meetings are mostly with Priya and Tom; treat their names as colleagues, not contacts to research.</span>
+              <span class="strow__m"><span class="topic">— no topic</span>added 20d ago</span>
+            </span>
+          </div>
+          <div class="strow">
+            <span class="strow__q">✎</span>
+            <span class="strow__t">
+              <span class="strow__x">Don't summarise my evenings — I only want the working day.</span>
+              <span class="strow__m"><span class="topic">— no topic</span>added 21d ago</span>
+            </span>
+          </div>
+        </div>
       </div>
-      <div class="askrow is-sel" style="margin:0 var(--s-8) var(--s-4)">
-        <span class="askrow__ic"><svg><use href="#i-spark"/></svg></span>
-        <span class="askrow__t"><span class="askrow__l">Ask AI — “webhook 400”</span><span class="askrow__s">Answer from 6 weeks, with citations</span></span>
-        <span class="askrow__k"><span class="kbd">⏎</span></span>
+
+      <div class="ctx__rail">
+        <div class="rcard">
+          <div class="rcard__h"><span class="t-label">What it worked out</span>
+            <span class="kbd" style="margin-left:auto">⌃J</span></div>
+          <div class="kv"><b>412</b><span>activities summarized</span></div>
+          <div class="kv"><b>38</b><span>conclusions across 12 subjects</span></div>
+          <div class="kv"><b>7</b><span>dismissed by you</span></div>
+          <div class="t-meta is-mono is-num" style="color:var(--app-text-subtle);margin-top:2px">covered to 14:10 · last pass 12 min ago</div>
+          <div class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">≈ 1.9M tokens across 214 passes — estimated from text length, not a billed count</div>
+          <span class="btn btn--sm" style="margin-top:var(--s-4)">Browse subjects <span class="kbd">⌃J</span></span>
+        </div>
+
+        <div class="rcard">
+          <div class="rcard__h"><span class="t-label">Newest conclusion</span>
+            <span class="t-meta is-mono is-num" style="margin-left:auto;color:var(--app-text-subtle)">3h ago</span></div>
+          <span class="t-ui" style="line-height:1.45">Webhook HMAC is computed over the raw whsec_ string, not the decoded key</span>
+          <span class="cbar"><i style="width:82%"></i></span>
+          <div style="display:flex;align-items:baseline;gap:var(--gap-inline)">
+            <span class="t-ui strong is-mono is-num">82%</span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">confidence · subject <b class="med">Mnema licensing</b></span>
+          </div>
+          <span class="t-label" style="margin-top:2px">Grounded in</span>
+          <div class="evchips">
+            <span class="evchip"><i><span class="shot shot--docs"><span class="nav"><i class="w88"></i><i class="w60 on"></i></span><span class="pg"><i class="h"></i><s class="ln"><s class="tk tk--pi w88"></s></s></span></span></i><span class="evsrc evsrc--scr">scr</span>3h</span>
+            <span class="evchip"><i><span class="shot shot--wave"><i style="height:40%"></i><i class="hi" style="height:78%"></i><i style="height:52%"></i></span></i><span class="evsrc evsrc--mic">mic</span>4h</span>
+            <span class="evchip"><i><span class="shot shot--editor"><i class="act"></i><i class="side"></i></span></i><span class="evsrc evsrc--scr">scr</span>1d</span>
+            <span class="t-meta" style="color:var(--app-text-subtle)">+5 more</span>
+          </div>
+          <div style="display:flex;gap:var(--s-4);margin-top:var(--s-4)">
+            <span class="btn btn--sm">Pin <span class="kbd">⌘P</span></span>
+            <span class="btn btn--sm">Dismiss <span class="kbd">⌘⌫</span></span>
+          </div>
+        </div>
+
+        <div class="callout">
+          <svg><use href="#i-eye"/></svg>
+          <span class="t-meta">Health, politics, sexuality, religion and similar are never inferred or surfaced —
+            even if you mention them here. Mnema errs toward over-suppression.</span>
+        </div>
       </div>
     </div>
-    <span class="t-meta">Selection is full-row accent fill — the native list idiom — and the row's key changes
-      with it (<span class="is-mono">⌘⏎</span> when it rests, <span class="is-mono">⏎</span> when it's selected),
-      because the deck must always be able to name what Return does.</span>
   </div>
-  <div class="cell">
-    <span class="cell__k">Media — result cell (rest · selected) at 1/2 scale · citation pills</span>
-    <div class="cell__r" style="align-items:flex-start">
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="qcell__f" style="width:174px;height:98px">
-          <span class="shot shot--editor"><i class="act"></i><i class="side"></i><i class="tabs"></i><i class="tab a"></i>
-            <span class="code"><s class="ln"><s class="tk tk--cm w44"></s></s><s class="ln"><s class="tk tk--kw w10"></s><s class="tk tk--fn w22"></s></s><s class="ln"><s class="tk tk--dim w8"></s><s class="tk tk--str w34"></s></s></span></span>
-          <span class="hitbox" style="left:34%;top:34%;width:24%;height:9%"></span>
-        </span>
-        <span class="qcell__l1" style="width:174px"><span class="qcell__app">VS Code</span><span class="qcell__ttl"><mark>webhook</mark>.rs</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="qcell__f" style="width:174px;height:98px;box-shadow:0 0 0 2px var(--app-accent)">
-          <span class="shot shot--wave"><i style="height:30%"></i><i class="hi" style="height:72%"></i><i style="height:48%"></i><i class="hi" style="height:88%"></i><i style="height:40%"></i><i class="sy" style="height:64%"></i><i style="height:34%"></i><i class="hi" style="height:56%"></i><i style="height:44%"></i><i style="height:62%"></i></span>
-          <span class="qcell__dur">04:58</span>
-          <span class="qcell__aff"><span class="kbd">⏎</span></span>
-        </span>
-        <span class="qcell__l1" style="width:174px"><span class="qcell__app">Mic</span><span class="qcell__ttl">Launch sync</span></span>
-      </span>
-      <span style="display:flex;flex-direction:column;gap:var(--s-6)">
-        <span class="srcpill" style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 var(--s-6);border-radius:var(--r-sm);background:var(--app-surface-hover);font:var(--w-regular) var(--t-meta)/1 var(--app-font-sans);color:var(--app-text-muted)">
-          <i style="width:20px;height:13px;border-radius:2px;overflow:hidden;position:relative;display:block"><span class="shot shot--chat"><span class="rail"><i class="on"></i><i></i></span><span class="chans"><i class="w70"></i><i class="w52 on"></i></span></span></i>this screen · 15:41:02</span>
-        <span class="cite"><i><span class="shot shot--wave"><i style="height:30%"></i><i class="hi" style="height:70%"></i><i style="height:45%"></i><i class="hi" style="height:85%"></i></span></i>13:02</span>
-      </span>
-    </div>
+
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-book"/></svg>Context · 6 standing statements · 38 conclusions</span>
+    <span class="savestate"><svg><use href="#i-check"/></svg>All changes saved · 15:42:06</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">↑↓</span><span>Move</span></span>
+      <span class="hint"><span class="kbd">⏎</span><span>Edit</span></span>
+      <span class="hint"><span class="kbd">⌘⌫</span><span>Delete</span></span>
+      <span class="deck__sep"></span>
+      <span class="hint"><span class="kbd">esc</span><span>Back to Overview</span></span>
+    </span>
   </div>
 </div>
 
-<!-- ═══════════════ AUDIT ═══════════════ -->
-<div class="sect"><div class="sect__k">Self-audit</div><p class="sect__t">Every page against the pattern rules — and where it bends them</p></div>
+<p class="caption" style="margin-top:32px"><b>B · 1100 × 720</b> — the archive and the one destructive action. Dismissed beliefs are kept as a
+  veto, not as rows, and the copy says exactly that. The wipe sheet <b>names everything it clears</b>, including
+  the two things the shipped confirmation forgets to mention.</p>
+<div class="win win--1100">
+  <div class="tbar">
+    <div class="tl"><i></i><i></i><i></i></div>
+    <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span><span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
+    <span class="chip on" style="margin-left:var(--s-8)"><svg style="width:11px;height:11px"><use href="#i-chevr"/></svg>Context <span class="kbd">esc</span></span>
+    <div class="tbar__sp"></div>
+    <button class="pill"><i class="rdot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+  </div>
+
+  <div class="ctx" style="position:relative">
+    <div class="ctx__hd">
+      <p class="t-title" style="margin:0">Context</p>
+      <span class="t-meta">Dismissed beliefs and what deletion actually reaches.</span>
+    </div>
+    <div class="ctx__body" style="grid-template-columns:1fr 300px">
+      <div class="ctx__main">
+        <div class="stlist" style="flex:0 0 auto">
+          <div class="strow" style="align-items:center">
+            <span class="strow__t"><span class="strow__x">Dismissed · 7</span>
+              <span class="t-meta">Beliefs you removed from your dossier. Restoring lets one form again — only
+                if your activity still supports it.</span></span>
+            <span class="btn btn--sm">Hide <span class="kbd">⌘D</span></span>
+          </div>
+        </div>
+        <div class="stlist" style="flex:0 0 auto">
+          <div class="arow">
+            <span class="arow__s">Mnema licensing</span>
+            <span class="arow__x">Prefers Stripe over Polar as merchant of record</span>
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">4d ago</span>
+            <span class="btn btn--ghost btn--sm">Restore <span class="kbd">⏎</span></span>
+          </div>
+          <div class="arow">
+            <span class="arow__s">Working hours</span>
+            <span class="arow__x">Works late most evenings</span>
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">9d ago</span>
+            <span class="btn btn--ghost btn--sm">Restore</span>
+          </div>
+          <div class="arow">
+            <span class="arow__s">Capture pipeline</span>
+            <span class="arow__x">Plans to drop system audio capture</span>
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">11d ago</span>
+            <span class="btn btn--ghost btn--sm">Restore</span>
+          </div>
+          <div class="arow">
+            <span class="arow__s">Diarization</span>
+            <span class="arow__x">Uses sherpa-onnx for speaker separation</span>
+            <span class="t-meta is-mono is-num" style="color:var(--app-text-subtle)">18d ago</span>
+            <span class="btn btn--ghost btn--sm">Restore</span>
+          </div>
+        </div>
+        <div class="callout">
+          <svg><use href="#i-alert"/></svg>
+          <span class="t-meta">Dismissing <b class="med">deletes</b> the belief and records a veto against it.
+            Restoring lifts the veto — it does not bring the old belief back; the same belief can only form
+            again from substantially fresher evidence.</span>
+        </div>
+      </div>
+
+      <div class="ctx__rail">
+        <div class="rcard">
+          <div class="rcard__h"><span class="t-label">What deletion reaches</span></div>
+          <div style="display:flex;flex-direction:column;gap:var(--s-6)">
+            <div>
+              <span class="t-ui strong">Retention cleanup</span>
+              <div class="t-meta">Ages out frames and audio on your schedule. <b class="med">Never</b> touches
+                activities, conclusions or standing context.</div>
+            </div>
+            <div>
+              <span class="t-ui strong">Delete recent capture</span>
+              <div class="t-meta">Deletes the raw window <b class="med">and</b> the activities derived from it,
+                then drops conclusions left under the evidence bar.</div>
+            </div>
+            <div>
+              <span class="t-ui strong">Wipe user context</span>
+              <div class="t-meta">Clears the understanding itself and turns the engine off. Recordings kept.</div>
+            </div>
+          </div>
+          <span class="btn btn--danger btn--sm" style="margin-top:var(--s-4)"><svg style="width:12px;height:12px"><use href="#i-trash"/></svg>Wipe user context</span>
+        </div>
+        <div class="callout">
+          <svg><use href="#i-clock"/></svg>
+          <span class="t-meta">The understanding outlives the recordings. Once the footage behind a conclusion
+            ages out, the summary stays and its receipt stops resolving to a frame.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="scrim"></div>
+    <div class="sheet">
+      <div style="display:flex;align-items:center;gap:var(--s-8)">
+        <svg style="width:15px;height:15px;color:var(--app-danger)"><use href="#i-alert"/></svg>
+        <span class="t-title" style="font-size:var(--t-ui)">Wipe everything Mnema has concluded?</span>
+      </div>
+      <span class="t-meta">This clears the derived understanding and turns the Reasoning Engine off. It cannot be undone.</span>
+      <span class="t-label" style="margin-top:var(--s-4)">Cleared</span>
+      <ul>
+        <li><b>412 activities</b> and <b>38 conclusions</b> across 12 subjects</li>
+        <li>All confidence history and subject vectors</li>
+        <li>Your <b>7 dismissals</b> — the vetoes go too, so those beliefs can form again</li>
+        <li>Your <b>6 standing statements</b></li>
+        <li>All Quick Access ask history</li>
+      </ul>
+      <span class="t-label" style="margin-top:var(--s-4)">Kept</span>
+      <ul>
+        <li>Every recording, frame and audio segment on disk — <b>34.2 GB</b></li>
+        <li>All capture, privacy and retention settings</li>
+      </ul>
+      <div style="display:flex;gap:var(--s-8);margin-top:var(--s-8)">
+        <span class="btn btn--sm" style="margin-left:auto">Cancel <span class="kbd">esc</span></span>
+        <span class="btn btn--danger btn--sm">Wipe user context <span class="kbd">⌘⏎</span></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="deck">
+    <span class="deck__ctx"><svg><use href="#i-alert"/></svg>Context · confirm wipe</span>
+    <span class="deck__hints">
+      <span class="hint"><span class="kbd">⌘⏎</span><span>Confirm</span></span>
+      <span class="deck__sep"></span>
+      <span class="hint"><span class="kbd">esc</span><span>Cancel</span></span>
+    </span>
+  </div>
+</div>
+
+<div class="sect"><div class="sect__k">Honesty notes</div>
+  <p class="sect__t">Three things this page refuses to draw, and one it rewrites</p></div>
 <div class="tblwrap">
   <table class="tbl">
-    <thead>
-      <tr>
-        <th style="width:132px">Page</th>
-        <th>Hierarchy — one thing wins</th>
-        <th>Spacing grid</th>
-        <th>Colour &amp; contrast</th>
-        <th>States designed</th>
-        <th>Native bar</th>
-        <th style="width:112px">Bordered<br>containers</th>
-      </tr>
-    </thead>
+    <thead><tr><th style="width:240px">Shipping today</th><th style="width:230px">This page</th><th>Why</th></tr></thead>
     <tbody>
       <tr>
-        <td><b>01 Overview</b></td>
-        <td>The <span class="is-mono">6:42</span> hours hero is the only <span class="is-mono">--t-display</span>; the moments strip is the only full-bleed media. Tile headers are all one label size, so nothing competes.</td>
-        <td>12px inset = 12px gutter. Four tile footprints (4/2/1 wide), four fixed rows.</td>
-        <td>Accent appears 4× (today's bar, conviction dots, hero week bar, ask key). App icons keep true colour — identity, not decoration.</td>
-        <td>Recording · idle · empty tile (redacted line) · hover row · 800×600 drop order.</td>
-        <td>38px title bar, 28px rows, 13px default, overlay scrollbar, tabular-nums on every count.</td>
-        <td class="n ok">2</td>
+        <td><b>A “Steering your dossier” rail</b> — each authored statement shown as <span class="is-mono">supports</span> a conclusion</td>
+        <td>Not drawn.</td>
+        <td>There is no stored link between any standing statement and any conclusion. The rail picks the three
+          highest-confidence conclusions and stages them next to your writing, which reads as causation the
+          data cannot support. The honest version of “did my context matter?” is a real provenance field, not
+          a layout.</td>
       </tr>
       <tr>
-        <td><b>02 Timeline</b></td>
-        <td><span class="is-mono">13:07:24</span> readout is the display type; the stage owns 64% of the height; the pill sits on the playhead so position beats everything else in the rail.</td>
-        <td>12px window inset; rail 52 / lane 28 / readout 26 / pill band 26 — the shipping fixed heights.</td>
-        <td>Record red is reserved for the playhead + selected segment. Mic/sys keep their source hues. Menu disabled row is 45% — legible, clearly dead.</td>
-        <td>Drawer open · jump menu open · hover ghost + bubble · disabled day · zoom levels · playing.</td>
-        <td>Real NSMenu anatomy (24px rows, checkmark gutter, right key column), AppKit segmented, material popover.</td>
-        <td class="n ok">3</td>
+        <td><b>A <span class="is-mono">✎</span> quill on the conclusion's subject name</b></td>
+        <td>The quill marks <i>your</i> statements only.</td>
+        <td>On a conclusion it implies you authored the subject. You did not — the engine named it.</td>
       </tr>
       <tr>
-        <td><b>03 Search</b></td>
-        <td>The grid is the content; chrome is 88px of it. Ask row is the only accent-capable row above the fold.</td>
-        <td>20px inset / 16px gutter — the documented fixed-window exemption so 3 × 349 divides 1120 exactly.</td>
-        <td>Match highlight is accent at 16% + accent text; selection is a 2px accent ring on the image, never a tint over the frame.</td>
-        <td>Results · empty · no-match · selected cell · scope on/off · ask row rest/selected/promoted.</td>
-        <td>Full-row accent selection, no underlines; overlay scrollbar; captions in native two-line list style.</td>
-        <td class="n ok">1</td>
+        <td><b>A legend bar filled to 60%</b> illustrating “confidence rises &amp; fades”</td>
+        <td>Dropped; the real conclusion's real bar does the job.</td>
+        <td>The 60% is a hardcoded CSS width beside a caption about confidence. A fake number next to a real
+          word is the exact failure G8 exists to prevent.</td>
       </tr>
       <tr>
-        <td><b>04 Ask + frame</b></td>
-        <td>One reading column at 66ch; the rail is 280px and never competes. On the overlay, the answer panel is the only thing with real weight.</td>
-        <td>20/24 inside the window; the HUD is a 640px column with 14px panel padding — a floating thing, so it gets its own inset.</td>
-        <td>Accent-bg header band + accent underline is the whole mode signal — no second hue introduced. Green outline on the display is the accent again.</td>
-        <td>Streaming · stopped · frame attached · not-yet-sent · answering · dismissed answer · follow-up.</td>
-        <td>Material blur on the HUD only (macOS uses material for floating chrome), opaque content elsewhere.</td>
-        <td class="n ok">2</td>
+        <td><b>The wipe confirmation</b> lists activities, conclusions and dismissals</td>
+        <td>Also names <b>standing context</b> and <b>ask history</b>.</td>
+        <td>Both are cleared by the same call and neither is mentioned today. A destructive confirmation that
+          under-states what it destroys is a bug in the copy, not a wording preference.</td>
       </tr>
       <tr>
-        <td><b>05 Settings</b></td>
-        <td>Sticky section title is the only <span class="is-mono">--t-title</span> on screen at a time; the focused row wins by accent fill.</td>
-        <td>660px column, 44px rows, 24px between sections, 16px inside a group.</td>
-        <td>Accent = selection + saved state. Danger only on the conflict line. No colour used to group.</td>
-        <td>Rest · keyboard-focused · saved echo · recording a shortcut · conflict · filtered · unsaved failure.</td>
-        <td>System-Settings grouped fills, AppKit switch/popup/segmented, 28px controls in 44px rows.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>06 Intelligence</b></td>
-        <td>Verdict chips are the loudest thing in a model row — the control's real output, not its name.</td>
-        <td>Same 660px column; instruments are 260–300px so every consequence line fits on one line.</td>
-        <td>Green/amber/red verdicts are the one semantic triple; they never appear anywhere decorative.</td>
-        <td>Key works · reachable · downloaded · download · disabled (too large) · cloud consent needed.</td>
-        <td>Radio group is a real radio list, not cards; popup buttons for enums; no web-shaped toggles.</td>
-        <td class="n ok">2</td>
-      </tr>
-      <tr>
-        <td><b>07 This page</b></td>
-        <td>Documentation, not app chrome: spec cells are allowed to nest a demo group inside a cell.</td>
-        <td>16px between cells, 16px inside; two-column grid.</td>
-        <td>Swatches are the only place raw tokens are shown as colour.</td>
-        <td>Every control state on the sheet is a state used by pages 01–06 — nothing invented for the sheet.</td>
-        <td>n/a — no window is rendered here.</td>
-        <td class="n">n/a</td>
+        <td><b>Suggestion chips</b> read as categories</td>
+        <td>Labelled <span class="is-mono">prefill:</span>.</td>
+        <td>They only seed the textarea. Topic is free text with no vocabulary, so nothing behind them is a
+          taxonomy.</td>
       </tr>
     </tbody>
   </table>
 </div>
 
-<div class="sect"><div class="sect__k">Deviations</div><p class="sect__t">Where this direction bends a rule, on purpose</p></div>
+<div class="sect"><div class="sect__k">Backend asks</div>
+  <p class="sect__t">What this page wants that nothing serves today</p></div>
 <div class="tblwrap">
   <table class="tbl">
-    <thead><tr><th style="width:230px">Rule</th><th>What this direction does</th><th style="width:300px">Why it is defensible</th></tr></thead>
+    <thead><tr><th style="width:280px">Wanted</th><th>Status</th></tr></thead>
     <tbody>
-      <tr>
-        <td><b>“Six type sizes exist”</b></td>
-        <td>The <b>masthead</b> outside every app window uses 26px for its headline.</td>
-        <td>The masthead is presentation furniture for reviewing the mockups; nothing inside a rendered window
-          leaves the six roles.</td>
-      </tr>
-      <tr>
-        <td><b>Quick Access is 1120×720 with Search and Ask inside</b></td>
-        <td>Held. But <b>“ask about this screen”</b> renders as a 640px floating bar over the desktop instead of
-          the window.</td>
-        <td>It is the same Quick Access window collapsing, not a new window: the same process, the same
-          conversation, and ⌘O restores it to full size. The feature's whole point is that the window gets out
-          of the way.</td>
-      </tr>
-      <tr>
-        <td><b>Search and Ask both live in Quick Access</b></td>
-        <td>Held, but there is <b>no segmented control</b> — Ask is the top-ranked row and taking it retitles the
-          surface.</td>
-        <td>The founder asked for them to be clearly different. A segment makes them look like two tabs of one
-          thing; a ranked row plus a full surface transform makes them two different answers to two different
-          questions.</td>
-      </tr>
-      <tr>
-        <td><b>Settings sidebar</b></td>
-        <td>Removed entirely — five horizontal tabs, one scroll, ⌘F filter.</td>
-        <td>The founder called the rail “a bit weird”. Raycast ships exactly this shape natively
-          (NSToolbar tabs, no rail) and it removes the “which bucket is this in?” problem instead of
-          re-decorating it.</td>
-      </tr>
-      <tr>
-        <td><b>Context attachment should be one muted label, no thumbnail</b></td>
-        <td>A <b>42 × 26</b> thumb sits beside the label in the HUD.</td>
-        <td>The rule targets hero thumbnails that cost the panel's width. At 42px it costs 6% of the bar and
-          answers “which screen?” on a multi-display Mac, which a text label cannot.</td>
-      </tr>
-      <tr>
-        <td><b>~12 bordered containers per window</b></td>
-        <td>Every page lands at 1–3.</td>
-        <td>Depth is carried by surface steps and the two chrome bars; the only true borders are the window
-          itself, floating things (menu, drawer, HUD) and media frames.</td>
-      </tr>
-      <tr>
-        <td><b>Every rendered surface is one of the two documented window sizes</b></td>
-        <td>Held on 08–10. <b>Page 11 draws each settings tab at its natural height</b> — the whole scroll
-          unrolled inside real chrome.</td>
-        <td>Page 11 is a census of all 96 rows; a 720px viewport would hide most of it below a fold and make
-          the completeness claim unverifiable. Pages 05 and 06 already show the real viewport at both sizes.</td>
-      </tr>
-      <tr>
-        <td><b>The mockup shows what the app shows</b></td>
-        <td><b>Page 09 refuses four shipping behaviours</b>: the category dot (always resolves to the accent),
-          <span class="is-mono">0.82</span> on the row against <span class="is-mono">82%</span> one click
-          deeper, the index-spaced sparkline, and the silent five-chip evidence cap.</td>
-        <td>G8 is about invented facts, and a mark that always says the same thing is an invented fact in
-          colour. The sparkline fix costs nothing — snapshot timestamps are already on the wire.</td>
-      </tr>
-      <tr>
-        <td><b>Draw the surface as built</b></td>
-        <td><b>Page 10 does not draw the “Steering your dossier” rail</b>, and it corrects page 01's Context
-          tile from “142 facts about you”.</td>
-        <td>The rail stages the three highest-confidence conclusions beside your writing and labels the
-          relationship <span class="is-mono">supports</span>; no such link is stored. And there is no
-          <i>fact</i> entity anywhere — the real counts are Activities, Conclusions, Subjects and standing
-          statements.</td>
-      </tr>
-      <tr>
-        <td><b>No modal windows</b></td>
-        <td>The journal <b>receipt</b> (08) and the <b>wipe sheet</b> (10) are modal.</td>
-        <td>Both take the keyboard whole — the receipt is a transport (␣, ←→, esc) and the wipe sheet is a
-          destructive confirmation. The deck says so: while either is open it swaps to that surface's keys and
-          nothing else, which is how the modal announces it owns input.</td>
-      </tr>
+      <tr><td><b>A provenance link from a standing statement to the conclusions it steered</b></td>
+        <td>Nothing records it. Authored text is concatenated into the prompt block (newest first, capped at
+          2,000 characters, older statements silently dropped) and never attributed. <b>Ask:</b> record which
+          authored statements were in the prompt for a distillation pass, so “this is what your context
+          changed” can be true.</td></tr>
+      <tr><td><b>A signal when a standing statement was dropped for the character cap</b></td>
+        <td>Silent today. Six short statements are nowhere near the cap, but there is no feedback at any
+          length. <b>Ask:</b> surface the cap on the composer, the way every other budget in the app is
+          surfaced.</td></tr>
+      <tr><td><b>“Mark wrong but keep”</b> on a conclusion</td>
+        <td>Does not exist and this page does not pretend otherwise. Dismiss deletes and vetoes; there is no
+          edit, no soft correction, no free-text rebuttal. Whether that is the right model is a product
+          question — it is not a mockup question.</td></tr>
     </tbody>
   </table>
 </div>
