@@ -81,25 +81,32 @@
 </svg>
 
 <style>
+  /* Sized by the caller (09's row hero is 172 x 46); the viewBox stretches
+     because preserveAspectRatio is none. */
   .sparkline {
     width: 100%;
-    height: auto;
-    max-width: 140px;
+    height: 100%;
     display: block;
   }
+  /* The display floor — the ONE dashed line in the chart, so a trajectory
+     crossing it reads as crossing something. */
   .floor {
-    stroke: var(--app-text-subtle);
+    stroke: var(--app-text-faint);
     stroke-width: 1;
-    stroke-dasharray: 2 2;
+    stroke-dasharray: 2 3;
+    opacity: 0.7;
     vector-effect: non-scaling-stroke;
   }
   .line {
     fill: none;
-    stroke-width: 1.5;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
     vector-effect: non-scaling-stroke;
   }
+  /* A faded conclusion's line stays SOLID and just recedes — dashing it would
+     collide with the floor, the only dashed thing here. */
   .line--faded {
-    opacity: 0.4;
-    stroke-dasharray: 2 2;
+    opacity: 0.45;
   }
 </style>

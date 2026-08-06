@@ -39,7 +39,17 @@ export type TimelineEvent = (
       from: number; // 0..1 confidence at the run's start
       to: number; // 0..1 confidence at the run's end
     }
-  | { kind: "contradict"; atMs: number | null; activityId: number; title: string }
+  | {
+      kind: "contradict";
+      atMs: number | null;
+      activityId: number;
+      title: string;
+      // Same resolved facts an `evidence` row carries — a contradiction is an
+      // activity too, so its source badge, category and frame are just as real.
+      category: string | null;
+      sourceType: "screen" | "audio" | null;
+      frameId: number | null;
+    }
   // ADR 0046: this belief replaced a wrong earlier one; `statement` is the
   // retired take, `atMs` its retirement time. Audit event, no causal claim.
   | { kind: "replaced"; atMs: number; statement: string }
@@ -95,16 +105,6 @@ export function buildTimeline(
       activity?.title ?? ref.activityTitle ?? `Activity #${ref.activityId}`;
     // Evidence/contradict sit on the trajectory at their own timestamp.
     const confidenceAt = interpolateConfidence(history, atMs, fallback);
-    if (ref.stance === "contradict") {
-      events.push({
-        kind: "contradict",
-        atMs,
-        activityId: ref.activityId,
-        title,
-        confidenceAt,
-      });
-      continue;
-    }
     const firstRef = activity?.evidence?.[0];
     const sourceType: "screen" | "audio" | null = firstRef
       ? firstRef.subjectType === "audio_segment"
@@ -113,6 +113,19 @@ export function buildTimeline(
       : null;
     const frameId =
       firstRef && firstRef.subjectType === "frame" ? firstRef.subjectId : null;
+    if (ref.stance === "contradict") {
+      events.push({
+        kind: "contradict",
+        atMs,
+        activityId: ref.activityId,
+        title,
+        category: activity?.category ?? null,
+        sourceType,
+        frameId,
+        confidenceAt,
+      });
+      continue;
+    }
     events.push({
       kind: "evidence",
       atMs,

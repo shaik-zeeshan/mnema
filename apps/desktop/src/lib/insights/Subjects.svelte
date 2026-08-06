@@ -1,25 +1,32 @@
 <script lang="ts">
-  import { tip } from "$lib/components/tooltip";
-  // Subjects — the browsable Subjects index sub-surface, "Conviction view"
-  // redesign (Subjects-tab Conviction redesign, Slice 2).
+  // Subjects — the Subjects destination's index (page 09, direction 03).
   //
-  // A Subject is a browsable entity that holds MULTIPLE individual Conclusions,
-  // each with its OWN confidence-over-time trajectory — NEVER a single rolled-up
-  // sentiment score. Instead of a flat card grid, the view groups Subjects into
-  // ordered TIERS along a grouping axis (conviction: how firmly held / movement:
-  // which way it's heading). Each Subject renders as a row whose HERO is a
-  // multi-line micro-sparkline (one faint line per Conclusion). Tiers read
-  // top→bottom like a sentence; faded subjects sink to a "kept for history" tier.
+  // This shell owns the data: the load, the per-subject trajectory fetch, the
+  // realtime staging buffer, tiering and search. `SubjectRow.svelte` draws a
+  // row and `subject-rows.ts` derives one; tier thresholds live in
+  // `subjectsTiers.ts`. Tier labels float over the pane; the rows a tier holds
+  // sit on ONE opaque plate, so a whole tier reads as a single card.
   //
-  // Tiering thresholds live ENTIRELY in `subjectsTiers.ts` (Slice 1) — this
-  // component never re-derives them. Below SPARSE_LIMIT subjects we skip tiers
-  // and render one flat list so early users don't see mostly-empty headers.
+  // Honesty rules this surface obeys (see 09's audit block):
+  //   · There is NO subject-level score in the backend. The 0.72 on a row is
+  //     literally the top conclusion's `confidence`, rendered toFixed(2) — which
+  //     is why it never gets a progress bar of its own.
+  //   · The index shows NO evidence count. It can only say "N conclusions";
+  //     linked-activity counts appear on the DETAIL, where refs are resolved.
+  //   · The sparkline has NO time axis. Snapshot points are evenly spaced by
+  //     index — the backend stores a confidence history, not a time series.
+  //   · The dashed line inside every sparkline is the 0.15 display floor, which
+  //     is why the fading tier's lines are drawn crossing it, not deleted.
   //
   // Subjects are derived CLIENT-SIDE from `list_user_context_conclusions`,
-  // grouped by `subject`. To draw HONEST per-conclusion trajectories (not flat
-  // baselines), we lazily fetch `get_user_context_subject` per subject and use
-  // each trajectory's real Confidence History; if that fetch fails or has no
-  // history we fall back to a flat single-point baseline from current confidence.
+  // grouped by `subject`. To draw honest per-conclusion trajectories (not flat
+  // baselines) we lazily fetch `get_user_context_subject` per subject and use
+  // each trajectory's real Confidence History; a failed fetch falls back to a
+  // flat baseline at the current confidence.
+  //
+  // Tiering thresholds live ENTIRELY in `subjectsTiers.ts` — this component
+  // never re-derives them. Below SPARSE_LIMIT subjects we skip tiers and render
+  // one flat plate so early users don't see mostly-empty headers.
   //
   // Props:
   //   onOpenSubject: (subject: string) => void
@@ -27,35 +34,33 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { toast } from "$lib/toast.svelte";
-  import { goto } from "$app/navigation";
   import { openSettings } from "$lib/surface-windows";
   import type {
     Conclusion,
     SubjectView,
-    ConclusionEvidenceRef,
-    Activity,
-    ActivityEvidenceRef,
     AiRuntimeStatus,
     UserContextStatus,
   } from "$lib/types/recording";
-  import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
-  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
+  import SubjectRow from "$lib/insights/SubjectRow.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import {
     type Axis,
-    type Trend,
-    type TierSubject,
     buildTiers,
-    deriveTrend,
     isSparse,
     summaryCounts,
     subjectsDiff,
     decideRefresh,
     debounce,
   } from "$lib/insights/subjectsTiers";
+  import {
+    type SubjectRow as Row,
+    buildSubjectRows,
+    displayedSubjectOrder,
+    sortDisplayRows,
+  } from "$lib/insights/subject-rows";
   import { rankSubjects } from "$lib/insights/subjectSearch";
+  import { subjectSearch } from "$lib/insights/subject-search-state.svelte";
   import { humanizeError } from "$lib/format-error";
 
   // Number of placeholder rows shown while the conclusions load.
@@ -67,43 +72,12 @@
 
   let { onOpenSubject }: Props = $props();
 
-  // Sparkline lines encode MAGNITUDE, not identity: the top conclusion draws in
-  // accent and the remaining lines are a single neutral grey, so a subject with
-  // many conclusions never fans out into a hard-to-decode rainbow of hues
-  // (categorical colours past ~5-6 stop mapping reliably to meaning).
-  const SPARK_LEAD = "--app-accent";
-  const SPARK_REST = "--chart-grey-3";
-
-  const FLOOR = 0.15;
-
-  interface SubjectSpark {
-    colorVar: string;
-    faded: boolean;
-    points: number[];
-  }
-
-  // SubjectRow satisfies TierSubject (topConfidence/faded/trend/lastMovedAtMs)
-  // so the tiering helpers can group it directly without a separate projection.
-  interface SubjectRow extends TierSubject {
-    subject: string;
-    conclusions: Conclusion[];
-    conclusionCount: number;
-    pinned: boolean;
-    faded: boolean; // all conclusions faded
-    headline: string; // top (highest-confidence) conclusion statement
-    lastMovedAtMs: number; // most recent updated/last-supported across conclusions
-    trend: Trend;
-    spark: SubjectSpark[];
-    topConfidence: number; // highest-confidence conclusion's confidence
-    catColorVar: string; // top conclusion's palette colour (dot + strongest line)
-  }
-
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   // Engine on/off — lets the empty state tell "engine is off, turn it on" apart
-  // from "engine is on but hasn't formed any views yet" (two very different
-  // next steps). null until the first status call resolves.
+  // from "engine is on but hasn't formed any views yet" (two very different next
+  // steps). null until the first status call resolves.
   let engineOn = $state<boolean | null>(null);
 
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
@@ -114,29 +88,22 @@
     { value: "movement", label: "By movement" },
   ];
 
-  // Search box. `searchQuery` is the raw input; `appliedQuery` is the debounced
-  // value the ranking actually runs on (filtering is in-memory and cheap, so the
-  // debounce only spares us re-ranking on every keystroke). A non-empty applied
-  // query swaps the tiered/sparse layout for one flat relevance-ranked list.
-  let searchQuery = $state("");
+  // Search. The field itself lives in the TITLE BAR (page 09) and writes into
+  // the shared slice store; `appliedQuery` is the debounced value the ranking
+  // runs on. A non-empty applied query swaps the tiered layout for one flat
+  // relevance-ranked plate.
   let appliedQuery = $state("");
   const applySearch = debounce((q: string) => {
     appliedQuery = q;
   }, 200);
-  function onSearchInput(): void {
-    applySearch(searchQuery);
-  }
-
-  // Which row's detail is expanded (by subject name), or null for none. The
-  // expand container is an interaction skeleton — Slice 3 fills its content.
-  let expandedSubject = $state<string | null>(null);
+  $effect(() => {
+    applySearch(subjectSearch.query);
+  });
 
   // Per-tier paging: each tier shows TIER_PAGE rows at a time. `tierShown` maps a
   // tier id to how many rows it currently reveals (absent → the default page).
-  // "Show 10 more" grows the count one page at a time rather than dumping the
-  // whole list, so a crowded tier (e.g. a big "Forming" pile) never floods the
-  // surface in a single click. Reassign the Map on change so the $state reacts
-  // (plain Maps aren't deep-proxied in Svelte 5).
+  // Reassign the Map on change so the $state reacts (plain Maps aren't
+  // deep-proxied in Svelte 5).
   const TIER_PAGE = 10;
   let tierShown = $state<Map<string, number>>(new Map());
 
@@ -160,21 +127,14 @@
   let trajectories = $state<Map<string, Map<number, number[]>>>(new Map());
   // Monotonic generation token for `loadTrajectories`. Each call bumps it; only
   // the call whose token still matches at completion may write `trajectories`,
-  // so a slow earlier load can't clobber a newer one's results (stale clobber).
+  // so a slow earlier load can't clobber a newer one's results.
   let trajectoriesGen = 0;
 
-  // Guards a single in-flight Pin/Dismiss action by conclusion id, so the
-  // expanded detail's per-conclusion buttons disable while one is running.
-  // `actionKind` records WHICH action is running so only that button shows its
-  // busy affordance (the sibling stays disabled but unlabelled).
-  let actionId = $state<number | null>(null);
-  let actionKind = $state<"pin" | "dismiss" | null>(null);
-
-  // ---- Slice 4: realtime staging buffer + refresh pill --------------------
+  // ---- Realtime staging buffer + refresh pill ------------------------------
   // Engine `user_context_changed` events never reflow the page while the user
   // reads. A debounced reload lands in `stagedConclusions`; the pill surfaces
   // "{pendingCount} views updated · refresh" and the swap happens only on the
-  // pill click (or silently when no row is open and the list is at the top).
+  // pill click (or silently when the list is back at the top).
   let stagedConclusions = $state<Conclusion[] | null>(null);
   let pendingCount = $state(0);
   // Whether the scroll surface is at the top (best-effort) — gates silent apply.
@@ -182,371 +142,34 @@
   // The section root, used to resolve the nearest scroll container on mount.
   let rootEl = $state<HTMLElement | null>(null);
 
-  // Resolved evidence Activities, keyed by activityId, populated lazily when a
-  // subject's row is expanded. Maps activityId → Activity (title/time/category +
-  // raw evidence refs for the Timeline handoff). A bounded paged scan fills it.
-  let activitiesById = $state<Map<number, Activity>>(new Map());
-  // Subjects whose evidence resolution has already been kicked off, so the lazy
-  // loader never double-fetches the same subject across re-expands.
-  let resolvedSubjects = $state<Set<string>>(new Set());
+  const rows = $derived(
+    conclusions ? buildSubjectRows(conclusions, trajectories) : [],
+  );
 
-  function groupSubjects(list: Conclusion[]): Map<string, Conclusion[]> {
-    const groups = new Map<string, Conclusion[]>();
-    for (const c of list) {
-      const key = c.subject;
-      const bucket = groups.get(key);
-      if (bucket) bucket.push(c);
-      else groups.set(key, [c]);
-    }
-    return groups;
-  }
-
-  function buildSpark(
-    cs: Conclusion[],
-    history: Map<number, number[]> | undefined,
-  ): SubjectSpark[] {
-    // One line per Conclusion, coloured by cycling the category palette. Prefer
-    // real history points; fall back to a flat baseline from current confidence.
-    return cs.map((c, i) => {
-      const pts = history?.get(c.id);
-      // A polyline needs >= 2 points to draw a visible segment. A single
-      // snapshot (one history point, or none) would render an invisible line,
-      // so flatten it into a 2-point baseline at that confidence.
-      const points =
-        pts && pts.length >= 2
-          ? pts
-          : pts && pts.length === 1
-            ? [pts[0], pts[0]]
-            : [c.confidence, c.confidence]; // flat baseline (2 pts so a line draws)
-      return {
-        colorVar: i === 0 ? SPARK_LEAD : SPARK_REST,
-        faded: c.status === "faded",
-        points,
-      };
-    });
-  }
-
-  const rows = $derived.by<SubjectRow[]>(() => {
-    if (!conclusions) return [];
-    const groups = groupSubjects(conclusions);
-    const out: SubjectRow[] = [];
-    for (const [subject, cs] of groups) {
-      const history = trajectories.get(subject);
-      const sorted = [...cs].sort((a, b) => b.confidence - a.confidence);
-      const top = sorted[0];
-      const lastMovedAtMs = cs.reduce(
-        (acc, c) => Math.max(acc, c.updatedAtMs, c.lastSupportedAtMs),
-        0,
-      );
-      const spark = buildSpark(sorted, history);
-      out.push({
-        subject,
-        conclusions: sorted,
-        conclusionCount: cs.length,
-        pinned: cs.some((c) => c.pinned),
-        faded: cs.every((c) => c.status === "faded"),
-        headline: top?.statement ?? subject,
-        lastMovedAtMs,
-        trend: deriveTrend(cs, history),
-        spark,
-        topConfidence: top?.confidence ?? 0,
-        catColorVar: spark[0]?.colorVar ?? SPARK_LEAD,
-      });
-    }
-    return out;
-  });
-
-  // Flat sorted list: non-faded by topConfidence desc, faded sunk to the bottom.
-  // This single ordering feeds both the sparse flat list and `buildTiers`.
-  const displayRows = $derived.by<SubjectRow[]>(() => {
-    const list = [...rows];
-    list.sort(
-      (a, b) =>
-        Number(a.faded) - Number(b.faded) ||
-        b.topConfidence - a.topConfidence ||
-        a.subject.localeCompare(b.subject),
-    );
-    return list;
-  });
+  // The one display ordering — feeds the flat list, the tiers and the diff.
+  const displayRows = $derived(sortDisplayRows(rows));
 
   // Ordered, non-empty tiers for the current axis (faded tier last).
   const tiers = $derived.by(() =>
     buildTiers(displayRows, axis).filter((t) => t.items.length > 0),
   );
 
-  // Sparse mode: too few subjects to justify tier headers — render one flat list.
+  // Sparse mode: too few subjects to justify tier headers — one flat plate.
   const sparse = $derived(isSparse(displayRows.length));
 
-  // Honest header counts (no rolled-up score) from the real displayed rows:
-  // "{active} active views · {fading} fading — {warming} ▲ · {steady} · {cooling} ▼".
+  // Honest header counts (no rolled-up score) from the real displayed rows.
   const summary = $derived(summaryCounts(displayRows));
 
-  // True when a search is active. Drives the layout swap (flat ranked list) and
+  // True when a search is active. Drives the layout swap (flat ranked plate) and
   // the header line (match count instead of the conviction/movement tallies).
   const searching = $derived(appliedQuery.trim().length > 0);
 
   // Relevance-ranked matches for the active query. Ranks over `displayRows` so
   // ties fall back to the same confidence-desc, faded-last order the tiers use.
   // Matches name + conclusion statements across ALL loaded rows (fading too).
-  const searchResults = $derived.by<SubjectRow[]>(() =>
+  const searchResults = $derived.by<Row[]>(() =>
     searching ? rankSubjects(displayRows, appliedQuery) : [],
   );
-
-  function relativeTime(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "—";
-    const diff = Date.now() - ms;
-    if (diff < 0) return "just now";
-    const min = Math.floor(diff / 60000);
-    if (min < 1) return "just now";
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    if (day < 7) return `${day}d ago`;
-    const wk = Math.floor(day / 7);
-    if (wk < 5) return `${wk}w ago`;
-    const mo = Math.floor(day / 30);
-    if (mo < 12) return `${mo}mo ago`;
-    const yr = Math.floor(day / 365);
-    return `${yr}y ago`;
-  }
-
-  function trendPillClass(t: Trend): string {
-    return t === "up"
-      ? "trend-up"
-      : t === "down"
-        ? "trend-down"
-        : "trend-steady";
-  }
-  function trendLabel(t: Trend): string {
-    return t === "up" ? "▲ warming" : t === "down" ? "▼ cooling" : "– steady";
-  }
-
-  function openSubject(row: SubjectRow): void {
-    onOpenSubject(row.subject);
-  }
-  function toggleExpand(subject: string): void {
-    expandedSubject = expandedSubject === subject ? null : subject;
-    if (expandedSubject) void resolveActivitiesFor(expandedSubject);
-  }
-
-  function pct(confidence: number): number {
-    return Math.round(Math.max(0, Math.min(1, confidence)) * 100);
-  }
-
-  // ---- Per-conclusion actions (mirrors SubjectDetail's signatures exactly) ----
-  // After a successful pin/dismiss we reload the whole conclusion set so the
-  // confidence arc + tier grouping reflect the change. User-initiated actions
-  // are IMMEDIATE (never gated behind the refresh pill) — applyConclusions swaps
-  // the data straight in; the open row stays open (`expandedSubject` preserved).
-  async function togglePinned(c: Conclusion): Promise<void> {
-    if (actionId !== null) return;
-    actionId = c.id;
-    actionKind = "pin";
-    try {
-      await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
-      applyConclusions(await fetchConclusions());
-    } catch (error) {
-      // Write failure must NOT blow away the loaded list — surface it in a
-      // dialog (mirrors Context.svelte) and leave the rows intact.
-      const detail = humanizeError(error);
-      toast({
-        tone: "error",
-        title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
-        message: detail,
-      });
-    } finally {
-      actionId = null;
-      actionKind = null;
-    }
-  }
-
-  async function dismiss(c: Conclusion): Promise<void> {
-    if (actionId !== null) return;
-    actionId = c.id;
-    actionKind = "dismiss";
-    try {
-      await invoke("user_context_dismiss_conclusion", { id: c.id });
-      applyConclusions(await fetchConclusions());
-    } catch (error) {
-      // Write failure must NOT blow away the loaded list — surface it in a
-      // dialog (mirrors Context.svelte) and leave the rows intact.
-      const detail = humanizeError(error);
-      toast({
-        tone: "error",
-        title: "Couldn't dismiss conclusion",
-        message: detail,
-      });
-    } finally {
-      actionId = null;
-      actionKind = null;
-    }
-  }
-
-  // ---- Lazy, bounded evidence resolution (quick look, not the deep dive) ----
-  // One evidence chip per resolved Activity cited by the subject's conclusions.
-  interface EvidenceChip {
-    activityId: number;
-    sourceType: "screen" | "audio";
-    atMs: number | null;
-  }
-
-  // Aggregate the distinct evidence Activities cited across a subject's
-  // conclusions and project the resolved ones into source-typed chips. Capped to
-  // a handful so the expanded row stays a glance, not the full inspector.
-  function evidenceChipsFor(r: SubjectRow): EvidenceChip[] {
-    const seen = new Set<number>();
-    const order: number[] = [];
-    for (const c of r.conclusions) {
-      for (const e of c.evidence as ConclusionEvidenceRef[]) {
-        if (!seen.has(e.activityId)) {
-          seen.add(e.activityId);
-          order.push(e.activityId);
-        }
-      }
-    }
-    const chips: EvidenceChip[] = [];
-    for (const id of order) {
-      const activity = activitiesById.get(id);
-      if (!activity) continue;
-      const firstRef = activity.evidence?.[0];
-      const sourceType: "screen" | "audio" =
-        firstRef?.subjectType === "audio_segment" ? "audio" : "screen";
-      chips.push({ activityId: id, sourceType, atMs: activity.startedAtMs ?? null });
-      if (chips.length >= 5) break;
-    }
-    return chips;
-  }
-
-  // True while the expanded subject cites evidence but none has resolved yet.
-  function hasEvidenceRefs(r: SubjectRow): boolean {
-    return r.conclusions.some((c) => c.evidence.length > 0);
-  }
-
-  // Resolve the Activities a subject's conclusions cite via a bounded paged scan
-  // (port of SubjectDetail.loadActivities). Runs at most once per subject; merges
-  // resolved Activities into the shared `activitiesById` cache so re-expanding is
-  // instant. Best-effort — unresolved refs simply yield no chip.
-  async function resolveActivitiesFor(subject: string): Promise<void> {
-    if (resolvedSubjects.has(subject)) return;
-    const nextResolved = new Set(resolvedSubjects);
-    nextResolved.add(subject);
-    resolvedSubjects = nextResolved;
-
-    const row = rows.find((r) => r.subject === subject);
-    if (!row) return;
-    const wanted = new Set<number>();
-    for (const c of row.conclusions)
-      for (const e of c.evidence) wanted.add(e.activityId);
-    if (wanted.size === 0) return;
-
-    const resolved = new Map<number, Activity>();
-    const PAGE = 200;
-    const MAX_PAGES = 6; // bounded scan; evidence is recent for live subjects
-    for (let page = 0; page < MAX_PAGES; page++) {
-      let batch: Activity[];
-      try {
-        batch = await invoke<Activity[]>("list_user_context_activities", {
-          limit: PAGE,
-          offset: page * PAGE,
-        });
-      } catch {
-        break;
-      }
-      if (batch.length === 0) break;
-      for (const a of batch) {
-        if (wanted.has(a.id)) resolved.set(a.id, a);
-      }
-      if (resolved.size >= wanted.size) break;
-      if (batch.length < PAGE) break;
-    }
-    if (resolved.size > 0) {
-      const merged = new Map(activitiesById);
-      for (const [id, a] of resolved) merged.set(id, a);
-      activitiesById = merged;
-    }
-  }
-
-  // In-place frame peek (FrameDetailModal). A frame evidence ref opens the modal
-  // instead of hopping to the raw Timeline window; the old hand-off survives only
-  // as the modal's escape hatch and as the audio/no-ref fallback.
-  let frameModalOpen = $state(false);
-  let frameModalId = $state<number | null>(null);
-  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
-
-  // "View frame" — resolve the first cited Activity's first raw evidence ref. A
-  // frame ref peeks in place; an audio ref (or no ref) keeps the old raw-Timeline
-  // hand-off / plain Timeline navigation.
-  async function viewInTimeline(r: SubjectRow): Promise<void> {
-    const chips = evidenceChipsFor(r);
-    const first = chips[0];
-    const activity = first ? activitiesById.get(first.activityId) : undefined;
-    const ref = activity?.evidence?.[0];
-    if (ref && ref.subjectType === "frame") {
-      frameModalId = ref.subjectId;
-      frameModalOpenInTimeline = () => void openRefInTimeline(ref);
-      frameModalOpen = true;
-      return;
-    }
-    await openRefInTimeline(ref);
-  }
-
-  // The legacy best-effort Activity-span hand-off to the raw Timeline — now the
-  // modal's escape hatch + the audio/no-ref fallback.
-  async function openRefInTimeline(
-    ref: ActivityEvidenceRef | undefined,
-  ): Promise<void> {
-    try {
-      if (ref && ref.subjectType === "audio_segment") {
-        await invoke("open_capture_result_in_main_window", {
-          kind: "audio",
-          frameId: null,
-          audioSegmentId: ref.subjectId,
-          // spanStartMs is an offset WITHIN the segment; ref.capturedAtMs is the
-          // segment's absolute start, i.e. offset 0 — passing it seeked to the end.
-          spanStartMs: null,
-          alignedFrameId: null,
-        });
-        return;
-      }
-      if (ref && ref.subjectType === "frame") {
-        await invoke("open_capture_result_in_main_window", {
-          kind: "frame",
-          frameId: ref.subjectId,
-          audioSegmentId: null,
-        });
-        return;
-      }
-    } catch {
-      // fall through to a plain Timeline navigation
-    }
-    void goto("/");
-  }
-
-  // Compute the subject display order for an arbitrary conclusions list — the
-  // SAME grouping + sort `displayRows` uses (non-faded by topConfidence desc,
-  // faded sunk to the bottom, ties broken by subject name). Used to diff the
-  // displayed list against a staged reload in the SAME order the user sees.
-  function displayedSubjectOrder(list: Conclusion[]): string[] {
-    const groups = groupSubjects(list);
-    const summaries: { subject: string; faded: boolean; topConfidence: number }[] =
-      [];
-    for (const [subject, cs] of groups) {
-      const top = [...cs].sort((a, b) => b.confidence - a.confidence)[0];
-      summaries.push({
-        subject,
-        faded: cs.every((c) => c.status === "faded"),
-        topConfidence: top?.confidence ?? 0,
-      });
-    }
-    summaries.sort(
-      (a, b) =>
-        Number(a.faded) - Number(b.faded) ||
-        b.topConfidence - a.topConfidence ||
-        a.subject.localeCompare(b.subject),
-    );
-    return summaries.map((s) => s.subject);
-  }
 
   // The single network read. Returns the fresh list; sets loadError on failure
   // (and returns the current list so callers don't blow away what's displayed).
@@ -569,9 +192,7 @@
     }
   }
 
-  // Swap a list into the DISPLAYED dataset and refresh its trajectories. This is
-  // the immediate path: first paint, user pin/dismiss, and the pill click all
-  // call it directly. `expandedSubject` is untouched, so an open row stays open.
+  // Swap a list into the DISPLAYED dataset and refresh its trajectories.
   function applyConclusions(list: Conclusion[]): void {
     conclusions = list;
     void loadTrajectories(list);
@@ -596,8 +217,7 @@
       invoke<UserContextStatus>("get_user_context_status").catch(() => null),
     ]);
     engineOn =
-      Boolean(ai?.enabled && ai?.available) ||
-      Boolean(ctx?.engineAvailable);
+      Boolean(ai?.enabled && ai?.available) || Boolean(ctx?.engineAvailable);
   }
 
   // Apply the staged reload now (the refresh-pill click, or auto-apply on idle).
@@ -648,8 +268,7 @@
 
   // The debounced engine-change handler: fetch fresh data, diff it against what
   // is displayed (in the SAME display order), then decide. "apply" swaps it in
-  // silently; "stage" holds it behind the pill; "ignore" discards it. This is
-  // the ONLY staged path — user actions and first paint stay immediate.
+  // silently; "stage" holds it behind the pill; "ignore" refreshes figures only.
   async function onContextChanged(): Promise<void> {
     const next = await fetchConclusions();
     const displayedOrder = displayedSubjectOrder(
@@ -657,17 +276,18 @@
     );
     const stagedOrder = displayedSubjectOrder(next);
     const diff = subjectsDiff(displayedOrder, stagedOrder);
+    // Rows navigate rather than expand in place (page 09), so the only reason to
+    // hold a reload back is that the reader has scrolled away from the top.
     const action = decideRefresh({
       changed: diff.changed,
-      expanded: untrack(() => expandedSubject) !== null,
+      expanded: false,
       atTop: untrack(() => atTop),
     });
     if (action === "ignore") {
       // Membership + display order unchanged — but the per-row FIGURES may have
       // moved (confidence values, trajectory/sparkline points). Refresh them in
-      // place: applyConclusions swaps the data and reloads trajectories without
-      // touching ordering, `expandedSubject`, or the pill, so no row reorders,
-      // appears, or disappears — only the numbers/sparklines catch up.
+      // place: no row reorders, appears or disappears, only the numbers and
+      // sparklines catch up.
       applyConclusions(next);
       return;
     }
@@ -682,11 +302,10 @@
     pendingCount = diff.count;
   }
 
-  // Auto-apply on idle: once no row is open and the surface is back at the top,
-  // a staged reload swaps in without needing the pill click. Best-effort — the
-  // pill remains the primary path. Never fires while a row is expanded.
+  // Auto-apply on idle: once the surface is back at the top, a staged reload
+  // swaps in without needing the pill click. The pill remains the primary path.
   $effect(() => {
-    if (expandedSubject === null && atTop && stagedConclusions !== null) {
+    if (atTop && stagedConclusions !== null) {
       applyStaged();
     }
   });
@@ -709,9 +328,9 @@
       else unlisten = fn;
     });
 
-    // atTop detection: find the nearest scroll container (the surface scrolls
-    // inside `.insights-main`) and track its scrollTop. Best-effort — fall back
-    // to window scroll if no container resolves. Listener removed on unmount.
+    // atTop detection: find the nearest scroll container (the destination pane
+    // scrolls) and track its scrollTop. Best-effort — fall back to window
+    // scroll if no container resolves. Listener removed on unmount.
     let scrollEl: HTMLElement | null = null;
     let usingWindow = false;
     const updateAtTop = (): void => {
@@ -719,18 +338,15 @@
       atTop = top <= 8;
     };
     if (rootEl) {
-      let el: HTMLElement | null = rootEl.closest(".insights-main");
-      if (!el) {
-        // Walk parents for the first scrollable ancestor.
-        let p = rootEl.parentElement;
-        while (p) {
-          const oy = getComputedStyle(p).overflowY;
-          if (oy === "auto" || oy === "scroll") {
-            el = p;
-            break;
-          }
-          p = p.parentElement;
+      let el: HTMLElement | null = null;
+      let p = rootEl.parentElement;
+      while (p) {
+        const oy = getComputedStyle(p).overflowY;
+        if (oy === "auto" || oy === "scroll") {
+          el = p;
+          break;
         }
+        p = p.parentElement;
       }
       scrollEl = el;
     }
@@ -753,234 +369,20 @@
   });
 </script>
 
-{#snippet row(r: SubjectRow)}
-  {@const open = expandedSubject === r.subject}
-  <!-- The row is a non-interactive container; navigation lives on an explicit
-       button (the subject name/headline) and the caret/Pin/Dismiss are the only
-       other controls — one keyboard path per action, no button-in-button. -->
-  <div
-    class="card conv-row"
-    class:is-faded={r.faded}
-    class:is-open={open}
-  >
-    <!-- The whole main strip opens the subject on click (so the hover highlight
-         matches the hit-area, not just the left meta). This is a MOUSE-ONLY
-         convenience; the real keyboard path stays the inner `.conv-open` button
-         (one tab stop per action). The caret + pin/dismiss stopPropagation so
-         they don't also navigate. -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="conv-rowmain" onclick={() => openSubject(r)}>
-      <!-- LEFT: meta — the navigation trigger (keyboard path). -->
-      <button
-        type="button"
-        class="conv-meta conv-open"
-        aria-label={`Open ${r.subject}`}
-        onclick={(e) => {
-          e.stopPropagation();
-          openSubject(r);
-        }}
-      >
-        <div class="conv-metatop">
-          <span
-            class="conv-catdot"
-            style="background:var({r.catColorVar})"
-          ></span>
-          <span class="conv-name">{r.subject}</span>
-          {#if r.pinned}
-            <span class="conv-pin" use:tip={"Pinned"}>★</span>
-          {/if}
-          <span class="tag {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
-          <span class="conv-cc">
-            · {r.conclusionCount}
-            {r.conclusionCount === 1 ? "conclusion" : "conclusions"}
-          </span>
-        </div>
-        <div class="conv-headline">{r.headline}</div>
-      </button>
-
-      <!-- RIGHT: hero sparkline + figure + caret -->
-      <div class="conv-hero">
-        <div class="conv-spark">
-          <Sparkline
-            series={r.spark}
-            floor={FLOOR}
-            label={`${r.subject} — confidence trend, ${trendLabel(r.trend)}, across ${r.conclusionCount} ${r.conclusionCount === 1 ? "conclusion" : "conclusions"}`}
-          />
-        </div>
-        <div class="conv-figure">
-          <div class="conv-conf">{r.topConfidence.toFixed(2)}</div>
-          <div class="conv-moved">{relativeTime(r.lastMovedAtMs)}</div>
-        </div>
-        <button
-          type="button"
-          class="conv-caret"
-          class:is-open={open}
-          aria-label={open ? "Collapse conclusions" : "Expand conclusions"}
-          use:tip={open ? "Collapse conclusions" : "Expand conclusions"}
-          aria-expanded={open}
-          onclick={(e) => {
-            e.stopPropagation();
-            toggleExpand(r.subject);
-          }}
-        >
-          ▶
-        </button>
-      </div>
-    </div>
-
-    <!-- Expand container — shown only when this row is open. -->
-    {#if open}
-      {@const chips = evidenceChipsFor(r)}
-      <div class="conv-detail">
-        <div class="conv-detail-inner">
-          <!-- Block 1: ranked conclusions with per-conclusion Pin/Dismiss. -->
-          <div class="conv-detail-block">
-            <p class="conv-detail-label">Conclusions · ranked by confidence</p>
-            <div class="conv-concl">
-              {#each r.conclusions as c (c.id)}
-                {@const faded = c.status === "faded"}
-                <div class="conv-concl-row" class:is-faded={faded}>
-                  <span class="conv-concl-stmt" use:tip={c.statement}>
-                    {#if c.pinned}<span class="conv-concl-pin" aria-hidden="true"
-                        >★</span
-                      >{/if}{c.statement}
-                  </span>
-                  <span class="confidence-bar">
-                    <span
-                      class="confidence-bar-fill"
-                      class:is-faded={faded}
-                      style="width:{pct(c.confidence)}%"
-                    ></span>
-                  </span>
-                  <span class="conv-concl-pct">{pct(c.confidence)}%</span>
-                  <span class="chip {faded ? 'status-faded' : 'status-active'}">
-                    {faded ? "faded" : "active"}
-                  </span>
-                  <span class="conv-concl-actions">
-                    <button
-                      type="button"
-                      class="btn"
-                      class:btn--accent={c.pinned}
-                      class:btn--busy={actionId === c.id && actionKind === "pin"}
-                      disabled={actionId !== null}
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        void togglePinned(c);
-                      }}
-                    >
-                      {#if actionId === c.id && actionKind === "pin"}
-                        <span class="btn-spinner" aria-hidden="true"></span>
-                        {c.pinned ? "Unpinning…" : "Pinning…"}
-                      {:else}
-                        {c.pinned ? "★ Pinned" : "Pin"}
-                      {/if}
-                    </button>
-                    <button
-                      type="button"
-                      class="btn"
-                      class:btn--busy={actionId === c.id &&
-                        actionKind === "dismiss"}
-                      disabled={actionId !== null}
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        void dismiss(c);
-                      }}
-                    >
-                      {#if actionId === c.id && actionKind === "dismiss"}
-                        <span class="btn-spinner" aria-hidden="true"></span>
-                        Dismissing…
-                      {:else}
-                        Dismiss
-                      {/if}
-                    </button>
-                  </span>
-                </div>
-              {/each}
-            </div>
-          </div>
-
-          <!-- Block 2: grounding evidence (lazy, bounded) + Timeline handoff. -->
-          <div class="conv-detail-block">
-            <p class="conv-detail-label">Grounded in</p>
-            {#if chips.length > 0}
-              <div class="conv-chiprow">
-                {#each chips as chip (chip.activityId)}
-                  <span
-                    class="chip {chip.sourceType === 'audio'
-                      ? 'src-mic'
-                      : 'src-screen'}"
-                  >
-                    {chip.sourceType === "audio" ? "audio" : "screen"}
-                    <span class="chip-time">{relativeTime(chip.atMs ?? 0)}</span>
-                  </span>
-                {/each}
-                <button
-                  type="button"
-                  class="btn btn--ghost conv-timeline-btn"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    void viewInTimeline(r);
-                  }}
-                >
-                  View frame ›
-                </button>
-              </div>
-            {:else if hasEvidenceRefs(r) && !resolvedSubjects.has(r.subject)}
-              <p class="ev-empty">Resolving evidence…</p>
-            {:else}
-              <p class="ev-empty">No grounding evidence linked.</p>
-            {/if}
-          </div>
-        </div>
-      </div>
-    {/if}
-  </div>
-{/snippet}
-
 <section class="subjects" aria-label="Subjects" bind:this={rootEl}>
-  <!-- Header -->
-  <div class="conv-head">
+  <div class="sbhead">
     <h1>Subjects</h1>
-    <p class="conv-sub">
+    <p>
       What Mnema has come to believe about you — and how firmly. Strongest views
       first; fading ones are kept for history.
     </p>
-    <!-- Honest counts line (no rolled-up score). Hidden while loading and when
-         there are zero subjects — the empty state covers that. The line simply
-         isn't rendered until conclusions load, so the header doesn't jank. -->
-    {#if conclusions && displayRows.length > 0}
-      {#if searching}
-        <p class="conv-summary">
-          <span class="num">{searchResults.length}</span>
-          {searchResults.length === 1 ? "match" : "matches"} for
-          <span class="num">“{appliedQuery.trim()}”</span>
-        </p>
-      {:else}
-        <p class="conv-summary">
-          <span class="num">{summary.active}</span> active views ·
-          <span class="num">{summary.fading}</span> fading<span class="sep"
-            >—</span
-          ><span class="num">{summary.warming}</span> warming
-          <span class="up">▲</span> · <span class="num">{summary.steady}</span>
-          steady · <span class="num">{summary.cooling}</span> cooling
-          <span class="down">▼</span>
-        </p>
-      {/if}
-    {/if}
   </div>
 
-  <!-- Realtime refresh pill — appears when an engine update is staged behind the
-       reader (a row is open, or the page is scrolled). Click swaps it in. The
-       pill is the only signal that fresh views are waiting; the page never
-       reflows out from under the reader. -->
+  <!-- Realtime refresh pill — appears when an engine update is staged behind a
+       scrolled reader. Click swaps it in; the page never reflows underneath. -->
   {#if pendingCount > 0 || stagedConclusions !== null}
-    <div class="conv-refresh-bar">
-      <button
-        type="button"
-        class="conv-refresh-pill"
-        onclick={applyStaged}
-      >
+    <div class="refresh-bar">
+      <button type="button" class="btn btn--accent btn--sm" onclick={applyStaged}>
         ↻ {pendingCount > 0
           ? `${pendingCount} ${pendingCount === 1 ? "view" : "views"} updated`
           : "views updated"} · refresh
@@ -988,34 +390,26 @@
     </div>
   {/if}
 
-  <!-- Controls: search box + grouping-axis toggle -->
-  <div class="conv-controls">
-    <div class="search">
-      <svg
-        class="search-glyph"
-        width="13"
-        height="13"
-        viewBox="0 0 14 14"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        aria-hidden="true"
-      >
-        <circle cx="6" cy="6" r="4.5" />
-        <path d="M9.5 9.5 13 13" />
-      </svg>
-      <input
-        type="search"
-        class="search-input"
-        placeholder="Search subjects…"
-        aria-label="Search subjects"
-        autocomplete="off"
-        spellcheck="false"
-        bind:value={searchQuery}
-        oninput={onSearchInput}
-      />
-    </div>
+  <div class="sbbar">
+    <!-- Honest counts line (no rolled-up score). Held until conclusions load so
+         the header doesn't jank; the empty state covers the zero case. -->
+    {#if conclusions && displayRows.length > 0}
+      {#if searching}
+        <span class="counts is-num">
+          {searchResults.length}
+          {searchResults.length === 1 ? "match" : "matches"} for “{appliedQuery.trim()}”
+        </span>
+      {:else}
+        <span class="counts is-num">
+          {summary.active} active views · {summary.fading} fading —
+          {summary.warming} warming <span class="up">▲</span> ·
+          {summary.steady} steady · {summary.cooling} cooling
+          <span class="dn">▼</span>
+        </span>
+      {/if}
+    {:else}
+      <span class="counts"></span>
+    {/if}
     <Segmented
       options={AXIS_OPTIONS}
       value={axis}
@@ -1023,9 +417,9 @@
       ariaLabel="Organize subjects by"
     />
   </div>
-  <!-- Define the grouping axis for newcomers — "conviction" and "movement" aren't
-       self-evident terms. The line tracks the active axis. -->
-  <p class="axis-hint">
+  <!-- Define the active grouping axis — "conviction" and "movement" aren't
+       self-evident terms. -->
+  <p class="sbhint">
     {#if axis === "conviction"}
       Conviction — how firmly the engine holds each view (its confidence).
     {:else}
@@ -1034,44 +428,36 @@
   </p>
 
   {#if loadError && !conclusions}
-    <div class="state state--error">
+    <div class="plate state state--error">
       <p class="state-title">Couldn't load Subjects.</p>
       <p class="state-detail">{loadError}</p>
       <button
         type="button"
-        class="state-retry"
+        class="btn btn--sm state-retry"
         onclick={() => void loadConclusions()}
         disabled={loading}
       >
-        <span class="state-retry-ico" aria-hidden="true">↻</span>
-        Try again
+        ↻ Try again
       </button>
     </div>
   {:else if loading && !conclusions}
-    <!-- Loading skeleton — a few rows matching the loaded row shape so the swap
-         to loaded content causes no layout shift. Distinct from the empty state
-         below, which only renders AFTER loading completes with no subjects. -->
-    <div class="conv-rows" aria-label="Loading subjects" aria-busy="true">
+    <!-- Loading skeleton — rows on a plate, matching the loaded row shape so the
+         swap to real content causes no layout shift. -->
+    <div class="tplate" aria-label="Loading subjects" aria-busy="true">
       {#each Array.from({ length: SKELETON_COUNT }) as _, i (i)}
-        <div class="card conv-row conv-row--skeleton">
-          <div class="conv-rowmain">
-            <div class="conv-meta">
-              <div class="conv-metatop">
-                <Skeleton variant="text" width="42%" height="14px" />
-                <Skeleton variant="text" width="64px" height="14px" radius="999px" />
-              </div>
-              <Skeleton variant="text" width="68%" height="12px" />
-            </div>
-            <div class="conv-hero">
-              <Skeleton width="120px" height="32px" radius="6px" />
-              <Skeleton variant="text" width="48px" height="22px" />
-            </div>
-          </div>
+        <div class="skrow">
+          <span class="skrow__t">
+            <Skeleton variant="text" width="34%" height="14px" />
+            <Skeleton variant="text" width="62%" height="12px" />
+            <Skeleton variant="text" width="86px" height="11px" />
+          </span>
+          <Skeleton width="172px" height="34px" radius="4px" />
+          <Skeleton variant="text" width="44px" height="17px" />
         </div>
       {/each}
     </div>
   {:else if displayRows.length === 0}
-    <div class="state">
+    <div class="plate state">
       {#if engineOn === false}
         <!-- Engine is off — the actionable case: a direct path to turn it on. -->
         <p class="state-title">The Reasoning Engine is off.</p>
@@ -1081,7 +467,7 @@
         </p>
         <button
           type="button"
-          class="state-cta"
+          class="btn btn--accent state-retry"
           onclick={() => void openSettings("intelligence")}
         >
           Open engine settings
@@ -1097,9 +483,9 @@
       {/if}
     </div>
   {:else if searching}
-    <!-- Search active: one flat list ranked by relevance, no tier headers. -->
+    <!-- Search active: one flat plate ranked by relevance, no tier headers. -->
     {#if searchResults.length === 0}
-      <div class="state">
+      <div class="plate state">
         <p class="state-title">No subjects match “{appliedQuery.trim()}”.</p>
         <p class="state-detail">
           Search looks at subject names and the wording of each belief. Try a
@@ -1107,45 +493,46 @@
         </p>
       </div>
     {:else}
-      <div class="conv-rows">
+      <div class="tplate">
         {#each searchResults as r (r.subject)}
-          {@render row(r)}
+          <SubjectRow row={r} onOpen={onOpenSubject} />
         {/each}
       </div>
     {/if}
   {:else if sparse}
-    <!-- Sparse: one ungrouped list, no tier headers. -->
-    <div class="conv-rows">
+    <!-- Sparse: one ungrouped plate, no tier headers. -->
+    <div class="tplate">
       {#each displayRows as r (r.subject)}
-        {@render row(r)}
+        <SubjectRow row={r} onOpen={onOpenSubject} />
       {/each}
     </div>
-    <p class="conv-foot">
+    <p class="sfoot">
       Confidence is recency-weighted — views warm with fresh evidence and cool on
       their own. Faded views are kept for history, never deleted.
     </p>
   {:else}
-    <!-- Tiered layout — one section per non-empty tier. -->
+    <!-- Tiered: the label floats over the pane, the rows share ONE plate, so a
+         whole tier reads as a single card. -->
     {#each tiers as tier (tier.id)}
       {@const visible = shownCount(tier.id)}
       {@const shown = tier.items.slice(0, visible)}
       {@const hidden = tier.items.length - shown.length}
       {@const nextPage = Math.min(TIER_PAGE, hidden)}
-      <section class="conv-tier" class:conv-tier--faded={tier.faded}>
-        <div class="conv-tier-head">
-          <span class="section-title">{tier.title}</span>
-          <span class="conv-tier-note">{tier.note}</span>
+      <section class="tier" class:tier--faded={tier.faded}>
+        <div class="tier__h">
+          <span class="tier__t">{tier.title}</span>
+          <span class="tier__note">{tier.note}</span>
+          <span class="tier__n is-num">{tier.items.length}</span>
         </div>
-        <div class="conv-rule"></div>
-        <div class="conv-rows">
+        <div class="tplate">
           {#each shown as r (r.subject)}
-            {@render row(r)}
+            <SubjectRow row={r} onOpen={onOpenSubject} />
           {/each}
         </div>
         {#if hidden > 0}
           <button
             type="button"
-            class="conv-tier-more"
+            class="btn btn--ghost btn--sm tier__more"
             onclick={() => showMoreTier(tier.id)}
           >
             Show {nextPage} more
@@ -1153,7 +540,7 @@
         {:else if visible > TIER_PAGE}
           <button
             type="button"
-            class="conv-tier-more"
+            class="btn btn--ghost btn--sm tier__more"
             onclick={() => collapseTier(tier.id)}
           >
             Show less
@@ -1162,21 +549,12 @@
       </section>
     {/each}
 
-    <p class="conv-foot">
+    <p class="sfoot">
       Confidence is recency-weighted — views warm with fresh evidence and cool on
       their own. Faded views are kept for history, never deleted.
     </p>
   {/if}
 </section>
-
-<!-- In-place frame peek for a subject's grounding evidence. Its "open full
-     timeline →" escape hatch replays the old raw-Timeline hand-off. -->
-<FrameDetailModal
-  open={frameModalOpen}
-  frameId={frameModalId}
-  onClose={() => (frameModalOpen = false)}
-  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
-/>
 
 <style>
   .subjects {
@@ -1185,702 +563,163 @@
   }
 
   /* ---- Header ---- */
-  .conv-head {
-    margin-bottom: 14px;
+  .sbhead {
+    margin-bottom: 10px;
   }
-  .conv-head h1 {
-    margin: 0 0 4px;
-    font-size: 18px;
-    font-weight: 600;
+  .sbhead h1 {
+    margin: 0 0 var(--s-4);
+    font: var(--w-semi) var(--t-display) / var(--lh-display) var(--app-font-sans);
+    letter-spacing: var(--ls-display);
     color: var(--app-text-strong);
-    letter-spacing: -0.01em;
   }
-  .conv-head .conv-sub {
+  .sbhead p {
     margin: 0;
-    font-size: var(--t-ui);
+    max-width: 78ch;
+    font: var(--w-regular) var(--t-meta) / 1.5 var(--app-font-sans);
     color: var(--app-text-muted);
-    max-width: 760px;
   }
 
-  /* Honest counts line — token-driven, tabular figures so it never reflows. */
-  .conv-summary {
-    margin: 8px 0 0;
-    font-size: var(--t-ui);
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .conv-summary .num {
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-  }
-  .conv-summary .up {
-    color: var(--app-accent-strong);
-  }
-  /* faded/cooling count reads quiet (normal decay), not as a danger red. */
-  .conv-summary .down {
-    color: var(--app-text-muted);
-  }
-  .conv-summary .sep {
-    color: var(--app-text-faint);
-    padding: 0 6px;
-  }
-
-  /* ---- Controls row ---- */
-  .conv-controls {
+  .sbbar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin: 14px 0 10px;
+    gap: var(--s-12);
+    margin: var(--s-12) 0 var(--s-6);
   }
-  /* Quiet definition of the active grouping axis (conviction / movement). */
-  .axis-hint {
-    margin: 0 0 14px;
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    line-height: 1.5;
-  }
-
-  /* Search box — same surface as the Chat rail's search so the two read alike. */
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: 28px;
-    padding: 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    flex: 1 1 220px;
-    min-width: 180px;
-    max-width: 320px;
-  }
-  .search:focus-within {
-    border-color: var(--app-accent-border);
-    box-shadow: var(--app-ring);
-  }
-  .search-glyph {
-    display: block;
-    flex: 0 0 auto;
-    color: var(--app-text-subtle);
-  }
-  .search-input {
+  .counts {
     flex: 1 1 auto;
     min-width: 0;
-    font: inherit;
-    font-size: var(--t-meta);
-    border: none;
-    background: transparent;
-    color: var(--app-text);
-    outline: none;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    color: var(--app-text-muted);
   }
-  .search-input::placeholder {
+  .counts .up {
+    color: var(--app-accent);
+  }
+  /* Cooling is normal decay, not an error — it stays quiet. */
+  .counts .dn {
     color: var(--app-text-faint);
   }
-  .search-input::-webkit-search-cancel-button {
-    -webkit-appearance: none;
-    appearance: none;
+  .sbhint {
+    margin: 0 0 var(--s-16);
+    font: var(--w-regular) var(--t-meta) / 1.4 var(--app-font-sans);
+    color: var(--app-text-subtle);
   }
 
-  /* ---- Realtime refresh pill ---- */
-  /* Sticky banner so the pill stays visible while the reader scrolls or has a
-     row open. Accent-styled from tokens only; snappy entrance. */
-  .conv-refresh-bar {
+  .refresh-bar {
     position: sticky;
-    top: 6px;
+    top: var(--s-6);
     z-index: 3;
     display: flex;
     justify-content: center;
-    pointer-events: none;
-    margin: 0 0 8px;
-  }
-  .conv-refresh-pill {
-    pointer-events: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: var(--t-meta);
-    letter-spacing: 0.02em;
-    padding: 4px 13px;
-    border-radius: 999px;
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    box-shadow: 0 2px 10px var(--app-accent-glow);
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease,
-      transform 0.12s ease;
-  }
-  .conv-refresh-pill:hover {
-    background: var(--app-accent);
-    border-color: var(--app-accent);
-    color: var(--app-accent-contrast, var(--app-text-strong));
-    transform: translateY(-1px);
-  }
-  .conv-refresh-pill:not(:disabled):active {
-    transform: translateY(0);
-  }
-  .conv-refresh-pill:focus-visible {
-    outline: 2px solid var(--app-accent-border);
-    outline-offset: 2px;
+    margin: 0 0 var(--s-8);
   }
 
-  /* ---- Tier section ---- */
-  .conv-tier {
-    margin-top: 16px;
+  /* ---- Tier: a labelled band. The label floats over the pane; the rows sit on
+     ONE opaque plate, so a whole tier reads as a single card. ---- */
+  .tier {
+    margin-bottom: var(--s-16);
   }
-  .conv-tier:first-of-type {
-    margin-top: 4px;
-  }
-  .conv-tier-head {
+  .tier__h {
     display: flex;
     align-items: baseline;
-    gap: 10px;
-    margin-bottom: 8px;
+    gap: 9px;
+    padding: 0 var(--s-4) var(--s-6);
   }
-  .section-title {
-    font-size: var(--t-ui);
-    font-weight: 600;
-    color: var(--app-text-strong);
-    letter-spacing: -0.01em;
-  }
-  .conv-tier-note {
-    margin-left: auto;
-    font-size: var(--t-meta);
-    color: var(--app-text-faint);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
-  }
-  .conv-rule {
+  .tier__h:after {
+    content: "";
+    flex: 1;
     height: 1px;
     background: var(--app-border);
-    margin-bottom: 10px;
+    align-self: center;
   }
-  .conv-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  /* Per-tier "Show N more / Show less" toggle — quiet, left-aligned under the
-     rows so it reads as a continuation of the list, not a primary action. */
-  .conv-tier-more {
-    align-self: flex-start;
-    margin-top: 8px;
-    font: inherit;
-    font-size: var(--t-meta);
-    letter-spacing: 0.02em;
-    padding: 4px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
+  .tier__t {
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
     color: var(--app-text-muted);
-    cursor: pointer;
-    font-variant-numeric: tabular-nums;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
   }
-  .conv-tier-more:hover {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .conv-tier-more:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .conv-tier-more:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .conv-tier--faded .conv-tier-head .section-title {
+  .tier--faded .tier__t {
     color: var(--app-text-subtle);
   }
-  .conv-tier--faded .conv-rule {
-    background: var(--app-border);
-    opacity: 0.6;
+  .tier__note {
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    color: var(--app-text-subtle);
+  }
+  .tier__n {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    color: var(--app-text-faint);
+  }
+  .tier__more {
+    margin-top: var(--s-6);
   }
 
-  /* ---- Card / Subject row ---- */
-  .card {
+  /* The tier plate — opaque, one per tier. */
+  .tplate {
+    border-radius: var(--r-lg);
     background: var(--app-surface);
-    border-radius: 9px;
     box-shadow: var(--sh-tile);
+    padding: 0 var(--s-12);
   }
-  .conv-row {
-    padding: 0;
-    overflow: hidden;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .conv-row:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  /* The whole card lifts to the accent affordance when its navigation button is
-     focused, so keyboard focus is obvious without the card itself being a button. */
-  .conv-row:has(.conv-open:focus-visible) {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  /* Navigation trigger — a real button reset to look like the meta block. */
-  .conv-open {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: block;
-    text-align: left;
-    font: inherit;
-    color: inherit;
-    background: transparent;
-    border: none;
-    padding: 0;
-    margin: 0;
-    cursor: pointer;
-  }
-  .conv-open:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-    border-radius: 6px;
-  }
-  .conv-row.is-faded {
-    opacity: 0.6;
-  }
-  .conv-row.is-faded:hover {
-    opacity: 0.85;
-  }
-  .conv-row--skeleton {
-    cursor: default;
+  /* Rows share ONE plate, so their only separator is a hairline of the
+     material's own rim — never a border. Lives here rather than in
+     SubjectRow.svelte: a component can't see its own siblings, so the compiler
+     prunes the rule as unused when it is scoped to the row. */
+  .tplate :global(.srow + .srow) {
+    box-shadow: inset 0 1px 0 var(--glass-line);
   }
 
-  .conv-rowmain {
+  /* Skeleton row — matches the loaded row's rhythm so the swap causes no
+     layout shift. The real row's styles live in SubjectRow.svelte. */
+  .skrow {
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 11px 14px;
-    /* The whole strip opens the subject (matches the full-row hover highlight). */
-    cursor: pointer;
+    min-height: 52px;
+    padding: 9px 0;
   }
-
-  /* row LEFT — meta */
-  .conv-meta {
-    flex: 1 1 auto;
+  .skrow + .skrow {
+    box-shadow: inset 0 1px 0 var(--glass-line);
+  }
+  .skrow__t {
+    flex: 1;
     min-width: 0;
-  }
-  .conv-metatop {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .conv-catdot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-  }
-  .conv-name {
-    font-size: var(--t-ui);
-    font-weight: 600;
-    color: var(--app-text-strong);
-    letter-spacing: 0.01em;
-    min-width: 0;
-  }
-  .conv-pin {
-    font-size: var(--t-meta);
-    color: var(--app-accent-strong);
-    flex: 0 0 auto;
-  }
-  .conv-cc {
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .conv-headline {
-    margin-top: 3px;
-    font-size: var(--t-ui);
-    color: var(--app-text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* trend tag */
-  .tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    font-size: var(--t-label);
-    letter-spacing: 0.02em;
-    padding: 1px 7px;
-    border-radius: 999px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    flex: 0 0 auto;
-  }
-  .tag.trend-up {
-    color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  /* "cooling" is normal decay, not an error — so it reads QUIET (muted text on a
-     neutral surface) and the ▼ glyph carries the direction. This keeps the
-     saturated --app-danger token reserved for destructive/contradiction states
-     so the two never collide. */
-  .tag.trend-down {
-    color: var(--app-text-muted);
-    border-color: var(--app-border);
-    background: var(--app-surface);
-  }
-  .tag.trend-steady {
-    color: var(--app-text-muted);
-  }
-
-  /* row RIGHT — hero sparkline + figure */
-  .conv-hero {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex: 0 0 auto;
-  }
-  .conv-spark {
-    display: block;
-    flex: 0 0 auto;
-    width: 120px;
-  }
-  .conv-figure {
-    text-align: right;
-    min-width: 56px;
-  }
-  .conv-conf {
-    font-size: var(--t-title);
-    font-weight: 600;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-    line-height: 1.2;
-  }
-  .conv-moved {
-    font-size: var(--t-label);
-    color: var(--app-text-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  .conv-caret {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    color: var(--app-text-subtle);
-    font-size: var(--t-meta);
-    line-height: 1;
-    padding: 0;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    transition:
-      transform 0.12s ease,
-      color 0.12s ease;
-  }
-  .conv-row:hover .conv-caret {
-    color: var(--app-text-muted);
-  }
-  .conv-caret:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .conv-caret.is-open {
-    transform: rotate(90deg);
-    color: var(--app-accent-strong);
-  }
-  .conv-caret.is-open:not(:disabled):active {
-    transform: rotate(90deg) translateY(1px);
-  }
-  .conv-caret:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-    border-radius: 4px;
-  }
-
-  /* ---- Expanded detail (interaction skeleton; Slice 3 fills content) ---- */
-  .conv-detail {
-    overflow: hidden;
-  }
-  .conv-detail-inner {
-    border-top: 1px solid var(--app-border);
-    padding: 12px 14px 13px;
-  }
-  .conv-detail-label {
-    font-size: var(--t-label);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    margin: 0 0 7px;
-  }
-  .conv-detail-block + .conv-detail-block {
-    margin-top: 13px;
-  }
-  .ev-empty {
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    margin: 0;
-  }
-
-  /* Block 1 — ranked conclusions with per-conclusion actions. */
-  .conv-concl {
     display: flex;
     flex-direction: column;
-    gap: 7px;
-  }
-  .conv-concl-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 120px 42px 54px auto;
-    align-items: center;
-    gap: 10px;
-  }
-  .conv-concl-row.is-faded {
-    opacity: 0.55;
-  }
-  .conv-concl-stmt {
-    font-size: var(--t-ui);
-    color: var(--app-text-strong);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .conv-concl-row.is-faded .conv-concl-stmt {
-    color: var(--app-text);
-  }
-  .conv-concl-pin {
-    color: var(--app-accent-strong);
-    margin-right: 5px;
-    font-size: var(--t-meta);
-  }
-  .conv-concl-pct {
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-  }
-  .conv-concl-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    justify-self: end;
+    gap: var(--s-4);
   }
 
-  /* confidence-bar — ported scoped from the mockup's global-only styles. */
-  .confidence-bar {
-    position: relative;
-    width: 100%;
-    height: 5px;
-    border-radius: 999px;
-    background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
-    overflow: hidden;
-  }
-  .confidence-bar-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    height: 100%;
-    border-radius: 999px;
-    background: var(--app-accent);
-    box-shadow: 0 0 8px var(--app-accent-glow);
-  }
-  .confidence-bar-fill.is-faded {
-    background: var(--app-text-subtle);
-    box-shadow: none;
-  }
-
-  /* chip base + status / source variants (ported scoped, token-driven). */
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--t-label);
-    letter-spacing: 0.02em;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
-    color: var(--app-text-muted);
-    white-space: nowrap;
-  }
-  .chip.status-active {
-    color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  .chip.status-faded {
-    color: var(--app-text-faint);
-  }
-  .chip.src-screen {
-    color: var(--app-source-screen);
-    background: var(--app-source-screen-bg);
-    border-color: var(--app-source-screen-border);
-  }
-  .chip.src-mic {
-    color: var(--app-source-mic);
-    background: var(--app-source-mic-bg);
-    border-color: var(--app-source-mic-border);
-  }
-  .chip .chip-time {
-    color: var(--app-text-faint);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Block 2 — grounding evidence chip row + Timeline button. */
-  .conv-chiprow {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    flex-wrap: wrap;
-  }
-
-  /* Base `.btn` + `--accent` / `--ghost` are the shared primitive
-     (system.css §6, routes/+layout.svelte). */
-  /* Busy: the acting button stays legible (no dim) while its sibling dims via
-     :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
-  .btn--busy:disabled {
-    opacity: 1;
-    cursor: progress;
-  }
-  .btn-spinner {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 1.5px solid var(--app-border-hover);
-    border-top-color: var(--app-text-strong);
-    animation: btn-spin 0.6s linear infinite;
-    flex: 0 0 auto;
-  }
-  @keyframes btn-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* ---- Footer ---- */
-  .conv-foot {
-    margin-top: 22px;
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border);
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
+  .sfoot {
+    margin-top: var(--s-2);
+    padding: 0 var(--s-4);
+    max-width: 82ch;
+    font: var(--w-regular) var(--t-meta) / 1.5 var(--app-font-sans);
+    color: var(--app-text-subtle);
   }
 
   /* ---- States ---- */
   .state {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 18px;
-    background: var(--app-surface);
-    border-radius: 9px;
-    box-shadow: var(--sh-tile);
+    gap: var(--s-6);
+    padding: var(--s-16);
   }
   .state--error {
-    border-color: var(--app-danger-border);
     background: var(--app-danger-bg);
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
   .state-title {
     margin: 0;
-    font-size: var(--t-ui);
+    font: var(--w-medium) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: var(--t-meta);
+    font: var(--w-regular) var(--t-meta) / 1.6 var(--app-font-sans);
     color: var(--app-text-muted);
-    line-height: 1.6;
+    max-width: 70ch;
   }
-  /* Empty-state CTA — accent button (e.g. "Open engine settings"). */
-  .state-cta {
-    align-self: flex-start;
-    margin-top: 8px;
-    font: inherit;
-    font-size: var(--t-meta);
-    padding: 6px 13px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .state-cta:hover {
-    border-color: var(--app-accent);
-  }
-  .state-cta:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .state-cta:active {
-    transform: translateY(1px);
-  }
-  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
   .state-retry {
     align-self: flex-start;
-    margin-top: 4px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: var(--t-label);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .state-retry:hover:not(:disabled) {
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .state-retry:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .state-retry:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .state-retry-ico {
-    font-size: var(--t-ui);
-    line-height: 1;
-    letter-spacing: 0;
+    margin-top: var(--s-4);
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .conv-row,
-    .conv-caret,
-    .conv-refresh-pill,
-    .conv-tier-more,
-    .conv-refresh-pill:hover {
-      transform: none;
-    }
-    .conv-caret:not(:disabled):active,
-    .conv-caret.is-open:not(:disabled):active,
-    .conv-tier-more:not(:disabled):active,
-    .state-retry:not(:disabled):active {
-      transform: none;
-    }
-    .btn-spinner {
-      animation: none;
-    }
-  }
 </style>

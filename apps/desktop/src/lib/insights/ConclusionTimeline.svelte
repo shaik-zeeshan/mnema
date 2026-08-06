@@ -1,16 +1,19 @@
 <script lang="ts">
-  // ConclusionTimeline — the selected Conclusion's detail: a hero card
-  // (ConclusionHero) above a story-framed UNIFIED timeline. The timeline threads
-  // an SVG confidence trajectory through content-sized rows: higher confidence
-  // sits further right, one node per event, evidence/markers/origin interleaved
-  // newest-first.
+  // ConclusionTimeline — the selected Conclusion's detail (page 09): the
+  // pinned-belief hero (ConclusionHero) above "The story over time", the
+  // trajectory track.
   //
-  // Faithful to docs/user-context/mockups/subject-redesign/unified-timeline.html
-  // — the mockup's CSS was authored against the real app tokens, so it ports
-  // near-verbatim. Node X comes from `confidenceToX(confidenceAt)` (pure +
-  // tested in subjectTimeline.ts); node Y and the track height are MEASURED from
-  // the real DOM after render (rows size to their content — no assumed heights),
-  // kept fresh by a ResizeObserver on the track.
+  // THE SPINE IS NOT DECORATION: a node's horizontal position IS the belief's
+  // confidence at that moment, so the line leaning right is literally the
+  // belief getting firmer. Five event kinds thread onto it, newest at the top,
+  // `formed` always last: a confidence step, an evidence event, a replaced
+  // earlier take, a contradiction, and the origin. Every card is an opaque
+  // plate; the spine is drawn on the pane behind them, one layer down.
+  //
+  // Node X comes from `confidenceToX(confidenceAt)` (pure + tested in
+  // subjectTimeline.ts); node Y and the track height are MEASURED from the real
+  // DOM after render (rows size to their content — no assumed heights), kept
+  // fresh by a ResizeObserver on the track.
   //
   // The shell owns everything else: it builds & orders `events` (newest-first,
   // `formed` last), lazy-loads `thumbnails`, and runs the pin/dismiss commands
@@ -153,35 +156,28 @@
       x: confidenceToX(ev.confidenceAt),
       y: centers[i] ?? 0,
       cls: nodeClass(ev),
-      r: nodeR(ev),
+      r: 4,
     }));
     const n = nodes.length;
-    const firstY = n ? nodes[0].y : 0;
     const lastY = n ? nodes[n - 1].y : 0;
     return {
       // Node-driven; fall back to the measured track only before first measure.
       height: lastY > 0 ? lastY + 8 : trackHeight,
-      axisY1: n ? Math.max(0, firstY - 6) : 8,
-      axisY2: n ? lastY : Math.max(8, trackHeight - 8),
       points: nodes.map((p) => `${p.x},${p.y}`).join(" "),
       nodes,
     };
   });
 
+  // Node vocabulary (09's spine): the trajectory's OWN points — a confidence
+  // step and the origin — are filled accent; everything else is a hollow node
+  // on the line, and a cooling/contradicting one loses its grey for faint.
   function nodeClass(ev: TimelineEvent): string {
     if (ev.kind === "formed") return "origin";
-    if (
-      ev.kind === "contradict" ||
-      (ev.kind === "marker" && ev.direction === "decayed")
-    ) {
-      return "bad";
+    if (ev.kind === "marker") {
+      return ev.direction === "reinforced" ? "step" : "down";
     }
-    return isFaded ? "dim" : "";
-  }
-  function nodeR(ev: TimelineEvent): number {
-    if (ev.kind === "formed") return 5;
-    if (ev.kind === "marker") return 3.6;
-    return 4.5;
+    if (ev.kind === "contradict") return "down";
+    return isFaded ? "down" : "";
   }
 
   function catColorVar(category: string | null): string {
@@ -221,10 +217,15 @@
       hour12: true,
     });
   }
+  /** The card's one timestamp: "4h ago · 1:46 PM" (clock dropped when absent). */
+  function when(ms: number | null): string {
+    const clock = clockTime(ms);
+    return clock ? `${relativeTime(ms)} · ${clock}` : relativeTime(ms);
+  }
 </script>
 
 <section class="conclusion-timeline">
-  <!-- ============================== HERO CARD ============================== -->
+  <!-- ============================== THE HERO ============================== -->
   <ConclusionHero
     {conclusion}
     {trajectory}
@@ -234,157 +235,143 @@
     {onDismiss}
   />
 
-  <!-- ============================== STORY FRAMING ============================== -->
-  <div class="story-head"><span class="story-title">The story over time</span></div>
-  <p class="story-sub">
-    Most recent at top. The green line is this belief's confidence journey —
-    evidence events feed it, quiet stretches let it decay.
-  </p>
-  <div class="story-legend">
-    <span class="li"><span class="lg-line"></span> confidence trajectory</span>
-    <span class="li"><span class="lg-node"></span> evidence event</span>
-    <span class="li"><span class="lg-mk">↑</span> reinforced</span>
-    <span class="li"><span class="lg-mk down">↓</span> decayed / contradicted</span>
+  <!-- ============================ STORY FRAMING ============================ -->
+  <div class="story">
+    <span class="story__t">The story over time</span>
+    <span class="story__s"
+      >Most recent at top. The line is this belief's confidence journey —
+      evidence events feed it, quiet stretches let it decay.</span
+    >
+  </div>
+  <div class="legend">
+    <span><i class="lg-traj"></i>confidence trajectory</span>
+    <span><i class="lg-ev"></i>evidence event</span>
+    <span><i class="lg-up"></i>↑ reinforced</span>
+    <span><i class="lg-dn"></i>↓ decayed / contradicted</span>
   </div>
 
-  <!-- ============================== TIMELINE ============================== -->
-  <!-- Rows size to their content; the absolutely-positioned SVG trajectory is
-       driven by measured anchor Ys (see `measure()`) so every node lands on its
-       card's vertical centre at its confidence x — nothing gets clipped. -->
-  <div class="tl-track" bind:this={track}>
+  <!-- ========================= THE TRAJECTORY TRACK =========================
+       The spine is NOT decoration: each node's horizontal position IS the
+       belief's confidence at that moment, so the line leaning right is
+       literally the belief getting firmer. Every card is an opaque plate; the
+       spine is drawn on the pane BEHIND them, one layer down. Node X is pure
+       (`confidenceToX`); node Y is MEASURED from the real DOM, because rows
+       size to their content and no row height may be assumed. -->
+  <div class="tline" bind:this={track}>
     <svg
-      class="tl-spine-svg"
+      class="spine"
       height={geom.height}
       viewBox="0 0 72 {geom.height}"
       preserveAspectRatio="none"
       aria-hidden="true"
     >
-      <line class="axis" x1="36" y1={geom.axisY1} x2="36" y2={geom.axisY2} />
-      <polyline class="glow" points={geom.points} />
-      <polyline class="line" points={geom.points} />
+      <polyline class="spine__line" points={geom.points} />
       {#each geom.nodes as n, i (i)}
-        <circle class="node {n.cls}" cx={n.x} cy={n.y} r={n.r} />
+        <circle class="spine__node {n.cls}" cx={n.x} cy={n.y} r={n.r} />
       {/each}
     </svg>
 
     <!-- Positional key: TimelineEvent has no unique id (activityId repeats
-         across support/contradict rows), so `i` mirrors SubjectDetail's list. -->
+         across support/contradict rows), so `i` mirrors the built order. -->
     {#each events as ev, i (i)}
-      <div class="tl-row">
+      <div class="tev">
+        <span class="tev__t is-num">{pct(ev.confidenceAt)}%</span>
+        <span class="tev__a" bind:this={anchors[i]}></span>
+
         {#if ev.kind === "evidence" || ev.kind === "contradict"}
           {@const isContra = ev.kind === "contradict"}
-          {@const sourceType = ev.kind === "evidence" ? ev.sourceType : null}
-          {@const frameId = ev.kind === "evidence" ? ev.frameId : null}
-          {@const category = ev.kind === "evidence" ? ev.category : null}
           {@const thumbUrl =
-            sourceType === "screen" && frameId != null
-              ? (thumbnails.get(frameId) ?? null)
+            ev.sourceType === "screen" && ev.frameId != null
+              ? (thumbnails.get(ev.frameId) ?? null)
               : null}
-          <div class="tl-time">
-            <span class="rel">{relativeTime(ev.atMs)}</span>
-            {#if clockTime(ev.atMs)}
-              <span class="clock">{clockTime(ev.atMs)}</span>
-            {/if}
-          </div>
-          <div class="tl-gutter" bind:this={anchors[i]}></div>
-          <div
-            class="ev-card"
-            class:ev-card--contradict={isContra}
-            role="button"
-            tabindex="0"
-            onclick={() => openEvidence(frameId, ev.activityId)}
-            onkeydown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                openEvidence(frameId, ev.activityId);
-              }
-            }}
+          <button
+            type="button"
+            class="plate tev__c tev__c--act"
+            onclick={() => openEvidence(ev.frameId, ev.activityId)}
           >
-            <div
-              class="ev-thumb"
-              class:is-screen={sourceType !== "audio"}
-              class:is-audio={sourceType === "audio"}
-            >
-              {#if thumbUrl}
-                <img class="ev-thumb-img" src={thumbUrl} alt="" />
+            <span class="tev__h">
+              {#if ev.sourceType}
+                <span class="badge">{ev.sourceType === "audio" ? "mic" : "scr"}</span>
               {/if}
-              <span
-                class="ev-src"
-                class:scr={sourceType !== "audio"}
-                class:mic={sourceType === "audio"}
-              >
-                {sourceType === "audio" ? "mic" : "scr"}
-              </span>
-            </div>
-            <div class="ev-info">
-              {#if !isContra && category}
-                <div class="ev-cat">
-                  <span class="cat-tag">
-                    <span
-                      class="cat-dot"
-                      style="background:var({catColorVar(category)})"
-                    ></span>
-                    {catLabel(category)}
-                  </span>
-                </div>
-              {/if}
-              <div class="ev-title">{ev.title}</div>
-              <div class="ev-foot">
-                <span class="stance" class:stance--contradict={isContra}>
-                  {isContra ? "contradicts" : "supports"}
+              {#if ev.category}
+                <span class="cchip">
+                  <em style="background:var({catColorVar(ev.category)})"></em>
+                  {catLabel(ev.category)}
                 </span>
-                <span class="ev-link"
-                  >{frameId != null ? "view frame →" : "view in Timeline →"}</span
+              {/if}
+              <span class="tev__when is-num">{when(ev.atMs)}</span>
+            </span>
+            <span class="tev__b">
+              {#if ev.sourceType}
+                <span
+                  class="th"
+                  class:th--audio={ev.sourceType === "audio"}
+                  aria-hidden="true"
                 >
-              </div>
-            </div>
-          </div>
+                  {#if thumbUrl}<img src={thumbUrl} alt="" />{/if}
+                </span>
+              {/if}
+              <span class="tev__title">{ev.title}</span>
+            </span>
+            <span class="tev__f">
+              <span class="stance" class:stance--contra={isContra}>
+                {isContra ? "contradicts" : "supports"}
+              </span>
+              <span class="tev__link"
+                >{ev.frameId != null ? "view frame ›" : "view in Timeline ›"}</span
+              >
+            </span>
+          </button>
         {:else if ev.kind === "marker"}
-          <div class="tl-time faint">
-            <span class="rel">{relativeTime(ev.atMs)}</span>
-          </div>
-          <div class="tl-gutter" bind:this={anchors[i]}></div>
-          <div
-            class="mk"
-            class:mk--up={ev.direction === "reinforced"}
-            class:mk--down={ev.direction === "decayed"}
-          >
-            <span class="g" aria-hidden="true"
-              >{ev.direction === "reinforced" ? "↑" : "↓"}</span
-            >
-            <span class="txt"
-              >confidence <b>{Math.round(ev.from * 100)}→{Math.round(ev.to * 100)}</b>
-              · {ev.direction === "reinforced" ? "reinforced" : "decayed"}</span
-            >
-            <span class="when">{relativeTime(ev.atMs)}</span>
+          {@const up = ev.direction === "reinforced"}
+          <div class="plate tev__c">
+            <div class="tev__h">
+              <span class="trend" class:tr-up={up} class:tr-dn={!up}
+                >{up ? "↑" : "↓"}</span
+              >
+              <span class="tev__lead is-num"
+                >confidence {pct(ev.from)}% → {pct(ev.to)}%</span
+              >
+              <span class="tev__chip">{up ? "reinforced" : "decayed"}</span>
+              <span class="tev__when is-num">{when(ev.atMs)}</span>
+            </div>
+            <p class="tev__p">
+              {up
+                ? "A fresh supporting activity re-formed the belief and snapshotted the up-step."
+                : "No fresh evidence in this stretch, so the belief cooled on its own."}
+            </p>
           </div>
         {:else if ev.kind === "replaced"}
-          <div class="tl-time faint">
-            <span class="rel">{relativeTime(ev.atMs)}</span>
-            {#if clockTime(ev.atMs)}
-              <span class="clock">{clockTime(ev.atMs)}</span>
-            {/if}
-          </div>
-          <div class="tl-gutter" bind:this={anchors[i]}></div>
-          <div class="rp">
-            <div class="rp-head">
-              <span class="rp-label">Replaced an earlier take</span>
-              <span class="when">{relativeTime(ev.atMs)}</span>
+          <!-- ADR 0046 audit event: a belief is superseded, never revised. -->
+          <div class="plate tev__c">
+            <div class="tev__h">
+              <svg
+                class="tev__glyph"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M9 14.5 3.8 9.4 9 4.3" />
+                <path d="M3.8 9.4h11.4a5.3 5.3 0 1 1 0 10.6h-4.4" />
+              </svg>
+              <span class="tev__lead">Replaced an earlier take</span>
+              <span class="tev__when is-num">{when(ev.atMs)}</span>
             </div>
-            <p class="rp-old">{ev.statement}</p>
+            <p class="tev__p">“{ev.statement}” — retired, not revised.</p>
           </div>
         {:else if ev.kind === "formed"}
-          <div class="tl-time faint">
-            <span class="rel">{relativeTime(ev.atMs)}</span>
-            {#if clockTime(ev.atMs)}
-              <span class="clock">{clockTime(ev.atMs)}</span>
-            {/if}
-          </div>
-          <div class="tl-gutter" bind:this={anchors[i]}></div>
-          <div class="origin">
-            <span class="origin-badge">✦ formed</span>
-            <span class="origin-title">Conclusion first formed</span>
-            <span class="origin-text">Started at <b>{pct(ev.confidence)}%</b>.</span>
+          <div class="plate tev__c">
+            <div class="tev__h">
+              <span class="formed" aria-hidden="true">✦</span>
+              <span class="formed__l">formed</span>
+              <span class="tev__when is-num">{when(ev.atMs)}</span>
+            </div>
+            <div class="tev__b"><span class="tev__title">Conclusion first formed</span></div>
+            <p class="tev__p is-num">Started at {pct(ev.confidence)}%.</p>
           </div>
         {/if}
       </div>
@@ -402,187 +389,214 @@
 />
 
 <style>
-  /* ============================== STORY FRAMING ============================== */
-  .story-head {
-    margin: 0 0 4px;
-  }
-  .story-title {
-    font-size: var(--t-ui);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--app-text-strong);
-  }
-  .story-sub {
-    font-size: var(--t-meta);
-    line-height: 1.45;
-    color: var(--app-text-muted);
-    margin: 0 0 14px;
-  }
-  .story-legend {
-    display: flex;
-    gap: 16px;
-    margin: 0 0 14px;
-    font-size: var(--t-label);
-    color: var(--app-text-subtle);
-    flex-wrap: wrap;
-  }
-  .story-legend .li {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .lg-line {
-    width: 16px;
-    height: 0;
-    border-top: 2px solid var(--app-accent);
-  }
-  .lg-node {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--app-accent);
-    border: 1.5px solid var(--app-surface);
-    box-shadow: 0 0 0 1px var(--app-accent-border);
-  }
-  .lg-mk {
-    color: var(--app-accent-strong);
-  }
-  .lg-mk.down {
-    color: var(--app-danger);
+  .is-num {
+    font-variant-numeric: tabular-nums;
   }
 
-  /* ============================== TIMELINE ============================== */
-  .tl-track {
+  /* ============================ STORY FRAMING ============================ */
+  .story {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--s-12);
+    margin: var(--s-4) 0 var(--s-8);
+    padding: 0 var(--s-4);
+  }
+  .story__t {
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
+    color: var(--app-text-strong);
+  }
+  .story__s {
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    color: var(--app-text-muted);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-12);
+    padding: 0 var(--s-4);
+    margin-bottom: var(--s-12);
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-6);
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-subtle);
+  }
+  .legend i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: block;
+  }
+  .lg-traj {
+    background: var(--app-accent);
+  }
+  .lg-ev {
+    background: var(--chart-grey-3);
+  }
+  .lg-up {
+    background: var(--app-accent);
+    opacity: 0.6;
+  }
+  .lg-dn {
+    background: var(--app-text-faint);
+  }
+
+  /* ========================= THE TRAJECTORY TRACK ========================= */
+  .tline {
     position: relative;
   }
-  .tl-spine-svg {
+  /* The spine lives on the PANE, behind every plate — one layer down. */
+  .spine {
     position: absolute;
+    left: 34px;
     top: 0;
-    left: 92px;
     width: 72px;
     pointer-events: none;
   }
-  .tl-spine-svg .glow {
+  .spine__line {
     fill: none;
     stroke: var(--app-accent);
-    stroke-width: 8;
-    opacity: 0.1;
+    stroke-width: 1.6;
     stroke-linejoin: round;
     stroke-linecap: round;
   }
-  .tl-spine-svg .line {
-    fill: none;
-    stroke: var(--app-accent);
-    stroke-width: 2.25;
-    stroke-linejoin: round;
-    stroke-linecap: round;
-  }
-  .tl-spine-svg .axis {
-    stroke: var(--app-border-strong);
-    stroke-width: 1;
-    stroke-dasharray: 2 4;
-  }
-  .tl-spine-svg .node {
-    fill: var(--app-accent);
-    stroke: var(--app-surface);
+  .spine__node {
+    fill: var(--app-surface);
+    stroke: var(--chart-grey-3);
     stroke-width: 2;
   }
-  .tl-spine-svg .node.dim {
-    fill: var(--app-text-faint);
+  /* A confidence step and the origin are the trajectory's OWN points, so they
+     are filled accent; evidence and audit events are hollow. */
+  .spine__node.step,
+  .spine__node.origin {
+    fill: var(--app-accent);
+    stroke: none;
   }
-  .tl-spine-svg .node.bad {
-    fill: var(--app-danger);
-  }
-  .tl-spine-svg .node.origin {
-    fill: var(--app-surface);
-    stroke: var(--app-accent);
-    stroke-width: 2.25;
+  .spine__node.down {
+    stroke: var(--app-text-faint);
   }
 
-  /* Rows size to their content (no fixed height / clip) so cards breathe and the
-     measured spine geometry always spans the full track. align-items:center
-     keeps the zero-size .tl-gutter anchor on each card's vertical centre. */
-  .tl-row {
+  /* One row: [34px confidence label][72px spine gutter][the card]. The label
+     and the node share the row's centre line, so the number reads as the
+     node's value — the y-axis tick for that moment. */
+  .tev {
     display: grid;
-    grid-template-columns: 92px 72px 1fr;
+    grid-template-columns: 34px 72px minmax(0, 1fr);
     align-items: center;
+    padding-bottom: 10px;
   }
-  /* Zero-size spine anchor: measured for each node's Y (see measure()). */
-  .tl-gutter {
+  .tev__t {
+    text-align: right;
+    padding-right: var(--s-6);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-faint);
+  }
+  /* Zero-size spine anchor — measured for each node's Y (see measure()). */
+  .tev__a {
     width: 0;
     height: 0;
     justify-self: center;
   }
-  .tl-time {
-    text-align: right;
-    padding-right: 16px;
-    align-self: center;
+
+  /* Every event is an opaque plate. */
+  .tev__c {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 5px;
+    padding: 9px 12px 10px;
+    min-width: 0;
+    text-align: left;
   }
-  .tl-time .rel {
-    font-size: var(--t-meta);
-    color: var(--app-text);
-    font-variant-numeric: tabular-nums;
+  .tev__c--act {
+    border: 0;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    transition: box-shadow var(--dur-quick) var(--ease);
   }
-  .tl-time .clock {
-    font-size: var(--t-label);
-    color: var(--app-text-faint);
-    font-variant-numeric: tabular-nums;
+  .tev__c--act:hover {
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
-  .tl-time.faint .rel {
-    color: var(--app-text-subtle);
+  .tev__c--act:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
   }
 
-  /* ---- evidence / contradiction card ---- */
-  .ev-card {
-    display: grid;
-    grid-template-columns: 52px 1fr;
-    gap: 12px;
-    align-items: start;
-    padding: 11px 12px;
-    margin: 7px 0;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface);
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      background 0.12s ease,
-      box-shadow 0.12s ease;
+  .tev__h {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    min-width: 0;
   }
-  .ev-card:hover {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-subtle);
-    box-shadow: 0 1px 0 var(--app-border);
+  .tev__lead {
+    font: var(--w-medium) var(--t-ui) / 1.3 var(--app-font-sans);
+    color: var(--app-text-strong);
   }
-  .ev-card:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
+  .tev__when {
+    margin-left: auto;
+    padding-left: var(--s-8);
+    white-space: nowrap;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-subtle);
   }
-  .ev-card--contradict {
-    border-color: var(--app-danger-border);
-  }
-  .ev-card--contradict:hover {
-    border-color: var(--app-danger);
-  }
-  .ev-thumb {
-    width: 52px;
-    height: 40px;
-    border-radius: 5px;
-    border: 1px solid var(--app-border);
-    overflow: hidden;
-    position: relative;
+  .tev__glyph {
+    width: 12px;
+    height: 12px;
     flex: 0 0 auto;
+    color: var(--app-text-subtle);
   }
-  .ev-thumb.is-screen {
+  .tev__p {
+    margin: 0;
+    font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans);
+    color: var(--app-text-muted);
+  }
+  .tev__b {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .tev__title {
+    font: var(--w-medium) var(--t-ui) / 1.35 var(--app-font-sans);
+    color: var(--app-text-strong);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tev__f {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+  }
+  .tev__link {
+    margin-left: auto;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-subtle);
+  }
+  .tev__c--act:hover .tev__link {
+    color: var(--app-accent);
+  }
+
+  /* The frame itself — a small opaque thumbnail, never a decoration. */
+  .th {
+    width: 56px;
+    height: 34px;
+    border-radius: 5px;
+    overflow: hidden;
+    flex: 0 0 auto;
+    position: relative;
     background: var(--app-source-screen-bg);
   }
-  .ev-thumb.is-audio {
+  .th--audio {
     background: var(--app-source-mic-bg);
   }
-  .ev-thumb-img {
+  .th img {
     position: absolute;
     inset: 0;
     width: 100%;
@@ -590,226 +604,74 @@
     object-fit: cover;
     display: block;
   }
-  .ev-src {
-    position: absolute;
-    left: 3px;
-    bottom: 3px;
-    font-size: 7px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    padding: 0 3px;
-    border-radius: 3px;
-    background: var(--app-bg);
-  }
-  .ev-src.scr {
-    color: var(--app-source-screen);
-  }
-  .ev-src.mic {
-    color: var(--app-source-mic);
-  }
-  .ev-info {
-    min-width: 0;
-  }
-  .ev-cat {
-    display: flex;
+
+  /* The machine's own labels: mono, uppercase, on the material's tint. */
+  .badge {
+    display: inline-flex;
     align-items: center;
-    gap: 7px;
-    font-size: var(--t-label);
-    color: var(--app-text-subtle);
-    margin-bottom: 5px;
+    justify-content: center;
+    width: 26px;
+    height: 16px;
+    flex: 0 0 auto;
+    border-radius: 3px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    color: var(--app-text-muted);
+    font: var(--w-medium) 8px / 1 var(--app-font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
-  .cat-tag {
+  .cchip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    min-width: 0;
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    color: var(--app-text);
   }
-  .cat-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
+  .cchip em {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: block;
     flex: 0 0 auto;
   }
-  /* Evidence title clamped to ONE line to keep cards scannable and compact. */
-  .ev-title {
-    font-size: var(--t-ui);
-    line-height: 1.4;
-    color: var(--app-text-strong);
-    margin-bottom: 7px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ev-foot {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
   .stance {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    padding: 1px 7px;
-    border-radius: 4px;
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-accent);
   }
-  .stance--contradict {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
+  .stance--contra {
     color: var(--app-danger);
   }
-  .ev-link {
-    margin-left: auto;
-    font-size: var(--t-label);
-    color: var(--app-text-muted);
-    border-bottom: 1px dotted var(--app-border-strong);
+  .trend {
+    width: 12px;
+    flex: 0 0 auto;
+    text-align: center;
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
   }
-  .ev-card:hover .ev-link {
-    color: var(--app-accent-strong);
-    border-bottom-color: var(--app-accent-border);
+  .tr-up {
+    color: var(--app-accent);
   }
-
-  /* ---- confidence-change marker (compact pill, NO causal claim) ---- */
-  .mk {
-    display: inline-flex;
-    align-items: center;
-    gap: 9px;
-    margin: 4px 0;
-    padding: 4px 11px 4px 9px;
-    border-radius: 999px;
-    align-self: center;
-    width: fit-content;
-    font-size: var(--t-meta);
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .mk .g {
-    font-size: var(--t-ui);
-  }
-  .mk b {
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
-  .mk .txt {
-    color: var(--app-text-muted);
-  }
-  .mk .when {
-    color: var(--app-text-faint);
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding-left: 2px;
-  }
-  .mk--up .txt b {
-    color: var(--app-accent-strong);
-  }
-  .mk--down {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-    color: var(--app-danger);
-  }
-  .mk--down .txt b {
-    color: var(--app-danger);
-  }
-
-  /* ---- replaced-an-earlier-take (ADR 0046) ---- */
-  .rp {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-self: center;
-    width: fit-content;
-    max-width: 100%;
-    margin: 4px 0;
-    padding: 7px 11px;
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .rp-head {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-  }
-  .rp-label {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-  .rp .when {
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
+  .tr-dn {
     color: var(--app-text-faint);
   }
-  .rp-old {
-    margin: 0;
-    font-size: var(--t-meta);
-    line-height: 1.4;
+  .tev__chip {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
     color: var(--app-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
-
-  /* ---- origin (bottom) ---- */
-  .origin {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    margin: 6px 0;
-    padding: 12px;
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-    align-self: center;
+  .formed {
+    color: var(--app-accent);
+    line-height: 1;
   }
-  .origin-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    width: fit-content;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.12em;
+  .formed__l {
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    padding: 2px 8px;
-    border-radius: 999px;
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .origin-title {
-    font-size: var(--t-ui);
-    color: var(--app-text-strong);
-    font-weight: 600;
-  }
-  .origin-text {
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    line-height: 1.5;
-  }
-  .origin-text b {
-    color: var(--app-text);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
+    color: var(--app-accent);
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .ev-card {
+    .tev__c--act {
       transition: none;
     }
   }

@@ -140,6 +140,32 @@ describe("buildTimeline", () => {
     expect(events.filter((e) => e.kind === "evidence")).toHaveLength(1);
   });
 
+  test("a contradiction resolves the same source/category/frame as evidence", () => {
+    const c = conclusion({
+      evidence: [evidenceRef({ activityId: 11, stance: "contradict" })],
+    });
+    const acts = new Map<number, Activity>([
+      [
+        11,
+        activity({
+          id: 11,
+          title: "Launch sync",
+          category: "meetings",
+          evidence: [{ subjectType: "frame", subjectId: 77, isHeadline: true }],
+        }),
+      ],
+    ]);
+    const contra = buildTimeline(c, undefined, acts).find(
+      (e) => e.kind === "contradict",
+    );
+    expect(contra).toMatchObject({
+      title: "Launch sync",
+      category: "meetings",
+      sourceType: "screen",
+      frameId: 77,
+    });
+  });
+
   test("confidenceAt: formed=formation, marker=to, evidence=interpolated", () => {
     const c = conclusion({
       confidence: 0.9,

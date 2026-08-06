@@ -150,7 +150,8 @@
     const cache = untrack(() => thumbnailCache);
     const wanted = timelineEvents
       .map((ev) =>
-        ev.kind === "evidence" && ev.sourceType === "screen"
+        (ev.kind === "evidence" || ev.kind === "contradict") &&
+        ev.sourceType === "screen"
           ? ev.frameId
           : null,
       )
@@ -385,17 +386,16 @@
 
 <section class="subject-detail" aria-label={`Subject — ${subject}`}>
   {#if loadError && !view}
-    <div class="state state--error">
+    <div class="plate state state--error">
       <p class="state-title">Couldn't load this subject.</p>
       <p class="state-detail">{loadError}</p>
       <button
         type="button"
-        class="state-retry"
+        class="btn btn--sm state-retry"
         onclick={() => void loadSubject()}
         disabled={loading}
       >
-        <span class="state-retry-ico" aria-hidden="true">↻</span>
-        Try again
+        ↻ Try again
       </button>
     </div>
   {:else if loading && !view}
@@ -403,32 +403,32 @@
          the swap to loaded content causes no layout shift. The "nothing
          concluded" empty state only renders once loaded. -->
     <div aria-label={`Loading ${subject}`} aria-busy="true">
-      <div class="subj-hero">
+      <div class="plate subj-hero">
         <div class="subj-hero-main">
           <div class="sk-hero-title">
-            <Skeleton variant="text" width="240px" height="25px" />
+            <Skeleton variant="text" width="240px" height="26px" />
           </div>
           <div class="subj-meta">
-            <Skeleton variant="text" width="92px" height="18px" radius="999px" />
-            <Skeleton variant="text" width="118px" height="18px" radius="999px" />
-            <Skeleton variant="text" width="132px" height="18px" radius="999px" />
+            <Skeleton variant="text" width="92px" height="22px" radius="999px" />
+            <Skeleton variant="text" width="118px" height="22px" radius="999px" />
+            <Skeleton variant="text" width="132px" height="22px" radius="999px" />
           </div>
         </div>
       </div>
 
       <div class="sk-strip">
         {#each Array.from({ length: 3 }) as _, i (i)}
-          <div class="sk-card">
+          <div class="plate sk-card">
             <Skeleton variant="text" width="42px" height="11px" />
             <Skeleton variant="text" width="90%" height="13px" />
             <Skeleton variant="text" width="70%" height="13px" />
-            <Skeleton width="100%" height="6px" radius="999px" />
+            <Skeleton width="100%" height="5px" radius="999px" />
           </div>
         {/each}
       </div>
     </div>
   {:else if view && conclusionCount === 0}
-    <div class="state">
+    <div class="plate state">
       <p class="state-title">Nothing concluded about {subject} yet.</p>
       <p class="state-detail">
         Conclusions form as evidence accumulates. This subject has no active or
@@ -436,29 +436,31 @@
       </p>
     </div>
   {:else if view}
-    <!-- Hero -->
-    <div class="subj-hero">
+    <!-- Hero — one opaque plate. Every chip states a count the client can
+         actually derive; "N linked activities" is only honest HERE, where the
+         evidence refs have been resolved (never on the index). -->
+    <div class="plate subj-hero">
       <div class="subj-hero-main">
         <h1 class="subj-title">{subject}</h1>
         <div class="subj-meta">
-          <span class="tag">
+          <span class="chip">
             {conclusionCount}
             {conclusionCount === 1 ? "conclusion" : "conclusions"}
           </span>
           {#if fadedCount > 0}
-            <span class="tag">{fadedCount} below floor</span>
+            <span class="chip">{fadedCount} below floor</span>
           {/if}
-          <span class="tag">first seen {relativeTime(firstSeenMs)}</span>
-          <span class="tag">last evidence {relativeTime(lastEvidenceMs)}</span>
+          <span class="chip">first seen {relativeTime(firstSeenMs)}</span>
+          <span class="chip">last evidence {relativeTime(lastEvidenceMs)}</span>
           {#if linkedActivityCount > 0}
-            <span class="tag">{linkedActivityCount} linked activities</span>
+            <span class="chip">{linkedActivityCount} linked activities</span>
           {/if}
         </div>
       </div>
       <!-- Subject → Chat hand-off: open a fresh chat prefilled to ask the engine
            about this subject (the prompt is seeded for review/edit, not sent). -->
-      <button type="button" class="ask-subject" onclick={askAboutSubject}>
-        <span class="ask-subject-glyph" aria-hidden="true">✦</span>
+      <button type="button" class="btn btn--primary ask-subject" onclick={askAboutSubject}>
+        <span aria-hidden="true">✦</span>
         Ask AI about {subject}
       </button>
     </div>
@@ -510,68 +512,43 @@
   .subj-hero {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
-    gap: 18px;
-    margin-bottom: 18px;
+    gap: 14px;
+    padding: 14px var(--s-16);
+    margin-bottom: 14px;
   }
   .subj-hero-main {
+    flex: 1;
     min-width: 0;
   }
   .subj-title {
-    font-size: 24px;
-    letter-spacing: -0.01em;
+    margin: 0 0 var(--s-6);
+    font: var(--w-semi) var(--t-display) / 1.15 var(--app-font-sans);
+    letter-spacing: var(--ls-display);
     color: var(--app-text-strong);
-    font-weight: 600;
-    margin: 0 0 10px;
   }
   .subj-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: var(--s-6);
   }
-  .tag {
-    font-size: 10.5px;
-    padding: 2px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+  /* The direction's chip: the material's own tint + its rim, never a border. */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
     white-space: nowrap;
   }
 
-  /* Subject → Chat hand-off button (top-right of the hero). The primary outbound
-     action from a subject, so it carries the accent treatment. */
+  /* Subject → Chat hand-off — the one outbound action from a subject, so it is
+     the page's single filled button. */
   .ask-subject {
     flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: 11.5px;
-    padding: 6px 12px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .ask-subject:hover {
-    border-color: var(--app-accent);
-  }
-  .ask-subject:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .ask-subject:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .ask-subject-glyph {
-    font-size: 11px;
-    line-height: 1;
   }
 
   /* ---- Loading skeleton helpers ---- */
@@ -579,94 +556,41 @@
     margin: 0 0 10px;
   }
   .sk-strip {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
     gap: 10px;
   }
   .sk-card {
-    flex: 0 0 auto;
-    width: 240px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface);
+    gap: var(--s-6);
+    padding: 10px 12px 11px;
   }
 
   /* ---- States ---- */
   .state {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 18px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
+    gap: var(--s-6);
+    padding: var(--s-16);
   }
   .state--error {
-    border-color: var(--app-danger-border);
     background: var(--app-danger-bg);
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font: var(--w-medium) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font: var(--w-regular) var(--t-meta) / 1.6 var(--app-font-sans);
     color: var(--app-text-muted);
-    line-height: 1.6;
+    max-width: 70ch;
   }
-  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
   .state-retry {
     align-self: flex-start;
-    margin-top: 4px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: 10px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .state-retry:hover:not(:disabled) {
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .state-retry:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .state-retry:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .state-retry-ico {
-    font-size: 12px;
-    line-height: 1;
-    letter-spacing: 0;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .ask-subject,
-    .state-retry {
-      transition: none;
-    }
-    .ask-subject:not(:disabled):active,
-    .state-retry:not(:disabled):active {
-      transform: none;
-    }
+    margin-top: var(--s-4);
   }
 </style>

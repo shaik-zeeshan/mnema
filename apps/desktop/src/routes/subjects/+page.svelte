@@ -37,13 +37,35 @@
     min-height: 0;
     margin-top: calc(var(--h-titlebar) * -1);
     position: relative;
+    background: var(--app-bg);
+    overflow: hidden;
+  }
+  /* The destination pane's own light: two soft corner washes UNDER the content,
+     so the plates read as floating over a lit surface rather than on flat grey.
+     Non-interactive, never behind text contrast (every plate is opaque). */
+  .dest:before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        520px 320px at 4% 0%,
+        color-mix(in srgb, var(--app-accent) 10%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        420px 380px at 98% 96%,
+        color-mix(in srgb, var(--app-source-screen) 12%, transparent),
+        transparent 72%
+      );
   }
   .dest__scroll {
     position: absolute;
     inset: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: calc(var(--h-titlebar) + 14px) 20px 28px;
+    padding: calc(var(--h-titlebar) + 18px) var(--s-24) var(--s-24);
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-hover) transparent;
   }
