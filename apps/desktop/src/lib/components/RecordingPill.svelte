@@ -61,13 +61,39 @@
   let restarting = $state(false);
 
   // One clock for the elapsed readout and the settle grace period. Ticks only
-  // while a session is running.
+  // while a session is running AND the document is actually being shown.
+  //
+  // The visibility gate is not a micro-optimisation: this is the app's only
+  // PERMANENT repaint driver (the title bar is static otherwise, and was
+  // entirely static before this pill), and a DOM repaint that the compositor
+  // never shows is what strands WebKit's non-purgeable backing stores — the
+  // documented 26 MB-per-repaint leak this app already has. A recorder runs for
+  // hours with its window hidden, so gating here removes the bulk of it.
+  //
+  // ponytail: `visibilityState` is the half of "can't reach a lit display" that
+  // JS can see; the display-asleep / window-parked-offscreen half needs the
+  // native render-idle gate (NSWorkspace screens-sleep events + offscreen
+  // clamp). Wire this to that signal when it lands.
   let now = $state(Date.now());
   $effect(() => {
     if (!captureControls.isRunning) return;
-    now = Date.now();
-    const handle = setInterval(() => { now = Date.now(); }, 1000);
-    return () => clearInterval(handle);
+    let handle: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (handle !== null) clearInterval(handle);
+      handle = null;
+    };
+    const sync = () => {
+      stop();
+      if (document.visibilityState !== "visible") return;
+      now = Date.now();
+      handle = setInterval(() => { now = Date.now(); }, 1000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
 
   const startedAtMs = $derived.by<number | null>(() => {
@@ -202,6 +228,12 @@
   });
 
   // The sentence the tooltip and the popover header both use.
+  //
+  // Deliberately carries NO elapsed time. It feeds the shared tooltip node (a
+  // `document.body` child) and the pill's `aria-label` on an `aria-live` element:
+  // putting the clock in it rewrote a body-level node and re-announced the
+  // accessible name every second, for the whole recording. The clock is right
+  // there in the pill's own text.
   const detail = $derived.by(() => {
     switch (pillState) {
       case "idle":
@@ -211,9 +243,9 @@
       case "stopping":
         return "Stopping recording…";
       case "recording":
-        return `Recording · ${formatElapsed(elapsedMs)} · ${costLabel}`;
+        return `Recording · ${costLabel}`;
       case "paused-manual":
-        return `Paused · ${formatElapsed(elapsedMs)} elapsed`;
+        return "Paused";
       case "paused-inactive":
         return "Paused while you're away — recording resumes on your next input";
       case "low-disk":
