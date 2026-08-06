@@ -58,6 +58,12 @@
   title="Access"
   hint="Let local tools request time-bounded, redacted access to your Mnema history."
 >
+  <!-- Tile-header meta (mockup 11): what this tile is about, right of the
+       eyebrow, on the one header baseline every tile shares. -->
+  {#snippet actions()}
+    <span class="group-meta">agent &amp; CLI</span>
+  {/snippet}
+
   <SettingRow label="CLI Access" full divider={false}>
     {#snippet control()}
       <!-- The agent-access section is the `?focus=cliAccess` deeplink target: it
@@ -73,9 +79,15 @@
       >
         <div class="settings-stack">
           {#if c.brokerAuthorizationPromptVisible}
-            <div class="agent-access-callout" role="status">
-              <strong>CLI access request</strong>
-              <p>Review the request window or native prompt, then rerun the CLI command if needed.</p>
+            <!-- Approval happens in the broker's own consent window, never here:
+                 this pane can only say a request is live (mockup 11 draws
+                 Approve/Deny inline — there is no command behind them). -->
+            <div class="permission-callout" role="status">
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">CLI access request</span>
+                <strong>A local tool is asking to read your capture history</strong>
+                <p>Approve or deny it in the request window or native prompt, then rerun the CLI command if needed.</p>
+              </div>
             </div>
           {/if}
           <div class="privacy-disclosure">

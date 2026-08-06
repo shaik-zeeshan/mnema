@@ -184,11 +184,15 @@
   hint="Buy once, keep it forever. Everything is verified offline — no account, no phoning home."
 >
   <SettingRow label="Status" description="Your current trial or license state." full>
+    <!-- The state signifier belongs on the label line (mockup 11): it is what
+         you scan the row for, and it must not push the explanation down. -->
+    {#snippet aside()}
+      {#if badge}
+        <span class="badge badge--{badge.variant} badge--sm">{badge.label}</span>
+      {/if}
+    {/snippet}
     {#snippet control()}
       <div class="license-status">
-        {#if badge}
-          <span class="badge badge--{badge.variant} badge--sm">{badge.label}</span>
-        {/if}
         {#if !status}
           <p class="group-hint">Checking license status…</p>
         {:else if status.kind === "trialNotStarted"}
@@ -214,7 +218,20 @@
             searchable; new recording is paused.
           </p>
         {:else if status.kind === "licensed"}
-          <p class="license-status__lead">Licensed to {status.name || status.email}</p>
+          <!-- Who it is licensed to and what that buys, as one card (mockup 11):
+               the identity leads, the two facts under it are the meta line.
+               Only real values appear — a missing device count prints nothing
+               rather than a zero (G8). -->
+          {@const facts = [
+            devices ? `${devices.used} of ${devices.cap} devices activated` : null,
+            status.inWindow ? `updates included through ${fmtDate(status.updateThroughMs)}` : null,
+          ].filter((f) => f !== null)}
+          <div class="license-card">
+            <p class="license-status__lead">Licensed to {status.name || status.email}</p>
+            {#if facts.length > 0}
+              <p class="group-hint">{facts.join(" · ")}</p>
+            {/if}
+          </div>
           {#if status.activation.state === "pending"}
             <p class="group-hint">
               Finishing activation… ({days(status.activation.provisionalDaysLeft)} to connect).
@@ -264,15 +281,7 @@
               completes.
             </p>
           {/if}
-          {#if devices}
-            <!-- A count only, never a list: no device names are sent or stored. -->
-            <p class="group-hint">
-              {devices.used} of {devices.cap} devices activated.
-            </p>
-          {/if}
-          {#if status.inWindow}
-            <p class="group-hint">Updates included through {fmtDate(status.updateThroughMs)}.</p>
-          {:else}
+          {#if !status.inWindow}
             <p class="group-hint group-hint--warn">
               Update window lapsed — you keep this version forever; renew for new builds.
             </p>
@@ -391,6 +400,18 @@
 
   .license-status p {
     margin: 0;
+  }
+
+  /* The licensed-identity card — the sub-surface a status block gets inside a
+     tile row (same recessed fill the model-status cards use). */
+  .license-card {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: var(--tile-r-in, 6px);
+    background: var(--app-surface-subtle);
   }
 
   /* The one-line state summary — carries slightly more weight than the muted

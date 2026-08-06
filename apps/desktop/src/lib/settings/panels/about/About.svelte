@@ -23,6 +23,7 @@
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconClear from "~icons/lucide/x";
   import IconArrowUpRight from "~icons/lucide/arrow-up-right";
+  import IconApp from "~icons/lucide/clapperboard";
   import type { AppUpdateChannel, AppUpdateStatus } from "$lib/types";
 
   const c = getSettingsController();
@@ -78,6 +79,10 @@
        (a dedicated block, not a plain action-row label rendered at 13px/550). -->
   <div class="about-hero">
     <div class="about-hero__head">
+      <!-- The app mark: the identity block leads with the thing itself, the way
+           an About window does (mockup 11). Decorative — the name beside it is
+           the accessible label. -->
+      <span class="about-hero__mark" aria-hidden="true"><IconApp /></span>
       <span class="about-hero__name">Mnema</span>
       <div class="about-id__mark">
         {#if appUpdateStatus?.app.version}
@@ -227,20 +232,21 @@
 
 <SettingGroup title="Acknowledgements" hint="Mnema's on-device models are built on these open projects. Each is credited under its license.">
   <SettingRow label="Third-party notices" description="The full attribution list for the bundled open-source components." full divider={false}>
+    <!-- The one action this row has sits on the label line (mockup 11), so the
+         list below starts immediately under the description. -->
+    {#snippet aside()}
+      <button
+        type="button"
+        class="btn btn--ghost btn--sm"
+        onclick={copyThirdPartyNotices}
+        disabled={!thirdPartyNotices || loadingThirdPartyNotices}
+        aria-label="Copy the full third-party notices to the clipboard"
+      >
+        <span class="copy-status" aria-live="polite">{thirdPartyNoticesCopied ? "Copied" : "Copy notices"}</span>
+      </button>
+    {/snippet}
     {#snippet control()}
       <div class="about-notices">
-        <div class="about-notices__head">
-          <button
-            type="button"
-            class="btn btn--ghost btn--sm"
-            onclick={copyThirdPartyNotices}
-            disabled={!thirdPartyNotices || loadingThirdPartyNotices}
-            aria-label="Copy the full third-party notices to the clipboard"
-          >
-            <span class="copy-status" aria-live="polite">{thirdPartyNoticesCopied ? "Copied" : "Copy notices"}</span>
-          </button>
-        </div>
-
         {#if loadingThirdPartyNotices && !thirdPartyNotices}
           <p class="group-hint">Loading notices…</p>
         {:else if thirdPartyNoticeGroups.length > 0}
@@ -312,8 +318,27 @@
   .about-hero__head {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     gap: 8px 12px;
+  }
+
+  /* 44px rounded square in the accent, the size an About window gives an app
+     icon. `flex: 0 0 auto` so it never shrinks when the version chips wrap. */
+  .about-hero__mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: var(--app-accent-strong, var(--app-accent));
+    color: #fff;
+  }
+
+  .about-hero__mark :global(svg) {
+    width: 22px;
+    height: 22px;
   }
 
   .about-hero__name {
@@ -342,8 +367,7 @@
     width: 100%;
   }
 
-  .about-update__head,
-  .about-notices__head {
+  .about-update__head {
     display: flex;
     align-items: center;
     justify-content: space-between;

@@ -92,7 +92,8 @@
   id="settings-section-shortcuts"
   wide
   title="Keyboard Shortcuts"
-  hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears. Changes save automatically."
+  hint="click a shortcut to rebind · esc cancels · ⌫ clears"
+  hintInline
 >
   {#snippet actions()}
     <ReloadButton
@@ -146,8 +147,14 @@
          inside its `.pay--rows` payload — the same object every other settings
          group lists with. No group nested inside a group, and no self-framed
          block sitting on the window background. -->
-    <SettingGroup title={shortcutCategoryLabel(category)} wide>
-      {#each shortcutCategoryActions(category) as action (action.id)}
+    {@const actions = shortcutCategoryActions(category)}
+    <SettingGroup
+      title={shortcutCategoryLabel(category)}
+      hint={`${actions.length} ${actions.length === 1 ? "binding" : "bindings"}`}
+      hintInline
+      wide
+    >
+      {#each actions as action (action.id)}
         {@const binding = shortcutDraftBinding(action.id)}
         {@const issue = shortcutIssueFor(action.id)}
         {@const tokens = shortcutKeyTokens(binding)}

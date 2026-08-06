@@ -222,7 +222,7 @@
 <!-- Custom input 2 of 5 — the retention ladder. Same tile grid, same rows; the
      only thing it adds is the footprint bar, which puts the keep-window and the
      free space it has to fit into on ONE axis. -->
-<SettingGroup title="Retention" hint="What survives, and what it costs.">
+<SettingGroup title="Retention" hint="what survives, and what it costs" hintInline>
   <SettingRow
     label="Retention"
     description="Captures older than the chosen window are deleted automatically. Context and subjects Mnema has already distilled are never touched by it."

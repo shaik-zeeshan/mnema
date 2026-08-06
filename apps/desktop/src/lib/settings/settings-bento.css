@@ -238,6 +238,17 @@
    SettingRow) — the Debug page reuses both outside this shell, so those rules
    must travel with the component, not with the settings skin. */
 
+/* Tile-header meta: the right half of the constant header row (`.tile__h .more`
+   in the mockup) — what this tile is, in one phrase, on the same baseline as
+   the eyebrow. Rendered through SettingGroup's `actions` slot by the groups
+   whose hint is already a block of prose. */
+.settings-shell .group-meta {
+  font-size: var(--t-meta);
+  line-height: 1;
+  color: var(--app-text-subtle);
+  white-space: nowrap;
+}
+
 /* ═══ Native controls ════════════════════════════════════════════════════
    Buttons wear the AppKit push bezel: a top-light gradient over the raised
    surface. Ghost and danger keep their own treatment. */
@@ -450,7 +461,13 @@
   display: none;
 }
 /* All five panels are mounted while filtering; keep one gutter between the
-   grids so the surviving tiles read as one continuous result set. */
+   grids so the surviving tiles read as one continuous result set — and drop a
+   whole panel that kept no hit, or its empty grid would push the first result
+   down the pane by its own padding. */
 .settings-shell.is-finding .settings-panel + .settings-panel {
   margin-top: var(--cell-gutter);
+}
+.settings-shell.is-finding
+  .settings-panel:not(:has(.setting-row:not(.setting-row--miss))) {
+  display: none;
 }

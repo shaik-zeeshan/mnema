@@ -141,9 +141,17 @@
         {/if}
         {#if pendingRestart}
           <div class="restart-notice" role="status">
-            <p class="group-hint group-hint--warn">
-              Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
-            </p>
+            <!-- Same `.permission-callout` warn block the capture panel uses for
+                 an unverifiable permission: a mono eyebrow, one sentence of
+                 consequence, and the action that resolves it. -->
+            <div class="permission-callout">
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">Restart required</span>
+                <p>
+                  Saved — but the new location takes effect on the next launch. Captures already on disk stay where they are.
+                </p>
+              </div>
+            </div>
             <div class="row-actions">
               <button
                 type="button"
