@@ -83,6 +83,7 @@
     label="Enable OCR"
     description="Automatically queue OCR for captured screen frames when the selected engine is available"
     full
+    cost={ocrBacklogHint}
   >
     {#snippet aside()}
       <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />

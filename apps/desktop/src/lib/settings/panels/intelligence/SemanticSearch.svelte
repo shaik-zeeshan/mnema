@@ -103,6 +103,7 @@
     label="Enable semantic search"
     description="Fuse meaning-based results with keyword search. Inert until a model below is installed."
     full
+    cost={rec.draftSemanticSearchEnabled ? (coverage?.phrase ?? null) : semanticPrice}
   >
     {#snippet aside()}
       <Switch

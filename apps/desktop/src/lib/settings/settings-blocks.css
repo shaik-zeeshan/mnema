@@ -488,6 +488,19 @@
     font-weight: var(--w-regular);
   }
 
+  /* The row-line readout for a wide control (a slider's current value, a
+     timeout, a percentage). Machine voice: mono, tabular, strong — it sits in
+     the row's `aside` so the control below it can stay bare instead of
+     printing the row's own name a second time. */
+  .settings-shell .row-value {
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-ui);
+    font-weight: var(--w-medium);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
   /* Progress + coverage meters are the kit's gauge: 8px, rounded, inset
      hairline. Used by the semantic-search coverage meter (G10) and by every
      model download. */

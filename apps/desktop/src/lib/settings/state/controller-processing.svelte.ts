@@ -112,13 +112,20 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
   }
 
   // ─── Transcription option derivations ──────────────────────────────────────
+  // Where a provider RUNS is the first thing to say about it — three of the four
+  // are on-device and one is not (ADR 0047). Availability alone read identically
+  // for Deepgram and for local Whisper, which is the one distinction that costs
+  // the user their audio.
   const transcriptionProviderOptions = $derived(
     (models.transcriptionModelStatus?.providers ?? []).map((provider) => ({
       value: provider.provider,
       label: provider.displayName,
-      description: provider.models.some((model) => model.available)
-        ? "At least one model is available"
-        : "No available model detected",
+      description:
+        provider.provider === "deepgram"
+          ? "Cloud — uploads your microphone and system audio to your own Deepgram account."
+          : provider.models.some((model) => model.available)
+            ? "On device · at least one model is available"
+            : "On device · no available model detected",
     })),
   );
   const selectedTranscriptionProviderStatus = $derived(

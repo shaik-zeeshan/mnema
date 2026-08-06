@@ -188,6 +188,7 @@
     description="Automatically delete captured data after the chosen window."
     full
     divider={false}
+    cost={retentionHint}
   >
     {#snippet control()}
       <div class="retention-control">
@@ -204,6 +205,14 @@
         {#if retentionHint}
           <p class="group-hint">{retentionHint}</p>
         {/if}
+        <!-- What this row does NOT delete. Retention never cascades to the
+             `user_context_*` tables (ADR 0029), so the window is only half the
+             story until the row says which half it is. -->
+        <p class="group-hint">
+          Frames, audio and transcripts are deleted. <strong>What Mnema concluded about you is
+          not</strong> — the derived understanding outlives raw retention by design. Clearing it is
+          Intelligence › <em>Wipe User Context</em>, not this row.
+        </p>
         <div class="row-actions">
           <button
             type="button"

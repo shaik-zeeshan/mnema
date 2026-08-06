@@ -9,8 +9,9 @@
   // "previous value", "default", or "takes effect at" store behind Settings, so
   // those lines from the mockup are absent rather than invented (G8's rule,
   // applied to prose as well as to numbers). What IS real: the row's label and
-  // description, its breadcrumb, the ⌘F terms that reach it, and the rows this
-  // session has actually saved.
+  // description, its breadcrumb, what it costs on this Mac when that is
+  // measurable, the ⌘F terms that reach it, and the rows this session has
+  // actually saved.
 
   import IconSliders from "~icons/lucide/sliders-horizontal";
   import { settingsInspector } from "../state/inspector.svelte";
@@ -50,6 +51,17 @@
         <div class="ss-kv ss-kv--stack">
           <span class="ss-kv__k">What it does</span>
           <span class="ss-kv__v">{subject.description}</span>
+        </div>
+      {/if}
+
+      {#if subject.cost}
+        <!-- G8: only rows whose cost is measurable on THIS Mac carry one, and
+             the phrase is the one `system-facts.ts` already wrote for the row —
+             the panel never re-derives a number of its own. -->
+        <div class="ss-insp__sec"><span>On this Mac</span></div>
+        <div class="ss-kv ss-kv--stack">
+          <span class="ss-kv__k">Costs</span>
+          <span class="ss-kv__v">{subject.cost}</span>
         </div>
       {/if}
 

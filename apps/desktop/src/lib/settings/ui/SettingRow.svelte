@@ -29,6 +29,13 @@
     full?: boolean;
     /** Show the inset divider above this row. Defaults true; pass false to suppress. */
     divider?: boolean;
+    /**
+     * What this row costs on THIS machine — a phrase already computed from
+     * `system-facts.ts` (bytes/day, GB kept, backlog depth, index size). Shown
+     * in the inspector under "On this Mac". Omit it for the rows with no
+     * measurable cost: G8 bans an invented denominator, so no line at all.
+     */
+    cost?: string | null;
   }
 
   let {
@@ -41,6 +48,7 @@
     disabled = false,
     full = false,
     divider = true,
+    cost = null,
   }: Props = $props();
 
   // Row-level "Saved ✓" echo (G7). Every row gets it for free: touching any
@@ -73,8 +81,17 @@
   );
 
   function inspect() {
-    settingsInspector.focus({ label, description: description ?? null, section });
+    settingsInspector.focus({ label, description: description ?? null, section, cost });
   }
+
+  // A cost that changes while this row is the subject (drag the rate slider and
+  // the GB/day moves) has to reach the panel too, or the inspector reads a value
+  // the row no longer shows.
+  $effect(() => {
+    if (focused && settingsInspector.subject && settingsInspector.subject.cost !== cost) {
+      settingsInspector.focus({ label, description: description ?? null, section, cost });
+    }
+  });
 
   // The echo firing is the one moment we know a save is attributable to THIS
   // row, so it is also where the inspector's session history is written.

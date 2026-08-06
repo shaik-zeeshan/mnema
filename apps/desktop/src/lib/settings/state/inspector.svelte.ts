@@ -6,11 +6,12 @@
  * gone, so this panel is never a nav and must never grow one.
  *
  * What it holds is deliberately only what Mnema actually knows about a row:
- * its label, its section breadcrumb, its description, and the search terms it
- * answers to. There is no "previous value" or "takes effect at" store behind
- * Settings, so those mockup lines are not invented here (G8's honest-numbers
- * rule applied to prose). The one live history is this session's saved rows,
- * which the row echo already establishes.
+ * its label, its section breadcrumb, its description, the search terms it
+ * answers to, and — for the rows that have one — what it costs on this machine,
+ * measured (never estimated) by `system-facts.ts`. There is no "previous value"
+ * or "takes effect at" store behind Settings, so those mockup lines are not
+ * invented here (G8's honest-numbers rule applied to prose). The one live
+ * history is this session's saved rows, which the row echo already establishes.
  *
  * ponytail: a module singleton, like `settings-find`. Settings is one route
  * with one inspector; a registry would be machinery for a second one that does
@@ -24,6 +25,13 @@ export interface InspectedSetting {
 	label: string;
 	description: string | null;
 	section: SettingsSectionId | null;
+	/**
+	 * What this row costs ON THIS MACHINE, already phrased by `system-facts.ts`
+	 * — bytes/day, GB kept, backlog depth, index size. `null` for the rows that
+	 * cost nothing measurable, which is most of them: G8 forbids inventing a
+	 * denominator, so the inspector simply omits the section.
+	 */
+	cost: string | null;
 }
 
 export interface SettingsChange {

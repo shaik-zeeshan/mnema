@@ -45,6 +45,15 @@
   const startSelectedSpeakerModelDownload = () => c.startSelectedSpeakerModelDownload();
   const cancelSelectedSpeakerModelDownload = () => c.cancelSelectedSpeakerModelDownload();
   const deleteSelectedSpeakerModel = () => c.deleteSelectedSpeakerModel();
+
+  // The separation row's own denominator (G8): what this preset weighs, read
+  // from the model DTO — i.e. the corrected registry, where speakrs really is
+  // 419 MB. Absent while the status is still loading; never hard-coded.
+  const separationFootprint = $derived.by(() => {
+    const size = selectedSpeakerModel?.download?.byteSize ?? null;
+    if (!size) return null;
+    return `${selectedSpeakerModel?.provider ?? "speakrs"} · on device · ${formatBytes(size)} of models, loaded on demand.`;
+  });
 </script>
 
 <SettingGroup
@@ -61,26 +70,36 @@
     />
   {/snippet}
 
-  <SettingRow label="Speaker separation" full>
+  <!-- Two switches under one indexed row (page 11 draws it exactly this way):
+       separation is anonymous, recognition is a SECOND opt-in gated on it. The
+       marketing hero this replaced was the one card left in a shell whose whole
+       argument is hairlines instead of card edges. -->
+  <SettingRow
+    label="Speaker separation"
+    description={separationFootprint ??
+      "Runs on device, after microphone transcription. Separation is anonymous; recognition is a second opt-in."}
+    full
+  >
     {#snippet control()}
-      <div class="speaker-settings-hero">
-        <div>
-          <span class="group-label">Transcript speakers</span>
-          <h3>Split the room before naming anyone.</h3>
-          <p>Speaker separation runs locally after microphone transcription. Recognition uses only confirmed Person voice embeddings stored in this save directory.</p>
+      <div class="ss-grp speaker-switches">
+        <div class="ss-mrow">
+          <span class="ss-mrow__n speaker-switches__n">Separate speakers in transcripts</span>
+          <span class="ss-mrow__meta">
+            <Switch
+              bind:checked={rec.draftSpeakerSeparateSpeakers}
+              ariaLabel="Separate speakers in transcripts"
+            />
+          </span>
         </div>
-        <div class="speaker-settings-hero__toggles">
-          <Switch
-            bind:checked={rec.draftSpeakerSeparateSpeakers}
-            label="Separate speakers in transcripts"
-            description="Queue local diarization after successful microphone transcription"
-          />
-          <Switch
-            bind:checked={rec.draftSpeakerRecognizeSavedPeople}
-            disabled={!rec.draftSpeakerSeparateSpeakers}
-            label="Recognize saved people"
-            description="Opt in to matching against confirmed local Person voice profiles"
-          />
+        <div class="ss-mrow">
+          <span class="ss-mrow__n speaker-switches__n">Recognize saved people</span>
+          <span class="ss-mrow__meta">
+            <Switch
+              bind:checked={rec.draftSpeakerRecognizeSavedPeople}
+              disabled={!rec.draftSpeakerSeparateSpeakers}
+              ariaLabel="Recognize saved people"
+            />
+          </span>
         </div>
       </div>
     {/snippet}
@@ -91,13 +110,16 @@
     description="Stops speaker analysis if the local helper runs too long. Existing queued jobs keep the timeout they were created with."
     full
   >
+    {#snippet aside()}
+      <span class="row-value">{rec.draftSpeakerTimeoutMinutes}m</span>
+    {/snippet}
     {#snippet control()}
       <Slider
         bind:value={rec.draftSpeakerTimeoutMinutes}
         min={1}
         max={60}
         step={1}
-        label="Timeout"
+        ariaLabel="Speaker helper timeout"
         unit="m"
         disabled={!rec.draftSpeakerSeparateSpeakers}
       />

@@ -211,10 +211,10 @@
         value={rec.draftTranscriptionProvider}
         onValueChange={chooseTranscriptionProvider}
         options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
-          { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-          { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
-          { value: "deepgram", label: "Deepgram (cloud)", description: "Cloud transcription — requires an API key" },
+          { value: "local_whisper", label: "Local Whisper", description: "On device · model status is loading" },
+          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "On device · managed by macOS" },
+          { value: "parakeet", label: "Parakeet", description: "On device · model status is loading" },
+          { value: "deepgram", label: "Deepgram (cloud)", description: "Cloud — uploads your microphone and system audio to your own Deepgram account." },
         ]}
       />
     {/snippet}

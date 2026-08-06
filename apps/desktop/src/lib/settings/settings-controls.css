@@ -198,37 +198,15 @@
     font-weight: 600;
   }
 
-  .settings-shell .speaker-settings-hero {
-    display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
-    gap: 16px;
-    align-items: start;
-    padding: 16px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
-    border-radius: 10px;
-    background:
-      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--app-warn) 12%, transparent), transparent 38%),
-      radial-gradient(circle at 84% 8%, color-mix(in srgb, var(--app-accent) 14%, transparent), transparent 42%),
-      color-mix(in srgb, var(--app-surface) 88%, transparent);
+  /* Speaker separation is two switches under one indexed row (page 11). The
+     gradient hero that used to live here was the last card in a shell whose
+     whole argument is hairlines instead of card edges. */
+  .settings-shell .speaker-switches {
+    width: 100%;
   }
 
-  .settings-shell .speaker-settings-hero h3 {
-    margin: 4px 0;
-    color: var(--app-text-strong);
-    font-size: var(--t-title);
-    line-height: 1.15;
-  }
-
-  .settings-shell .speaker-settings-hero p {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: 11px;
-    line-height: 1.55;
-  }
-
-  .settings-shell .speaker-settings-hero__toggles {
-    display: grid;
-    gap: 10px;
+  .settings-shell .speaker-switches__n {
+    font-family: var(--app-font-sans);
   }
 
   .settings-shell .group-hint {

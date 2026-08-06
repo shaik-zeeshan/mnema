@@ -22,6 +22,15 @@
 
   const loadRecordingSettings = () => rec.loadRecordingSettings();
 
+  // Row-line readouts for the sliders below. Coarse by construction — seconds
+  // and whole minutes, the resolution the sliders actually step in.
+  function seconds(value: number): string {
+    if (value < 60) return `${value}s`;
+    const rest = value % 60;
+    return rest === 0 ? `${value / 60}m` : `${Math.floor(value / 60)}m ${rest}s`;
+  }
+  const segmentDurationLabel = $derived(seconds(rec.draftSegmentDuration));
+  const idleTimeoutLabel = $derived(seconds(rec.draftIdleTimeoutSeconds));
 </script>
 
 <SettingGroup
@@ -103,16 +112,27 @@
       full
       divider={false}
     >
+      <!-- The value reads on the row's own line (mono, machine voice); the
+           slider below it is bare. Giving the Slider a `label` too printed the
+           row's name twice, which is the one thing a 28px row cannot afford. -->
+      {#snippet aside()}
+        <span class="row-value">{segmentDurationLabel}</span>
+      {/snippet}
       {#snippet control()}
-        <Slider
-          bind:value={rec.draftSegmentDuration}
-          min={10}
-          max={300}
-          step={10}
-          label="Duration"
-          unit="s"
-          formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60}s` : `${v}s`}
-        />
+        <div class="control-stack">
+          <Slider
+            bind:value={rec.draftSegmentDuration}
+            min={10}
+            max={300}
+            step={10}
+            ariaLabel="Segment duration"
+            unit="s"
+          />
+          <p class="group-hint">
+            Capped at <strong>5 minutes</strong> — a shorter segment loses less to a crash, because
+            only the segment still open is unrecoverable.
+          </p>
+        </div>
       {/snippet}
     </SettingRow>
   {/if}
@@ -132,6 +152,9 @@
 
     {#if rec.draftPauseCaptureOnInactivity}
       <SettingRow label="Idle timeout" full>
+        {#snippet aside()}
+          <span class="row-value">{idleTimeoutLabel}</span>
+        {/snippet}
         {#snippet control()}
           <div class="control-stack">
           <Slider
@@ -139,9 +162,8 @@
             min={5}
             max={300}
             step={5}
-            label="Idle timeout"
+            ariaLabel="Idle timeout"
             unit="s"
-            formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m${v%60 > 0 ? ` ${v%60}s` : ""}` : `${v}s`}
           />
           <p class="group-hint">
             Capture pauses after <strong>{rec.draftIdleTimeoutSeconds}s</strong> of system-wide inactivity (no mouse, keyboard,
@@ -201,6 +223,9 @@
 
         {#if rec.draftMicrophoneVadAdapter === "off"}
           <SettingRow label="Microphone Activity Sensitivity" full>
+            {#snippet aside()}
+              <span class="row-value">{rec.draftMicrophoneActivitySensitivity}%</span>
+            {/snippet}
             {#snippet control()}
               <div class="control-stack">
               <Slider
@@ -208,7 +233,7 @@
                 min={0}
                 max={100}
                 step={1}
-                label="Mic sensitivity"
+                ariaLabel="Microphone activity sensitivity"
                 unit="%"
                 disabled={!rec.draftCaptureMicrophone}
               />
@@ -235,6 +260,9 @@
         {/if}
 
         <SettingRow label="System Audio Activity Sensitivity" full>
+          {#snippet aside()}
+            <span class="row-value">{rec.draftSystemAudioActivitySensitivity}%</span>
+          {/snippet}
           {#snippet control()}
             <div class="control-stack">
             <Slider
@@ -242,7 +270,7 @@
               min={0}
               max={100}
               step={1}
-              label="System audio sensitivity"
+              ariaLabel="System audio activity sensitivity"
               unit="%"
               disabled={!rec.draftCaptureSystemAudio}
             />
