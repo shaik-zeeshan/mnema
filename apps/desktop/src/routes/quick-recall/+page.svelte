@@ -1531,14 +1531,32 @@
 
   // ── The freshness readout (direction 05's one instrument on this surface) ──
   // Age is a measured elapsed time, so it ticks; the wall clock is the only
-  // input. The interval only runs while the bar is actually on screen.
+  // input. The interval only runs while the bar is actually on screen — and the
+  // mode gate alone does not get there: this window is hidden and reused, never
+  // destroyed, so a frame ask left open would keep ticking off-screen forever.
+  // Same visibility gate as the recording pill, same reason (a repaint the
+  // compositor never shows strands WebKit backing stores).
   let frameNowMs = $state(Date.now());
   let frameRegrabbing = $state(false);
   $effect(() => {
     if (mode !== "frame" || frameCapture === null) return;
-    frameNowMs = Date.now();
-    const id = setInterval(() => (frameNowMs = Date.now()), 500);
-    return () => clearInterval(id);
+    let id: ReturnType<typeof setInterval> | null = null;
+    const stop = (): void => {
+      if (id !== null) clearInterval(id);
+      id = null;
+    };
+    const sync = (): void => {
+      stop();
+      if (document.visibilityState !== "visible") return;
+      frameNowMs = Date.now();
+      id = setInterval(() => (frameNowMs = Date.now()), 500);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
   let frameAgeMs = $derived(
     frameCapture === null ? null : frameNowMs - frameCapture.capturedAtUnixMs,
