@@ -539,7 +539,56 @@
     insights: "/insights",
   } as const;
 
+  // ── Overview destinations (Journal · Subjects · Context) ────────────────
+  // Journal, Subjects and Context are DESTINATIONS INSIDE Overview, not new
+  // top-level surfaces: `/overview/journal`, `/overview/subjects`, and the
+  // drill-in `/overview/subjects/<encodeURIComponent(subject)>`. Overview
+  // stays lit in the switcher because you never left it, and the bar grows a
+  // back control that NAMES where it goes ("‹ Overview / Journal") rather than
+  // pointing an arrow at nothing.
+  //
+  // The trail is derived purely from the URL, so the drill-in — and anything
+  // deeper a later slice adds — needs no special case here. Only the first
+  // segment has a fixed display name; everything below it is a live value
+  // (a subject) and is decoded straight out of the path.
+  const OVERVIEW_DESTINATIONS: Record<string, string> = {
+    journal: "Journal",
+    subjects: "Subjects",
+    context: "Context",
+  };
+
+  function decodeSegment(segment: string): string {
+    try {
+      return decodeURIComponent(segment);
+    } catch {
+      return segment;
+    }
+  }
+
+  const overviewTrail = $derived.by(() => {
+    if (!isOverviewRoute) return null;
+    const segments = normalizedPathname.split("/").filter(Boolean).slice(1);
+    if (segments.length === 0) return null;
+    const labels = ["Overview", ...segments.map((segment, depth) =>
+      depth === 0
+        ? (OVERVIEW_DESTINATIONS[segment] ?? decodeSegment(segment))
+        : decodeSegment(segment),
+    )];
+    return {
+      parent: labels[labels.length - 2],
+      current: labels[labels.length - 1],
+      // One step back is one path segment off the end.
+      parentPath: `/${["overview", ...segments.slice(0, -1)].join("/")}`,
+    };
+  });
+
   function goToSurface(surface: keyof typeof SURFACE_PATHS): void {
+    // ⌘2 (and the Overview segment that carries the ⌘2 keycap) walk back one
+    // step while inside a destination, rather than jumping to the bento.
+    if (surface === "overview" && overviewTrail) {
+      void goto(overviewTrail.parentPath);
+      return;
+    }
     const target = SURFACE_PATHS[surface];
     if (normalizeAppPathname($page.url.pathname) === target) return;
     void goto(target);
@@ -709,6 +758,24 @@
     return true;
   }
 
+  // Escape walks one step back out of an Overview destination — the same step
+  // ⌘2 takes. It never hijacks: a handled key, a text target, or any open
+  // overlay (the bell popover, the shortcuts sheet) keeps Escape.
+  // `isDedicatedWindowCloseSuppressedTarget` is the shell's existing
+  // text-target test, reused here rather than re-listed.
+  function walkBackOverviewOnEscape(event: KeyboardEvent): boolean {
+    if (!isMainWindow || !overviewTrail) return false;
+    if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
+    if (notificationsOpen || shortcutsHelpOpen) return false;
+    if (isDedicatedWindowCloseSuppressedTarget(event.target)) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void goto(overviewTrail.parentPath);
+    return true;
+  }
+
   function onShortcutsHelpKeydown(event: KeyboardEvent): void {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -726,6 +793,7 @@
   function handleGlobalShortcutKeydown(event: KeyboardEvent): void {
     if (dismissQuickRecallOnEscape(event)) return;
     if (closeDedicatedWindowOnEscape(event)) return;
+    if (walkBackOverviewOnEscape(event)) return;
 
     const action = getGlobalShortcutAction(event, {
       devEnabled,
@@ -917,6 +985,35 @@
            that route neither surface segment is the current page. -->
       {#if isSettingsRoute}
         <span class="titlebar__title">Settings</span>
+      {:else if overviewTrail}
+        <!-- Same slot, inside an Overview destination: the back control names
+             its parent, then the current destination. Both are derived from
+             the URL, so the subject drill-in reads "‹ Subjects / Mnema
+             licensing" with no case of its own. -->
+        <button
+          type="button"
+          class="titlebar__back"
+          use:tip={`Back to ${overviewTrail.parent} (${shortcutDisplay("openOverviewSurface")} or Esc)`}
+          onclick={() => void goto(overviewTrail.parentPath)}
+        >
+          <svg
+            class="titlebar__back-chev"
+            width="8"
+            height="12"
+            viewBox="0 0 8 12"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.6"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M6.5 1 1.5 6l5 5" />
+          </svg>
+          {overviewTrail.parent}
+        </button>
+        <span class="titlebar__crumb" aria-hidden="true">/</span>
+        <span class="titlebar__title">{overviewTrail.current}</span>
       {/if}
     </div>
 
@@ -2538,6 +2635,34 @@
     font: var(--w-semi) var(--t-ui) / 1 var(--app-font-sans);
     color: var(--app-text-strong);
     white-space: nowrap;
+  }
+  /* The Overview back control + its crumb. A quiet ghost row, not a button
+     face: depth here would claim the destination is a modal layer. */
+  .titlebar__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: var(--h-sm);
+    padding: 0 8px 0 5px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    white-space: nowrap;
+    cursor: default;
+  }
+  .titlebar__back:hover {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+  .titlebar__back:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  .titlebar__crumb {
+    color: var(--app-text-faint);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
   }
   /* On the Settings route neither surface is the current page; de-emphasize the
      whole toggle so it doesn't read as a live selection, and quietly mark the

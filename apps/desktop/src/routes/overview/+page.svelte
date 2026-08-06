@@ -30,7 +30,14 @@
   import type { ConversationCluster, Moment } from "$lib/highlights";
   import type { DayCoverage } from "$lib/types/app-infra";
   import type { UserContextDigest, UserContextStatus } from "$lib/types";
+  import type {
+    AuthoredContext,
+    ConfidenceSnapshot,
+    Conclusion,
+    SubjectView,
+  } from "$lib/types/recording";
   import type { ConversationSummary } from "$lib/insights/conversation";
+  import ConfidenceTrace from "$lib/overview/ConfidenceTrace.svelte";
   import { captureControls } from "$lib/capture-controls.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
   import { coarseRuntime } from "$lib/settings/state/system-facts";
@@ -64,6 +71,9 @@
   // without the bento scrolling, and the history's job here is to prove the
   // store is being read — the full list lives behind the door.
   const ASK_ROWS = 1;
+  // The Subjects tile is a door with two treads, exactly as the mockup draws
+  // it: the whole list lives behind the header link.
+  const SUBJECT_ROWS = 2;
 
   let now = $state(new Date());
   let coverage = $state<DayCoverage[]>([]);
@@ -72,6 +82,13 @@
   let asks = $state<ConversationSummary[]>([]);
   let digest = $state<UserContextDigest | null>(null);
   let context = $state<UserContextStatus | null>(null);
+  let conclusions = $state<Conclusion[]>([]);
+  let authored = $state<AuthoredContext[]>([]);
+  // Per-subject confidence history for the two Subjects rows, fetched lazily
+  // after the tile knows which subjects it shows. G8: a subject whose fetch
+  // fails or has fewer than two snapshots renders NO trace — never a
+  // straight-line stand-in.
+  let traces = $state(new Map<string, ConfidenceSnapshot[]>());
   let frameCount = $state<number | null>(null);
   let loaded = $state(false);
 
@@ -88,7 +105,7 @@
   async function load(): Promise<void> {
     const today = new Date();
     const { startMs, endMs } = dayWindow(today);
-    const [days, moment, convo, ask, dig, ctx, usage] = await Promise.all([
+    const [days, moment, convo, ask, dig, ctx, usage, beliefs, written] = await Promise.all([
       invoke<DayCoverage[]>("list_day_coverage").catch(() => []),
       invoke<Moment[]>("get_moments", { startMs, endMs, limit: MOMENT_LIMIT }).catch(() => []),
       invoke<ConversationCluster[]>("get_conversations", { startMs, endMs }).catch(() => []),
@@ -96,6 +113,14 @@
       invoke<UserContextDigest | null>("get_latest_user_context_digest").catch(() => null),
       invoke<UserContextStatus | null>("get_user_context_status").catch(() => null),
       invoke<UsageCharts | null>("get_usage_charts", { startMs, endMs }).catch(() => null),
+      invoke<Conclusion[]>("list_user_context_conclusions", { includeFaded: false }).catch(
+        () => [],
+      ),
+      // Two counts, never one: an authored statement is stored verbatim and
+      // never fades; an inferred conclusion carries a confidence that rises
+      // and decays. They live in different tables and survive different
+      // delete paths, so the Context tile reads them separately.
+      invoke<AuthoredContext[]>("list_user_context_authored").catch(() => []),
     ]);
     void systemFacts.ensureLoaded();
     now = today;
@@ -105,6 +130,8 @@
     asks = ask ?? [];
     digest = dig?.narrative ? dig : null;
     context = ctx ?? null;
+    conclusions = beliefs ?? [];
+    authored = written ?? [];
     const apps = usage?.timePerApp ?? [];
     frameCount = apps.length > 0 ? apps.reduce((sum, a) => sum + (a.frameCount ?? 0), 0) : null;
     loaded = true;
@@ -150,6 +177,71 @@
       : `The bar is a month at this rate, ${week}.`;
   });
 
+  // ── The Subjects door ────────────────────────────────────────────────────
+  // Subjects are derived client-side by grouping conclusions, the same read
+  // the destination makes. Each row shows the subject's HIGHEST-confidence
+  // conclusion, and the tile ranks subjects by that number.
+  const topSubjects = $derived.by(() => {
+    const best = new Map<string, Conclusion>();
+    for (const belief of conclusions) {
+      const held = best.get(belief.subject);
+      if (!held || belief.confidence > held.confidence) best.set(belief.subject, belief);
+    }
+    return [...best.values()]
+      .sort((a, b) => b.confidence - a.confidence || a.subject.localeCompare(b.subject))
+      .slice(0, SUBJECT_ROWS);
+  });
+
+  // Best-effort, and only for the subjects actually on screen — at most two
+  // calls. Reading `traces` here would re-trigger this effect, so the map is
+  // rebuilt from the rows rather than merged into.
+  $effect(() => {
+    const rows = topSubjects;
+    if (rows.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      const next = new Map<string, ConfidenceSnapshot[]>();
+      await Promise.all(
+        rows.map(async (row) => {
+          try {
+            const view = await invoke<SubjectView>("get_user_context_subject", {
+              subject: row.subject,
+            });
+            const line = view.trajectories.find((t) => t.conclusionId === row.id);
+            if (line && line.history.length >= 2) next.set(row.subject, line.history);
+          } catch {
+            // No trace rather than an invented one.
+          }
+        }),
+      );
+      if (!cancelled) traces = next;
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const subjectHref = (subject: string): string =>
+    `/overview/subjects/${encodeURIComponent(subject)}`;
+
+  const newestAuthored = $derived.by(() => {
+    if (authored.length === 0) return null;
+    return [...authored].sort((a, b) => b.updatedAtMs - a.updatedAtMs)[0];
+  });
+
+  // "47 conclusions across 16 subjects, inferred separately" — both halves are
+  // real reads or the line does not render at all.
+  const inferredLine = $derived.by(() => {
+    if (!context || context.conclusionCount <= 0) return null;
+    const beliefs = `${context.conclusionCount.toLocaleString()} conclusion${
+      context.conclusionCount === 1 ? "" : "s"
+    }`;
+    if (context.subjectCount <= 0) return `${beliefs}, inferred separately`;
+    return `${beliefs} across ${context.subjectCount.toLocaleString()} subject${
+      context.subjectCount === 1 ? "" : "s"
+    }, inferred separately`;
+  });
+
   const digestStamp = $derived(digest ? clockLabel(digest.generatedAtMs) : null);
 
   function hideBroken(event: Event): void {
@@ -166,6 +258,23 @@
     }
   }
 </script>
+
+{#snippet chevron()}
+  <svg
+    class="ov__chev"
+    width="8"
+    height="12"
+    viewBox="0 0 8 12"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="m1.5 1 5 5-5 5" />
+  </svg>
+{/snippet}
 
 <div class="ov">
   <header class="ov__hd">
@@ -215,6 +324,14 @@
           enough of a day to read — including whatever it finds still open.
         </p>
       {/if}
+      <!-- Journal's door. The digest is the first line of the day, so "the
+           whole day" is the only sentence this tile needs — and it stands
+           whether or not a digest was written, because the Journal is the day
+           itself, not the read of it. -->
+      <a class="ti-tile-row ov__door" href="/overview/journal">
+        <span class="t-meta ov__doorlbl">The whole day, hour by hour</span>
+        {@render chevron()}
+      </a>
     </div>
 
     <!-- INSTRUMENT FACE 1 — coverage. Hours are physical; this one only reads. -->
@@ -345,33 +462,85 @@
       </div>
     </div>
 
+    <!-- Context. The mockup's "142 facts about you" and "3 pending" are both
+         corrected here: there is no review queue and no pending state on a
+         context statement, and merging what you WROTE with what the engine
+         INFERRED would be one number over two stores with two lifetimes. Two
+         reads, stated separately. -->
     <div class="ti-tile">
       <div class="ti-tile-h">
         <span class="t-label">Context</span>
-        {#if context && context.subjectCount > 0}
-          <span class="ti-more t-meta is-num">{context.subjectCount} subjects</span>
-        {/if}
+        <a class="ti-more ov__more" href="/overview/context">Review all ›</a>
       </div>
-      {#if context && context.conclusionCount > 0}
-        <div class="ti-tile-row">
-          <span class="t-ui ov__value is-num">{context.conclusionCount.toLocaleString()}</span>
-          <span class="t-meta">things Mnema believes about you</span>
-        </div>
-        <div class="ti-tile-row ov__foot">
-          <span class="t-meta">
-            {context.activityCount.toLocaleString()} activities read so far.
-          </span>
-        </div>
+      {#if authored.length > 0 || inferredLine}
+        {#if authored.length > 0}
+          <div class="ti-tile-row">
+            <span class="t-ui ov__value is-num">{authored.length.toLocaleString()}</span>
+            <span class="t-meta">
+              statement{authored.length === 1 ? "" : "s"} you wrote
+            </span>
+          </div>
+        {/if}
+        {#if newestAuthored}
+          <div class="ti-tile-row">
+            <span class="t-meta ov__quote">Newest: “{newestAuthored.text}”</span>
+          </div>
+        {/if}
+        {#if inferredLine}
+          <div class="ti-tile-row ov__foot">
+            <span class="t-meta is-num ov__subtle">{inferredLine}</span>
+          </div>
+        {/if}
       {:else}
         <p class="t-meta ov__empty">
-          Nothing derived yet. Context is written by the Reasoning Engine as it
-          reads your activities.
+          Nothing here yet. Write a statement to steer your dossier, or let the
+          Reasoning Engine infer conclusions as it reads your activities.
+        </p>
+      {/if}
+    </div>
+
+    <!-- Subjects — the door to the conviction list. Two rows, each a subject,
+         each with its own confidence trace: the tile and the destination are
+         the same instrument at two sizes. -->
+    <div class="ti-tile ti-tile--2">
+      <div class="ti-tile-h">
+        <span class="t-label">Subjects</span>
+        <a class="ti-more ov__more" href="/overview/subjects">
+          {#if context && context.subjectCount > 0}
+            {context.subjectCount.toLocaleString()} views ›
+          {:else}
+            All subjects ›
+          {/if}
+        </a>
+      </div>
+      {#if topSubjects.length > 0}
+        {#each topSubjects as row (row.subject)}
+          <a class="ti-grow ov__row ov__srow" href={subjectHref(row.subject)}>
+            <span class="ti-grow__txt">
+              <span class="ti-grow__lbl">{row.subject}</span>
+              <span class="ti-grow__sub ov__clip">{row.statement}</span>
+            </span>
+            <span class="ti-grow__val">
+              {#if traces.get(row.subject)}
+                <ConfidenceTrace
+                  history={traces.get(row.subject) ?? []}
+                  label={`Confidence over time for ${row.subject}`}
+                />
+              {/if}
+              {@render chevron()}
+            </span>
+          </a>
+        {/each}
+      {:else}
+        <p class="t-meta ov__empty">
+          No subjects yet. As the Reasoning Engine forms views about you, each
+          one appears here with its own confidence trace.
         </p>
       {/if}
     </div>
 
     <!-- G11: Ask history — a conversation-store read, plus the door itself. -->
-    <div class="ti-tile ti-tile--4">
+    <div class="ti-tile ti-tile--2">
       <div class="ti-tile-h">
         <span class="t-label">Ask</span>
         <span class="ti-more t-meta">history</span>
@@ -473,11 +642,93 @@
   .ov__push {
     margin-left: auto;
   }
+  .ov__subtle {
+    color: var(--app-text-subtle);
+  }
+  .ov__quote,
+  .ov__clip {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
-  /* filmstrip — the mockup's 94px band, so four tile rows fit the 720px window
-     without the bento scrolling. */
+  /* ── the three doors ──────────────────────────────────────────────────────
+     Journal, Subjects and Context are destinations INSIDE Overview. A door is
+     a plain link — no button face, no border: the tile it sits in is already
+     the surface step. */
+  .ov__more {
+    font: 510 var(--t-meta) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    color: var(--app-accent);
+    text-decoration: none;
+  }
+  .ov__more:hover {
+    text-decoration: underline;
+  }
+  .ov__door {
+    margin-top: auto;
+    padding-top: var(--s-4);
+    text-decoration: none;
+    color: var(--app-accent);
+  }
+  .ov__doorlbl {
+    font-weight: 510;
+    color: var(--app-accent);
+  }
+  .ov__door .ov__chev {
+    margin-left: auto;
+    color: var(--app-accent);
+  }
+  .ov__door:hover .ov__doorlbl {
+    text-decoration: underline;
+  }
+  .ov__chev {
+    color: var(--app-text-faint);
+    flex: 0 0 auto;
+  }
+  /* Subject rows: the whole row is the target, so it carries the hover, and
+     the row hairline `.ti-grow` already draws stays the only separator. */
+  .ov__srow {
+    padding-left: 0;
+    padding-right: 0;
+    border-radius: var(--r-md);
+    text-decoration: none;
+    color: inherit;
+  }
+  .ov__srow:hover {
+    background: var(--app-surface-hover);
+  }
+  .ov__srow:hover .ov__chev {
+    color: var(--app-text-muted);
+  }
+  .ov__door:focus-visible,
+  .ov__srow:focus-visible,
+  .ov__more:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+    border-radius: var(--r-md);
+  }
+
+  /* Four content rows now (Subjects joined the bento), so the grid gap and the
+     filmstrip band both give back what the fourth row costs — the whole bento
+     still fits 1100×720 without scrolling. */
+  .ov :global(.ti-tiles) {
+    gap: var(--s-12);
+  }
   .ov__strip {
-    height: 94px;
+    height: 84px;
+  }
+  /* The digest is one headline and one paragraph; clamped so a long read can
+     never push the fourth row off the window. The whole day is one click away
+     through the door below it. */
+  .ov__prose {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    overflow: hidden;
   }
   .ov__frame {
     position: relative;
