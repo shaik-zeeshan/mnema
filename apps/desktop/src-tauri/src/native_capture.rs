@@ -2656,7 +2656,12 @@ pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> 
         .map_err(|error| format!("failed to open accessibility settings: {error}"))
 }
 
-#[tauri::command]
+/// `(async)` because this takes the lifecycle mutex and the frontend polls it
+/// every 2 s for the whole of a recording: on the main thread it would stall the
+/// window every time a *worker* holds that mutex (a start, a pause, or a
+/// mid-session source toggle — all seconds long). Reading off-main costs nothing
+/// and removes the contention entirely.
+#[tauri::command(async)]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
     activity::get_idle_debug(state)
 }
@@ -3576,41 +3581,68 @@ pub(crate) fn persist_semantic_search_settings(
     )
 }
 
+/// Join a lifecycle command's blocking task back into its own error shape.
+fn lifecycle_join_error(command: &str, error: impl std::fmt::Display) -> CaptureErrorResponse {
+    CaptureErrorResponse {
+        code: format!("{command}_join"),
+        message: format!("{command} task failed: {error}"),
+    }
+}
+
+/// Starting opens ScreenCaptureKit, the microphone and the Core Audio process
+/// tap and writes the session row — hundreds of ms to seconds, all under the
+/// lifecycle mutex. A *sync* `#[tauri::command]` runs on the MAIN thread, so
+/// doing that inline froze the window for the whole of every Record click while
+/// the tray's identical action (which spawns, `status_bar::handle_recording_toggle`)
+/// did not. Same treatment as [`stop_native_capture`]: blocking pool, awaited,
+/// so ordering still holds — the change event fires after the session is really up.
 #[tauri::command]
-pub fn start_native_capture(
+pub async fn start_native_capture(
     request: StartNativeCaptureRequest,
-    state: tauri::State<'_, NativeCaptureState>,
-    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
-    recording_settings_state: tauri::State<'_, RecordingSettingsState>,
-    app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = start_native_capture_inner(
-        "command",
-        request,
-        state,
-        microphone_controller_preferences_state,
-        recording_settings_state,
-        app_notifications_state,
-        app_handle.clone(),
-    )?;
+    let handle = app_handle.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        start_native_capture_inner(
+            "command",
+            request,
+            handle.state::<NativeCaptureState>(),
+            handle.state::<MicrophoneControllerPreferencesState>(),
+            handle.state::<RecordingSettingsState>(),
+            handle.state::<AppNotificationsState>(),
+            handle.clone(),
+        )
+    })
+    .await
+    .map_err(|error| lifecycle_join_error("start_native_capture", error))??;
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)
 }
 
+/// Off the main thread for the same reason as start: pausing stops every live
+/// source and finalizes its in-flight writer, under the lifecycle mutex.
 #[tauri::command]
-pub fn pause_native_capture(
+pub async fn pause_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    pause_native_capture_from_app_handle(&app_handle)
+    tauri::async_runtime::spawn_blocking(move || {
+        pause_native_capture_from_app_handle(&app_handle)
+    })
+    .await
+    .map_err(|error| lifecycle_join_error("pause_native_capture", error))?
 }
 
+/// Resuming restarts the same streams a pause stopped — off the main thread too.
 #[tauri::command]
-pub fn resume_native_capture(
+pub async fn resume_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    resume_native_capture_from_app_handle(&app_handle)
+    tauri::async_runtime::spawn_blocking(move || {
+        resume_native_capture_from_app_handle(&app_handle)
+    })
+    .await
+    .map_err(|error| lifecycle_join_error("resume_native_capture", error))?
 }
 
 /// Turn sources off and on while recording. `sources` is the desired live set;
