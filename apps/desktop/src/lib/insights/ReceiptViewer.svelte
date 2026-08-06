@@ -111,14 +111,17 @@
 <style>
   /* Viewer — the ONE elastic region; no transition on the img: instant frame
      swaps are the video feel. */
-  .viewer { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--app-bg); border-bottom: 1px solid var(--app-border); }
+  /* Direction 05: the stage is the CANVAS (the void media floats in), and its
+     chips are dark glass — the same treatment the moments filmstrip uses. No
+     border anywhere in here; the modal's ring is the only outline. */
+  .viewer { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; margin: 0 16px; border-radius: var(--r-md); background: var(--ti-canvas); }
   .viewer__img { display: block; width: 100%; height: 100%; object-fit: contain; }
-  .skeleton { position: absolute; inset: 18px 22px; background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%); border: 1px solid var(--app-border); border-radius: 8px; animation: pulse 1.4s ease-in-out infinite; }
+  .skeleton { position: absolute; inset: 18px 22px; background: var(--ti-empty); border-radius: var(--r-lg); animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.85; } }
-  .viewer__redactions { position: absolute; top: 8px; right: 8px; padding: 3px 7px; font-size: 10px; color: var(--app-text-muted); background: var(--app-overlay-bg); border: 1px solid var(--app-border-strong); border-radius: 5px; backdrop-filter: blur(4px); }
-  .frame-meta { position: absolute; left: 16px; bottom: 12px; display: flex; gap: 8px; max-width: calc(100% - 32px); overflow: hidden; }
-  .frame-meta__chip { padding: 2px 8px; font-size: 10px; color: var(--app-text-muted); background: var(--app-overlay-bg); border: 1px solid var(--app-border-strong); border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(4px); }
-  .frame-meta__chip--app { flex: 0 0 auto; color: var(--app-text); }
+  .viewer__redactions { position: absolute; top: 8px; right: 8px; padding: 2px 7px; font: var(--w-medium) var(--t-label)/1.5 var(--app-font-mono); color: var(--app-warn); background: rgba(8, 8, 12, 0.62); border-radius: var(--r-sm); backdrop-filter: blur(3px); }
+  .frame-meta { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 5px; max-width: calc(100% - 16px); overflow: hidden; }
+  .frame-meta__chip { padding: 1px 6px; font: var(--w-medium) var(--t-label)/1.5 var(--app-font-mono); color: #fff; background: rgba(8, 8, 12, 0.62); border-radius: var(--r-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(3px); }
+  .frame-meta__chip--app { flex: 0 0 auto; }
 
   .viewer--expired { aspect-ratio: 16 / 6; display: flex; align-items: center; justify-content: center; }
   .exp { max-width: 440px; padding: 24px; text-align: center; }
@@ -130,15 +133,15 @@
   /* Audio-only viewer — a bounded audio player, never a false "footage expired".
      Leads with WHO spoke; the channel is quiet secondary meta. */
   .viewer--audio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
-  .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; color: var(--cat-communication); background: var(--app-accent-bg); border: 1px solid var(--cat-communication); }
-  .big-play:disabled { opacity: 0.5; cursor: default; }
-  .big-play :global(svg) { width: 17px; height: 17px; }
+  .big-play { width: 56px; height: 56px; display: inline-flex; align-items: center; justify-content: center; cursor: default; border-radius: 50%; color: var(--app-accent-contrast); background: var(--app-accent); border: 0; }
+  .big-play:disabled { opacity: var(--opacity-disabled); }
+  .big-play :global(svg) { width: 20px; height: 20px; }
   .a-spk { display: inline-flex; align-items: center; gap: 8px; }
-  .a-spk__dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--_c); box-shadow: 0 0 7px var(--_c); }
-  .a-spk__name { font-size: 15px; font-weight: 600; color: var(--app-text-strong); }
+  .a-spk__dot { flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--_c); }
+  .a-spk__name { font: var(--w-medium) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong); }
   .a-spk__name.is-fallback { color: var(--_c); }
-  .a-spk__meta { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
-  .a-when { font-size: 10.5px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+  .a-spk__meta { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-muted); }
+  .a-when { font: var(--w-regular) var(--t-meta)/1.35 var(--app-font-sans); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
 
   @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 </style>

@@ -724,20 +724,23 @@
      (repo rule); tokens + structure mirror docs/mockups/dayflow/04-timelapse.html.
      Audio channel (ADR 0049) uses --cat-communication (lavender) for voice. */
   .receipt { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 16px; background: var(--app-overlay-bg); backdrop-filter: blur(4px); }
-  .modal-card { width: 82vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface); border: 1px solid var(--app-border-strong); border-radius: 12px; box-shadow: var(--app-shadow-popover); }
+  /* Direction 05: the receipt genuinely FLOATS, so it earns a shadow — but not
+     a border. Its outline is a hairline ring on the shadow, the same treatment
+     every floating surface in this direction uses. */
+  .modal-card { width: 82vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface-raised); border: 0; border-radius: var(--r-xl); box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) var(--app-border-strong); }
   /* The frame .viewer is the ONE elastic region; every other row is pinned so the
      added lane + transcript trade against the frame height, never overflow the
      modal (mirrors the mockup's `.modal .modal-card` rule). */
   .m-head, .m-summary, .scrub, .film, .controls, .m-foot { flex: 0 0 auto; }
-  .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--app-border); }
-  .chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-muted); }
-  .sw { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
-  .m-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .when { flex: 0 0 auto; font-size: 11px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; font: inherit; cursor: pointer; color: var(--app-text-subtle); background: transparent; border: 1px solid var(--app-border); border-radius: 5px; }
-  .m-close:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+  .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; box-shadow: inset 0 -1px 0 var(--app-border); }
+  .chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--app-text-muted); }
+  .sw { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
+  .m-title { flex: 1 1 auto; min-width: 0; margin: 0; font: var(--w-semi) var(--t-ui)/1.25 var(--app-font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .when { flex: 0 0 auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: var(--h-sm); height: var(--h-sm); font: inherit; cursor: default; color: var(--app-text-subtle); background: transparent; border: 0; border-radius: var(--r-md); }
+  .m-close:hover { color: var(--app-text-strong); background: var(--app-surface-hover); }
   .m-close :global(svg) { width: 13px; height: 13px; }
-  .m-summary { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.65; color: var(--app-text-muted); }
+  .m-summary { margin: 0; padding: 10px 16px; box-shadow: inset 0 -1px 0 var(--app-border); font: var(--w-regular) var(--t-meta)/1.65 var(--app-font-sans); color: var(--app-text-muted); }
 
   /* The viewport (the ONE elastic .viewer region — loading/expired/audio/frame)
      lives in ReceiptViewer.svelte with its own styles. */
@@ -745,37 +748,41 @@
   /* Scrubber — frame ticks above the spine; the Speaker-Turn Lane + transcript
      reader sit BELOW it (their own components) inside this pinned block. */
   .scrub { padding: 14px 16px 8px; }
-  .track { position: relative; height: 6px; border-radius: 3px; background: var(--app-surface-hover); cursor: pointer; touch-action: none; }
+  /* The transport wears the WELL treatment (a recess, not a border) because it
+     is a machined control — but it is NOT a seventh instrument: nothing on it
+     turns a physical quantity, it only moves a playhead. */
+  .track { position: relative; height: 6px; border-radius: 3px; background: var(--ti-track); box-shadow: inset 0 1px 2px var(--ti-recess); cursor: default; touch-action: none; }
   .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent-strong); pointer-events: none; }
   .fill--audio { background: var(--cat-communication); }
-  .head { position: absolute; top: 50%; transform: translate(-50%, -50%); padding: 2px 8px; font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--app-bg); background: var(--app-accent); border-radius: 999px; white-space: nowrap; pointer-events: none; }
+  .head { position: absolute; top: 50%; transform: translate(-50%, -50%); padding: 2px 8px; font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-accent-contrast); background: var(--app-accent); border-radius: var(--r-pill); white-space: nowrap; pointer-events: none; }
   .head--audio { background: var(--cat-communication); color: var(--app-bg); }
   .ev { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--app-accent); border-radius: 1px; opacity: 0.5; pointer-events: none; }
   .ev--hl { opacity: 1; box-shadow: 0 0 6px var(--app-accent); }
-  .scrub-caps { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
+  .scrub-caps { display: flex; justify-content: space-between; margin-top: 6px; font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
 
   /* Filmstrip — a scroll container's auto min-height is 0, so flex:0 0 auto pins
      it to its natural cell-aspect height instead of getting crushed. */
   .film { display: grid; grid-auto-flow: column; gap: 5px; padding: 8px 16px 8px; grid-auto-columns: calc((100% - 55px) / 12); overflow-x: auto; overflow-y: hidden; }
-  .film__cell { position: relative; aspect-ratio: 16 / 10; padding: 0; cursor: pointer; background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%); border: 1px solid var(--app-border); border-radius: 4px; overflow: hidden; }
-  .film__cell::after { content: ""; position: absolute; inset: 25% 18% 30%; background: var(--app-surface-hover); border-radius: 2px; }
+  .film__cell { position: relative; aspect-ratio: 16 / 10; padding: 0; cursor: default; background: var(--ti-empty); border: 0; border-radius: 3px; overflow: hidden; }
   .film__img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
-  .film__cell.cur { border-color: var(--app-accent); box-shadow: 0 0 0 1px var(--app-accent); }
-  .film__cell.cited::before { content: ""; position: absolute; top: 3px; right: 3px; z-index: 2; width: 5px; height: 5px; background: var(--app-accent); border-radius: 50%; }
+  .film__cell.cur { box-shadow: 0 0 0 2px var(--app-accent); }
+  .film__cell.cited::before { content: ""; position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; height: 2px; background: var(--app-accent); }
 
   /* Controls */
   .controls { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
-  .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 7px; }
-  .play:hover, .open-tl:hover { border-color: var(--app-accent); }
-  .play--audio { color: var(--cat-communication); background: var(--app-accent-bg); border-color: var(--cat-communication); }
+  .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; cursor: default; color: var(--app-accent-contrast); background: var(--app-accent); border: 0; border-radius: 50%; }
+  .play--audio { color: var(--app-bg); background: var(--cat-communication); }
   .play :global(svg), .open-tl :global(svg) { width: 14px; height: 14px; }
-  .counter { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
-  .counter__now { color: var(--app-text-strong); }
+  .counter { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+  .counter__now { color: var(--app-text-strong); font-weight: var(--w-medium); }
   .ctl-spacer { flex: 1 1 auto; }
-  .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font: inherit; font-size: 11px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 6px; }
+  /* A door, not a button face: the modal is already the surface step. */
+  .open-tl { display: inline-flex; align-items: center; gap: 6px; height: var(--h-sm); padding: 0 var(--s-8); font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); cursor: default; color: var(--app-accent); background: transparent; border: 0; border-radius: var(--r-md); }
+  .open-tl:hover { background: var(--app-surface-hover); }
   .open-tl :global(svg) { width: 13px; height: 13px; }
 
-  /* Footer */
-  .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font-size: 10.5px; color: var(--app-text-subtle); border-top: 1px dashed var(--app-border); }
+  /* Footer — the one place on the page with hard numbers, every one of them a
+     fraction of something the database really holds (G8). */
+  .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-subtle); box-shadow: inset 0 1px 0 var(--app-border); }
   .m-foot .sep { color: var(--app-text-faint); }
 </style>

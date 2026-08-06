@@ -80,28 +80,30 @@
 <svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} />
 
 <div class="date-stepper">
-  <button
-    class="nav"
-    type="button"
-    aria-label="Previous day"
-    onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", -1))}>‹</button
-  >
-  <button
-    class="range-label"
-    type="button"
-    bind:this={triggerEl}
-    aria-haspopup="dialog"
-    aria-expanded={open}
-    aria-label="Jump to date"
-    onclick={toggle}>{dayLabel}</button
-  >
-  <button
-    class="nav"
-    type="button"
-    aria-label="Next day"
-    disabled={atLatest}
-    onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", 1))}>›</button
-  >
+  <span class="datestep">
+    <button
+      class="nav"
+      type="button"
+      aria-label="Previous day"
+      onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", -1))}>‹</button
+    >
+    <button
+      class="range-label"
+      type="button"
+      bind:this={triggerEl}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-label="Jump to date"
+      onclick={toggle}>{dayLabel}</button
+    >
+    <button
+      class="nav"
+      type="button"
+      aria-label="Next day"
+      disabled={atLatest}
+      onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", 1))}>›</button
+    >
+  </span>
   {#if !atLatest}
     <button class="today" type="button" onclick={() => (anchorMs = Date.now())}
       >Today</button
@@ -121,93 +123,89 @@
 </div>
 
 <style>
+  /* Direction 05 "Tactile Instruments": one recessed segmented pill (‹ day ›),
+     a pill's own outline being the one border kind this direction allows. The
+     day label is still the calendar trigger — G6 drops the type-a-date FIELD,
+     not the ability to jump to a day. */
   .date-stepper {
     position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    font-size: var(--t-meta);
+    gap: var(--s-8);
     color: var(--app-text-muted);
   }
+  .datestep {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  }
   .nav {
-    width: 24px;
-    height: 24px;
+    height: 20px;
+    min-width: 20px;
+    padding: 0 6px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
+    border: 0;
+    border-radius: var(--r-sm);
     background: transparent;
-    color: var(--app-text-subtle);
-    cursor: pointer;
-    font: inherit;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
+    color: var(--app-text-muted);
+    cursor: default;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    transition: background var(--dur-quick) var(--ease);
   }
   .nav:hover:not(:disabled) {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
   .nav:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
+    box-shadow: var(--ring);
   }
   .nav:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: default;
+    opacity: var(--opacity-disabled);
   }
   .range-label {
+    height: 20px;
     margin: 0;
-    padding: 2px 4px;
+    padding: 0 10px;
     border: 0;
+    border-radius: var(--r-sm);
     background: transparent;
-    font: inherit;
-    color: var(--app-text);
-    letter-spacing: 0.02em;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    border-radius: 4px;
-    border-bottom: 1px dotted var(--app-border-strong);
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease;
+    cursor: default;
+    transition: background var(--dur-quick) var(--ease);
   }
   .range-label:hover {
-    color: var(--app-accent);
-    border-bottom-color: var(--app-accent-border);
+    background: var(--app-surface-hover);
   }
   .range-label:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
+    box-shadow: var(--ring);
   }
   .today {
-    height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: var(--t-label);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
+    color: var(--app-accent);
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+    cursor: default;
+    transition: background var(--dur-quick) var(--ease);
   }
   .today:hover {
     background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
   .today:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
+    box-shadow: var(--ring);
   }
   .cal-pop {
     position: absolute;
@@ -215,10 +213,10 @@
     right: 0;
     z-index: 20;
     width: 300px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border-strong);
     overflow: hidden;
   }
   /* The calendar pane ships a border-right for the jumper's two-pane layout;

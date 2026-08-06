@@ -52,16 +52,17 @@
   /* One rule per line to mirror ActivityReceipt.svelte + the 04-timelapse mockup.
      Dimmed rows sit at 0.7 (raised from the mockup's 0.55) for legibility. Body
      text is the app default font; time + speaker are mono w/ tabular numerals. */
-  .script { max-height: 110px; overflow-y: auto; margin-top: 8px; padding: 4px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface-subtle); }
-  .script__row { display: grid; grid-template-columns: 44px 1fr; column-gap: 8px; align-items: baseline; width: 100%; padding: 4px 8px; border: 0; border-left: 2px solid transparent; border-radius: 5px; background: transparent; font: inherit; text-align: left; color: var(--app-text-muted); opacity: 0.7; cursor: pointer; transition: opacity 0.12s ease, background 0.12s ease; }
+  /* Direction 05: a fill, not a bordered box. */
+  .script { max-height: 110px; overflow-y: auto; margin-top: 8px; padding: var(--s-8); border: 0; border-radius: var(--r-md); background: var(--app-surface-subtle); }
+  .script__row { display: grid; grid-template-columns: 44px 1fr; column-gap: 8px; align-items: baseline; width: 100%; padding: 2px 8px; border: 0; border-left: 2px solid transparent; border-radius: var(--r-sm); background: transparent; font: inherit; text-align: left; color: var(--app-text-muted); opacity: 0.7; cursor: default; transition: opacity 0.12s ease, background 0.12s ease; }
   .script__row:hover { opacity: 0.9; background: var(--app-surface-hover); }
   .script__row:focus-visible { outline: 2px solid var(--app-accent); outline-offset: -2px; opacity: 1; }
   .script__row.is-active { opacity: 1; border-left-color: var(--_c); background: color-mix(in srgb, var(--_c) 10%, transparent); }
-  .script__t { font-family: var(--app-font-mono); font-size: 10px; font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+  .script__t { font: var(--w-regular) var(--t-label)/1.5 var(--app-font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
   .script__row.is-active .script__t { color: var(--app-text-muted); }
-  .script__body { font-size: 12px; line-height: 1.5; color: inherit; }
+  .script__body { font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: inherit; }
   .script__row.is-active .script__body { color: var(--app-text); }
-  .script__spk { font-family: var(--app-font-mono); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--_c); }
+  .script__spk { font-weight: var(--w-medium); color: var(--_c); }
 
   @media (prefers-reduced-motion: reduce) {
     .script__row { transition: none; }
