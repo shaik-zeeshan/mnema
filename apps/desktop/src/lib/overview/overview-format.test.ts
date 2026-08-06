@@ -12,7 +12,6 @@ import {
   heroHours,
   localDayWindow,
   minutesLabel,
-  newestStatement,
   subjectRows,
   weekBars,
   weekTotalMs,
@@ -135,16 +134,6 @@ describe("subjectRows", () => {
 
   it("is empty for no conclusions", () => {
     expect(subjectRows([])).toEqual([]);
-    expect(newestStatement([])).toBeNull();
-  });
-
-  it("reads the newest belief by formation time", () => {
-    expect(
-      newestStatement([
-        conclusion({ id: 1, formedAtMs: 5, statement: "old" }),
-        conclusion({ id: 2, formedAtMs: 50, statement: "new" }),
-      ]),
-    ).toBe("new");
   });
 });
 

@@ -166,15 +166,6 @@ export function subjectRows(conclusions: Conclusion[], limit = 2): SubjectRow[] 
     }));
 }
 
-/** The newest belief's statement — the Context tile's "Newest:" line. */
-export function newestStatement(conclusions: Conclusion[]): string | null {
-  let newest: Conclusion | null = null;
-  for (const c of conclusions) {
-    if (!newest || c.formedAtMs > newest.formedAtMs) newest = c;
-  }
-  return newest?.statement ?? null;
-}
-
 /** Filled dots out of `of` for a 0–1 confidence. At least one when held at all. */
 export function confidenceDots(confidence: number, of = 5): number {
   if (!Number.isFinite(confidence) || confidence <= 0) return 0;
