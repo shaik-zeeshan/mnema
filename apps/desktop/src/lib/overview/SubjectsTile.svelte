@@ -24,8 +24,8 @@
 <div class="tile tile--w2">
   <div class="tile__h">
     <span class="t-label">Subjects</span>
-    <button type="button" class="tile__more" onclick={() => void goto("/insights")}>
-      {#if subjectCount > 0}<span class="is-num">{subjectCount}</span> active{:else}Insights{/if}
+    <button type="button" class="tile__more" onclick={() => void goto("/subjects")}>
+      {#if subjectCount > 0}<span class="is-num">{subjectCount}</span> active{:else}Subjects{/if}
       <span class="chev"><Glyph name="chevr" /></span>
     </button>
   </div>

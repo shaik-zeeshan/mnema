@@ -45,7 +45,7 @@
     {#if newest}
       <div class="trow newest"><span class="t-meta">Newest: “{newest}”</span></div>
     {/if}
-    <button type="button" class="trow more" onclick={() => void goto("/insights")}>
+    <button type="button" class="trow more" onclick={() => void goto("/context")}>
       <span class="t-meta subtle">Review all</span>
       <span class="chev"><Glyph name="chevr" /></span>
     </button>

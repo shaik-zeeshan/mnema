@@ -90,11 +90,36 @@
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
-  // The Main window hosts the top-level Surfaces — Timeline (`/`), its peer
-  // Overview (`/overview`), and Insights (`/insights`). The shared main titlebar
-  // (record controls, source pills, settings, the surface switcher) renders on
-  // all of them.
-  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || isInsightsRoute);
+  // Destinations, not surfaces (direction 01): Journal / Subjects / Context open
+  // from an Overview tile's header row, and Chat (`/insights`) holds the Quick
+  // Recall → Chat handoff. While one is open the titlebar swaps the segmented
+  // switcher for a named back chevron (`‹ Overview`), so the return is named,
+  // never guessed. A subject drill-in (`/subjects?s=…`) reads `‹ Subjects`.
+  const destination = $derived.by<
+    { title: string; backLabel: string; backPath: string } | null
+  >(() => {
+    const p = normalizedPathname;
+    if (p.startsWith("/journal")) {
+      return { title: "Journal", backLabel: "Overview", backPath: "/overview" };
+    }
+    if (p.startsWith("/subjects")) {
+      const subject = $page.url.searchParams.get("s");
+      if (subject) return { title: subject, backLabel: "Subjects", backPath: "/subjects" };
+      return { title: "Subjects", backLabel: "Overview", backPath: "/overview" };
+    }
+    if (p.startsWith("/context")) {
+      return { title: "Context", backLabel: "Overview", backPath: "/overview" };
+    }
+    if (p.startsWith("/insights")) {
+      return { title: "Chat", backLabel: "Overview", backPath: "/overview" };
+    }
+    return null;
+  });
+  // The Main window hosts the top-level Surfaces — Timeline (`/`) and its peer
+  // Overview (`/overview`) — plus the destinations above. The shared main
+  // titlebar (record controls, settings, the switcher or the back chevron)
+  // renders on all of them.
+  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || destination !== null);
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -566,11 +591,13 @@
   });
 
   // The gear is a real toggle: opening Settings from a surface, then clicking
-  // the gear again returns to the surface it was opened from (Timeline,
-  // Overview, or Insights) instead of being a no-op with no obvious exit.
+  // the gear again returns to the exact surface it was opened from — a peer
+  // (Timeline / Overview) or a destination (Journal / Subjects / Context /
+  // Chat) — instead of being a no-op with no obvious exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      goToSurface(settingsReturnTarget);
+      const target = normalizeAppPathname(getLastMainSurface());
+      if (normalizeAppPathname($page.url.pathname) !== target) void goto(target);
       return;
     }
     void openSettings();
@@ -875,16 +902,34 @@
       <RecordingPill platform={windowPlatform} />
     </div>
 
-    <!-- Inert centre area carries the drag region + the surface switcher + the
-         Quick Recall (Search) door. -->
+    <!-- Inert centre area carries the drag region + either the surface switcher
+         + the Quick Recall (Search) door, or — while a destination (Journal /
+         Subjects / Context / Chat) is open — the named back chevron + title. -->
     <div class="titlebar__drag" data-tauri-drag-region>
+      {#if destination}
+        <!-- Destination chrome: the segmented control is replaced by a named
+             back chevron and the destination's title (mockups 08–10). The
+             return is named — `‹ Overview`, or `‹ Subjects` from a drill-in —
+             so the way back is stated, never guessed. -->
+        <nav class="titlebar__dest" aria-label="Destination">
+          <button
+            type="button"
+            class="dest-back"
+            onclick={() => void goto(destination.backPath)}
+          >
+            <svg width="7" height="11" viewBox="0 0 7 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5.5 1.5 1.5 5.5l4 4" />
+            </svg>
+            <span>{destination.backLabel}</span>
+          </button>
+          <span class="dest-title" aria-current="page">{destination.title}</span>
+        </nav>
+      {:else}
       <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
-           Insights stays reachable here until Ask moves into Quick Access.
-           "dashboard" retired (#103). Bento Native renders it as the direction's
-           NSSegmentedControl (`.seg`), with the two peers' shortcuts as visible
-           keycaps inside the segment (the mockup's `.seg__i .kbd` rule) — the
-           bar is 38px now, so the chip fits. Insights has no global shortcut,
-           so it carries no keycap rather than an invented one. -->
+           there is no third segment: Journal / Subjects / Context / Chat are
+           destinations opened from Overview, not surfaces. Bento Native renders
+           the switcher as the direction's NSSegmentedControl (`.seg`), with the
+           peers' shortcuts as visible keycaps inside the segment. -->
       <div
         class="seg surface-toggle"
         class:surface-toggle--muted={isSettingsRoute}
@@ -919,16 +964,6 @@
             <span class="kbd surface-toggle__kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</span>
           {/if}
         </button>
-        <button
-          type="button"
-          class="seg__i"
-          class:on={isInsightsRoute}
-          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
-          aria-current={isInsightsRoute ? "page" : undefined}
-          onclick={() => goToSurface("insights")}
-        >
-          Insights
-        </button>
       </div>
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->
@@ -957,6 +992,7 @@
         <span class="titlebar__search-label">Search</span>
         <kbd class="kbd titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
       </button>
+      {/if}
     </div>
 
     <div class="titlebar__group titlebar__group--right">
@@ -2518,6 +2554,50 @@
   }
   .surface-toggle--muted .seg__i.return-target {
     color: var(--app-text);
+  }
+
+  /* ── Destination chrome (Journal / Subjects / Context / Chat) ──
+     Replaces the segmented switcher while a destination is open: a named back
+     chevron (`‹ Overview` / `‹ Subjects`) and the destination title on one
+     baseline (mockups 08–10). The back button is quiet text, not a bezel — it
+     names a place, it doesn't perform an action. */
+  .titlebar__dest {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .dest-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    margin: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    font: inherit;
+    font-size: var(--t-ui, 13px);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+  }
+  .dest-back:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+  }
+  .dest-back:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .dest-title {
+    font-size: var(--t-ui, 13px);
+    font-weight: 600;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* ── Quick Recall door ─────────────────────────────────────────

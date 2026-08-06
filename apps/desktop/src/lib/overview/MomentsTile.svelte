@@ -11,6 +11,7 @@
   // `open_capture_result_in_main_window` seam Quick Recall and Chat use; the
   // shell layout listens for its event and routes the window to `/`.
   import { invoke } from "@tauri-apps/api/core";
+  import { goto } from "$app/navigation";
   import type { Moment } from "$lib/highlights";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { clock } from "./overview-format";
@@ -36,10 +37,14 @@
 <div class="tile tile--w4 tile--static">
   <div class="tile__h">
     <span class="t-label">Moments</span>
-    <span class="tile__more">
+    <!-- The header meta is the door to the Journal destination (mockup 08):
+         the count and the chevron were already here, so the affordance costs
+         no new chrome. -->
+    <button type="button" class="tile__more" onclick={() => void goto("/journal")}>
       the day's main things{#if moments.length}
         · <span class="is-num">{moments.length}</span> in all{/if}
-    </span>
+      <span class="chev"><Glyph name="chevr" /></span>
+    </button>
   </div>
 
   {#if moments.length}
@@ -106,6 +111,22 @@
   }
   .faint {
     color: var(--app-text-subtle);
+  }
+
+  /* Header-meta door to the Journal (same treatment as SubjectsTile's). */
+  button.tile__more {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  button.tile__more:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
+  }
+  button.tile__more .chev {
+    width: 8px;
+    height: 12px;
   }
 
   @media (max-width: 900px) {
