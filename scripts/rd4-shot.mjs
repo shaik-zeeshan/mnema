@@ -456,6 +456,111 @@ const SEM_MODELS = { modelsDirectory: "/Users/you/.mnema/models", models: [{
   installPath: "/Users/you/.mnema/models/nomic", missingFiles: [],
 }] };
 
+// ── User-context fixture (additive) ─────────────────────────────────────────
+// The Journal / Subjects / Context destinations (pages 08–10). Activities cover
+// today with the mockup's late-morning gap; conclusions span all four
+// conviction tiers; trajectories carry REAL snapshotAtMs values across six
+// weeks so the trace's time x-axis is provable in a screenshot. EMPTY=1 keeps
+// every read empty, exactly as day one does.
+const UC_AT = (h, m) => { const d = new Date(TL_NOW); d.setHours(h, m, 0, 0); return d.getTime(); };
+const UC_ACTIVITIES = [
+  ["Reading Polar's webhook signature docs", "research", "deep", 9, 14, 38,
+   "Worked through how Polar signs its webhooks and confirmed the HMAC is keyed on the raw whsec_ string rather than the decoded key."],
+  ["Design review with the product team", "meetings", "mixed", 10, 12, 41,
+   "Walked the settings redesign end to end; the toolbar-tab shape stuck and the retention ladder was the only control anyone argued about."],
+  ["Filing the sprint board", "organizing", null, 10, 56, 6,
+   "Moved the finished round-4 cards and split the webhook fix into two."],
+  ["Rewriting the licensing CRL cache", "creating", "deep", 11, 48, 74,
+   "Replaced the eager fetch with a cached read and a staleness window, then rewrote the test to stop reaching for the network."],
+  ["Launch sync — the webhook is still 400-ing", "meetings", "deep", 13, 2, 38,
+   "Five people, one unresolved failure: the signature check passes locally and fails in production. Tom asked for delivery ids in the log before the next attempt."],
+  ["answer_view.rs — parsing answers into typed blocks", "creating", "deep", 13, 48, 46,
+   "Moved fence parsing off the frontend: the backend now hands over one render-ready view per turn instead of a string the UI has to guess at."],
+  ["Slack triage", "communication", "distracted", 14, 36, 26,
+   "Cleared the launch channel and answered the two webhook threads that could not wait."],
+].map(([title, category, focus, h, m, mins, summary], i) => ({
+  id: 80 + i, title, summary, category, focus,
+  startedAtMs: UC_AT(h, m), endedAtMs: UC_AT(h, m) + mins * 60000,
+  createdAtMs: UC_AT(h, m) + mins * 60000,
+  evidence: [
+    { subjectType: "frame", subjectId: 4000 - i * 3, capturedAtMs: UC_AT(h, m) + 300000, isHeadline: true },
+    { subjectType: "frame", subjectId: 4001 - i * 3, capturedAtMs: UC_AT(h, m) + 900000, isHeadline: false },
+  ],
+}));
+const UC_DAYS = 86400000;
+const UC_CONCLUSION = (id, subject, statement, confidence, opts = {}) => ({
+  id, subject, statement, confidence,
+  status: opts.status ?? "visible", pinned: opts.pinned ?? false,
+  formedAtMs: TL_NOW - (opts.ageDays ?? 21) * UC_DAYS,
+  lastSupportedAtMs: TL_NOW - (opts.lastDays ?? 0.1) * UC_DAYS,
+  updatedAtMs: TL_NOW - (opts.lastDays ?? 0.1) * UC_DAYS,
+  evidence: [
+    { activityId: 84, stance: "support", activityTitle: "Launch sync — the webhook is still 400-ing", activityStartedAtMs: UC_AT(13, 2) },
+    { activityId: 80, stance: "support", activityTitle: "Reading Polar's webhook signature docs", activityStartedAtMs: UC_AT(9, 14) },
+  ],
+  replacedStatement: opts.replaced ?? null,
+  replacedAtMs: opts.replaced ? TL_NOW - 7 * UC_DAYS : null,
+});
+const UC_CONCLUSIONS = [
+  UC_CONCLUSION(1, "Mnema licensing", "Ships a one-time purchase with a one-year update window, verified offline.", 0.86, { pinned: true, ageDays: 42, replaced: "Ships a monthly subscription with a free tier" }),
+  UC_CONCLUSION(2, "Mnema licensing", "Keys the Polar webhook HMAC on the raw whsec_ string, not the decoded key.", 0.74, { ageDays: 12, lastDays: 0.08 }),
+  UC_CONCLUSION(3, "Mnema licensing", "Treats the revocation list as a cache with a staleness window, not a live fetch.", 0.51, { ageDays: 9, lastDays: 2 }),
+  UC_CONCLUSION(4, "Mnema licensing", "Considered a model where updates are free forever.", 0.12, { status: "faded", ageDays: 40, lastDays: 24 }),
+  UC_CONCLUSION(5, "Mnema licensing", "Wants the license dialog to never block launch.", 0.44, { ageDays: 15, lastDays: 4 }),
+  UC_CONCLUSION(6, "Capture pipeline", "Treats a display going away as transient liveness, never a privacy failure.", 0.79, { ageDays: 35, lastDays: 0.3 }),
+  UC_CONCLUSION(7, "Capture pipeline", "Keeps system audio as its own capture family on Core Audio taps.", 0.66, { ageDays: 20, lastDays: 1 }),
+  UC_CONCLUSION(8, "Capture pipeline", "Caps capture segments at five minutes.", 0.6, { ageDays: 30, lastDays: 3 }),
+  UC_CONCLUSION(9, "Capture pipeline", "Prefers rebuilding the tap over splicing a generation into a live writer.", 0.45, { ageDays: 8, lastDays: 2 }),
+  UC_CONCLUSION(10, "How you work", "Does the deep work before lunch and leaves the afternoon to meetings.", 0.71, { ageDays: 28, lastDays: 1 }),
+  UC_CONCLUSION(11, "How you work", "Writes the test before trusting a network-touching fix.", 0.55, { ageDays: 18, lastDays: 5 }),
+  UC_CONCLUSION(12, "How you work", "Keeps Slack closed until the afternoon.", 0.4, { ageDays: 10, lastDays: 6 }),
+  UC_CONCLUSION(13, "Deepgram streaming", "Reading the websocket protocol against the batch endpoint; no decision yet.", 0.54, { ageDays: 5, lastDays: 0.2 }),
+  UC_CONCLUSION(14, "Deepgram streaming", "Leans toward keeping cloud transcription a provider property.", 0.37, { ageDays: 4, lastDays: 1 }),
+  UC_CONCLUSION(15, "Speaker diarization", "Prefers speakrs over sortformer once a room has five or more speakers.", 0.47, { ageDays: 25, lastDays: 3 }),
+  UC_CONCLUSION(16, "Speaker diarization", "Benchmarks with DER before adopting any provider.", 0.42, { ageDays: 22, lastDays: 8 }),
+  UC_CONCLUSION(17, "Speaker diarization", "Caps embedding windows near a minute.", 0.3, { ageDays: 14, lastDays: 9 }),
+  UC_CONCLUSION(18, "Onboarding rework", "Wants exactly two hard gates and nothing else blocking the finish.", 0.24, { ageDays: 6, lastDays: 0.5 }),
+  UC_CONCLUSION(19, "Onboarding rework", "Anchors the pitch on ~270 MB per captured day.", 0.2, { ageDays: 6, lastDays: 2 }),
+  UC_CONCLUSION(20, "Sortformer evaluation", "Benchmarked it and moved on — the four-speaker cap was the end of it.", 0.11, { status: "faded", ageDays: 44, lastDays: 40 }),
+  UC_CONCLUSION(21, "Sortformer evaluation", "Considered shipping it as a fallback provider.", 0.08, { status: "faded", ageDays: 44, lastDays: 42 }),
+];
+// Six weeks of snapshots per conclusion, newest last, on REAL timestamps —
+// rising toward the current confidence, floored at 0.04.
+const UC_HISTORY = (c) => {
+  const weeks = 6, points = [];
+  for (let k = 0; k <= weeks * 2; k++) {
+    const at = TL_NOW - (weeks * 7 - k * 3.5) * UC_DAYS;
+    if (at < c.formedAtMs) continue;
+    const t = k / (weeks * 2);
+    const start = Math.min(0.54, Math.max(0.2, c.confidence - 0.32));
+    points.push({ confidence: Math.max(0.04, +(start + (c.confidence - start) * t).toFixed(3)), snapshotAtMs: Math.round(at) });
+  }
+  return points.length >= 2 ? points : [
+    { confidence: Math.max(0.04, c.confidence - 0.1), snapshotAtMs: c.formedAtMs },
+    { confidence: c.confidence, snapshotAtMs: TL_NOW - 7200000 },
+  ];
+};
+const UC_SUBJECT = (subject) => {
+  const cs = UC_CONCLUSIONS.filter((c) => c.subject.toLowerCase() === String(subject ?? "").toLowerCase());
+  return {
+    subject: cs[0]?.subject ?? String(subject ?? ""),
+    conclusions: cs,
+    trajectories: cs.map((c) => ({ conclusionId: c.id, statement: c.statement, history: UC_HISTORY(c) })),
+  };
+};
+const UC_AUTHORED = [
+  ["I run the repo with Bun, never pnpm — commands go through the workspace root.", "tooling", 0.1],
+  ["I'm building Mnema solo — design, Rust and the web site are all me.", "role", 21],
+  ["I care about the app staying quiet about my machine — no fans, no surprise battery.", "values", 4],
+].map(([text, topic, days], i) => ({
+  id: 30 + i, text, topic,
+  createdAtMs: TL_NOW - days * UC_DAYS, updatedAtMs: TL_NOW - days * UC_DAYS,
+}));
+const UC_DISMISSED = [
+  ["How you work", "Prefers to work late into the evening.", 14],
+  ["Mnema licensing", "Is evaluating a move to a subscription price.", 21],
+].map(([subject, statement, days]) => ({ subject, statement, dismissedAtMs: TL_NOW - days * UC_DAYS }));
+
 window.__TAURI_INTERNALS__ = {
   invoke: async (cmd, args) => {
     const req = (args && (args.request ?? args.payload ?? args)) || {};
@@ -504,6 +609,13 @@ window.__TAURI_INTERNALS__ = {
       return Array.from({ length: req.bucketCount ?? 96 }, (_, i) =>
         0.12 + 0.78 * Math.abs(Math.sin(i / 3.7)) * (0.45 + 0.55 * Math.abs(Math.cos(i / 11))));
     if (cmd === "list_speaker_turns") return TL_TURNS;
+    // Journal (page 08) reads the digest for the DAY IT IS SHOWING, not the
+    // latest one, and its "re-read" writes a fresh one. Without these the {}
+    // fallback lands on \`digest.narrative\` and the read block renders a
+    // truthy-but-blank digest instead of the fixture's prose.
+    if (cmd === "get_user_context_digest" || cmd === "regenerate_user_context_digest")
+      return OV_EMPTY ? null : { ...OV_DIGEST, rangeStartMs: req.startMs ?? OV_DIGEST.rangeStartMs,
+                                rangeEndMs: req.endMs ?? OV_DIGEST.rangeEndMs };
     // One completed OCR job per frame, so the rail's OCR cluster renders its
     // real face (engine label + rerun + region count) instead of "no OCR data".
     if (cmd === "list_processing_jobs" && req.subjectType === "frame")
@@ -517,10 +629,56 @@ window.__TAURI_INTERNALS__ = {
         observations: TL_OCR,
       }), createdAt: new Date(TL_NOW).toISOString() };
     if (cmd === "get_recording_settings") return TL_SETTINGS;
+    if (cmd === "list_user_context_activities") {
+      if (OV_EMPTY) return [];
+      const all = [...UC_ACTIVITIES].sort((x, y) => y.startedAtMs - x.startedAtMs);
+      if (typeof req.startMs === "number" || typeof req.endMs === "number")
+        return all.filter((a) => a.endedAtMs >= (req.startMs ?? 0) && a.startedAtMs <= (req.endMs ?? Infinity));
+      const offset = req.offset ?? 0;
+      return all.slice(offset, offset + (req.limit ?? all.length));
+    }
+    if (cmd === "list_user_context_conclusions") return OV_EMPTY ? [] : UC_CONCLUSIONS;
+    if (cmd === "get_user_context_subject") return UC_SUBJECT(req.subject ?? args?.subject);
+    if (cmd === "list_user_context_authored") return OV_EMPTY ? [] : UC_AUTHORED;
+    if (cmd === "user_context_list_dismissed") return OV_EMPTY ? [] : UC_DISMISSED;
+    if (cmd === "user_context_add_authored")
+      return { id: 99, text: req.text ?? "", topic: req.topic ?? null, createdAtMs: Date.now(), updatedAtMs: Date.now() };
+    if (cmd === "user_context_update_authored")
+      return { id: req.id ?? 99, text: req.text ?? "", topic: req.topic ?? null, createdAtMs: Date.now(), updatedAtMs: Date.now() };
+    if (cmd === "user_context_delete_authored" || cmd === "user_context_dismiss_conclusion" ||
+        cmd === "user_context_restore_dismissed" || cmd === "user_context_set_pinned") return {};
+    if (cmd === "get_ai_runtime_status")
+      return { enabled: true, configured: true, available: true, defaultModel: null, reason: null };
     if (cmd === "get_microphone_controller_state" || cmd === "update_microphone_controller")
       return { devices: [TL_MIC], preference: { mode: "default", deviceId: null },
                disconnectPolicy: "fallback_to_default", effectiveDevice: TL_MIC };
     if (cmd === "get_storage_location") return "/Users/you/.mnema";
+    // About tab. Without this the {} fallback lands on \`.app.version\` and the
+    // whole About panel throws, so the tab renders the PREVIOUS panel's DOM.
+    if (cmd === "get_app_update_status" || cmd === "check_for_app_updates" ||
+        cmd === "set_app_update_channel")
+      return { app: { productName: "Mnema", version: "0.4.1", identifier: "day.mnema",
+                      platform: "darwin", arch: "aarch64" },
+               channel: "stable", state: "upToDate", update: null, progress: null,
+               error: null, lastCheckedAtUnixMs: Date.now() - 3600000, recordingActive: false };
+    // The later {licensed:…} stub is not the real wire shape (a flat tagged
+    // union), so the License row rendered blank. This one wins by position.
+    if (cmd === "get_license_status")
+      return { kind: "licensed", updateThroughMs: Date.now() + 3.15e10, inWindow: true,
+               email: "you@example.com", name: "", activation: { state: "activated" } };
+    if (cmd === "get_license_devices") return { used: 2, cap: 3 };
+    if (cmd === "delete_recent_capture")
+      return { windowSeconds: req.windowSeconds ?? 300, startedAt: "", endedAt: "",
+               deletedCaptureSegments: 3, deletedFrames: 412, deletedAudioSegments: 2,
+               deletedProcessingJobs: 0, deletedProcessingResults: 0, deletedBackgroundJobs: 0,
+               deletedFrameBatches: 0, deletedSearchDocuments: 0, pendingFileTombstones: 0,
+               fileDeleteErrors: 0 };
+    if (cmd === "get_third_party_notices")
+      return { plainText: "Mnema bundles open-source components.", entries: [
+        { component: "speakrs", kind: "diarization", displayName: "speakrs",
+          license: "MIT", sourceUrl: "https://github.com/…" },
+        { component: "openblas", kind: "linear-algebra", displayName: "OpenBLAS",
+          license: "BSD-3-Clause", sourceUrl: "https://github.com/…" }] };
     if (cmd === "get_app_notifications") return [];
     if (cmd === "get_license_status") return { licensed: { kind: "purchased", updatesUntilMs: Date.now() + 3.15e10 } };
     if (cmd === "get_audio_transcription_model_status") return TX_MODELS;
