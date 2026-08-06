@@ -698,6 +698,12 @@
           {/if}
         </span>
         <span class="ctl-spacer"></span>
+        {#if !isAudioOnly}
+          <!-- There is no video file: only 1× has audio to play, and the faster
+               speeds are a frame timelapse. Say so rather than letting a silent
+               8× read as broken sound. -->
+          <span class="honesty">1× replays the real audio · above it is a silent timelapse</span>
+        {/if}
         <button type="button" class="open-tl" onclick={openInTimeline}>Open in Timeline <IconArrowRight /></button>
       </div>
 
@@ -714,6 +720,12 @@
           <span class="sep">·</span>
           <span>{frameEvidence.length} frames + {audioEvidence.length} spoken segments cited</span>
         {/if}
+        <!-- The keys the receipt already listens for, stated where they are used. -->
+        <span class="keys">
+          <span class="kbd">esc</span>close
+          <span class="kbd">←</span><span class="kbd">→</span>step
+          <span class="kbd">space</span>play
+        </span>
       </div>
     {/if}
   </div>
@@ -778,4 +790,6 @@
   /* Footer */
   .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font-size: 10.5px; color: var(--app-text-subtle); border-top: 1px dashed var(--app-border); }
   .m-foot .sep { color: var(--app-text-faint); }
+  .keys { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--app-text-faint); }
+  .honesty { font-size: 10.5px; color: var(--app-text-subtle); }
 </style>
