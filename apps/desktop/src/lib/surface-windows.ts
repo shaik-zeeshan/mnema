@@ -144,13 +144,15 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
 // Settings), which is the desired fallback.
 let lastMainSurfacePath = "/";
 
-/** Is `pathname` one of the main app surfaces (Timeline, Overview, Insights)? */
+/** Is `pathname` one of the main app surfaces (Timeline, Overview, Insights,
+ * or an Overview destination — Journal / Subjects / Context)? */
 function isMainSurface(pathname: string): boolean {
   const normalized = normalizeAppPathname(pathname);
   return (
     isMainAppRoute(pathname) ||
     normalized.startsWith("/overview") ||
-    normalized.startsWith("/insights")
+    normalized.startsWith("/insights") ||
+    /^\/(journal|subjects|context)(\/|$)/.test(normalized)
   );
 }
 

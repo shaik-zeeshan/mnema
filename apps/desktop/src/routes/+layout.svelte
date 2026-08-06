@@ -39,6 +39,7 @@
   } from "$lib/notifications.svelte";
   import Toasts from "$lib/Toasts.svelte";
   import DeckBar from "$lib/DeckBar.svelte";
+  import { crumb } from "$lib/crumb.svelte";
   import { clearArchivedToast, clearToastArchive, toasts } from "$lib/toast.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
@@ -78,6 +79,11 @@
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isOverviewRoute = $derived(normalizedPathname.startsWith("/overview"));
+  // Journal / Subjects / Context — destinations opened from Overview (pages
+  // 08–10). They ride the main titlebar + deck; the crumb chip marks the spot.
+  const isDestinationRoute = $derived(
+    /^\/(journal|subjects|context)(\/|$)/.test(normalizedPathname),
+  );
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -91,7 +97,9 @@
   // Overview (`/overview`), and Insights (`/insights`). The shared main titlebar
   // (record controls, source pills, settings, the surface switcher) renders on
   // all of them.
-  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || isInsightsRoute);
+  const isMainSurfaceRoute = $derived(
+    isMainRoute || isOverviewRoute || isInsightsRoute || isDestinationRoute,
+  );
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -558,16 +566,19 @@
   const settingsReturnTarget = $derived.by<keyof typeof SURFACE_PATHS>(() => {
     const last = normalizeAppPathname(getLastMainSurface());
     if (last.startsWith("/insights")) return "insights";
-    if (last.startsWith("/overview")) return "overview";
+    // The three destinations are Overview's children — mark Overview as the way
+    // back (the actual return goes to the exact recorded path, below).
+    if (/^\/(overview|journal|subjects|context)(\/|$)/.test(last)) return "overview";
     return "timeline";
   });
 
   // The gear is a real toggle: opening Settings from a surface, then clicking
-  // the gear again returns to the surface it was opened from (Timeline,
-  // Overview, or Insights) instead of being a no-op with no obvious exit.
+  // the gear again returns to the exact surface path it was opened from
+  // (Timeline, Overview, a destination, or Insights) instead of being a no-op
+  // with no obvious exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      goToSurface(settingsReturnTarget);
+      void goto(normalizeAppPathname(getLastMainSurface()));
       return;
     }
     void openSettings();
@@ -876,14 +887,14 @@
          Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
-           Insights stays reachable here until Ask moves into Quick Access.
            "dashboard" retired (#103). Direction 04 renders the shortcut as a
            visible keycap (the segments grow to --h-sm so a 17px cap fits).
-           Insights gets no cap — it has no key, and a keycap that does nothing
-           is a lie. -->
+           The Insights segment is gone: Journal / Subjects / Context are
+           destinations opened from Overview (crumb chip below); Chat's one
+           remaining door is the Quick Access "Continue in Chat" handoff. -->
       <div
         class="surface-toggle"
-        class:surface-toggle--muted={isSettingsRoute}
+        class:surface-toggle--muted={isSettingsRoute || isDestinationRoute || isInsightsRoute}
         role="navigation"
         aria-label="Main surface"
       >
@@ -909,16 +920,26 @@
           Overview
           <kbd class="kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</kbd>
         </button>
-        <button
-          type="button"
-          class:active={isInsightsRoute}
-          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
-          aria-current={isInsightsRoute ? "page" : undefined}
-          onclick={() => goToSurface("insights")}
-        >
-          Insights
-        </button>
       </div>
+      <!-- The one breadcrumb chip (pages 08–10): `› Journal esc`. The route
+           publishes its trail into the crumb store; the last crumb is the
+           current place, earlier crumbs (e.g. "Subjects" over a detail) are
+           links. `esc` is the route's own key — the cap here is the teach-in. -->
+      {#if crumb.trail.length > 0}
+        <nav class="crumbchip" aria-label="Breadcrumb">
+          {#each crumb.trail as c, i (i)}
+            <span class="crumbchip__sep" aria-hidden="true">›</span>
+            {#if c.href && i < crumb.trail.length - 1}
+              <button type="button" class="crumbchip__link" onclick={() => void goto(c.href!)}>
+                {c.label}
+              </button>
+            {:else}
+              <span class="crumbchip__here" aria-current="page">{c.label}</span>
+            {/if}
+          {/each}
+          <kbd class="kbd" aria-hidden="true">esc</kbd>
+        </nav>
+      {/if}
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->
       <button
@@ -2588,6 +2609,51 @@
     color: var(--app-text);
     border-color: var(--app-border);
     background: var(--app-surface-raised);
+  }
+
+  /* ── Breadcrumb chip (pages 08–10) ────────────────────────────
+     `› Journal esc` — the titlebar grows one chip while a destination
+     (Journal / Subjects / Context) is showing. Accent text marks "you are
+     here"; the esc cap teaches the way back. */
+  .crumbchip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: var(--h-sm);
+    padding: 0 6px 0 8px;
+    border-radius: var(--r-md);
+    background: var(--app-accent-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
+  }
+  .crumbchip__sep {
+    color: var(--app-accent);
+    opacity: 0.7;
+  }
+  .crumbchip__here {
+    color: var(--app-accent-strong);
+  }
+  .crumbchip__link {
+    font: inherit;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--app-accent);
+    cursor: pointer;
+  }
+  .crumbchip__link:hover {
+    color: var(--app-accent-strong);
+  }
+  .crumbchip__link:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 4px;
+  }
+  .crumbchip .kbd {
+    margin-left: 2px;
   }
 
   /* ── Quick Recall door ─────────────────────────────────────────

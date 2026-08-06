@@ -82,11 +82,13 @@
   });
 
   // ── destinations ───────────────────────────────────────────────────────────
-  // Every one of these is a real surface this app already has. Insights hosts
-  // its sub-surfaces in local state, not routes, so the four Insights tiles all
-  // land on Insights rather than each on its own sub-tab.
+  // Every one of these is a real surface this app already has. Journal,
+  // Subjects and Context are addressable destinations (pages 08–10) — each
+  // tile is the door to its own surface, esc returns here.
   const openTimeline = (): void => void goto("/");
-  const openInsights = (): void => void goto("/insights");
+  const openJournal = (): void => void goto("/journal");
+  const openSubjects = (): void => void goto("/subjects");
+  const openContext = (): void => void goto("/context");
   const openCaptureSettings = (): void => void openSettings("capture");
   const openStorageSettings = (): void => void openSettings("storage");
   const openQuickAccess = (): void => void invoke("summon_quick_recall_window_command");
@@ -183,7 +185,7 @@
 
   <div class="tiles">
     <MomentsTile moments={snap.moments} {loaded} open={openTimeline} />
-    <DigestTile digest={snap.digest} {loaded} open={openInsights} />
+    <DigestTile digest={snap.digest} {loaded} open={openJournal} />
     <CaptureTile
       {coveredTodayMs}
       coverageError={snap.coverage.error}
@@ -197,14 +199,14 @@
       conclusions={snap.conclusions}
       context={snap.context}
       {loaded}
-      open={openInsights}
+      open={openSubjects}
     />
     <WeekTile coverage={snap.coverage} {now} {loaded} />
     <ContextTile
       context={snap.context}
       conclusions={snap.conclusions}
       {loaded}
-      open={openInsights}
+      open={openContext}
     />
     <AskTile asks={snap.asks} {loaded} open={openQuickAccess} />
   </div>
