@@ -15,6 +15,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
+  import ModelVerdict from "$lib/settings/ui/ModelVerdict.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
   import { backlogPhrase } from "$lib/settings/state/system-facts";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -257,10 +258,13 @@
               <div class="model-status__title">{selectedOcrModel.displayName}</div>
               <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
             </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedOcrModel.available}
-            >{selectedOcrModel.available ? "available" : "unavailable"}</span>
+            <ModelVerdict
+              provider={selectedOcrModel.provider}
+              available={selectedOcrModel.available}
+              status={selectedOcrModel.status}
+              osManaged={selectedOcrModel.management === "os_managed"}
+              downloadBytes={selectedOcrModel.download?.byteSize ?? null}
+            />
           </div>
           <p class="group-hint">{selectedOcrModel.description}</p>
           {#if selectedOcrModel.runtimeMessage}

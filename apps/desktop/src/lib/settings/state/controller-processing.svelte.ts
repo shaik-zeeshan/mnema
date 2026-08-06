@@ -112,14 +112,28 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
   }
 
   // ─── Transcription option derivations ──────────────────────────────────────
+  // Page 11: a model choice states WHERE IT RUNS, not just whether a model is
+  // there. Deepgram is the one provider whose audio leaves the Mac (ADR 0047),
+  // and the list is where that has to be visible — by the time the consent
+  // dialog fires, the user has already picked. (The mockup also puts a RAM
+  // verdict on each option; the measured per-engine RAM table lives in
+  // `lib/onboarding/transcription-engines.ts` and is not exported, and
+  // `components/RadioGroup` has no slot for a trailing pill — see the report.)
   const transcriptionProviderOptions = $derived(
-    (models.transcriptionModelStatus?.providers ?? []).map((provider) => ({
-      value: provider.provider,
-      label: provider.displayName,
-      description: provider.models.some((model) => model.available)
+    (models.transcriptionModelStatus?.providers ?? []).map((provider) => {
+      const availability = provider.models.some((model) => model.available)
         ? "At least one model is available"
-        : "No available model detected",
-    })),
+        : "No available model detected";
+      const locality =
+        provider.provider === "deepgram"
+          ? "cloud — audio leaves this Mac"
+          : "runs on this Mac";
+      return {
+        value: provider.provider,
+        label: provider.displayName,
+        description: `${locality} · ${availability.toLowerCase()}`,
+      };
+    }),
   );
   const selectedTranscriptionProviderStatus = $derived(
     models.transcriptionModelStatus?.providers.find((provider) => provider.provider === rec.draftTranscriptionProvider) ?? null,

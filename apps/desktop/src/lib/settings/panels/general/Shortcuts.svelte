@@ -136,24 +136,30 @@
         </div>
       </div>
     {/if}
-  {/if}
-</SettingGroup>
 
-{#if keyboardBindingsSettings !== null}
-  {#each SHORTCUT_CATEGORIES as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)} bare nested>
-      <div class="shortcut-editor-list">
+    <!-- The four category cards live INSIDE this plate as bare hairline boxes
+         (page 11): the editor is part of the Shortcuts section, and a plate
+         beside a plate would have read as four more sections. -->
+    <div class="shortcut-editor-cards">
+      {#each SHORTCUT_CATEGORIES as category (category)}
+        <SettingGroup title={shortcutCategoryLabel(category)} bare nested>
+          <div class="shortcut-editor-list">
         {#each shortcutCategoryActions(category) as action (action.id)}
           {@const binding = shortcutDraftBinding(action.id)}
           {@const issue = shortcutIssueFor(action.id)}
           {@const tokens = shortcutKeyTokens(binding)}
           {@const listening = shortcutCaptureActionId === action.id}
           <div id={`shortcut-row-${action.id}`} class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
+            <!-- The conflict takes the description's line rather than adding
+                 one: same slot, same height, so naming a conflict never
+                 reflows the list (page 06's "reserved space" rule) and 21 rows
+                 pay no permanent empty line for it. -->
             <div class="shortcut-editor-row__main">
               <span class="shortcut-editor-row__title">{action.label}</span>
-              <span class="shortcut-editor-row__description">{action.description}</span>
               {#if issue}
                 <span class="shortcut-editor-row__error">{issue}</span>
+              {:else}
+                <span class="shortcut-editor-row__description">{action.description}</span>
               {/if}
             </div>
             <div class="shortcut-editor-row__controls">
@@ -203,12 +209,22 @@
             </div>
           </div>
         {/each}
-      </div>
-    </SettingGroup>
-  {/each}
-{/if}
+          </div>
+        </SettingGroup>
+      {/each}
+    </div>
+  {/if}
+</SettingGroup>
 
 <style>
+  /* The four bare category cards stack with the plate's own row rhythm. */
+  .shortcut-editor-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 2px 0 12px;
+  }
+
   /* The inline shortcut-conflict alert is a full-width banner, not a labeled
      row — break it out of the row grid so it spans the group. */
   .shortcuts-error-row {

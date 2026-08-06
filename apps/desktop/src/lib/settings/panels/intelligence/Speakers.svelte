@@ -12,6 +12,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
+  import ModelVerdict from "$lib/settings/ui/ModelVerdict.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { speakerStatusLabel } from "$lib/settings/state/models-format";
@@ -130,10 +131,12 @@
               <div class="model-status__title">{selectedSpeakerModel.displayName}</div>
               <div class="model-status__meta">{speakerStatusLabel(selectedSpeakerModel)}</div>
             </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedSpeakerModel.available}
-            >{selectedSpeakerModel.available ? "available" : "unavailable"}</span>
+            <ModelVerdict
+              provider={selectedSpeakerModel.provider}
+              available={selectedSpeakerModel.available}
+              status={selectedSpeakerModel.status}
+              downloadBytes={selectedSpeakerModel.download?.byteSize ?? null}
+            />
           </div>
           <p class="group-hint">{selectedSpeakerModel.description}</p>
           {#if selectedSpeakerModel.installPath}

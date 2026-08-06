@@ -1,16 +1,21 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
-  // Settings left rail — Codex-style (Slice 3).
+  // Settings left rail — page 11's corrected structure.
   //
-  // Renders the 5 navigation groups from `groups.ts` (the source of truth) as
-  // category headers (`.nav-cat`) each followed by their sub-sections as bare
-  // `.nav-item`s. The nav is a NAVIGATION landmark (a `role="list"` of grouped
-  // section buttons), NOT a tablist: settings is a single scrolling panel with
-  // scroll-spy, so the items behave like in-page links — the active one carries
-  // `aria-current="page"`. A roving tabindex + arrow/Home/End keyboard nav keeps
-  // the whole list reachable with one Tab stop; the active sub-section is driven
-  // by the shell via `activeSection`, and clicks / keyboard activation call
-  // `onNavigate(section)`.
+  // The app has FIVE groups and twenty-two sections, and twenty-seven rows do
+  // not fit a 208px rail at native density. So the rail lists the five GROUPS,
+  // each with its indexed row count, and only the ACTIVE group discloses its
+  // sections beneath it — the pane's sticky headers already carry the same
+  // names. (`docs/redesign/round4/03-layered-glass/README.md`, "11's rail
+  // corrects 05's".)
+  //
+  // The nav is a NAVIGATION landmark (a `role="list"` of group rows and their
+  // disclosed section rows), NOT a tablist: settings is a single scrolling
+  // panel with scroll-spy, so the items behave like in-page links — the active
+  // one carries `aria-current="page"`. A roving tabindex + arrow/Home/End
+  // keyboard nav keeps the whole list reachable with one Tab stop; the active
+  // sub-section is driven by the shell via `activeSection`, and clicks /
+  // keyboard activation call `onNavigate(section)`.
   //
   // The rail is always expanded (the collapse-to-icons feature was dropped).
   // A fixed top zone holds the "← Back to app" link + a search field. The rail
@@ -24,6 +29,7 @@
   // `systemFacts` for the machine) — no new data flow — and it is bound by G8:
   // a figure with no real source renders as nothing, never as a placeholder.
 
+  import { tick } from "svelte";
   import { goto } from "$app/navigation";
   import { captureControls, sourceSelection } from "$lib/capture-controls.svelte";
   import { systemFacts } from "./state/system-facts.svelte";
@@ -31,14 +37,15 @@
   import IconBack from "~icons/lucide/chevron-left";
   import IconSearch from "~icons/lucide/search";
   import IconClear from "~icons/lucide/x";
-  import { SECTION_ICONS } from "./section-icons";
+  import { GROUP_ICONS } from "./section-icons";
   import {
     SETTINGS_GROUPS,
     type SettingsGroupId,
-    type SettingsSection,
     type SettingsSectionId,
   } from "./groups";
-  import { filterGroups, flattenSections } from "./rail-filter";
+  import { filterGroups } from "./rail-filter";
+  import { indexedRowCounts } from "./settings-index";
+  import { settingsFind } from "./state/settings-find.svelte";
   import { getLastMainSurface } from "$lib/surface-windows";
 
   interface Props {
@@ -61,21 +68,45 @@
   // whitespace query is a pass-through (all groups). A no-match query yields [].
   const visibleGroups = $derived(filterGroups(SETTINGS_GROUPS, searchQuery));
 
-  // The flattened sub-section order (rail order) — the keyboard roving model.
-  // Derived from the VISIBLE groups so Arrow/Home/End only traverse the items
-  // currently shown (if the active section is filtered out, nav still works over
-  // whatever is visible, and is a no-op on an empty list).
-  const flatItems = $derived<SettingsSection[]>(flattenSections(visibleGroups));
+  // The indexed row count printed on each group row. While ⌘F is filtering it
+  // counts the MATCHING rows, so the rail and the filtered pane agree on how
+  // many hits live where. Both numbers come from the one index whose
+  // completeness a test enforces — nothing here is hand-counted.
+  const rowCounts = $derived(
+    indexedRowCounts(settingsFind.active ? settingsFind.query : ""),
+  );
 
-  // The single roving-tabindex target: the one visible tab that gets `tabindex=0`
-  // (so the tablist is reachable by Tab). It's `activeSection` while that section
-  // is still visible; once a search query filters the active section OUT of
-  // `flatItems`, fall back to the first visible item so the list never becomes
-  // entirely `tabindex=-1` (which would make it unreachable by keyboard).
-  const rovingTarget = $derived<SettingsSectionId | undefined>(
-    flatItems.some((s) => s.id === activeSection)
-      ? activeSection
-      : flatItems[0]?.id,
+  // The keyboard roving model, in rendered order: every group row, plus the
+  // ACTIVE group's disclosed sections (a collapsed group's sections are not in
+  // the DOM, so they must not be steppable either). Group rows navigate to the
+  // group's first section.
+  interface RailEntry {
+    /** DOM id of the button. */
+    domId: string;
+    /** The section a click/keyboard activation navigates to. */
+    section: SettingsSectionId;
+  }
+
+  const flatItems = $derived<RailEntry[]>(
+    visibleGroups.flatMap((group) => [
+      { domId: `settings-group-${group.id}`, section: group.sections[0].id },
+      ...(group.id === activeGroup
+        ? group.sections.map((s) => ({
+            domId: `settings-tab-${s.id}`,
+            section: s.id,
+          }))
+        : []),
+    ]),
+  );
+
+  // The single roving-tabindex target: the one visible item that gets
+  // `tabindex=0` (so the rail is reachable by Tab). It's the active section
+  // while that row is disclosed; otherwise the first visible item, so the list
+  // never becomes entirely `tabindex=-1` (unreachable by keyboard).
+  const rovingTarget = $derived<string | undefined>(
+    flatItems.some((e) => e.domId === `settings-tab-${activeSection}`)
+      ? `settings-tab-${activeSection}`
+      : flatItems[0]?.domId,
   );
 
   // Clearing the query on blur must NOT eat a click on a nav item: a click that
@@ -175,15 +206,16 @@
     const focusedTab = event.target instanceof Element
       ? event.target.closest<HTMLElement>(".nav-item")
       : null;
-    const focusedSection = focusedTab?.dataset.section as SettingsSectionId | undefined;
-    const focusedIndex = focusedSection
-      ? flatItems.findIndex((s) => s.id === focusedSection)
+    const focusedIndex = focusedTab
+      ? flatItems.findIndex((e) => e.domId === focusedTab.id)
       : -1;
-    // Anchor nav on the focused tab; else the active section if it's still
+    // Anchor nav on the focused row; else the active section if it's still
     // visible; else the first survivor (a query may have filtered the active
     // section out, but the visible survivors must still be steppable). Bail only
     // when there's genuinely nothing to navigate.
-    const activeIndex = flatItems.findIndex((s) => s.id === activeSection);
+    const activeIndex = flatItems.findIndex(
+      (e) => e.domId === `settings-tab-${activeSection}`,
+    );
     const currentIndex = focusedIndex >= 0
       ? focusedIndex
       : activeIndex >= 0
@@ -208,9 +240,13 @@
     event.preventDefault();
     event.stopPropagation();
     const next = flatItems[nextIndex];
-    // Moving the roving focus activates the item (focus + navigate).
-    onNavigate(next.id);
-    document.getElementById(`settings-tab-${next.id}`)?.focus();
+    // Moving the roving focus activates the item (focus + navigate). Stepping
+    // onto a collapsed group discloses it, which changes what comes next — so
+    // focus the row by the id it had BEFORE the disclosure re-render, which is
+    // still this row's id either way.
+    const domId = next.domId;
+    onNavigate(next.section);
+    void tick().then(() => document.getElementById(domId)?.focus());
   }
 </script>
 
@@ -254,30 +290,56 @@
        a real tablist mustn't do. The active section carries aria-current="page".
        The roving-tabindex keyboard stepping (arrow/Home/End) lives on the
        .nav-item buttons themselves — keeping the keydown on the interactive
-       elements, not the non-interactive role="list" container. -->
+       elements, not the non-interactive role="list" container.
+
+       Five group rows; only the active group discloses its sections (page 11).
+       The group row is the accent-filled one — it says which pane you are in;
+       the disclosed section reads one level quieter. -->
   <nav class="settings-nav rail-nav" aria-label="Settings sections">
     <div class="rail-nav__list" role="list">
       {#each visibleGroups as group (group.id)}
-        <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
-          <h2 class="nav-cat" id="settings-cat-{group.id}">{group.label}</h2>
+        {@const GroupIcon = GROUP_ICONS[group.id]}
+        <!-- Disclosed when this is the pane you are in — or whenever the rail's
+             own search is narrowing the nav, since the whole point of a
+             surviving section is to be clickable. While ⌘F is filtering there
+             is no "pane you are in" (every group's rows are in one list), so
+             nothing is filled or disclosed; the count beside each group is how
+             many of its rows matched. -->
+        {@const open =
+          (group.id === activeGroup || searchQuery.trim() !== "") && !settingsFind.active}
+        <button
+          class="nav-item nav-item--group"
+          class:nav-item--active={group.id === activeGroup && !settingsFind.active}
+          type="button"
+          id="settings-group-{group.id}"
+          aria-expanded={open}
+          tabindex={rovingTarget === `settings-group-${group.id}` ? 0 : -1}
+          onclick={() => onNavigate(group.sections[0].id)}
+          onkeydown={handleNavKeydown}
+        >
+          <GroupIcon aria-hidden="true" />
+          <span>{group.label}</span>
+          <span class="nav-item__n" aria-label="{rowCounts[group.id]} settings">
+            {rowCounts[group.id]}
+          </span>
+        </button>
+        {#if open}
           {#each group.sections as section (section.id)}
-            {@const SectionIcon = SECTION_ICONS[section.id]}
             <button
-              class="nav-item"
-              class:nav-item--active={activeSection === section.id}
+              class="nav-item nav-item--sub"
+              class:nav-item--sub-active={activeSection === section.id}
               type="button"
               id="settings-tab-{section.id}"
               data-section={section.id}
               aria-current={activeSection === section.id ? "page" : undefined}
-              tabindex={rovingTarget === section.id ? 0 : -1}
+              tabindex={rovingTarget === `settings-tab-${section.id}` ? 0 : -1}
               onclick={() => onNavigate(section.id)}
               onkeydown={handleNavKeydown}
             >
-              <SectionIcon aria-hidden="true" />
               <span>{section.label}</span>
             </button>
           {/each}
-        </div>
+        {/if}
       {/each}
       {#if visibleGroups.length === 0}
         <div class="rail-empty" role="status">

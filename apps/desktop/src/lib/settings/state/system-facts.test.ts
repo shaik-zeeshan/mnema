@@ -65,15 +65,15 @@ describe("coarseRuntime", () => {
 });
 
 describe("captureRateConsequence", () => {
-  it("states the daily cost and how long the disk lasts", () => {
+  it("states the rate, the day and month cost, and the free space", () => {
     expect(captureRateConsequence(facts(), 1)).toBe(
-      "About 20.0 GB a day at this rate — about 10 days of free space left. Measured over your last 7 days of capture.",
+      "1 fps → ≈ 20.0 GB a day · ≈ 600.0 GB a month · of 200.0 GB free — measured over your last 7 days of capture.",
     );
   });
 
-  it("drops the runtime clause when free space is unmeasurable", () => {
+  it("drops the free-space term when the volume is unmeasurable", () => {
     expect(captureRateConsequence(facts({ diskFreeBytes: null }), 0.5)).toBe(
-      "About 10.0 GB a day at this rate — measured over your last 7 days of capture.",
+      "0.5 fps → ≈ 10.0 GB a day · ≈ 300.0 GB a month — measured over your last 7 days of capture.",
     );
   });
 

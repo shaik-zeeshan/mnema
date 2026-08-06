@@ -50,9 +50,17 @@ export function coarseRuntime(freeBytes: number | null, bytesPerDay: number | nu
 }
 
 /**
- * The capture-rate row's consequence: what this slider position costs per day,
- * and how long the disk lasts at it. `null` until a complete capture day has
- * been measured — before then Mnema genuinely does not know.
+ * The capture-rate row's consequence, as page 11 states it: the rate, what it
+ * costs per day and per month, and the free space that has to absorb it —
+ * `2 fps → ≈ 1.4 GB a day · ≈ 42 GB a month · of 494 GB free`. Every term is
+ * the measured average projected onto this slider position (a month is 30 of
+ * those days — a restatement of the same measurement, not a second claim), and
+ * the provenance rides at the end so the figure is never mistaken for a spec
+ * sheet number.
+ *
+ * `null` until a complete capture day has been measured — before then Mnema
+ * genuinely does not know. The free-space term drops on its own if the volume
+ * could not be read.
  */
 export function captureRateConsequence(
 	facts: SystemFacts | null,
@@ -60,15 +68,15 @@ export function captureRateConsequence(
 ): string | null {
 	const perDay = projectedBytesPerDay(facts, targetFps);
 	if (perDay === null || !facts) return null;
-	const runtime = coarseRuntime(facts.diskFreeBytes, perDay);
 	const measured = `measured over your last ${facts.measuredDays} ${
 		facts.measuredDays === 1 ? "day" : "days"
 	} of capture`;
-	return runtime === null
-		? `About ${formatBytes(perDay)} a day at this rate — ${measured}.`
-		: `About ${formatBytes(perDay)} a day at this rate — ${runtime} of free space left. ${
-				measured.charAt(0).toUpperCase() + measured.slice(1)
-			}.`;
+	const terms = [
+		`≈ ${formatBytes(perDay)} a day`,
+		`≈ ${formatBytes(perDay * 30)} a month`,
+	];
+	if (facts.diskFreeBytes !== null) terms.push(`of ${formatBytes(facts.diskFreeBytes)} free`);
+	return `${targetFps} fps → ${terms.join(" · ")} — ${measured}.`;
 }
 
 /**

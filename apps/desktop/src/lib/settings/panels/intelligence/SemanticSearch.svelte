@@ -193,16 +193,25 @@
                   <p class="group-hint">{picked.description}</p>
                   <p class="group-hint">{picked.metaLine}</p>
                 </div>
-                <span class="badge {selected ? 'badge--ok' : 'badge--neutral'} badge--sm">
+                <!-- The model row's verdict, in the same four-tone vocabulary
+                     the OCR/transcription/speaker cards use (page 11). The
+                     download size beside it comes from ModelFootprintHint. -->
+                <span
+                  class="verdict verdict--{selected || installed
+                    ? 'ok'
+                    : progress && progress.status === 'failed'
+                      ? 'bad'
+                      : 'warn'}"
+                >
                   {selected
-                    ? "Active"
+                    ? "active · runs on this Mac"
                     : installed
-                      ? "Installed"
+                      ? "installed · runs on this Mac"
                       : downloading
-                        ? `Downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
+                        ? `downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
                         : progress && progress.status === "failed"
-                          ? "Failed"
-                          : "Not installed"}
+                          ? "download failed"
+                          : "not installed"}
                 </span>
               </div>
 

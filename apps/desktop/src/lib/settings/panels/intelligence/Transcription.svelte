@@ -15,6 +15,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
+  import ModelVerdict from "$lib/settings/ui/ModelVerdict.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import {
@@ -370,10 +371,13 @@
               <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
               <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
             </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedTranscriptionModel.available}
-            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+            <ModelVerdict
+              provider={selectedTranscriptionModel.provider}
+              available={selectedTranscriptionModel.available}
+              status={selectedTranscriptionModel.status}
+              osManaged={selectedTranscriptionModel.management === "os_managed"}
+              downloadBytes={selectedTranscriptionModel.download?.byteSize ?? null}
+            />
           </div>
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}

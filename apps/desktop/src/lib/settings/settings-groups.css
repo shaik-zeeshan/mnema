@@ -4,6 +4,38 @@
  * shell imports the parts in source order — see settings-layout.css for the
  * full map). Every selector is namespaced under `.settings-shell`. */
 
+  /* ── Section headers, settings-only ────────────────────────
+     Page 11 draws every section header as ONE baseline row — the mono eyebrow
+     and its sentence side by side (`.gsec__h`), with the section's actions at
+     the trailing edge. Twenty-two of these stack down the pane, so a stacked
+     two-line header would have cost 22 extra lines of vertical rhythm for
+     nothing. Scoped to `.settings-shell` on purpose: the Debug page shares
+     `SettingGroup` and keeps its own stacked heading (it opts in per-card via
+     `hintInline`). */
+  .settings-shell .setting-group > .setting-group__header {
+    align-items: baseline;
+  }
+  .settings-shell .setting-group .setting-group__heading {
+    flex: 1 1 auto;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 10px;
+  }
+  /* The eyebrow keeps its one line — it is the section's name, and a wrapped
+     two-line "KEYBOARD SHORTCUTS" reads as two sections. */
+  .settings-shell .setting-group .setting-group__title-line {
+    flex: 0 0 auto;
+  }
+  .settings-shell .setting-group .setting-group__title {
+    white-space: nowrap;
+  }
+  /* The sentence takes the leftover width and wraps inside it, so a long hint
+     never pushes the actions off the row. */
+  .settings-shell .setting-group .setting-group__hint {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   /* ── Settings groups ──────────────────────────────────────── */
   .settings-shell .settings-group {
     display: flex;
@@ -50,10 +82,13 @@
     border-radius: 6px;
   }
 
+  /* The shortcut rows live inside a BARE (hairline) card, which lives inside
+     the Shortcuts plate. A boxed row there would be a third box in the same
+     stack — so the rows carry no surface at all and are separated the way rows
+     inside a plate are: one hairline between them. */
   .settings-shell .shortcut-editor-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
   }
 
   .settings-shell .shortcut-editor-row {
@@ -61,13 +96,25 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px 14px;
     align-items: center;
-    padding: 9px 10px;
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
+    padding: 6px 0;
+    min-height: 30px;
   }
 
+  .settings-shell .shortcut-editor-row + .shortcut-editor-row {
+    box-shadow: inset 0 1px 0 var(--glass-line);
+  }
+
+  /* A row with a problem is the one place a rim comes back — it has to be
+     findable at a glance in a list of otherwise identical rows. */
+  .settings-shell .shortcut-editor-row--error,
+  .settings-shell .shortcut-editor-row--error + .shortcut-editor-row,
+  .settings-shell .shortcut-editor-row + .shortcut-editor-row--error {
+    box-shadow: none;
+  }
   .settings-shell .shortcut-editor-row--error {
+    margin: 2px 0;
+    padding: 6px 8px;
+    border-radius: 6px;
     box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
 
@@ -107,8 +154,17 @@
     flex-wrap: wrap;
   }
 
+  /* Listening: the recorder itself already takes the accent ring; the row only
+     lifts its own tint so the eye lands on the right line. */
+  .settings-shell .shortcut-editor-row--listening,
+  .settings-shell .shortcut-editor-row--listening + .shortcut-editor-row {
+    box-shadow: none;
+  }
   .settings-shell .shortcut-editor-row--listening {
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    margin: 2px 0;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--app-accent-bg);
   }
 
   .settings-shell .shortcut-capture {

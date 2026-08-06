@@ -163,23 +163,6 @@
     flex-direction: column;
   }
 
-  .settings-shell .nav-group {
-    margin-top: 0;
-  }
-
-  /* Group eyebrow — mono, faint, the mockup's `.srail__g`. */
-  .settings-shell .nav-cat {
-    margin: 0;
-    padding: 9px 8px 3px;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--t-label);
-    font-weight: 500;
-    line-height: 1;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-  }
-
   /* 28px rows, 6px radius, and the selected state is a FULL-ROW accent fill —
      never an underline, never an edge bar. */
   .settings-shell .nav-item {
@@ -242,6 +225,49 @@
   .settings-shell .nav-item--active svg,
   .settings-shell .nav-item--active span {
     color: inherit;
+  }
+
+  /* The group row's indexed row count — mono, tabular, pushed to the trailing
+     edge. It is the same number ⌘F filters against (settings-index.ts), so the
+     rail and the find bar can never disagree. */
+  .settings-shell .nav-item__n {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-meta);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-faint);
+  }
+
+  /* A disclosed section under its (accent-filled) group row: shorter, inset
+     past the group glyph, one type step down, and marked by a small dot rather
+     than an icon — the group already spent the rail's one icon slot. Its
+     selected state is a quiet tint, never a second accent fill. */
+  .settings-shell .nav-item--sub {
+    gap: 8px;
+    height: 24px;
+    padding: 0 8px 0 30px;
+    color: var(--app-text-muted);
+  }
+  .settings-shell .nav-item--sub::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 3px;
+    height: 3px;
+    margin-left: -9px;
+    border-radius: 999px;
+    background: currentColor;
+    opacity: 0.5;
+  }
+  .settings-shell .nav-item--sub span {
+    font-size: var(--t-meta);
+    font-weight: 400;
+  }
+  .settings-shell .nav-item--sub-active,
+  .settings-shell .nav-item--sub-active:hover {
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
   }
 
   /* ── The cost of what you enabled, pinned to the rail's bottom ───────

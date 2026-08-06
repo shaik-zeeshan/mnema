@@ -50,7 +50,9 @@
       <div class="control-stack">
         <CaptureRateControl bind:value={rec.draftFrameRate} />
         {#if captureRateHint}
-          <p class="group-hint">{captureRateHint}</p>
+          <!-- The consequence reads as an instrument readout, not prose: mono,
+               tabular, one fraction (page 11's capture-rate strip). -->
+          <p class="group-hint rate-readout">{captureRateHint}</p>
         {/if}
       </div>
     {/snippet}
@@ -187,6 +189,12 @@
 </SettingGroup>
 
 <style>
+  .rate-readout {
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
   /* SettingRow's full-mode control slot is a flex row; stack these wide custom
      blocks (notices, radio group, preset/custom inputs, hints) vertically. */
   .control-stack {

@@ -16,7 +16,12 @@
 // matcher already searches the label, the section label and the group label, so
 // "Retention" needs no "retention" synonym — it needs "delete old", "days".
 
-import { SETTINGS_GROUPS, type SettingsSectionId } from "./groups";
+import {
+	SETTINGS_GROUPS,
+	groupForSection,
+	type SettingsGroupId,
+	type SettingsSectionId,
+} from "./groups";
 
 export interface SettingsRowIndexEntry {
 	/** The section the row lives in (its `setSettingsSection` scope). */
@@ -155,6 +160,30 @@ export function rowIndexEntry(
 ): SettingsRowIndexEntry | null {
 	if (section === null) return null;
 	return BY_KEY.get(key(section, label)) ?? null;
+}
+
+/**
+ * How many indexed rows each group owns — the number the rail prints beside a
+ * group, so the rail and ⌘F are counting the same thing (page 11's rail
+ * correction). With a query, it counts the rows that MATCH, which is what the
+ * rail shows while ⌘F is filtering.
+ *
+ * Derived from the index itself, never hand-maintained: the completeness test
+ * keeps the index equal to the rendered rows, so these counts are honest by
+ * construction (G8 — a number only ships where it is real).
+ */
+export function indexedRowCounts(
+	query = "",
+): Record<SettingsGroupId, number> {
+	const counts = {} as Record<SettingsGroupId, number>;
+	for (const group of SETTINGS_GROUPS) counts[group.id] = 0;
+	for (const entry of SETTINGS_ROW_INDEX) {
+		if (query.trim() !== "" && !rowMatchesQuery(entry.section, entry.label, query)) {
+			continue;
+		}
+		counts[groupForSection(entry.section)] += 1;
+	}
+	return counts;
 }
 
 /** Section id → the labels ⌘F shows as the hit's breadcrumb ("Capture › Video"). */

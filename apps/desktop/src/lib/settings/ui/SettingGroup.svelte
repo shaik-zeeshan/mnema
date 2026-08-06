@@ -29,9 +29,11 @@
         omit it and the title stays inert text, which is what Settings wants.
         Used by the Debug page's feature cards to push their detail view. */
     onTitleClick?: () => void;
-    /** Drop the card chrome (border, background, accent hairline) so children
-        sit directly on the page. Used by the keybinding lists, whose rows
-        already carry their own borders — the parent frame is redundant. */
+    /** Render a BARE card: a hairline outline instead of an opaque plate, with
+        the title inside it. A plate inside a plate is the box-in-box this
+        direction refuses (page 11 — "the four shortcut-editor cards are bare
+        hairlines, not plates"), so a group nested inside another group's plate
+        takes this. Used by the keybinding category lists. */
     bare?: boolean;
     /** Render the section title as a nested/child heading (smaller, lighter,
         inset) so a group sitting under a parent section reads as its child,
@@ -46,8 +48,13 @@
 
 <!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
      scrollable <section>, never on the inner card. -->
-<section class="setting-group" {id}>
-  <header class="setting-group__header" class:setting-group__header--inline={hintInline}>
+<section class="setting-group" class:setting-group--bare={bare} {id}>
+  {#snippet header()}
+  <header
+    class="setting-group__header"
+    class:setting-group__header--inline={hintInline}
+    class:setting-group__header--bare={bare}
+  >
     <div class="setting-group__heading">
       <!-- The title and anything inline after it share one row so a trailing
            badge sits beside the title rather than under it. With no
@@ -75,8 +82,14 @@
       </div>
     {/if}
   </header>
+  {/snippet}
 
+  <!-- A bare card owns its own title (the hairline box IS the grouping, so a
+       heading floating above it would read as a second, empty level). A plate
+       keeps the title above it, where it can stick to the pane's top edge. -->
+  {#if !bare}{@render header()}{/if}
   <div class="setting-group__card {cardClass ?? ''}" class:setting-group__card--bare={bare}>
+    {#if bare}{@render header()}{/if}
     {@render children()}
   </div>
 </section>
@@ -237,11 +250,27 @@
     box-shadow: var(--sh-tile);
   }
 
-  /* Bare: no plate — children (which carry their own surfaces) sit flush. */
+  /* Bare: a HAIRLINE OUTLINE, not a plate. This card only ever appears inside
+     another card's plate, and a plate inside a plate is the box-in-box this
+     direction refuses — so the rim is the whole chrome and nothing is raised. */
   .setting-group__card--bare {
-    padding: 0;
+    padding: 0 12px 4px;
     background: none;
-    box-shadow: none;
-    border-radius: 0;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  }
+
+  /* The bare card's own header sits inside the rim, so it takes the rim's
+     padding rather than the pane's, and never sticks (it is a child heading,
+     not a section header the pane scrolls under). */
+  .setting-group__header--bare {
+    position: static;
+    padding: 9px 0 5px;
+    background: none;
+  }
+
+  /* A bare group is nested inside a plate: it contributes its own rim, so it
+     needs no gap above the rim itself. */
+  .setting-group--bare {
+    gap: 0;
   }
 </style>
