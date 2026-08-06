@@ -16,6 +16,11 @@ machine is doing right now.
    section headers that keep your address.
 5. **Densest of the five directions.** 28px content rows, 22px chrome rows, hairline separations
    instead of card edges — tight, never cramped.
+6. **Journal, Subjects and Context are destinations, not surfaces.** The main window still has exactly
+   two surfaces (Timeline · Overview). Each destination opens from its own Overview tile header and
+   comes back through the tool strip's first control; the old Insights rail is gone. Inside each one
+   the shape is unchanged — tool strip navigates, one region scrolls, the inspector carries the
+   selection's record, the status strip carries live state.
 
 ## What it does with each founder ask
 
@@ -40,7 +45,11 @@ machine is doing right now.
 | `05-settings-general.html` | the no-sidebar settings shell — General + Capture, and the filter applied |
 | `06-settings-intelligence.html` | Intelligence, and the six custom inputs at working size |
 | `07-components.html` | component sheet, type + spacing specimen, per-page pattern audit |
-| `shots/` | rendered verification screenshots, both themes |
+| `08-journal.html` | the day as a river — digest lede, four honest stats, the four card states, and the receipt (frames, scrub with evidence ticks, filmstrip, 1×/2×/8×/16×, speaker transcript) |
+| `09-subjects.html` | tiers by conviction with the sparkline as the row's hero, plus one subject opened — conclusion strip, hero, and the story-over-time spine |
+| `10-context.html` | authored context: composer, the standing ledger with edit/delete, the dismissed archive with restore, and Authored-vs-Inferred in the inspector |
+| `11-settings-complete.html` | every registered settings row — 5 groups, 19 sections, **96 rows** — at true size and then unrolled at full length, with the G7/G8/G9/G10 amendments applied |
+| `shots/` | rendered verification screenshots, both themes, 1280×800 full-page |
 
 Each page is self-contained (inline CSS, inline SVG, no external assets), designs both themes, and
 carries a light/dark toggle top-right that overrides the system preference.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Studio Shell — 07 Components, type, audit</title>
+<title>Studio Shell — 11 Settings, complete</title>
 <style>
 /* ============================================================================
    Mnema round 4 — direction 02 STUDIO SHELL
@@ -963,518 +963,879 @@ mark { background: color-mix(in srgb, var(--app-accent) 26%, transparent); color
 })();
 </script>
 
+<style>
+/* page 11 only: the scroll column drawn at full length, outside a 720px window */
+.unroll { width: 844px; margin: 0 auto; border-radius: 10px; background: var(--app-bg);
+  box-shadow: var(--win-shadow), 0 0 0 var(--hairline) var(--win-edge); overflow: hidden;
+  padding-bottom: 20px; font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui); color: var(--app-text); font-variant-numeric: tabular-nums; }
+.grouphd { display: flex; align-items: baseline; gap: var(--s-10); height: 34px; padding: 0 16px;
+  background: var(--app-surface-subtle); border-top: var(--hairline) solid var(--app-border-strong);
+  border-bottom: var(--hairline) solid var(--app-border); }
+.grouphd:first-child { border-top: 0; }
+.grouphd__n { font: var(--w-semi) var(--t-title)/1 var(--app-font-sans); letter-spacing: var(--ls-title);
+  color: var(--app-text-strong); }
+.grouphd__c { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color: var(--app-text-faint); }
+.cond { display: inline-flex; align-items: center; height: 15px; padding: 0 5px; border-radius: 3px;
+  background: var(--app-surface-hover); color: var(--app-text-subtle);
+  font: var(--w-medium) var(--t-label)/15px var(--app-font-mono); text-transform: uppercase;
+  letter-spacing: .04em; white-space: nowrap; }
+</style>
+
 <header class="mast">
   <p class="mast__dir">Direction 02 · Studio Shell</p>
-  <h1 class="mast__pg"><b>07</b>Components, type specimen, and the pattern audit</h1>
-  <p class="mast__note">Every control this direction uses, in every state it has; the type ramp and
-    spacing constants with their real metrics; and an honest per-page audit against the UI/UX rules
-    and the carried-over native and de-boxing rules. Numbers in the audit are counted from the
-    rendered pages, not estimated.</p>
+  <h1 class="mast__pg"><b>11</b>Settings, whole — all 96 rows in one scroll</h1>
+  <p class="mast__note">Every settings row the app registers, drawn in this direction's settings shape:
+    <b>no navigation rail</b>, one scroll, a filter field in the tool strip, group headers as the
+    address, and the inspector carrying the focused setting's detail. The structure is not invented —
+    it is <span class="is-mono">settings/groups.ts</span> and
+    <span class="is-mono">settings-index.ts</span> read straight down: <b>5 groups, 19 sections,
+    96 rows</b>, the same count the ⌘F index test enforces. First frame is the true 1100×720 window
+    mid-scroll; the second unrolls the whole content column so every group can be checked off at once.
+    Rows the app only renders under a condition carry a <span class="cond">only when…</span> tag
+    rather than being quietly dropped.</p>
   <div class="mast__rule"></div>
 </header>
 
-<main class="sheet">
+<main class="sect">
 
-  <!-- ─────────────────────────── chrome ─────────────────────────── -->
-  <p class="wlabel"><b>1 · The shell.</b> Four fixed pieces. Only the middle scrolls; the strips and
-    the inspector are structural, so live state and save state can never scroll out of view.</p>
-  <div class="win" style="width:1100px;height:300px;margin:0 auto">
+  <p class="wlabel"><b>1100 × 720 — the real window, scrolled into Intelligence.</b> The group header
+    (<b>Intelligence</b>) is pinned; the section sub-header scrolls under it. The focused row is the
+    transcription provider; the inspector shows what that provider means on this Mac, its ⌘F terms,
+    and the session's changes. Per <b>G7</b> the status strip carries the save chip and
+    <i>no Undo</i> — settings-Undo is out for v1, which is a deliberate departure from pages 05 and 06.</p>
+  <div class="fit"><div class="win">
+
     <div class="tbar">
       <div class="tl"><i></i><i></i><i></i></div>
-      <div class="seg"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span>
-        <span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
-      <span class="spacer"></span>
-      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-search"/></svg>Search or Ask
-        <span class="kbd kbd--mod">⌘⌥Space</span></button>
-      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-        <span class="pill__gb is-num">270 MB</span></button>
-    </div>
-    <div class="tstrip">
-      <span class="t-label">Title bar 38 · tool strip 30 · status strip 24 · inspector 256</span>
-      <span class="spacer"></span>
-      <span class="t-meta">contextual controls live here, never in the title bar</span>
-    </div>
-    <div class="wbody">
-      <div class="main" style="display:flex;align-items:center;justify-content:center">
-        <span class="t-meta">the only scrolling region</span>
+      <span class="tbar__title">Settings</span>
+      <div class="seg" style="margin-left:8px">
+        <span class="seg__i">Timeline <span class="kbd">⌘1</span></span>
+        <span class="seg__i">Overview <span class="kbd">⌘2</span></span>
       </div>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost btn--sm">Done <span class="kbd">esc</span></button>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+
+    <div class="tstrip">
+      <div class="input" style="width:250px;height:22px">
+        <svg class="ic ic--sm sub"><use href="#i-search"/></svg>
+        <span class="ph">Filter settings…</span><span class="kbd spacer">⌘F</span>
+      </div>
+      <div class="tstrip__sep"></div>
+      <span class="t-meta is-mono">96 settings · 5 sections</span>
+      <span class="spacer"></span>
+      <span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>All models present</span>
+      <div class="tstrip__sep"></div>
+      <button class="btn btn--sm btn--icon" title="Detail ⌥⌘I"><svg class="ic"><use href="#i-panel"/></svg></button>
+    </div>
+
+    <div class="wbody">
+      <div class="main">
+        <div class="setscroll">
+          <div class="setcol" style="margin-top:-24px">
+
+            <div class="stick">
+              <span class="stick__n">Intelligence</span>
+              <span class="t-meta">Providers · Ask AI · User Context · OCR · Transcription · Speakers · Semantic Search</span>
+              <span class="stick__c">35 – 79 of 96</span>
+            </div>
+
+            <div class="sub-h"><span class="t-label">Transcription</span>
+              <span class="t-meta">Local speech-to-text provider and model setup</span></div>
+            <div class="setgrp grp">
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Enable audio transcription</span>
+                  <span class="srow__s">Master switch for source-specific audio transcription</span></div>
+                <div class="srow__v"><span class="sw on"><i></i></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Transcribe microphone</span>
+                  <span class="srow__s">Automatically queue transcription for committed microphone audio segments</span></div>
+                <div class="srow__v"><span class="sw on"><i></i></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Transcribe system audio</span>
+                  <span class="srow__s">Transcribe system audio only when speech is detected</span></div>
+                <div class="srow__v"><span class="sw on"><i></i></span></div>
+              </div>
+              <div class="srow is-focus srow--wide">
+                <div style="display:flex;align-items:center;gap:12px;width:100%">
+                  <div class="srow__t"><span class="srow__l">Provider</span>
+                    <span class="srow__s">Runs on device unless you choose the cloud one</span></div>
+                  <div class="srow__v"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span></div>
+                </div>
+                <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+                  <div class="mrow"><span style="width:13px"></span><span class="mrow__n">Local Whisper</span>
+                    <span class="mrow__meta"><span class="chip chip--sq">on device</span>
+                      <span class="t-meta is-mono">default</span></span></div>
+                  <div class="mrow"><span style="width:13px"></span><span class="mrow__n">Apple Speech</span>
+                    <span class="mrow__meta"><span class="chip chip--sq">on device</span>
+                      <span class="t-meta is-mono">managed by macOS</span></span></div>
+                  <div class="mrow on"><svg class="ic ic--sm acc"><use href="#i-check"/></svg>
+                    <span class="mrow__n">Parakeet</span>
+                    <span class="mrow__meta"><span class="chip chip--sq">on device</span>
+                      <span class="t-meta is-mono">1.2 GB on disk</span></span></div>
+                  <div class="mrow"><span style="width:13px"></span><span class="mrow__n">Deepgram</span>
+                    <span class="mrow__meta"><span class="chip chip--sq">cloud</span>
+                      <span class="chip chip--warn">uploads your audio</span></span></div>
+                </div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Model</span></div>
+                <div class="srow__v"><span class="pop">parakeet-tdt-0.6b-v3 <b><svg><use href="#i-chevud"/></svg></b></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Language</span>
+                  <span class="srow__s">Use auto for automatic detection, or a hint such as <span class="is-mono">en</span></span></div>
+                <div class="srow__v"><span class="pop">auto <b><svg><use href="#i-chevud"/></svg></b></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Deepgram API key</span>
+                  <span class="srow__s">Key saved to the macOS keychain · switching to Deepgram asks for
+                    consent first, because your microphone and system audio would leave this Mac</span></div>
+                <div class="srow__v"><span class="cond">only when · Deepgram</span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Parakeet memory mode</span></div>
+                <div class="srow__v"><span class="seg"><span class="seg__i on">Balanced</span>
+                  <span class="seg__i">Low memory</span><span class="seg__i">Performance</span></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Idle unload seconds</span>
+                  <span class="srow__s">Release the weights after this long with nothing to transcribe</span></div>
+                <div class="srow__v"><span class="cond">only when · Balanced</span>
+                  <span class="pop">300 s <b><svg><use href="#i-chevud"/></svg></b></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Chunk seconds</span>
+                  <span class="srow__s">Chunking limits peak activation memory; 0 disables it</span></div>
+                <div class="srow__v"><span class="pop">30 s <b><svg><use href="#i-chevud"/></svg></b></span></div>
+              </div>
+              <div class="srow">
+                <div class="srow__t"><span class="srow__l">Selected model status</span>
+                  <span class="srow__s">Downloads validate sha256 before a model is marked installed</span></div>
+                <div class="srow__v"><span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>All files present</span>
+                  <button class="btn btn--ghost btn--sm">Refresh</button></div>
+              </div>
+            </div>
+
+            <div class="sub-h"><span class="t-label">Speakers</span>
+              <span class="t-meta">Anonymous diarization first; recognition only when you opt in</span></div>
+            <div class="setgrp grp">
+              <div class="srow srow--wide">
+                <div style="display:flex;align-items:center;gap:12px;width:100%">
+                  <div class="srow__t"><span class="srow__l">Speaker separation</span>
+                    <span class="srow__s">speakrs · on device · 419 MB of models, loaded on demand</span></div>
+                </div>
+                <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+                  <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Separate speakers in transcripts</span>
+                    <span class="mrow__meta"><span class="sw on"><i></i></span></span></div>
+                  <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Recognize saved people</span>
+                    <span class="mrow__meta"><span class="sw"><i></i></span></span></div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
       <aside class="insp">
-        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-panel"/></svg>
-          <span class="t-label" style="color:var(--app-text-strong)">Inspector</span>
+        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-sliders"/></svg>
+          <span class="t-label" style="color:var(--app-text-strong)">Detail</span>
           <span class="spacer"></span><span class="kbd">⌥⌘I</span></div>
         <div class="insp__b">
-          <div class="insp__sec"><span class="t-label">Section</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v is-mono">value</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v">value, wrapping when it must</span></div>
-          <p class="t-meta" style="margin:10px">Same panel, four subjects: conversation row, frame,
-            search result, changed setting.</p>
+          <div class="kv kv--stack"><span class="kv__k">Setting</span>
+            <span class="kv__v" style="font:var(--w-semi) 15px/1.3 var(--app-font-sans)">Provider</span></div>
+          <div class="kv"><span class="kv__k">Section</span><span class="kv__v">Intelligence › Transcription</span></div>
+          <div class="kv"><span class="kv__k">Value</span><span class="kv__v is-mono">Parakeet</span></div>
+          <div class="kv"><span class="kv__k">Was</span><span class="kv__v is-mono">Local Whisper · until 14:44</span></div>
+          <div class="kv"><span class="kv__k">Default</span><span class="kv__v is-mono">Local Whisper</span></div>
+
+          <div class="insp__sec"><span class="t-label">What it does</span></div>
+          <div style="padding:2px 10px 0"><p class="conseq" style="margin:0">Chooses the engine that turns
+            committed audio segments into text. Three of the four run on this Mac; Deepgram does not.</p></div>
+
+          <div class="insp__sec"><span class="t-label">Finds as</span></div>
+          <div style="padding:2px 10px 0"><p class="t-meta is-mono" style="margin:0;color:var(--app-text-subtle)">provider ·
+            whisper · parakeet · deepgram · cloud · engine · transcription · intelligence</p></div>
+
+          <div class="insp__sec"><span class="t-label">On this Mac</span></div>
+          <div class="kv"><span class="kv__k">Model</span><span class="kv__v is-mono">1.2 GB on disk</span></div>
+          <div class="kv"><span class="kv__k">Egress</span><span class="kv__v">None — nothing uploaded</span></div>
+          <div class="kv"><span class="kv__k">Queue</span><span class="kv__v is-mono">2 waiting · 0 running</span></div>
+
+          <div class="insp__sec"><span class="t-label">Recent changes</span></div>
+          <div class="kv"><span class="kv__k">14:44</span><span class="kv__v">Provider → Parakeet</span></div>
+          <div class="kv"><span class="kv__k">14:41</span><span class="kv__v">Screen Capture Rate → every 2 s</span></div>
         </div>
       </aside>
     </div>
+
     <div class="sstrip">
-      <div class="sstrip__g"><svg class="ic ic--sm" style="color:var(--app-src-screen)"><use href="#i-screen"/></svg>
-        <span class="is-mono">2 fps · 1080p · H.264</span></div>
+      <div class="sstrip__g"><svg class="ic ic--sm sub"><use href="#i-cpu"/></svg>
+        <span class="is-mono">OCR queue 742 · transcribe 2</span></div>
       <span class="sstrip__dot"></span>
       <div class="sstrip__g"><span class="is-mono"><b>270 MB</b> today</span></div>
       <span class="sstrip__dot"></span>
-      <div class="sstrip__g"><span class="is-mono">≈ 8.1 GB / mo</span></div>
+      <div class="sstrip__g"><span class="is-mono">34.2 GB stored</span></div>
       <span class="spacer"></span>
-      <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-      <button class="sbtn">Undo</button>
+      <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:44</span>
       <button class="sbtn on"><svg><use href="#i-panel"/></svg>Detail</button>
     </div>
-  </div>
 
-  <!-- ─────────────────────────── controls ─────────────────────────── -->
-  <p class="wlabel"><b>2 · Controls, and every state each one has.</b> Rest · hover · pressed · focus ·
-    disabled · busy for anything clickable; rest · focus · invalid for anything typable.</p>
-  <div class="cellgrid">
-    <div class="cell"><span class="cell__l">Button — default</span>
-      <div class="cell__b"><button class="btn">Rest</button><button class="btn is-hover">Hover</button>
-        <button class="btn is-press">Press</button><button class="btn btn--focus">Focus</button>
-        <button class="btn" disabled>Off</button>
-        <button class="btn is-busy"><span class="spin"></span>Busy</button></div></div>
-    <div class="cell"><span class="cell__l">Button — primary (accent-filled default)</span>
-      <div class="cell__b"><button class="btn btn--primary">Rest</button>
-        <button class="btn btn--primary is-hover">Hover</button>
-        <button class="btn btn--primary is-press">Press</button>
-        <button class="btn btn--primary" disabled>Off</button></div></div>
-    <div class="cell"><span class="cell__l">Button — ghost + danger</span>
-      <div class="cell__b"><button class="btn btn--ghost">Ghost</button>
-        <button class="btn btn--ghost is-hover">Hover</button>
-        <button class="btn btn--danger">Delete Recent…</button></div></div>
-    <div class="cell"><span class="cell__l">Button — sizes 22 / 28 / 32</span>
-      <div class="cell__b"><button class="btn btn--sm">Small</button><button class="btn">Default</button>
-        <button class="btn" style="height:32px;padding:0 12px">Large</button>
-        <button class="btn btn--icon"><svg class="ic"><use href="#i-refresh"/></svg></button></div></div>
+  </div></div>
 
-    <div class="cell"><span class="cell__l">Segmented — 2, 3 and 4 up</span>
-      <div class="cell__b" style="display:block">
-        <span class="seg" style="margin-right:8px"><span class="seg__i on">Search</span><span class="seg__i">Ask</span></span>
-        <span class="seg" style="margin-right:8px"><span class="seg__i">Light</span><span class="seg__i">Dark</span><span class="seg__i on">System</span></span>
-        <span class="seg"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span><span class="seg__i">Month</span></span></div></div>
-    <div class="cell"><span class="cell__l">Popup button · switch</span>
-      <div class="cell__b"><span class="pop">90 days <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="pop pop--md">Timeline <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="sw on"><i></i></span><span class="sw"><i></i></span></div></div>
-    <div class="cell"><span class="cell__l">Chips — scope, verdict, machine label</span>
-      <div class="cell__b"><span class="chip on">All</span><span class="chip">Screen</span>
-        <span class="chip chip--sq">Q4_K_M</span><span class="chip chip--ok">fits on GPU</span>
-        <span class="chip chip--warn">may be slow</span><span class="chip chip--bad">too large</span></div></div>
-    <div class="cell"><span class="cell__l">Keycaps · shortcut recorder</span>
-      <div class="cell__b"><span class="kbd">⏎</span><span class="kbd kbd--mod">⌘⌥Space</span>
-        <span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⇧</span>
-          <span class="kbd kbd--big">S</span></span>
-        <span class="recorder is-armed">Type a shortcut…</span></div></div>
+  <p class="wlabel"><b>The whole scroll, unrolled.</b> The same 844px content column, drawn at full
+    length instead of clipped to 720px, so all five groups can be checked at once. Group bars are the
+    address; 10px mono sub-headers are the sections; every row below one is a registered setting.
+    Values shown are the app's real defaults except where a dependent row would otherwise be invisible
+    — <i>Pause capture when idle</i> and <i>Enable AI features</i> are drawn ON so the rows they gate
+    can be seen. The counts on the right of each bar add to 96.</p>
 
-    <div class="cell"><span class="cell__l">Text field — rest · focus · invalid</span>
-      <div class="cell__b" style="display:block">
-        <span class="input" style="width:100%;margin-bottom:6px"><span class="ph">Filter settings</span></span>
-        <span class="input is-focused" style="width:100%;margin-bottom:6px">webhook<span class="caret"></span></span>
-        <span class="input is-bad" style="width:100%">sk-ant-•••• </span>
-        <p class="conseq" style="margin:5px 0 0;color:var(--app-danger)">That key was rejected by
-          Anthropic — 401 at 14:38.</p></div></div>
-    <div class="cell"><span class="cell__l">Slider with consequence</span>
-      <div class="cell__b" style="display:block">
-        <div class="slider"><span class="slider__t"><i class="slider__f" style="width:26%"></i>
-          <span class="slider__k" style="left:26%"></span></span></div>
-        <div class="slider__ticks"><span>0.5</span><span>1</span><span>2</span><span>4</span><span>8</span><span>15</span></div>
-        <p class="conseq" style="margin:6px 0 0">2 fps → <b>~1.4 GB/day</b></p></div></div>
-    <div class="cell"><span class="cell__l">Ladder · duty · gauge</span>
-      <div class="cell__b" style="display:block">
-        <div class="ladder" style="margin-bottom:8px"><span>7 d</span><span>30 d</span>
-          <span class="on">90 d</span><span>1 y</span><span>Forever</span></div>
-        <div class="duty" style="margin-bottom:8px"><i class="work" style="width:20%">20%</i>
-          <i class="cool" style="width:80%">cool 80%</i></div>
-        <div class="gauge"><span class="gauge__b"><i style="width:36%"></i></span>
-          <span class="t-meta is-mono">1.8 / 5.0 GB</span></div></div></div>
-    <div class="cell" style="grid-column:span 2"><span class="cell__l">Model row — size · quant · verdict</span>
-      <div class="grp" style="background:var(--app-surface-subtle)">
-        <div class="mrow on"><svg class="ic ic--sm acc"><use href="#i-check"/></svg>
-          <span class="mrow__n">qwen2.5:14b</span><span class="mrow__meta">
-          <span class="chip chip--sq">Q4_K_M</span><span class="t-meta is-mono">9.0 GB</span>
-          <span class="chip chip--ok">fits</span></span></div>
-        <div class="mrow"><span style="width:13px"></span><span class="mrow__n">llama3.3:70b</span>
-          <span class="mrow__meta"><span class="t-meta is-mono">42 GB</span>
-          <span class="chip chip--bad">too large</span></span></div></div></div>
+  <div class="unroll">
 
-    <div class="cell"><span class="cell__l">Recording pill — the nine states</span>
-      <div class="cell__b" style="display:block;line-height:2.2">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__gb is-num">270 MB</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__w">Rec</span></button>
-        <button class="pill"><i class="rec__dot"></i></button>
-        <button class="pill pill--quiet"><span class="spin" style="width:10px;height:10px"></span>
-          <span class="pill__w">Starting</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Idle 12m</span></button>
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i>
-          <span class="pill__w">Low disk</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__w" style="color:var(--app-info)">screen asleep</span></button>
-      </div></div>
-    <div class="cell"><span class="cell__l">Status strip — the three write states</span>
-      <div class="cell__b" style="display:block;line-height:2.4">
-        <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-        <span class="save save--busy"><span class="spin" style="width:9px;height:9px"></span>Saving…</span>
-        <span class="save" style="background:var(--app-danger-bg);color:var(--app-danger)">
-          <svg><use href="#i-alert"/></svg>Could not save — retry</span></div>
-      <p class="conseq" style="margin:0">Never a save bar. There is no unsaved state to defend, so the
-        strip states only whether the write landed, and offers Undo.</p></div>
+    <!-- ── GENERAL ─────────────────────────────────────────────────────────── -->
+    <div class="grouphd"><span class="grouphd__n">General</span>
+      <span class="t-meta">Appearance, startup, shortcuts</span>
+      <span class="grouphd__c">1 – 5 of 96 · 3 sections</span></div>
 
-    <div class="cell"><span class="cell__l">NSMenu — popover anatomy</span>
-      <div class="menu" style="width:100%">
-        <div class="menu__hd">Recording · 2:14:07 · 270 MB today</div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-pause"/></svg></span>
-          Pause Capture<span class="menu__kbd">⌥⌘P</span></div>
-        <div class="menu__i is-hl"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-stop"/></svg></span>
-          Stop &amp; Save<span class="menu__kbd">⌥⌘S</span></div>
-        <div class="menu__sep"></div>
-        <div class="menu__i"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-mic)"><svg class="ic ic--sm"><use href="#i-mic"/></svg></span>Microphone</div>
-        <div class="menu__i is-off"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-sys)"><svg class="ic ic--sm"><use href="#i-sys"/></svg></span>System Audio</div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Toast — the one non-blocking error placement</span>
-      <div class="toast" style="width:100%">
-        <div class="toast__h"><svg class="ic ic--sm" style="color:var(--app-danger)"><use href="#i-alert"/></svg>
-          Transcription failed</div>
-        <p class="t-meta" style="margin:0">Deepgram returned 401 for the launch sync at 13:02. The
-          segment is kept and will retry when the key is fixed.</p>
-        <div style="display:flex;gap:6px;margin-top:2px"><button class="btn btn--sm">Open Settings</button>
-          <button class="btn btn--sm btn--ghost">Dismiss</button></div></div></div>
-    <div class="cell"><span class="cell__l">Rows — setting · list · selected · inspector kv</span>
-      <div class="grp" style="margin-bottom:8px">
-        <div class="srow"><div class="srow__t"><span class="srow__l">Launch at login</span></div>
+    <div class="sub-h"><span class="t-label">Appearance</span>
+      <span class="t-meta">also available from every titlebar</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Theme</span>
+        <span class="srow__s">System follows your OS setting; pick Light or Dark to override it</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">System</span><span class="seg__i">Light</span><span class="seg__i">Dark</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Follow live recording</span>
+        <span class="srow__s">Keep the timeline pinned to the latest captured data while recording</span></div>
+        <div class="srow__v"><span class="sw"><i></i></span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Startup</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Open Mnema on</span>
+        <span class="srow__s">The surface a freshly launched window lands on. Switch anytime with ⌘1 / ⌘2.</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">Timeline</span><span class="seg__i">Overview</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Auto-start recording on launch</span>
+        <span class="srow__s">Begin capturing immediately when the app opens</span></div>
+        <div class="srow__v"><span class="sw"><i></i></span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Shortcuts</span>
+      <span class="t-meta">click a shortcut to rebind it · esc cancels · ⌫ clears</span></div>
+    <div class="setgrp grp">
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Global shortcuts</span>
+            <span class="srow__s">Use system-wide shortcuts while Mnema is in the background. Background
+              shortcuts require ⌘/⌃ or ⌥; foreground ones are ignored while you are typing.</span></div>
+          <div class="srow__v"><span class="sw on"><i></i></span></div>
+        </div>
+        <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Start or stop recording</span>
+            <span class="mrow__meta"><span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⌥</span><span class="kbd kbd--big">R</span></span></span></div>
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Pause or resume recording</span>
+            <span class="mrow__meta"><span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⌥</span><span class="kbd kbd--big">P</span></span></span></div>
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Show or hide Mnema</span>
+            <span class="mrow__meta"><span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⌥</span><span class="kbd kbd--big">M</span></span></span></div>
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Summon Quick Recall</span>
+            <span class="mrow__meta"><span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⌥</span><span class="kbd kbd--big">Space</span></span></span></div>
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Ask about my screen</span>
+            <span class="mrow__meta"><span class="recorder is-armed">Type a shortcut… <span class="t-meta">esc to cancel</span></span></span></div>
+        </div>
+        <p class="conseq" style="margin:0">⌘⌥Space is already used by <b>Summon Quick Recall</b> — Mnema can
+          name its own conflicts. A combination another app owns can still fail to register, and macOS
+          will not say which app took it.</p>
+        <p class="t-meta sub" style="margin:0">The recorder rows above are one list under one indexed
+          row; the four categories (Recording &amp; window · App · Dashboard · Audio Drawer) hold 21
+          bindings between them.</p>
+      </div>
+    </div>
+
+    <!-- ── CAPTURE ─────────────────────────────────────────────────────────── -->
+    <div class="grouphd"><span class="grouphd__n">Capture</span>
+      <span class="t-meta">Sources, video, audio, privacy</span>
+      <span class="grouphd__c">6 – 34 of 96 · 4 sections</span></div>
+
+    <div class="sub-h"><span class="t-label">Capture</span>
+      <span class="t-meta">what gets recorded and how often segments roll over</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Capture</span>
+        <span class="srow__s">Recording settings are loading</span></div>
+        <div class="srow__v"><span class="cond">only when · loading</span><span class="spin"></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Screen</span>
+        <span class="srow__s">Capture the display</span></div>
+        <div class="srow__v"><svg class="ic ic--sm" style="color:var(--app-src-screen)"><use href="#i-screen"/></svg><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Microphone</span>
+        <span class="srow__s">Capture audio from microphone</span></div>
+        <div class="srow__v"><svg class="ic ic--sm" style="color:var(--app-src-mic)"><use href="#i-mic"/></svg><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">System Audio</span>
+        <span class="srow__s">Capture Mac system audio (macOS 15+) — meetings, videos, and app sound</span></div>
+        <div class="srow__v"><svg class="ic ic--sm" style="color:var(--app-src-sys)"><use href="#i-sys"/></svg><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">System audio access</span>
+        <span class="srow__s">System audio is on, but no recording has captured a sound yet. macOS gives
+          no way to read this permission back, so this row states evidence, not status.</span></div>
+        <div class="srow__v"><span class="cond">only when · may be blocked</span>
+          <button class="btn btn--ghost btn--sm">Open System Settings</button></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Segment Duration</span>
+            <span class="srow__s">How long each recording segment runs before a new one starts</span></div>
+          <div class="srow__v"><span class="t-ui is-mono strong">1m 0s</span></div></div>
+        <div style="width:100%"><div class="slider"><span class="slider__t"><i class="slider__f" style="width:17%"></i>
+          <span class="slider__k" style="left:17%"></span></span></div>
+          <div class="slider__ticks"><span>10s</span><span>60s</span><span>120s</span><span>180s</span><span>240s</span><span>300s</span></div>
+          <p class="conseq" style="margin:6px 0 0">Capped at <b>5 minutes</b> — a shorter segment loses
+            less to a crash, because only the segment still open is unrecoverable.</p></div>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Pause capture when idle</span>
+        <span class="srow__s">Pause after the system has been idle, and resume when activity returns</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Idle timeout</span></div>
+          <div class="srow__v"><span class="cond">only when · idle pause on</span>
+            <span class="t-ui is-mono strong">30 s</span></div></div>
+        <div style="width:100%"><div class="slider"><span class="slider__t"><i class="slider__f" style="width:9%"></i>
+          <span class="slider__k" style="left:9%"></span></span></div>
+          <p class="conseq" style="margin:6px 0 0">Capture pauses after <b>30 s</b> of system-wide
+            inactivity — no mouse, keyboard or other input anywhere on the Mac.</p></div>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Activity sources</span>
+        <span class="srow__s">Activity is detected from keyboard/mouse input, on-screen changes, and
+          source-specific audio. Microphone activity is speech-first when voice detection is on.</span></div>
+        <div class="srow__v"><span class="cond">only when · idle pause on</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Microphone Voice Detection</span>
+        <span class="srow__s">Silero is the default speech detector and falls back to WebRTC when unavailable</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">Silero</span><span class="seg__i">WebRTC</span><span class="seg__i">Off</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Microphone Activity Sensitivity</span>
+        <span class="srow__s">Only the legacy peak-level detector has a threshold to set</span></div>
+        <div class="srow__v"><span class="cond">only when · detection off</span>
+          <span class="t-meta is-mono">50%</span></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">System Audio Activity Sensitivity</span></div>
+          <div class="srow__v"><span class="cond">only when · idle pause on</span>
+            <span class="t-ui is-mono strong">50%</span></div></div>
+        <div style="width:100%"><div class="slider"><span class="slider__t"><i class="slider__f" style="width:50%"></i>
+          <span class="slider__k" style="left:50%"></span></span></div>
+          <p class="conseq" style="margin:6px 0 0"><b>Medium</b> — typical media playback triggers
+            activity. Recommended.</p></div>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Audio Activity Monitoring</span>
+        <span class="srow__s">Both microphone and system audio are monitored independently for activity</span></div>
+        <div class="srow__v"><span class="wave" style="width:96px;height:16px;border-radius:3px" data-wave="22" data-seed="4"></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Validation</span>
+        <span class="srow__s">Resolve these before recording settings can save</span></div>
+        <div class="srow__v"><span class="cond">only when · errors</span>
+          <span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>none</span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Video</span></div>
+    <div class="setgrp grp">
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Screen Capture Rate</span>
+            <span class="srow__s">How often a snapshot of your screen is taken. More frequent snapshots
+              produce larger files.</span></div>
+          <div class="srow__v"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span>
+            <span class="t-ui is-mono strong">every 2 s</span></div></div>
+        <div style="width:100%">
+          <div class="slider"><span class="slider__t"><i class="slider__f" style="width:27%"></i>
+            <span class="slider__k" style="left:27%"></span></span></div>
+          <div class="slider__ticks"><span>0.1s</span><span>1s</span><span>3s</span><span>10s</span><span>30s</span><span>60s</span></div>
+          <p class="conseq" style="margin:6px 0 0">Measured on this Mac at your average screen activity,
+            a snapshot every 2 s writes about <b>0.7 GB/day</b> — roughly <b>21 GB</b> a month.
+            The projection is omitted entirely until there is enough capture to measure it.</p></div>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Screen Resolution</span>
+        <span class="srow__s">Output files match the captured display's native pixel dimensions</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">Original</span><span class="seg__i">1080p</span>
+          <span class="seg__i">720p</span><span class="seg__i">540p</span><span class="seg__i">Custom</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Bitrate</span>
+        <span class="srow__s">~8 Mbps. Balanced quality and file size for most screen recordings.
+          At 1 snapshot every 2 s / 1080p.</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i">Low</span><span class="seg__i on">Medium</span>
+          <span class="seg__i">High</span><span class="seg__i">Custom</span></span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Audio</span><span class="t-meta">the microphone controller</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Microphone</span>
+        <span class="srow__s">Microphone state could not be loaded</span></div>
+        <div class="srow__v"><span class="cond">only when · loading or failed</span>
+          <button class="btn btn--ghost btn--sm">Retry</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Active Device</span>
+        <span class="srow__s">The microphone currently in use</span></div>
+        <div class="srow__v"><span class="rec__dot" style="background:var(--app-accent);box-shadow:none;animation:none"></span>
+          <span class="t-meta is-mono strong">MacBook Pro Microphone</span><span class="chip chip--sq">default</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Available Devices</span>
+        <span class="srow__s">Microphones detected on this Mac</span></div>
+        <div class="srow__v"><span class="t-meta is-mono">3 detected</span><span class="chev"><svg><use href="#i-chevr"/></svg></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Preference</span>
+        <span class="srow__s">Which microphone capture should use</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">System Default</span><span class="seg__i">Specific Device</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Device</span>
+        <span class="srow__s">Pick the microphone to lock to</span></div>
+        <div class="srow__v"><span class="cond">only when · specific device</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">On Disconnect</span>
+        <span class="srow__s">What to do when the chosen microphone disconnects</span></div>
+        <div class="srow__v"><span class="cond">only when · specific device</span>
+          <span class="seg" style="opacity:.5"><span class="seg__i on">Fallback to Default</span><span class="seg__i">Wait for Same Device</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Error</span>
+        <span class="srow__s">The last microphone failure, dismissable</span></div>
+        <div class="srow__v"><span class="cond">only when · error set</span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Privacy</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Capture frame context</span>
+        <span class="srow__s">Store app, window, and supported browser context with frames</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Browser URL mode</span>
+        <span class="srow__s">Sanitized keeps scheme, host, port and path; query strings and fragments are dropped</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i">Off</span><span class="seg__i on">Sanitized</span><span class="seg__i">Full</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Browser URL access (Firefox / Zen)</span>
+        <span class="srow__s">Gecko browsers have no scriptable URL — reading their address needs macOS
+          Accessibility. Safari and Chromium do not.</span></div>
+        <div class="srow__v"><span class="cond">only when · gecko installed</span>
+          <span class="chip chip--warn"><svg class="ic ic--sm"><use href="#i-alert"/></svg>Not granted</span>
+          <button class="btn btn--ghost btn--sm">Grant access</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Excluded Apps</span>
+        <span class="srow__s">Apps whose visible content is never recorded</span></div>
+        <div class="srow__v">
+          <span class="chip"><span class="gicon ic-1p" style="width:14px;height:14px;font-size:7px">1P</span>1Password</span>
+          <span class="chip"><span class="gicon ic-sig" style="width:14px;height:14px;font-size:7px">Sg</span>Signal</span>
+          <button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-plus"/></svg>Add</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Filter system audio</span>
+        <span class="srow__s">Also keep audio from excluded apps out of recordings — the tap's exclude
+          list is the same list, by design</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+    </div>
+
+    <!-- ── INTELLIGENCE ────────────────────────────────────────────────────── -->
+    <div class="grouphd"><span class="grouphd__n">Intelligence</span>
+      <span class="t-meta">Providers, Ask AI, processing</span>
+      <span class="grouphd__c">35 – 79 of 96 · 7 sections</span></div>
+
+    <div class="sub-h"><span class="t-label">Providers</span>
+      <span class="t-meta">one global default model; every feature inherits it</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Enable AI features</span>
+        <span class="srow__s">The master switch for everything AI. While off, nothing is sent to any
+          model. <b>Off by default.</b> Drawn on here so the 44 rows it gates are visible.</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Providers</span>
+            <span class="srow__s">Keys are stored only in the macOS keychain — never in settings, config
+              or the save directory. Add a kind twice to run two instances.</span></div>
+          <div class="srow__v"><button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-plus"/></svg>Anthropic</button>
+            <button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-plus"/></svg>Ollama</button></div></div>
+        <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+          <div class="mrow"><span class="mrow__n">Anthropic</span>
+            <span class="mrow__meta"><span class="chip chip--sq">cloud</span>
+              <span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-key"/></svg>key in keychain</span></span></div>
+          <div class="mrow"><span class="mrow__n">Ollama</span>
+            <span class="mrow__meta"><span class="chip chip--sq">local</span>
+              <span class="t-meta is-mono">localhost:11434</span>
+              <span class="chip">no key needed</span></span></div>
+        </div>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Global default model</span>
+        <span class="srow__s">One merged list across every connected provider. Type any model id and pick
+          the provider to attribute it to.</span></div>
+        <div class="srow__v"><span class="pop">claude-sonnet-4-5 <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">AI runtime</span>
+        <span class="srow__s">One structured round trip against the default model — it verifies that
+          provider's key even while AI features are off</span></div>
+        <div class="srow__v"><span class="chip chip--ok">available</span>
+          <button class="btn btn--ghost btn--sm">Test connection</button></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Connectors</span>
+            <span class="srow__s">MCP servers chat may call. A connector works only when it is both
+              enabled <i>and</i> authorized — two separate things.</span></div>
+          <div class="srow__v"><button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-plus"/></svg>Add connector</button></div></div>
+        <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+          <div class="mrow"><svg class="ic ic--sm sub"><use href="#i-term"/></svg>
+            <span class="mrow__n" style="font-family:var(--app-font-sans)">Linear</span>
+            <span class="mrow__meta"><span class="chip chip--sq">bearer</span>
+              <span class="t-meta is-mono">7 tools · 7 active</span>
+              <span class="chip chip--ok">authorized</span><span class="sw on"><i></i></span></span></div>
+          <div class="mrow"><svg class="ic ic--sm sub"><use href="#i-term"/></svg>
+            <span class="mrow__n" style="font-family:var(--app-font-sans)">Notion</span>
+            <span class="mrow__meta"><span class="chip chip--sq">oauth</span>
+              <span class="chip">not connected</span>
+              <button class="btn btn--ghost btn--sm">Connect</button><span class="sw"><i></i></span></span></div>
+          <div class="mrow"><svg class="ic ic--sm sub"><use href="#i-term"/></svg>
+            <span class="mrow__n" style="font-family:var(--app-font-sans)">Filesystem</span>
+            <span class="mrow__meta"><span class="chip chip--sq">stdio</span>
+              <span class="chip chip--warn">needs Node</span><span class="sw"><i></i></span></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Ask AI</span>
+      <span class="t-meta">Quick Recall answers over your redacted capture history</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Enable Ask AI</span>
+        <span class="srow__s">Off by default</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Fetch pages you visited</span>
+        <span class="srow__s">Lets Ask AI re-request a page you visited — its address minus any secrets —
+          over the network. Off by default.</span></div>
+        <div class="srow__v"><span class="sw"><i></i></span></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Limit tool calls per question</span>
+            <span class="srow__s">Each tool call is one brokered query into your redacted capture history</span></div>
           <div class="srow__v"><span class="sw on"><i></i></span></div></div>
-        <div class="srow is-focus"><div class="srow__t"><span class="srow__l">Frame rate</span>
-          <span class="srow__s">focused row — accent bar + tinted fill</span></div>
-          <div class="srow__v"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span></div></div>
+        <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+          <div class="mrow"><span class="mrow__n" style="font-family:var(--app-font-sans)">Max tool calls per question</span>
+            <span class="mrow__meta"><button class="btn btn--sm btn--icon"><svg class="ic ic--sm"><use href="#i-minus"/></svg></button>
+              <span class="t-ui is-mono strong" style="width:22px;text-align:center">12</span>
+              <button class="btn btn--sm btn--icon"><svg class="ic ic--sm"><use href="#i-plus"/></svg></button></span></div>
+        </div>
+        <p class="conseq" style="margin:0">Turning the cap off means one question can issue unlimited
+          brokered queries into your retained capture history.</p>
       </div>
-      <div class="grp">
-        <div class="grow"><span class="gthumb"><span class="wave" data-wave="9" data-seed="4"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Design review</span>
-            <span class="grow__sub">41 min · 3 speakers</span></span>
-          <span class="grow__val"><span class="chev"><svg><use href="#i-chevr"/></svg></span></span></div>
-        <div class="grow grow--sel"><span class="gthumb"><span class="wave" data-wave="9" data-seed="8"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Launch sync</span>
-            <span class="grow__sub">full-row accent selection</span></span>
-          <span class="grow__val"><span class="t-meta is-mono">13:02</span></span></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Media — result cell, moment card, audio cell</span>
-      <div class="cell__b" style="align-items:flex-start">
-        <div class="mcard" style="width:132px"><div class="mcard__f">
-          <span class="shot shot--editor"><span class="lines lines--code"></span></span>
-          <span class="qcell__dur">14:32</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">webhook.rs</span></div></div>
-        <div class="mcard" style="width:132px"><div class="mcard__f qcell__f--audio">
-          <span class="tag"><svg class="ic ic--sm" style="color:var(--app-src-mic)"><use href="#i-mic"/></svg>mic</span>
-          <span class="wave" data-wave="26" data-seed="6"></span>
-          <span class="qcell__dur">04:58</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">Launch sync</span></div></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Timeline parts</span>
-      <div style="position:relative;padding-top:20px">
-        <div class="rail" style="height:26px">
-          <div class="band" style="left:0;width:34%"><span class="gicon ic-figma">F</span></div>
-          <div class="band" style="left:35%;width:26%"><span class="gicon ic-zoom">Z</span></div>
-          <div class="band" style="left:62%;right:0"><span class="gicon ic-code">C</span></div>
-          <span class="tickA" style="right:0"></span></div>
-        <span class="playhead" style="left:62%;top:14px;bottom:-14px"></span>
-        <span class="nowpill" style="left:62%">Mon, Aug 3 · <span class="num">14:32</span>
-          <svg class="ic ic--sm"><use href="#i-chevd"/></svg></span>
-      </div>
-      <div class="lane" style="margin-top:18px"><div class="lane__labs"><span>mic</span><span>sys</span></div>
-        <div class="lane__vp"><span class="abar abar--mic" style="left:0;width:36%"></span>
-          <span class="abar abar--sys is-sel" style="left:35%;width:26%"></span></div></div></div>
-    <div class="cell"><span class="cell__l">Empty / redacted states are designed</span>
-      <div style="border-radius:5px;aspect-ratio:16/9;background:var(--app-surface-subtle);
-        display:flex;align-items:center;justify-content:center">
-        <svg class="ic ic--lg" style="color:var(--app-text-faint)"><use href="#i-frame"/></svg></div>
-      <div class="kv"><span class="kv__k">Title</span><span class="kv__v sub">—</span></div>
-      <p class="conseq" style="margin:0">Every inspector field has an em-dash rendering, so the panel
-        keeps its width and the layout never jumps.</p></div>
-  </div>
-
-  <!-- ─────────────────────────── type ─────────────────────────── -->
-  <p class="wlabel"><b>3 · Type — six roles, three weights, and the one rule.</b> A size is not a choice,
-    it is a consequence of what the text is. Mono is the machine voice: times, sizes, counts, ids,
-    keys, engine names. Sans is the product speaking.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:110px">Role</th><th style="width:290px">Specimen</th>
-        <th class="num" style="width:172px">px / lh / tracking / weight</th>
-        <th>Used for, in this direction</th></tr>
-      <tr><td><span class="is-mono">--t-label</span></td>
-        <td><span class="t-label">CAPTURE · MIC · 20% DUTY</span></td>
-        <td class="num">10 / 1.4 / +.02 / 510 mono</td>
-        <td>tile headers, inspector keys, lane labels, section eyebrows, chip text. Never a sentence.</td></tr>
-      <tr><td><span class="is-mono">--t-meta</span></td>
-        <td><span class="t-meta">41 min · 3 speakers · system audio</span></td>
-        <td class="num">11 / 1.35 / +.01 / 400</td>
-        <td>status strip, helper lines under a row, captions, counts, consequence lines.</td></tr>
-      <tr><td><span class="is-mono">--t-ui</span></td>
-        <td><span class="t-ui">Start recording at login</span></td>
-        <td class="num">13 / 1.25 / −.006 / 400</td>
-        <td>the default: rows, buttons, menus, labels, chips, transcript speakers.</td></tr>
-      <tr><td><span class="is-mono">--t-read</span></td>
-        <td><span class="t-read" style="display:block">The webhook verifier was the week's one real change.</span></td>
-        <td class="num">14 / 1.55 / −.008 / 400</td>
-        <td>prose only: the digest, AI answers, empty-state body. Capped at 70ch.</td></tr>
-      <tr><td><span class="is-mono">--t-title</span></td>
-        <td><span class="t-title">Monday, August 3</span></td>
-        <td class="num">17 / 1.3 / −.016 / 590</td>
-        <td>the date header, the Quick Access query, section names, empty-state leads.</td></tr>
-      <tr><td><span class="is-mono">--t-display</span></td>
-        <td><span class="t-display is-num">14:32:08</span></td>
-        <td class="num">22 / 1.2 / −.02 / 590</td>
-        <td><b>one per screen.</b> Timeline: the readout clock. Overview: the captured-hours hero.
-          Quick Access: the no-match lead.</td></tr>
-    </table>
-  </div>
-
-  <p class="wlabel"><b>4 · Spacing, metrics, radii.</b> Named constants, not raw numbers — a designer
-    picks “section gap”, so the same relationship is the same number on every surface. The density rule
-    holds: a grid's inset equals its gutter.</p>
-  <div class="fitrow" style="align-items:stretch">
-    <div class="cell" style="width:540px;padding:0;overflow:hidden">
-      <table class="tbl">
-        <tr><th style="width:150px">Constant</th><th class="num" style="width:96px">px</th><th>Where</th></tr>
-        <tr><td><span class="is-mono">--gap-inline</span></td><td class="num">6</td><td>icon → its label; chip → its count</td></tr>
-        <tr><td><span class="is-mono">--gap-row</span></td><td class="num">8</td><td>between rows in a list or form</td></tr>
-        <tr><td><span class="is-mono">--gap-group</span></td><td class="num">12</td><td>tile gutter, tile inset, pane padding</td></tr>
-        <tr><td><span class="is-mono">--gap-section</span></td><td class="num">20</td><td>between sections of a settings surface</td></tr>
-        <tr><td><span class="is-mono">--h-sm / md / lg</span></td><td class="num">22 / 28 / 32</td><td>tool-strip control · default row and button · dialog primary</td></tr>
-        <tr><td><span class="is-mono">--h-titlebar</span></td><td class="num">38</td><td>title bar; tool strip 30, status strip 24</td></tr>
-        <tr><td><span class="is-mono">--w-insp</span></td><td class="num">256</td><td>inspector (280 in Quick Access, where the window is wider)</td></tr>
-        <tr><td><span class="is-mono">--r-sm / md / lg / xl</span></td><td class="num">4 / 6 / 8 / 12</td><td>badge · control · panel and tile · floating</td></tr>
-      </table>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Model override</span>
+        <span class="srow__s">Quick Recall only. A pinned chat thread still wins over this.</span></div>
+        <div class="srow__v"><span class="pop">Global default model <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
     </div>
-    <div class="cell" style="width:520px">
-      <span class="cell__l">The 4-point rhythm, drawn</span>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">6</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:6px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">8</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:8px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">12</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:12px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">20</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:20px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">28</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:28px"></i></span></div>
+
+    <div class="sub-h"><span class="t-label">User Context</span>
+      <span class="t-meta">the high-consent continuous worker — off by default</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Derive context continuously</span>
+        <span class="srow__s">Build a private, on-device understanding of your activity in the
+          background, 24/7. Distinct from Ask AI.</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Derivation status</span>
+        <span class="srow__s">≈ 2.1 M tokens used across 340 passes — estimated from text length, not a
+          billed count</span></div>
+        <div class="srow__v"><span class="chip chip--ok">active</span>
+          <span class="t-meta is-mono">318 Activities · 47 Conclusions</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Derivation Budget</span>
+        <span class="srow__s">Paces background work so tokens are a trickle, never a one-time bill</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i">Light</span><span class="seg__i on">Balanced</span><span class="seg__i">Thorough</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">History Backfill</span>
+        <span class="srow__s">Newest history is derived first; by default Mnema reaches back about
+          30 days. “Go deeper” extends that to your entire history.</span></div>
+        <div class="srow__v"><span class="sw"><i></i></span></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Run derivation</span>
+            <span class="srow__s">Once, now, over the range not yet covered</span></div>
+          <div class="srow__v"><button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-refresh"/></svg>Run derivation now</button></div></div>
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <p class="conseq" style="margin:0;flex:1 1 auto">This derived understanding deliberately outlives
+            your Retention Policy window — Mnema keeps what it learned long after the recordings it
+            learned from age out. <b>Wipe User Context is the only control that clears it</b>, and it
+            does not touch your raw captures.</p>
+          <button class="btn btn--sm btn--danger"><svg class="ic ic--sm"><use href="#i-trash"/></svg>Wipe User Context</button></div>
       </div>
-      <span class="cell__l" style="margin-top:8px">Icons — one family, monochrome, currentColor</span>
-      <div class="cell__b" style="gap:12px">
-        <svg class="ic ic--lg"><use href="#i-screen"/></svg><svg class="ic ic--lg"><use href="#i-mic"/></svg>
-        <svg class="ic ic--lg"><use href="#i-sys"/></svg><svg class="ic ic--lg"><use href="#i-spark"/></svg>
-        <svg class="ic ic--lg"><use href="#i-search"/></svg><svg class="ic ic--lg"><use href="#i-panel"/></svg>
-        <svg class="ic ic--lg"><use href="#i-scan"/></svg><svg class="ic ic--lg"><use href="#i-cpu"/></svg>
-        <svg class="ic ic--lg"><use href="#i-clock"/></svg><svg class="ic ic--lg"><use href="#i-wave"/></svg>
-        <svg class="ic ic--lg"><use href="#i-frame"/></svg><svg class="ic ic--lg"><use href="#i-sliders"/></svg>
-      </div>
-      <p class="conseq" style="margin:0">Only a real third-party app icon keeps its own colours —
-        the exclude list, the timeline bands. That is identity, not decoration.</p>
     </div>
+
+    <div class="sub-h"><span class="t-label">OCR</span>
+      <span class="t-meta">13 rows — five of them exist only for Tesseract</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Enable OCR</span>
+        <span class="srow__s">Queue OCR for captured screen frames when the selected engine is available ·
+          <b>742 frames</b> still unread</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Provider</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">Apple Vision</span><span class="seg__i">Tesseract</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Model</span>
+        <span class="srow__s">Apple Vision is managed by macOS — there is no app-managed download</span></div>
+        <div class="srow__v"><span class="pop" style="opacity:.5">OS-managed <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Language</span></div>
+        <div class="srow__v"><span class="cond">only when · Tesseract</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Recognition mode</span></div>
+        <div class="srow__v"><span class="cond">only when · Apple Vision</span>
+          <span class="seg"><span class="seg__i on">Fast</span><span class="seg__i">Accurate</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Language correction</span>
+        <span class="srow__s">Let Apple Vision spend extra work correcting recognized text</span></div>
+        <div class="srow__v"><span class="cond">only when · Apple Vision</span><span class="sw"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Page segmentation</span>
+        <span class="srow__s">Auto for mixed layouts, Single block for paragraphs, Sparse text for
+          scattered screenshots</span></div>
+        <div class="srow__v"><span class="cond">only when · Tesseract</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Image preprocessing</span></div>
+        <div class="srow__v"><span class="cond">only when · Tesseract</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Upscale before OCR</span>
+        <span class="srow__s">Tesseract works best near 300 DPI; 2× is the first step for tiny screenshots</span></div>
+        <div class="srow__v"><span class="cond">only when · Tesseract</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Character whitelist</span></div>
+        <div class="srow__v"><span class="cond">only when · Tesseract</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">OCR availability</span>
+        <span class="srow__s">With screen capture on, recording start is blocked until the selected OCR
+          provider is available</span></div>
+        <div class="srow__v"><span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>available</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Selected model status</span></div>
+        <div class="srow__v"><span class="t-meta sub">managed by macOS · no download</span>
+          <button class="btn btn--ghost btn--sm btn--icon"><svg class="ic ic--sm"><use href="#i-refresh"/></svg></button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Cache duration</span>
+        <span class="srow__s">In-memory cache for frame and image previews</span></div>
+        <div class="srow__v"><span class="pop">1 hour <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Transcription</span>
+      <span class="t-meta">drawn at true size in the window above</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Enable audio transcription</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Transcribe microphone</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Transcribe system audio</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Provider</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i">Whisper</span><span class="seg__i">Apple Speech</span>
+          <span class="seg__i on">Parakeet</span><span class="seg__i">Deepgram</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Model</span></div>
+        <div class="srow__v"><span class="pop">parakeet-tdt-0.6b-v3 <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Language</span></div>
+        <div class="srow__v"><span class="pop">auto <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Deepgram API key</span>
+        <span class="srow__s">Switching to Deepgram fires a blocking consent dialog first — your
+          microphone and system audio would be uploaded to your own Deepgram account</span></div>
+        <div class="srow__v"><span class="cond">only when · Deepgram</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Parakeet memory mode</span></div>
+        <div class="srow__v"><span class="cond">only when · Parakeet</span>
+          <span class="seg"><span class="seg__i on">Balanced</span><span class="seg__i">Low memory</span><span class="seg__i">Performance</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Idle unload seconds</span></div>
+        <div class="srow__v"><span class="cond">only when · Balanced</span><span class="pop">300 s <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Chunk seconds</span></div>
+        <div class="srow__v"><span class="cond">only when · Parakeet</span><span class="pop">30 s <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Selected model status</span></div>
+        <div class="srow__v"><span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>installed</span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Speakers</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Speaker separation</span>
+        <span class="srow__s">Two switches in one row: <i>Separate speakers in transcripts</i> and
+          <i>Recognize saved people</i>. Separation is anonymous; recognition is a second opt-in.</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span><span class="sw"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Helper timeout</span>
+        <span class="srow__s">Stops speaker analysis if the local helper runs too long. Queued jobs keep
+          the timeout they were created with.</span></div>
+        <div class="srow__v"><span class="pop">10 min <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Speaker model</span>
+        <span class="srow__s">Recognition is scoped per preset — switching is reversible, but saved
+          voices need a one-time re-tag under the new preset</span></div>
+        <div class="srow__v"><span class="pop">pyannote-community-1 · WeSpeaker <b><svg><use href="#i-chevud"/></svg></b></span>
+          <span class="chip chip--ok">419 MB · installed</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Voiceprint</span>
+        <span class="srow__s">Record 15 seconds so Mnema can label your turns with your name instead of
+          “Speaker 1”. It never leaves this device.</span></div>
+        <div class="srow__v"><span class="chip">no voiceprint saved</span>
+          <button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-mic"/></svg>Record 15 seconds</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Label my voice automatically</span>
+        <span class="srow__s">Off means Mnema suggests your name and waits. Only your own voice is ever
+          labelled this way.</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Semantic Search</span></div>
+    <div class="setgrp grp">
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Enable semantic search</span>
+            <span class="srow__s">Fuse meaning-based results with keyword search. Inert until a model is
+              installed, and no model ships installed.</span></div>
+          <div class="srow__v"><span class="sw"><i></i></span></div></div>
+        <p class="conseq" style="margin:0">Off. Turning it on makes Mnema a background indexer for as long
+          as it takes to catch up: on the <b>418,000</b> anchors you already have, that is roughly
+          <b>1.4 GB</b> of index and hours of GPU work, and switching models later re-indexes all of it.
+          Full-text search does not depend on it. <b>No coverage meter is drawn while it is off</b> —
+          there is nothing to measure.</p>
+      </div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Model</span>
+        <span class="srow__s">Nothing downloads until you choose one. Recommended tiers first;
+          multilingual models are marked.</span></div>
+        <div class="srow__v"><span class="pop">Select a model… <b><svg><use href="#i-chevud"/></svg></b></span></div></div>
+    </div>
+
+    <!-- ── DATA ────────────────────────────────────────────────────────────── -->
+    <div class="grouphd"><span class="grouphd__n">Data</span>
+      <span class="t-meta">Storage, CLI access</span>
+      <span class="grouphd__c">80 – 82 of 96 · 2 sections</span></div>
+
+    <div class="sub-h"><span class="t-label">Storage</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Save Directory</span>
+        <span class="srow__s">Where captures, the database and model caches live on disk. Changing it
+          takes effect after a restart; captures already written stay where they are.</span></div>
+        <div class="srow__v"><span class="t-meta is-mono">~/.mnema</span>
+          <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-folder"/></svg>Browse</button></div></div>
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">Retention</span>
+            <span class="srow__s">Automatically delete captured data after the chosen window.
+              <b>Forever</b> is the default.</span></div>
+          <div class="srow__v"><button class="btn btn--sm">Run cleanup now</button></div></div>
+        <div style="width:100%">
+          <div class="ladder"><span>7 days</span><span>14 days</span><span class="on">30 days</span><span>Forever</span></div>
+          <div class="axis"><span class="axis__l"></span><span class="axis__f" style="width:44%"></span>
+            <span class="axis__m" style="left:44%"><b>you are here · 34.2 GB</b></span>
+            <span class="axis__m" style="left:82%;background:var(--app-warn)"><b style="color:var(--app-warn)">disk full</b></span></div>
+          <p class="conseq" style="margin:14px 0 0">Frames, audio and transcripts are deleted.
+            <b>What Mnema concluded about you is not</b> — the derived understanding outlives raw
+            retention by design. Clearing that is Settings › Intelligence › <i>Wipe User Context</i>,
+            not this row. Last cleanup: 412 segments, 38,102 frames, 96 audio segments.</p></div>
+      </div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Access</span></div>
+    <div class="setgrp grp">
+      <div class="srow srow--wide">
+        <div style="display:flex;align-items:center;gap:12px;width:100%">
+          <div class="srow__t"><span class="srow__l">CLI Access</span>
+            <span class="srow__s">Lets local tools request time-bounded access to searchable Mnema text —
+              screen text, audio transcripts, timeline results. Output never includes media paths, raw
+              rows, app or window titles, browser URLs, or deep links.</span></div>
+          <div class="srow__v"><span class="chip chip--ok">installed at /usr/local/bin/mnema</span>
+            <button class="btn btn--ghost btn--sm">Reinstall CLI</button></div></div>
+        <div class="grp" style="width:100%;background:var(--app-surface-subtle)">
+          <div class="mrow"><span class="rec__dot" style="background:var(--app-accent);box-shadow:none;animation:none"></span>
+            <span class="mrow__n" style="font-family:var(--app-font-sans)">Claude Code</span>
+            <span class="mrow__meta"><span class="t-meta is-mono">search · expires in 4 d</span>
+              <button class="btn btn--ghost btn--sm">Revoke</button></span></div>
+          <div class="mrow"><span class="rec__dot" style="background:var(--app-text-faint);box-shadow:none;animation:none"></span>
+            <span class="mrow__n" style="font-family:var(--app-font-sans)">Terminal</span>
+            <span class="mrow__meta"><span class="t-meta is-mono">search · expired</span>
+              <button class="btn btn--ghost btn--sm">Revoke</button></span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ABOUT ───────────────────────────────────────────────────────────── -->
+    <div class="grouphd"><span class="grouphd__n">About</span>
+      <span class="t-meta">Version, license, updates</span>
+      <span class="grouphd__c">83 – 96 of 96 · 3 sections</span></div>
+
+    <div class="sub-h"><span class="t-label">License &amp; Trial</span>
+      <span class="t-meta">buy once, keep it forever · verified offline</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Status</span>
+        <span class="srow__s">Updates included through 4 Mar 2027 · 1 of 3 devices activated</span></div>
+        <div class="srow__v"><span class="chip chip--ok"><svg class="ic ic--sm"><use href="#i-check"/></svg>Licensed</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Refresh license status</span>
+        <span class="srow__s">Re-check with the license server — a renewal or freed-up device lands right away</span></div>
+        <div class="srow__v"><button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-refresh"/></svg>Refresh</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Buy Mnema</span>
+        <span class="srow__s">$69 one-time purchase — includes a 1-year update window</span></div>
+        <div class="srow__v"><span class="cond">only when · not licensed</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Renew</span>
+        <span class="srow__s">Extends the window in which new builds install. The version you have never
+          expires.</span></div>
+        <div class="srow__v"><button class="btn btn--sm">Renew ($29) <svg class="ic ic--sm"><use href="#i-ext"/></svg></button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Activate license</span>
+        <span class="srow__s">Paste the key from your purchase email to unlock recording on this device</span></div>
+        <div class="srow__v"><span class="input is-mono" style="width:190px;height:22px;font-size:11px"><span class="ph">Paste your license key</span></span>
+          <button class="btn btn--sm">Activate</button></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">About</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Copy details</span>
+        <span class="srow__s">Version and build details as text, for a support message</span></div>
+        <div class="srow__v"><span class="t-meta is-mono">v0.1.9 · Stable · arm64</span>
+          <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-copy"/></svg>Copy details</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Update channel</span>
+        <span class="srow__s">Current channel: Stable. Switching channels checks immediately.</span></div>
+        <div class="srow__v"><span class="seg"><span class="seg__i on">Stable</span><span class="seg__i">Preview</span></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Confirm preview channel</span>
+        <span class="srow__s">Preview builds may be less stable and may show macOS security warnings</span></div>
+        <div class="srow__v"><span class="cond">only when · switching to Preview</span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Status</span>
+        <span class="srow__s">Last checked 14:12 today</span></div>
+        <div class="srow__v"><span class="chip chip--ok">Up to date</span>
+          <button class="btn btn--ghost btn--sm">Check for Updates</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Third-party notices</span>
+        <span class="srow__s">The bundled on-device models are built on open projects, each credited
+          under its licence</span></div>
+        <div class="srow__v"><button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-copy"/></svg>Copy notices</button></div></div>
+    </div>
+
+    <div class="sub-h"><span class="t-label">Developer</span></div>
+    <div class="setgrp grp">
+      <div class="srow"><div class="srow__t"><span class="srow__l">Enable developer options</span>
+        <span class="srow__s">Reveals the Debug surface and records verbose entries in the application
+          log. With it off, visiting Debug redirects to the Timeline.</span></div>
+        <div class="srow__v"><span class="sw on"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Native capture debug logging</span>
+        <span class="srow__s">Write native capture diagnostic output to a file on disk</span></div>
+        <div class="srow__v"><span class="sw"><i></i></span></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">Native capture log</span>
+        <span class="srow__s">Where diagnostic output is written on disk</span></div>
+        <div class="srow__v"><span class="cond">only when · status exists</span>
+          <span class="t-meta is-mono">rust.log</span>
+          <button class="btn btn--ghost btn--sm">Open Log File</button></div></div>
+      <div class="srow"><div class="srow__t"><span class="srow__l">General application log</span>
+        <span class="srow__s">High-level runtime events and errors</span></div>
+        <div class="srow__v"><span class="t-meta is-mono">mnema.log</span>
+          <button class="btn btn--ghost btn--sm">Open Log File</button></div></div>
+    </div>
+
   </div>
 
-  <!-- ─────────────────────────── audit ─────────────────────────── -->
-  <p class="wlabel"><b>5 · Pattern self-audit.</b> Each page against the six checks. Bordered
-    containers are counted as the de-boxing rule defines them — control bezels (button, segmented,
-    switch, popup, field) and the hairline that clips a screenshot are free; only containers count.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
+  <p class="wlabel"><b>Coverage, checked against the source.</b> Left column is
+    <span class="is-mono">groups.ts</span>; the count is from <span class="is-mono">settings-index.ts</span>,
+    whose completeness is enforced by <span class="is-mono">specs/settings-row-index.test.ts</span> —
+    a row that dodges the index fails the build. If a section grows a row, this page is wrong until it
+    grows one too. That is the point of drawing it this way rather than sampling.</p>
+  <div class="cell" style="padding:0;overflow:hidden;max-width:1100px;margin:0 auto">
     <table class="tbl">
-      <tr>
-        <th style="width:118px">Page</th>
-        <th>Hierarchy</th>
-        <th>Spacing grid</th>
-        <th>Colour &amp; contrast</th>
-        <th>States</th>
-        <th>Native bar</th>
-        <th class="num" style="width:78px">Borders</th>
-      </tr>
-      <tr>
-        <td><b>01 Overview</b></td>
-        <td>One <span class="is-mono">--t-display</span> (6:42 hero) → date title → tile labels. Four
-          type sizes in the grid.</td>
-        <td>12 inset = 12 gutter. Rows 108 / 1fr × 3.</td>
-        <td>Accent appears three times: selected row, today's bar, the write chip.</td>
-        <td>Row hover, full-row selection, inspector empty state, 800px degradation.</td>
-        <td>38px bar, 22px strip controls, tabular-nums throughout, no pointer cursor on lists.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>02 Timeline</b></td>
-        <td>The clock is the display size; app name is the only 13px item in the readout.</td>
-        <td>12 pane inset, 10 between stage / rail / drawer.</td>
-        <td>Record red is a state, not an error: now-tick, selected audio segment. Sources keep their
-          three hues.</td>
-        <td>Hover ghost + bubble, scrubbed vs live, drawer open, disabled next-day.</td>
-        <td>NSMenu jump popover with checkmark gutter and ⌘ column; overlay scrollbars.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>03 Quick Access · Search</b></td>
-        <td>Query at 17px is the loudest thing; results are images, captions are 13/11.</td>
-        <td>16 inset, 12 gutter — the fixed-window exemption.</td>
-        <td>Neutral grey mode chip; accent only on selection and match highlight.</td>
-        <td>Results, empty, no-match, selection, inspector placeholder.</td>
-        <td>Full-row accent selection, ⏎/⌘⏎ stated in a persistent bottom bar.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>04 Quick Access · Ask</b></td>
-        <td>Question 17px → answer 14px prose at 70ch → tool chips 11px.</td>
-        <td>24 reading inset; 10 between moment cards.</td>
-        <td>Accent mode chip and accent send button; the answer itself carries no colour.</td>
-        <td>Streaming with caret, Stop, collapsed bar, capturing, attached, answering.</td>
-        <td>Floating pieces get shadows and 12–14px radii; nothing else does.</td>
-        <td class="num">4</td>
-      </tr>
-      <tr>
-        <td><b>05 Settings · General</b></td>
-        <td>Sticky section name is 13px semibold; sub-headers are 10px mono; rows 13/11.</td>
-        <td>16 page inset, rows 34–46 tall by content, groups full-bleed inside.</td>
-        <td>Accent on the focused row, the switch, and the save chip. Danger reserved for delete.</td>
-        <td>Row focus, saved echo, saving, filter applied, armed recorder, conflict.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; native sheet for
-          confirms (never drawn here).</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>06 Settings · Intelligence</b></td>
-        <td>Same as 05. No display size on this surface — nothing here is a hero number.</td>
-        <td>Same 16 / group rhythm; custom inputs sit inside a normal row's width.</td>
-        <td>Verdict chips are the only semantic colour: green fits, amber slow, red too large.</td>
-        <td>Verified, not running, saved, focused, conflicting shortcut, budget at 36%.</td>
-        <td>Model rows are 30px list rows, not cards; checkmark gutter matches NSMenu.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>08 Journal</b></td>
-        <td>Digest headline is the one <span class="is-mono">--t-display</span>; lede stats 17px mono →
-          card title 13 → summary 11. The receipt inverts it — the frame is the hero, type serves it.</td>
-        <td>16 page inset; 78/16/1fr river grid; 10 between receipt pieces.</td>
-        <td>Category swatches are the app's eight <span class="is-mono">--cat-*</span> tokens, used only
-          as 8–9px dots and chips. Accent is the selected card, the live footer and the save chip.</td>
-        <td>Full card, compact row, footage-expired, pending (deriving + paused), receipt open, scrubbed.</td>
-        <td>Sheet over the surface with a scrim; 28px rows; ⏎/esc/←/→/Space stated in the receipt's
-          bottom bar.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>09 Subjects</b></td>
-        <td>No display size in the tier list — the sparkline is the hero, not a number. The detail's
-          <span class="is-mono">86%</span> is the one display item on that frame.</td>
-        <td>16 inset; 40px minimum row (taller than the 28 floor, because two lines + a chart).</td>
-        <td>Accent = the lead conclusion's line, warming, and selection. Warn = cooling. Faded rows are
-          opacity, never a different hue.</td>
-        <td>Four tiers, selection, faded, paging (“Show 2 more”), sort, pinned, below-floor.</td>
-        <td>Full-row accent selection; inline SVG polylines, no chart library idiom; overlay scrollbars.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>10 Context</b></td>
-        <td>Authored sentences are <span class="is-mono">--t-read</span> at 72ch — they are prose the
-          user wrote, so they get reading type, not UI type. No display size on the surface.</td>
-        <td>16 inset; the composer is one 10px-padded fill, not a bordered card.</td>
-        <td>Accent marks <i>authored</i> everywhere it appears. Warn is reserved for the guardrail card
-          — the only place on the page a caution is honest.</td>
-        <td>Composer focused, row hover, row editing, saving, archive hidden/shown, restore.</td>
-        <td>Native confirm sheet for delete (never drawn); ⌘⏎ stated inline; 28px rows.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>11 Settings · complete</b></td>
-        <td>Group bar 17px semibold → section sub-header 10px mono → rows 13/11. Same ramp as 05/06 with
-          one level added, because 19 sections need two levels of address.</td>
-        <td>Same 16 / group rhythm as 05. The unrolled column is the same 844px content width.</td>
-        <td>Accent on the focused row, switches and the save chip. Warn on “uploads your audio” and the
-          two ungranted permissions. Danger only on Wipe User Context.</td>
-        <td>Focused row, saved echo, conditional (<span class="is-mono">only when…</span>), armed
-          recorder, disabled dependent, off-with-price.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; no save bar and,
-          per G7, no Undo.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>07 Components</b></td>
-        <td>Specimen page — labels 10px mono, everything else at its native role.</td>
-        <td>10 cell gutter, auto-fill 258px columns.</td>
-        <td>Both themes rendered from the same tokens; no hard-coded colour outside screenshots.</td>
-        <td>Every control's full state set is drawn rather than described.</td>
-        <td>The shell is drawn at true size at the top of the page.</td>
-        <td class="num">n/a</td>
-      </tr>
+      <tr><th style="width:130px">Group</th><th>Sections, in render order</th>
+        <th class="num" style="width:70px">Rows</th><th style="width:300px">Notes</th></tr>
+      <tr><td><b>General</b></td><td>Appearance · Startup · Shortcuts</td><td class="num">5</td>
+        <td>the 21 key bindings live under one indexed row</td></tr>
+      <tr><td><b>Capture</b></td><td>Capture · Video · Audio · Privacy</td><td class="num">29</td>
+        <td>11 of the 29 are conditional on another row's value</td></tr>
+      <tr><td><b>Intelligence</b></td><td>Providers · Ask AI · User Context · OCR · Transcription ·
+        Speakers · Semantic Search</td><td class="num">45</td>
+        <td>MCP connectors are one row inside Providers, not a section</td></tr>
+      <tr><td><b>Data</b></td><td>Storage · Access</td><td class="num">3</td>
+        <td>the smallest group, and the one with the most consequence per row</td></tr>
+      <tr><td><b>About</b></td><td>License &amp; Trial · About · Developer</td><td class="num">14</td>
+        <td>About renders three groups (About · Updates · Acknowledgements) in one section</td></tr>
+      <tr><td><b>5 groups</b></td><td><b>19 sections</b></td><td class="num"><b>96</b></td>
+        <td>every one drawn above</td></tr>
     </table>
   </div>
 
-  <p class="wlabel"><b>6 · Where this direction knowingly spends.</b></p>
-  <div class="cellgrid" style="grid-template-columns:repeat(3,1fr)">
-    <div class="cell"><span class="cell__l">Density</span>
-      <p class="t-meta" style="margin:0">22px tool-strip controls and 24px status strip are below the
-        28px row floor — but they are <i>chrome</i>, and the 28px hit target is preserved by their
-        transparent padding. Content rows are never below 28.</p></div>
-    <div class="cell"><span class="cell__l">The inspector's width</span>
-      <p class="t-meta" style="margin:0">256px is real estate the other four directions spend on
-        content. It buys the same detail surface on four different screens and stops every tile and
-        cell from growing a second column.</p></div>
-    <div class="cell"><span class="cell__l">Two permanent strips</span>
-      <p class="t-meta" style="margin:0">54px of vertical chrome under the title bar. The trade is
-        that capture rate, disk cost and save state are structurally unclippable — the founder's
-        autosave complaint cannot recur.</p></div>
+  <p class="wlabel"><b>Where the G-decisions overrode the earlier pages, and what the source says.</b></p>
+  <div class="cellgrid" style="grid-template-columns:repeat(4,1fr);max-width:1100px;margin:0 auto">
+    <div class="cell"><span class="cell__l">G7 · no Undo</span>
+      <p class="t-meta" style="margin:0">Pages 05 and 06 put an <b>Undo</b> button in the status strip.
+        Settings-Undo is out for v1, so the strip here carries the save chip alone. Row echo plus chip
+        is the whole pattern.</p></div>
+    <div class="cell"><span class="cell__l">G8 · no temperature, no ETA</span>
+      <p class="t-meta" style="margin:0">Page 06's OCR control claims <span class="is-mono">+3 °C</span>
+        and a clear-by time. Neither appears here. Consequence lines name disk, index size, model size,
+        queue depth and token estimates — quantities the app holds.</p></div>
+    <div class="cell"><span class="cell__l">G9 · unnamed external conflicts</span>
+      <p class="t-meta" style="margin:0">The shortcut group names an <i>in-app</i> owner (“already used
+        by Summon Quick Recall”) and says only “another app” otherwise. macOS cannot enumerate other
+        apps' hotkeys.</p></div>
+    <div class="cell"><span class="cell__l">G10 · semantic search off</span>
+      <p class="t-meta" style="margin:0">Drawn OFF with the price stated before the switch and
+        <b>no coverage meter</b>. Note the source's stored default is <span class="is-mono">true</span>
+        — but with no model installed it embeds nothing, so “off” is what the user sees. Worth
+        reconciling.</p></div>
   </div>
 
-  <p class="wlabel"><b>7 · Deliberate deviations, recorded.</b> Where pages 08–11 depart from the first
-    seven, or from an earlier page's pixels. Precedence applied throughout is
-    <b>G-decision &gt; direction mockup &gt; judgment</b>.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:150px">Deviation</th><th>What changed</th><th style="width:250px">Why</th></tr>
-      <tr><td><b>No Undo in the status strip</b></td>
-        <td>Pages 05 and 06 draw an <span class="is-mono">Undo</span> button beside the save chip.
-          Page 11 drops it; the strip carries the chip alone.</td>
-        <td><b>G7</b> — settings-Undo is out for v1. Where 05/06 and G7 disagree, G7 wins, so 11 is the
-          page to build from.</td></tr>
-      <tr><td><b>No temperature, no ETA</b></td>
-        <td>Page 06's OCR duty control claims <span class="is-mono">+3 °C</span>, “fans off”, and a
-          backlog clear-by time. None of that appears on 08–11.</td>
-        <td><b>G8</b> — a denominator ships only where the value is real on this machine. Neither is.</td></tr>
-      <tr><td><b>Semantic search drawn off</b></td>
-        <td>Page 06 draws it on with a coverage gauge. Page 11 draws it off, with the price stated
-          before the switch and no gauge at all.</td>
-        <td><b>G10</b> — shipping default is off; the meter renders only when the feature is on. Note the
-          stored default in the source is <span class="is-mono">true</span>; with no model installed
-          nothing is embedded, so “off” is what the user sees. Flagged for reconciliation.</td></tr>
-      <tr><td><b>Conflicts named only in-app</b></td>
-        <td>The shortcut group names its own conflict (“already used by Summon Quick Recall”) and says
-          only “another app” for an external register failure.</td>
-        <td><b>G9</b> — macOS has no API to enumerate other apps' hotkeys, so naming one would be a
-          guess printed as a fact.</td></tr>
-      <tr><td><b>A third level of address</b></td>
-        <td>05/06 use one sticky header. Page 11 adds a group bar above the section sub-header, so the
-          address is <i>group › section › row</i>.</td>
-        <td>19 sections across 5 groups. One level cannot say where you are; the second is the rail,
-          laid on its side, inside the content.</td></tr>
-      <tr><td><b>Rows taller than 28px</b></td>
-        <td>Subject rows on 09 are 40px minimum; authored rows on 10 are as tall as their prose.</td>
-        <td>The 28px floor is a <i>minimum</i>. A row carrying two lines and a chart, or a written
-          sentence at reading size, cannot honour it and stay legible.</td></tr>
-      <tr><td><b>A sheet, on 08</b></td>
-        <td>The receipt is a scrimmed sheet over the surface rather than a route or an inspector
-          expansion.</td>
-        <td>It is the only place in the direction where content wants the whole window: a frame, a
-          filmstrip, a scrub track and a transcript do not fit beside a 256px inspector.</td></tr>
-      <tr><td><b>The unrolled column</b></td>
-        <td>Page 11's second figure is not a window — it is the 844px content column drawn at full
-          length, outside any chrome.</td>
-        <td>Every one of the 96 rows had to be checkable. Sampling would have hidden exactly the rows
-          a completeness audit exists to find.</td></tr>
-    </table>
-  </div>
+  <p class="wlabel"><b>Why this shape holds at 96 rows and not just at 48.</b> A rail needs 19 entries
+    to reach every section, or 5 entries plus a second level of scrolling inside each. The filter
+    reaches all 96 in two keystrokes and does not care which group a setting is in — which is the state
+    a user is actually in when they open Settings. The group bars exist so that <i>scrolling</i> still
+    teaches the structure: they are the rail, laid on its side, inside the content.</p>
 </main>
 </body>
 </html>

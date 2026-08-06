@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Studio Shell — 07 Components, type, audit</title>
+<title>Studio Shell — 08 Journal</title>
 <style>
 /* ============================================================================
    Mnema round 4 — direction 02 STUDIO SHELL
@@ -963,518 +963,552 @@ mark { background: color-mix(in srgb, var(--app-accent) 26%, transparent); color
 })();
 </script>
 
+<style>
+/* page 08 only — the river, and the receipt overlay */
+.jscroll { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 0 12px; }
+.lede { padding: 12px 16px 0; }
+.lede__eyebrow { display: flex; align-items: center; gap: var(--s-8); height: 18px; }
+.lede__h { font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display); color: var(--app-text-strong); margin: 6px 0 4px; max-width: 46ch; }
+.lede__p { font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  color: var(--app-text); margin: 0; max-width: 74ch; }
+.lstats { display: flex; gap: var(--s-24); margin: 12px 0 0; padding: 10px 16px 12px;
+  border-top: var(--hairline) solid var(--app-border); }
+.lstat { display: flex; flex-direction: column; gap: 2px; }
+.lstat b { font: var(--w-semi) var(--t-title)/1 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); display: flex; align-items: center; gap: 5px; }
+.lstat span { font: var(--w-medium) var(--t-label)/1.4 var(--app-font-mono); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--app-text-subtle); }
+.sw-dot { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+
+.band { position: static; display: flex; align-items: center; gap: var(--s-8); height: 24px;
+  padding: 0 16px; background: var(--app-bg); border-bottom: var(--hairline) solid var(--app-border); }
+.band__n { font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); letter-spacing: .1em;
+  text-transform: uppercase; color: var(--app-text-strong); }
+
+.river { display: grid; grid-template-columns: 78px 16px 1fr; column-gap: 0; padding: 0 16px; }
+.riv__when { padding: 10px 8px 0 0; text-align: right; }
+.riv__clock { font: var(--w-medium) var(--t-meta)/1.3 var(--app-font-mono); font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong); display: block; }
+.riv__dur { font: var(--w-regular) var(--t-label)/1.5 var(--app-font-mono); color: var(--app-text-faint); display: block; }
+.riv__spine { position: relative; }
+.riv__spine::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px;
+  background: var(--app-border); transform: translateX(-50%); }
+.riv__node { position: absolute; left: 50%; top: 15px; width: 7px; height: 7px; border-radius: 50%;
+  transform: translateX(-50%); box-shadow: 0 0 0 3px var(--app-bg); }
+.riv__card { padding: 8px 0 12px 10px; min-width: 0; }
+.riv__card.is-sel { background: var(--app-surface); border-radius: var(--r-md); box-shadow: inset 2px 0 0 var(--app-accent); padding-left: 12px; }
+.riv__meta { display: flex; align-items: center; gap: var(--s-6); margin-bottom: 3px; }
+.riv__t { font: var(--w-semi) var(--t-ui)/1.35 var(--app-font-sans); color: var(--app-text-strong); margin: 0 0 2px; }
+.riv__s { font: var(--w-regular) var(--t-meta)/1.5 var(--app-font-sans); color: var(--app-text-muted);
+  margin: 0; max-width: 70ch; }
+.riv__foot { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px;
+  font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-subtle); }
+.riv__foot.is-live { color: var(--app-accent-strong); }
+.riv__compact { display: flex; align-items: center; gap: var(--s-8); padding: 5px 0 5px 10px; min-height: 22px; }
+.riv__away { padding: 6px 0 6px 10px; font: var(--w-regular) var(--t-meta)/1.4 var(--app-font-sans);
+  color: var(--app-text-faint); font-style: italic; }
+.catchip { display: inline-flex; align-items: center; gap: 5px; height: 17px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--app-surface-hover); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); text-transform: uppercase; letter-spacing: .05em; }
+.nowpill--float { position: absolute; right: 14px; bottom: 10px; z-index: 8; }
+
+/* the receipt — a sheet over the surface */
+.scrim { position: absolute; inset: 0; background: rgba(6,8,12,.46); z-index: 30; }
+.receipt { position: absolute; z-index: 31; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  width: 92%; height: 90%; display: flex; flex-direction: column; border-radius: var(--r-xl);
+  background: var(--app-bg); overflow: hidden;
+  box-shadow: var(--shadow-modal), 0 0 0 var(--hairline) var(--app-border-strong); }
+.receipt__h { display: flex; align-items: center; gap: var(--s-8); height: 34px; flex: 0 0 auto;
+  padding: 0 var(--s-10); background: var(--app-surface); border-bottom: var(--hairline) solid var(--app-border); }
+.receipt__b { flex: 1 1 auto; min-height: 0; display: flex; }
+.receipt__stage { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 10px 12px 0; gap: 8px; }
+.viewer { flex: 1 1 auto; min-height: 0; position: relative; border-radius: var(--r-md); overflow: hidden;
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong); }
+.viewer__meta { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 5px; }
+.viewer__badge { position: absolute; right: 8px; top: 8px; }
+.vchip { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px;
+  border-radius: var(--r-sm); background: rgba(0,0,0,.62); color: #fff;
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); backdrop-filter: blur(6px); }
+.scrub { position: relative; height: 18px; flex: 0 0 auto; }
+.scrub__t { position: absolute; left: 0; right: 0; top: 8px; height: 3px; border-radius: 2px;
+  background: var(--app-surface-hover); }
+.scrub__f { position: absolute; left: 0; top: 8px; height: 3px; border-radius: 2px; background: var(--app-accent); }
+.scrub__ev { position: absolute; top: 4px; width: 2px; height: 11px; border-radius: 1px;
+  background: var(--app-text-faint); }
+.scrub__ev.is-hl { background: var(--app-accent); height: 15px; top: 2px; }
+.scrub__ph { position: absolute; top: -3px; transform: translateX(-50%); height: 20px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--app-text-strong); color: var(--app-bg);
+  font: var(--w-medium) var(--t-label)/20px var(--app-font-mono); white-space: nowrap; z-index: 3; }
+.filmstrip { display: flex; gap: 3px; height: 40px; flex: 0 0 auto; }
+.filmstrip > i { position: relative; flex: 1 1 auto; border-radius: 3px; overflow: hidden;
+  box-shadow: 0 0 0 var(--hairline) var(--app-border); }
+.filmstrip > i.is-cited { box-shadow: 0 0 0 1.5px var(--app-accent); }
+.filmstrip > i.is-cur { box-shadow: 0 0 0 2px var(--app-text-strong); }
+.rctl { display: flex; align-items: center; gap: var(--s-8); height: 30px; flex: 0 0 auto; }
+.tpanel { flex: 0 0 auto; max-height: 118px; overflow: hidden; padding: 6px 0 0;
+  border-top: var(--hairline) solid var(--app-border); }
+.tturn { display: flex; gap: var(--s-8); align-items: baseline; padding: 2px 0; }
+.tturn__t { flex: 0 0 46px; font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-mono);
+  color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+.tturn__sp { flex: 0 0 76px; font: var(--w-medium) var(--t-meta)/1.45 var(--app-font-sans); }
+.tturn__x { font: var(--w-regular) var(--t-meta)/1.45 var(--app-font-sans); color: var(--app-text-muted); }
+.tturn.is-on { background: var(--app-surface); border-radius: 3px; }
+.tturn.is-on .tturn__x { color: var(--app-text-strong); }
+.rfoot { display: flex; align-items: center; gap: var(--s-10); height: 24px; flex: 0 0 auto;
+  padding: 0 var(--s-10); background: var(--app-surface); border-top: var(--hairline) solid var(--app-border);
+  font: var(--w-regular) var(--t-meta)/1 var(--app-font-sans); color: var(--app-text-muted); }
+
+/* the Overview affordance inset */
+.inset { width: 268px; flex: 0 0 auto; }
+.insetwrap { display: flex; gap: 20px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+</style>
+
 <header class="mast">
   <p class="mast__dir">Direction 02 · Studio Shell</p>
-  <h1 class="mast__pg"><b>07</b>Components, type specimen, and the pattern audit</h1>
-  <p class="mast__note">Every control this direction uses, in every state it has; the type ramp and
-    spacing constants with their real metrics; and an honest per-page audit against the UI/UX rules
-    and the carried-over native and de-boxing rules. Numbers in the audit are counted from the
-    rendered pages, not estimated.</p>
+  <h1 class="mast__pg"><b>08</b>Journal — the day as a river, with a receipt behind every card</h1>
+  <p class="mast__note">Journal is <b>not a third main surface</b>. The window still has exactly two —
+    Timeline and Overview — and Journal is a <b>destination opened from an Overview tile</b>, with the
+    tool strip carrying the way back. Inside, the studio shape holds: the tool strip is the day's
+    navigation, the river is the one scrolling region, the <b>inspector carries the selected
+    activity's record</b> so no card has to grow a second column, and the status strip stays welded to
+    the bottom. Second frame opens the <b>receipt</b> — the frames, the transcript, and the playback
+    controls behind one card. Every label here is the app's own: “The read”, “re-read”,
+    <span class="is-mono">▸ 14 frames · receipt</span>, “footage expired”, “away — no capture”.</p>
   <div class="mast__rule"></div>
 </header>
 
-<main class="sheet">
+<main class="sect">
 
-  <!-- ─────────────────────────── chrome ─────────────────────────── -->
-  <p class="wlabel"><b>1 · The shell.</b> Four fixed pieces. Only the middle scrolls; the strips and
-    the inspector are structural, so live state and save state can never scroll out of view.</p>
-  <div class="win" style="width:1100px;height:300px;margin:0 auto">
+  <p class="wlabel"><b>How you get here, and how you get back.</b> The <b>Today</b> tile on Overview is
+    the digest — the same “read” the Journal opens with. Its header gains the opener; ⏎ or a click on
+    the tile header opens Journal at today. Coming back is the tool strip's first control
+    (<span class="is-mono">‹ Overview</span>) or ⌘2. No rail, no segment, no third tab.</p>
+  <div class="fit insetwrap">
+    <div class="inset">
+      <p class="t-meta" style="margin:0 0 8px">On Overview — the tile header is the door</p>
+      <div class="tile" style="height:132px">
+        <div class="tile__h"><span class="t-label">Today</span>
+          <span class="more" style="display:flex;align-items:center;gap:4px;color:var(--app-accent)">Open Journal
+            <svg class="ic ic--sm"><use href="#i-chevr"/></svg></span></div>
+        <div class="tile__b">
+          <p class="t-read" style="margin:0;font-size:13px;line-height:1.5">Mostly a licensing day: the
+            Polar webhook fix landed after the launch sync, and the afternoon went to
+            <b>answer_view.rs</b>.</p>
+        </div>
+      </div>
+    </div>
+    <div class="inset">
+      <p class="t-meta" style="margin:0 0 8px">In Journal — the tool strip is the way back</p>
+      <div class="tstrip" style="border-radius:var(--r-md);border:var(--hairline) solid var(--app-border);height:30px">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div>
+        <span class="t-meta is-mono">Journal</span>
+        <span class="spacer"></span><span class="kbd">⌘2</span>
+      </div>
+      <p class="t-meta sub" style="margin:8px 0 0">Subjects and Context open the same way, from their
+        own tiles — pages 09 and 10.</p>
+    </div>
+  </div>
+
+  <p class="wlabel"><b>1100 × 720 — the day, read top to bottom.</b> The digest lede is the only
+    <span class="is-mono">--t-display</span> on the surface, and the four stats under it come straight
+    from what the backend already computes: tracked hours from the usage chart, deep-focus share from
+    the activities that carry a focus value, the top category, and the activity count. There is no
+    per-activity focus <i>score</i> — focus is three values (Deep · Mixed · Scattered), so the card
+    shows a chip, not a number. Frame counts are counted client-side into each activity's window,
+    which is why a card can honestly say <i>footage expired</i>.</p>
+  <div class="fit"><div class="win">
+
     <div class="tbar">
       <div class="tl"><i></i><i></i><i></i></div>
-      <div class="seg"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span>
-        <span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
-      <span class="spacer"></span>
-      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-search"/></svg>Search or Ask
-        <span class="kbd kbd--mod">⌘⌥Space</span></button>
-      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-        <span class="pill__gb is-num">270 MB</span></button>
-    </div>
-    <div class="tstrip">
-      <span class="t-label">Title bar 38 · tool strip 30 · status strip 24 · inspector 256</span>
-      <span class="spacer"></span>
-      <span class="t-meta">contextual controls live here, never in the title bar</span>
-    </div>
-    <div class="wbody">
-      <div class="main" style="display:flex;align-items:center;justify-content:center">
-        <span class="t-meta">the only scrolling region</span>
+      <div class="seg">
+        <span class="seg__i">Timeline <span class="kbd">⌘1</span></span>
+        <span class="seg__i on">Overview <span class="kbd">⌘2</span></span>
       </div>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-search"/></svg>Search or Ask <span class="kbd kbd--mod">⌘⌥Space</span></button>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
+    </div>
+
+    <div class="tstrip">
+      <div class="tstrip__g">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div>
+        <span class="t-label" style="color:var(--app-text-strong)">Journal</span>
+      </div>
+      <div class="tstrip__sep"></div>
+      <div class="tstrip__g">
+        <button class="btn btn--sm btn--icon"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg></button>
+        <span class="pop"><svg class="ic ic--sm"><use href="#i-cal"/></svg>Wed, Aug 5 <b><svg><use href="#i-chevud"/></svg></b></span>
+        <button class="btn btn--sm btn--icon is-off" disabled><svg class="ic ic--sm"><use href="#i-chevr"/></svg></button>
+      </div>
+      <div class="tstrip__sep"></div>
+      <span class="seg"><span class="seg__i on">Morning</span><span class="seg__i">Afternoon</span><span class="seg__i">Evening</span></span>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-refresh"/></svg>re-read</button>
+      <div class="tstrip__sep"></div>
+      <button class="btn btn--sm btn--icon"><svg class="ic"><use href="#i-panel"/></svg></button>
+    </div>
+
+    <div class="wbody">
+      <div class="main" style="position:relative">
+        <div class="jscroll">
+
+          <div class="lede">
+            <div class="lede__eyebrow">
+              <span class="t-label" style="color:var(--app-accent)">◆ The read</span>
+              <span class="t-meta">Wed, Aug 5</span>
+              <span class="sstrip__dot"></span>
+              <span class="t-meta is-mono">22 min ago</span>
+            </div>
+            <h2 class="lede__h">A licensing day that turned into a webhook day.</h2>
+            <p class="lede__p">The morning went to the Polar signature mismatch — the HMAC is applied to the
+              raw <span class="is-mono">whsec_</span> string. The launch sync turned it into a
+              delivery-id question, and the afternoon has been
+              <span class="is-mono">answer_view.rs</span> since.</p>
+          </div>
+
+          <div class="lstats">
+            <div class="lstat"><b>6.4h</b><span>tracked</span></div>
+            <div class="lstat"><b>62%</b><span>deep focus</span></div>
+            <div class="lstat"><b><i class="sw-dot" style="background:#5b8def"></i>Creating</b><span>top category</span></div>
+            <div class="lstat"><b>9</b><span>activities</span></div>
+          </div>
+
+          <div class="band"><span class="band__n">Morning</span>
+            <span class="t-meta">08:40 – 12:00 · 4 activities</span></div>
+
+          <div class="river">
+            <div class="riv__when"><span class="riv__clock">9:14 AM</span><span class="riv__dur">1h 12m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#5b8def"></span></div>
+            <div class="riv__card">
+              <div class="riv__meta"><span class="catchip"><i class="sw-dot" style="background:#5b8def"></i>Creating</span>
+                <span class="catchip">Deep</span></div>
+              <p class="riv__t">Chasing the Polar webhook signature mismatch</p>
+              <p class="riv__s">You went back and forth between the Polar docs and
+                <span class="is-mono">webhook.rs</span> — the HMAC was being computed over the decoded
+                key rather than the raw <span class="is-mono">whsec_</span> string.</p>
+              <span class="riv__foot"><svg class="ic ic--sm"><use href="#i-play"/></svg>14 frames · receipt</span>
+            </div>
+
+            <div class="riv__when"><span class="riv__clock">10:31 AM</span><span class="riv__dur">4m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#8b8b9a;top:11px"></span></div>
+            <div class="riv__compact"><i class="sw-dot" style="background:#8b8b9a"></i>
+              <span class="t-ui">Skimmed the Deepgram streaming docs</span></div>
+
+            <div class="riv__when"></div>
+            <div class="riv__spine"></div>
+            <div class="riv__away">10:35 AM – 10:52 AM · away — no capture</div>
+
+            <div class="riv__when"><span class="riv__clock">10:52 AM</span><span class="riv__dur">38m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#d98a3f"></span></div>
+            <div class="riv__card">
+              <div class="riv__meta"><span class="catchip"><i class="sw-dot" style="background:#d98a3f"></i>Meetings</span>
+                <span class="catchip">Mixed</span></div>
+              <p class="riv__t">Design review — the receipt overlay</p>
+              <p class="riv__s">Three voices, mostly about whether the transcript belongs inside the
+                receipt or beside it.</p>
+              <span class="riv__foot">footage expired</span>
+            </div>
+          </div>
+
+          <div class="band" style="margin-top:6px"><span class="band__n">Afternoon</span>
+            <span class="t-meta">13:02 – now · 5 activities</span></div>
+
+          <div class="river">
+            <div class="riv__when"><span class="riv__clock">1:02 PM</span><span class="riv__dur">38m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#d98a3f"></span></div>
+            <div class="riv__card is-sel">
+              <div class="riv__meta"><span class="catchip"><i class="sw-dot" style="background:#d98a3f"></i>Meetings</span>
+                <span class="catchip">Mixed</span></div>
+              <p class="riv__t">Launch sync — release blockers</p>
+              <p class="riv__s">Five speakers. The webhook was still 400-ing in staging; Priya asked
+                for delivery ids in the log so a failure can be traced without re-sending.</p>
+              <span class="riv__foot is-live"><svg class="ic ic--sm"><use href="#i-play"/></svg>96 frames · receipt</span>
+            </div>
+
+            <div class="riv__when"><span class="riv__clock">2:12 PM</span><span class="riv__dur">2h 15m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#5b8def;top:11px"></span></div>
+            <div class="riv__compact"><i class="sw-dot" style="background:#5b8def"></i>
+              <span class="t-ui">Parsing answer blocks server-side in answer_view.rs</span>
+              <span class="spacer"></span><span class="riv__foot" style="margin:0">318 frames · receipt</span></div>
+
+            <div class="riv__when"><span class="riv__clock">4:27 PM</span><span class="riv__dur">now</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:var(--app-border-hover)"></span></div>
+            <div class="riv__card">
+              <p class="riv__t" style="color:var(--app-text-muted)">Summarizing this window…</p>
+              <p class="riv__s">The journal trails live capture by up to 30 minutes — the footage itself
+                is already on the Timeline.</p>
+            </div>
+          </div>
+
+        </div>
+        <span class="nowpill nowpill--float"><svg class="ic ic--sm"><use href="#i-arrowup"/></svg>now</span>
+      </div>
+
       <aside class="insp">
         <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-panel"/></svg>
           <span class="t-label" style="color:var(--app-text-strong)">Inspector</span>
           <span class="spacer"></span><span class="kbd">⌥⌘I</span></div>
         <div class="insp__b">
-          <div class="insp__sec"><span class="t-label">Section</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v is-mono">value</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v">value, wrapping when it must</span></div>
-          <p class="t-meta" style="margin:10px">Same panel, four subjects: conversation row, frame,
-            search result, changed setting.</p>
+          <div class="insp__sec"><span class="t-label">Activity</span>
+            <span class="t-meta spacer" style="text-align:right">5 of 9</span></div>
+          <div class="kv kv--stack"><span class="kv__k">Title</span>
+            <span class="kv__v" style="font:var(--w-semi) 15px/1.3 var(--app-font-sans)">Launch sync — release blockers</span></div>
+          <div class="kv"><span class="kv__k">Category</span><span class="kv__v">Meetings</span></div>
+          <div class="kv"><span class="kv__k">Focus</span><span class="kv__v">Mixed</span></div>
+          <div class="kv"><span class="kv__k">When</span><span class="kv__v is-mono">13:02 – 13:40</span></div>
+          <div class="kv"><span class="kv__k">Duration</span><span class="kv__v is-mono">38m</span></div>
+
+          <div class="insp__sec"><span class="t-label">Evidence</span></div>
+          <div class="kv"><span class="kv__k">Frames</span><span class="kv__v is-mono">96 · 4 segments</span></div>
+          <div class="kv"><span class="kv__k">Cited</span><span class="kv__v is-mono">6 frames · 3 spoken</span></div>
+          <div class="kv"><span class="kv__k">Headline</span><span class="kv__v is-mono">frame · 13:11:04</span></div>
+          <div class="kv"><span class="kv__k">Speakers</span><span class="kv__v">You, Priya, Tom + 2</span></div>
+          <div style="height:30px;margin:4px 10px 6px;border-radius:4px;overflow:hidden">
+            <span class="wave" data-wave="44" data-seed="23"></span>
+          </div>
+
+          <div class="insp__sec"><span class="t-label">Derived from this</span></div>
+          <div class="kv"><span class="kv__k">Subjects</span><span class="kv__v">Mnema licensing · Q3 launch</span></div>
+          <div class="kv"><span class="kv__k">Digest</span><span class="kv__v">quoted in today's read</span></div>
+
+          <div class="insp__sec"><span class="t-label">Actions</span></div>
+          <div style="display:flex;flex-direction:column;gap:5px;padding:6px 10px 0">
+            <button class="btn btn--sm btn--primary" style="justify-content:flex-start;width:100%"><svg class="ic ic--sm"><use href="#i-play"/></svg>Open receipt <span class="kbd spacer" style="background:transparent">⏎</span></button>
+            <button class="btn btn--sm" style="justify-content:flex-start;width:100%"><svg class="ic ic--sm"><use href="#i-clock"/></svg>Show in Timeline <span class="kbd spacer">⌘1</span></button>
+            <button class="btn btn--sm" style="justify-content:flex-start;width:100%"><svg class="ic ic--sm"><use href="#i-spark"/></svg>Ask about this <span class="kbd spacer">⌃A</span></button>
+          </div>
         </div>
       </aside>
     </div>
+
     <div class="sstrip">
       <div class="sstrip__g"><svg class="ic ic--sm" style="color:var(--app-src-screen)"><use href="#i-screen"/></svg>
-        <span class="is-mono">2 fps · 1080p · H.264</span></div>
+        <span class="is-mono">every 2 s · 1080p</span></div>
       <span class="sstrip__dot"></span>
-      <div class="sstrip__g"><span class="is-mono"><b>270 MB</b> today</span></div>
+      <div class="sstrip__g"><span class="is-mono"><b>6.4h</b> tracked today</span></div>
       <span class="sstrip__dot"></span>
-      <div class="sstrip__g"><span class="is-mono">≈ 8.1 GB / mo</span></div>
+      <div class="sstrip__g"><span class="is-mono">9 activities · 1 pending</span></div>
       <span class="spacer"></span>
-      <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-      <button class="sbtn">Undo</button>
-      <button class="sbtn on"><svg><use href="#i-panel"/></svg>Detail</button>
+      <span class="save"><svg><use href="#i-check"/></svg>read written 16:05</span>
+      <button class="sbtn on"><svg><use href="#i-panel"/></svg>Inspector</button>
     </div>
-  </div>
 
-  <!-- ─────────────────────────── controls ─────────────────────────── -->
-  <p class="wlabel"><b>2 · Controls, and every state each one has.</b> Rest · hover · pressed · focus ·
-    disabled · busy for anything clickable; rest · focus · invalid for anything typable.</p>
-  <div class="cellgrid">
-    <div class="cell"><span class="cell__l">Button — default</span>
-      <div class="cell__b"><button class="btn">Rest</button><button class="btn is-hover">Hover</button>
-        <button class="btn is-press">Press</button><button class="btn btn--focus">Focus</button>
-        <button class="btn" disabled>Off</button>
-        <button class="btn is-busy"><span class="spin"></span>Busy</button></div></div>
-    <div class="cell"><span class="cell__l">Button — primary (accent-filled default)</span>
-      <div class="cell__b"><button class="btn btn--primary">Rest</button>
-        <button class="btn btn--primary is-hover">Hover</button>
-        <button class="btn btn--primary is-press">Press</button>
-        <button class="btn btn--primary" disabled>Off</button></div></div>
-    <div class="cell"><span class="cell__l">Button — ghost + danger</span>
-      <div class="cell__b"><button class="btn btn--ghost">Ghost</button>
-        <button class="btn btn--ghost is-hover">Hover</button>
-        <button class="btn btn--danger">Delete Recent…</button></div></div>
-    <div class="cell"><span class="cell__l">Button — sizes 22 / 28 / 32</span>
-      <div class="cell__b"><button class="btn btn--sm">Small</button><button class="btn">Default</button>
-        <button class="btn" style="height:32px;padding:0 12px">Large</button>
-        <button class="btn btn--icon"><svg class="ic"><use href="#i-refresh"/></svg></button></div></div>
+  </div></div>
 
-    <div class="cell"><span class="cell__l">Segmented — 2, 3 and 4 up</span>
-      <div class="cell__b" style="display:block">
-        <span class="seg" style="margin-right:8px"><span class="seg__i on">Search</span><span class="seg__i">Ask</span></span>
-        <span class="seg" style="margin-right:8px"><span class="seg__i">Light</span><span class="seg__i">Dark</span><span class="seg__i on">System</span></span>
-        <span class="seg"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span><span class="seg__i">Month</span></span></div></div>
-    <div class="cell"><span class="cell__l">Popup button · switch</span>
-      <div class="cell__b"><span class="pop">90 days <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="pop pop--md">Timeline <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="sw on"><i></i></span><span class="sw"><i></i></span></div></div>
-    <div class="cell"><span class="cell__l">Chips — scope, verdict, machine label</span>
-      <div class="cell__b"><span class="chip on">All</span><span class="chip">Screen</span>
-        <span class="chip chip--sq">Q4_K_M</span><span class="chip chip--ok">fits on GPU</span>
-        <span class="chip chip--warn">may be slow</span><span class="chip chip--bad">too large</span></div></div>
-    <div class="cell"><span class="cell__l">Keycaps · shortcut recorder</span>
-      <div class="cell__b"><span class="kbd">⏎</span><span class="kbd kbd--mod">⌘⌥Space</span>
-        <span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⇧</span>
-          <span class="kbd kbd--big">S</span></span>
-        <span class="recorder is-armed">Type a shortcut…</span></div></div>
+  <p class="wlabel"><b>The live edge, at true width.</b> The tail of the same scroll, below the fold in
+    the frame above. The pending slot is the only card with no time span and no receipt, because
+    neither exists yet — its gutter reads <span class="is-mono">now</span>. When derivation is on it
+    says what it is doing; when a switch is off it says which one, in the app's own
+    “Summaries are paused — …” wording, and never blames the user.</p>
+  <div class="fit"><div class="cellgrid" style="max-width:1100px;width:100%;grid-template-columns:1fr 1fr">
+    <div class="cell" style="padding:10px 12px 12px">
+      <span class="cell__l">Deriving</span>
+      <div class="river" style="padding:0">
+        <div class="riv__when"><span class="riv__clock">2:12 PM</span><span class="riv__dur">2h 15m</span></div>
+        <div class="riv__spine"><span class="riv__node" style="background:#5b8def;top:11px"></span></div>
+        <div class="riv__compact"><i class="sw-dot" style="background:#5b8def"></i>
+          <span class="t-ui">Parsing answer blocks server-side in answer_view.rs</span></div>
 
-    <div class="cell"><span class="cell__l">Text field — rest · focus · invalid</span>
-      <div class="cell__b" style="display:block">
-        <span class="input" style="width:100%;margin-bottom:6px"><span class="ph">Filter settings</span></span>
-        <span class="input is-focused" style="width:100%;margin-bottom:6px">webhook<span class="caret"></span></span>
-        <span class="input is-bad" style="width:100%">sk-ant-•••• </span>
-        <p class="conseq" style="margin:5px 0 0;color:var(--app-danger)">That key was rejected by
-          Anthropic — 401 at 14:38.</p></div></div>
-    <div class="cell"><span class="cell__l">Slider with consequence</span>
-      <div class="cell__b" style="display:block">
-        <div class="slider"><span class="slider__t"><i class="slider__f" style="width:26%"></i>
-          <span class="slider__k" style="left:26%"></span></span></div>
-        <div class="slider__ticks"><span>0.5</span><span>1</span><span>2</span><span>4</span><span>8</span><span>15</span></div>
-        <p class="conseq" style="margin:6px 0 0">2 fps → <b>~1.4 GB/day</b></p></div></div>
-    <div class="cell"><span class="cell__l">Ladder · duty · gauge</span>
-      <div class="cell__b" style="display:block">
-        <div class="ladder" style="margin-bottom:8px"><span>7 d</span><span>30 d</span>
-          <span class="on">90 d</span><span>1 y</span><span>Forever</span></div>
-        <div class="duty" style="margin-bottom:8px"><i class="work" style="width:20%">20%</i>
-          <i class="cool" style="width:80%">cool 80%</i></div>
-        <div class="gauge"><span class="gauge__b"><i style="width:36%"></i></span>
-          <span class="t-meta is-mono">1.8 / 5.0 GB</span></div></div></div>
-    <div class="cell" style="grid-column:span 2"><span class="cell__l">Model row — size · quant · verdict</span>
-      <div class="grp" style="background:var(--app-surface-subtle)">
-        <div class="mrow on"><svg class="ic ic--sm acc"><use href="#i-check"/></svg>
-          <span class="mrow__n">qwen2.5:14b</span><span class="mrow__meta">
-          <span class="chip chip--sq">Q4_K_M</span><span class="t-meta is-mono">9.0 GB</span>
-          <span class="chip chip--ok">fits</span></span></div>
-        <div class="mrow"><span style="width:13px"></span><span class="mrow__n">llama3.3:70b</span>
-          <span class="mrow__meta"><span class="t-meta is-mono">42 GB</span>
-          <span class="chip chip--bad">too large</span></span></div></div></div>
-
-    <div class="cell"><span class="cell__l">Recording pill — the nine states</span>
-      <div class="cell__b" style="display:block;line-height:2.2">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__gb is-num">270 MB</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__w">Rec</span></button>
-        <button class="pill"><i class="rec__dot"></i></button>
-        <button class="pill pill--quiet"><span class="spin" style="width:10px;height:10px"></span>
-          <span class="pill__w">Starting</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Idle 12m</span></button>
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i>
-          <span class="pill__w">Low disk</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__w" style="color:var(--app-info)">screen asleep</span></button>
-      </div></div>
-    <div class="cell"><span class="cell__l">Status strip — the three write states</span>
-      <div class="cell__b" style="display:block;line-height:2.4">
-        <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-        <span class="save save--busy"><span class="spin" style="width:9px;height:9px"></span>Saving…</span>
-        <span class="save" style="background:var(--app-danger-bg);color:var(--app-danger)">
-          <svg><use href="#i-alert"/></svg>Could not save — retry</span></div>
-      <p class="conseq" style="margin:0">Never a save bar. There is no unsaved state to defend, so the
-        strip states only whether the write landed, and offers Undo.</p></div>
-
-    <div class="cell"><span class="cell__l">NSMenu — popover anatomy</span>
-      <div class="menu" style="width:100%">
-        <div class="menu__hd">Recording · 2:14:07 · 270 MB today</div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-pause"/></svg></span>
-          Pause Capture<span class="menu__kbd">⌥⌘P</span></div>
-        <div class="menu__i is-hl"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-stop"/></svg></span>
-          Stop &amp; Save<span class="menu__kbd">⌥⌘S</span></div>
-        <div class="menu__sep"></div>
-        <div class="menu__i"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-mic)"><svg class="ic ic--sm"><use href="#i-mic"/></svg></span>Microphone</div>
-        <div class="menu__i is-off"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-sys)"><svg class="ic ic--sm"><use href="#i-sys"/></svg></span>System Audio</div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Toast — the one non-blocking error placement</span>
-      <div class="toast" style="width:100%">
-        <div class="toast__h"><svg class="ic ic--sm" style="color:var(--app-danger)"><use href="#i-alert"/></svg>
-          Transcription failed</div>
-        <p class="t-meta" style="margin:0">Deepgram returned 401 for the launch sync at 13:02. The
-          segment is kept and will retry when the key is fixed.</p>
-        <div style="display:flex;gap:6px;margin-top:2px"><button class="btn btn--sm">Open Settings</button>
-          <button class="btn btn--sm btn--ghost">Dismiss</button></div></div></div>
-    <div class="cell"><span class="cell__l">Rows — setting · list · selected · inspector kv</span>
-      <div class="grp" style="margin-bottom:8px">
-        <div class="srow"><div class="srow__t"><span class="srow__l">Launch at login</span></div>
-          <div class="srow__v"><span class="sw on"><i></i></span></div></div>
-        <div class="srow is-focus"><div class="srow__t"><span class="srow__l">Frame rate</span>
-          <span class="srow__s">focused row — accent bar + tinted fill</span></div>
-          <div class="srow__v"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span></div></div>
+        <div class="riv__when"><span class="riv__clock">4:27 PM</span><span class="riv__dur">now</span></div>
+        <div class="riv__spine"><span class="riv__node" style="background:var(--app-border-hover)"></span></div>
+        <div class="riv__card">
+          <p class="riv__t" style="color:var(--app-text-muted)">Summarizing this window…</p>
+          <p class="riv__s">The journal trails live capture by up to 30 minutes — the footage itself is
+            already on the Timeline.</p>
+        </div>
       </div>
-      <div class="grp">
-        <div class="grow"><span class="gthumb"><span class="wave" data-wave="9" data-seed="4"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Design review</span>
-            <span class="grow__sub">41 min · 3 speakers</span></span>
-          <span class="grow__val"><span class="chev"><svg><use href="#i-chevr"/></svg></span></span></div>
-        <div class="grow grow--sel"><span class="gthumb"><span class="wave" data-wave="9" data-seed="8"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Launch sync</span>
-            <span class="grow__sub">full-row accent selection</span></span>
-          <span class="grow__val"><span class="t-meta is-mono">13:02</span></span></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Media — result cell, moment card, audio cell</span>
-      <div class="cell__b" style="align-items:flex-start">
-        <div class="mcard" style="width:132px"><div class="mcard__f">
-          <span class="shot shot--editor"><span class="lines lines--code"></span></span>
-          <span class="qcell__dur">14:32</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">webhook.rs</span></div></div>
-        <div class="mcard" style="width:132px"><div class="mcard__f qcell__f--audio">
-          <span class="tag"><svg class="ic ic--sm" style="color:var(--app-src-mic)"><use href="#i-mic"/></svg>mic</span>
-          <span class="wave" data-wave="26" data-seed="6"></span>
-          <span class="qcell__dur">04:58</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">Launch sync</span></div></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Timeline parts</span>
-      <div style="position:relative;padding-top:20px">
-        <div class="rail" style="height:26px">
-          <div class="band" style="left:0;width:34%"><span class="gicon ic-figma">F</span></div>
-          <div class="band" style="left:35%;width:26%"><span class="gicon ic-zoom">Z</span></div>
-          <div class="band" style="left:62%;right:0"><span class="gicon ic-code">C</span></div>
-          <span class="tickA" style="right:0"></span></div>
-        <span class="playhead" style="left:62%;top:14px;bottom:-14px"></span>
-        <span class="nowpill" style="left:62%">Mon, Aug 3 · <span class="num">14:32</span>
-          <svg class="ic ic--sm"><use href="#i-chevd"/></svg></span>
-      </div>
-      <div class="lane" style="margin-top:18px"><div class="lane__labs"><span>mic</span><span>sys</span></div>
-        <div class="lane__vp"><span class="abar abar--mic" style="left:0;width:36%"></span>
-          <span class="abar abar--sys is-sel" style="left:35%;width:26%"></span></div></div></div>
-    <div class="cell"><span class="cell__l">Empty / redacted states are designed</span>
-      <div style="border-radius:5px;aspect-ratio:16/9;background:var(--app-surface-subtle);
-        display:flex;align-items:center;justify-content:center">
-        <svg class="ic ic--lg" style="color:var(--app-text-faint)"><use href="#i-frame"/></svg></div>
-      <div class="kv"><span class="kv__k">Title</span><span class="kv__v sub">—</span></div>
-      <p class="conseq" style="margin:0">Every inspector field has an em-dash rendering, so the panel
-        keeps its width and the layout never jumps.</p></div>
-  </div>
-
-  <!-- ─────────────────────────── type ─────────────────────────── -->
-  <p class="wlabel"><b>3 · Type — six roles, three weights, and the one rule.</b> A size is not a choice,
-    it is a consequence of what the text is. Mono is the machine voice: times, sizes, counts, ids,
-    keys, engine names. Sans is the product speaking.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:110px">Role</th><th style="width:290px">Specimen</th>
-        <th class="num" style="width:172px">px / lh / tracking / weight</th>
-        <th>Used for, in this direction</th></tr>
-      <tr><td><span class="is-mono">--t-label</span></td>
-        <td><span class="t-label">CAPTURE · MIC · 20% DUTY</span></td>
-        <td class="num">10 / 1.4 / +.02 / 510 mono</td>
-        <td>tile headers, inspector keys, lane labels, section eyebrows, chip text. Never a sentence.</td></tr>
-      <tr><td><span class="is-mono">--t-meta</span></td>
-        <td><span class="t-meta">41 min · 3 speakers · system audio</span></td>
-        <td class="num">11 / 1.35 / +.01 / 400</td>
-        <td>status strip, helper lines under a row, captions, counts, consequence lines.</td></tr>
-      <tr><td><span class="is-mono">--t-ui</span></td>
-        <td><span class="t-ui">Start recording at login</span></td>
-        <td class="num">13 / 1.25 / −.006 / 400</td>
-        <td>the default: rows, buttons, menus, labels, chips, transcript speakers.</td></tr>
-      <tr><td><span class="is-mono">--t-read</span></td>
-        <td><span class="t-read" style="display:block">The webhook verifier was the week's one real change.</span></td>
-        <td class="num">14 / 1.55 / −.008 / 400</td>
-        <td>prose only: the digest, AI answers, empty-state body. Capped at 70ch.</td></tr>
-      <tr><td><span class="is-mono">--t-title</span></td>
-        <td><span class="t-title">Monday, August 3</span></td>
-        <td class="num">17 / 1.3 / −.016 / 590</td>
-        <td>the date header, the Quick Access query, section names, empty-state leads.</td></tr>
-      <tr><td><span class="is-mono">--t-display</span></td>
-        <td><span class="t-display is-num">14:32:08</span></td>
-        <td class="num">22 / 1.2 / −.02 / 590</td>
-        <td><b>one per screen.</b> Timeline: the readout clock. Overview: the captured-hours hero.
-          Quick Access: the no-match lead.</td></tr>
-    </table>
-  </div>
-
-  <p class="wlabel"><b>4 · Spacing, metrics, radii.</b> Named constants, not raw numbers — a designer
-    picks “section gap”, so the same relationship is the same number on every surface. The density rule
-    holds: a grid's inset equals its gutter.</p>
-  <div class="fitrow" style="align-items:stretch">
-    <div class="cell" style="width:540px;padding:0;overflow:hidden">
-      <table class="tbl">
-        <tr><th style="width:150px">Constant</th><th class="num" style="width:96px">px</th><th>Where</th></tr>
-        <tr><td><span class="is-mono">--gap-inline</span></td><td class="num">6</td><td>icon → its label; chip → its count</td></tr>
-        <tr><td><span class="is-mono">--gap-row</span></td><td class="num">8</td><td>between rows in a list or form</td></tr>
-        <tr><td><span class="is-mono">--gap-group</span></td><td class="num">12</td><td>tile gutter, tile inset, pane padding</td></tr>
-        <tr><td><span class="is-mono">--gap-section</span></td><td class="num">20</td><td>between sections of a settings surface</td></tr>
-        <tr><td><span class="is-mono">--h-sm / md / lg</span></td><td class="num">22 / 28 / 32</td><td>tool-strip control · default row and button · dialog primary</td></tr>
-        <tr><td><span class="is-mono">--h-titlebar</span></td><td class="num">38</td><td>title bar; tool strip 30, status strip 24</td></tr>
-        <tr><td><span class="is-mono">--w-insp</span></td><td class="num">256</td><td>inspector (280 in Quick Access, where the window is wider)</td></tr>
-        <tr><td><span class="is-mono">--r-sm / md / lg / xl</span></td><td class="num">4 / 6 / 8 / 12</td><td>badge · control · panel and tile · floating</td></tr>
-      </table>
     </div>
-    <div class="cell" style="width:520px">
-      <span class="cell__l">The 4-point rhythm, drawn</span>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">6</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:6px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">8</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:8px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">12</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:12px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">20</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:20px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">28</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:28px"></i></span></div>
+    <div class="cell" style="padding:10px 12px 12px">
+      <span class="cell__l">Paused — the same slot, four of its nine reasons</span>
+      <div class="river" style="padding:0">
+        <div class="riv__when"><span class="riv__clock">4:27 PM</span><span class="riv__dur">now</span></div>
+        <div class="riv__spine"><span class="riv__node" style="background:var(--app-border-hover)"></span></div>
+        <div class="riv__card" style="padding-bottom:6px">
+          <p class="riv__t" style="color:var(--app-text-muted)">Summaries are paused — continuous
+            derivation is turned off.</p>
+        </div>
       </div>
-      <span class="cell__l" style="margin-top:8px">Icons — one family, monochrome, currentColor</span>
-      <div class="cell__b" style="gap:12px">
-        <svg class="ic ic--lg"><use href="#i-screen"/></svg><svg class="ic ic--lg"><use href="#i-mic"/></svg>
-        <svg class="ic ic--lg"><use href="#i-sys"/></svg><svg class="ic ic--lg"><use href="#i-spark"/></svg>
-        <svg class="ic ic--lg"><use href="#i-search"/></svg><svg class="ic ic--lg"><use href="#i-panel"/></svg>
-        <svg class="ic ic--lg"><use href="#i-scan"/></svg><svg class="ic ic--lg"><use href="#i-cpu"/></svg>
-        <svg class="ic ic--lg"><use href="#i-clock"/></svg><svg class="ic ic--lg"><use href="#i-wave"/></svg>
-        <svg class="ic ic--lg"><use href="#i-frame"/></svg><svg class="ic ic--lg"><use href="#i-sliders"/></svg>
-      </div>
-      <p class="conseq" style="margin:0">Only a real third-party app icon keeps its own colours —
-        the exclude list, the timeline bands. That is identity, not decoration.</p>
+      <p class="t-meta sub" style="margin:2px 0 0">…no AI provider is connected yet · …no default model
+        is chosen · …the local engine can't be reached. Each names the one switch that would resume it,
+        and each is a link into Settings › Intelligence.</p>
     </div>
-  </div>
+  </div></div>
 
-  <!-- ─────────────────────────── audit ─────────────────────────── -->
-  <p class="wlabel"><b>5 · Pattern self-audit.</b> Each page against the six checks. Bordered
-    containers are counted as the de-boxing rule defines them — control bezels (button, segmented,
-    switch, popup, field) and the hairline that clips a screenshot are free; only containers count.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr>
-        <th style="width:118px">Page</th>
-        <th>Hierarchy</th>
-        <th>Spacing grid</th>
-        <th>Colour &amp; contrast</th>
-        <th>States</th>
-        <th>Native bar</th>
-        <th class="num" style="width:78px">Borders</th>
-      </tr>
-      <tr>
-        <td><b>01 Overview</b></td>
-        <td>One <span class="is-mono">--t-display</span> (6:42 hero) → date title → tile labels. Four
-          type sizes in the grid.</td>
-        <td>12 inset = 12 gutter. Rows 108 / 1fr × 3.</td>
-        <td>Accent appears three times: selected row, today's bar, the write chip.</td>
-        <td>Row hover, full-row selection, inspector empty state, 800px degradation.</td>
-        <td>38px bar, 22px strip controls, tabular-nums throughout, no pointer cursor on lists.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>02 Timeline</b></td>
-        <td>The clock is the display size; app name is the only 13px item in the readout.</td>
-        <td>12 pane inset, 10 between stage / rail / drawer.</td>
-        <td>Record red is a state, not an error: now-tick, selected audio segment. Sources keep their
-          three hues.</td>
-        <td>Hover ghost + bubble, scrubbed vs live, drawer open, disabled next-day.</td>
-        <td>NSMenu jump popover with checkmark gutter and ⌘ column; overlay scrollbars.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>03 Quick Access · Search</b></td>
-        <td>Query at 17px is the loudest thing; results are images, captions are 13/11.</td>
-        <td>16 inset, 12 gutter — the fixed-window exemption.</td>
-        <td>Neutral grey mode chip; accent only on selection and match highlight.</td>
-        <td>Results, empty, no-match, selection, inspector placeholder.</td>
-        <td>Full-row accent selection, ⏎/⌘⏎ stated in a persistent bottom bar.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>04 Quick Access · Ask</b></td>
-        <td>Question 17px → answer 14px prose at 70ch → tool chips 11px.</td>
-        <td>24 reading inset; 10 between moment cards.</td>
-        <td>Accent mode chip and accent send button; the answer itself carries no colour.</td>
-        <td>Streaming with caret, Stop, collapsed bar, capturing, attached, answering.</td>
-        <td>Floating pieces get shadows and 12–14px radii; nothing else does.</td>
-        <td class="num">4</td>
-      </tr>
-      <tr>
-        <td><b>05 Settings · General</b></td>
-        <td>Sticky section name is 13px semibold; sub-headers are 10px mono; rows 13/11.</td>
-        <td>16 page inset, rows 34–46 tall by content, groups full-bleed inside.</td>
-        <td>Accent on the focused row, the switch, and the save chip. Danger reserved for delete.</td>
-        <td>Row focus, saved echo, saving, filter applied, armed recorder, conflict.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; native sheet for
-          confirms (never drawn here).</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>06 Settings · Intelligence</b></td>
-        <td>Same as 05. No display size on this surface — nothing here is a hero number.</td>
-        <td>Same 16 / group rhythm; custom inputs sit inside a normal row's width.</td>
-        <td>Verdict chips are the only semantic colour: green fits, amber slow, red too large.</td>
-        <td>Verified, not running, saved, focused, conflicting shortcut, budget at 36%.</td>
-        <td>Model rows are 30px list rows, not cards; checkmark gutter matches NSMenu.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>08 Journal</b></td>
-        <td>Digest headline is the one <span class="is-mono">--t-display</span>; lede stats 17px mono →
-          card title 13 → summary 11. The receipt inverts it — the frame is the hero, type serves it.</td>
-        <td>16 page inset; 78/16/1fr river grid; 10 between receipt pieces.</td>
-        <td>Category swatches are the app's eight <span class="is-mono">--cat-*</span> tokens, used only
-          as 8–9px dots and chips. Accent is the selected card, the live footer and the save chip.</td>
-        <td>Full card, compact row, footage-expired, pending (deriving + paused), receipt open, scrubbed.</td>
-        <td>Sheet over the surface with a scrim; 28px rows; ⏎/esc/←/→/Space stated in the receipt's
-          bottom bar.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>09 Subjects</b></td>
-        <td>No display size in the tier list — the sparkline is the hero, not a number. The detail's
-          <span class="is-mono">86%</span> is the one display item on that frame.</td>
-        <td>16 inset; 40px minimum row (taller than the 28 floor, because two lines + a chart).</td>
-        <td>Accent = the lead conclusion's line, warming, and selection. Warn = cooling. Faded rows are
-          opacity, never a different hue.</td>
-        <td>Four tiers, selection, faded, paging (“Show 2 more”), sort, pinned, below-floor.</td>
-        <td>Full-row accent selection; inline SVG polylines, no chart library idiom; overlay scrollbars.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>10 Context</b></td>
-        <td>Authored sentences are <span class="is-mono">--t-read</span> at 72ch — they are prose the
-          user wrote, so they get reading type, not UI type. No display size on the surface.</td>
-        <td>16 inset; the composer is one 10px-padded fill, not a bordered card.</td>
-        <td>Accent marks <i>authored</i> everywhere it appears. Warn is reserved for the guardrail card
-          — the only place on the page a caution is honest.</td>
-        <td>Composer focused, row hover, row editing, saving, archive hidden/shown, restore.</td>
-        <td>Native confirm sheet for delete (never drawn); ⌘⏎ stated inline; 28px rows.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>11 Settings · complete</b></td>
-        <td>Group bar 17px semibold → section sub-header 10px mono → rows 13/11. Same ramp as 05/06 with
-          one level added, because 19 sections need two levels of address.</td>
-        <td>Same 16 / group rhythm as 05. The unrolled column is the same 844px content width.</td>
-        <td>Accent on the focused row, switches and the save chip. Warn on “uploads your audio” and the
-          two ungranted permissions. Danger only on Wipe User Context.</td>
-        <td>Focused row, saved echo, conditional (<span class="is-mono">only when…</span>), armed
-          recorder, disabled dependent, off-with-price.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; no save bar and,
-          per G7, no Undo.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>07 Components</b></td>
-        <td>Specimen page — labels 10px mono, everything else at its native role.</td>
-        <td>10 cell gutter, auto-fill 258px columns.</td>
-        <td>Both themes rendered from the same tokens; no hard-coded colour outside screenshots.</td>
-        <td>Every control's full state set is drawn rather than described.</td>
-        <td>The shell is drawn at true size at the top of the page.</td>
-        <td class="num">n/a</td>
-      </tr>
-    </table>
-  </div>
+  <p class="wlabel"><b>The receipt — what is actually behind one card.</b> ⏎ on a card opens it over the
+    river; <span class="is-mono">esc</span> closes, <span class="is-mono">←/→</span> step a frame,
+    <span class="is-mono">Space</span> plays. There is no video file: the player swaps frame previews,
+    which is why the speed control reads <b>1× · 2× · 8× · 16×</b> and only <b>1×</b> is audible —
+    above it there is no audio to play, so the honest label is a timelapse. The scrub track carries a
+    tick per cited frame, the taller one being the headline. The transcript is real speaker-attributed
+    turns and clicking one plays it. <b>OCR is a chip, not a panel</b> — the recognised text lives on
+    the Timeline, and this is the door to it.</p>
+  <div class="fit"><div class="win">
 
-  <p class="wlabel"><b>6 · Where this direction knowingly spends.</b></p>
-  <div class="cellgrid" style="grid-template-columns:repeat(3,1fr)">
-    <div class="cell"><span class="cell__l">Density</span>
-      <p class="t-meta" style="margin:0">22px tool-strip controls and 24px status strip are below the
-        28px row floor — but they are <i>chrome</i>, and the 28px hit target is preserved by their
-        transparent padding. Content rows are never below 28.</p></div>
-    <div class="cell"><span class="cell__l">The inspector's width</span>
-      <p class="t-meta" style="margin:0">256px is real estate the other four directions spend on
-        content. It buys the same detail surface on four different screens and stops every tile and
-        cell from growing a second column.</p></div>
-    <div class="cell"><span class="cell__l">Two permanent strips</span>
-      <p class="t-meta" style="margin:0">54px of vertical chrome under the title bar. The trade is
-        that capture rate, disk cost and save state are structurally unclippable — the founder's
-        autosave complaint cannot recur.</p></div>
-  </div>
+    <div class="tbar">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span>
+        <span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
+      <span class="spacer"></span>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button>
+    </div>
 
-  <p class="wlabel"><b>7 · Deliberate deviations, recorded.</b> Where pages 08–11 depart from the first
-    seven, or from an earlier page's pixels. Precedence applied throughout is
-    <b>G-decision &gt; direction mockup &gt; judgment</b>.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:150px">Deviation</th><th>What changed</th><th style="width:250px">Why</th></tr>
-      <tr><td><b>No Undo in the status strip</b></td>
-        <td>Pages 05 and 06 draw an <span class="is-mono">Undo</span> button beside the save chip.
-          Page 11 drops it; the strip carries the chip alone.</td>
-        <td><b>G7</b> — settings-Undo is out for v1. Where 05/06 and G7 disagree, G7 wins, so 11 is the
-          page to build from.</td></tr>
-      <tr><td><b>No temperature, no ETA</b></td>
-        <td>Page 06's OCR duty control claims <span class="is-mono">+3 °C</span>, “fans off”, and a
-          backlog clear-by time. None of that appears on 08–11.</td>
-        <td><b>G8</b> — a denominator ships only where the value is real on this machine. Neither is.</td></tr>
-      <tr><td><b>Semantic search drawn off</b></td>
-        <td>Page 06 draws it on with a coverage gauge. Page 11 draws it off, with the price stated
-          before the switch and no gauge at all.</td>
-        <td><b>G10</b> — shipping default is off; the meter renders only when the feature is on. Note the
-          stored default in the source is <span class="is-mono">true</span>; with no model installed
-          nothing is embedded, so “off” is what the user sees. Flagged for reconciliation.</td></tr>
-      <tr><td><b>Conflicts named only in-app</b></td>
-        <td>The shortcut group names its own conflict (“already used by Summon Quick Recall”) and says
-          only “another app” for an external register failure.</td>
-        <td><b>G9</b> — macOS has no API to enumerate other apps' hotkeys, so naming one would be a
-          guess printed as a fact.</td></tr>
-      <tr><td><b>A third level of address</b></td>
-        <td>05/06 use one sticky header. Page 11 adds a group bar above the section sub-header, so the
-          address is <i>group › section › row</i>.</td>
-        <td>19 sections across 5 groups. One level cannot say where you are; the second is the rail,
-          laid on its side, inside the content.</td></tr>
-      <tr><td><b>Rows taller than 28px</b></td>
-        <td>Subject rows on 09 are 40px minimum; authored rows on 10 are as tall as their prose.</td>
-        <td>The 28px floor is a <i>minimum</i>. A row carrying two lines and a chart, or a written
-          sentence at reading size, cannot honour it and stay legible.</td></tr>
-      <tr><td><b>A sheet, on 08</b></td>
-        <td>The receipt is a scrimmed sheet over the surface rather than a route or an inspector
-          expansion.</td>
-        <td>It is the only place in the direction where content wants the whole window: a frame, a
-          filmstrip, a scrub track and a transcript do not fit beside a 256px inspector.</td></tr>
-      <tr><td><b>The unrolled column</b></td>
-        <td>Page 11's second figure is not a window — it is the 844px content column drawn at full
-          length, outside any chrome.</td>
-        <td>Every one of the 96 rows had to be checkable. Sampling would have hidden exactly the rows
-          a completeness audit exists to find.</td></tr>
-    </table>
-  </div>
+    <div class="tstrip">
+      <div class="tstrip__g">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div>
+        <span class="t-label" style="color:var(--app-text-strong)">Journal</span>
+      </div>
+      <div class="tstrip__sep"></div>
+      <span class="pop"><svg class="ic ic--sm"><use href="#i-cal"/></svg>Wed, Aug 5 <b><svg><use href="#i-chevud"/></svg></b></span>
+      <span class="spacer"></span>
+      <button class="btn btn--sm btn--icon"><svg class="ic"><use href="#i-panel"/></svg></button>
+    </div>
+
+    <div class="wbody" style="position:relative">
+      <div class="main">
+        <div class="jscroll" style="opacity:.5">
+          <div class="band"><span class="band__n">Afternoon</span></div>
+          <div class="river">
+            <div class="riv__when"><span class="riv__clock">1:02 PM</span><span class="riv__dur">38m</span></div>
+            <div class="riv__spine"><span class="riv__node" style="background:#d98a3f"></span></div>
+            <div class="riv__card"><p class="riv__t">Launch sync — release blockers</p>
+              <p class="riv__s">Five speakers. The webhook was still 400-ing in staging.</p></div>
+          </div>
+        </div>
+      </div>
+      <aside class="insp" style="opacity:.5">
+        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-panel"/></svg>
+          <span class="t-label" style="color:var(--app-text-strong)">Inspector</span></div>
+      </aside>
+
+      <div class="scrim"></div>
+      <div class="receipt">
+        <div class="receipt__h">
+          <span class="catchip"><i class="sw-dot" style="background:#d98a3f"></i>Meetings</span>
+          <span class="t-ui strong">Launch sync — release blockers</span>
+          <span class="t-meta is-mono">1:02 PM – 1:40 PM · 38m</span>
+          <span class="spacer"></span>
+          <button class="btn btn--ghost btn--sm btn--icon"><svg class="ic"><use href="#i-x"/></svg></button>
+        </div>
+
+        <div class="receipt__b">
+          <div class="receipt__stage">
+            <p class="t-meta" style="margin:0;max-width:78ch">Five speakers. The webhook was still 400-ing
+              in staging; Priya asked for delivery ids in the log so a failure can be traced without
+              re-sending. Kept even after the pixels age out.</p>
+
+            <div class="viewer">
+              <span class="shot shot--chat"><span class="lines lines--p"></span></span>
+              <span class="viewer__badge"><span class="vchip"><svg class="ic ic--sm"><use href="#i-eye"/></svg>2 redactions</span></span>
+              <span class="viewer__meta">
+                <span class="vchip">Slack</span>
+                <span class="vchip">#launch — delivery ids</span>
+                <span class="vchip">1:11:04 PM</span>
+                <span class="vchip">OCR</span>
+              </span>
+            </div>
+
+            <div class="scrub">
+              <span class="scrub__t"></span><span class="scrub__f" style="width:24%"></span>
+              <span class="scrub__ev" style="left:6%"></span>
+              <span class="scrub__ev is-hl" style="left:24%"></span>
+              <span class="scrub__ev" style="left:38%"></span>
+              <span class="scrub__ev" style="left:52%"></span>
+              <span class="scrub__ev" style="left:71%"></span>
+              <span class="scrub__ev" style="left:88%"></span>
+              <span class="scrub__ph" style="left:24%">1:11 PM</span>
+            </div>
+
+            <div class="filmstrip">
+              <i><span class="shot shot--call"><i class="t on"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="ctrl"></i></span></i>
+              <i class="is-cited"><span class="shot shot--browser"><span class="lines lines--p"></span></span></i>
+              <i class="is-cited is-cur"><span class="shot shot--chat"><span class="lines lines--p"></span></span></i>
+              <i><span class="shot shot--editor"><span class="lines lines--code"></span></span></i>
+              <i class="is-cited"><span class="shot shot--docs"><span class="lines lines--p"></span></span></i>
+              <i><span class="shot shot--terminal"><span class="lines lines--term"></span></span></i>
+              <i><span class="shot shot--editor"><span class="lines lines--code"></span></span></i>
+              <i class="is-cited"><span class="shot shot--sheet"></span></i>
+              <i><span class="shot shot--chat"><span class="lines lines--p"></span></span></i>
+              <i><span class="shot shot--browser"><span class="lines lines--p"></span></span></i>
+              <i class="is-cited"><span class="shot shot--call"><i class="t on"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="t"></i><i class="ctrl"></i></span></i>
+              <i><span class="shot shot--figma"><i class="art1"></i><i class="art2"></i><i class="sq"></i></span></i>
+            </div>
+
+            <div class="rctl">
+              <button class="btn btn--sm btn--icon btn--primary"><svg class="ic"><use href="#i-pause"/></svg></button>
+              <span class="seg"><span class="seg__i on">1×</span><span class="seg__i">2×</span>
+                <span class="seg__i">8×</span><span class="seg__i">16×</span></span>
+              <span class="t-meta is-mono">1:11:04 PM · Priya · 1×</span>
+              <span class="spacer"></span>
+              <span class="t-meta sub">1× replays the real audio · above it is a silent timelapse</span>
+              <button class="btn btn--sm"><svg class="ic ic--sm"><use href="#i-clock"/></svg>Open in Timeline →</button>
+            </div>
+
+            <div class="tpanel">
+              <div class="tturn"><span class="tturn__t is-mono">1:10:41</span>
+                <span class="tturn__sp" style="color:var(--app-src-mic)">You</span>
+                <span class="tturn__x">…staging is still returning 400 on every delivery, but the local
+                  signature check passes.</span></div>
+              <div class="tturn is-on"><span class="tturn__t is-mono">1:11:04</span>
+                <span class="tturn__sp" style="color:#d98a3f">Priya</span>
+                <span class="tturn__x">Can we get the delivery id into the log line? Right now a failure
+                  is untraceable unless you re-send it.</span></div>
+              <div class="tturn"><span class="tturn__t is-mono">1:11:22</span>
+                <span class="tturn__sp" style="color:#5b8def">Tom</span>
+                <span class="tturn__x">Same for the retry count. Two fields and this stops being a guessing game.</span></div>
+              <div class="tturn"><span class="tturn__t is-mono">1:11:48</span>
+                <span class="tturn__sp sub">Speaker 4</span>
+                <span class="tturn__x">Is that a Polar limitation or ours?</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rfoot">
+          <span class="is-mono">96 frames across 4 capture segments</span>
+          <span class="sstrip__dot"></span>
+          <span class="is-mono">6 frames + 3 spoken segments cited</span>
+          <span class="spacer"></span>
+          <span class="kbd">esc</span><span>close</span>
+          <span class="kbd">←</span><span class="kbd">→</span><span>step</span>
+          <span class="kbd">space</span><span>play</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sstrip">
+      <div class="sstrip__g"><span class="is-mono">receipt · Launch sync</span></div>
+      <span class="spacer"></span>
+      <span class="save"><svg><use href="#i-check"/></svg>read written 16:05</span>
+      <button class="sbtn"><svg><use href="#i-panel"/></svg></button>
+    </div>
+
+  </div></div>
+
+  <p class="wlabel"><b>The four states a card can be in, and why none of them is an error.</b></p>
+  <div class="fit"><div class="cellgrid" style="max-width:1100px;width:100%;grid-template-columns:repeat(4,1fr)">
+    <div class="cell"><span class="cell__l">Full card</span>
+      <p class="t-meta" style="margin:0">Five minutes or longer: category chip, focus chip, title,
+        summary, and <span class="is-mono">▸ N frames · receipt</span>. The only row with a summary.</p></div>
+    <div class="cell"><span class="cell__l">Compact row</span>
+      <p class="t-meta" style="margin:0">Under five minutes: swatch and title only. The summary exists but
+        is not worth the vertical spend — it is in the receipt.</p></div>
+    <div class="cell"><span class="cell__l">Footage expired</span>
+      <p class="t-meta" style="margin:0">Zero frames still on disk. Retention removed the pixels; the
+        card, summary and evidence list stay. A normal end state, not a failure — so it reads as a
+        fact, not a warning.</p></div>
+    <div class="cell"><span class="cell__l">Pending, at the live edge</span>
+      <p class="t-meta" style="margin:0">“Summarizing this window…”. The journal trails live capture by up
+        to 30 minutes. If derivation is paused the same slot states which switch is off, in the app's
+        own “Summaries are paused — …” wording.</p></div>
+  </div></div>
+
+  <p class="wlabel"><b>What this page deliberately does not draw.</b> No focus percentage per activity
+    (the backend stores three values, not a score). No “N% of your day” pie. No minute-precise ETA on
+    the pending slot — the app says “up to 30 minutes”, so that is what the card says. No OCR text in
+    the receipt: the chip states that text exists and <i>Open in Timeline</i> is where it is read.</p>
 </main>
 </body>
 </html>

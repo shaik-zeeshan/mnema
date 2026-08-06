@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Studio Shell — 07 Components, type, audit</title>
+<title>Studio Shell — 10 Context</title>
 <style>
 /* ============================================================================
    Mnema round 4 — direction 02 STUDIO SHELL
@@ -963,518 +963,461 @@ mark { background: color-mix(in srgb, var(--app-accent) 26%, transparent); color
 })();
 </script>
 
+<style>
+/* page 10 only — the composer, the standing ledger, the dismissed archive */
+.cscroll { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0 0 12px; }
+.chd { display: flex; align-items: baseline; gap: var(--s-8); height: 26px; padding: 0 16px;
+  background: var(--app-bg); border-bottom: var(--hairline) solid var(--app-border); margin-top: 14px; }
+.chd:first-child { margin-top: 0; }
+.chd__n { font: var(--w-semi) var(--t-ui)/1 var(--app-font-sans); color: var(--app-text-strong);
+  letter-spacing: -.01em; }
+.chd__c { margin-left: auto; font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+  color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+
+.composer2 { margin: 12px 16px 0; background: var(--app-surface); border-radius: var(--r-lg);
+  padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.ta { min-height: 52px; padding: 7px 9px; border-radius: var(--r-md);
+  border: var(--hairline) solid var(--app-border-strong); background: var(--app-bg);
+  font: var(--w-regular) var(--t-read)/1.5 var(--app-font-sans); color: var(--app-text-strong); }
+.ta.is-focused { border-color: var(--app-accent-border); box-shadow: var(--ring); }
+.ta .ph { color: var(--app-text-subtle); }
+.sugg { display: flex; gap: 5px; flex-wrap: wrap; }
+
+.arow { display: flex; align-items: flex-start; gap: var(--s-10); padding: 8px 10px;
+  border-top: var(--hairline) solid var(--app-border); }
+.arow:first-child { border-top: 0; }
+.arow:hover { background: var(--app-surface-hover); }
+.arow.is-sel { background: var(--app-surface-active); box-shadow: inset 2px 0 0 var(--app-accent); }
+.arow__t { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.arow__x { font: var(--w-regular) var(--t-read)/1.5 var(--app-font-sans); color: var(--app-text-strong);
+  margin: 0; max-width: 72ch; }
+.arow__m { display: flex; align-items: center; gap: var(--s-6); }
+.arow__a { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.authored { display: inline-flex; align-items: center; gap: 4px; height: 17px; padding: 0 6px;
+  border-radius: var(--r-pill); background: var(--app-accent-bg); color: var(--app-accent-strong);
+  border: var(--hairline) solid var(--app-accent-border);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); text-transform: uppercase; letter-spacing: .05em; }
+.topicchip { display: inline-flex; align-items: center; height: 17px; padding: 0 6px;
+  border-radius: var(--r-sm); background: var(--app-surface-hover); color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono); }
+
+.guard { margin: 8px 10px 0; padding: 8px 9px; border-radius: var(--r-md);
+  background: var(--app-warn-bg); border: var(--hairline) solid var(--app-warn-border); }
+.vsblock { padding: 6px 10px 0; display: flex; flex-direction: column; gap: 8px; }
+.vs { display: flex; flex-direction: column; gap: 2px; padding: 7px 8px; border-radius: var(--r-md);
+  background: var(--app-surface-subtle); }
+.vs.is-this { background: var(--app-accent-bg); box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border); }
+.inset { width: 268px; flex: 0 0 auto; }
+.insetwrap { display: flex; gap: 20px; align-items: flex-start; justify-content: center; flex-wrap: wrap; }
+</style>
+
 <header class="mast">
   <p class="mast__dir">Direction 02 · Studio Shell</p>
-  <h1 class="mast__pg"><b>07</b>Components, type specimen, and the pattern audit</h1>
-  <p class="mast__note">Every control this direction uses, in every state it has; the type ramp and
-    spacing constants with their real metrics; and an honest per-page audit against the UI/UX rules
-    and the carried-over native and de-boxing rules. Numbers in the audit are counted from the
-    rendered pages, not estimated.</p>
+  <h1 class="mast__pg"><b>10</b>Context — what you told Mnema, next to what it inferred</h1>
+  <p class="mast__note">Context is a <b>destination opened from the Overview's Context tile</b>. The
+    surface owns exactly one kind of data: <b>authored context</b> — sentences you wrote, which carry
+    no confidence and never fade. Everything Mnema <i>inferred</i> lives on Subjects; this page only
+    shows which of those your writing is currently steering. That distinction is the whole design, so
+    it gets the inspector: <b>Authored vs Inferred</b> at the top, what is being steered under it, and
+    the Sensitive Category Guardrail at the bottom. The correction affordances are the real ones —
+    <b>add, edit, delete</b> for what you wrote, <b>restore</b> for a belief you dismissed. Second
+    frame shows a row mid-edit and the dismissed archive open.</p>
   <div class="mast__rule"></div>
 </header>
 
-<main class="sheet">
+<main class="sect">
 
-  <!-- ─────────────────────────── chrome ─────────────────────────── -->
-  <p class="wlabel"><b>1 · The shell.</b> Four fixed pieces. Only the middle scrolls; the strips and
-    the inspector are structural, so live state and save state can never scroll out of view.</p>
-  <div class="win" style="width:1100px;height:300px;margin:0 auto">
+  <p class="wlabel"><b>The door, and the way back.</b> The Context tile counts what Mnema holds and
+    surfaces the newest line; its footer opens the page.</p>
+  <div class="fit insetwrap">
+    <div class="inset">
+      <p class="t-meta" style="margin:0 0 8px">On Overview</p>
+      <div class="tile" style="height:118px">
+        <div class="tile__h"><span class="t-label">Context</span>
+          <span class="more">7 standing</span></div>
+        <div class="tile__b">
+          <div class="trow"><span class="t-ui strong">7 things you told Mnema</span></div>
+          <div class="trow" style="align-items:flex-start"><span class="t-meta">Newest: “I run this repo
+            with Bun, never pnpm.”</span></div>
+          <div class="trow" style="margin-top:auto"><span class="t-meta" style="color:var(--app-accent)">Review all</span>
+            <span class="chev r" style="color:var(--app-accent)"><svg><use href="#i-chevr"/></svg></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="inset">
+      <p class="t-meta" style="margin:0 0 8px">In Context</p>
+      <div class="tstrip" style="border-radius:var(--r-md);border:var(--hairline) solid var(--app-border);height:30px">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div><span class="t-meta is-mono">Context</span>
+        <span class="spacer"></span><span class="kbd">⌘2</span>
+      </div>
+      <p class="t-meta sub" style="margin:8px 0 0">The tile counts <i>authored</i> lines only. Inferred
+        beliefs are counted on the Subjects tile, because they are a different thing.</p>
+    </div>
+  </div>
+
+  <p class="wlabel"><b>1100 × 720 — write, then see what it steers.</b> The composer is the top of the
+    scroll rather than a modal, because adding context is the reason you came. ⌘⏎ submits. The
+    suggestion chips prefill an opening — “I'm a … ”, “I'm currently working on … ” — they are not
+    categories, and the topic field beside them is free text, not an enum. Below, the standing ledger:
+    one row per sentence, each with <b>Edit</b> and <b>Delete</b>, because that is the entire
+    correction vocabulary this data has.</p>
+  <div class="fit"><div class="win">
+
     <div class="tbar">
       <div class="tl"><i></i><i></i><i></i></div>
-      <div class="seg"><span class="seg__i on">Timeline <span class="kbd">⌘1</span></span>
-        <span class="seg__i">Overview <span class="kbd">⌘2</span></span></div>
+      <div class="seg"><span class="seg__i">Timeline <span class="kbd">⌘1</span></span>
+        <span class="seg__i on">Overview <span class="kbd">⌘2</span></span></div>
       <span class="spacer"></span>
-      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-search"/></svg>Search or Ask
-        <span class="kbd kbd--mod">⌘⌥Space</span></button>
-      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-        <span class="pill__gb is-num">270 MB</span></button>
+      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-search"/></svg>Search or Ask <span class="kbd kbd--mod">⌘⌥Space</span></button>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span><span class="pill__gb is-num">270 MB</span></button>
     </div>
+
     <div class="tstrip">
-      <span class="t-label">Title bar 38 · tool strip 30 · status strip 24 · inspector 256</span>
-      <span class="spacer"></span>
-      <span class="t-meta">contextual controls live here, never in the title bar</span>
-    </div>
-    <div class="wbody">
-      <div class="main" style="display:flex;align-items:center;justify-content:center">
-        <span class="t-meta">the only scrolling region</span>
+      <div class="tstrip__g">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div>
+        <span class="t-label" style="color:var(--app-text-strong)">Context</span>
       </div>
+      <div class="tstrip__sep"></div>
+      <span class="t-meta is-mono">7 standing · 4 dismissed</span>
+      <span class="spacer"></span>
+      <span class="chip">Derivation · Balanced</span>
+      <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm"><use href="#i-sliders"/></svg>User Context settings</button>
+      <div class="tstrip__sep"></div>
+      <button class="btn btn--sm btn--icon"><svg class="ic"><use href="#i-panel"/></svg></button>
+    </div>
+
+    <div class="wbody">
+      <div class="main">
+        <div class="cscroll">
+
+          <div class="chd"><span class="chd__n">Add context</span>
+            <span class="t-meta">What you tell Mnema about yourself — it steers your dossier and never
+              fades like an inferred conclusion</span></div>
+
+          <div class="composer2">
+            <div class="ta is-focused"><span class="ph">I'm a… I care about… I work best with…</span><span class="caret"></span></div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="input" style="width:280px;height:24px">
+                <span class="ph" style="font-size:12px">topic (optional, e.g. role, focus, goal)</span></div>
+              <span class="authored"><svg class="ic ic--sm"><use href="#i-check"/></svg>authored</span>
+              <span class="spacer"></span>
+              <span class="t-meta sub"><span class="kbd">⌘</span><span class="kbd">⏎</span> to add</span>
+              <button class="btn btn--sm btn--primary"><svg class="ic ic--sm"><use href="#i-plus"/></svg>Add</button>
+            </div>
+            <div class="sugg">
+              <span class="chip">Your role</span><span class="chip">What you're working on</span>
+              <span class="chip">How you work</span><span class="chip">What you care about</span>
+              <span class="chip">Goals this quarter</span>
+            </div>
+            <p class="t-meta sub" style="margin:0">› Authored statements never fade from your dossier.</p>
+          </div>
+
+          <div class="chd"><span class="chd__n">Standing context</span>
+            <span class="chd__c">7</span></div>
+          <div class="setgrp grp" style="margin-top:8px">
+            <div class="arow is-sel">
+              <div class="arow__t">
+                <p class="arow__x">I run this repo with Bun, never pnpm — if you suggest a pnpm command
+                  it is wrong.</p>
+                <div class="arow__m"><span class="topicchip">tooling</span>
+                  <span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">added 2h ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x">I'm the sole developer on Mnema — a local-first macOS app that records
+                  the screen so it can be searched later.</p>
+                <div class="arow__m"><span class="topicchip">role</span>
+                  <span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">edited 3d ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x">I prefer to work by shipping the smallest version that works and
+                  questioning it in the same breath.</p>
+                <div class="arow__m"><span class="topicchip">how I work</span>
+                  <span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">added 1w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x">Goal: ship the licensing flow and the redesign before the end of the
+                  quarter.</p>
+                <div class="arow__m"><span class="topicchip">goal</span>
+                  <span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">added 2w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x">I care about the app being honest about what it costs — disk, battery,
+                  and what leaves the machine.</p>
+                <div class="arow__m"><span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">added 3w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+          </div>
+
+          <div class="chd"><span class="chd__n">Dismissed</span>
+            <span class="t-meta">Beliefs you removed from your dossier</span>
+            <span class="chd__c" style="display:flex;align-items:center;gap:8px">4
+              <button class="btn btn--ghost btn--sm">Show</button></span></div>
+
+        </div>
+      </div>
+
       <aside class="insp">
-        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-panel"/></svg>
-          <span class="t-label" style="color:var(--app-text-strong)">Inspector</span>
+        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-layers"/></svg>
+          <span class="t-label" style="color:var(--app-text-strong)">How Mnema uses this</span>
           <span class="spacer"></span><span class="kbd">⌥⌘I</span></div>
         <div class="insp__b">
-          <div class="insp__sec"><span class="t-label">Section</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v is-mono">value</span></div>
-          <div class="kv"><span class="kv__k">Key</span><span class="kv__v">value, wrapping when it must</span></div>
-          <p class="t-meta" style="margin:10px">Same panel, four subjects: conversation row, frame,
-            search result, changed setting.</p>
+          <div class="vsblock">
+            <div class="vs is-this">
+              <div style="display:flex;align-items:baseline;gap:6px">
+                <span class="t-ui strong">Authored</span><span class="t-label sub">· this page</span></div>
+              <p class="t-meta" style="margin:0">You asserted it. It steers your dossier up front and
+                stays as written.</p>
+              <span class="t-label is-mono acc" style="margin-top:2px">never fades</span>
+            </div>
+            <div class="vs">
+              <div style="display:flex;align-items:baseline;gap:6px">
+                <span class="t-ui strong">Inferred</span><span class="t-label sub">· Subjects</span></div>
+              <p class="t-meta" style="margin:0">Mnema concluded it from your activity. Confidence rises
+                and fades over time.</p>
+              <span class="t-label is-mono sub" style="margin-top:2px">confidence rises &amp; fades</span>
+            </div>
+          </div>
+
+          <div class="insp__sec"><span class="t-label">Steering your dossier</span></div>
+          <div style="padding:2px 10px 0;display:flex;flex-direction:column;gap:8px">
+            <div>
+              <p class="t-meta" style="margin:0"><span class="is-mono acc">✎ tooling</span> supports</p>
+              <p class="t-meta" style="margin:1px 0 0;color:var(--app-text-strong)">◆ Every repo command in
+                this workspace runs through Bun <span class="is-mono sub">72%</span></p>
+            </div>
+            <div>
+              <p class="t-meta" style="margin:0"><span class="is-mono acc">✎ role</span> supports</p>
+              <p class="t-meta" style="margin:1px 0 0;color:var(--app-text-strong)">◆ Licence verification
+                is offline Ed25519 <span class="is-mono sub">69%</span></p>
+            </div>
+            <div>
+              <p class="t-meta" style="margin:0"><span class="is-mono acc">✎ how I work</span> supports</p>
+              <p class="t-meta" style="margin:1px 0 0;color:var(--app-text-strong)">◆ Prefers the smallest
+                change that works <span class="is-mono sub">54%</span></p>
+            </div>
+          </div>
+
+          <div class="insp__sec"><span class="t-label">Sensitive Category Guardrail</span></div>
+          <div class="guard">
+            <p class="t-meta" style="margin:0;color:var(--app-warn-strong)">Health, politics, sexuality,
+              religion, and similar are never inferred or surfaced — even if you mention them here.
+              Mnema errs toward over-suppression.</p>
+          </div>
+
+          <div class="insp__sec"><span class="t-label">What deletes what</span></div>
+          <div class="kv"><span class="kv__k">Delete</span><span class="kv__v">Removes that one sentence,
+            immediately</span></div>
+          <div class="kv"><span class="kv__k">Retention</span><span class="kv__v">Never touches this page —
+            it deletes recordings, not conclusions</span></div>
+          <div class="kv"><span class="kv__k">Wipe</span><span class="kv__v">Settings › Intelligence ›
+            Wipe User Context clears everything derived, and this ledger with it</span></div>
         </div>
       </aside>
     </div>
+
     <div class="sstrip">
-      <div class="sstrip__g"><svg class="ic ic--sm" style="color:var(--app-src-screen)"><use href="#i-screen"/></svg>
-        <span class="is-mono">2 fps · 1080p · H.264</span></div>
+      <div class="sstrip__g"><svg class="ic ic--sm sub"><use href="#i-layers"/></svg>
+        <span class="is-mono">7 authored · 47 inferred</span></div>
       <span class="sstrip__dot"></span>
-      <div class="sstrip__g"><span class="is-mono"><b>270 MB</b> today</span></div>
+      <div class="sstrip__g"><span class="is-mono">derivation active · Balanced</span></div>
       <span class="sstrip__dot"></span>
-      <div class="sstrip__g"><span class="is-mono">≈ 8.1 GB / mo</span></div>
+      <div class="sstrip__g"><span class="is-mono">last pass 14:20</span></div>
       <span class="spacer"></span>
-      <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-      <button class="sbtn">Undo</button>
-      <button class="sbtn on"><svg><use href="#i-panel"/></svg>Detail</button>
+      <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:52</span>
+      <button class="sbtn on"><svg><use href="#i-panel"/></svg>Inspector</button>
     </div>
-  </div>
 
-  <!-- ─────────────────────────── controls ─────────────────────────── -->
-  <p class="wlabel"><b>2 · Controls, and every state each one has.</b> Rest · hover · pressed · focus ·
-    disabled · busy for anything clickable; rest · focus · invalid for anything typable.</p>
-  <div class="cellgrid">
-    <div class="cell"><span class="cell__l">Button — default</span>
-      <div class="cell__b"><button class="btn">Rest</button><button class="btn is-hover">Hover</button>
-        <button class="btn is-press">Press</button><button class="btn btn--focus">Focus</button>
-        <button class="btn" disabled>Off</button>
-        <button class="btn is-busy"><span class="spin"></span>Busy</button></div></div>
-    <div class="cell"><span class="cell__l">Button — primary (accent-filled default)</span>
-      <div class="cell__b"><button class="btn btn--primary">Rest</button>
-        <button class="btn btn--primary is-hover">Hover</button>
-        <button class="btn btn--primary is-press">Press</button>
-        <button class="btn btn--primary" disabled>Off</button></div></div>
-    <div class="cell"><span class="cell__l">Button — ghost + danger</span>
-      <div class="cell__b"><button class="btn btn--ghost">Ghost</button>
-        <button class="btn btn--ghost is-hover">Hover</button>
-        <button class="btn btn--danger">Delete Recent…</button></div></div>
-    <div class="cell"><span class="cell__l">Button — sizes 22 / 28 / 32</span>
-      <div class="cell__b"><button class="btn btn--sm">Small</button><button class="btn">Default</button>
-        <button class="btn" style="height:32px;padding:0 12px">Large</button>
-        <button class="btn btn--icon"><svg class="ic"><use href="#i-refresh"/></svg></button></div></div>
+  </div></div>
 
-    <div class="cell"><span class="cell__l">Segmented — 2, 3 and 4 up</span>
-      <div class="cell__b" style="display:block">
-        <span class="seg" style="margin-right:8px"><span class="seg__i on">Search</span><span class="seg__i">Ask</span></span>
-        <span class="seg" style="margin-right:8px"><span class="seg__i">Light</span><span class="seg__i">Dark</span><span class="seg__i on">System</span></span>
-        <span class="seg"><span class="seg__i">Hour</span><span class="seg__i on">Day</span><span class="seg__i">Week</span><span class="seg__i">Month</span></span></div></div>
-    <div class="cell"><span class="cell__l">Popup button · switch</span>
-      <div class="cell__b"><span class="pop">90 days <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="pop pop--md">Timeline <b><svg><use href="#i-chevud"/></svg></b></span>
-        <span class="sw on"><i></i></span><span class="sw"><i></i></span></div></div>
-    <div class="cell"><span class="cell__l">Chips — scope, verdict, machine label</span>
-      <div class="cell__b"><span class="chip on">All</span><span class="chip">Screen</span>
-        <span class="chip chip--sq">Q4_K_M</span><span class="chip chip--ok">fits on GPU</span>
-        <span class="chip chip--warn">may be slow</span><span class="chip chip--bad">too large</span></div></div>
-    <div class="cell"><span class="cell__l">Keycaps · shortcut recorder</span>
-      <div class="cell__b"><span class="kbd">⏎</span><span class="kbd kbd--mod">⌘⌥Space</span>
-        <span class="recorder"><span class="kbd kbd--big">⌘</span><span class="kbd kbd--big">⇧</span>
-          <span class="kbd kbd--big">S</span></span>
-        <span class="recorder is-armed">Type a shortcut…</span></div></div>
+  <p class="wlabel"><b>Editing in place, and the archive open.</b> Edit turns the row into the same
+    composer it was written with — never a modal, never a separate screen. Delete goes through the
+    native confirm sheet (never drawn here). Below, the dismissed archive: beliefs you removed, with
+    <b>Restore</b>. The copy is careful about what restore actually does — it lets the belief form
+    again <i>only if your activity still supports it</i>. It does not put it back.</p>
+  <div class="fit"><div class="win" style="height:560px">
 
-    <div class="cell"><span class="cell__l">Text field — rest · focus · invalid</span>
-      <div class="cell__b" style="display:block">
-        <span class="input" style="width:100%;margin-bottom:6px"><span class="ph">Filter settings</span></span>
-        <span class="input is-focused" style="width:100%;margin-bottom:6px">webhook<span class="caret"></span></span>
-        <span class="input is-bad" style="width:100%">sk-ant-•••• </span>
-        <p class="conseq" style="margin:5px 0 0;color:var(--app-danger)">That key was rejected by
-          Anthropic — 401 at 14:38.</p></div></div>
-    <div class="cell"><span class="cell__l">Slider with consequence</span>
-      <div class="cell__b" style="display:block">
-        <div class="slider"><span class="slider__t"><i class="slider__f" style="width:26%"></i>
-          <span class="slider__k" style="left:26%"></span></span></div>
-        <div class="slider__ticks"><span>0.5</span><span>1</span><span>2</span><span>4</span><span>8</span><span>15</span></div>
-        <p class="conseq" style="margin:6px 0 0">2 fps → <b>~1.4 GB/day</b></p></div></div>
-    <div class="cell"><span class="cell__l">Ladder · duty · gauge</span>
-      <div class="cell__b" style="display:block">
-        <div class="ladder" style="margin-bottom:8px"><span>7 d</span><span>30 d</span>
-          <span class="on">90 d</span><span>1 y</span><span>Forever</span></div>
-        <div class="duty" style="margin-bottom:8px"><i class="work" style="width:20%">20%</i>
-          <i class="cool" style="width:80%">cool 80%</i></div>
-        <div class="gauge"><span class="gauge__b"><i style="width:36%"></i></span>
-          <span class="t-meta is-mono">1.8 / 5.0 GB</span></div></div></div>
-    <div class="cell" style="grid-column:span 2"><span class="cell__l">Model row — size · quant · verdict</span>
-      <div class="grp" style="background:var(--app-surface-subtle)">
-        <div class="mrow on"><svg class="ic ic--sm acc"><use href="#i-check"/></svg>
-          <span class="mrow__n">qwen2.5:14b</span><span class="mrow__meta">
-          <span class="chip chip--sq">Q4_K_M</span><span class="t-meta is-mono">9.0 GB</span>
-          <span class="chip chip--ok">fits</span></span></div>
-        <div class="mrow"><span style="width:13px"></span><span class="mrow__n">llama3.3:70b</span>
-          <span class="mrow__meta"><span class="t-meta is-mono">42 GB</span>
-          <span class="chip chip--bad">too large</span></span></div></div></div>
-
-    <div class="cell"><span class="cell__l">Recording pill — the nine states</span>
-      <div class="cell__b" style="display:block;line-height:2.2">
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__gb is-num">270 MB</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__w">Rec</span></button>
-        <button class="pill"><i class="rec__dot"></i></button>
-        <button class="pill pill--quiet"><span class="spin" style="width:10px;height:10px"></span>
-          <span class="pill__w">Starting</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Paused</span><span class="pill__t is-num" style="color:var(--app-text-subtle)">2:14:07</span></button>
-        <button class="pill pill--quiet"><i class="rec__dot" style="background:var(--app-text-subtle);animation:none"></i>
-          <span class="pill__w">Idle 12m</span></button>
-        <button class="pill pill--warn"><i class="rec__dot" style="background:var(--app-warn);animation:none"></i>
-          <span class="pill__w">Low disk</span></button>
-        <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span>
-          <span class="pill__w" style="color:var(--app-info)">screen asleep</span></button>
-      </div></div>
-    <div class="cell"><span class="cell__l">Status strip — the three write states</span>
-      <div class="cell__b" style="display:block;line-height:2.4">
-        <span class="save"><svg><use href="#i-check"/></svg>All changes saved · 14:41</span>
-        <span class="save save--busy"><span class="spin" style="width:9px;height:9px"></span>Saving…</span>
-        <span class="save" style="background:var(--app-danger-bg);color:var(--app-danger)">
-          <svg><use href="#i-alert"/></svg>Could not save — retry</span></div>
-      <p class="conseq" style="margin:0">Never a save bar. There is no unsaved state to defend, so the
-        strip states only whether the write landed, and offers Undo.</p></div>
-
-    <div class="cell"><span class="cell__l">NSMenu — popover anatomy</span>
-      <div class="menu" style="width:100%">
-        <div class="menu__hd">Recording · 2:14:07 · 270 MB today</div>
-        <div class="menu__i"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-pause"/></svg></span>
-          Pause Capture<span class="menu__kbd">⌥⌘P</span></div>
-        <div class="menu__i is-hl"><span class="menu__ck"></span><span class="menu__gl"><svg class="ic ic--sm"><use href="#i-stop"/></svg></span>
-          Stop &amp; Save<span class="menu__kbd">⌥⌘S</span></div>
-        <div class="menu__sep"></div>
-        <div class="menu__i"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-mic)"><svg class="ic ic--sm"><use href="#i-mic"/></svg></span>Microphone</div>
-        <div class="menu__i is-off"><span class="menu__ck"><svg><use href="#i-check"/></svg></span>
-          <span class="menu__gl" style="color:var(--app-src-sys)"><svg class="ic ic--sm"><use href="#i-sys"/></svg></span>System Audio</div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Toast — the one non-blocking error placement</span>
-      <div class="toast" style="width:100%">
-        <div class="toast__h"><svg class="ic ic--sm" style="color:var(--app-danger)"><use href="#i-alert"/></svg>
-          Transcription failed</div>
-        <p class="t-meta" style="margin:0">Deepgram returned 401 for the launch sync at 13:02. The
-          segment is kept and will retry when the key is fixed.</p>
-        <div style="display:flex;gap:6px;margin-top:2px"><button class="btn btn--sm">Open Settings</button>
-          <button class="btn btn--sm btn--ghost">Dismiss</button></div></div></div>
-    <div class="cell"><span class="cell__l">Rows — setting · list · selected · inspector kv</span>
-      <div class="grp" style="margin-bottom:8px">
-        <div class="srow"><div class="srow__t"><span class="srow__l">Launch at login</span></div>
-          <div class="srow__v"><span class="sw on"><i></i></span></div></div>
-        <div class="srow is-focus"><div class="srow__t"><span class="srow__l">Frame rate</span>
-          <span class="srow__s">focused row — accent bar + tinted fill</span></div>
-          <div class="srow__v"><span class="echo"><svg><use href="#i-check"/></svg>Saved</span></div></div>
-      </div>
-      <div class="grp">
-        <div class="grow"><span class="gthumb"><span class="wave" data-wave="9" data-seed="4"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Design review</span>
-            <span class="grow__sub">41 min · 3 speakers</span></span>
-          <span class="grow__val"><span class="chev"><svg><use href="#i-chevr"/></svg></span></span></div>
-        <div class="grow grow--sel"><span class="gthumb"><span class="wave" data-wave="9" data-seed="8"></span></span>
-          <span class="grow__txt"><span class="grow__lbl">Launch sync</span>
-            <span class="grow__sub">full-row accent selection</span></span>
-          <span class="grow__val"><span class="t-meta is-mono">13:02</span></span></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Media — result cell, moment card, audio cell</span>
-      <div class="cell__b" style="align-items:flex-start">
-        <div class="mcard" style="width:132px"><div class="mcard__f">
-          <span class="shot shot--editor"><span class="lines lines--code"></span></span>
-          <span class="qcell__dur">14:32</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">webhook.rs</span></div></div>
-        <div class="mcard" style="width:132px"><div class="mcard__f qcell__f--audio">
-          <span class="tag"><svg class="ic ic--sm" style="color:var(--app-src-mic)"><use href="#i-mic"/></svg>mic</span>
-          <span class="wave" data-wave="26" data-seed="6"></span>
-          <span class="qcell__dur">04:58</span></div>
-          <div class="qcell__l1"><span class="qcell__ttl" style="font-size:11px">Launch sync</span></div></div>
-      </div></div>
-    <div class="cell"><span class="cell__l">Timeline parts</span>
-      <div style="position:relative;padding-top:20px">
-        <div class="rail" style="height:26px">
-          <div class="band" style="left:0;width:34%"><span class="gicon ic-figma">F</span></div>
-          <div class="band" style="left:35%;width:26%"><span class="gicon ic-zoom">Z</span></div>
-          <div class="band" style="left:62%;right:0"><span class="gicon ic-code">C</span></div>
-          <span class="tickA" style="right:0"></span></div>
-        <span class="playhead" style="left:62%;top:14px;bottom:-14px"></span>
-        <span class="nowpill" style="left:62%">Mon, Aug 3 · <span class="num">14:32</span>
-          <svg class="ic ic--sm"><use href="#i-chevd"/></svg></span>
-      </div>
-      <div class="lane" style="margin-top:18px"><div class="lane__labs"><span>mic</span><span>sys</span></div>
-        <div class="lane__vp"><span class="abar abar--mic" style="left:0;width:36%"></span>
-          <span class="abar abar--sys is-sel" style="left:35%;width:26%"></span></div></div></div>
-    <div class="cell"><span class="cell__l">Empty / redacted states are designed</span>
-      <div style="border-radius:5px;aspect-ratio:16/9;background:var(--app-surface-subtle);
-        display:flex;align-items:center;justify-content:center">
-        <svg class="ic ic--lg" style="color:var(--app-text-faint)"><use href="#i-frame"/></svg></div>
-      <div class="kv"><span class="kv__k">Title</span><span class="kv__v sub">—</span></div>
-      <p class="conseq" style="margin:0">Every inspector field has an em-dash rendering, so the panel
-        keeps its width and the layout never jumps.</p></div>
-  </div>
-
-  <!-- ─────────────────────────── type ─────────────────────────── -->
-  <p class="wlabel"><b>3 · Type — six roles, three weights, and the one rule.</b> A size is not a choice,
-    it is a consequence of what the text is. Mono is the machine voice: times, sizes, counts, ids,
-    keys, engine names. Sans is the product speaking.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:110px">Role</th><th style="width:290px">Specimen</th>
-        <th class="num" style="width:172px">px / lh / tracking / weight</th>
-        <th>Used for, in this direction</th></tr>
-      <tr><td><span class="is-mono">--t-label</span></td>
-        <td><span class="t-label">CAPTURE · MIC · 20% DUTY</span></td>
-        <td class="num">10 / 1.4 / +.02 / 510 mono</td>
-        <td>tile headers, inspector keys, lane labels, section eyebrows, chip text. Never a sentence.</td></tr>
-      <tr><td><span class="is-mono">--t-meta</span></td>
-        <td><span class="t-meta">41 min · 3 speakers · system audio</span></td>
-        <td class="num">11 / 1.35 / +.01 / 400</td>
-        <td>status strip, helper lines under a row, captions, counts, consequence lines.</td></tr>
-      <tr><td><span class="is-mono">--t-ui</span></td>
-        <td><span class="t-ui">Start recording at login</span></td>
-        <td class="num">13 / 1.25 / −.006 / 400</td>
-        <td>the default: rows, buttons, menus, labels, chips, transcript speakers.</td></tr>
-      <tr><td><span class="is-mono">--t-read</span></td>
-        <td><span class="t-read" style="display:block">The webhook verifier was the week's one real change.</span></td>
-        <td class="num">14 / 1.55 / −.008 / 400</td>
-        <td>prose only: the digest, AI answers, empty-state body. Capped at 70ch.</td></tr>
-      <tr><td><span class="is-mono">--t-title</span></td>
-        <td><span class="t-title">Monday, August 3</span></td>
-        <td class="num">17 / 1.3 / −.016 / 590</td>
-        <td>the date header, the Quick Access query, section names, empty-state leads.</td></tr>
-      <tr><td><span class="is-mono">--t-display</span></td>
-        <td><span class="t-display is-num">14:32:08</span></td>
-        <td class="num">22 / 1.2 / −.02 / 590</td>
-        <td><b>one per screen.</b> Timeline: the readout clock. Overview: the captured-hours hero.
-          Quick Access: the no-match lead.</td></tr>
-    </table>
-  </div>
-
-  <p class="wlabel"><b>4 · Spacing, metrics, radii.</b> Named constants, not raw numbers — a designer
-    picks “section gap”, so the same relationship is the same number on every surface. The density rule
-    holds: a grid's inset equals its gutter.</p>
-  <div class="fitrow" style="align-items:stretch">
-    <div class="cell" style="width:540px;padding:0;overflow:hidden">
-      <table class="tbl">
-        <tr><th style="width:150px">Constant</th><th class="num" style="width:96px">px</th><th>Where</th></tr>
-        <tr><td><span class="is-mono">--gap-inline</span></td><td class="num">6</td><td>icon → its label; chip → its count</td></tr>
-        <tr><td><span class="is-mono">--gap-row</span></td><td class="num">8</td><td>between rows in a list or form</td></tr>
-        <tr><td><span class="is-mono">--gap-group</span></td><td class="num">12</td><td>tile gutter, tile inset, pane padding</td></tr>
-        <tr><td><span class="is-mono">--gap-section</span></td><td class="num">20</td><td>between sections of a settings surface</td></tr>
-        <tr><td><span class="is-mono">--h-sm / md / lg</span></td><td class="num">22 / 28 / 32</td><td>tool-strip control · default row and button · dialog primary</td></tr>
-        <tr><td><span class="is-mono">--h-titlebar</span></td><td class="num">38</td><td>title bar; tool strip 30, status strip 24</td></tr>
-        <tr><td><span class="is-mono">--w-insp</span></td><td class="num">256</td><td>inspector (280 in Quick Access, where the window is wider)</td></tr>
-        <tr><td><span class="is-mono">--r-sm / md / lg / xl</span></td><td class="num">4 / 6 / 8 / 12</td><td>badge · control · panel and tile · floating</td></tr>
-      </table>
+    <div class="tbar">
+      <div class="tl"><i></i><i></i><i></i></div>
+      <div class="seg"><span class="seg__i">Timeline</span><span class="seg__i on">Overview</span></div>
+      <span class="spacer"></span>
+      <button class="pill"><i class="rec__dot"></i><span class="pill__t is-num">2:14:07</span></button>
     </div>
-    <div class="cell" style="width:520px">
-      <span class="cell__l">The 4-point rhythm, drawn</span>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">6</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:6px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">8</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:8px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">12</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:12px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">20</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:20px"></i></span></div>
-        <div style="display:flex;align-items:center;gap:10px"><span class="t-label" style="width:38px">28</span>
-          <span class="ruler" style="flex:1"><i style="left:0;width:28px"></i></span></div>
+
+    <div class="tstrip">
+      <div class="tstrip__g">
+        <button class="btn btn--ghost btn--sm"><svg class="ic ic--sm" style="transform:rotate(180deg)"><use href="#i-chevr"/></svg>Overview</button>
+        <div class="tstrip__sep"></div>
+        <span class="t-label" style="color:var(--app-text-strong)">Context</span>
       </div>
-      <span class="cell__l" style="margin-top:8px">Icons — one family, monochrome, currentColor</span>
-      <div class="cell__b" style="gap:12px">
-        <svg class="ic ic--lg"><use href="#i-screen"/></svg><svg class="ic ic--lg"><use href="#i-mic"/></svg>
-        <svg class="ic ic--lg"><use href="#i-sys"/></svg><svg class="ic ic--lg"><use href="#i-spark"/></svg>
-        <svg class="ic ic--lg"><use href="#i-search"/></svg><svg class="ic ic--lg"><use href="#i-panel"/></svg>
-        <svg class="ic ic--lg"><use href="#i-scan"/></svg><svg class="ic ic--lg"><use href="#i-cpu"/></svg>
-        <svg class="ic ic--lg"><use href="#i-clock"/></svg><svg class="ic ic--lg"><use href="#i-wave"/></svg>
-        <svg class="ic ic--lg"><use href="#i-frame"/></svg><svg class="ic ic--lg"><use href="#i-sliders"/></svg>
-      </div>
-      <p class="conseq" style="margin:0">Only a real third-party app icon keeps its own colours —
-        the exclude list, the timeline bands. That is identity, not decoration.</p>
+      <div class="tstrip__sep"></div>
+      <span class="t-meta is-mono">7 standing · 4 dismissed</span>
+      <span class="spacer"></span>
+      <button class="btn btn--sm btn--icon"><svg class="ic"><use href="#i-panel"/></svg></button>
     </div>
-  </div>
 
-  <!-- ─────────────────────────── audit ─────────────────────────── -->
-  <p class="wlabel"><b>5 · Pattern self-audit.</b> Each page against the six checks. Bordered
-    containers are counted as the de-boxing rule defines them — control bezels (button, segmented,
-    switch, popup, field) and the hairline that clips a screenshot are free; only containers count.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
+    <div class="wbody">
+      <div class="main">
+        <div class="cscroll">
+
+          <div class="chd"><span class="chd__n">Standing context</span><span class="chd__c">7</span></div>
+          <div class="setgrp grp" style="margin-top:8px">
+            <div class="arow is-sel" style="flex-direction:column;align-items:stretch;gap:8px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="t-label" style="color:var(--app-text-strong)">Editing</span>
+                <span class="chip"><svg class="ic ic--sm"><use href="#i-check"/></svg>✎ editing</span>
+              </div>
+              <div class="ta is-focused">I run this repo with Bun, never pnpm — if you suggest a pnpm
+                command it is wrong.<span class="caret"></span></div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="input" style="width:240px;height:24px"><span class="strong" style="font-size:12px">tooling</span></div>
+                <span class="spacer"></span>
+                <button class="btn btn--ghost btn--sm">Cancel</button>
+                <button class="btn btn--sm btn--primary">Save</button>
+              </div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x">I'm the sole developer on Mnema — a local-first macOS app that records
+                  the screen so it can be searched later.</p>
+                <div class="arow__m"><span class="topicchip">role</span>
+                  <span class="authored">✎ authored</span>
+                  <span class="t-meta sub is-mono">edited 3d ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--ghost btn--sm">Edit</button>
+                <button class="btn btn--ghost btn--sm">Delete</button></div>
+            </div>
+          </div>
+
+          <div class="chd"><span class="chd__n">Dismissed</span>
+            <span class="t-meta">Restoring lets one form again — only if your activity still supports it</span>
+            <span class="chd__c" style="display:flex;align-items:center;gap:8px">4
+              <button class="btn btn--ghost btn--sm">Hide</button></span></div>
+          <div class="setgrp grp" style="margin-top:8px">
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x" style="font-size:13px">You are evaluating sortformer as a replacement
+                  for speakrs.</p>
+                <div class="arow__m"><span class="topicchip">Diarisation</span>
+                  <span class="t-meta sub is-mono">dismissed 3w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--sm">Restore</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x" style="font-size:13px">You work primarily in the evenings.</p>
+                <div class="arow__m"><span class="topicchip">Working hours</span>
+                  <span class="t-meta sub is-mono">dismissed 5w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--sm">Restore</button></div>
+            </div>
+            <div class="arow">
+              <div class="arow__t">
+                <p class="arow__x" style="font-size:13px">Semantic search is planned for the next release.</p>
+                <div class="arow__m"><span class="topicchip">Semantic search</span>
+                  <span class="t-meta sub is-mono">dismissed 6w ago</span></div>
+              </div>
+              <div class="arow__a"><button class="btn btn--sm">Restore</button></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <aside class="insp">
+        <div class="insp__h"><svg class="ic ic--sm sub"><use href="#i-layers"/></svg>
+          <span class="t-label" style="color:var(--app-text-strong)">How Mnema uses this</span></div>
+        <div class="insp__b">
+          <div class="insp__sec"><span class="t-label">Editing</span></div>
+          <div class="kv kv--stack"><span class="kv__k">Statement</span>
+            <span class="kv__v">I run this repo with Bun, never pnpm…</span></div>
+          <div class="kv"><span class="kv__k">Topic</span><span class="kv__v is-mono">tooling</span></div>
+          <div class="kv"><span class="kv__k">Added</span><span class="kv__v is-mono">2h ago</span></div>
+          <div class="kv"><span class="kv__k">Confidence</span><span class="kv__v sub">none — authored
+            context carries no confidence</span></div>
+          <div class="kv"><span class="kv__k">Evidence</span><span class="kv__v sub">none — you asserted
+            it, so there is nothing to ground</span></div>
+
+          <div class="insp__sec"><span class="t-label">Restore, precisely</span></div>
+          <div style="padding:4px 10px 0"><p class="conseq" style="margin:0">Restoring clears the dismissal
+            so the belief is allowed to form again. If your activity no longer supports it, nothing
+            comes back — and that is the correct outcome, not a failure.</p></div>
+
+          <div class="insp__sec"><span class="t-label">Guardrail</span></div>
+          <div class="guard">
+            <p class="t-meta" style="margin:0;color:var(--app-warn-strong)">Health, politics, sexuality,
+              religion and similar are never inferred or surfaced — even if you mention them here.</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="sstrip">
+      <div class="sstrip__g"><span class="is-mono">editing 1 of 7</span></div>
+      <span class="spacer"></span>
+      <span class="save save--busy"><span class="spin" style="width:9px;height:9px"></span>Saving…</span>
+      <button class="sbtn"><svg><use href="#i-panel"/></svg></button>
+    </div>
+
+  </div></div>
+
+  <p class="wlabel"><b>The one thing this page must not say.</b> Nothing here promises that deleting a
+    line deletes what Mnema learned from your activity. It cannot: the two are different tables and
+    different lifetimes. Below is the honest map of who can erase what — it is also why the
+    <i>Wipe User Context</i> control lives in Settings and is referenced, not duplicated, here.</p>
+  <div class="fit"><div class="cell" style="padding:0;overflow:hidden;max-width:1100px;width:100%">
     <table class="tbl">
-      <tr>
-        <th style="width:118px">Page</th>
-        <th>Hierarchy</th>
-        <th>Spacing grid</th>
-        <th>Colour &amp; contrast</th>
-        <th>States</th>
-        <th>Native bar</th>
-        <th class="num" style="width:78px">Borders</th>
-      </tr>
-      <tr>
-        <td><b>01 Overview</b></td>
-        <td>One <span class="is-mono">--t-display</span> (6:42 hero) → date title → tile labels. Four
-          type sizes in the grid.</td>
-        <td>12 inset = 12 gutter. Rows 108 / 1fr × 3.</td>
-        <td>Accent appears three times: selected row, today's bar, the write chip.</td>
-        <td>Row hover, full-row selection, inspector empty state, 800px degradation.</td>
-        <td>38px bar, 22px strip controls, tabular-nums throughout, no pointer cursor on lists.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>02 Timeline</b></td>
-        <td>The clock is the display size; app name is the only 13px item in the readout.</td>
-        <td>12 pane inset, 10 between stage / rail / drawer.</td>
-        <td>Record red is a state, not an error: now-tick, selected audio segment. Sources keep their
-          three hues.</td>
-        <td>Hover ghost + bubble, scrubbed vs live, drawer open, disabled next-day.</td>
-        <td>NSMenu jump popover with checkmark gutter and ⌘ column; overlay scrollbars.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>03 Quick Access · Search</b></td>
-        <td>Query at 17px is the loudest thing; results are images, captions are 13/11.</td>
-        <td>16 inset, 12 gutter — the fixed-window exemption.</td>
-        <td>Neutral grey mode chip; accent only on selection and match highlight.</td>
-        <td>Results, empty, no-match, selection, inspector placeholder.</td>
-        <td>Full-row accent selection, ⏎/⌘⏎ stated in a persistent bottom bar.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>04 Quick Access · Ask</b></td>
-        <td>Question 17px → answer 14px prose at 70ch → tool chips 11px.</td>
-        <td>24 reading inset; 10 between moment cards.</td>
-        <td>Accent mode chip and accent send button; the answer itself carries no colour.</td>
-        <td>Streaming with caret, Stop, collapsed bar, capturing, attached, answering.</td>
-        <td>Floating pieces get shadows and 12–14px radii; nothing else does.</td>
-        <td class="num">4</td>
-      </tr>
-      <tr>
-        <td><b>05 Settings · General</b></td>
-        <td>Sticky section name is 13px semibold; sub-headers are 10px mono; rows 13/11.</td>
-        <td>16 page inset, rows 34–46 tall by content, groups full-bleed inside.</td>
-        <td>Accent on the focused row, the switch, and the save chip. Danger reserved for delete.</td>
-        <td>Row focus, saved echo, saving, filter applied, armed recorder, conflict.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; native sheet for
-          confirms (never drawn here).</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>06 Settings · Intelligence</b></td>
-        <td>Same as 05. No display size on this surface — nothing here is a hero number.</td>
-        <td>Same 16 / group rhythm; custom inputs sit inside a normal row's width.</td>
-        <td>Verdict chips are the only semantic colour: green fits, amber slow, red too large.</td>
-        <td>Verified, not running, saved, focused, conflicting shortcut, budget at 36%.</td>
-        <td>Model rows are 30px list rows, not cards; checkmark gutter matches NSMenu.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>08 Journal</b></td>
-        <td>Digest headline is the one <span class="is-mono">--t-display</span>; lede stats 17px mono →
-          card title 13 → summary 11. The receipt inverts it — the frame is the hero, type serves it.</td>
-        <td>16 page inset; 78/16/1fr river grid; 10 between receipt pieces.</td>
-        <td>Category swatches are the app's eight <span class="is-mono">--cat-*</span> tokens, used only
-          as 8–9px dots and chips. Accent is the selected card, the live footer and the save chip.</td>
-        <td>Full card, compact row, footage-expired, pending (deriving + paused), receipt open, scrubbed.</td>
-        <td>Sheet over the surface with a scrim; 28px rows; ⏎/esc/←/→/Space stated in the receipt's
-          bottom bar.</td>
-        <td class="num">7</td>
-      </tr>
-      <tr>
-        <td><b>09 Subjects</b></td>
-        <td>No display size in the tier list — the sparkline is the hero, not a number. The detail's
-          <span class="is-mono">86%</span> is the one display item on that frame.</td>
-        <td>16 inset; 40px minimum row (taller than the 28 floor, because two lines + a chart).</td>
-        <td>Accent = the lead conclusion's line, warming, and selection. Warn = cooling. Faded rows are
-          opacity, never a different hue.</td>
-        <td>Four tiers, selection, faded, paging (“Show 2 more”), sort, pinned, below-floor.</td>
-        <td>Full-row accent selection; inline SVG polylines, no chart library idiom; overlay scrollbars.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>10 Context</b></td>
-        <td>Authored sentences are <span class="is-mono">--t-read</span> at 72ch — they are prose the
-          user wrote, so they get reading type, not UI type. No display size on the surface.</td>
-        <td>16 inset; the composer is one 10px-padded fill, not a bordered card.</td>
-        <td>Accent marks <i>authored</i> everywhere it appears. Warn is reserved for the guardrail card
-          — the only place on the page a caution is honest.</td>
-        <td>Composer focused, row hover, row editing, saving, archive hidden/shown, restore.</td>
-        <td>Native confirm sheet for delete (never drawn); ⌘⏎ stated inline; 28px rows.</td>
-        <td class="num">6</td>
-      </tr>
-      <tr>
-        <td><b>11 Settings · complete</b></td>
-        <td>Group bar 17px semibold → section sub-header 10px mono → rows 13/11. Same ramp as 05/06 with
-          one level added, because 19 sections need two levels of address.</td>
-        <td>Same 16 / group rhythm as 05. The unrolled column is the same 844px content width.</td>
-        <td>Accent on the focused row, switches and the save chip. Warn on “uploads your audio” and the
-          two ungranted permissions. Danger only on Wipe User Context.</td>
-        <td>Focused row, saved echo, conditional (<span class="is-mono">only when…</span>), armed
-          recorder, disabled dependent, off-with-price.</td>
-        <td>No sidebar; 28px rows; popup buttons with the accent chevron badge; no save bar and,
-          per G7, no Undo.</td>
-        <td class="num">5</td>
-      </tr>
-      <tr>
-        <td><b>07 Components</b></td>
-        <td>Specimen page — labels 10px mono, everything else at its native role.</td>
-        <td>10 cell gutter, auto-fill 258px columns.</td>
-        <td>Both themes rendered from the same tokens; no hard-coded colour outside screenshots.</td>
-        <td>Every control's full state set is drawn rather than described.</td>
-        <td>The shell is drawn at true size at the top of the page.</td>
-        <td class="num">n/a</td>
-      </tr>
+      <tr><th style="width:220px">Control</th><th>What it removes</th><th>What it leaves</th>
+        <th style="width:220px">Where it lives</th></tr>
+      <tr><td><b>Delete</b> (this page)</td><td>One authored sentence, immediately</td>
+        <td>Every inferred conclusion, including any this sentence was steering</td>
+        <td>the row's own action</td></tr>
+      <tr><td><b>Dismiss</b> (Subjects)</td><td>One inferred conclusion from the dossier</td>
+        <td>Its confidence history, so the trajectory still draws — and the belief can re-form</td>
+        <td>Subjects → conclusion</td></tr>
+      <tr><td><b>Retention Cleanup</b></td><td>Frames, audio and transcripts past the window</td>
+        <td><b>All of it</b> — activities, conclusions and this ledger. The understanding deliberately
+          outlives the recordings.</td>
+        <td>Settings › Data › Storage</td></tr>
+      <tr><td><b>Delete Recent Capture</b></td><td>A window of recordings, the activities derived from
+        it, and any conclusion that loses all its evidence</td>
+        <td><b>Your authored context</b> — it was never derived from capture, so the cascade does not
+          reach it</td><td>the capture surface</td></tr>
+      <tr><td><b>Wipe User Context</b></td><td>Every activity, conclusion, dismissal and authored line,
+        and switches derivation off</td><td>Every raw recording, untouched</td>
+        <td>Settings › Intelligence › User Context</td></tr>
     </table>
-  </div>
+  </div></div>
 
-  <p class="wlabel"><b>6 · Where this direction knowingly spends.</b></p>
-  <div class="cellgrid" style="grid-template-columns:repeat(3,1fr)">
-    <div class="cell"><span class="cell__l">Density</span>
-      <p class="t-meta" style="margin:0">22px tool-strip controls and 24px status strip are below the
-        28px row floor — but they are <i>chrome</i>, and the 28px hit target is preserved by their
-        transparent padding. Content rows are never below 28.</p></div>
-    <div class="cell"><span class="cell__l">The inspector's width</span>
-      <p class="t-meta" style="margin:0">256px is real estate the other four directions spend on
-        content. It buys the same detail surface on four different screens and stops every tile and
-        cell from growing a second column.</p></div>
-    <div class="cell"><span class="cell__l">Two permanent strips</span>
-      <p class="t-meta" style="margin:0">54px of vertical chrome under the title bar. The trade is
-        that capture rate, disk cost and save state are structurally unclippable — the founder's
-        autosave complaint cannot recur.</p></div>
-  </div>
-
-  <p class="wlabel"><b>7 · Deliberate deviations, recorded.</b> Where pages 08–11 depart from the first
-    seven, or from an earlier page's pixels. Precedence applied throughout is
-    <b>G-decision &gt; direction mockup &gt; judgment</b>.</p>
-  <div class="cell" style="padding:0;overflow:hidden">
-    <table class="tbl">
-      <tr><th style="width:150px">Deviation</th><th>What changed</th><th style="width:250px">Why</th></tr>
-      <tr><td><b>No Undo in the status strip</b></td>
-        <td>Pages 05 and 06 draw an <span class="is-mono">Undo</span> button beside the save chip.
-          Page 11 drops it; the strip carries the chip alone.</td>
-        <td><b>G7</b> — settings-Undo is out for v1. Where 05/06 and G7 disagree, G7 wins, so 11 is the
-          page to build from.</td></tr>
-      <tr><td><b>No temperature, no ETA</b></td>
-        <td>Page 06's OCR duty control claims <span class="is-mono">+3 °C</span>, “fans off”, and a
-          backlog clear-by time. None of that appears on 08–11.</td>
-        <td><b>G8</b> — a denominator ships only where the value is real on this machine. Neither is.</td></tr>
-      <tr><td><b>Semantic search drawn off</b></td>
-        <td>Page 06 draws it on with a coverage gauge. Page 11 draws it off, with the price stated
-          before the switch and no gauge at all.</td>
-        <td><b>G10</b> — shipping default is off; the meter renders only when the feature is on. Note the
-          stored default in the source is <span class="is-mono">true</span>; with no model installed
-          nothing is embedded, so “off” is what the user sees. Flagged for reconciliation.</td></tr>
-      <tr><td><b>Conflicts named only in-app</b></td>
-        <td>The shortcut group names its own conflict (“already used by Summon Quick Recall”) and says
-          only “another app” for an external register failure.</td>
-        <td><b>G9</b> — macOS has no API to enumerate other apps' hotkeys, so naming one would be a
-          guess printed as a fact.</td></tr>
-      <tr><td><b>A third level of address</b></td>
-        <td>05/06 use one sticky header. Page 11 adds a group bar above the section sub-header, so the
-          address is <i>group › section › row</i>.</td>
-        <td>19 sections across 5 groups. One level cannot say where you are; the second is the rail,
-          laid on its side, inside the content.</td></tr>
-      <tr><td><b>Rows taller than 28px</b></td>
-        <td>Subject rows on 09 are 40px minimum; authored rows on 10 are as tall as their prose.</td>
-        <td>The 28px floor is a <i>minimum</i>. A row carrying two lines and a chart, or a written
-          sentence at reading size, cannot honour it and stay legible.</td></tr>
-      <tr><td><b>A sheet, on 08</b></td>
-        <td>The receipt is a scrimmed sheet over the surface rather than a route or an inspector
-          expansion.</td>
-        <td>It is the only place in the direction where content wants the whole window: a frame, a
-          filmstrip, a scrub track and a transcript do not fit beside a 256px inspector.</td></tr>
-      <tr><td><b>The unrolled column</b></td>
-        <td>Page 11's second figure is not a window — it is the 844px content column drawn at full
-          length, outside any chrome.</td>
-        <td>Every one of the 96 rows had to be checkable. Sampling would have hidden exactly the rows
-          a completeness audit exists to find.</td></tr>
-    </table>
-  </div>
+  <p class="wlabel"><b>What is not drawn, and why.</b> No confidence bar on an authored row — the data
+    has no confidence field, and inventing one would blur the single distinction this page exists to
+    make. No evidence list either: you asserted it, so there is nothing to ground it in. No confirm or
+    reject buttons: those belong to inferred beliefs and live on Subjects. And no category picker —
+    <span class="is-mono">topic</span> is free text in the schema, so it is a text field here.</p>
 </main>
 </body>
 </html>
