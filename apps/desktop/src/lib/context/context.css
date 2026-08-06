@@ -1,0 +1,404 @@
+/* Context (page 10) — the surface's shared row / card / callout vocabulary.
+ *
+ * A plain stylesheet rather than a component `<style>` block because three
+ * files render these classes (the route, `EngineRail`, `Archive`) and Svelte
+ * scoping would otherwise mean either three copies or a wall of `:global()`.
+ * Every selector is anchored on `.ctx`, so nothing here leaks off this route.
+ * (Same pattern as `settings-*.css` and `debug-*.css`.) */
+
+/* The surface fills the window between the title bar and the deck. Flex, not
+   height:100% — a percentage height collapses under WKWebView here. */
+.ctx {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx__hd {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s-12);
+  padding: var(--s-12) var(--s-16) var(--s-8);
+}
+.ctx__ttl {
+  margin: 0;
+}
+.ctx__sub {
+  max-width: 56ch;
+}
+.ctx__arch {
+  margin-left: auto;
+}
+.ctx__err {
+  margin: 0 var(--s-16) var(--s-8);
+  color: var(--app-danger);
+}
+
+.ctx__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: var(--s-16);
+  padding: 0 var(--s-16) var(--s-12);
+}
+/* Below ~900px the rail stops being a rail: one column, engine side first
+   (it is the shorter of the two). */
+@media (max-width: 900px) {
+  .ctx__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ctx .ctx__main,
+.ctx .ctx__rail {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-8);
+}
+.ctx .ctx__rail > * {
+  flex: 0 0 auto;
+}
+
+/* ── composer ─────────────────────────────────────────────────────────── */
+.ctx .comp {
+  flex: 0 0 auto;
+  border-radius: var(--r-lg);
+  background: var(--app-surface);
+  padding: var(--s-8) var(--s-12) var(--s-12);
+}
+.ctx .comp__h {
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+  padding-bottom: var(--s-6);
+}
+.ctx .comp__own {
+  color: var(--app-text-subtle);
+}
+.ctx .comp__k {
+  margin-left: auto;
+}
+.ctx .comp__ta {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  padding: var(--s-8);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--app-surface-subtle);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+  font: var(--w-regular) var(--t-read) / 1.5 var(--app-font-sans);
+  letter-spacing: var(--ls-read);
+  color: var(--app-text-strong);
+}
+.ctx .comp__ta::placeholder {
+  color: var(--app-text-subtle);
+}
+.ctx .comp__ta:focus {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 var(--hairline) var(--app-accent-border),
+    var(--ring);
+}
+.ctx .comp__ft {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  margin-top: var(--s-8);
+  flex-wrap: wrap;
+}
+.ctx .comp__pl {
+  color: var(--app-text-subtle);
+}
+.ctx .prefill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--s-8);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--app-surface-hover);
+  color: var(--app-text-muted);
+  font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+  cursor: pointer;
+}
+.ctx .prefill:hover {
+  color: var(--app-text-strong);
+}
+.ctx .comp__topic {
+  height: var(--h-sm);
+  width: 148px;
+  font-size: var(--t-meta);
+}
+.ctx .comp__add {
+  margin-left: auto;
+}
+
+/* ── keyboard rows ────────────────────────────────────────────────────── */
+.ctx .stlist {
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  background: var(--app-surface);
+}
+.ctx .strow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-8);
+  padding: var(--s-8) var(--s-12);
+}
+.ctx .strow + .strow {
+  box-shadow: inset 0 var(--hairline) 0 var(--app-border);
+}
+.ctx .strow--head,
+.ctx .strow--empty {
+  align-items: center;
+}
+.ctx .strow.is-key {
+  background: var(--app-accent);
+}
+.ctx .strow.is-key + .strow {
+  box-shadow: none;
+}
+.ctx .strow__q {
+  flex: 0 0 14px;
+  width: 14px;
+  padding-top: 2px;
+  text-align: center;
+  font: var(--w-regular) 12px / 1 var(--app-font-sans);
+  color: var(--app-accent);
+}
+.ctx .strow.is-key .strow__q {
+  color: var(--app-accent-contrast);
+}
+.ctx .strow__t {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ctx .strow__x {
+  font: var(--w-regular) var(--t-ui) / 1.45 var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong);
+}
+.ctx .strow__m {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline);
+  font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-subtle);
+}
+.ctx .strow.is-key .strow__x,
+.ctx .strow.is-key .t-meta {
+  color: var(--app-accent-contrast);
+}
+.ctx .strow.is-key .strow__m {
+  color: var(--app-accent-contrast);
+  opacity: 0.78;
+}
+.ctx .strow__a {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+}
+.ctx .strow--edit {
+  background: var(--app-surface-raised);
+}
+.ctx .strow__edit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-6);
+  margin-top: var(--s-6);
+}
+.ctx .topic {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  background: var(--app-surface-hover);
+  color: var(--app-text-muted);
+  font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ctx .topic--none {
+  background: transparent;
+  color: var(--app-text-faint);
+  padding-left: 0;
+}
+/* On the accent row every keycap and chip flips to the contrast ink. */
+.ctx .strow.is-key .topic {
+  background: color-mix(in srgb, var(--app-accent-contrast) 18%, transparent);
+  color: var(--app-accent-contrast);
+}
+.ctx .strow.is-key .kbd,
+.ctx .arow.is-key .kbd {
+  background: color-mix(in srgb, var(--app-accent-contrast) 20%, transparent);
+  color: var(--app-accent-contrast);
+  box-shadow: none;
+}
+.ctx .strow.is-key .btn {
+  background: color-mix(in srgb, var(--app-accent-contrast) 14%, transparent);
+  border-color: transparent;
+  color: var(--app-accent-contrast);
+}
+
+/* ── archive rows ─────────────────────────────────────────────────────── */
+.ctx .arow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+  padding: var(--s-8) var(--s-12);
+}
+.ctx .arow + .arow {
+  box-shadow: inset 0 var(--hairline) 0 var(--app-border);
+}
+.ctx .arow.is-key {
+  background: var(--app-accent);
+}
+.ctx .arow.is-key + .arow {
+  box-shadow: none;
+}
+.ctx .arow__x {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--w-regular) var(--t-ui) / 1.35 var(--app-font-sans);
+  color: var(--app-text-muted);
+}
+.ctx .arow__s {
+  flex: 0 0 auto;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+.ctx .arow.is-key .arow__x,
+.ctx .arow.is-key .arow__s,
+.ctx .arow.is-key .t-meta {
+  color: var(--app-accent-contrast);
+}
+.ctx .arow.is-key .btn {
+  background: color-mix(in srgb, var(--app-accent-contrast) 14%, transparent);
+  border-color: transparent;
+  color: var(--app-accent-contrast);
+}
+
+/* ── rail cards ───────────────────────────────────────────────────────── */
+.ctx .rcard {
+  border-radius: var(--r-lg);
+  background: var(--app-surface);
+  padding: var(--s-8) var(--s-12) var(--s-12);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+.ctx .rcard__h {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline);
+}
+.ctx .kv {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-inline);
+}
+.ctx .kv b {
+  min-width: 34px;
+  text-align: right;
+  font: var(--w-semi) var(--t-ui) / 1 var(--app-font-mono);
+  color: var(--app-text-strong);
+}
+.ctx .kv span {
+  font: var(--w-regular) var(--t-meta) / 1.3 var(--app-font-sans);
+  color: var(--app-text-muted);
+}
+.ctx .cbar {
+  position: relative;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--app-surface-hover);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  overflow: hidden;
+}
+.ctx .cbar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--app-accent);
+}
+.ctx .evchips {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+.ctx .evchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  background: var(--app-surface-hover);
+  font: var(--w-regular) var(--t-label) / 1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted);
+}
+.ctx .evchip__t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ctx .evchip__a {
+  flex: 0 0 auto;
+  color: var(--app-text-subtle);
+}
+
+/* ── callouts ─────────────────────────────────────────────────────────── */
+.ctx .callout {
+  display: flex;
+  gap: var(--s-8);
+  padding: var(--s-8) var(--s-12);
+  border-radius: var(--r-lg);
+  background: var(--app-info-bg);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border);
+}
+.ctx .callout svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--app-info);
+}
+.ctx .callout--warn {
+  background: var(--app-warn-bg);
+  box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
+}
+.ctx .callout--warn svg {
+  color: var(--app-warn);
+}
+
+/* Text-weight modifiers the type roles leave to the caller. */
+.ctx .strong {
+  color: var(--app-text-strong);
+}
+.ctx .med {
+  font-weight: var(--w-medium);
+  color: var(--app-text-strong);
+}
