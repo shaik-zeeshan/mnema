@@ -3616,7 +3616,14 @@ pub fn resume_native_capture(
 /// Turn sources off and on while recording. `sources` is the desired live set;
 /// sources the session never requested are ignored (the mask works inside
 /// `requested_sources` — adding one needs a fresh start).
-#[tauri::command]
+///
+/// `(async)` is load-bearing, not decoration: masking a source runs the same
+/// stop/finalize (and unmasking the same stream restart) an inactivity pause
+/// runs, which takes hundreds of ms to seconds, and a *synchronous* command
+/// runs on the main thread — the whole UI would freeze for the duration. The
+/// inactivity tick already drives this exact code from a worker thread, so
+/// off-main is the norm here, not a new risk.
+#[tauri::command(async)]
 pub fn set_native_capture_live_sources(
     sources: CaptureSources,
     app_handle: tauri::AppHandle,
