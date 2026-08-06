@@ -32,16 +32,34 @@
   );
   const hero = $derived(formatHeroHours(coveredMs));
 
-  // One clock, ticking only while a session runs — the same shape the title
-  // bar's recording pill uses.
+  // One clock, ticking only while a session runs AND the document is being
+  // shown — the same shape the title bar's recording pill uses, visibility gate
+  // included. That gate is the load-bearing half: a 1 Hz DOM write that starts
+  // on the Record click and never stops is a permanent repaint driver, and a
+  // repaint the compositor never shows is what strands WebKit's non-purgeable
+  // backing stores. A recorder runs for hours with its window hidden.
   let now = $state(Date.now());
   $effect(() => {
     if (!captureControls.isRunning) return;
-    now = Date.now();
-    const handle = setInterval(() => {
+    let handle: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (handle !== null) clearInterval(handle);
+      handle = null;
+    };
+    const sync = () => {
+      stop();
+      if (document.visibilityState !== "visible") return;
       now = Date.now();
-    }, 1000);
-    return () => clearInterval(handle);
+      handle = setInterval(() => {
+        now = Date.now();
+      }, 1000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
 
   const startedAtMs = $derived.by<number | null>(() => {
