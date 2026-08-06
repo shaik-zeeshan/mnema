@@ -543,6 +543,43 @@ mod tests {
         MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
     };
 
+    #[test]
+    fn run_with_timeout_abandons_a_start_that_never_returns() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (abandoned_tx, abandoned_rx) = mpsc::channel::<u32>();
+
+        let timed_out = super::run_with_timeout(
+            7u32,
+            Duration::from_millis(50),
+            move |_| {
+                // Stands in for a `startRunning` that never returns.
+                let _ = release_rx.recv();
+            },
+            move |value| {
+                let _ = abandoned_tx.send(value);
+            },
+        );
+        assert!(timed_out.is_none(), "a start that never returns must fail");
+
+        // The abandoned thread still owns the value: a late return goes to
+        // `abandon`, never back to the caller.
+        drop(release_tx);
+        assert_eq!(
+            abandoned_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(7),
+            "a late return must be handed to the abandon path"
+        );
+
+        assert_eq!(
+            super::run_with_timeout(9u32, Duration::from_secs(5), |_| {}, |_| unreachable!()),
+            Some(9),
+            "a start that returns in time must hand the value back"
+        );
+    }
+
     fn microphone_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
         GUARD
@@ -2709,6 +2746,57 @@ pub fn start_avfoundation_microphone_capture_session_for_file_with_device_id_and
     )
 }
 
+/// Matches the 20s cap every ScreenCaptureKit wait in `capture-screen` uses.
+#[cfg(target_os = "macos")]
+const MICROPHONE_START_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Run `run` on a dedicated thread and wait `timeout` for it to return.
+///
+/// A thread blocked inside an ObjC call cannot be cancelled, so on timeout it is
+/// abandoned deliberately: it keeps owning `value`, and if the call ever returns
+/// it hands it to `abandon` instead of to the caller. That is the whole guard —
+/// a late success cleans up after itself and can never reach a caller that has
+/// already failed the start.
+#[cfg(target_os = "macos")]
+fn run_with_timeout<T: Send + 'static>(
+    mut value: T,
+    timeout: Duration,
+    run: impl FnOnce(&mut T) + Send + 'static,
+    abandon: impl FnOnce(T) + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = mpsc::channel::<T>();
+    let abandoned = Arc::new(Mutex::new(false));
+    let thread_abandoned = Arc::clone(&abandoned);
+
+    std::thread::spawn(move || {
+        run(&mut value);
+
+        // The flag, not the channel, decides ownership: both sides take this
+        // lock, so a hand-back can never race the caller's timeout into a
+        // value nobody owns.
+        let abandoned = thread_abandoned
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *abandoned {
+            abandon(value);
+        } else {
+            let _ = tx.send(value);
+        }
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            let mut abandoned = abandoned
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *abandoned = true;
+            // A hand-back that beat us to the lock is still a real success.
+            rx.try_recv().ok()
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn start_avfoundation_microphone_capture_session_with_output_file(
     output_url: &cidre::ns::Url,
@@ -2767,13 +2855,41 @@ fn start_avfoundation_microphone_capture_session_with_output_file(
         session.add_output(&audio_output);
     });
 
-    capture_session.start_running();
+    let device_name = format!("{}", mic_device.localized_name().as_ref());
 
-    Ok(AvFoundationMicrophoneCaptureSession {
+    let session = AvFoundationMicrophoneCaptureSession {
         capture_session,
         _audio_output: audio_output,
         output_delegate,
         output_queue,
+    };
+
+    // `startRunning` blocks, and against a wedged input device it never returns:
+    // real capture starts stalled here forever, with no error and no timeout, so
+    // the whole start hung and the pill sat on "starting". Bound it like every
+    // ScreenCaptureKit wait in the sibling crates.
+    run_with_timeout(
+        session,
+        MICROPHONE_START_TIMEOUT,
+        |session| session.capture_session.start_running(),
+        |mut session| {
+            // The blocked thread is leaked deliberately. If the start ever does
+            // return, stop the session here and drop the whole
+            // session/output/delegate graph on this thread — the caller already
+            // failed this start and must never see a live session from it.
+            session.capture_session.stop_running();
+            capture_runtime::debug_log!(
+                "[capture-microphone] abandoned microphone capture session started after the {}s bound and was stopped",
+                MICROPHONE_START_TIMEOUT.as_secs()
+            );
+        },
+    )
+    .ok_or_else(|| CaptureErrorResponse {
+        code: "microphone_start_timeout".to_string(),
+        message: format!(
+            "Microphone '{device_name}' did not start within {}s",
+            MICROPHONE_START_TIMEOUT.as_secs()
+        ),
     })
 }
 
