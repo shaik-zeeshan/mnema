@@ -47,7 +47,9 @@
   let loaded = $state(false);
   let holding = $state(false);
   // One ticking clock for the whole surface: the live elapsed readout and the
-  // "as of" stamp.
+  // "as of" stamp. It ticks only while the document is actually shown — a
+  // repaint the compositor never displays is what strands WebKit backing
+  // stores, same reason the recording pill gates its clock.
   let nowMs = $state(Date.now());
   const now = $derived(new Date(nowMs));
 
@@ -60,8 +62,23 @@
         loaded = true;
       });
     });
-    const tick = setInterval(() => (nowMs = Date.now()), 1000);
-    return () => clearInterval(tick);
+    let tick: ReturnType<typeof setInterval> | null = null;
+    const stop = (): void => {
+      if (tick !== null) clearInterval(tick);
+      tick = null;
+    };
+    const sync = (): void => {
+      stop();
+      if (document.visibilityState !== "visible") return;
+      nowMs = Date.now();
+      tick = setInterval(() => (nowMs = Date.now()), 1000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", sync);
+    };
   });
 
   // ── destinations ───────────────────────────────────────────────────────────
