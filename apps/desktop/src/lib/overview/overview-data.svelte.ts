@@ -14,7 +14,12 @@ import { invoke } from "@tauri-apps/api/core";
 import type { ConversationCluster, Moment } from "$lib/highlights";
 import type { ConversationSummary } from "$lib/insights/conversation";
 import type { DayCoverage } from "$lib/types/app-infra";
-import type { Conclusion, UserContextDigest, UserContextStatus } from "$lib/types/recording";
+import type {
+  AuthoredContext,
+  Conclusion,
+  UserContextDigest,
+  UserContextStatus,
+} from "$lib/types/recording";
 import { dayKeyOf, dayWindow } from "./overview-format";
 
 /** One key/value line in the inspector. */
@@ -69,6 +74,9 @@ export class OverviewData {
   digest = $state<LoadState<UserContextDigest | null>>({ status: "loading" });
   conclusions = $state<LoadState<Conclusion[]>>({ status: "loading" });
   contextStatus = $state<LoadState<UserContextStatus | null>>({ status: "loading" });
+  /** What the user WROTE. The Context tile counts these; inferred beliefs are
+   *  the Subjects tile's business, because they are a different thing. */
+  authored = $state<LoadState<AuthoredContext[]>>({ status: "loading" });
   asks = $state<LoadState<ConversationSummary[]>>({ status: "loading" });
 
   selection = $state<Selection | null>(null);
@@ -107,7 +115,7 @@ export class OverviewData {
 
   /** Reads that are the same whatever day is showing. */
   async loadStanding(): Promise<void> {
-    const [coverage, digest, conclusions, contextStatus, asks] = await Promise.all([
+    const [coverage, digest, conclusions, contextStatus, asks, authored] = await Promise.all([
       read(() => invoke<DayCoverage[]>("list_day_coverage")),
       // Read-only by construction: the day digest tile must never start a
       // generation just because it mounted (G11 — Open Threads v1 is prose).
@@ -115,11 +123,13 @@ export class OverviewData {
       read(() => invoke<Conclusion[]>("list_user_context_conclusions", { includeFaded: false })),
       read(() => invoke<UserContextStatus | null>("get_user_context_status")),
       read(() => invoke<ConversationSummary[]>("list_conversations", { limit: 6, offset: 0 })),
+      read(() => invoke<AuthoredContext[]>("list_user_context_authored")),
     ]);
     this.coverage = coverage;
     this.digest = digest;
     this.conclusions = conclusions;
     this.contextStatus = contextStatus;
     this.asks = asks;
+    this.authored = authored;
   }
 }

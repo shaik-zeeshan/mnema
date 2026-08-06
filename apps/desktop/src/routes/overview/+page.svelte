@@ -121,11 +121,7 @@
             onopen={() => void goto("/subjects")}
           />
           {#if wide}
-            <ContextTile
-              conclusions={data.conclusions}
-              status={data.contextStatus}
-              onopen={() => void goto("/context")}
-            />
+            <ContextTile authored={data.authored} onopen={() => void goto("/context")} />
           {/if}
           <WeekTile
             coverage={data.coverage}

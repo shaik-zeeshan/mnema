@@ -1,52 +1,56 @@
 <script lang="ts">
-  // What Mnema has written down about you. `conclusionCount` is a stored count,
-  // and the newest belief is the newest row of the list already read for the
-  // Subjects tile — no third query.
+  // What YOU told Mnema — the door to the Context destination (page 10).
+  //
+  // It counts AUTHORED lines only. Inferred beliefs are counted on the Subjects
+  // tile, because they are a different thing: one you asserted and it never
+  // fades, the other Mnema concluded and its confidence rises and fades. Mixing
+  // them into one number would blur the distinction the destination exists for.
   //
   // The mockup's "3 pending" header note is absent: there is no pending-review
-  // count in `UserContextStatus`, and G8 says a number that isn't real on this
-  // machine does not ship.
-  import type { Conclusion, UserContextStatus } from "$lib/types/recording";
+  // count in the backend, and G8 says a number that isn't real does not ship.
+  import type { AuthoredContext } from "$lib/types/recording";
   import type { LoadState } from "./overview-data.svelte";
   import TileShell from "./TileShell.svelte";
 
   interface Props {
-    conclusions: LoadState<Conclusion[]>;
-    status: LoadState<UserContextStatus | null>;
+    authored: LoadState<AuthoredContext[]>;
     /** The tile is the Context destination's door (page 10). */
     onopen?: () => void;
   }
 
-  let { conclusions, status, onopen }: Props = $props();
+  let { authored, onopen }: Props = $props();
 
-  const count = $derived(status.status === "ok" ? (status.value?.conclusionCount ?? null) : null);
+  const count = $derived(authored.status === "ok" ? authored.value.length : null);
 
-  const newest = $derived.by<Conclusion | null>(() => {
-    if (conclusions.status !== "ok") return null;
-    let best: Conclusion | null = null;
-    for (const c of conclusions.value) if (!best || c.formedAtMs > best.formedAtMs) best = c;
+  const newest = $derived.by<AuthoredContext | null>(() => {
+    if (authored.status !== "ok") return null;
+    let best: AuthoredContext | null = null;
+    for (const a of authored.value) if (!best || a.createdAtMs > best.createdAtMs) best = a;
     return best;
   });
 
   const quiet = $derived(
-    status.status === "failed" && conclusions.status === "failed"
+    authored.status === "failed"
       ? "Couldn't read your context."
       : count === 0
-        ? "Nothing written down about you yet."
+        ? "You haven't told Mnema anything about yourself yet."
         : null,
   );
 </script>
 
+<!-- The mockup's "7 standing" header note and the "Review all ›" opener want the
+     same seat in `TileShell`'s header; the opener wins, because the tile is the
+     destination's door and the count is already this tile's headline row. -->
 <TileShell label="Context" more={onopen ? "Review all" : undefined} {onopen} {quiet}>
   {#if count !== null && count > 0}
     <div class="ss-trow">
       <span class="t-ui strong is-num">{count.toLocaleString()}</span>
-      <span class="t-ui">{count === 1 ? "fact about you" : "facts about you"}</span>
+      <span class="t-ui">{count === 1 ? "thing you told Mnema" : "things you told Mnema"}</span>
     </div>
   {/if}
   {#if newest}
     <div class="ss-trow newest">
-      <span class="t-meta">Newest: “{newest.statement}”</span>
+      <span class="t-meta">Newest: “{newest.text}”</span>
     </div>
   {/if}
 </TileShell>
