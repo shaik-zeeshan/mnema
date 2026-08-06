@@ -80,6 +80,29 @@ which is the founder's autosave complaint answered by geometry rather than by co
   as a **chip inside the sentence**, deletable like a word, and the display is outlined on screen
   where the thing being seen actually is (G3).
 
+### The destinations — Journal, Subjects, Context (pages 08–10)
+Three destinations, not surfaces: the window still has exactly two surfaces, and each of these
+opens from its own Overview tile header ("Open Journal ›", "N active ›", "Review all ›") and
+comes back through the tool strip's first control (`‹ Overview`) or `⌘2`. No rail, no third tab.
+Inside each one the shape holds: tool strip navigates, one region scrolls, the 256px inspector
+carries the selection's record, the status strip stays welded down.
+
+- **Journal** — the day as a river: the digest lede with four honest stats (each absent when not
+  computable), morning/afternoon/evening bands, and the four card states — full, compact, footage
+  expired, and the live edge — none of which is an error. `▸ N frames · receipt` opens the receipt
+  sheet: frames, scrub with evidence ticks, filmstrip, 1×/2×/8×/16× ("1× replays the real audio ·
+  above it is a silent timelapse"), speaker transcript. The pending slot says "up to 30 minutes",
+  never a minute-precise ETA (G8).
+- **Subjects** — tiers by conviction at the engine's own thresholds (0.68 / 0.30 / the 0.15
+  display floor drawn dashed), the sparkline as the row's hero (x = snapshot index, not time), and
+  the two number registers kept deliberately: `0.86` on a row is a measurement, `86%` on a
+  conclusion is a claim. Open one subject: conclusion strip, confidence hero, the story-over-time
+  spine ending on its formed row. No aggregate score, no delete — dismiss and fade only.
+- **Context** — authored context only: the composer at the top of the scroll, the standing ledger
+  with edit-in-place and native-confirm delete, the dismissed archive with its careful Restore
+  copy, and the inspector's Authored-vs-Inferred split, sensitive-category guardrail, and
+  what-deletes-what. No confidence bars on authored rows — the data has none.
+
 ### Settings (`⌘,`)
 - **The navigation rail is gone.** One scrolling page, a filter field in the tool strip, sticky
   section headers carrying the section name and its position in the total.
