@@ -81,3 +81,47 @@ export function clockAt(ms: number): string {
 export function spokenLabel(ms: number): string {
   return formatCapturedHours(ms);
 }
+
+// ── Subjects tile (page 09's door) ──────────────────────────────────────────
+// A "Subject" is not a backend noun — it is a client-side group-by over
+// `Conclusion.subject`, the same read Subjects itself renders. The tile may
+// honestly show a subject's name, its top conclusion's confidence and the
+// active/fading split; it must NOT show an evidence count (the index never
+// loads one).
+
+export interface SubjectTileRow {
+  name: string;
+  /** The subject's top conclusion's confidence — literally the number the
+   *  Subjects index shows on the same row. */
+  topConfidence: number;
+  fading: boolean;
+}
+
+export interface SubjectsTileSummary {
+  /** Active subjects, top conviction first. */
+  rows: SubjectTileRow[];
+  activeCount: number;
+  fadingCount: number;
+}
+
+export function subjectsTile(conclusions: { subject: string; confidence: number; status: string }[]): SubjectsTileSummary {
+  const bySubject = new Map<string, { top: number; anyVisible: boolean }>();
+  for (const c of conclusions) {
+    if (c.status === "dismissed") continue;
+    const entry = bySubject.get(c.subject) ?? { top: 0, anyVisible: false };
+    entry.top = Math.max(entry.top, c.confidence);
+    entry.anyVisible ||= c.status === "visible";
+    bySubject.set(c.subject, entry);
+  }
+  const all = [...bySubject.entries()].map(([name, entry]) => ({
+    name,
+    topConfidence: entry.top,
+    fading: !entry.anyVisible,
+  }));
+  const active = all.filter((s) => !s.fading).sort((a, b) => b.topConfidence - a.topConfidence);
+  return {
+    rows: active,
+    activeCount: active.length,
+    fadingCount: all.length - active.length,
+  };
+}

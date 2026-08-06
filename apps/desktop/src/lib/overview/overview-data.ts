@@ -17,8 +17,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { framePreviewAssetUrl } from "$lib/frame-preview";
 import type { ConversationCluster, Moment } from "$lib/highlights";
 import type { ConversationSummary } from "$lib/insights/conversation";
-import { openThreadSentence, todayRange, weekFromCoverage } from "$lib/overview/overview-shape";
-import type { WeekDay } from "$lib/overview/overview-shape";
+import {
+  openThreadSentence,
+  subjectsTile,
+  todayRange,
+  weekFromCoverage,
+} from "$lib/overview/overview-shape";
+import type { SubjectsTileSummary, WeekDay } from "$lib/overview/overview-shape";
 import type { DayCoverage, FramePreviewDto, GetFramePreviewRequest } from "$lib/types/app-infra";
 import type { Conclusion, UserContextDigest } from "$lib/types/recording";
 
@@ -44,6 +49,11 @@ export interface OverviewSnapshot {
   openThread: string | null;
   asks: ConversationSummary[];
   conclusions: Conclusion[];
+  /** Page 09's door: subjects = client-side group-by over the whole dossier's
+   *  conclusions (unscoped, unlike `conclusions` above which is today-only). */
+  subjects: SubjectsTileSummary;
+  /** Page 10's door footer: non-dismissed conclusions in the whole dossier. */
+  dossierCount: number;
 }
 
 export const EMPTY_SNAPSHOT: OverviewSnapshot = {
@@ -55,6 +65,8 @@ export const EMPTY_SNAPSHOT: OverviewSnapshot = {
   openThread: null,
   asks: [],
   conclusions: [],
+  subjects: { rows: [], activeCount: 0, fadingCount: 0 },
+  dossierCount: 0,
 };
 
 async function safe<T>(run: () => Promise<T>, fallback: T): Promise<T> {
@@ -84,7 +96,7 @@ async function withPreviews(moments: Moment[]): Promise<MomentCard[]> {
 /** Load every tile at once. Never throws: a failed read is an empty tile. */
 export async function loadOverview(now: Date = new Date()): Promise<OverviewSnapshot> {
   const { startMs, endMs } = todayRange(now);
-  const [moments, conversations, coverage, digest, asks, conclusions] = await Promise.all([
+  const [moments, conversations, coverage, digest, asks, conclusions, allConclusions] = await Promise.all([
     safe(() => invoke<Moment[]>("get_moments", { startMs, endMs, limit: MOMENT_LIMIT }), []),
     safe(() => invoke<ConversationCluster[]>("get_conversations", { startMs, endMs }), []),
     safe(() => invoke<DayCoverage[]>("list_day_coverage"), []),
@@ -102,6 +114,12 @@ export async function loadOverview(now: Date = new Date()): Promise<OverviewSnap
         }),
       [],
     ),
+    // The Subjects door: the whole dossier (same read the Subjects index makes),
+    // so the tile's active/fading split matches what opening it shows.
+    safe(
+      () => invoke<Conclusion[]>("list_user_context_conclusions", { includeFaded: true }),
+      [],
+    ),
   ]);
 
   const week = weekFromCoverage(coverage, now);
@@ -114,5 +132,7 @@ export async function loadOverview(now: Date = new Date()): Promise<OverviewSnap
     openThread: openThreadSentence(digest?.narrative),
     asks,
     conclusions,
+    subjects: subjectsTile(allConclusions),
+    dossierCount: allConclusions.filter((c) => c.status !== "dismissed").length,
   };
 }

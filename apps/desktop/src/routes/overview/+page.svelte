@@ -15,6 +15,7 @@
   // on this machine. G11 — This Week and Ask history are in; Open Threads is the
   // digest's own prose sentence, nothing extracted.
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { captureControls } from "$lib/capture-controls.svelte";
   import {
@@ -135,13 +136,17 @@
         {/if}
       </section>
 
-      <!-- 2×2 — the day's digest prose + G11's one open thread. -->
+      <!-- 2×2 — the day's digest prose + G11's one open thread. Its header is
+           the Journal door (pages 08–10: destinations open from their tile). -->
       <section class="tile tile--w2 tile--h2 tile--prose">
         <div class="tile__h">
           <span class="label">Today</span>
           {#if data.digest && clockAt(data.digest.generatedAtMs)}
             <span class="meta mono">updated {clockAt(data.digest.generatedAtMs)}</span>
           {/if}
+          <button type="button" class="tile__door" onclick={() => void goto("/journal")}>
+            Open Journal <span aria-hidden="true">›</span>
+          </button>
         </div>
         {#if data.digest}
           {#if data.digest.headline}
@@ -299,16 +304,52 @@
         {/if}
       </section>
 
-      <!-- 2×1 — what Mnema concluded today. -->
-      <section class="tile tile--ctx tile--w2">
+      <!-- 2×1 — subjects (page 09's door). A client-side group-by over the
+           dossier's conclusions: name + its top conclusion's confidence, and
+           the active/fading split. Never an evidence count — the index never
+           loads one. -->
+      <section class="tile tile--subj tile--w2">
+        <div class="tile__h">
+          <span class="label">Subjects</span>
+          {#if data.subjects.activeCount > 0}
+            <span class="meta">
+              {`${data.subjects.activeCount} active${data.subjects.fadingCount > 0 ? ` · ${data.subjects.fadingCount} fading` : ""}`}
+            </span>
+          {/if}
+          <button type="button" class="tile__door" onclick={() => void goto("/subjects")}>
+            Open Subjects <span aria-hidden="true">›</span>
+          </button>
+        </div>
+        {#if data.subjects.rows.length > 0}
+          {#each data.subjects.rows.slice(0, 2) as subject (subject.name)}
+            <div class="row">
+              <span class="row__txt">
+                <span class="row__lbl">{subject.name}</span>
+              </span>
+              <span class="meta mono">{subject.topConfidence.toFixed(2)}</span>
+            </div>
+          {/each}
+        {:else}
+          <p class="tile__empty">
+            No views formed yet. Subjects appear once conclusions have been
+            distilled from your days.
+          </p>
+        {/if}
+      </section>
+
+      <!-- 4×1 — what Mnema concluded today (page 10's door). -->
+      <section class="tile tile--ctx tile--w4">
         <div class="tile__h">
           <span class="label">Context</span>
           {#if data.conclusions.length > 0}
             <span class="meta">{data.conclusions.length} moved today</span>
           {/if}
+          <button type="button" class="tile__door" onclick={() => void goto("/context")}>
+            Open Context <span aria-hidden="true">›</span>
+          </button>
         </div>
         {#if data.conclusions.length > 0}
-          {#each data.conclusions.slice(0, 2) as conclusion (conclusion.id)}
+          {#each data.conclusions.slice(0, 1) as conclusion (conclusion.id)}
             <div class="row">
               <span class="row__txt">
                 <span class="row__lbl">{conclusion.subject}</span>
@@ -320,6 +361,14 @@
           <p class="tile__empty">
             Nothing new about you today. Conclusions land after a distillation pass.
           </p>
+        {/if}
+        {#if data.dossierCount > 0}
+          <div class="tile__row tile__row--foot">
+            <span class="meta">
+              {data.dossierCount}
+              {data.dossierCount === 1 ? "conclusion" : "conclusions"} in your dossier
+            </span>
+          </div>
         {/if}
       </section>
 
@@ -389,7 +438,7 @@
   .bento {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: 120px repeat(3, 124px) 44px;
+    grid-template-rows: 120px repeat(4, 124px) 44px;
     gap: var(--gap-group);
   }
 
@@ -450,6 +499,39 @@
   }
   .tile--week {
     --tint: color-mix(in srgb, var(--app-info) 20%, transparent);
+  }
+  .tile--subj {
+    --tint: color-mix(in srgb, var(--app-accent) 22%, transparent);
+  }
+
+  /* The destination door: an accent link in the tile header, pinned right.
+     Pages 08–10 open from here; the tile itself keeps showing its read. */
+  .tile__door {
+    margin-left: auto;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
+    line-height: 1;
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .tile__door:hover {
+    background: var(--app-accent-bg);
+  }
+  .tile__door:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .tile__h .meta + .tile__door {
+    margin-left: 0;
   }
 
   .tile__h {
@@ -815,7 +897,7 @@
   @media (max-width: 900px) {
     .bento {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      grid-template-rows: 106px repeat(3, 118px) 44px;
+      grid-template-rows: 106px repeat(4, 118px) 44px;
       gap: 12px;
     }
     /* A 2×1 list collapses to a 1×1 — only the media strip and the prose tile

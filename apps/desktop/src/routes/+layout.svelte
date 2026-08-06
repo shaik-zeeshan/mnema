@@ -49,6 +49,8 @@
     type GlobalShortcutId,
   } from "$lib/global-shortcuts";
   import { initKeyboardBindings } from "$lib/keyboard-bindings.svelte";
+  import JournalTitlebarControls from "$lib/insights/JournalTitlebarControls.svelte";
+  import SubjectsTitlebarControls from "$lib/insights/SubjectsTitlebarControls.svelte";
   import { askAiClock } from "$lib/askAiClock";
   import {
     detectKeyboardPlatform,
@@ -77,6 +79,23 @@
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isOverviewRoute = $derived(normalizedPathname.startsWith("/overview"));
+  // Overview destinations (pages 08–10): Journal / Subjects / Context replace
+  // the pane under the same title bar; the only way back is the ‹ Overview
+  // button in the chrome. They are NOT surfaces — the switcher stays two-wide.
+  const isJournalRoute = $derived(normalizedPathname.startsWith("/journal"));
+  const isSubjectsRoute = $derived(normalizedPathname.startsWith("/subjects"));
+  const isContextRoute = $derived(normalizedPathname.startsWith("/context"));
+  const isDestinationRoute = $derived(isJournalRoute || isSubjectsRoute || isContextRoute);
+  // Subjects drill-in is addressable (`/subjects?subject=…`): the chrome then
+  // reads "‹ Subjects · ⟨name⟩" and the back door pops the drill-in, not the
+  // destination.
+  const subjectsDetailName = $derived(
+    isSubjectsRoute ? $page.url.searchParams.get("subject") : null,
+  );
+  const destinationTitle = $derived(
+    subjectsDetailName ??
+      (isJournalRoute ? "Journal" : isSubjectsRoute ? "Subjects" : "Context"),
+  );
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -90,7 +109,9 @@
   // Overview (`/overview`), and Insights (`/insights`). The shared main titlebar
   // (record controls, source pills, settings, the surface switcher) renders on
   // all of them.
-  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || isInsightsRoute);
+  const isMainSurfaceRoute = $derived(
+    isMainRoute || isOverviewRoute || isInsightsRoute || isDestinationRoute,
+  );
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -557,16 +578,18 @@
   const settingsReturnTarget = $derived.by<keyof typeof SURFACE_PATHS>(() => {
     const last = normalizeAppPathname(getLastMainSurface());
     if (last.startsWith("/insights")) return "insights";
-    if (last.startsWith("/overview")) return "overview";
-    return "timeline";
+    // Overview and its destinations (Journal / Subjects / Context) are one
+    // family — the Overview segment carries the return-target mark for all.
+    if (last === "/" || last.startsWith("/debug")) return "timeline";
+    return "overview";
   });
 
   // The gear is a real toggle: opening Settings from a surface, then clicking
-  // the gear again returns to the surface it was opened from (Timeline,
-  // Overview, or Insights) instead of being a no-op with no obvious exit.
+  // the gear again returns to the exact place it was opened from (Timeline,
+  // Overview, a destination, or Chat) instead of being a no-op with no exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      goToSurface(settingsReturnTarget);
+      void goto(getLastMainSurface());
       return;
     }
     void openSettings();
@@ -874,8 +897,26 @@
     <!-- Inert centre area carries the drag region + the surface switcher + the
          Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
-      <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
-           Insights stays reachable here until Ask moves into Quick Access.
+      {#if isDestinationRoute}
+        <!-- Destination chrome (pages 08–10): Journal / Subjects / Context are
+             destinations, not surfaces — the switcher yields to a ‹ Overview
+             door plus the destination's name, the idiom Settings already uses. -->
+        <nav class="dest-nav" aria-label="Destination">
+          <button
+            type="button"
+            class="dest-nav__back"
+            onclick={() =>
+              subjectsDetailName ? void goto("/subjects") : goToSurface("overview")}
+          >
+            <span aria-hidden="true">‹</span>
+            {subjectsDetailName ? "Subjects" : "Overview"}
+          </button>
+          <span class="dest-nav__title">{destinationTitle}</span>
+        </nav>
+      {:else}
+      <!-- Surface switcher — Timeline and Overview are the only two surfaces
+           (⌘1/⌘2). Insights dissolved into Overview destinations (pages 08–10);
+           Chat remains reachable via Ask history + the Quick Recall handoff.
            "dashboard" retired (#103). The shortcut rides in the tooltip rather
            than a visible ⌘1 chip: the segments are 22px tall and a direction
            skin may render the chip in phase 2. -->
@@ -898,23 +939,15 @@
         <button
           type="button"
           class:active={isOverviewRoute}
-          class:return-target={isSettingsRoute && settingsReturnTarget === "overview"}
+          class:return-target={isSettingsRoute && settingsReturnTarget !== "timeline"}
           aria-current={isOverviewRoute ? "page" : undefined}
           use:tip={`Overview (${shortcutDisplay("openOverviewSurface")})`}
           onclick={() => goToSurface("overview")}
         >
           Overview
         </button>
-        <button
-          type="button"
-          class:active={isInsightsRoute}
-          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
-          aria-current={isInsightsRoute ? "page" : undefined}
-          onclick={() => goToSurface("insights")}
-        >
-          Insights
-        </button>
       </div>
+      {/if}
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->
       <button
@@ -945,6 +978,15 @@
     </div>
 
     <div class="titlebar__group titlebar__group--right">
+      <!-- Destination-owned chrome controls (pages 08/09): the Journal date
+           capsule and the Subjects search field ride in the title bar. Each
+           component is owned by its destination slice; the layout only mounts
+           it on the matching route. -->
+      {#if isJournalRoute}
+        <JournalTitlebarControls />
+      {:else if isSubjectsRoute}
+        <SubjectsTitlebarControls />
+      {/if}
       {#if showMainTitlebar}
         <!-- Persistent live regions: announce a new/cleared alert even while the
              bell popover is closed. Two always-mounted regions (one polite, one
@@ -2646,6 +2688,53 @@
   .surface-toggle--muted button.return-target {
     color: var(--app-text);
     background: var(--glass-tint);
+  }
+
+  /* ── Destination chrome (pages 08–10) ─────────────────────────────
+     Journal / Subjects / Context replace the pane under the same title bar;
+     the way back is this ‹ Overview ghost button beside the destination's
+     name. Ghost on glass: no fill until hover, never a drawn border. */
+  .dest-nav {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dest-nav__back {
+    font: inherit;
+    font-size: var(--t-ui);
+    line-height: 1;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px 0 8px;
+    height: 22px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .dest-nav__back:hover {
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
+  }
+  .dest-nav__back:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .dest-nav__back span {
+    font-size: 14px;
+    line-height: 1;
+    margin-top: -1px;
+  }
+  .dest-nav__title {
+    font-size: var(--t-ui);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--app-text-strong);
   }
 
   /* ── Quick Recall door ─────────────────────────────────────────

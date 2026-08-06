@@ -1,10 +1,9 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
-  // Insights workspace — the second top-level Surface of Main (alongside the
-  // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
-  // switched via local state (NOT separate routes), plus a Subject drill-in.
-  // The surface toggle that brings the user here lives in the shared titlebar
-  // (`+layout.svelte`); this page owns only the sub-nav + sub-surface content.
+  // Insights — the Chat surface. Pages 08–10 dissolved the old sub-surface
+  // shell: Journal / Subjects / Context are Overview destinations (their own
+  // routes) now, so this page is Chat plus its history rail, reachable via the
+  // Overview "Recent asks" tile and the Quick Recall → Chat handoff.
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -14,67 +13,19 @@
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
-  import Overview from "$lib/insights/Overview.svelte";
-  import DayTimeline from "$lib/insights/DayTimeline.svelte";
-  import Subjects from "$lib/insights/Subjects.svelte";
-  import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
-  import Context from "$lib/insights/Context.svelte";
   import Chat from "$lib/insights/Chat.svelte";
   import InsightsRail from "$lib/insights/InsightsRail.svelte";
   import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
-  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
-
-  // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
-  // the Subjects tab held in `selectedSubject` (null = the index).
-  let view = $state<InsightsTab>("overview");
-  let selectedSubject = $state<string | null>(null);
-
   // Quick Recall → Chat handoff (issue #111, ADR 0031). When a Quick Recall
   // thread is promoted into Chat, the main window is shown/navigated here and a
   // conversation id is delivered (a live `insights_open_conversation` event for
-  // a warm window, or the cold-window drain on mount). The handoff now routes
-  // through the shared store's selection BUS (`requestOpen`), which Chat watches;
-  // the effect below switches this shell to the Chat sub-surface when the bus
-  // fires (so a request that arrives while on another tab still lands on Chat).
+  // a warm window, or the cold-window drain on mount). The handoff routes
+  // through the shared store's selection BUS (`requestOpen`), which Chat
+  // watches; Chat is always mounted here, so no tab switching is needed.
   function handoffConversation(conversationId: string): void {
     conversationStore.requestOpen(conversationId);
-    view = "chat";
-    selectedSubject = null;
-  }
-
-  // A bus request (from the handoff above, or — in a later slice — the rail
-  // clicking a row from another surface) switches the shell to the Chat
-  // sub-surface. Track the nonce; skip 0 (nothing requested yet on mount).
-  let lastHandoffNonce = 0;
-  $effect(() => {
-    const pending = conversationStore.pendingOpen;
-    untrack(() => {
-      if (pending.nonce === 0 || pending.nonce === lastHandoffNonce) return;
-      lastHandoffNonce = pending.nonce;
-      view = "chat";
-      selectedSubject = null;
-    });
-  });
-
-  function openTab(tab: InsightsTab): void {
-    view = tab;
-    if (tab !== "subjects") selectedSubject = null;
-    // Leaving Chat unmounts it, so its mirror effect can no longer clear the
-    // store's open-thread id — clear it here so the rail stops highlighting the
-    // previously-open row while a non-Chat sub-surface is showing. (Re-entering
-    // Chat remounts it; the bus/handoff sets the active id back as needed.)
-    if (tab !== "chat") conversationStore.activeConversationId = null;
-  }
-
-  function openSubject(subject: string): void {
-    view = "subjects";
-    selectedSubject = subject;
-  }
-
-  function backToSubjects(): void {
-    selectedSubject = null;
   }
 
   // ── Engine status ────────────────────────────────────────────────────
@@ -107,32 +58,6 @@
   const engineGated = $derived(
     statusLoaded && !(aiStatus?.enabled && aiStatus?.configured),
   );
-
-  // Continuous-derivation lock: the runtime is set up (page not gated) but the
-  // User Context opt-in is off. Overview / Journal / Subjects / Context are all
-  // rendered FROM derivation output, so they'd sit empty forever — the rail
-  // locks them (tooltip + click-through to the derivation setting) and the shell
-  // lands on Chat, the one sub-surface that works without derivation. Keyed on
-  // the specific `user_context_disabled` reason so transient engine trouble
-  // (unreachable local model) does NOT lock the tabs — the per-surface error
-  // states own that case.
-  const derivationOff = $derived(
-    statusLoaded && ctxStatus?.reason === "user_context_disabled",
-  );
-
-  // While derivation is off the four locked tabs are unreachable via the rail,
-  // but `view` can still point at one (default "overview", or derivation was
-  // turned off while on a locked tab) — steer to Chat.
-  $effect(() => {
-    if (derivationOff && view !== "chat") {
-      view = "chat";
-      selectedSubject = null;
-    }
-  });
-
-  function openDerivationSettings(): void {
-    void openSettings("userContext");
-  }
 
   function shortModel(model: string): string {
     const trimmed = model.trim();
@@ -368,10 +293,6 @@
 {:else}
 <div class="insights" class:insights--collapsed={railCollapsed}>
   <InsightsRail
-    {view}
-    onOpenTab={openTab}
-    {derivationOff}
-    onOpenDerivationSettings={openDerivationSettings}
     {engineOn}
     {modelLabel}
     {statusLoaded}
@@ -393,7 +314,7 @@
     />
   {/if}
 
-  <main class="insights-main" class:insights-main--chat={view === "chat"}>
+  <main class="insights-main insights-main--chat">
     <!-- When the rail is collapsed, a quiet floating button (top-left, with a
          subtle backdrop so it reads above sub-surface content) brings it back. -->
     {#if railCollapsed}
@@ -408,27 +329,7 @@
         <span aria-hidden="true">»</span>
       </button>
     {/if}
-    {#if view === "overview"}
-      <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
-    {:else if view === "journal"}
-      <DayTimeline />
-    {:else if view === "subjects"}
-      {#if selectedSubject}
-        <div class="breadcrumb">
-          <button type="button" class="breadcrumb-back" onclick={backToSubjects}>‹ back</button>
-          <button type="button" class="breadcrumb-link" onclick={backToSubjects}>Subjects</button>
-          <span class="sep">/</span>
-          <span class="current">{selectedSubject}</span>
-        </div>
-        <SubjectDetail subject={selectedSubject} onBack={backToSubjects} />
-      {:else}
-        <Subjects onOpenSubject={openSubject} />
-      {/if}
-    {:else if view === "context"}
-      <Context />
-    {:else}
-      <Chat />
-    {/if}
+    <Chat />
   </main>
 </div>
 {/if}
@@ -563,15 +464,6 @@
     overflow-x: hidden;
     padding: 18px 20px 28px;
   }
-  /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /
-     context) reserve a little extra top-left room so the floating expand button
-     never sits on top of their content. Chat floats above its own header, so it
-     keeps its edge-to-edge `--chat` padding (the button's backdrop separates
-     it). */
-  .insights--collapsed .insights-main:not(.insights-main--chat) {
-    padding-top: 46px;
-  }
-
   /* Floating expand affordance — only rendered when the rail is collapsed.
      Anchored top-left of the content area with a small inset + a subtle backdrop
      so it reads cleanly above whatever sub-surface is showing. Quiet by default,
@@ -625,65 +517,4 @@
     min-height: 0;
   }
 
-  /* Drill-in breadcrumb (Subjects / <name>). Mirrors app.css `.breadcrumb`. */
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin-bottom: 14px;
-  }
-  .breadcrumb-link {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .breadcrumb-link:hover {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-link:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    border-radius: 4px;
-    box-shadow: var(--app-ring);
-  }
-  .breadcrumb .sep {
-    color: var(--app-text-faint);
-  }
-  .breadcrumb .current {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-right: 4px;
-    padding: 2px 7px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11.5px;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .breadcrumb-back:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    box-shadow: var(--app-ring);
-  }
 </style>

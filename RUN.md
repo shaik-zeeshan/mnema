@@ -37,8 +37,11 @@ The ladder, if you want to name what you are looking at:
 ## What to look at, per surface
 
 **Title bar (everywhere).** Translucent chrome with a rim and a top highlight; content scrolls
-*under* it — most visible on Overview at a small window size. The Timeline/Overview/Insights
-switcher is an AppKit segmented control (⌘1 / ⌘2).
+*under* it — most visible on Overview at a small window size. The switcher is two surfaces only —
+Timeline / Overview (⌘1 / ⌘2). Insights dissolved (pages 08–10): Journal, Subjects and Context are
+**destinations** opened from their Overview tile's door ("Open Journal ›" …); on a destination the
+switcher yields to a **‹ Overview** back button plus the destination's name. Chat survives as the
+Ask surface behind the Overview "Recent asks" tile and the Quick Recall → Chat handoff.
 
 **Timeline (⌘1).** The chrome is one continuous material block over an opaque stage. The
 signature move: the position readout and the date picker are **one glass capsule anchored over
