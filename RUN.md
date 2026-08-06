@@ -13,8 +13,11 @@ System-Settings bones everywhere — quiet, flat, native — with one exception:
 where a value has a **physical** consequence it gets an **instrument**: a
 machined face with a header (name + live value), a recessed **well** (the
 control), and a **readout** that states the cost in your units, with a
-denominator. There are **six instruments in the whole app** plus two read-only
-readouts on Overview. The contrast between the quiet rows and the occasional
+denominator. There are **seven instruments in the whole app** (pages 08–11
+corrected the original count of six — page 06 always drew the semantic-index
+gauge) plus three read-only readouts: the 24-hour coverage strip, the
+day-budget gauge, and the confidence trace on Subjects. On a readout an
+instrument reads — it never turns. The contrast between the quiet rows and the occasional
 instrument *is* the design. Depth is a surface step — a fill, a recess, or a
 shadow on something that genuinely floats — never a container border.
 
@@ -79,6 +82,22 @@ display-size number on the page. Two read-only readouts: the 24-hour coverage
 strip on Capture, and the day-budget gauge on Storage. **On Overview an
 instrument reads — it never turns; you turn it in Settings.**
 
+**Journal / Subjects / Context (from Overview).** Pages 08–10: three
+destinations *inside* Overview, not a third top-level surface. The doors are on
+the bento — the Today tile's "The whole day, hour by hour ›", the Subjects
+tile's rows and "N views ›", the Context tile's "Review all ›" — and the
+toolbar grows a `‹ Overview / ⟨destination⟩` back control while Overview stays
+lit; **⌘2 and esc both walk back one step** (subject detail → Subjects →
+Overview). Journal is the day's river: the read with four honest counts, the
+coverage strip at day scale, bands with named away-gaps, a receipt behind every
+card, and retention keeping the sentence after the pixels expire. Subjects is
+tiers by conviction with the confidence trace recessed in a well — every trace
+on one shared six-week clock, x-axis is real time, `NN%` everywhere; the only
+verbs are Pin and Dismiss. Context is a composer, a list, an archive and the
+erase ledger — no instrument on it, deliberately; every ledger claim is
+verified against the real delete paths. The old Insights surface (and Chat)
+still exists untouched; the destinations are additive.
+
 **Quick Access (⌘⌥Space).** One field, no Search/Ask segmented control. Search
 returns *things* — monochrome chrome, a 3-up grid of real frames, and a match
 meter that decomposes the count instead of printing it. "Ask Mnema about …" is a
@@ -125,3 +144,18 @@ default; `SHOW_TOASTS=1` brings them back.
 - **Retention lives under Data › Storage** where the app already had it, rather
   than being moved under Capture › Privacy as the mockup's own deviations list
   proposed — moving a settings row is a behaviour change, and this phase skins.
+  Page 11's pointer row in Data was also dropped: it would point at itself.
+- **The Insights surface stays** (third switcher segment, Chat, the old rail) —
+  pages 08–10 draw a toolbar without it, but Chat has no other home and the
+  Quick Recall → Chat handoff lands there. The destinations are additive.
+- **Steering rows never fabricate a link.** There is no stored
+  authored→conclusion edge in the backend, so a Context steering row claims
+  "your statement supports ⟨subject⟩" only when the statement genuinely names
+  that subject; otherwise the rail shows the dossier's own top subjects with
+  copy saying none of your statements names one yet.
+- **"Ask AI about ⟨subject⟩" cannot prefill** — no command seeds Quick Access
+  with a query, so the button just opens it.
+- **Settings shortcut defaults and the retention ladder steps** render the
+  backend's real values where page 11 drew invented ones (⌃1/⌃2/⌃3, a 90d/1yr
+  ladder); Delete Recent Capture is three explicit window buttons because the
+  backend accepts exactly 60/300/900 seconds.
