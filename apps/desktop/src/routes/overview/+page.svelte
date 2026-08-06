@@ -14,6 +14,7 @@
   // Round-4 decision **G8** is the rule for every number: real on this machine
   // or absent. A failed read renders a quiet reason, never a zero.
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { OverviewData } from "$lib/overview/overview-data.svelte";
   import { dayKeyOf, formatDayTitle, formatSpan, shiftDayKey } from "$lib/overview/overview-format";
   import ToolStrip from "$lib/overview/ToolStrip.svelte";
@@ -100,7 +101,7 @@
             {selectedKey}
             onselect={(s) => data.select(s)}
           />
-          <DigestTile digest={data.digest} {compact} />
+          <DigestTile digest={data.digest} {compact} onopen={() => void goto("/journal")} />
           <CaptureTile coverage={data.coverage} dayKey={data.dayKey} {isToday} {compact} />
           {#if wide}
             <StorageTile />
@@ -117,9 +118,14 @@
             {selectedKey}
             {compact}
             onselect={(s) => data.select(s)}
+            onopen={() => void goto("/subjects")}
           />
           {#if wide}
-            <ContextTile conclusions={data.conclusions} status={data.contextStatus} />
+            <ContextTile
+              conclusions={data.conclusions}
+              status={data.contextStatus}
+              onopen={() => void goto("/context")}
+            />
           {/if}
           <WeekTile
             coverage={data.coverage}

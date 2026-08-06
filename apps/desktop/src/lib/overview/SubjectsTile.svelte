@@ -16,9 +16,11 @@
     /** The 800px floor: two single-line rows, which is what actually fits. */
     compact?: boolean;
     onselect: (selection: Selection) => void;
+    /** The tile is the Subjects destination's door (page 09). */
+    onopen?: () => void;
   }
 
-  let { conclusions, status, selectedKey, compact = false, onselect }: Props = $props();
+  let { conclusions, status, selectedKey, compact = false, onselect, onopen }: Props = $props();
 
   const all = $derived(conclusions.status === "ok" ? conclusions.value : []);
 
@@ -38,7 +40,11 @@
   const subjectCount = $derived(
     status.status === "ok" ? (status.value?.subjectCount ?? null) : null,
   );
-  const more = $derived(subjectCount === null ? undefined : `${subjectCount} active`);
+  // With a door, the header note is the opener — "12 active ›" when the count
+  // is real on this machine, a bare "Open" otherwise (G8: no invented number).
+  const more = $derived(
+    subjectCount === null ? (onopen ? "Open" : undefined) : `${subjectCount} active`,
+  );
 
   const quiet = $derived(
     conclusions.status === "failed"
@@ -87,6 +93,7 @@
 <TileShell
   label="Subjects"
   {more}
+  {onopen}
   span="ss-tile--2 ov-half"
   {quiet}
   selected={rows.some((c) => keyOf(c) === selectedKey)}

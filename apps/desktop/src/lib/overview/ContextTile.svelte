@@ -13,9 +13,11 @@
   interface Props {
     conclusions: LoadState<Conclusion[]>;
     status: LoadState<UserContextStatus | null>;
+    /** The tile is the Context destination's door (page 10). */
+    onopen?: () => void;
   }
 
-  let { conclusions, status }: Props = $props();
+  let { conclusions, status, onopen }: Props = $props();
 
   const count = $derived(status.status === "ok" ? (status.value?.conclusionCount ?? null) : null);
 
@@ -35,7 +37,7 @@
   );
 </script>
 
-<TileShell label="Context" {quiet}>
+<TileShell label="Context" more={onopen ? "Review all" : undefined} {onopen} {quiet}>
   {#if count !== null && count > 0}
     <div class="ss-trow">
       <span class="t-ui strong is-num">{count.toLocaleString()}</span>

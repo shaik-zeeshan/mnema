@@ -81,6 +81,15 @@
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isOverviewRoute = $derived(normalizedPathname.startsWith("/overview"));
+  // Overview's destinations (direction 02, pages 08–10): Journal, Subjects and
+  // Context are addressable routes opened from their Overview tiles. They render
+  // inside the main shell (title bar + status strip) and the surface toggle
+  // keeps Overview lit — the window still has exactly two surfaces.
+  const isDestinationRoute = $derived(
+    normalizedPathname.startsWith("/journal") ||
+      normalizedPathname.startsWith("/subjects") ||
+      normalizedPathname.startsWith("/context"),
+  );
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -94,7 +103,9 @@
   // Overview (`/overview`), and Insights (`/insights`). The shared main titlebar
   // (record controls, source pills, settings, the surface switcher) renders on
   // all of them.
-  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || isInsightsRoute);
+  const isMainSurfaceRoute = $derived(
+    isMainRoute || isOverviewRoute || isInsightsRoute || isDestinationRoute,
+  );
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -561,7 +572,14 @@
   const settingsReturnTarget = $derived.by<keyof typeof SURFACE_PATHS>(() => {
     const last = normalizeAppPathname(getLastMainSurface());
     if (last.startsWith("/insights")) return "insights";
-    if (last.startsWith("/overview")) return "overview";
+    if (
+      last.startsWith("/overview") ||
+      last.startsWith("/journal") ||
+      last.startsWith("/subjects") ||
+      last.startsWith("/context")
+    ) {
+      return "overview";
+    }
     return "timeline";
   });
 
@@ -901,7 +919,7 @@
         </button>
         <button
           type="button"
-          class:active={isOverviewRoute}
+          class:active={isOverviewRoute || isDestinationRoute}
           class:return-target={isSettingsRoute && settingsReturnTarget === "overview"}
           aria-current={isOverviewRoute ? "page" : undefined}
           use:tip={`Overview (${shortcutDisplay("openOverviewSurface")})`}
@@ -909,15 +927,9 @@
         >
           Overview
         </button>
-        <button
-          type="button"
-          class:active={isInsightsRoute}
-          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
-          aria-current={isInsightsRoute ? "page" : undefined}
-          onclick={() => goToSurface("insights")}
-        >
-          Insights
-        </button>
+        <!-- No third tab (page 08): Journal / Subjects / Context are destinations
+             opened from Overview tiles, and Chat's remaining door is the Quick
+             Recall handoff — `/insights` stays routable for it, unlisted here. -->
       </div>
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->

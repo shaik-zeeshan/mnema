@@ -20,9 +20,12 @@
      *  The headline is the line that goes — the open-thread sentence G11 ships
      *  lives in the narrative, so the narrative is what keeps the room. */
     compact?: boolean;
+    /** The tile is the Journal's door (page 08): the header opener replaces the
+     *  digest stamp — the stamp lives in the Journal's own lede. */
+    onopen?: () => void;
   }
 
-  let { digest, compact = false }: Props = $props();
+  let { digest, compact = false, onopen }: Props = $props();
 
   const value = $derived(digest.status === "ok" ? digest.value : null);
 
@@ -38,10 +41,13 @@
 
   // No stamp, no time in the header — never "digest · NaN:NaN" (G8).
   const stamp = $derived(value ? formatClock(value.generatedAtMs) : null);
-  const more = $derived(stamp === null ? undefined : compact ? stamp : `digest · ${stamp}`);
+  const more = $derived.by(() => {
+    if (onopen) return "Open Journal";
+    return stamp === null ? undefined : compact ? stamp : `digest · ${stamp}`;
+  });
 </script>
 
-<TileShell label="Today" {more} span="ss-tile--2" {quiet}>
+<TileShell label="Today" {more} {onopen} span="ss-tile--2" {quiet}>
   {#if value}
     <div class="prose">
       {#if value.headline && !compact}<p class="head">{value.headline}</p>{/if}

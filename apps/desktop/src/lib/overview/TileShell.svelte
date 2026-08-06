@@ -12,6 +12,9 @@
     label: string;
     /** Right-aligned note in the header — a count, a timestamp, an affordance. */
     more?: string;
+    /** When set, the tile is a door: the header-right note becomes the opener
+     *  button ("Open Journal ›") that navigates to the tile's destination. */
+    onopen?: () => void;
     /** Extra tile classes: `ss-tile--2`, `ss-tile--media`, … */
     span?: string;
     /** Ringed when one of this tile's rows owns the inspector. */
@@ -21,13 +24,17 @@
     children?: Snippet;
   }
 
-  let { label, more, span = "", selected = false, quiet = null, children }: Props = $props();
+  let { label, more, onopen, span = "", selected = false, quiet = null, children }: Props = $props();
 </script>
 
 <section class="ss-tile {span}" class:is-sel={selected}>
   <div class="ss-tile__h">
     <span class="t-label">{label}</span>
-    {#if more}<span class="ss-more">{more}</span>{/if}
+    {#if onopen}
+      <button type="button" class="ss-more open" onclick={onopen}>
+        {more}<span aria-hidden="true"> ›</span>
+      </button>
+    {:else if more}<span class="ss-more">{more}</span>{/if}
   </div>
   <div class="ss-tile__b">
     {#if quiet}
@@ -39,6 +46,26 @@
 </section>
 
 <style>
+  /* The opener inherits `.ss-more`'s seat in the header and adds the accent +
+     button reset. Keyboard reachable — a destination must not be mouse-only. */
+  .open {
+    border: none;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+    color: var(--app-accent-strong);
+    transition: color 0.12s ease;
+  }
+  .open:hover {
+    color: var(--app-accent);
+  }
+  .open:focus-visible {
+    outline: none;
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
+
   .quiet {
     margin: 0;
     font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans);
