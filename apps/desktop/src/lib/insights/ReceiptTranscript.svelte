@@ -23,6 +23,10 @@
 
   let rowEls = $state<(HTMLButtonElement | null)[]>([]);
 
+  // Distinct voices over the span — the rail's one count. Speaker names are
+  // already resolved upstream (profiles + fallbacks), so this is a set size.
+  const speakerCount = $derived(new Set(turns.map((t) => t.speaker)).size);
+
   // Keep the active row visible as the selection moves (guarded for no match).
   $effect(() => {
     const i = selectionIndex(turns, selectedKey);
@@ -31,8 +35,16 @@
   });
 </script>
 
-<div class="script" role="group" aria-label="Transcript">
-  {#each turns as turn, i (turn.key)}
+<div class="plate script" role="group" aria-label="Transcript">
+  <div class="script__h">
+    <span class="t-label">Transcript</span>
+    <span class="t-meta is-num script__n">
+      {speakerCount}
+      {speakerCount === 1 ? "speaker" : "speakers"}
+    </span>
+  </div>
+  <div class="script__list">
+    {#each turns as turn, i (turn.key)}
     <button
       type="button"
       class="script__row"
@@ -42,26 +54,29 @@
       bind:this={rowEls[i]}
       onclick={() => onSelect(turn.key)}
     >
-      <span class="script__t">{clock(turn.startMs)}</span>
-      <span class="script__body"><span class="script__spk">{turn.speaker}</span>: {turn.text || "—"}</span>
+      <span class="script__t is-num">{clock(turn.startMs)}</span>
+      <span class="script__body"><span class="script__spk">{turn.speaker}:</span> {turn.text || "—"}</span>
     </button>
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
-  /* One rule per line to mirror ActivityReceipt.svelte + the 04-timelapse mockup.
-     Dimmed rows sit at 0.7 (raised from the mockup's 0.55) for legibility. Body
-     text is the app default font; time + speaker are mono w/ tabular numerals. */
-  .script { max-height: 110px; overflow-y: auto; margin-top: 8px; padding: 4px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface-subtle); }
-  .script__row { display: grid; grid-template-columns: 44px 1fr; column-gap: 8px; align-items: baseline; width: 100%; padding: 4px 8px; border: 0; border-left: 2px solid transparent; border-radius: 5px; background: transparent; font: inherit; text-align: left; color: var(--app-text-muted); opacity: 0.7; cursor: pointer; transition: opacity 0.12s ease, background 0.12s ease; }
-  .script__row:hover { opacity: 0.9; background: var(--app-surface-hover); }
-  .script__row:focus-visible { outline: 2px solid var(--app-accent); outline-offset: -2px; opacity: 1; }
-  .script__row.is-active { opacity: 1; border-left-color: var(--_c); background: color-mix(in srgb, var(--_c) 10%, transparent); }
-  .script__t { font-family: var(--app-font-mono); font-size: 10px; font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
-  .script__row.is-active .script__t { color: var(--app-text-muted); }
-  .script__body { font-size: 12px; line-height: 1.5; color: inherit; }
+  /* Prose, so an opaque plate — never the sheet's material (page 08). The rail
+     is a bounded scroller: every turn's FULL text, wrapped, never truncated.
+     One rule per line to mirror ActivityReceipt.svelte. */
+  .script { display: flex; flex-direction: column; min-height: 0; padding: 10px 0 4px; overflow: hidden; }
+  .script__h { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 12px 7px; }
+  .script__n { margin-left: auto; color: var(--app-text-subtle); }
+  .script__list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 0 6px; scrollbar-width: thin; scrollbar-color: var(--app-border-hover) transparent; }
+  .script__row { display: flex; gap: 8px; align-items: baseline; width: 100%; padding: 5px 6px; border: 0; border-radius: var(--r-sm); background: transparent; font: inherit; text-align: left; color: var(--app-text-muted); cursor: pointer; transition: background-color var(--dur-quick) var(--ease); }
+  .script__row:hover { background: var(--app-surface-hover); }
+  .script__row:focus-visible { outline: none; box-shadow: var(--ring); }
+  .script__row.is-active { background: var(--app-surface-hover); }
+  .script__t { flex: 0 0 auto; font: var(--w-regular) var(--t-label) / 1.5 var(--app-font-mono); color: var(--app-text-faint); }
+  .script__body { font: var(--w-regular) var(--t-meta) / 1.5 var(--app-font-sans); color: inherit; }
   .script__row.is-active .script__body { color: var(--app-text); }
-  .script__spk { font-family: var(--app-font-mono); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--_c); }
+  .script__spk { font-weight: var(--w-medium); color: var(--_c); }
 
   @media (prefers-reduced-motion: reduce) {
     .script__row { transition: none; }

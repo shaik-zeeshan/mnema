@@ -1,8 +1,10 @@
 <script lang="ts">
-  // Journal date stepper — ‹ day › navigation, a calendar popover on the day
-  // label (reuses the Timeline jumper's bits-ui calendar pane, so day-jumping
-  // looks the same everywhere), and a Today reset. Split out of
-  // DayTimeline.svelte to keep it under the 800-line ceiling.
+  // The Journal's date control (page 08) — the Timeline's glass capsule idiom:
+  // ‹ | calendar + day | ›, one piece of level-5 material riding in the title
+  // bar. The day label opens the same bits-ui calendar pane the Timeline jumper
+  // uses, so day-jumping looks identical everywhere. State lives in the
+  // `journalDate` store (journal-date.svelte.ts) because the surface that loads
+  // the day renders in a different tree.
   import { untrack } from "svelte";
   import {
     CalendarDate,
@@ -10,19 +12,11 @@
     today,
     type DateValue,
   } from "@internationalized/date";
+  import IconCalendar from "~icons/lucide/calendar";
+  import IconChevronLeft from "~icons/lucide/chevron-left";
+  import IconChevronRight from "~icons/lucide/chevron-right";
   import JumperCalendar from "$lib/timeline/JumperCalendar.svelte";
-  import { shiftAnchor } from "$lib/insights/activity-helpers";
-
-  interface Props {
-    /** The viewed day's anchor — the stepper writes it, the parent derives the range. */
-    anchorMs: number;
-    /** Local midnight of the viewed day (seeds the calendar). */
-    rangeStartMs: number;
-    /** True when the viewed day is the current day. */
-    atLatest: boolean;
-    dayLabel: string;
-  }
-  let { anchorMs = $bindable(), rangeStartMs, atLatest, dayLabel }: Props = $props();
+  import { journalDate } from "$lib/insights/journal-date.svelte";
 
   let open = $state(false);
   let calValue = $state<DateValue | undefined>(undefined);
@@ -31,7 +25,7 @@
   let triggerEl = $state<HTMLButtonElement | null>(null);
 
   function viewedDate(): CalendarDate {
-    const d = new Date(rangeStartMs);
+    const d = new Date(journalDate.range.startMs);
     return new CalendarDate(d.getFullYear(), d.getMonth() + 1, d.getDate());
   }
 
@@ -49,14 +43,14 @@
     return d.compare(today(getLocalTimeZone())) > 0;
   }
 
-  // Picking a day commits it and closes. Local noon dodges DST-boundary
-  // midnights. The seed write (same day) is a no-op by the compare guard.
+  // Picking a day commits it and closes. The seed write (same day) is a no-op
+  // by the compare guard.
   $effect(() => {
     const v = calValue;
     if (!open || !v) return;
     untrack(() => {
       if (v.compare(viewedDate()) === 0) return;
-      anchorMs = new Date(v.year, v.month - 1, v.day, 12).getTime();
+      journalDate.setDay(v.year, v.month, v.day);
       open = false;
     });
   });
@@ -79,37 +73,35 @@
 
 <svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} />
 
-<div class="date-stepper">
+<div class="datecap">
   <button
-    class="nav"
+    class="datecap__nav"
     type="button"
     aria-label="Previous day"
-    onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", -1))}>‹</button
+    onclick={() => journalDate.step(-1)}><IconChevronLeft /></button
   >
   <button
-    class="range-label"
+    class="datecap__day"
     type="button"
     bind:this={triggerEl}
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-label="Jump to date"
-    onclick={toggle}>{dayLabel}</button
+    onclick={toggle}
   >
+    <IconCalendar />
+    <span class="is-num">{journalDate.dayLabel}</span>
+  </button>
   <button
-    class="nav"
+    class="datecap__nav"
     type="button"
     aria-label="Next day"
-    disabled={atLatest}
-    onclick={() => (anchorMs = shiftAnchor(anchorMs, "day", 1))}>›</button
+    disabled={journalDate.atLatest}
+    onclick={() => journalDate.step(1)}><IconChevronRight /></button
   >
-  {#if !atLatest}
-    <button class="today" type="button" onclick={() => (anchorMs = Date.now())}
-      >Today</button
-    >
-  {/if}
 
   {#if open}
-    <div class="cal-pop" role="dialog" aria-label="Jump to date" bind:this={popEl}>
+    <div class="cal-pop glass-pop" role="dialog" aria-label="Jump to date" bind:this={popEl}>
       <JumperCalendar
         bind:value={calValue}
         bind:placeholder={calPlaceholder}
@@ -121,104 +113,82 @@
 </div>
 
 <style>
-  .date-stepper {
+  /* The capsule is level-5 material (`--glass-pop`): it floats over the chrome
+     the way the Timeline's jump capsule floats over the stage. Its own rim is
+     the only edge it spends. */
+  .datecap {
     position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
+    gap: 2px;
+    height: 26px;
+    padding: 2px;
+    border-radius: var(--r-pill);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
-  .nav {
-    width: 24px;
-    height: 24px;
+  .datecap__nav {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
     background: transparent;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     cursor: pointer;
-    font: inherit;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
+    transition: background-color var(--dur-quick) var(--ease);
   }
-  .nav:hover:not(:disabled) {
-    background: var(--app-surface-hover);
+  .datecap__nav:hover:not(:disabled) {
+    background: var(--glass-tint);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
-  .nav:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .nav:disabled {
-    opacity: var(--app-disabled-opacity);
+  .datecap__nav:disabled {
+    opacity: var(--opacity-disabled);
     cursor: default;
   }
-  .range-label {
-    margin: 0;
-    padding: 2px 4px;
+  .datecap__nav :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+  .datecap__day {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 10px;
     border: 0;
+    border-radius: var(--r-pill);
     background: transparent;
-    font: inherit;
-    color: var(--app-text);
-    letter-spacing: 0.02em;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    border-radius: 4px;
-    border-bottom: 1px dotted var(--app-border-strong);
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .range-label:hover {
-    color: var(--app-accent);
-    border-bottom-color: var(--app-accent-border);
-  }
-  .range-label:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .today {
-    height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: var(--t-label);
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .today:hover {
-    background: var(--app-surface-hover);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
+    cursor: pointer;
+    transition: background-color var(--dur-quick) var(--ease);
   }
-  .today:focus-visible {
+  .datecap__day:hover {
+    background: var(--glass-tint);
+  }
+  .datecap__nav:focus-visible,
+  .datecap__day:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
+    box-shadow: var(--ring);
+  }
+  .datecap__day :global(svg) {
+    width: 12px;
+    height: 12px;
+    color: var(--app-text-muted);
   }
   .cal-pop {
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 8px);
     right: 0;
-    z-index: 20;
+    z-index: 40;
     width: 300px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    border-radius: var(--r-lg);
     overflow: hidden;
   }
   /* The calendar pane ships a border-right for the jumper's two-pane layout;

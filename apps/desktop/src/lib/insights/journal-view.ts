@@ -76,32 +76,33 @@ export function bandRiver(rows: RiverRow[]): RiverBand[] {
 }
 
 /**
- * Human copy for the pending slot when the engine is unavailable. Codes mirror
- * `AiRuntimeStatus.reason` / `UserContextStatus.reason` (see
- * `settings/state/ai-runtime.svelte.ts`'s `aiRuntimeReasonLabel`), reshaped into
- * "Summaries are paused — <why>" sentences with a safe generic default.
+ * Why summaries are paused, as its own sentence. The paused plate states the
+ * headline ("Summaries are paused") separately and puts this underneath, so the
+ * detail must stand alone. Codes mirror `AiRuntimeStatus.reason` /
+ * `UserContextStatus.reason` (see `settings/state/ai-runtime.svelte.ts`'s
+ * `aiRuntimeReasonLabel`), with a safe generic default.
  */
-export function pendingReasonCopy(reason: string): string {
+export function pendingPausedDetail(reason: string): string {
   if (reason.startsWith("no_provider_key:")) {
-    return "Summaries are paused — no API key is saved for the engine's provider.";
+    return "No API key is saved for the engine's provider.";
   }
   if (reason.startsWith("provider_not_connected:")) {
-    return "Summaries are paused — the engine's default provider isn't connected.";
+    return "The engine's default provider isn't connected.";
   }
   switch (reason) {
     case "user_context_disabled":
-      return "Summaries are paused — continuous derivation is turned off.";
+      return "Continuous derivation is turned off.";
     case "ai_runtime_disabled":
-      return "Summaries are paused — AI features are turned off.";
+      return "AI features are turned off.";
     case "no_providers":
-      return "Summaries are paused — no AI provider is connected yet.";
+      return "No AI provider is connected yet.";
     case "no_default_model":
-      return "Summaries are paused — no default model is chosen.";
+      return "No default model is chosen.";
     case "no_base_url":
-      return "Summaries are paused — the local provider needs a base URL.";
+      return "The local provider needs a base URL.";
     case "local_endpoint_unreachable":
-      return "Summaries are paused — the local engine can't be reached.";
+      return "The local engine can't be reached.";
     default:
-      return "Summaries are paused — the Reasoning Engine isn't available right now.";
+      return "The Reasoning Engine isn't available right now.";
   }
 }

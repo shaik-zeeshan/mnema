@@ -19,6 +19,26 @@
     min-height: 0;
     margin-top: calc(var(--h-titlebar) * -1);
     position: relative;
+    background: var(--app-bg);
+  }
+  /* The destination pane's own tint — two soft washes so the plates read as
+     floating on a lit floor rather than sitting on a flat fill. */
+  .dest::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        520px 320px at 4% 0%,
+        color-mix(in srgb, var(--app-accent) 10%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        420px 380px at 98% 96%,
+        color-mix(in srgb, var(--cat-communication) 12%, transparent),
+        transparent 72%
+      );
   }
   .dest__scroll {
     position: absolute;

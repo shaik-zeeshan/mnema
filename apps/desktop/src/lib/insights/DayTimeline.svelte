@@ -18,33 +18,22 @@
     UserContextStatus,
   } from "$lib/types/recording";
   import type { FrameSummaryDto } from "$lib/types/app-infra";
-  import {
-    humanizeHours,
-    startOfDay,
-    windowFor,
-  } from "$lib/insights/activity-helpers";
+  import { humanizeHours } from "$lib/insights/activity-helpers";
   import { computeLedeStats } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, bandRiver } from "$lib/insights/journal-view";
   import { captureControls } from "$lib/capture-controls.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
-  import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
+  import { journalDate } from "$lib/insights/journal-date.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
 
   // ── Day range (always mode "day"; local midnight bounds) ────────────────
-  let anchorMs = $state<number>(Date.now());
-  const range = $derived(windowFor(anchorMs, "day"));
-  // Disable stepping past the current day (mirrors Overview's `atLatest`).
-  const atLatest = $derived(Date.now() < range.endMs);
-
-  const dayLabel = $derived(
-    new Date(range.startMs).toLocaleDateString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-    }),
-  );
+  // The date control itself lives in the title bar (page 08: the date control
+  // is chrome, not content) — this surface only reads the shared store.
+  const range = $derived(journalDate.range);
+  const atLatest = $derived(journalDate.atLatest);
+  const dayLabel = $derived(journalDate.dayLabel);
 
   // No Cards⇄Blocks toggle yet: a one-option Segmented is noise. The toggle
   // ships alongside the Blocks view (mockup 02).
@@ -324,99 +313,87 @@
 </script>
 
 <section class="journal" aria-label="Journal">
-  <!-- ── Header ── -->
-  <div class="ov-header">
-    <div class="titles">
-      <h1>Journal</h1>
-      <p class="subtitle">Your day, written down while you worked.</p>
-    </div>
-    <div class="ov-controls">
-      <JournalDateStepper
-        bind:anchorMs
-        rangeStartMs={range.startMs}
-        {atLatest}
-        {dayLabel}
-      />
-    </div>
+  <!-- ── Header. The date control is NOT here: page 08 puts it in the chrome
+       (<JournalTitlebarControls/>), so the content carries only the read. ── -->
+  <div class="jhead">
+    <h1 class="t-title">Journal</h1>
+    <p class="t-meta">Your day, written down while you worked.</p>
   </div>
 
-  <!-- ── Digest lede (reused from Overview: headline + narrative + re-read) ── -->
+  <!-- ── The read (digest lede) — one opaque plate, the widest reading measure
+       on the page. ── -->
   <article
-    class="entry entry--lede"
+    class="plate lede"
     aria-busy={(!digest && digestLoading) || digestRegenerating}
   >
-    <p class="eyebrow">
-      <span class="diamond" aria-hidden="true">◆</span>
-      <span class="tick" aria-hidden="true"></span>
-      The read · {dayLabel}
-      <span class="rule"></span>
-      {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
+    <div class="lede__eb">
+      <span class="t-label lede__tag">◆ The read · {dayLabel}</span>
+      {#if digest}
+        <span class="t-meta is-num lede__when">{relativeTime(digest.generatedAtMs)}</span>
+      {/if}
       {#if engineOn}
         <button
           type="button"
-          class="re-read"
+          class="btn btn--ghost btn--sm lede__re"
           class:is-busy={digestRegenerating}
           onclick={regenerateDigest}
           disabled={digestRegenerating || (!digest && digestLoading)}
         >
-          <span class="re-read-ico" aria-hidden="true">↻</span>
+          <span class="lede__re-ico" aria-hidden="true">↻</span>
           {digestRegenerating ? "reading…" : "re-read"}
         </button>
       {/if}
-    </p>
+    </div>
     {#if digest}
       {#key digest.generatedAtMs}
-        <div class="lede-body">
+        <div class="lede__body">
           {#if digest.headline}
-            <h2 class="lede-headline">{digest.headline}</h2>
+            <h2 class="lede__headline">{digest.headline}</h2>
           {/if}
-          <p class="lede-text">{digest.narrative}</p>
+          <p class="t-read lede__text">{digest.narrative}</p>
         </div>
       {/key}
     {:else if digestLoading || digestRegenerating}
       <div class="sk-row"><Skeleton variant="text" width="92%" height="12px" /></div>
       <div class="sk-row"><Skeleton variant="text" width="64%" height="12px" /></div>
     {:else if digestError}
-      <p class="lede-error">{digestError}</p>
+      <p class="t-read lede__error">{digestError}</p>
     {/if}
-    <!-- Four stats — tracked / deep focus % / top category / activities. The
-         usage-derived tracked stat gates on `usageLoaded`, the engine-derived
-         deep %/top category on the range load so a day switch never shows the
-         previous day's numbers. -->
-    <div class="lede-stats" aria-label="Day highlights">
-      {#if usageLoaded}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{trackedLabel}</span>
-          <span class="lede-stat-cap">tracked</span>
-        </div>
-      {/if}
-      {#if riverLoadedOnce && ledeStats.deepPct !== null}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{ledeStats.deepPct}%</span>
-          <span class="lede-stat-cap">deep focus</span>
-        </div>
-      {/if}
-      {#if riverLoadedOnce && ledeStats.topCategory}
-        <div class="lede-stat">
-          <span class="lede-stat-n lede-stat-n--cat">
-            <span
-              class="lede-stat-swatch"
-              style="background:var({ledeStats.topCategory.colorVar});"
-              aria-hidden="true"
-            ></span>
-            {ledeStats.topCategory.label}
-          </span>
-          <span class="lede-stat-cap">top category</span>
-        </div>
-      {/if}
-      {#if riverLoadedOnce}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{model.slots.length}</span>
-          <span class="lede-stat-cap">activities</span>
-        </div>
-      {/if}
-    </div>
   </article>
+
+  <!-- Four stat plates — the only four the backend actually computes. The
+       usage-derived tracked stat gates on `usageLoaded`, the engine-derived
+       deep %/top category on the range load so a day switch never shows the
+       previous day's numbers. -->
+  <div class="stats" aria-label="Day highlights">
+    {#if usageLoaded}
+      <div class="plate stat">
+        <span class="stat__v is-num">{trackedLabel}</span>
+        <span class="t-label">tracked</span>
+      </div>
+    {/if}
+    {#if riverLoadedOnce && ledeStats.deepPct !== null}
+      <div class="plate stat">
+        <span class="stat__v is-num">{ledeStats.deepPct}%</span>
+        <span class="t-label">deep focus</span>
+      </div>
+    {/if}
+    {#if riverLoadedOnce && ledeStats.topCategory}
+      <div class="plate stat">
+        <span class="stat__v stat__v--sm">
+          <em style="background:var({ledeStats.topCategory.colorVar});" aria-hidden="true"></em>
+          {ledeStats.topCategory.label}
+        </span>
+        <span class="t-label">top category</span>
+      </div>
+    {/if}
+    {#if riverLoadedOnce}
+      <div class="plate stat">
+        <span class="stat__v is-num">{model.slots.length}</span>
+        <span class="t-label">activities</span>
+      </div>
+    {/if}
+  </div>
 
   <!-- ── The river (skeleton / cards+pending / empty panels) ── -->
   <JournalRiver
@@ -437,15 +414,16 @@
 {/if}
 
 <style>
-  /* Journal surface. Mirrors Overview's reading column + lede tokens; the river
-     styles live in <JournalRiver/>. All colours are app tokens (`--app-*`); the
-     mockup's raw hex is only its self-contained copy of the same tokens. */
+  /* Journal surface (page 08 — the day as a river of plates). Every readable
+     thing lands on an opaque `.plate`; the only material on this surface is the
+     title bar's, which the date capsule rides. Colours are app tokens
+     (`--app-*`, `--cat-*`, `--focus-*`) — the mockup's raw hex is only its
+     self-contained copy of the same tokens. */
   .journal {
     display: flex;
     flex-direction: column;
-    gap: 20px;
     width: 100%;
-    max-width: 720px;
+    max-width: 1100px;
     margin: 0 auto;
     /* AI-written titles/summaries can carry long unbreakable tokens (URLs,
        paths); without this they blow out the river's 1fr grid track and give
@@ -453,125 +431,47 @@
        also stops inflating min-content sizing. */
     overflow-wrap: anywhere;
   }
-  @media (min-width: 1024px) {
-    .journal {
-      max-width: 860px;
-    }
+
+  /* ---- Header ---- */
+  .jhead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 0 14px;
+  }
+  .jhead h1 {
+    margin: 0;
+  }
+  .jhead p {
+    margin: 0;
   }
 
-  /* ---- Header (shared shape with Overview .ov-header) ---- */
-  .ov-header {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    flex-wrap: wrap;
+  /* ---- The read ---- */
+  .lede {
+    padding: 14px 16px 16px;
+    margin-bottom: 14px;
   }
-  .ov-header .titles {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .ov-header h1 {
-    margin: 0;
-    font-size: var(--t-title);
-    line-height: 1.2;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--app-text-strong);
-  }
-  .ov-header .subtitle {
-    margin: 3px 0 0;
-    font-size: var(--t-ui);
-    color: var(--app-text-muted);
-  }
-  .ov-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 12px;
-    flex: 0 0 auto;
-  }
-
-  /* ---- Digest lede (copied token-for-token from Overview) ---- */
-  .entry {
-    position: relative;
-    padding: 20px 22px 18px;
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-    background: var(--app-surface);
-  }
-  .entry--lede {
-    padding: 24px 26px 22px;
-    border-left: 2px solid var(--app-accent);
-    background: linear-gradient(
-      to right,
-      var(--app-accent-bg),
-      var(--app-surface) 42%
-    );
-  }
-  .eyebrow {
+  .lede__eb {
     display: flex;
     align-items: center;
-    gap: 9px;
-    font-size: var(--t-label);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    margin: 0 0 11px;
+    gap: 8px;
+    margin-bottom: 8px;
   }
-  .eyebrow .tick {
-    flex: 0 0 auto;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--app-text-faint);
-  }
-  .eyebrow .rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--app-border);
-  }
-  .eyebrow .diamond {
-    color: var(--app-text-faint);
-    letter-spacing: 0;
-  }
-  .eyebrow-when {
-    flex: 0 0 auto;
-  }
-  .re-read {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    margin: 0;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: var(--t-label);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .re-read:hover:not(:disabled) {
+  .lede__tag {
     color: var(--app-accent);
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
   }
-  .re-read:disabled {
-    cursor: default;
-    opacity: 0.6;
+  .lede__when {
+    color: var(--app-text-subtle);
   }
-  .re-read-ico {
+  .lede__re {
+    margin-left: auto;
+  }
+  .lede__re-ico {
     font-size: var(--t-ui);
     line-height: 1;
-    letter-spacing: 0;
+    display: inline-block;
   }
-  .re-read.is-busy .re-read-ico {
+  .lede__re.is-busy .lede__re-ico {
     animation: re-read-spin 0.8s linear infinite;
   }
   @keyframes re-read-spin {
@@ -580,11 +480,11 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .re-read.is-busy .re-read-ico {
+    .lede__re.is-busy .lede__re-ico {
       animation: none;
     }
   }
-  .lede-body {
+  .lede__body {
     animation: lede-reveal 0.25s ease;
   }
   @keyframes lede-reveal {
@@ -598,28 +498,23 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .lede-body {
+    .lede__body {
       animation: none;
     }
   }
-  .lede-headline {
-    margin: 0 0 10px;
-    font-size: 24px;
-    line-height: 1.22;
-    font-weight: 650;
-    letter-spacing: -0.02em;
+  .lede__headline {
+    margin: 0 0 6px;
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     color: var(--app-text-strong);
+    max-width: 62ch;
   }
-  .lede-text {
+  .lede__text {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.7;
-    color: var(--app-text);
+    color: var(--app-text-muted);
   }
-  .lede-error {
+  .lede__error {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.7;
     color: var(--app-danger, var(--app-text-subtle));
   }
   .sk-row {
@@ -627,50 +522,52 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 9px 0;
+    padding: 7px 0;
   }
-  .sk-row + .sk-row {
-    border-top: 1px dashed var(--app-border);
+
+  /* ---- The four statistics — one plate each ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
   }
-  .lede-stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14px 28px;
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px dashed var(--app-border);
-  }
-  .lede-stat {
+  .stat {
+    padding: 10px 12px 11px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
   }
-  .lede-stat-n {
-    font-size: var(--t-title);
-    line-height: 1.1;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-  }
-  .lede-stat-n--cat {
-    display: inline-flex;
+  .stat__v {
+    display: flex;
     align-items: center;
     gap: 7px;
-    max-width: 220px;
+    font: var(--w-semi) var(--t-display) / 1.1 var(--app-font-sans);
+    letter-spacing: var(--ls-display);
+    color: var(--app-text-strong);
+    min-width: 0;
+  }
+  .stat__v--sm {
+    font: var(--w-semi) var(--t-title) / 1.2 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .lede-stat-swatch {
+  .stat__v em {
     flex: 0 0 auto;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
+    width: 11px;
+    height: 11px;
+    border-radius: 3px;
+    font-style: normal;
   }
-  .lede-stat-cap {
-    font-size: var(--t-label);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+
+  /* Narrow window: the four statistics fold to two rows rather than shrink
+     into unreadable columns. */
+  @media (max-width: 760px) {
+    .stats {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 </style>

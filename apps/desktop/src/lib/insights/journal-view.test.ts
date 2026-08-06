@@ -7,7 +7,7 @@ import {
   bandOf,
   bandRiver,
   isShortActivity,
-  pendingReasonCopy,
+  pendingPausedDetail,
   riverRowKey,
 } from "./journal-view";
 
@@ -77,14 +77,14 @@ describe("riverRowKey", () => {
   });
 });
 
-describe("pendingReasonCopy", () => {
-  it("maps known codes and prefixes to paused sentences", () => {
-    expect(pendingReasonCopy("ai_runtime_disabled")).toContain("AI features are turned off");
-    expect(pendingReasonCopy("no_provider_key:openai")).toContain("no API key");
-    expect(pendingReasonCopy("provider_not_connected:x")).toContain("isn't connected");
+describe("pendingPausedDetail", () => {
+  it("maps known codes and prefixes to stand-alone why sentences", () => {
+    expect(pendingPausedDetail("ai_runtime_disabled")).toBe("AI features are turned off.");
+    expect(pendingPausedDetail("no_provider_key:openai")).toContain("No API key");
+    expect(pendingPausedDetail("provider_not_connected:x")).toContain("isn't connected");
   });
   it("falls back to a safe generic sentence for unknown codes", () => {
-    expect(pendingReasonCopy("something_new")).toContain("isn't available right now");
-    expect(pendingReasonCopy("")).toContain("isn't available right now");
+    expect(pendingPausedDetail("something_new")).toContain("isn't available right now");
+    expect(pendingPausedDetail("")).toContain("isn't available right now");
   });
 });

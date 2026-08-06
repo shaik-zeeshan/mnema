@@ -100,45 +100,51 @@
       </span>
     {/if}
     <div class="frame-meta">
-      {#if metaApp}<span class="frame-meta__chip frame-meta__chip--app">{metaApp}</span>{/if}
+      {#if metaApp}<span class="frame-meta__chip">{metaApp}</span>{/if}
       {#if metaTitle}<span class="frame-meta__chip">{metaTitle}</span>{/if}
       {#if currentMs != null}<span class="frame-meta__chip">{clockSec(currentMs)}</span>{/if}
-      {#if hasOcr}<span class="frame-meta__chip">OCR</span>{/if}
+      {#if hasOcr}<span class="frame-meta__chip frame-meta__chip--ocr">OCR</span>{/if}
     </div>
   </div>
 {/if}
 
 <style>
-  /* Viewer — the ONE elastic region; no transition on the img: instant frame
-     swaps are the video feel. */
-  .viewer { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--app-bg); border-bottom: 1px solid var(--app-border); }
+  /* The stage is an opaque PLATE — the sheet around it may be glass, pixels and
+     prose never are. No transition on the img: instant frame swaps are the
+     video feel. */
+  .viewer { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; border-radius: var(--r-lg); background: var(--app-surface); box-shadow: var(--sh-tile); }
   .viewer__img { display: block; width: 100%; height: 100%; object-fit: contain; }
-  .skeleton { position: absolute; inset: 18px 22px; background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%); border: 1px solid var(--app-border); border-radius: 8px; animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 0.85; } }
-  .viewer__redactions { position: absolute; top: 8px; right: 8px; padding: 3px 7px; font-size: 10px; color: var(--app-text-muted); background: var(--app-overlay-bg); border: 1px solid var(--app-border-strong); border-radius: 5px; backdrop-filter: blur(4px); }
-  .frame-meta { position: absolute; left: 16px; bottom: 12px; display: flex; gap: 8px; max-width: calc(100% - 32px); overflow: hidden; }
-  .frame-meta__chip { padding: 2px 8px; font-size: 10px; color: var(--app-text-muted); background: var(--app-overlay-bg); border: 1px solid var(--app-border-strong); border-radius: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(4px); }
-  .frame-meta__chip--app { flex: 0 0 auto; color: var(--app-text); }
+  .skeleton { position: absolute; inset: 18px 22px; border-radius: var(--r-md); background: var(--app-surface-hover); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.5; } }
 
-  .viewer--expired { aspect-ratio: 16 / 6; display: flex; align-items: center; justify-content: center; }
-  .exp { max-width: 440px; padding: 24px; text-align: center; }
-  .exp__glyph { display: flex; justify-content: center; margin-bottom: 10px; color: var(--app-text-faint); }
-  .exp__glyph :global(svg) { width: 30px; height: 30px; }
-  .exp h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--app-text-strong); }
-  .exp p { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--app-text-muted); }
+  /* Frame chips ride ON the picture, so they are the one place a dark scrim is
+     the honest background — the plate is behind them, not under the text. */
+  .viewer__redactions { position: absolute; top: 8px; right: 8px; z-index: 2; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: var(--r-pill); background: rgba(12, 12, 16, 0.62); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); color: #fff; font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans); }
+  .frame-meta { position: absolute; left: 8px; bottom: 8px; z-index: 2; display: flex; gap: 6px; max-width: calc(100% - 16px); overflow: hidden; }
+  .frame-meta__chip { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: var(--r-pill); background: rgba(12, 12, 16, 0.62); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); color: #fff; font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The OCR chip says only THAT text was recognized — the receipt never shows
+     the recognized text itself (that would be a new surface). */
+  .frame-meta__chip--ocr { font-family: var(--app-font-mono); letter-spacing: 0.06em; }
 
-  /* Audio-only viewer — a bounded audio player, never a false "footage expired".
+  /* The three viewports that are NOT a picture. All land on the same plate. */
+  .viewer--expired, .viewer--audio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; text-align: center; padding: 0 22px; }
+  .exp { max-width: 44ch; display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .exp__glyph { display: flex; color: var(--app-text-faint); }
+  .exp__glyph :global(svg) { width: 20px; height: 20px; }
+  .exp h4 { margin: 0; font: var(--w-semi) var(--t-ui) / 1.3 var(--app-font-sans); color: var(--app-text-strong); }
+  .exp p { margin: 0; font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans); color: var(--app-text-muted); }
+
+  /* Audio-only — a bounded audio player, never a false "footage expired".
      Leads with WHO spoke; the channel is quiet secondary meta. */
-  .viewer--audio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
-  .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; color: var(--cat-communication); background: var(--app-accent-bg); border: 1px solid var(--cat-communication); }
-  .big-play:disabled { opacity: 0.5; cursor: default; }
-  .big-play :global(svg) { width: 17px; height: 17px; }
+  .big-play { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border: 0; border-radius: 50%; color: var(--app-accent-contrast); background: var(--app-accent); }
+  .big-play:disabled { opacity: var(--opacity-disabled); cursor: default; }
+  .big-play :global(svg) { width: 16px; height: 16px; }
   .a-spk { display: inline-flex; align-items: center; gap: 8px; }
-  .a-spk__dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--_c); box-shadow: 0 0 7px var(--_c); }
-  .a-spk__name { font-size: 15px; font-weight: 600; color: var(--app-text-strong); }
+  .a-spk__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--_c); }
+  .a-spk__name { font: var(--w-semi) var(--t-ui) / 1.3 var(--app-font-sans); color: var(--app-text-strong); }
   .a-spk__name.is-fallback { color: var(--_c); }
-  .a-spk__meta { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
-  .a-when { font-size: 10.5px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+  .a-spk__meta { font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans); color: var(--app-text-muted); }
+  .a-when { font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans); color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
 
   @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 </style>

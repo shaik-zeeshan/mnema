@@ -1,17 +1,24 @@
 <script lang="ts">
-  // JournalRiver — the river half of the Journal surface (Slice 3), split out of
+  // JournalRiver — the river half of the Journal surface (page 08), split out of
   // DayTimeline.svelte to keep both files under the 800-line ceiling. Given the
   // banded river + pending model (built by the parent from `buildJournalDay` +
-  // `journal-view.ts`) it renders the `.slot` grid (when | spine | card), the
-  // away-gaps, the live-edge pending slot, plus the loading skeleton and the two
-  // empty-state panels. Activities under 5 minutes (`isShortActivity`) render as
-  // compact one-line rows instead of full cards to keep the river dense. It owns
-  // no data loading — pure presentation.
+  // `journal-view.ts`) it renders the banded rows (when column | card plate),
+  // the away-gaps, the live-edge pending slot, plus the loading skeleton and the
+  // two empty-state panels. Activities under 5 minutes (`isShortActivity`)
+  // collapse to one plain line. It owns no data loading — pure presentation.
+  //
+  // The direction's one exception lives here: EVERY row is an opaque plate
+  // except the away gap, which is a hairline outline with nothing behind it —
+  // a hole in the layer stack is exactly what "no capture" means.
   import { untrack } from "svelte";
   import type { Activity, ActivityFocus } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import type { RiverBand } from "$lib/insights/journal-view";
-  import { isShortActivity, pendingReasonCopy, riverRowKey } from "$lib/insights/journal-view";
+  import {
+    isShortActivity,
+    pendingPausedDetail,
+    riverRowKey,
+  } from "$lib/insights/journal-view";
   import {
     CATEGORY_COLOR,
     UNCATEGORIZED_COLOR,
@@ -19,6 +26,9 @@
     focusHint,
     humanizeMs,
   } from "$lib/insights/activity-helpers";
+  import { openSettings } from "$lib/surface-windows";
+  import IconPlay from "~icons/lucide/play";
+  import IconWarn from "~icons/lucide/triangle-alert";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import ScrollTimeBubble from "$lib/insights/ScrollTimeBubble.svelte";
 
@@ -93,17 +103,16 @@
     distracted: "--focus-distracted",
   };
   function frameLabel(n: number): string {
-    return `▸ ${n} ${n === 1 ? "frame" : "frames"} · receipt`;
+    return `${n} ${n === 1 ? "frame" : "frames"} · receipt`;
   }
 </script>
 
 {#if showSkeleton}
   <section class="river" aria-busy="true">
     {#each Array.from({ length: 4 }) as _, i (i)}
-      <div class="slot">
-        <div class="when"><Skeleton variant="text" width="34px" height="11px" /></div>
-        <div class="spine"><span class="node node--sk"></span></div>
-        <div class="card card--sk">
+      <div class="rrow">
+        <div class="rwhen"><Skeleton variant="text" width="46px" height="11px" /></div>
+        <div class="plate jcard jcard--sk">
           <Skeleton variant="text" width="52%" height="12px" />
           <Skeleton variant="text" width="84%" height="10px" />
         </div>
@@ -114,66 +123,60 @@
   <section class="river" aria-label="Activity journal">
     <ScrollTimeBubble />
     {#each bands as band (band.label + band.rows[0].atMs)}
-      <div class="day-rule"><span>{band.label}</span><span class="rule"></span></div>
+      <p class="t-label band">{band.label}</p>
       {#each band.rows as row (riverRowKey(row))}
         {#if row.kind === "gap"}
-          <div class="gap-note" data-at-ms={row.atMs}>
-            <div class="when"></div>
-            <div class="spine"></div>
-            <div class="txt">
-              {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · away — no capture
+          <!-- THE GAP: the one row in the app with no plate and no shadow. -->
+          <div class="rrow" data-at-ms={row.atMs}>
+            <div class="rwhen"></div>
+            <div class="jgap">
+              <span class="t-meta is-num">{clock(row.gap.startMs)} – {clock(row.gap.endMs)}</span>
+              <span class="t-meta">· away — no capture</span>
             </div>
           </div>
         {:else if isShortActivity(row.slot.activity)}
           {@const a = row.slot.activity}
-          <div class="slot slot--compact" data-at-ms={row.atMs}>
-            <div class="when">
-              {clock(a.startedAtMs)}
-              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
+          <div class="rrow" data-at-ms={row.atMs}>
+            <div class="rwhen">
+              <span class="rwhen__c is-num">{clock(a.startedAtMs)}</span>
+              <span class="rwhen__d is-num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
             </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button type="button" class="row-compact" onclick={() => onOpenActivity(a)}>
-              <span class="swatch" style="background:{catVar(a.category)};"></span>
-              <span class="row-title">{a.title}</span>
+            <button type="button" class="plate jcompact" onclick={() => onOpenActivity(a)}>
+              <em style="background:{catVar(a.category)};"></em>
+              <span class="jcompact__t">{a.title}</span>
             </button>
           </div>
         {:else}
           {@const a = row.slot.activity}
-          <div class="slot" data-at-ms={row.atMs}>
-            <div class="when">
-              {clock(a.startedAtMs)}
-              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
+          <div class="rrow" data-at-ms={row.atMs}>
+            <div class="rwhen">
+              <span class="rwhen__c is-num">{clock(a.startedAtMs)}</span>
+              <span class="rwhen__d is-num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
             </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button
-              type="button"
-              class="card"
-              style="--cat: {catVar(a.category)};"
-              onclick={() => onOpenActivity(a)}
-            >
-              <div class="card-top">
-                <span class="chip">
-                  <span class="swatch" style="background:{catVar(a.category)};"></span>
+            <button type="button" class="plate jcard" onclick={() => onOpenActivity(a)}>
+              <!-- No app icon, no window title, no URL: an Activity carries
+                   none of those (they exist per FRAME, inside the receipt), and
+                   focus is a three-value enum rendered as a WORD — there is no
+                   number behind it to show. -->
+              <span class="jchips">
+                <span class="cchip">
+                  <em style="background:{catVar(a.category)};"></em>
                   {a.category ? categoryLabel(a.category) : "Uncategorized"}
                 </span>
                 {#if a.focus}
-                  <span class="focus">
-                    <i style="background:var({FOCUS_TOKEN[a.focus]});"></i>
+                  <span class="fchip">
+                    <em style="background:var({FOCUS_TOKEN[a.focus]});"></em>
                     {focusHint(a.focus)}
                   </span>
                 {/if}
-              </div>
+              </span>
               <h3>{a.title}</h3>
-              <p>{a.summary}</p>
-              <div class="card-foot">
-                <span class="receipt">
-                  {row.slot.expired ? "footage expired" : frameLabel(row.slot.frameCount)}
-                </span>
-              </div>
+              {#if a.summary}<p>{a.summary}</p>{/if}
+              {#if row.slot.expired}
+                <span class="rfoot rfoot--gone">footage expired</span>
+              {:else}
+                <span class="rfoot"><IconPlay />{frameLabel(row.slot.frameCount)}</span>
+              {/if}
             </button>
           </div>
         {/if}
@@ -181,21 +184,34 @@
     {/each}
 
     {#if pending.active && pending.reason}
-      <div class="slot">
-        <div class="when">
-          {pending.sinceMs !== null ? clock(pending.sinceMs) : ""}
-          <span class="dur">now</span>
+      <div class="rrow">
+        <div class="rwhen">
+          {#if pending.sinceMs !== null}
+            <span class="rwhen__c is-num">{clock(pending.sinceMs)}</span>
+          {/if}
+          <span class="rwhen__d">now</span>
         </div>
-        <div class="spine"><span class="node node--pending"></span></div>
-        <div class="card card--pending">
+        <div class="plate pend">
           {#if pending.reason.kind === "summarizing"}
-            <div class="pt"><span class="spin"></span>Summarizing this window…</div>
-            <div class="sub">
+            <div class="pend__l">
+              <span class="spin" aria-hidden="true"></span>
+              <span class="t-ui pend__t">Summarizing this window…</span>
+            </div>
+            <p>
               The journal trails live capture by up to 30 minutes — the footage
               itself is already on the Timeline.
-            </div>
+            </p>
           {:else}
-            <div class="pt pt--paused">{pendingReasonCopy(pending.reason.reason)}</div>
+            <div class="pend__l">
+              <IconWarn />
+              <span class="t-ui pend__t">Summaries are paused</span>
+            </div>
+            <p>
+              {pendingPausedDetail(pending.reason.reason)}
+              <button type="button" class="pend__link" onclick={() => void openSettings("intelligence")}>
+                Open engine settings
+              </button>
+            </p>
           {/if}
         </div>
       </div>
@@ -209,8 +225,8 @@
     <div class="live-edge" bind:this={sentinelEl} aria-hidden="true"></div>
   </section>
 {:else if showNothingCaptured}
-  <div class="empty">
-    <div class="glyph" aria-hidden="true">◇</div>
+  <div class="plate empty">
+    <div class="empty__glyph" aria-hidden="true">◇</div>
     <h4>Nothing captured on {dayLabel}</h4>
     <p>
       There's no capture on this day, so there's no journal to show. Days with any
@@ -218,8 +234,8 @@
     </p>
   </div>
 {:else if showBeingWritten}
-  <div class="empty">
-    <div class="glyph" aria-hidden="true">◇</div>
+  <div class="plate empty">
+    <div class="empty__glyph" aria-hidden="true">◇</div>
     <h4>Your day is being written</h4>
     <p>
       Capture is landing. The first journal card appears once the first half-hour
@@ -229,332 +245,269 @@
 {/if}
 
 <style>
-  /* All colours are app tokens (`--app-*`, `--cat-*`, `--focus-*`); the mockup's
-     raw hex (docs/mockups/dayflow/01-day-journal.html) is only its self-contained
-     copy of these same tokens. */
+  /* Every row is an opaque plate; the away gap is the sole exception (see
+     `.jgap`). Colours are app tokens (`--app-*`, `--cat-*`, `--focus-*`). */
   .river {
     display: flex;
     flex-direction: column;
-    gap: 0;
     width: 100%;
   }
-  .day-rule {
+
+  /* Band headers — the river's only chrome. NOT sticky: the pane scrolls under
+     a glass title bar, and an opaque strip pinned beneath it reads as a second
+     bar. */
+  .band {
     display: flex;
     align-items: center;
-    gap: 9px;
-    font-size: var(--t-label);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
+    gap: 10px;
+    margin: 18px 0 8px;
     color: var(--app-text-subtle);
-    /* Sticks to the scrollport top while its band scrolls; part of the old
-       margins became padding so the solid bg covers cards passing beneath. */
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--app-bg);
-    padding: 4px 0 6px;
-    margin: 2px 0 8px;
   }
-  .day-rule:not(:first-child) {
-    margin-top: 14px;
+  .band:first-of-type {
+    margin-top: 0;
   }
-  .day-rule .rule {
+  .band::after {
+    content: "";
     flex: 1;
     height: 1px;
     background: var(--app-border);
   }
-  .slot {
-    display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-  }
-  .slot + .slot,
-  .gap-note + .slot,
-  .slot + .gap-note {
-    margin-top: 12px;
-  }
-  .slot .when {
-    padding-top: 16px;
-    text-align: right;
-    font-size: var(--t-meta);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-  .slot .when .dur {
-    display: block;
-    font-size: var(--t-label);
-    color: var(--app-text-faint);
-  }
-  .spine {
-    position: relative;
-  }
-  .spine::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: -12px;
-    width: 1px;
-    background: var(--app-border);
-  }
-  /* Last slot can't rely on :last-child — the live-edge sentinel (and at times
-     the jump pill) now render after it. */
-  .river > .slot:not(:has(~ .slot, ~ .gap-note)) .spine::before {
-    bottom: 12px;
-  }
-  .spine .node {
-    position: absolute;
-    left: 50%;
-    top: 19px;
-    transform: translate(-50%, 0);
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid var(--app-bg);
-  }
-  .spine .node--pending {
-    background: var(--app-text-faint);
-  }
-  .spine .node--sk {
-    background: var(--app-border-strong);
-  }
 
-  .gap-note {
+  .rrow {
     display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-    margin-top: 12px;
+    grid-template-columns: 78px 1fr;
+    gap: 12px;
+    margin-bottom: 8px;
+    align-items: start;
   }
-  .gap-note .spine::before {
-    bottom: -12px;
-    border-left: 1px dashed var(--app-border);
-    background: transparent;
-    width: 0;
-  }
-  .gap-note .txt {
-    font-size: var(--t-meta);
-    color: var(--app-text-faint);
-    padding: 4px 0;
-    font-style: italic;
-  }
-
-  /* Compact row — activities under 5 minutes render as one quiet clickable
-     line (swatch + title) instead of a full card; the click opens the receipt.
-     Tighter paddings + node top keep the spine node centered on the single
-     text line (row lands ~32px tall). */
-  .slot--compact .when {
-    padding-top: 7px;
-  }
-  .slot--compact .node {
-    top: 9px;
-  }
-  .row-compact {
+  .rwhen {
+    padding-top: 11px;
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    gap: 1px;
+    text-align: right;
+  }
+  .rwhen__c {
+    font: var(--w-medium) var(--t-ui) / 1.2 var(--app-font-mono);
+    color: var(--app-text-strong);
+  }
+  .rwhen__d {
+    font: var(--w-regular) var(--t-meta) / 1.3 var(--app-font-mono);
+    color: var(--app-text-faint);
+  }
+
+  /* ---- The activity card ---- */
+  .jcard {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    align-items: flex-start;
     width: 100%;
-    min-width: 0;
-    text-align: left;
+    padding: 11px 13px 10px;
     border: 0;
-    border-radius: 8px;
-    background: transparent;
-    padding: 7px 10px;
+    text-align: left;
     font: inherit;
     color: inherit;
     cursor: pointer;
-    transition: background 0.12s ease;
+    transition: background-color var(--dur-quick) var(--ease);
   }
-  .row-compact:hover {
-    background: var(--app-surface-hover);
+  .jcard:hover {
+    background: var(--app-surface-raised);
   }
-  .row-compact:hover .row-title {
+  .jcard:focus-visible {
+    outline: none;
+    box-shadow: var(--sh-tile), var(--ring);
+  }
+  .jcard--sk {
+    gap: 8px;
+    cursor: default;
+  }
+  .jcard h3 {
+    margin: 1px 0 0;
+    font: var(--w-semi) var(--t-ui) / 1.3 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
   }
-  .row-compact:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
+  .jcard p {
+    margin: 0;
+    font: var(--w-regular) var(--t-read) / 1.5 var(--app-font-sans);
+    letter-spacing: var(--ls-read);
+    color: var(--app-text-muted);
+    max-width: 68ch;
   }
-  .row-compact .swatch {
-    width: 8px;
-    height: 8px;
+  .jchips {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .cchip,
+  .fchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 19px;
+    padding: 0 8px;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-muted);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+  }
+  .cchip em {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    display: block;
+    font-style: normal;
+  }
+  .fchip em {
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    flex: none;
+    display: block;
+    font-style: normal;
   }
-  .row-compact .row-title {
+  .rfoot {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-accent);
+  }
+  .rfoot :global(svg) {
+    width: 11px;
+    height: 11px;
+  }
+  .rfoot--gone {
+    color: var(--app-text-faint);
+    font-weight: var(--w-regular);
+  }
+
+  /* ---- A short activity (< 5 min) is one line, still on a plate ---- */
+  .jcompact {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    height: 34px;
+    padding: 0 13px;
+    border: 0;
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    transition: background-color var(--dur-quick) var(--ease);
+  }
+  .jcompact:hover {
+    background: var(--app-surface-raised);
+  }
+  .jcompact:focus-visible {
+    outline: none;
+    box-shadow: var(--sh-tile), var(--ring);
+  }
+  .jcompact em {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    font-style: normal;
+  }
+  .jcompact__t {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--t-meta);
-    line-height: 1.35;
-    color: var(--app-text-muted);
-    transition: color 0.12s ease;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    color: var(--app-text-strong);
   }
 
-  /* Card — a full-width button so the whole card opens the receipt (keyboard
-     reachable). Category rides a left edge bar (`--cat`) on a neutral body. */
-  .card {
-    position: relative;
-    display: block;
-    width: 100%;
-    text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    padding: 13px 16px 12px 19px;
-    font: inherit;
-    color: inherit;
-    cursor: pointer;
-    transition: border-color 0.12s ease;
+  /* ---- THE GAP: no plate, no shadow — a hairline outline with nothing behind
+     it, because a hole in the layer stack IS what "no capture" means. ---- */
+  .jgap {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    height: 30px;
+    padding: 0 13px;
+    border-radius: var(--r-lg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+    color: var(--app-text-subtle);
   }
-  .card::before {
+  .jgap::before {
     content: "";
-    position: absolute;
-    left: -1px;
-    top: -1px;
-    bottom: -1px;
-    width: 3px;
-    border-radius: 10px 0 0 10px;
-    background: var(--cat, transparent);
+    flex: 0 0 auto;
+    width: 26px;
+    height: 1px;
+    background: repeating-linear-gradient(
+      90deg,
+      var(--app-border-hover) 0 3px,
+      transparent 3px 6px
+    );
   }
-  .card:hover {
-    border-color: var(--app-border-hover);
+  .jgap :global(.t-meta) {
+    color: var(--app-text-subtle);
   }
-  .card:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .card:hover .receipt,
-  .card:focus-visible .receipt {
-    color: var(--app-accent);
-    border-bottom-color: var(--app-accent-border);
-  }
-  .card--sk {
-    cursor: default;
+
+  /* ---- The live edge: the journal trails capture ---- */
+  .pend {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
+    padding: 11px 13px;
   }
-  .card--sk::before {
-    display: none;
-  }
-  .card-top {
+  .pend__l {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 6px;
   }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--t-label);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+  .pend__l :global(svg) {
+    width: 13px;
+    height: 13px;
+    color: var(--app-warn);
   }
-  .chip .swatch {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .focus {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--t-label);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-  .focus i {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .card h3 {
-    margin: 0 0 4px;
-    font-size: var(--t-ui);
-    font-weight: 600;
-    letter-spacing: -0.01em;
+  .pend__t {
+    font-weight: var(--w-semi);
     color: var(--app-text-strong);
-    line-height: 1.35;
   }
-  .card p {
+  .pend p {
     margin: 0;
-    font-size: var(--t-meta);
-    line-height: 1.65;
-    color: var(--app-text-muted);
-  }
-  .card-foot {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-top: 9px;
-    padding-top: 8px;
-    border-top: 1px dashed var(--app-border);
-    font-size: var(--t-meta);
+    font: var(--w-regular) var(--t-meta) / 1.4 var(--app-font-sans);
     color: var(--app-text-subtle);
-    flex-wrap: wrap;
+    max-width: 64ch;
   }
-  .receipt {
-    margin-left: auto;
-    color: var(--app-text-muted);
-    border-bottom: 1px dotted var(--app-border-strong);
-    line-height: 1.3;
-    white-space: nowrap;
-    transition:
-      color 0.12s ease,
-      border-bottom-color 0.12s ease;
+  .pend__link {
+    padding: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: var(--app-accent);
+    cursor: pointer;
   }
-
-  /* ---- Pending slot at the live edge ---- */
-  .card--pending {
-    border-style: dashed;
-    background: transparent;
-    cursor: default;
+  .pend__link:hover {
+    text-decoration: underline;
   }
-  .card--pending::before {
-    display: none;
-  }
-  .card--pending:hover {
-    border-color: var(--app-border);
-  }
-  .card--pending .pt {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--t-meta);
-    color: var(--app-text-subtle);
-  }
-  .card--pending .pt .spin {
-    width: 7px;
-    height: 7px;
+  .spin {
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
-    background: var(--app-accent-strong);
-    animation: journal-pulse 1.6s ease-in-out infinite;
+    flex: 0 0 auto;
+    display: block;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-accent);
+    animation: journal-spin 1s linear infinite;
   }
-  @keyframes journal-pulse {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 1;
+  @keyframes journal-spin {
+    to {
+      transform: rotate(360deg);
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .card--pending .pt .spin {
+    .spin {
       animation: none;
     }
-  }
-  .card--pending .sub {
-    margin-top: 3px;
-    font-size: var(--t-label);
-    color: var(--app-text-faint);
   }
 
   /* ---- Live edge: sentinel + "jump to now" pill ---- */
@@ -570,51 +523,44 @@
     align-self: center;
     margin-top: 14px;
     padding: 5px 13px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
-    font: inherit;
-    font-size: var(--t-label);
-    letter-spacing: 0.08em;
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
     cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease;
+    transition: color var(--dur-quick) var(--ease);
   }
   .jump-now:hover {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
+    color: var(--app-text-strong);
   }
   .jump-now:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
+    box-shadow: var(--ring), var(--sh-float);
   }
 
   /* ---- Empty-state panels ---- */
   .empty {
     text-align: center;
     padding: 44px 24px 40px;
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-    background: var(--app-surface-subtle);
   }
-  .empty .glyph {
+  .empty__glyph {
     font-size: 20px;
     color: var(--app-text-faint);
     margin-bottom: 10px;
   }
   .empty h4 {
     margin: 0 0 6px;
-    font-size: var(--t-ui);
-    font-weight: 600;
+    font: var(--w-semi) var(--t-ui) / 1.3 var(--app-font-sans);
     color: var(--app-text-strong);
   }
   .empty p {
     margin: 0 auto;
-    max-width: 380px;
-    font-size: var(--t-meta);
-    line-height: 1.7;
+    max-width: 420px;
+    font: var(--w-regular) var(--t-meta) / 1.6 var(--app-font-sans);
     color: var(--app-text-muted);
   }
 </style>

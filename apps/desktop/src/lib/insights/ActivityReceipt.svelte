@@ -558,27 +558,30 @@
   });
 </script>
 
-<div class="receipt" role="presentation" onpointerdown={onBackdropPointerDown}>
+<!-- The receipt is a floating SHEET, so it may wear material — and every region
+     inside it that carries information (stage, scrub, filmstrip, transcript) is
+     an opaque plate. That is the direction's whole rule stated in one
+     component. -->
+<div class="dim" role="presentation" onpointerdown={onBackdropPointerDown}>
   <div
-    class="modal-card"
+    class="rsheet"
     role="dialog"
     aria-modal="true"
     aria-label={`Activity receipt: ${activity.title}`}
   >
-    <div class="m-head">
-      <span class="chip">
-        <span class="sw" style="background:var({catColorVar})"></span>{catLabel}
+    <div class="rhead">
+      <span class="cchip">
+        <em style="background:var({catColorVar})"></em>{catLabel}
       </span>
-      <h2 class="m-title" use:tip={activity.title}>{activity.title}</h2>
-      <span class="when">{rangeLabel}</span>
-      <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}><IconClose /></button>
+      <h2 class="rhead__t" use:tip={activity.title}>{activity.title}</h2>
+      <span class="t-meta is-num rhead__when">{rangeLabel}</span>
+      <button
+        type="button"
+        class="btn btn--ghost btn--icon btn--sm rhead__x"
+        aria-label="Close receipt"
+        onclick={onClose}><IconClose /></button
+      >
     </div>
-
-    <!-- The compact journal rows show no summary, so the receipt is where the
-         description lives; it also survives footage expiry (ADR 0029). -->
-    {#if activity.summary}
-      <p class="m-summary">{activity.summary}</p>
-    {/if}
 
     <!-- One hidden <audio> clocks every bounded clip (ADR 0049); JS-driven, so
          visibility is irrelevant. Present in both frames and audio-only states. -->
@@ -591,89 +594,97 @@
       style="display:none"
     ></audio>
 
-    <!-- The viewport (loading / expired / audio-only / frame) — the one elastic
-         flex region; ReceiptViewer.svelte owns its markup + styles. -->
-    <ReceiptViewer
-      {loading}
-      {turnsPending}
-      {viewState}
-      {isPlaying}
-      {selectedTurn}
-      {currentUrl}
-      {metaApp}
-      {metaTitle}
-      {currentMs}
-      {hasOcr}
-      {currentPreview}
-      onTogglePlay={togglePlay}
-    />
+    <!-- The compact journal rows show no summary, so the receipt is where the
+         description lives; it also survives footage expiry (ADR 0029). Prose,
+         so it lands on a plate, never on the sheet's material. -->
+    {#if activity.summary}
+      <p class="plate rsummary">{activity.summary}</p>
+    {/if}
 
-    {#if loading}
-      <div class="m-foot"><span>Loading footage…</span></div>
-    {:else if viewState === "expired"}
-      <div class="m-foot">
-        <span>0 frames still on disk</span><span class="sep">·</span>
-        <span>summary retained</span>
-      </div>
-    {:else}
-      <!-- One surface, two viewers (ADR 0049): the frame timelapse, or a bounded
-           audio player when no frames survive. Scrub/lane/reader are shared. -->
-      <div class="scrub">
-        <div
-          class="track"
-          bind:this={trackEl}
-          role="slider"
-          aria-label="Scrub"
-          aria-valuemin={1}
-          aria-valuemax={Math.max(1, strip.length)}
-          aria-valuenow={index + 1}
-          tabindex="-1"
-          onpointerdown={onTrackPointerDown}
-          onpointermove={onTrackPointerMove}
-          onpointerup={onTrackPointerUp}
-          onpointercancel={onTrackPointerCancel}
-        >
+    <div class="rbody" class:rbody--wide={turns.length === 0}>
+      <div class="rleft">
+        <!-- The stage (loading / expired / audio-only / frame) — the one elastic
+             region; ReceiptViewer.svelte owns its markup + styles. -->
+        <ReceiptViewer
+          {loading}
+          {turnsPending}
+          {viewState}
+          {isPlaying}
+          {selectedTurn}
+          {currentUrl}
+          {metaApp}
+          {metaTitle}
+          {currentMs}
+          {hasOcr}
+          {currentPreview}
+          onTogglePlay={togglePlay}
+        />
+
+        {#if !loading && viewState !== "expired"}
+          <!-- Evidence ticks live ON the axis; the playhead carries the clock. -->
+          <div class="plate scrub">
+            <div
+              class="track"
+              bind:this={trackEl}
+              role="slider"
+              aria-label="Scrub"
+              aria-valuemin={1}
+              aria-valuemax={Math.max(1, strip.length)}
+              aria-valuenow={index + 1}
+              tabindex="-1"
+              onpointerdown={onTrackPointerDown}
+              onpointermove={onTrackPointerMove}
+              onpointerup={onTrackPointerUp}
+              onpointercancel={onTrackPointerCancel}
+            >
+              {#if !isAudioOnly}
+                <div class="fill" class:fill--audio={clipActive} style="width:{currentPos * 100}%"></div>
+                <!-- Ticks paint AFTER the fill: an evidence mark the playhead has
+                     already passed must still be visible. -->
+                {#each ticks as t, i (i)}
+                  <span class="ev" class:ev--hl={t.headline} style="left:{t.pos * 100}%"></span>
+                {/each}
+              {/if}
+              <div class="head is-num" class:head--audio={isAudioOnly || clipActive} style="left:{headPos * 100}%">{headClock}</div>
+            </div>
+            <div class="scrub-caps">
+              <span class="is-num">{clock(activity.startedAtMs)}</span>
+              <span class="is-num">{clock(activity.endedAtMs)}</span>
+            </div>
+          </div>
+
           {#if !isAudioOnly}
-            {#each ticks as t, i (i)}
-              <span class="ev" class:ev--hl={t.headline} style="left:{t.pos * 100}%"></span>
-            {/each}
-            <div class="fill" class:fill--audio={clipActive} style="width:{currentPos * 100}%"></div>
+            <div class="film" bind:this={filmEl}>
+              {#each strip as f, ti (f.id)}
+                <button
+                  type="button"
+                  class="film__cell"
+                  class:cur={ti === index}
+                  class:cited={citedIds.has(f.id)}
+                  aria-label={`Seek to ${clock(f.ms)}`}
+                  use:thumbCell={f.id}
+                  onclick={() => seek(ti)}
+                >
+                  {#if thumbUrls[f.id]}<img class="film__img" src={thumbUrls[f.id]} alt="" />{/if}
+                </button>
+              {/each}
+            </div>
           {/if}
-          <div class="head" class:head--audio={isAudioOnly || clipActive} style="left:{headPos * 100}%">{headClock}</div>
-        </div>
-        <div class="scrub-caps">
-          <span>{clock(activity.startedAtMs)}</span><span>{clock(activity.endedAtMs)}</span>
-        </div>
-
-        <!-- Synced transcript reader — the active row tracks the playhead; click
-             a row to relive that spoken moment at 1×. -->
-        {#if turns.length > 0}
-          <ReceiptTranscript {turns} selectedKey={activeKey} {onSelect} clock={clockShort} />
         {/if}
       </div>
 
-      {#if !isAudioOnly}
-        <div class="film" bind:this={filmEl}>
-          {#each strip as f, ti (f.id)}
-            <button
-              type="button"
-              class="film__cell"
-              class:cur={ti === index}
-              class:cited={citedIds.has(f.id)}
-              aria-label={`Seek to ${clock(f.ms)}`}
-              use:thumbCell={f.id}
-              onclick={() => seek(ti)}
-            >
-              {#if thumbUrls[f.id]}<img class="film__img" src={thumbUrls[f.id]} alt="" />{/if}
-            </button>
-          {/each}
-        </div>
+      <!-- Prose, so an opaque plate — never the sheet's material. The active row
+           tracks the playhead; clicking one relives that spoken moment at 1×. -->
+      {#if turns.length > 0}
+        <ReceiptTranscript {turns} selectedKey={activeKey} {onSelect} clock={clockShort} />
       {/if}
+    </div>
 
-      <div class="controls">
+    {#if !loading && viewState !== "expired"}
+      <div class="rctrl">
         <button
           type="button"
-          class="play"
+          class="btn btn--icon"
           class:play--audio={audible}
           aria-label={isPlaying ? "Pause" : "Play"}
           disabled={isAudioOnly && selectedTurn == null}
@@ -688,7 +699,7 @@
             compact
           />
         {/if}
-        <span class="counter">
+        <span class="t-meta is-mono is-num counter">
           {#if isAudioOnly}
             spoken turn {selOrdinal} / {turns.length}{#if headClock} · {headClock}{/if}
           {:else if relivingClip && selectedTurn}
@@ -697,85 +708,89 @@
             <span class="counter__now">frame {index + 1}</span> / {strip.length}{#if currentMs != null} · {clockSec(currentMs)}{/if}
           {/if}
         </span>
-        <span class="ctl-spacer"></span>
-        <button type="button" class="open-tl" onclick={openInTimeline}>Open in Timeline <IconArrowRight /></button>
-      </div>
-
-      <div class="m-foot">
-        {#if isAudioOnly}
-          <span>{audioFooterLeft(frameEvidence.length)}</span><span class="sep">·</span>
-          <span>{turnSpeakerRoster(turns)}</span>
-        {:else}
-          <span>
-            {strip.length}
-            {strip.length === 1 ? "frame" : "frames"} across {segmentCount} capture
-            {segmentCount === 1 ? "segment" : "segments"}
-          </span>
-          <span class="sep">·</span>
-          <span>{frameEvidence.length} frames + {audioEvidence.length} spoken segments cited</span>
-        {/if}
+        <button type="button" class="btn btn--ghost btn--sm open-tl" onclick={openInTimeline}
+          >Open in Timeline <IconArrowRight /></button
+        >
       </div>
     {/if}
+
+    <div class="rfoot">
+      <span class="t-meta is-num">
+        {#if loading}
+          Loading footage…
+        {:else if viewState === "expired"}
+          0 frames still on disk · summary retained
+        {:else if isAudioOnly}
+          {audioFooterLeft(frameEvidence.length)} · {turnSpeakerRoster(turns)}
+        {:else}
+          {strip.length}
+          {strip.length === 1 ? "frame" : "frames"} across {segmentCount} capture
+          {segmentCount === 1 ? "segment" : "segments"} · {frameEvidence.length} frames
+          + {audioEvidence.length} spoken segments cited
+        {/if}
+      </span>
+      <span class="t-meta rfoot__keys">Esc closes · ←/→ steps a frame · Space plays</span>
+    </div>
   </div>
 </div>
 
 <style>
   /* One selector per line to keep this component under the 800-line ceiling
-     (repo rule); tokens + structure mirror docs/mockups/dayflow/04-timelapse.html.
-     Audio channel (ADR 0049) uses --cat-communication (lavender) for voice. */
-  .receipt { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 16px; background: var(--app-overlay-bg); backdrop-filter: blur(4px); }
-  .modal-card { width: 82vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface); border: 1px solid var(--app-border-strong); border-radius: 12px; box-shadow: var(--app-shadow-popover); }
-  /* The frame .viewer is the ONE elastic region; every other row is pinned so the
-     added lane + transcript trade against the frame height, never overflow the
-     modal (mirrors the mockup's `.modal .modal-card` rule). */
-  .m-head, .m-summary, .scrub, .film, .controls, .m-foot { flex: 0 0 auto; }
-  .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--app-border); }
-  .chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-muted); }
-  .sw { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
-  .m-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .when { flex: 0 0 auto; font-size: 11px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; font: inherit; cursor: pointer; color: var(--app-text-subtle); background: transparent; border: 1px solid var(--app-border); border-radius: 5px; }
-  .m-close:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
-  .m-close :global(svg) { width: 13px; height: 13px; }
-  .m-summary { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.65; color: var(--app-text-muted); }
+     (repo rule). Page 08: the receipt is a floating glass SHEET over a dimmed
+     pane, and every content region inside it is an opaque `.plate`. Audio
+     channel (ADR 0049) uses --cat-communication (lavender) for voice. */
+  /* The sheet floats over a dimmed PANE — the title bar stays lit, because the
+     chrome is not what you are reading past. */
+  .dim { position: fixed; inset: var(--h-titlebar) 0 0 0; z-index: 2000; display: grid; place-items: center; padding: 16px; background: rgba(12, 12, 18, 0.44); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+  .rsheet { width: min(900px, 94vw); height: min(610px, 92vh); padding: 12px; display: flex; flex-direction: column; gap: 10px; border-radius: 16px; background: var(--glass-hud); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line), inset 0 1px 0 var(--glass-hi); }
 
-  /* The viewport (the ONE elastic .viewer region — loading/expired/audio/frame)
-     lives in ReceiptViewer.svelte with its own styles. */
+  /* Header — chip, title, span, close. Sits directly on the sheet: these are
+     labels, not prose. */
+  .rhead { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 2px; }
+  .cchip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; height: 19px; padding: 0 8px; border-radius: var(--r-pill); background: var(--glass-tint); font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans); color: var(--app-text-muted); box-shadow: inset 0 0 0 var(--hairline) var(--glass-line); }
+  .cchip em { width: 7px; height: 7px; border-radius: 2px; display: block; font-style: normal; }
+  .rhead__t { flex: 1 1 auto; min-width: 0; margin: 0; font: var(--w-semi) var(--t-title) / 1.2 var(--app-font-sans); letter-spacing: var(--ls-title); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rhead__when { flex: 0 0 auto; color: var(--app-text-subtle); white-space: nowrap; }
+  .rhead__x { flex: 0 0 auto; }
+  .rhead__x :global(svg) { width: 13px; height: 13px; }
+  .rsummary { flex: 0 0 auto; margin: 0; padding: 8px 12px; font: var(--w-regular) var(--t-meta) / 1.55 var(--app-font-sans); color: var(--app-text-muted); }
 
-  /* Scrubber — frame ticks above the spine; the Speaker-Turn Lane + transcript
-     reader sit BELOW it (their own components) inside this pinned block. */
-  .scrub { padding: 14px 16px 8px; }
+  /* Body — stage column beside the transcript rail (the rail collapses when the
+     span holds no spoken turns). */
+  .rbody { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1fr 268px; gap: 10px; }
+  /* Grid items default to min-height:auto — without this the stage refuses to
+     shrink and the filmstrip pushes the controls out of the sheet. */
+  .rbody > :global(*) { min-height: 0; }
+  .rbody--wide { grid-template-columns: 1fr; }
+  .rleft { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+
+  /* Scrub — evidence ticks live ON the track; the playhead carries the clock. */
+  .scrub { flex: 0 0 auto; padding: 28px 10px 8px; }
   .track { position: relative; height: 6px; border-radius: 3px; background: var(--app-surface-hover); cursor: pointer; touch-action: none; }
-  .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent-strong); pointer-events: none; }
-  .fill--audio { background: var(--cat-communication); }
-  .head { position: absolute; top: 50%; transform: translate(-50%, -50%); padding: 2px 8px; font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--app-bg); background: var(--app-accent); border-radius: 999px; white-space: nowrap; pointer-events: none; }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent); opacity: 0.55; pointer-events: none; }
+  .fill--audio { background: var(--cat-communication); opacity: 0.7; }
+  .head { position: absolute; top: -24px; transform: translateX(-50%); display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: var(--r-pill); background: var(--app-accent); color: var(--app-accent-contrast); font: var(--w-medium) var(--t-meta) / 1 var(--app-font-mono); white-space: nowrap; pointer-events: none; }
   .head--audio { background: var(--cat-communication); color: var(--app-bg); }
-  .ev { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--app-accent); border-radius: 1px; opacity: 0.5; pointer-events: none; }
-  .ev--hl { opacity: 1; box-shadow: 0 0 6px var(--app-accent); }
-  .scrub-caps { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
+  .ev { position: absolute; top: -3px; width: 2px; height: 12px; border-radius: 1px; background: var(--chart-grey-4); pointer-events: none; }
+  .ev--hl { top: -5px; height: 16px; background: var(--app-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 20%, transparent); }
+  .scrub-caps { display: flex; justify-content: space-between; margin-top: 7px; font: var(--w-regular) var(--t-label) / 1 var(--app-font-mono); color: var(--app-text-faint); }
 
-  /* Filmstrip — a scroll container's auto min-height is 0, so flex:0 0 auto pins
-     it to its natural cell-aspect height instead of getting crushed. */
-  .film { display: grid; grid-auto-flow: column; gap: 5px; padding: 8px 16px 8px; grid-auto-columns: calc((100% - 55px) / 12); overflow-x: auto; overflow-y: hidden; }
-  .film__cell { position: relative; aspect-ratio: 16 / 10; padding: 0; cursor: pointer; background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%); border: 1px solid var(--app-border); border-radius: 4px; overflow: hidden; }
-  .film__cell::after { content: ""; position: absolute; inset: 25% 18% 30%; background: var(--app-surface-hover); border-radius: 2px; }
-  .film__img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
-  .film__cell.cur { border-color: var(--app-accent); box-shadow: 0 0 0 1px var(--app-accent); }
-  .film__cell.cited::before { content: ""; position: absolute; top: 3px; right: 3px; z-index: 2; width: 5px; height: 5px; background: var(--app-accent); border-radius: 50%; }
+  /* Filmstrip — plates in a row; a scroll container's auto min-height is 0, so
+     flex:0 0 auto pins it to its natural height instead of getting crushed. */
+  .film { flex: 0 0 auto; display: grid; grid-template-rows: 52px; grid-auto-flow: column; grid-auto-columns: calc((100% - 42px) / 8); gap: 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .film__cell { position: relative; padding: 0; border: 0; border-radius: 6px; overflow: hidden; cursor: pointer; background: var(--app-surface-subtle); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
+  .film__img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .film__cell.cited::after { content: ""; position: absolute; inset: 0; border-radius: 6px; box-shadow: inset 0 0 0 1.5px var(--app-accent); }
+  .film__cell.cur::after { content: ""; position: absolute; inset: 0; border-radius: 6px; box-shadow: inset 0 0 0 2px var(--app-text-strong); }
 
-  /* Controls */
-  .controls { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
-  .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 7px; }
-  .play:hover, .open-tl:hover { border-color: var(--app-accent); }
-  .play--audio { color: var(--cat-communication); background: var(--app-accent-bg); border-color: var(--cat-communication); }
-  .play :global(svg), .open-tl :global(svg) { width: 14px; height: 14px; }
-  .counter { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+  /* Controls + footer sit on the sheet: machine labels, not prose. */
+  .rctrl { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 0 2px; }
+  .rctrl .play--audio { color: var(--cat-communication); }
+  .rctrl :global(svg) { width: 14px; height: 14px; }
+  .counter { color: var(--app-text-muted); }
   .counter__now { color: var(--app-text-strong); }
-  .ctl-spacer { flex: 1 1 auto; }
-  .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font: inherit; font-size: 11px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 6px; }
-  .open-tl :global(svg) { width: 13px; height: 13px; }
-
-  /* Footer */
-  .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font-size: 10.5px; color: var(--app-text-subtle); border-top: 1px dashed var(--app-border); }
-  .m-foot .sep { color: var(--app-text-faint); }
+  .open-tl { margin-left: auto; }
+  .rfoot { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+  .rfoot :global(.t-meta) { color: var(--app-text-subtle); }
+  .rfoot__keys { margin-left: auto; }
 </style>
