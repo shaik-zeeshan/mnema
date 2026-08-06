@@ -1,11 +1,11 @@
 <script lang="ts">
-  // Three Subjects, each with its newest conclusion and a five-dot conviction
-  // meter. Conviction is the Conclusion's own `confidence` — a real stored
-  // number, not a derived score.
+  // The way in to the Subjects destination (page 09). Two strongest views with
+  // their conviction as a WHOLE PERCENT — the same quantity the destination
+  // shows, in the same format, so nothing is recomputed differently one click
+  // deeper. The five-dot meter is gone with it: a dot ladder is a second
+  // encoding of a number the row already prints.
   import Tile from "./Tile.svelte";
   import Chev from "./Chev.svelte";
-  import { convictionDots } from "./format";
-  import { subjectRows } from "./data";
   import type { Cell } from "./data";
   import type { Conclusion, UserContextStatus } from "$lib/types/recording";
 
@@ -18,10 +18,21 @@
 
   let { conclusions, context, loaded, open }: Props = $props();
 
-  const rows = $derived(subjectRows(conclusions.data ?? [], 3));
-  const active = $derived(
-    context.data ? `${context.data.subjectCount} active` : null,
-  );
+  // Strongest first — the destination's own ordering (top confidence per
+  // subject), truncated to two.
+  const rows = $derived.by<Conclusion[]>(() => {
+    const bySubject = new Map<string, Conclusion>();
+    for (const c of conclusions.data ?? []) {
+      const key = c.subject.toLocaleLowerCase();
+      const seen = bySubject.get(key);
+      if (!seen || c.confidence > seen.confidence) bySubject.set(key, c);
+    }
+    return [...bySubject.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 2);
+  });
+
+  const active = $derived(context.data ? `${context.data.subjectCount} active` : null);
+  const pct = (confidence: number): number =>
+    Math.round(Math.max(0, Math.min(1, confidence)) * 100);
 </script>
 
 <Tile
@@ -31,7 +42,7 @@
   more={active}
   span={2}
   {open}
-  openLabel="Open Insights"
+  openLabel="Open Subjects"
 >
   {#if conclusions.error}
     <p class="tile-empty t-meta">Subjects unavailable — {conclusions.error}</p>
@@ -42,24 +53,36 @@
   {:else}
     {#each rows as row (row.id)}
       <button class="grow" type="button" onclick={open}>
-        <span class="gicon" aria-hidden="true">
-          <svg viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 1.8 9.5 6 13.8 7.5 9.5 9 8 13.2 6.5 9 2.2 7.5 6.5 6z" />
-          </svg>
-        </span>
         <span class="grow__txt">
           <span class="grow__lbl">{row.subject}</span>
           <span class="grow__sub">{row.statement}</span>
         </span>
         <span class="grow__val">
-          <span class="conv" aria-label="conviction {convictionDots(row.confidence)} of 5">
-            {#each [0, 1, 2, 3, 4] as dot (dot)}
-              <i class:on={dot < convictionDots(row.confidence)}></i>
-            {/each}
-          </span>
+          <span class="t-meta is-mono is-num subjects__pct">{pct(row.confidence)}%</span>
           <Chev />
         </span>
       </button>
     {/each}
+    {#if rows.length > 0}
+      <div class="tile-row subjects__all">
+        <span class="t-meta subjects__link">All subjects</span>
+        <span class="kbd subjects__k">⏎</span>
+      </div>
+    {/if}
   {/if}
 </Tile>
+
+<style>
+  .subjects__pct {
+    color: var(--app-text-muted);
+  }
+  .subjects__all {
+    margin-top: auto;
+  }
+  .subjects__link {
+    color: var(--app-accent);
+  }
+  .subjects__k {
+    margin-left: auto;
+  }
+</style>
