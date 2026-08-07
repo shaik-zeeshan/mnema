@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import { captureSession, setSession } from "$lib/session.svelte";
+import { renderIdle } from "$lib/render-idle.svelte";
 import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
@@ -273,6 +274,11 @@ let _runtimePollHandle: ReturnType<typeof setInterval> | null = null;
 let _runtimeRefCount = 0;
 
 async function refreshRuntimeSources(): Promise<void> {
+  // Skip while nothing can render (screens asleep / window hidden): updating
+  // `runtimeSources` mutates the title-bar pills, and each repaint in that
+  // state strands a non-purgeable IOSurface (see $lib/render-idle.svelte).
+  // The 2 s interval keeps ticking, so the first visible tick catches up.
+  if (renderIdle()) return;
   if (!captureControls.isRunning) {
     _state.runtimeSources = null;
     return;

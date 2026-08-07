@@ -126,6 +126,16 @@ impl MetadataNotifierState {
 }
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
+// Screens-asleep is a render-idle signal for the frontend: WebKit strands a
+// non-purgeable IOSurface for every layer repaint that happens while the
+// window isn't composited to a lit display (FB16462982), so the frontend
+// pauses its periodic DOM updates between these two events.
+pub const SCREENS_DID_SLEEP_EVENT: &str = "screens_did_sleep";
+pub const SCREENS_DID_WAKE_EVENT: &str = "screens_did_wake";
+// Fired at the end of every display reconfiguration (attach, detach, mode
+// change) so the frontend can clamp a window that was parked offscreen by a
+// display removal back onto a live monitor.
+pub const DISPLAY_CONFIGURATION_CHANGED_EVENT: &str = "display_configuration_changed";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
 // wake; keep recovery alive long enough that the backend does not depend on a
@@ -1511,6 +1521,28 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
                 recover_screen_capture_after_system_wake(app_handle.clone());
             }
         });
+    let screens_did_sleep_guard = center.add_observer_guard(
+        ns::workspace::notification::screens_did_sleep(),
+        None,
+        None,
+        {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                let _ = app_handle.emit(SCREENS_DID_SLEEP_EVENT, ());
+            }
+        },
+    );
+    let screens_did_wake_guard = center.add_observer_guard(
+        ns::workspace::notification::screens_did_wake(),
+        None,
+        None,
+        {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                let _ = app_handle.emit(SCREENS_DID_WAKE_EVENT, ());
+            }
+        },
+    );
 
     let notifier_state = app_handle.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state
@@ -1520,6 +1552,8 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
     notifier_slot.clear();
     notifier_slot.push(will_sleep_guard);
     notifier_slot.push(did_wake_guard);
+    notifier_slot.push(screens_did_sleep_guard);
+    notifier_slot.push(screens_did_wake_guard);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1573,7 +1607,10 @@ unsafe extern "C" fn display_reconfiguration_callback(
     flags: u32,
     _user_info: *const std::ffi::c_void,
 ) {
-    if !display_reconfiguration_flags_indicate_display_online(flags) {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+
+    // Only act on the end-configuration half of each begin/end pair.
+    if F::from_bits_retain(flags).contains(F::kCGDisplayBeginConfigurationFlag) {
         return;
     }
 
@@ -1581,7 +1618,15 @@ unsafe extern "C" fn display_reconfiguration_callback(
         .lock()
         .ok()
         .and_then(|guard| guard.clone());
-    if let Some(app_handle) = app_handle {
+    let Some(app_handle) = app_handle else {
+        return;
+    };
+
+    // Every end-of-configuration — including a display going away, which can
+    // park windows offscreen — notifies the frontend.
+    let _ = app_handle.emit(DISPLAY_CONFIGURATION_CHANGED_EVENT, ());
+
+    if display_reconfiguration_flags_indicate_display_online(flags) {
         // Funnel through the shared recovery path: it is atomic-guarded
         // (`begin/finish_system_wake_recovery`) and re-checks `!session_is_live`,
         // so firing alongside the `NSWorkspaceDidWake` fallback is idempotent.

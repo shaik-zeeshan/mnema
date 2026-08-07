@@ -24,6 +24,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
+  import { renderIdle, renderResumeTick } from "$lib/render-idle.svelte";
   import {
     appIconFallback,
     canonicalBundleIdForComparison,
@@ -1076,21 +1077,35 @@
   }
 
   // ── Mount ──────────────────────────────────────────────────────────────
+  function reloadForContextChange(): void {
+    void loadStatus();
+    void loadEngine();
+    // The engine beat is the only live signal during recording, so refresh the
+    // usage tiles (time-per-app / heatmap / transitions) and the vs-previous
+    // baseline here too — otherwise they freeze while the engine tiles update.
+    void loadFree();
+    void loadPrev();
+    // Same range → cache hit; keeps the current lede up until fresh prose.
+    void loadDigest();
+  }
+
+  // A context change that lands while nothing can render (screens asleep /
+  // window hidden) is deferred: the skeleton-swap re-render would strand
+  // non-purgeable IOSurfaces (see $lib/render-idle.svelte). The resume-tick
+  // effect below replays the newest deferred reload.
+  let pendingContextReload = false;
+
   $effect(() => {
     void untrack(() => reloadAll());
 
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
-      void loadStatus();
-      void loadEngine();
-      // The engine beat is the only live signal during recording, so refresh the
-      // usage tiles (time-per-app / heatmap / transitions) and the vs-previous
-      // baseline here too — otherwise they freeze while the engine tiles update.
-      void loadFree();
-      void loadPrev();
-      // Same range → cache hit; keeps the current lede up until fresh prose.
-      void loadDigest();
+      if (renderIdle()) {
+        pendingContextReload = true;
+        return;
+      }
+      reloadForContextChange();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -1100,6 +1115,15 @@
       disposed = true;
       unlisten?.();
     };
+  });
+
+  $effect(() => {
+    if (renderResumeTick() === 0 || !pendingContextReload) return;
+    // A focus flip can bump the tick while screens are still asleep — stay
+    // deferred until rendering is actually possible.
+    if (renderIdle()) return;
+    pendingContextReload = false;
+    untrack(reloadForContextChange);
   });
 
   const engineEmpty = $derived(
