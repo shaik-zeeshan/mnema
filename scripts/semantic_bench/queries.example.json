@@ -1,0 +1,23 @@
+{
+  "method": "hand-written example queries over corpus.example.jsonl (synthetic, no personal data) \u2014 smoke-test only, NOT the real query set",
+  "queries": [
+    {
+      "id": "q001",
+      "query": "why did my staging container get killed for using too much memory",
+      "source_anchor_id": "syn-s000",
+      "kind": "screenText"
+    },
+    {
+      "id": "q002",
+      "query": "what did we decide about the trial expiring, does it lock users out",
+      "source_anchor_id": "syn-a005",
+      "kind": "audioTranscript"
+    },
+    {
+      "id": "q003",
+      "query": "the long compile log with the deprecated tokenizer warning",
+      "source_anchor_id": "syn-long",
+      "kind": "screenText"
+    }
+  ]
+}
