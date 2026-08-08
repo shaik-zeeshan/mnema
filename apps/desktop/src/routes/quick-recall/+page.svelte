@@ -53,9 +53,7 @@
     frameChipLabel,
     frameExclusionNote,
     frameVisionNote,
-    CURRENT_FRAME_BAR_HEIGHT,
-    CURRENT_FRAME_DISCLOSURE_HEIGHT,
-    CURRENT_FRAME_ANSWER_HEIGHT,
+    quickRecallHeightForMode,
     type CurrentFrameCapture,
   } from "$lib/quick-recall/current-frame";
 
@@ -1564,16 +1562,20 @@
     return parts.join(" · ");
   });
 
-  // The collapsed window's height follows what the bar currently shows. Kept in
-  // an effect so growing for the answer and shrinking on dismiss are the same
-  // one rule rather than two call sites that can disagree.
+  // The window's size follows the mode, in BOTH directions. This effect is total
+  // on purpose: it used to early-return for every non-frame mode, which meant the
+  // only path that ever grew the window back was `exitCurrentFrame`. A click-away
+  // or Escape dismiss while collapsed goes through Rust's dismiss chokepoint
+  // instead — that resets `mode` to "search" but never touched the size — so the
+  // panel stayed 96px tall (and min-size-pinned) while hidden, and the NEXT
+  // summon showed the full launcher clipped to a sliver: the founder's "the ask
+  // screen doesn't open". Asserting `null` for every non-frame mode makes every
+  // way out of the bar restore the launcher, not just the one that remembered to.
   $effect(() => {
-    if (mode !== "frame") {
-      return;
-    }
-    const height = frameAnswerVisible
-      ? CURRENT_FRAME_ANSWER_HEIGHT
-      : CURRENT_FRAME_BAR_HEIGHT + (frameVision === null ? 0 : CURRENT_FRAME_DISCLOSURE_HEIGHT);
+    const height = quickRecallHeightForMode(mode, {
+      answerVisible: frameAnswerVisible,
+      hasVisionNote: frameVision !== null,
+    });
     void setQuickRecallCollapsed(height).catch(() => {
       // Best-effort: a resize failure leaves the window where it is; the bar
       // still renders and the turn still runs.
@@ -1605,7 +1607,8 @@
     }
   }
 
-  // ⌘O grows the window back (G3).
+  // ⌘O grows the window back (G3) — the size effect above does that, since
+  // `mode = "search"` is the one thing it keys off.
   async function exitCurrentFrame(): Promise<void> {
     await cancelActiveAsk();
     mode = "search";
@@ -1614,11 +1617,6 @@
     frameCaptureError = null;
     frameInput = "";
     frameAnswerDismissed = false;
-    try {
-      await setQuickRecallCollapsed(null);
-    } catch {
-      // Best-effort; see the resize effect.
-    }
     await tick();
     search.inputEl?.focus();
   }
@@ -2281,6 +2279,37 @@
             </svg>
             Filter <kbd aria-hidden="true">⌘F</kbd>
           </button>
+          <!-- "This screen" — the current-frame ask's ONLY mouse door. It had
+               none: ⌘⇧O in this window was the whole entry, advertised only as a
+               deck hint, which is the other half of the founder's "I keep trying
+               to open the this-screen ask and it doesn't open". Same argument and
+               same trigger skin as the Filter funnel beside it. Gated on Ask AI
+               availability, exactly as the deck hint is — never a dead button. -->
+          {#if askAvailable}
+            <button
+              type="button"
+              class="quick-recall__filter-trigger"
+              onclick={() => void enterCurrentFrame()}
+              aria-label="Ask about this screen"
+              use:tip={"Ask about this screen (⌘⇧O)"}
+              aria-keyshortcuts="Meta+Shift+O"
+            >
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.2"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="1" y="1.5" width="10" height="7" rx="1" />
+                <path d="M4 10.5h4" />
+              </svg>
+              This screen <kbd aria-hidden="true">⌘⇧O</kbd>
+            </button>
+          {/if}
           <!-- Syntax-help affordance (`?` trigger + static popover), extracted
                to a component; its open state lives on the search store so the
                keydown routing can close it. -->

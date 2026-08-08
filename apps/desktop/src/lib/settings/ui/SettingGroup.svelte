@@ -85,47 +85,16 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 12px;
   }
 
-  /* ── Section head (the mockup's `.ghd--sticky`) ───────────────
-     Sticky at the top of the scroll region: "where am I" is answered by the
-     header that is pinned, not by a rail you have to re-read. The section is
-     the sticky element's containing block, so the header stays pinned for
-     exactly as long as its own rows are on screen and then hands over to the
-     next one. Opaque (not the mockup's 72% gradient) because these hints are
-     real prose and can run two lines — content sliding under a translucent
-     band of that height reads as a rendering bug. The soft edge is the ::after
-     fade below instead.
-     z-index 2 clears the rows and stays under the row popovers (z-index 100). */
+  /* ── Section head (above the card) ─────────────────────────── */
   .setting-group__header {
-    position: sticky;
-    top: 0;
-    z-index: 2;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding: var(--gap-section) 4px 8px;
-    background: var(--app-bg);
-  }
-
-  /* The first section of a panel already has the column's own top padding
-     (`first-of-type`, not `first-child`: the panel head — a <div> — leads the
-     column, and the first <section> is still the first group under it). */
-  :global(.settings-panel > .setting-group:first-of-type) .setting-group__header {
-    padding-top: 0;
-  }
-
-  .setting-group__header::after {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 100%;
-    height: 10px;
-    background: linear-gradient(var(--app-bg), transparent);
-    pointer-events: none;
+    padding: 0 4px;
   }
 
   .setting-group__heading {
@@ -221,6 +190,7 @@
 
   .setting-group__hint {
     /* --t-meta is 11px — same value the mockup's `.group__hint` names. */
+    /* Sans, like the row text below it — this is prose, not a machine value. */
     font-family: var(--app-font-sans);
     font-size: var(--t-meta);
     color: var(--app-text-muted);
@@ -244,13 +214,11 @@
      them was cutting the menu at the card's bottom edge. The rows are
      transparent and the accent hairline below is inset within the card
      bounds, so nothing relies on clipping for the rounded-corner look. */
-  /* The mockup's `.grp`: one surface, rows separated by an INSET hairline
-     (drawn by `.setting-row + .setting-row`), no per-row borders. */
   .setting-group__card {
     position: relative;
-    background: var(--app-surface);
+    background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
-    border-radius: var(--r-lg);
+    border-radius: 12px;
   }
 
   /* Bare: no frame — children (which carry their own borders) sit flush. */

@@ -426,7 +426,11 @@
     {/if}
   </p>
 
-  <div class="subj__list">
+  <!-- `--empty` centers the one card in the region. Left at the top it was a
+       full-width panel pinned under the header with ~440px of nothing beneath
+       it — a floating panel with an unexplained gap, which is the exact defect
+       the founder called out. -->
+  <div class="subj__list" class:subj__list--empty={!loading && (rows.length === 0 || (loadError && !conclusions))}>
     {#if loadError && !conclusions}
       <div class="emptybox">
         <span class="gl">◇</span>
@@ -561,6 +565,13 @@
     min-height: 0;
     overflow-y: auto;
     padding: 0 var(--s-16) var(--s-12);
+  }
+  /* Empty / error: one card, centered in the region rather than pinned to its
+     top edge. Still scrolls if the window is shorter than the card. */
+  .subj__list--empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
   .subj__loading {
     padding: var(--s-12) var(--s-8);
@@ -764,6 +775,10 @@
     flex-direction: column;
     align-items: center;
     gap: var(--s-6);
+    /* A reading-width card, not a full-bleed band — at 1100px the stretched
+       version read as a mystery panel rather than a message. */
+    width: 100%;
+    max-width: 520px;
     margin-top: var(--s-16);
     padding: var(--s-20) var(--s-12);
     border-radius: var(--r-lg);

@@ -43,6 +43,26 @@ export const CURRENT_FRAME_BAR_HEIGHT = 96;
 export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 30;
 export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
 
+/**
+ * The window height the launcher should currently be, as a TOTAL rule over the
+ * mode — `null` (full launcher) for every mode that isn't the current-frame bar.
+ *
+ * Totality is the whole point. When this lived inline as an early-returning
+ * effect, nothing restored the height on the dismiss path: the panel stayed
+ * collapsed and min-size-pinned while hidden, so the next summon showed the full
+ * launcher clipped to a 96px sliver — "the ask screen doesn't open".
+ */
+export function quickRecallHeightForMode(
+  mode: "search" | "ask" | "frame",
+  opts: { answerVisible: boolean; hasVisionNote: boolean },
+): number | null {
+  if (mode !== "frame") return null;
+  if (opts.answerVisible) return CURRENT_FRAME_ANSWER_HEIGHT;
+  return (
+    CURRENT_FRAME_BAR_HEIGHT + (opts.hasVisionNote ? CURRENT_FRAME_DISCLOSURE_HEIGHT : 0)
+  );
+}
+
 /** The chip's primary label: what the shot is of. */
 export function frameChipLabel(frame: CurrentFrameCapture): string {
   const app = frame.appName?.trim();

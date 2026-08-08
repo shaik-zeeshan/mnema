@@ -33,6 +33,7 @@
     resolveTabDeeplink,
     resolveFocusDeeplink,
     sectionForFocus,
+    SETTINGS_GROUPS,
     sectionAnchor,
     isGroupEntrySection,
     DEFAULT_SETTINGS_GROUP,
@@ -40,6 +41,8 @@
     type SettingsGroupId,
     type SettingsSectionId,
   } from "$lib/settings/groups";
+  import { resetDeck, setDeck } from "$lib/deck.svelte";
+  import { SETTINGS_ROW_COUNT, matchingRowCount } from "$lib/settings/settings-index";
   import {
     isAtScrollTarget,
     isScrollable,
@@ -54,9 +57,9 @@
   import "$lib/settings/settings-controls-fields.css";
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
-  import SettingsTabs from "$lib/settings/SettingsTabs.svelte";
-  import SettingsSaveState from "$lib/settings/ui/SettingsSaveState.svelte";
-  import { attachRowNav } from "$lib/settings/state/row-nav";
+  import SettingsRail from "$lib/settings/SettingsRail.svelte";
+  import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
+  import SettingsFindBar from "$lib/settings/ui/SettingsFindBar.svelte";
   import { settingsFind } from "$lib/settings/state/settings-find.svelte";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
@@ -219,10 +222,10 @@
   // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
-      // A group's ENTRY section leads its panel, and the panel head (the tab's
-      // own title line) sits above it — scrolling that anchor to the top would
-      // push the head off screen on every tab switch. Going to the entry
-      // section IS going to the top of the tab.
+      // A group's ENTRY section leads its panel, and the panel head (its title
+      // line) sits above it — scrolling that anchor to the top would push the
+      // head off screen every time the rail lands on a group. Going to the entry
+      // section IS going to the top of the panel.
       if (isGroupEntrySection(section)) {
         scrollRegion?.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
         spySuppressTarget = 0;
@@ -233,6 +236,38 @@
       if (el) setSpyTarget(el);
     });
   }
+
+  // ─── The deck (direction 04) ────────────────────────────────────────────────
+  // Skin, not structure. The settings SHELL is phase 1's (rail + cards + save
+  // chip + ⌘F) per the founder's call, so the deck does NOT carry save state
+  // here — the save chip does, where it always did. All the deck does is name
+  // where you are and which keys work, exactly as it does on every other
+  // surface. It cannot clip at any window size, which is why the ⌘F denominator
+  // is safe to state here.
+  const deckContext = $derived.by(() => {
+    if (settingsFind.active) {
+      const n = matchingRowCount(settingsFind.query);
+      return `Settings · Find · ${n} of ${SETTINGS_ROW_COUNT} setting${n === 1 ? "" : "s"} match`;
+    }
+    const group = SETTINGS_GROUPS.find((g) => g.id === activeGroup);
+    const section = group?.sections.find((s) => s.id === activeSection);
+    // The entry section repeats the group's own name, so don't say it twice.
+    return section && !isGroupEntrySection(activeSection)
+      ? `Settings · ${group?.label} · ${section.label}`
+      : `Settings · ${group?.label ?? ""}`;
+  });
+  $effect(() => {
+    setDeck({
+      context: deckContext,
+      hints: settingsFind.active
+        ? [{ keys: "esc", label: "Close find" }]
+        : [
+            { keys: "⌘F", label: "Find a setting" },
+            { keys: "⌘1", label: "Timeline", separator: true },
+          ],
+    });
+    return resetDeck;
+  });
 
   // Select a section's group + sub-section and scroll to it. Used by both the
   // rail (onNavigate) and deeplink resolution. Suppresses scroll-spy so it does
@@ -276,16 +311,6 @@
   $effect(() => {
     activeGroup;
     untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
-  });
-
-  // ─── Keyboard row navigation (direction 04) ─────────────────────────────────
-  // ↑↓ steps the rows, ␣ activates the selected row's primary control, and the
-  // selected row takes full-row accent selection. Re-attached when the scroll
-  // region (re)mounts; the module itself is DOM-driven and framework-free.
-  $effect(() => {
-    const root = scrollRegion;
-    if (!root) return;
-    return attachRowNav(root);
   });
 
   // ─── Scroll-spy ─────────────────────────────────────────────────────────────
@@ -609,25 +634,37 @@
 </script>
 
 <!-- ── Settings shell ──────────────────────────────────────────────────────
-     Direction 04: no left rail. Five horizontal tabs (⌃1–⌃5) sit over ONE
-     scroll region with sticky section headers, and ⌘F turns that region into a
-     ranked list of matching rows. One group panel is mounted at a time (all
-     five while filtering), so the tab strip and window chrome stay pinned.
-     Autosave lives in the deck (G7), so this shell has no save surface at all. -->
+     A fixed left rail lists the 5 groups; only the right-hand content pane
+     scrolls. One group panel is mounted at a time, so the rail and window
+     chrome stay pinned.
+
+     This is phase 1's shell, deliberately: the founder's call is that settings
+     stay the same across the five directions ("use prevs design layout and
+     cards with just some changes"), so the direction-invented five-tab bar and
+     its deck-hosted save state are gone and the rail + carded groups + save
+     chip + ⌘F are back. What this direction adds is skin only — keycaps on the
+     find bar's keys, sans row text, and the deck naming where you are. -->
 <div class="settings-shell" class:is-finding={settingsFind.active}>
   <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
        <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the tab strip. -->
+       the visible title is the window chrome + the rail's grouped sections. -->
   <h1 class="settings-page-title">Settings</h1>
-
-  <!-- Headless: publishes the autosave state into the deck + owns the failure
-       toasts (G7 — no bottom save bar, ever, and no Undo). -->
-  <SettingsSaveState />
-
-  <SettingsTabs {activeGroup} onNavigate={(section) => focusSettingsSection(section)} />
+  <SettingsRail
+    {activeGroup}
+    {activeSection}
+    onNavigate={(section) => focusSettingsSection(section)}
+  />
 
   <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
+    <!-- Top-anchored, outside the scroll region: the autosave chip can never
+         clip off a short window (G7 — no bottom save bar, ever). -->
+    <SettingsSaveChip />
+
+    <!-- ⌘F row filter (G7) — a state over the content pane, not a nav. Renders
+         nothing until ⌘F opens it. -->
+    <SettingsFindBar />
+
     <AppPrivacyExclusionPrompt
       controller={c.appPrivacyExclusion}
       onReview={() => focusSettingsSection("privacy")}
@@ -643,16 +680,12 @@
       {#if settingsFind.active}
         <!-- ⌘F: every group's panel is mounted so a hit in any section can
              render WITH ITS LIVE CONTROL; the rows/groups that don't match hide
-             themselves (see `.is-finding` in settings-layout.css). The wrapper
-             is what makes the survivors read as ONE ranked list rather than
-             five gapped cards — it owns the outer radius the panels give up. -->
-        <div class="settings-hits">
-          <GeneralPanel />
-          <CapturePanel />
-          <IntelligencePanel />
-          <DataPanel />
-          <AboutPanel />
-        </div>
+             themselves (see `.is-finding` in settings-layout.css). -->
+        <GeneralPanel />
+        <CapturePanel />
+        <IntelligencePanel />
+        <DataPanel />
+        <AboutPanel />
       {:else if activeGroup === "general"}
         <GeneralPanel />
       {:else if activeGroup === "capture"}
@@ -672,16 +705,11 @@
   /* The shell root rule lives here (its element is in this template); all other
      settings CSS is the shared, `.settings-shell`-namespaced
      lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
-  /* One column: the 40px tab strip, then the pane. The negative margin cancels
-     `.app-content--settings`'s `8px 20px 0` gutter so the tab strip and the
-     pane are full-bleed inside the window — the strip carries its own surface
-     and bottom hairline, which only reads as chrome edge-to-edge. */
   .settings-shell {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    flex-direction: column;
-    margin: -8px -20px 0;
+    gap: 18px;
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

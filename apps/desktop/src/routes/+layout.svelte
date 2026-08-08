@@ -476,6 +476,7 @@
     rows.push(getEffectiveGlobalShortcut("toggleQuickRecall"));
     rows.push(getEffectiveGlobalShortcut("openTimelineSurface"));
     rows.push(getEffectiveGlobalShortcut("openOverviewSurface"));
+    rows.push(getEffectiveGlobalShortcut("openChatSurface"));
     rows.push(getEffectiveGlobalShortcut("openSettings"));
 
     if (devEnabled) {
@@ -886,15 +887,18 @@
     <!-- Inert centre area carries the drag region + the surface switcher + the
          Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
-      <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
+      <!-- Surface switcher — three peers: Timeline ⌘1, Overview ⌘2, Chat ⌘3.
            "dashboard" retired (#103). Direction 04 renders the shortcut as a
            visible keycap (the segments grow to --h-sm so a 17px cap fits).
-           The Insights segment is gone: Journal / Subjects / Context are
-           destinations opened from Overview (crumb chip below); Chat's one
-           remaining door is the Quick Access "Continue in Chat" handoff. -->
+           Chat is a segment, not a destination: an earlier pass demoted it to
+           the Quick Access "Continue in Chat" handoff, which meant a first-time
+           user could not find it from the main window at all. Journal / Subjects
+           / Context stay destinations opened from Overview (crumb chip below) —
+           they are things Mnema wrote, reached from where it summarises them;
+           Chat is something you DO, so it earns a permanent door. -->
       <div
         class="surface-toggle"
-        class:surface-toggle--muted={isSettingsRoute || isDestinationRoute || isInsightsRoute}
+        class:surface-toggle--muted={isSettingsRoute || isDestinationRoute}
         role="navigation"
         aria-label="Main surface"
       >
@@ -919,6 +923,17 @@
         >
           Overview
           <kbd class="kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</kbd>
+        </button>
+        <button
+          type="button"
+          class:active={isInsightsRoute}
+          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
+          aria-current={isInsightsRoute ? "page" : undefined}
+          use:tip={`Chat (${shortcutDisplay("openChatSurface")})`}
+          onclick={() => goToSurface("insights")}
+        >
+          Chat
+          <kbd class="kbd" aria-hidden="true">{shortcutDisplay("openChatSurface")}</kbd>
         </button>
       </div>
       <!-- The one breadcrumb chip (pages 08–10): `› Journal esc`. The route
@@ -3126,10 +3141,16 @@
      Main titlebar). The titlebar already reserves space for the native overlay
      traffic lights, so no top inset is needed here — just a small gap under the
      bar. Full-bleed otherwise (the settings shell owns its own scroll region). */
+  /* Flush to the window frame, like every other surface. The old `8px 20px 0`
+     was the one seam in the app where content floated away from the window
+     edges on three sides and sat flush on the fourth — the settings rail hung
+     20px off the left edge with the deck butted right up under it, which is the
+     detached-panel gap the founder flagged. The rail and the scroll region both
+     carry their own inner padding, so nothing here needed the outer inset. */
   .app-content--settings {
     background: var(--app-bg);
     overflow: hidden;
-    padding: 8px 20px 0;
+    padding: 0;
   }
 
   .app-shell--dedicated {

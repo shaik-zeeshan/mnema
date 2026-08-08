@@ -11,6 +11,11 @@
 # Source this before any cargo/tauri command that builds the desktop crate:
 #   . scripts/openblas-build-env.sh
 #
+# LIBRARY_PATH is listed in turbo.json's `tauri.passThroughEnv`. It has to be:
+# turbo strips anything not declared there, so without the entry this export is
+# silently dropped between here and cargo, and the from-source OpenBLAS build
+# dies with `ld: library 'gfortran' not found` at its test link.
+#
 # It does NOT set OPENBLAS_DYNAMIC_ARCH — that belongs to *distributable* builds
 # only (it builds every arm64 kernel, which is slow and pointless for local dev).
 # Distributable build scripts set it themselves.

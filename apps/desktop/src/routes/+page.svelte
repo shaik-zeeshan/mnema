@@ -6832,10 +6832,18 @@
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
       >
-        <div class="timeline-rail__audio-lane-labels">
-          <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
-          <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
-        </div>
+        <!-- With no frames the lane body is deliberately silent (see below), so
+             the gutter labels have nothing to label — they were rendering as two
+             orphaned words in the empty band under the placeholder rail. They
+             only appear once the lane says something. The wrap and its
+             fixed-height viewport stay, so the reserved height is unchanged and
+             the stage still doesn't resize when frames arrive. -->
+        {#if audioSegmentsError}
+          <div class="timeline-rail__audio-lane-labels">
+            <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--microphone">mic</span>
+            <span class="timeline-rail__audio-lane-label timeline-rail__audio-lane-label--systemAudio">sys</span>
+          </div>
+        {/if}
         <div class="timeline-rail__audio-lane-viewport">
           {#if audioSegmentsError}
             <div class="timeline-rail__audio-lane-error" role="alert">

@@ -1,45 +1,29 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
-  // InsightsRail — the persistent left rail of the Insights surface (Insights-
-  // rail refactor, Slices 2/3). It replaces the old horizontal `.subnav` and is
-  // always present across every sub-surface (Overview / Subjects / Context /
-  // Chat). Top→bottom it carries: the sub-surface nav (overview / subjects /
-  // context), a "new chat" action, the chat search + time-grouped history
-  // (<RailHistory/>), and the engine/model footer (<RailFooter/>). The active
-  // sub-surface renders in the column to the RIGHT of this rail (the shell owns
-  // that). Chat is reached via "new chat" or a history row — it is NOT a primary
-  // nav item, but the "New chat" row doubles as the Chat group anchor and carries
-  // the active treatment when `view === "chat"`, so the rail always shows a stable
-  // "you are here" landmark.
+  // The Chat surface's persistent left rail.
+  //
+  // It used to carry a four-item sub-surface nav (Overview / Journal / Subjects /
+  // Context) because Insights was a workspace of tabs. In this direction those
+  // four are real routes, opened from Overview and marked by the titlebar crumb
+  // chip — so the nav here was a second, competing set of doors to the same
+  // places. Dropping it is what turns this surface into what the founder asked
+  // for: a *dedicated* chat interface, whose rail is only ever about chats.
+  //
+  // Top→bottom: a collapse chevron, "New chat", the chat search + time-grouped
+  // history (<RailHistory/>), and the pinned engine/model footer (<RailFooter/>).
   //
   // The aesthetic is the approved "minimal / quiet" sidebar: hairline dividers +
   // whitespace + a single green accent. Active state combines accent label +
   // a faint accent tint + an inset accent bar (so "you are here" survives the
-  // squint test). Title-case nav/action labels to match the app's sidebar
-  // typography (date-group headers stay uppercase eyebrows). ~240px wide by
-  // default (drag-resizable), token-driven.
+  // squint test). Title-case action labels to match the app's sidebar typography
+  // (date-group headers stay uppercase eyebrows). ~240px wide by default
+  // (drag-resizable), token-driven.
   import RailHistory from "$lib/insights/RailHistory.svelte";
   import RailFooter from "$lib/insights/RailFooter.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
-  import type { IconComponent } from "$lib/settings/section-icons";
-  import IconOverview from "~icons/lucide/layout-dashboard";
-  import IconJournal from "~icons/lucide/calendar-days";
-  import IconSubjects from "~icons/lucide/lightbulb";
-  import IconContext from "~icons/lucide/notebook-text";
   import IconCollapse from "~icons/lucide/chevrons-left";
-  import IconLock from "~icons/lucide/lock";
-
-  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   interface Props {
-    view: InsightsTab;
-    onOpenTab: (tab: InsightsTab) => void;
-    // Continuous derivation (User Context opt-in) is off while the runtime is
-    // otherwise set up. All four nav sub-surfaces are derivation-fed, so they
-    // render locked (dim + lock glyph + tooltip) and clicking one deeplinks to
-    // the derivation setting instead of switching tabs. Chat stays live.
-    derivationOff: boolean;
-    onOpenDerivationSettings: () => void;
     engineOn: boolean;
     modelLabel: string;
     statusLoaded: boolean;
@@ -56,10 +40,6 @@
   }
 
   let {
-    view,
-    onOpenTab,
-    derivationOff,
-    onOpenDerivationSettings,
     engineOn,
     modelLabel,
     statusLoaded,
@@ -69,34 +49,20 @@
     width,
   }: Props = $props();
 
-  // The nav is the three persistent sub-surfaces only — Chat is reached via
-  // new-chat / a history row, never a nav item.
-  const NAV: {
-    id: Exclude<InsightsTab, "chat">;
-    label: string;
-    icon: IconComponent;
-  }[] = [
-    { id: "overview", label: "Overview", icon: IconOverview },
-    { id: "journal", label: "Journal", icon: IconJournal },
-    { id: "subjects", label: "Subjects", icon: IconSubjects },
-    { id: "context", label: "Context", icon: IconContext },
-  ];
-
-  // "New chat" carries the Chat-group active treatment ONLY when the open thread
-  // is an unsaved/new one — i.e. the active conversation id isn't a saved history
-  // row. When a SAVED conversation is open that row (in <RailHistory/>) owns the
-  // "you are here" highlight, so "New chat" reverts to its quiet state instead of
+  // "New chat" carries the active treatment ONLY when the open thread is an
+  // unsaved/new one — i.e. the active conversation id isn't a saved history row.
+  // When a SAVED conversation is open that row (in <RailHistory/>) owns the "you
+  // are here" highlight, so "New chat" reverts to its quiet state instead of
   // doubly reading active beside the selected row (the section-vs-selection nit).
   const newChatActive = $derived(
-    view === "chat" &&
-      !conversationStore.conversations.some(
-        (c) => c.conversationId === conversationStore.activeConversationId,
-      ),
+    !conversationStore.conversations.some(
+      (c) => c.conversationId === conversationStore.activeConversationId,
+    ),
   );
 </script>
 
 {#if !collapsed}
-<aside class="sidebar" aria-label="Insights" style="width: {width}px;">
+<aside class="sidebar" aria-label="Chats" style="width: {width}px;">
   <div class="sidebar-scroll">
     <!-- A quiet collapse chevron in a compact right-aligned header row. It owns
          its own band so it never sits on top of the (full-width) Overview nav
@@ -115,35 +81,9 @@
       </button>
     </div>
 
-    <!-- primary nav — title-case text rows with a leading glyph. Active =
-         accent label + tint + inset bar. -->
-    <nav class="rail-nav" aria-label="Insights sub-surface">
-      {#each NAV as item (item.id)}
-        {@const Icon = item.icon}
-        <button
-          type="button"
-          class="rail-nav-item"
-          class:active={view === item.id}
-          class:locked={derivationOff}
-          aria-current={view === item.id ? "page" : undefined}
-          use:tip={derivationOff
-            ? "Continuous derivation is off — click to turn it on in Settings"
-            : undefined}
-          onclick={() =>
-            derivationOff ? onOpenDerivationSettings() : onOpenTab(item.id)}
-        >
-          <Icon aria-hidden="true" />
-          {item.label}
-          {#if derivationOff}
-            <IconLock class="rail-lock" role="img" aria-label="Requires continuous derivation" />
-          {/if}
-        </button>
-      {/each}
-    </nav>
-
-    <!-- new chat — quiet borderless text link. Doubles as the Chat group anchor:
-         when `view === "chat"` it carries the active treatment so the rail always
-         shows a stable "you are here" landmark even with no history row matched. -->
+    <!-- new chat — the rail's one action, and the anchor for an unsaved thread:
+         with no saved conversation selected it carries the active treatment so
+         the rail always shows a stable "you are here" landmark. -->
     <button
       type="button"
       class="rail-newchat"
@@ -234,109 +174,10 @@
     box-shadow: var(--app-ring);
   }
 
-  /* primary nav — plain title-case text rows, generous spacing. */
-  .rail-nav {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .rail-nav-item {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 28px;
-    font: inherit;
-    font-size: var(--t-ui);
-    color: var(--app-text-muted);
-    transition:
-      color 0.12s ease,
-      background 0.12s ease;
-    background: transparent;
-    border: 0;
-    border-radius: 6px;
-    padding: 0 8px;
-    text-align: left;
-    cursor: pointer;
-  }
-  /* Leading glyph — inherits the row's color (muted → strong on hover → accent
-     when active) via currentColor, and never shrinks below its 16px box. */
-  .rail-nav-item :global(svg) {
-    flex: none;
-    width: 16px;
-    height: 16px;
-    opacity: 0.85;
-  }
-  .rail-nav-item.active :global(svg) {
-    opacity: 1;
-  }
-  .rail-nav-item:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-  }
-  /* Visible keyboard focus — quiet accent text, no box/pill (keeps the minimal
-     aesthetic; the focus ring is an underline-style accent rather than a border). */
-  .rail-nav-item:focus-visible {
-    outline: none;
-    color: var(--app-accent);
-    text-decoration: underline;
-    text-decoration-color: var(--app-accent-border);
-    text-underline-offset: 3px;
-  }
-  /* active = accent label + tint fill + inset accent bar (combine >=2 signals so
-     "you are here" survives the squint test, while hover stays a neutral tint). */
-  .rail-nav-item.active {
-    color: var(--app-accent);
-    font-weight: 600;
-    background: var(--app-accent-bg);
-  }
-  .rail-nav-item.active:hover {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .rail-nav-item.active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 3px;
-    height: 16px;
-    border-radius: 0 2px 2px 0;
-    background: var(--app-accent);
-  }
-  /* Locked (derivation off) — dimmed row with a trailing lock glyph. Still a
-     live control: clicking deeplinks to the derivation setting, so hover keeps
-     the pointer + a quiet tint but never the accent "openable" treatment. */
-  .rail-nav-item.locked {
-    color: var(--app-text-faint);
-  }
-  .rail-nav-item.locked :global(svg) {
-    opacity: 0.6;
-  }
-  .rail-nav-item.locked:hover {
-    color: var(--app-text-muted);
-    background: var(--app-surface-hover);
-  }
-  /* Keyboard-focus accent must survive the `.locked` dim (same specificity,
-     later in source). */
-  .rail-nav-item.locked:focus-visible {
-    color: var(--app-accent);
-  }
-  .rail-nav-item :global(.rail-lock) {
-    margin-left: auto;
-    width: 12px;
-    height: 12px;
-  }
-  /* The lock explains the locked state — keep it full-strength, not dimmed. */
-  .rail-nav-item.locked :global(.rail-lock) {
-    opacity: 1;
-  }
-  /* new chat — a full row that shares the nav's geometry exactly: same 28px
-     height, same 0 8px padding, same 8px gap, and a 16px leading-glyph box. That
-     puts the ＋ on the SAME vertical guide as the nav icons and the label on the
-     same guide as the nav labels (the previous inline link sat ~15px off, which
-     read as the rail's broken alignment). */
+  /* new chat — a full 28px row with a 16px leading-glyph box, so the ＋ and the
+     label sit on the same two vertical guides as the history rows below it. The
+     16px top margin that used to separate it from the sub-surface nav is gone
+     with the nav: it would now be an unexplained gap under the chevron. */
   .rail-newchat {
     position: relative;
     display: flex;
@@ -344,7 +185,6 @@
     gap: 8px;
     width: 100%;
     height: 28px;
-    margin-top: 16px;
     background: transparent;
     border: 0;
     border-radius: 6px;

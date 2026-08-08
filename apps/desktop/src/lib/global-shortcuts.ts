@@ -20,6 +20,7 @@ export type GlobalShortcutId =
   | "toggleQuickRecall"
   | "openTimelineSurface"
   | "openOverviewSurface"
+  | "openChatSurface"
   | "toggleSourceScreen"
   | "toggleSourceMicrophone"
   | "toggleSourceSystemAudio"
@@ -37,8 +38,8 @@ export type GlobalShortcutAction =
   | { type: "openSurface"; surface: MainSurface }
   | { type: "toggleSource"; source: SourceShortcutKey };
 
-/** The two peer surfaces the Main window switches between (⌘1 / ⌘2). */
-export type MainSurface = "timeline" | "overview";
+/** The peer surfaces the Main window switches between (⌘1 / ⌘2 / ⌘3). */
+export type MainSurface = "timeline" | "overview" | "insights";
 
 export type GlobalShortcutKeyEvent = Pick<
   KeyboardEvent,
@@ -100,6 +101,13 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
     kind: "command",
     scope: "global",
   },
+  openChatSurface: {
+    id: "openChatSurface",
+    label: "Go to Chat",
+    bindings: [{ key: "3", primary: true }],
+    kind: "command",
+    scope: "global",
+  },
   openSettings: {
     id: "openSettings",
     label: "Open settings",
@@ -155,7 +163,8 @@ export function getEffectiveGlobalShortcut(id: GlobalShortcutId): ShortcutDefini
   if (
     id === "closeShortcutsHelp" ||
     id === "openTimelineSurface" ||
-    id === "openOverviewSurface"
+    id === "openOverviewSurface" ||
+    id === "openChatSurface"
   ) {
     return GLOBAL_SHORTCUTS[id];
   }
@@ -187,12 +196,17 @@ export function getGlobalShortcutAction(
   // Surface switching is checked before the Timeline-only gate below: it has to
   // work *from* the other surfaces (⌘1 is how you get back, including from
   // Settings), and from inside text fields — ⌘/Ctrl+digit steals nothing from
-  // text editing, unlike the bare 1/2/3 source toggles.
+  // text editing, unlike the bare 1/2/3 source toggles. ⌘3 matters most here:
+  // Chat's whole surface IS a text field, so a key that stopped working inside
+  // one would be a key that never works.
   if (matchShortcut(event, effectiveShortcut("openTimelineSurface"), platform)) {
     return { type: "openSurface", surface: "timeline" };
   }
   if (matchShortcut(event, effectiveShortcut("openOverviewSurface"), platform)) {
     return { type: "openSurface", surface: "overview" };
+  }
+  if (matchShortcut(event, effectiveShortcut("openChatSurface"), platform)) {
+    return { type: "openSurface", surface: "insights" };
   }
 
   if (!context.isMainRoute) return null;

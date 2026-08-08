@@ -1,80 +1,40 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
-  // Insights workspace — the second top-level Surface of Main (alongside the
-  // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
-  // switched via local state (NOT separate routes), plus a Subject drill-in.
-  // The surface toggle that brings the user here lives in the shared titlebar
-  // (`+layout.svelte`); this page owns only the sub-nav + sub-surface content.
+  // Chat — a first-class Surface of the Main window, alongside Timeline (⌘1) and
+  // Overview (⌘2), reached by its own titlebar segment or ⌘3.
+  //
+  // This route used to be an "Insights workspace" of five locally-switched
+  // sub-surfaces (Overview / Journal / Subjects / Context / Chat). In this
+  // direction the first four are real routes opened from Overview, so all that
+  // was left here was a second set of doors to them wrapped around the one thing
+  // that lives nowhere else. It is now only that thing: the rail is chat history
+  // + new chat + engine status, and the column beside it is the conversation.
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openSettings } from "$lib/surface-windows";
+  import { resetDeck, setDeck } from "$lib/deck.svelte";
+  import { getEffectiveGlobalShortcut } from "$lib/global-shortcuts";
+  import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
   import type {
     AiRuntimeStatus,
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
-  import Overview from "$lib/insights/Overview.svelte";
-  import DayTimeline from "$lib/insights/DayTimeline.svelte";
-  import Subjects from "$lib/insights/Subjects.svelte";
-  import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
-  import Context from "$lib/insights/Context.svelte";
   import Chat from "$lib/insights/Chat.svelte";
   import InsightsRail from "$lib/insights/InsightsRail.svelte";
   import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
-  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
-
-  // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
-  // the Subjects tab held in `selectedSubject` (null = the index).
-  let view = $state<InsightsTab>("overview");
-  let selectedSubject = $state<string | null>(null);
-
   // Quick Recall → Chat handoff (issue #111, ADR 0031). When a Quick Recall
   // thread is promoted into Chat, the main window is shown/navigated here and a
   // conversation id is delivered (a live `insights_open_conversation` event for
-  // a warm window, or the cold-window drain on mount). The handoff now routes
-  // through the shared store's selection BUS (`requestOpen`), which Chat watches;
-  // the effect below switches this shell to the Chat sub-surface when the bus
-  // fires (so a request that arrives while on another tab still lands on Chat).
+  // a warm window, or the cold-window drain on mount). The handoff routes through
+  // the shared store's selection BUS (`requestOpen`), which Chat watches. There
+  // is no longer a tab to switch — this surface IS Chat — so the handoff is now
+  // just the bus call.
   function handoffConversation(conversationId: string): void {
     conversationStore.requestOpen(conversationId);
-    view = "chat";
-    selectedSubject = null;
-  }
-
-  // A bus request (from the handoff above, or — in a later slice — the rail
-  // clicking a row from another surface) switches the shell to the Chat
-  // sub-surface. Track the nonce; skip 0 (nothing requested yet on mount).
-  let lastHandoffNonce = 0;
-  $effect(() => {
-    const pending = conversationStore.pendingOpen;
-    untrack(() => {
-      if (pending.nonce === 0 || pending.nonce === lastHandoffNonce) return;
-      lastHandoffNonce = pending.nonce;
-      view = "chat";
-      selectedSubject = null;
-    });
-  });
-
-  function openTab(tab: InsightsTab): void {
-    view = tab;
-    if (tab !== "subjects") selectedSubject = null;
-    // Leaving Chat unmounts it, so its mirror effect can no longer clear the
-    // store's open-thread id — clear it here so the rail stops highlighting the
-    // previously-open row while a non-Chat sub-surface is showing. (Re-entering
-    // Chat remounts it; the bus/handoff sets the active id back as needed.)
-    if (tab !== "chat") conversationStore.activeConversationId = null;
-  }
-
-  function openSubject(subject: string): void {
-    view = "subjects";
-    selectedSubject = subject;
-  }
-
-  function backToSubjects(): void {
-    selectedSubject = null;
   }
 
   // ── Engine status ────────────────────────────────────────────────────
@@ -95,44 +55,21 @@
       Boolean(ctxStatus?.engineAvailable),
   );
 
-  // Whole-page gate: every Insights sub-surface is built from Reasoning Engine
-  // output (digest, journal activities, subjects, context, chat), so with the
-  // engine never set up the page is uniformly empty — show a pitch instead.
+  // Whole-page gate: a chat with no Reasoning Engine behind it can't answer, so
+  // with the engine never set up we show a pitch instead of a dead composer.
   // Keyed on the user's SETUP state (enabled && configured), NOT on `available`:
   // a configured engine that is momentarily unreachable (local model not
-  // running, network blip) keeps the page and its per-surface error states —
-  // transient liveness must not lock the user out of existing content.
+  // running, network blip) keeps the surface and its own error states —
+  // transient liveness must not lock the user out of existing conversations.
   // Only asserted after `statusLoaded` so the page never flashes the gate while
   // the status calls are still in flight.
+  //
+  // Note what is NOT gated here any more: continuous derivation (the User
+  // Context opt-in). It fed the four sub-surfaces this route used to host; Chat
+  // never needed it, so with them gone the derivation lock goes too.
   const engineGated = $derived(
     statusLoaded && !(aiStatus?.enabled && aiStatus?.configured),
   );
-
-  // Continuous-derivation lock: the runtime is set up (page not gated) but the
-  // User Context opt-in is off. Overview / Journal / Subjects / Context are all
-  // rendered FROM derivation output, so they'd sit empty forever — the rail
-  // locks them (tooltip + click-through to the derivation setting) and the shell
-  // lands on Chat, the one sub-surface that works without derivation. Keyed on
-  // the specific `user_context_disabled` reason so transient engine trouble
-  // (unreachable local model) does NOT lock the tabs — the per-surface error
-  // states own that case.
-  const derivationOff = $derived(
-    statusLoaded && ctxStatus?.reason === "user_context_disabled",
-  );
-
-  // While derivation is off the four locked tabs are unreachable via the rail,
-  // but `view` can still point at one (default "overview", or derivation was
-  // turned off while on a locked tab) — steer to Chat.
-  $effect(() => {
-    if (derivationOff && view !== "chat") {
-      view = "chat";
-      selectedSubject = null;
-    }
-  });
-
-  function openDerivationSettings(): void {
-    void openSettings("userContext");
-  }
 
   function shortModel(model: string): string {
     const trimmed = model.trim();
@@ -166,8 +103,36 @@
     void openSettings("intelligence");
   }
 
+  // ── The deck (direction 04) ─────────────────────────────────────────────
+  // Context on the left says what this window is holding: how many threads are
+  // saved. Hints are only keys that actually work here — the two surface
+  // switches and Quick Access. Nothing speculative.
+  const platform = detectKeyboardPlatform();
+  function keys(id: Parameters<typeof getEffectiveGlobalShortcut>[0]): string {
+    const binding = getEffectiveGlobalShortcut(id).bindings[0];
+    return binding ? formatShortcut(binding, platform).join("") : "";
+  }
+  const threadCount = $derived(conversationStore.conversations.length);
+  $effect(() => {
+    const quickAccess = keys("toggleQuickRecall");
+    setDeck({
+      context:
+        threadCount === 0
+          ? "Chat · no saved conversations yet"
+          : `Chat · ${threadCount} saved conversation${threadCount === 1 ? "" : "s"}`,
+      hints: [
+        { keys: keys("openTimelineSurface"), label: "Timeline" },
+        { keys: keys("openOverviewSurface"), label: "Overview" },
+        ...(quickAccess
+          ? [{ keys: quickAccess, label: "Quick Access", separator: true }]
+          : []),
+      ],
+    });
+    return resetDeck;
+  });
+
   // ── Rail collapse / expand (Slice 6) ─────────────────────────────────────
-  // The rail can be collapsed to give the active sub-surface full width. Two
+  // The rail can be collapsed to give the conversation full width. Two
   // independent inputs decide the EFFECTIVE collapsed state:
   //   • userCollapsed — the user's EXPLICIT preference, persisted to
   //     localStorage. Only the toggle button writes this.
@@ -272,10 +237,10 @@
 
   // Drain any pending Quick Recall → Chat handoff queued before this surface
   // mounted (cold main window): the event may have fired while the window was
-  // opening, so the latest queued conversation id lands the Chat tab on the
-  // handed-off thread. Best-effort; a transport failure just leaves the default
-  // Overview tab. The newest queued entry wins (handoffConversation is called in
-  // order, so the last call sets the active id).
+  // opening, so the latest queued conversation id lands on the handed-off
+  // thread. Best-effort; a transport failure just leaves the newest thread. The
+  // newest queued entry wins (handoffConversation is called in order, so the
+  // last call sets the active id).
   async function drainPendingHandoff(): Promise<void> {
     try {
       const pending = await invoke<{ conversationId: string }[]>(
@@ -287,13 +252,26 @@
     } catch {
       // Best-effort: no pending handoff, or the command is unavailable.
     }
+    // Land on a live, typeable chat rather than an empty pane. When Chat was one
+    // tab of a workspace, "no conversation selected" was a reasonable resting
+    // state — the other tabs had content. As the window's dedicated chat surface
+    // it is not: it left a full-height void with no composer in it, so the one
+    // thing you come here to do was the one thing you could not start doing.
+    // Arming a new chat is purely local (the row is created on the first turn),
+    // so this costs nothing if the user navigates straight back out.
+    //
+    // `nonce === 0` means nothing has claimed the pane yet — it is the guard
+    // against clobbering a handoff that landed while this drain was in flight.
+    if (conversationStore.pendingOpen.nonce === 0) {
+      conversationStore.requestNewChat();
+    }
   }
 
   $effect(() => {
     void untrack(() => loadEngineStatus());
     void untrack(() => drainPendingHandoff());
     // Kick the shared store's first history fetch so the rail populates even
-    // when Chat isn't mounted (idempotent — Chat also calls it on its mount).
+    // before Chat mounts (idempotent — Chat also calls it on its mount).
     void conversationStore.ensureStarted();
 
     let unlisten: UnlistenFn | undefined;
@@ -316,7 +294,7 @@
       else unlistenSettings = fn;
     });
 
-    // Warm-window handoff: a live event switches to Chat + selects the thread.
+    // Warm-window handoff: a live event selects the handed-off thread.
     void listen<{ conversationId: string }>(
       "insights_open_conversation",
       (event) => {
@@ -337,25 +315,24 @@
 </script>
 
 {#if engineGated}
-  <!-- Engine never set up — the whole workspace is engine-derived, so pitch it.
+  <!-- Engine never set up — a chat with nothing behind it, so pitch it instead.
        `recording_settings_changed` re-runs loadEngineStatus, so finishing setup
        in Settings unlocks this page live, no reload needed. -->
   <div class="gate">
     <div class="gate-panel">
       <p class="gate-eyebrow">
         <span class="diamond" aria-hidden="true">◆</span>
-        Insights
+        Chat
       </p>
-      <h1 class="gate-title">Turn on the Reasoning Engine to unlock Insights.</h1>
+      <h1 class="gate-title">Turn on the Reasoning Engine to chat with your history.</h1>
       <p class="gate-detail">
-        Insights is what the engine writes about your days — everything on this
-        surface is derived from it:
+        Chat asks questions over everything Mnema has captured — it needs a model
+        to answer with:
       </p>
       <ul class="gate-list">
-        <li><strong>The read</strong> — a daily digest of what you actually did.</li>
-        <li><strong>Journal</strong> — your day reconstructed as a timeline of activities.</li>
-        <li><strong>Subjects</strong> — the views it forms about you, with confidence trajectories.</li>
-        <li><strong>Chat</strong> — ask questions over your own history.</li>
+        <li><strong>Ask in your own words</strong> — "what was that error on Tuesday?"</li>
+        <li><strong>Cited answers</strong> — every claim links back to the moment it came from.</li>
+        <li><strong>Threads that keep</strong> — conversations are saved, searchable, and resumable.</li>
       </ul>
       <button type="button" class="gate-cta" onclick={enableEngine}>
         Open engine settings
@@ -368,10 +345,6 @@
 {:else}
 <div class="insights" class:insights--collapsed={railCollapsed}>
   <InsightsRail
-    {view}
-    onOpenTab={openTab}
-    {derivationOff}
-    onOpenDerivationSettings={openDerivationSettings}
     {engineOn}
     {modelLabel}
     {statusLoaded}
@@ -381,8 +354,8 @@
     width={railWidth}
   />
 
-  <!-- Drag handle between the rail and the active sub-surface. Only present when
-       the rail is (so there is a boundary to drag). -->
+  <!-- Drag handle between the rail and the conversation. Only present when the
+       rail is (so there is a boundary to drag). -->
   {#if !railCollapsed}
     <RailResizer
       width={railWidth}
@@ -393,9 +366,9 @@
     />
   {/if}
 
-  <main class="insights-main" class:insights-main--chat={view === "chat"}>
+  <main class="insights-main">
     <!-- When the rail is collapsed, a quiet floating button (top-left, with a
-         subtle backdrop so it reads above sub-surface content) brings it back. -->
+         subtle backdrop so it reads above the conversation) brings it back. -->
     {#if railCollapsed}
       <button
         type="button"
@@ -408,36 +381,14 @@
         <span aria-hidden="true">»</span>
       </button>
     {/if}
-    {#if view === "overview"}
-      <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
-    {:else if view === "journal"}
-      <DayTimeline />
-    {:else if view === "subjects"}
-      {#if selectedSubject}
-        <div class="breadcrumb">
-          <button type="button" class="breadcrumb-back" onclick={backToSubjects}>‹ back</button>
-          <button type="button" class="breadcrumb-link" onclick={backToSubjects}>Subjects</button>
-          <span class="sep">/</span>
-          <span class="current">{selectedSubject}</span>
-        </div>
-        <SubjectDetail subject={selectedSubject} onBack={backToSubjects} />
-      {:else}
-        <Subjects onOpenSubject={openSubject} />
-      {/if}
-    {:else if view === "context"}
-      <Context />
-    {:else}
-      <Chat />
-    {/if}
+    <Chat />
   </main>
 </div>
 {/if}
 
 <style>
-  /* Insights workspace shell — mirrors `.insights` from the mockup (app.css),
-     token-driven. A persistent left rail (<InsightsRail>) sits beside the
-     `.insights-main` scroll column; the rail carries the sub-surface nav,
-     new-chat, chat search/history, and the engine-status footer. */
+  /* Chat surface shell — a persistent left rail (<InsightsRail>) beside the
+     conversation column, token-driven. */
   .insights {
     display: flex;
     flex-direction: row;
@@ -552,30 +503,27 @@
     color: var(--app-text-faint);
   }
 
+  /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
+     so this column carries no padding and no outer scroll of its own. It is a
+     flex column because WKWebView (Tauri) does not reliably resolve a child's
+     `height: 100%` against a flex-stretched parent — `.chat` collapses to its
+     content height; growing it as a flex item instead fills the surface. */
   .insights-main {
     flex: 1 1 auto;
     min-width: 0;
     /* Position context for the floating expand button (collapsed state). */
     position: relative;
-    overflow-y: auto;
-    /* Reading surfaces never scroll sideways; a stray wide element (long
-       unwrapped token, 1px rounding) must not summon a horizontal scrollbar. */
-    overflow-x: hidden;
-    padding: 18px 20px 28px;
-  }
-  /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /
-     context) reserve a little extra top-left room so the floating expand button
-     never sits on top of their content. Chat floats above its own header, so it
-     keeps its edge-to-edge `--chat` padding (the button's backdrop separates
-     it). */
-  .insights--collapsed .insights-main:not(.insights-main--chat) {
-    padding-top: 46px;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   /* Floating expand affordance — only rendered when the rail is collapsed.
      Anchored top-left of the content area with a small inset + a subtle backdrop
-     so it reads cleanly above whatever sub-surface is showing. Quiet by default,
-     accent-on-hover, keyboard focusable with a visible focus ring. */
+     so it reads cleanly above the conversation. Quiet by default, accent-on-
+     hover, keyboard focusable with a visible focus ring. */
   .rail-expand-float {
     position: absolute;
     top: 12px;
@@ -609,81 +557,5 @@
     color: var(--app-accent);
     border-color: var(--app-accent);
     box-shadow: 0 0 0 2px var(--app-accent-glow);
-  }
-  /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
-     so the shell main drops its padding and outer scroll (mirrors the mockup's
-     `.insights-main` override). The other tabs keep the padded scroll above. */
-  .insights-main--chat {
-    padding: 0;
-    overflow: hidden;
-    /* Become a flex column so the chat surface fills via flex-grow rather than
-       a percentage height. WKWebView (Tauri) does not reliably resolve a child's
-       `height: 100%` against a flex-stretched parent, so `.chat` collapses to its
-       content height; growing it as a flex item instead fills the surface. */
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  /* Drill-in breadcrumb (Subjects / <name>). Mirrors app.css `.breadcrumb`. */
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin-bottom: 14px;
-  }
-  .breadcrumb-link {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .breadcrumb-link:hover {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-link:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    border-radius: 4px;
-    box-shadow: var(--app-ring);
-  }
-  .breadcrumb .sep {
-    color: var(--app-text-faint);
-  }
-  .breadcrumb .current {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-right: 4px;
-    padding: 2px 7px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11.5px;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .breadcrumb-back:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    box-shadow: var(--app-ring);
   }
 </style>

@@ -30,8 +30,11 @@ bun --cwd=apps/desktop run dev
 3. **Quick Access is the centrepiece.** One field, no mode toggle: Ask AI is the
    top-ranked row, and taking it transforms the surface.
 4. The main window is minimal chrome around content: two bars and nothing else.
-5. Settings has **no sidebar** — five horizontal tabs over one scroll, and ⌘F is
-   the real navigation.
+   Three surfaces switch in it — Timeline ⌘1, Overview ⌘2, **Chat ⌘3**.
+5. **Settings is phase 1's, deliberately.** Founder call (2026-08-08): settings
+   stay the same across all five directions — the rail, the carded groups, the
+   save chip and ⌘F, with only this direction's tokens laid over them. The
+   five-tab bar an earlier pass invented here is gone.
 
 ## What to look at, per surface
 
@@ -59,18 +62,28 @@ key becomes plain ⏎. Take it and watch the whole surface change identity —
 accent header band, an `ASK` token pinned in the field (⌫ deletes it and you're
 back in search), one reading column, cited moments as a media rail.
 
-**Ask about this screen (⌘⇧A).** The window collapses to a floating bar. Context
-is a chip in a sentence — an excluded app is named, and a non-vision model says
-so before you type. The answer arrives as a detached second panel; ⌘⌫ drops the
-frame, ⌘O grows back.
+**Ask about this screen (⌘⇧O, or the "This screen" button beside Filter).** The
+window collapses to a floating bar. Context is a chip in a sentence — an excluded
+app is named, and a non-vision model says so before you type. The answer arrives
+as a detached second panel; ⌘O grows back. Leaving the bar by ANY route — ⌘O,
+Escape, or clicking away — restores the full launcher; that last one used to
+leave the panel pinned at 96px so the next summon opened a sliver, which is what
+"the ask screen doesn't open" was.
 
-**Settings (⌘,).** No rail. Five tabs, ⌃1–⌃5. Press **⌘F** and type — every
-matching row in every section comes to you with its breadcrumb *and its live
-control*, so you change the setting from the search result. Change anything and
-watch both autosave signals: `Saved ✓` beside the control, and the timestamped
-state in the deck. Go to Intelligence for the six instruments (cost slider,
-retention ladder, OCR duty bar, model fit rows, shortcut recorder, consequence
-toggles) — each names a real quantity on *this* Mac.
+**Chat (⌘3).** The window's dedicated chat surface: a rail of your saved
+conversations (searchable, time-grouped, renameable) beside the conversation
+itself, and it opens on a live composer rather than an empty pane. "Continue in
+Chat" from Quick Access lands here too — but it is no longer the only way in,
+which was the whole complaint.
+
+**Settings (⌘,).** Phase 1's shell — rail, carded groups, save chip, ⌘F — under
+this direction's skin. Press **⌘F** and type: every matching row in every
+section comes to you with its breadcrumb *and its live control*, so you change
+the setting from the search result, and the strip states how many of Mnema's
+settings match. Change anything and `Saved ✓` appears beside the control. Go to
+Intelligence for the six instruments (cost slider, retention ladder, OCR duty
+bar, model fit rows, shortcut recorder, consequence toggles) — each names a real
+quantity on *this* Mac.
 
 ## Where the G-decisions overrode the mockup
 

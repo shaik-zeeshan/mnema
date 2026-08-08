@@ -10,7 +10,7 @@
 // the surrounding 16px / stroke-1.7 family.
 import type { Component } from "svelte";
 import type { SvelteHTMLElements } from "svelte/elements";
-import type { IconName, SettingsGroupId } from "./groups";
+import type { IconName } from "./groups";
 
 import IconAppearance from "~icons/lucide/palette";
 import IconStartup from "~icons/lucide/power";
@@ -32,10 +32,6 @@ import IconAccess from "~icons/lucide/key-round";
 import IconAbout from "~icons/lucide/info";
 import IconDeveloper from "~icons/lucide/code-xml";
 import IconLock from "~icons/lucide/lock";
-import IconGroupGeneral from "~icons/lucide/sliders-horizontal";
-import IconGroupData from "~icons/lucide/hard-drive";
-import IconGroupAbout from "~icons/lucide/book-open";
-import IconGroupIntelligence from "~icons/lucide/cpu";
 
 /** A Lucide icon as produced by unplugin-icons (`~icons/lucide/*`). */
 export type IconComponent = Component<SvelteHTMLElements["svg"]>;
@@ -63,11 +59,3 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   lock: IconLock,
 };
 
-/** One glyph per settings TAB (direction 04's five-tab bar). */
-export const GROUP_ICONS: Record<SettingsGroupId, IconComponent> = {
-  general: IconGroupGeneral,
-  capture: IconCapture,
-  intelligence: IconGroupIntelligence,
-  data: IconGroupData,
-  about: IconGroupAbout,
-};
