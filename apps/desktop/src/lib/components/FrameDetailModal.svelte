@@ -93,6 +93,11 @@
   // once the replacement has actually painted, so exactly one hero is decoded at
   // a time however long the session runs.
   const previewUrls = new FramePreviewUrlHolder();
+  // Teardown-only (no reactive reads): the `open`-goes-false effect below only
+  // runs while this component is alive. A parent destroyed with the modal still
+  // open (route change, subject back-out) would otherwise strand the full-size
+  // hero's blob — bytes and decoded surface both.
+  $effect(() => () => previewUrls.clear());
   let imgSrc = $state<string | null>(null);
   // Resolved via `resolve_app_icons` off the loaded frame's bundle id (best
   // effort; a letter avatar covers the null case). Same command the timeline uses.

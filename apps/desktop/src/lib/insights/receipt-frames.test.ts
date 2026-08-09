@@ -273,4 +273,47 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 		loader.reset();
 		expect(revoked).toEqual(["blob:thumb-1", "blob:thumb-2"]);
 	});
+
+	test("a URL evicted past the cap is retracted, not left painted", async () => {
+		// The strip renders EVERY frame of the span as a cell and the component
+		// keeps whatever `onThumb` handed it, forever. The loader's URL map is
+		// capped at FRAME_PREVIEW_URL_CAP (256), so a long receipt evicts —
+		// and evicting REVOKES. Without a retraction the component keeps
+		// painting a dead blob URL (broken cell, permanently: `thumbCell`
+		// unobserves after the first intersection, so nothing re-requests it).
+		const { loader, thumbs, revoked, calls, flush } = thumbHarness(scrubPreview);
+
+		const ids = Array.from({ length: 300 }, (_, i) => i + 1);
+		for (const fid of ids) loader.requestThumb(fid);
+		// Batches are serialized (one in flight at a time); drain them all. Each
+		// batch awaits a byte read per cell, so give it room to finish.
+		const drain = async () => {
+			for (let i = 0; i < 200; i++) await Promise.resolve();
+		};
+		for (let i = 0; i < 20; i++) {
+			await drain();
+			flush();
+			await drain();
+		}
+
+		// What the component still paints: last value per frame wins, a null
+		// retraction removes it.
+		const painted = new Map<number, string>();
+		for (const [fid, url] of thumbs) {
+			if (url === null) painted.delete(fid);
+			else painted.set(fid, url);
+		}
+		const dead = new Set(revoked);
+		expect(revoked.length).toBeGreaterThan(0); // the cap did evict
+		const stillPaintedButRevoked = [...painted].filter(([, url]) => dead.has(url));
+		expect(stillPaintedButRevoked).toEqual([]);
+
+		// …and an evicted cell must be re-fetchable when it scrolls back.
+		const evictedFid = ids.find((fid) => !painted.has(fid));
+		expect(evictedFid).toBeDefined();
+		const before = calls.length;
+		loader.requestThumb(evictedFid as number);
+		await settle();
+		expect(calls.length).toBe(before + 1);
+	});
 });

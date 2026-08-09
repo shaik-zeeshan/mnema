@@ -12,6 +12,8 @@ import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 
+import { clampTarget } from "$lib/render-idle-clamp";
+
 const _state = $state({ screensAsleep: false, resumeTick: 0 });
 
 export function renderIdle(): boolean {
@@ -32,13 +34,22 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   if (_initialized || typeof window === "undefined") return;
   _initialized = true;
 
+  const wake = () => {
+    _state.screensAsleep = false;
+    _state.resumeTick += 1;
+  };
   void listen("screens_did_sleep", () => {
     _state.screensAsleep = true;
   });
-  void listen("screens_did_wake", () => {
-    _state.screensAsleep = false;
-    _state.resumeTick += 1;
-  });
+  void listen("screens_did_wake", wake);
+  // Backstop: `screens_did_wake` is a single NSWorkspace notification, and a
+  // lost one would freeze every gated updater for the rest of the process
+  // (nothing else clears `screensAsleep` — `visibilitychange` only bumps the
+  // resume tick). The backend already emits `system_did_wake` from every wake
+  // path it has (NSWorkspaceDidWake, the display-reconfiguration recovery, and
+  // the missed-wake resync poll), and `+page.svelte` treats it as the primary
+  // wake trigger — so it un-gates here too. Redundant on a normal wake.
+  void listen("system_did_wake", wake);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") _state.resumeTick += 1;
   });
@@ -60,9 +71,6 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   }
 }
 
-// Physical pixels; window and monitor rects share the same global space.
-const MIN_VISIBLE_PX = 100;
-
 async function clampWindowOntoScreen(): Promise<void> {
   try {
     const win = getCurrentWindow();
@@ -71,24 +79,12 @@ async function clampWindowOntoScreen(): Promise<void> {
       win.outerPosition(),
       win.outerSize(),
     ]);
-    if (monitors.length === 0) return;
-    const meaningfullyVisible = monitors.some((m) => {
-      const overlapW =
-        Math.min(pos.x + size.width, m.position.x + m.size.width) -
-        Math.max(pos.x, m.position.x);
-      const overlapH =
-        Math.min(pos.y + size.height, m.position.y + m.size.height) -
-        Math.max(pos.y, m.position.y);
-      return overlapW >= MIN_VISIBLE_PX && overlapH >= MIN_VISIBLE_PX;
-    });
-    if (meaningfullyVisible) return;
-    const m = monitors[0];
-    await win.setPosition(
-      new PhysicalPosition(
-        m.position.x + Math.max(0, Math.round((m.size.width - size.width) / 2)),
-        m.position.y + Math.max(0, Math.round((m.size.height - size.height) / 2)),
-      ),
-    );
+    // The geometry lives in `$lib/render-idle-clamp` so it can be tested without a
+    // window: signed monitor origins, oversized windows, and the overlap threshold
+    // are all easy to get subtly wrong and impossible to assert from here.
+    const target = clampTarget(monitors, pos, size);
+    if (target === null) return;
+    await win.setPosition(new PhysicalPosition(target.x, target.y));
   } catch {
     // Best-effort: a failed clamp just leaves the window where it was.
   }

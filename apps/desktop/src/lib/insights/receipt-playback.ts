@@ -18,7 +18,7 @@ export class LruCache<V> {
   private map = new Map<number, V>();
   constructor(
     private capacity: number,
-    private onEvict?: (value: V) => void,
+    private onEvict?: (value: V, key: number) => void,
   ) {}
 
   peek(key: number): V | undefined {
@@ -41,7 +41,7 @@ export class LruCache<V> {
     const replaced = this.map.get(key);
     if (replaced !== undefined) {
       this.map.delete(key);
-      if (replaced !== value) this.onEvict?.(replaced);
+      if (replaced !== value) this.onEvict?.(replaced, key);
     }
     this.map.set(key, value);
     while (this.map.size > this.capacity) {
@@ -49,13 +49,13 @@ export class LruCache<V> {
       const lru = this.map.keys().next().value as number;
       const evicted = this.map.get(lru);
       this.map.delete(lru);
-      if (evicted !== undefined) this.onEvict?.(evicted);
+      if (evicted !== undefined) this.onEvict?.(evicted, lru);
     }
   }
 
   /** Drop everything, running `onEvict` for each value on the way out. */
   clear(): void {
-    for (const value of this.map.values()) this.onEvict?.(value);
+    for (const [key, value] of this.map) this.onEvict?.(value, key);
     this.map.clear();
   }
 

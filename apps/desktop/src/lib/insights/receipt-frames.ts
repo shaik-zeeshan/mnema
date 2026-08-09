@@ -35,8 +35,12 @@ type CachedPreview = { dto: FramePreviewDto; url: string };
 export interface ReceiptFrameEvents {
 	/** A preview landed — the display should re-read `peekPreview`. */
 	onPreview(): void;
-	/** A filmstrip thumbnail resolved to a renderable URL. */
-	onThumb(frameId: number, url: string): void;
+	/**
+	 * A filmstrip thumbnail resolved to a renderable URL, or `null` when the URL
+	 * previously handed out was revoked (LRU eviction / reset) — the cell must
+	 * drop it and become re-requestable, not keep painting a dead blob URL.
+	 */
+	onThumb(frameId: number, url: string | null): void;
 	/** Display metadata for the most recently requested frame. */
 	onMeta(meta: FrameDto): void;
 }
@@ -75,6 +79,7 @@ export class ReceiptFrameLoader {
 	#index = 0;
 	#gen = 0; // bumped per reset; stale async work drops
 	#metaToken = 0; // last-requested-meta wins
+	#releasing = false; // inside reset/dispose: suppress per-cell retractions
 
 	constructor(
 		events: ReceiptFrameEvents,
@@ -84,7 +89,16 @@ export class ReceiptFrameLoader {
 		this.#events = events;
 		this.#invoke = invokeFn;
 		this.#urlDeps = urlDeps;
-		this.#thumbUrls = new FramePreviewUrlMap(urlDeps);
+		// The strip renders a cell per frame of the span and keeps whatever URL it
+		// was handed, so a receipt longer than the map's cap evicts (and revokes)
+		// URLs that are still assigned into the component's record. Retract them:
+		// the cell drops the dead URL, and clearing `#thumbDone` lets it re-fetch
+		// when it scrolls back into view.
+		this.#thumbUrls = new FramePreviewUrlMap(urlDeps, undefined, (fid) => {
+			if (this.#releasing) return; // reset/dispose: the strip drops the lot anyway
+			this.#thumbDone.delete(fid);
+			this.#events.onThumb(fid, null);
+		});
 	}
 
 	/** New activity: drop caches/queues and invalidate all in-flight work. */
@@ -93,7 +107,7 @@ export class ReceiptFrameLoader {
 		// `clear()`, not a fresh LruCache: the cache owns live object URLs and
 		// replacing it would strand every one of them.
 		this.#previews.clear();
-		this.#thumbUrls.clear();
+		this.#releaseThumbUrls();
 		this.#metaCache.clear();
 		this.#inFlight.clear();
 		this.#failed.clear();
@@ -117,7 +131,17 @@ export class ReceiptFrameLoader {
 	dispose(): void {
 		this.#gen++;
 		this.#previews.clear();
-		this.#thumbUrls.clear();
+		this.#releaseThumbUrls();
+	}
+
+	/** Wholesale thumbnail release — revoke without retracting cell by cell. */
+	#releaseThumbUrls(): void {
+		this.#releasing = true;
+		try {
+			this.#thumbUrls.clear();
+		} finally {
+			this.#releasing = false;
+		}
 	}
 
 	// ── Bounded, cancellable preview prefetch ──────────────────────────────

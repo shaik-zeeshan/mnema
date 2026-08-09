@@ -97,6 +97,37 @@ describe("FramePreviewUrlHolder", () => {
     expect(holder.current).toBeNull();
   });
 
+  test("a superseded swap that fails is silent, not an error the caller acts on", async () => {
+    // Callers route a rejected `swap` to their no-hero path: DetailPane calls
+    // `clear()` (revoking the URL on screen) and the timeline stage runs its
+    // decode-retry loop. A stale swap that fails AFTER a newer one already
+    // painted must report the same "superseded" null as a stale swap that
+    // succeeded — otherwise a broken frame the user scrubbed past blanks the
+    // hero that loaded fine.
+    let release: (() => void) | null = null;
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let call = 0;
+    const { holder, revoked } = harness({
+      fetchImpl: async () => {
+        if (++call === 1) {
+          await slow;
+          return { ok: false, status: 404, statusText: "Not Found" };
+        }
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+    });
+
+    const stale = holder.swap("/frames/broken.png");
+    expect(await holder.swap("/frames/good.png")).toBe("blob:1");
+    release!();
+
+    expect(await stale).toBeNull();
+    expect(holder.current).toBe("blob:1");
+    expect(revoked).toEqual([]);
+  });
+
   test("a failed fetch surfaces to the caller and leaves the painted URL alone", async () => {
     let call = 0;
     const { holder, revoked } = harness({
@@ -179,6 +210,40 @@ describe("FramePreviewUrlMap", () => {
     expect(urls.snapshot().size).toBe(0);
   });
 
+  test("clear during an in-flight merge stops it minting more URLs", async () => {
+    // `merge` awaits one byte read per frame, so a whole search's worth of
+    // thumbnails takes many round trips. `clear()` is the last call a
+    // component-scoped map ever gets (unmount teardown) — anything the merge
+    // mints after it is stranded for the life of the WebContent process, the
+    // exact leak blob URLs were adopted to stop.
+    const revoked: string[] = [];
+    let minted = 0;
+    let release: (() => void) | null = null;
+    const stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let call = 0;
+    const urls = new FramePreviewUrlMap({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async () => {
+        if (++call === 2) await stalled; // unmount lands here
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: (url: string) => revoked.push(url),
+    });
+
+    const merging = urls.merge(entries(1, 5));
+    await Promise.resolve(); // let frame 1 land and frame 2 stall
+    urls.clear(); // component destroyed
+    release!();
+    await merging;
+
+    expect(urls.snapshot().size).toBe(0);
+    // Every URL that was ever minted has been handed back.
+    expect(new Set(revoked).size).toBe(minted);
+  });
+
   test("one frame failing to fetch leaves the rest painted", async () => {
     // Thumbnails are best-effort: a broken frame must not blank its neighbours,
     // and must stay out of the map so a later pass can retry it.
@@ -198,5 +263,70 @@ describe("FramePreviewUrlMap", () => {
 
     expect([...painted.keys()]).toEqual([1, 3]);
     expect(revoked).toEqual([]);
+  });
+
+  test("a cold merge fetches with bounded concurrency, not one at a time", async () => {
+    // A fresh Quick Recall search merges FRAME_FETCH_LIMIT = 24 entries and the
+    // caller paints nothing until the whole merge resolves. Awaiting each
+    // `asset://` round trip in turn makes that wait 24 IPC latencies deep; the
+    // pre-blob code assigned the map synchronously and let WebKit fetch the 24
+    // in parallel. Bound the pool instead of serialising it (and instead of an
+    // unbounded `Promise.all`, which would fan 24 concurrent reads at the
+    // asset-protocol handler).
+    let live = 0;
+    let peak = 0;
+    let minted = 0;
+    const urls = new FramePreviewUrlMap(
+      {
+        convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+        fetchImpl: async () => {
+          live += 1;
+          peak = Math.max(peak, live);
+          // Two microtask hops: long enough for every peer already scheduled to
+          // enter `fetchImpl` before the first one resolves.
+          await Promise.resolve();
+          await Promise.resolve();
+          live -= 1;
+          return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+        },
+        createObjectUrlImpl: () => `blob:${++minted}`,
+        revokeObjectUrlImpl: () => {},
+      },
+      64,
+    );
+
+    const painted = await urls.merge(entries(1, 24));
+
+    expect(painted.size).toBe(24);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(6); // FRAME_PREVIEW_MERGE_CONCURRENCY
+  });
+});
+
+describe("preview blob-URL ownership", () => {
+  test("every component that mints preview blob URLs revokes them on teardown", async () => {
+    // A blob URL outlives the object that minted it: it stays registered on the
+    // document until `revokeObjectURL`, so a destroyed component's `LruCache`
+    // cap buys nothing — the URLs it still held are stranded, bytes and decoded
+    // surface both. Worse than the `asset://` path this replaced, because a
+    // remount mints FRESH URLs for the same frames instead of reusing one
+    // cached surface per file path. So every component-scoped owner must
+    // release on teardown.
+    const root = new URL("..", import.meta.url).pathname; // apps/desktop/src
+    const offenders: string[] = [];
+    for await (const rel of new Bun.Glob("**/*.svelte").scan(root)) {
+      const source = await Bun.file(`${root}${rel}`).text();
+      const owner = source.match(
+        /(?:const|let)\s+(\w+)\s*=\s*new FramePreviewUrl(?:Map|Holder)\(/,
+      );
+      if (!owner) continue;
+      const id = owner[1];
+      const releasesOnTeardown =
+        new RegExp(`\\$effect\\(\\(\\)\\s*=>\\s*\\(\\)\\s*=>[^;]*${id}\\.clear\\(\\)`).test(
+          source,
+        ) || new RegExp(`onDestroy\\([\\s\\S]{0,600}?${id}\\.clear\\(\\)`).test(source);
+      if (!releasesOnTeardown) offenders.push(rel);
+    }
+    expect(offenders).toEqual([]);
   });
 });

@@ -246,6 +246,11 @@
   // eviction. Painting `asset://` here instead parked one decoded surface per
   // frame in the WebContent process for the life of the window.
   const thumbnailUrls = new FramePreviewUrlMap();
+  // Teardown-only (no reactive reads): Chat is destroyed on every insights tab
+  // switch, and a blob URL survives the object that minted it — without this,
+  // each visit strands its whole live set (bytes AND decoded surface) and the
+  // next visit mints brand-new URLs for the same frames.
+  $effect(() => () => thumbnailUrls.clear());
 
   let composerInput = $state("");
   let composerEl = $state<HTMLTextAreaElement | null>(null);

@@ -76,6 +76,11 @@
   // eviction. Painting `asset://` here instead parked one decoded surface per
   // frame in the WebContent process for the life of the window.
   const thumbnailUrls = new FramePreviewUrlMap();
+  // Teardown-only (no reactive reads): this component is destroyed on every
+  // back/subject switch, and a blob URL survives the object that minted it —
+  // without this, each visit strands its whole live set (bytes AND decoded
+  // surface) and the next visit mints brand-new URLs for the same frames.
+  $effect(() => () => thumbnailUrls.clear());
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
     const m = new Map<number, SubjectTrajectory>();

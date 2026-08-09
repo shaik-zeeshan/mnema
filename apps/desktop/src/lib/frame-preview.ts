@@ -69,11 +69,23 @@ export class FramePreviewUrlHolder {
    * Fetch `filePath` and become its object URL. Returns the URL to paint, or
    * `null` when a newer `swap` superseded this one mid-fetch (nothing was
    * created, so there is nothing to revoke). A failed fetch throws — callers
-   * route that to their existing preview-error path.
+   * route that to their existing preview-error path — but only while this swap
+   * is still the current one; a superseded failure reports `null` like any
+   * other superseded swap.
    */
   async swap(filePath: string, mimeType?: string | null): Promise<string | null> {
     const generation = ++this.#generation;
-    const bytes = await readFramePreviewBytes(filePath, this.#deps);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readFramePreviewBytes(filePath, this.#deps);
+    } catch (error) {
+      // A swap that already lost the race reports "superseded", never the
+      // failure: callers route a rejection to their no-hero path (DetailPane
+      // `clear()`s the holder, the timeline stage runs its decode-retry loop),
+      // which would revoke and blank the newer preview that painted fine.
+      if (generation !== this.#generation) return null;
+      throw error;
+    }
     if (generation !== this.#generation) return null;
     const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
     const url = create(new Blob([bytes], mimeType ? { type: mimeType } : undefined));
@@ -114,6 +126,25 @@ export class FramePreviewUrlHolder {
 export const FRAME_PREVIEW_URL_CAP = 256;
 
 /**
+ * How many preview reads a single {@link FramePreviewUrlMap.merge} keeps in
+ * flight.
+ *
+ * A cold merge is all-or-nothing — the caller assigns the snapshot to reactive
+ * state only once the whole batch resolves — and the batches are big: Quick
+ * Recall merges `FRAME_FETCH_LIMIT` (24) result thumbnails per search, the
+ * filmstrip merges `THUMB_BATCH_SIZE` (24) cells per pump. Awaiting them one at
+ * a time stacks 24 asset-protocol round trips before the first thumbnail
+ * paints, where the `asset://` code this replaced assigned the map
+ * synchronously and let WebKit fetch them in parallel.
+ *
+ * Bounded rather than `Promise.all`: an unbounded fan-out would hand the whole
+ * batch to the asset-protocol handler at once on every keystroke-settle.
+ * ponytail: 6 mirrors a browser's per-origin connection budget; raise it only
+ * with a measurement.
+ */
+export const FRAME_PREVIEW_MERGE_CONCURRENCY = 6;
+
+/**
  * The frame-id → preview-URL map behind every thumbnail grid (Quick Recall
  * results, Chat/Subject receipts, the scrub strip).
  *
@@ -135,12 +166,26 @@ export const FRAME_PREVIEW_URL_CAP = 256;
 export class FramePreviewUrlMap {
   #deps: FramePreviewUrlDependencies;
   #urls: LruCache<string>;
+  // Bumped by `clear()` so an in-flight `merge` stops minting into a map the
+  // owner has already released.
+  #generation = 0;
 
-  constructor(deps: FramePreviewUrlDependencies = {}, capacity = FRAME_PREVIEW_URL_CAP) {
+  /**
+   * `onDropped` fires for each frame whose URL was just revoked (eviction,
+   * `clear`). Callers that hand URLs out one at a time — rather than
+   * re-assigning the whole {@link snapshot} — MUST use it to retract the dead
+   * URL, or they keep painting it forever.
+   */
+  constructor(
+    deps: FramePreviewUrlDependencies = {},
+    capacity = FRAME_PREVIEW_URL_CAP,
+    onDropped?: (frameId: number) => void,
+  ) {
     this.#deps = deps;
-    this.#urls = new LruCache<string>(capacity, (url) => {
+    this.#urls = new LruCache<string>(capacity, (url, frameId) => {
       const revoke = this.#deps.revokeObjectUrlImpl ?? URL.revokeObjectURL;
       revoke(url);
+      onDropped?.(frameId);
     });
   }
 
@@ -156,16 +201,42 @@ export class FramePreviewUrlMap {
   async merge(
     entries: Iterable<{ frameId: number; preview: { filePath: string; mimeType: string } }>,
   ): Promise<Map<number, string>> {
-    for (const { frameId, preview } of entries) {
-      if (this.#urls.get(frameId) !== undefined) continue;
-      try {
-        const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
-        const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
-        this.#urls.set(frameId, create(new Blob([bytes], { type: preview.mimeType })));
-      } catch {
-        // Best-effort: leave the frame out so a later pass can retry it.
-      }
+    // `get` (not `peek`) so an already-held frame is still marked
+    // most-recently-used — a re-search over the same results must not make its
+    // own thumbnails the next eviction candidates.
+    const pending: { frameId: number; preview: { filePath: string; mimeType: string } }[] = [];
+    const claimed = new Set<number>();
+    for (const entry of entries) {
+      if (this.#urls.get(entry.frameId) !== undefined) continue;
+      if (claimed.has(entry.frameId)) continue; // a repeated id must not double-fetch
+      claimed.add(entry.frameId);
+      pending.push(entry);
     }
+
+    // `clear()` (unmount teardown, discarded results) routinely lands inside
+    // this loop — it is the LAST call a component-scoped map ever gets, so a
+    // URL minted after it is stranded for the life of the WebContent process,
+    // which is the leak blob URLs exist to stop. The generation makes `clear`
+    // abort the workers instead of racing them.
+    const generation = this.#generation;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < pending.length) {
+        if (generation !== this.#generation) return;
+        const { frameId, preview } = pending[next++];
+        try {
+          const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
+          if (generation !== this.#generation) return; // cleared mid-read
+          const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
+          this.#urls.set(frameId, create(new Blob([bytes], { type: preview.mimeType })));
+        } catch {
+          // Best-effort: leave the frame out so a later pass can retry it.
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(FRAME_PREVIEW_MERGE_CONCURRENCY, pending.length) }, worker),
+    );
     return this.snapshot();
   }
 
@@ -181,6 +252,9 @@ export class FramePreviewUrlMap {
 
   /** Revoke everything — call on unmount, or when results are discarded. */
   clear(): void {
+    // Bump first: an in-flight `merge` must not mint into a map that will
+    // never be cleared again.
+    this.#generation += 1;
     this.#urls.clear();
   }
 }
