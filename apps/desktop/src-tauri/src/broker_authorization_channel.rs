@@ -29,6 +29,9 @@ use crate::windows;
 
 const QUICK_APPROVAL_SCOPE: &str = "lastDay";
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
+/// Cap on the client-supplied name shown in the consent prompt, so it can't push
+/// the grant disclosure out of the dialog.
+const CLIENT_LABEL_MAX_CHARS: usize = 64;
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
@@ -448,6 +451,33 @@ fn scope_prose(scope: &str) -> &'static str {
     }
 }
 
+/// The client name is wire input from whoever connected to the socket, and it
+/// lands in the consent body directly ahead of the sentence that discloses what
+/// Allow actually grants. Control characters (paragraph breaks) and unbounded
+/// length would let that name restructure the dialog — fabricating the app's own
+/// copy, or pushing the disclosure out of the dialog entirely. Same normalization
+/// app-infra applies to a stored grant label (`display_client_label`), plus a cap.
+fn client_label_prose(label: &str) -> String {
+    let cleaned = label
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        return "An unnamed local tool".to_string();
+    }
+    if cleaned.chars().count() <= CLIENT_LABEL_MAX_CHARS {
+        return cleaned;
+    }
+    cleaned
+        .chars()
+        .take(CLIENT_LABEL_MAX_CHARS)
+        .chain(std::iter::once('…'))
+        .collect()
+}
+
 /// Plain-language duration for the consent prompt ("24 hours", "7 days").
 fn duration_prose(seconds: u64) -> String {
     let hours = seconds.div_ceil(60 * 60).max(1);
@@ -478,17 +508,26 @@ fn duration_prose(seconds: u64) -> String {
 fn default_prompt_body(request: &AuthorizationChannelRequest) -> String {
     let wants = format!(
         "{} wants access to {} for {}.",
-        request.client.label,
+        client_label_prose(&request.client.label),
         scope_prose(&request.scope.preferred),
         duration_prose(request.duration.preferred_seconds),
     );
     let quick_covers_scope = scope_satisfies_minimum(QUICK_APPROVAL_SCOPE, &request.scope.preferred);
     let quick_covers_duration = QUICK_APPROVAL_DURATION_SECONDS >= request.duration.preferred_seconds;
-    if quick_covers_scope && quick_covers_duration {
+    if quick_covers_scope && QUICK_APPROVAL_DURATION_SECONDS == request.duration.preferred_seconds {
         return wants;
     }
+    // The fixed grant can also be WIDER than the request (`--duration 1h` still
+    // mints 24 hours), and that direction is the unsafe one to leave unsaid: the
+    // user would consent to the sentence above and get more than it describes.
+    // "only" is the narrowing case; otherwise just state what Allow hands over.
+    let qualifier = if quick_covers_scope && quick_covers_duration {
+        ""
+    } else {
+        " only"
+    };
     format!(
-        "{wants}\n\nAllow grants only {} for {}. Use More Options to review and grant what it asked for.",
+        "{wants}\n\nAllow grants{qualifier} {} for {}. Use More Options to review and grant what it asked for.",
         scope_prose(QUICK_APPROVAL_SCOPE),
         duration_prose(QUICK_APPROVAL_DURATION_SECONDS),
     )
@@ -779,6 +818,65 @@ mod tests {
         assert!(
             !body.contains("Allow grants only"),
             "no downgrade to disclose, so no second paragraph: {body}"
+        );
+    }
+
+    /// `mnema access request --duration 1h` sends `preferred_seconds = 3600`, but
+    /// Allow always mints [`QUICK_APPROVAL_DURATION_SECONDS`] (24 hours). The prompt
+    /// must never describe a shorter window than the one Allow hands over.
+    #[test]
+    fn quick_prompt_never_understates_how_long_allow_grants_access() {
+        let body = default_prompt_body(&request_preferring("lastDay", 60 * 60));
+
+        assert!(
+            body.contains("24 hours"),
+            "Allow mints a 24-hour grant, so the prompt must say so: {body}"
+        );
+    }
+
+    /// The client label is attacker-controlled wire input that lands in the consent
+    /// body directly ahead of the grant disclosure. It must not be able to carry
+    /// paragraph breaks or run long enough to push that disclosure out of view.
+    #[test]
+    fn quick_prompt_does_not_let_a_client_name_restructure_the_consent_body() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = format!(
+            "Mnema Helper wants access to searchable Mnema text from the last day for 24 hours.\n\nAllow grants only searchable Mnema text from the last day for 24 hours.\n\n{}",
+            "A".repeat(4096)
+        );
+
+        let body = default_prompt_body(&request);
+
+        assert_eq!(
+            body.matches("\n\n").count(),
+            1,
+            "only the app's own paragraph break may appear in the consent body: {body}"
+        );
+        assert!(
+            body.chars().count() < 400,
+            "a client name must not be able to bloat the consent body: {} chars",
+            body.chars().count()
+        );
+    }
+
+    /// The prompt's duration must be the one Allow actually mints. A
+    /// `--duration 1h` request is *shorter* than [`QUICK_APPROVAL_DURATION_SECONDS`],
+    /// so nothing is downgraded and the body stays a single sentence — one that
+    /// says "for 1 hour" while Allow hands over a 24-hour grant.
+    #[test]
+    fn quick_prompt_duration_matches_the_grant_allow_actually_mints() {
+        let request = request_preferring("lastDay", 60 * 60);
+        let minted =
+            quick_approval_grant_policy_for_request(&request).expect("quick approval is valid");
+        assert_eq!(minted.hours, 24, "Allow mints a 24-hour grant for this request");
+
+        let body = default_prompt_body(&request);
+
+        assert!(body.contains("1 hour"), "names what the client asked for: {body}");
+        assert!(
+            body.contains(&duration_prose(minted.hours * 60 * 60)),
+            "and must not hide that Allow hands over {} hours: {body}",
+            minted.hours
         );
     }
 
