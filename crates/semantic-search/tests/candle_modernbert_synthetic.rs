@@ -440,8 +440,29 @@ fn modernbert_forwards_on_metal_when_available() {
         "ModernBERT must load on Metal — it is pinned to F32 there on purpose \
          (backend::candle::arch_dtype)",
     );
+    let text = "the quick brown fox";
     let vectors = backend
-        .embed_batch(&["the quick brown fox"])
+        .embed_batch(&[text])
         .expect("ModernBERT must complete a Metal forward pass at F32");
     assert_unit_vector("metal", &vectors[0]);
+
+    // Not just "it did not error": the same text must produce the same vector on both
+    // devices. `arch_dtype` pins ModernBERT to F32 on Metal because candle 0.10.2's
+    // forward adds an F32-only attention mask to hidden states in the weight dtype;
+    // relaxing that to the F16 the other architectures use would either fail the
+    // forward outright or silently degrade precision, and only a parity assertion
+    // catches the second case. Needs no weights on disk — the model is synthetic.
+    let cpu = CandleBackend::load_cpu(dir.path(), &descriptor)
+        .expect("the same synthetic model loads on CPU");
+    let cpu_vectors = cpu.embed_batch(&[text]).expect("CPU forward");
+    let cosine: f32 = vectors[0]
+        .iter()
+        .zip(&cpu_vectors[0])
+        .map(|(a, b)| a * b)
+        .sum();
+    assert!(
+        cosine >= 0.999,
+        "CPU and Metal must agree to 0.999 for the same input; got {cosine}. \
+         A drop here means the Metal dtype pin changed."
+    );
 }

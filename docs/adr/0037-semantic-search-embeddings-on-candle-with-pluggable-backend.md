@@ -121,7 +121,8 @@ may prepend a full instruction, not just a token tag). See
 documents the **Prompt** concept (Query/Document, declared per descriptor) and the
 **dimension-distinctness** invariant — the final catalog dimensions are 384 / 768 / 1024 /
 2048 / 256 (e5 / nomic / bge-m3 / Stella / Arctic), pairwise-distinct as the store requires.
-The remaining quality lever, **first-window embed**, stays deferred.
+The remaining quality lever, **first-window embed**, stays deferred. *(superseded — see the
+capped-window amendment below.)*
 
 **Amended 2026-08-01 (issue #190/#193): dimension-distinctness is retired.** The vector store
 now stamps the `model_id` of the embedding space its `vec0` table holds, written in the same
@@ -140,3 +141,26 @@ mask to hidden states carrying the weight dtype, so this arm loads at **F32 on M
 as CPU** (`backend::candle::arch_dtype`), costing resident weight bytes (~596 MB for the
 149M-param models) instead of the F16 halving every other arm gets. A CI test pins the
 upstream defect so the workaround can be deleted the moment a candle bump fixes it.
+
+**Amended 2026-08-06 (issue #190): the deferred "first-window embed" lever is taken, capped
+at two windows.** The migration above deferred it behind a larger judged set; that gate has
+still not been run. It ships anyway as `runtime::MAX_DOCUMENT_CHUNKS = 2` — a **DOCUMENT**
+contributes at most its first two token windows to its stored vector and the rest is dropped
+and never searchable; a **QUERY** is never capped. The justification is cost, not quality:
+measured on 2,409 real anchors (1.47 M tokens), a cap of 2 leaves **25.6% of corpus tokens
+unindexed** (a cap of 1 leaves 60.0%, almost all of it screen frames) and buys ~7 min per
+1000 anchors of backfill drain against ~16 min uncapped. It is **not** a heat lever — duty is
+pinned by `BACKFILL_BATCH_COOLDOWN_MULTIPLIER`, and 1 → 2 costs +2% GPU power, inside
+run-to-run scatter. The standing quality evidence is still the small judge (26 queries, single
+grader): nDCG@10 0.760 → 0.777 at a cap of 1 with a **−0.118 concept-query soft spot**. The
+larger judged set therefore remains an open follow-up on the shipped cap, not a precondition
+that was met.
+
+Two consequences the decision above no longer holds. (1) **"Never silently truncated" is
+retired on the document side** — the crate keeps "one stored vector per anchor", but that
+vector no longer covers all of an overflowing document. (2) Cross-chunk pooling is now
+**weighted by chunk length** (`runtime::weighted_mean_pool_l2`), not a uniform mean: with a
+cap in place an equal-weighted 6-token tail was swinging a full 250-token head (a query naming
+the head fell from rank 2 to 1062). The offline harness in `scripts/semantic_bench/` mirrors
+the weighting but defaults to **uncapped** (`--max-doc-chunks 0`), so the model-ranking numbers
+quoted in the catalog descriptions were measured without the cap.

@@ -227,10 +227,13 @@ impl SemanticSearchEmbedder {
     /// embedded as `kind` (query vs document — selects the per-model input prompt).
     ///
     /// Text within the window is embedded directly; text that overflows is
-    /// auto-split into token-window chunks (never silently truncated), each chunk
-    /// embedded, and the chunk vectors mean-pooled and L2-normalized into one
-    /// vector. Delegates to [`embed_texts`](Self::embed_texts) so the single-text
-    /// query path and the batched backfill path share one set of semantics.
+    /// auto-split into token-window chunks, each chunk embedded, and the chunk
+    /// vectors pooled **weighted by chunk length** and L2-normalized into one
+    /// vector ([`weighted_mean_pool_l2`]). A `Document` keeps only its first
+    /// [`MAX_DOCUMENT_CHUNKS`] windows — text past them is dropped and never
+    /// indexed; a `Query` is never capped. Delegates to
+    /// [`embed_texts`](Self::embed_texts) so the single-text query path and the
+    /// batched backfill path share one set of semantics.
     pub fn embed_text(&self, text: &str, kind: EmbedKind) -> Result<Vec<f32>, EmbeddingError> {
         self.embed_texts(&[text], kind)
             .into_iter()
@@ -699,17 +702,32 @@ mod tests {
         seen: std::sync::Mutex<Vec<String>>,
     }
 
+    /// The vector [`RecordingBackend`] returns for a chunk — a deterministic unit
+    /// vector derived from the chunk's TEXT.
+    ///
+    /// Deliberately not keyed on the chunk's position in the batch. A position-keyed
+    /// fake makes value assertions structurally impossible, because the expected
+    /// vector cannot be computed independently of the very ordering under test — so
+    /// a fan-in that slices at the wrong offset still returns something that looks
+    /// plausible. Keying on content means a misaligned slice hands a text a vector it
+    /// provably could not have produced.
+    fn content_vector(text: &str) -> Vec<f32> {
+        // Cheap deterministic angle: any injective-enough mixing works, the point is
+        // that it depends on the bytes and nothing else.
+        let mixed = text
+            .bytes()
+            .fold(0u32, |acc, byte| acc.wrapping_mul(31).wrapping_add(byte as u32));
+        let angle = (mixed % 3600) as f32 * std::f32::consts::TAU / 3600.0;
+        vec![angle.cos(), angle.sin()]
+    }
+
     impl SemanticSearchBackend for RecordingBackend {
         fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
             let mut seen = self.seen.lock().expect("seen");
             let mut out = Vec::with_capacity(texts.len());
-            for (index, text) in texts.iter().enumerate() {
+            for text in texts {
                 seen.push((*text).to_string());
-                // Distinct unit vectors, so a wrong fan-in slice is visible rather
-                // than accidentally matching.
-                let mut vector = vec![0.0; 2];
-                vector[index % 2] = 1.0;
-                out.push(vector);
+                out.push(content_vector(text));
             }
             Ok(out)
         }
@@ -717,6 +735,26 @@ mod tests {
         fn dimension(&self) -> usize {
             2
         }
+    }
+
+    /// The vector a text of `chunks` SHOULD resolve to: byte-for-byte passthrough for
+    /// a single chunk, otherwise the byte-length-weighted pool of its own chunks.
+    /// Computed independently of the code under test.
+    fn expected_vector(chunks: &[&str]) -> Vec<f32> {
+        if chunks.len() == 1 {
+            return content_vector(chunks[0]);
+        }
+        let vectors: Vec<Vec<f32>> = chunks.iter().map(|c| content_vector(c)).collect();
+        let weights: Vec<f32> = chunks.iter().map(|c| c.len() as f32).collect();
+        weighted_mean_pool_l2(&vectors, &weights).expect("pool")
+    }
+
+    fn assert_close(got: &[f32], want: &[f32], what: &str) {
+        assert_eq!(got.len(), want.len(), "{what}: dimension");
+        assert!(
+            got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-5),
+            "{what}\n  got:  {got:?}\n  want: {want:?}"
+        );
     }
 
     /// So the test can keep a handle on the recorder while the embedder owns it.
@@ -746,66 +784,180 @@ mod tests {
         (embedder, backend)
     }
 
+    /// A text that overflows the cap by exactly one window, built FROM the constant.
+    ///
+    /// The fixture must outgrow the cap whatever the cap is. An earlier version used a
+    /// fixed 3-window text and clamped with `MAX_DOCUMENT_CHUNKS.min(3)`, which meant
+    /// that at any cap >= 3 both sides of the assertion collapsed to "3 windows" and
+    /// the test silently stopped testing the cap at all. Unknown words map to `[UNK]`
+    /// through the whitespace tokenizer, still one token each, so arbitrary words work.
+    fn text_overflowing_the_cap() -> (String, Vec<String>) {
+        // Budget = 4 - SPECIAL_TOKEN_HEADROOM = 2 content tokens per window.
+        let windows: Vec<String> = (0..=MAX_DOCUMENT_CHUNKS)
+            .map(|w| format!("w{}a w{}b", w, w))
+            .collect();
+        (windows.join(" "), windows)
+    }
+
     #[test]
-    fn a_document_is_capped_to_one_window_but_a_query_is_not() {
-        // 6 content words at a 4-token budget (minus SPECIAL_TOKEN_HEADROOM = 2)
-        // splits into 3 chunks — see `split_covers_every_token`.
-        let text = "alpha bravo charlie delta echo foxtrot";
+    fn a_document_is_capped_to_max_document_chunks_but_a_query_is_not() {
+        let (text, windows) = text_overflowing_the_cap();
 
         let (embedder, backend) = recording_embedder(4);
-        let results = embedder.embed_texts(&[text], EmbedKind::Document);
+        let results = embedder.embed_texts(&[text.as_str()], EmbedKind::Document);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok(), "the capped document still embeds");
-        let seen = backend.seen.lock().expect("seen").clone();
-        // Asserted against the constant, not a baked-in count, so moving the cap does
-        // not silently turn this into a test of nothing.
+        let mut seen = backend.seen.lock().expect("seen").clone();
+        seen.sort();
+        let mut want: Vec<String> = windows[..MAX_DOCUMENT_CHUNKS].to_vec();
+        want.sort();
         assert_eq!(
-            seen,
-            ["alpha bravo", "charlie delta", "echo foxtrot"][..MAX_DOCUMENT_CHUNKS.min(3)]
-                .iter()
-                .map(|chunk| (*chunk).to_string())
-                .collect::<Vec<_>>(),
-            "a DOCUMENT is embedded from its first MAX_DOCUMENT_CHUNKS windows in order; \
+            seen, want,
+            "a DOCUMENT is embedded from its first MAX_DOCUMENT_CHUNKS windows; \
              everything past them is dropped"
         );
 
         // The same text as a QUERY is never capped — every window still embeds.
         let (embedder, backend) = recording_embedder(4);
-        let results = embedder.embed_texts(&[text], EmbedKind::Query);
+        let results = embedder.embed_texts(&[text.as_str()], EmbedKind::Query);
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok());
         assert_eq!(
             backend.seen.lock().expect("seen").len(),
-            3,
+            MAX_DOCUMENT_CHUNKS + 1,
             "a QUERY must keep every window — truncating the user's words is not the trade"
         );
     }
 
     #[test]
     fn capping_keeps_each_text_aligned_with_its_own_vector() {
-        // The hazard the cap introduces: `chunk_counts` must record the POST-cap
-        // length, or the fan-in slices the flat vector list at the wrong offsets and
-        // anchors silently receive EACH OTHER's vectors. Mix an overflowing text with
-        // short ones so a desync would misalign the neighbours.
-        let long = "alpha bravo charlie delta echo foxtrot";
+        // The hazard the cap introduces: `chunk_counts` AND `chunk_weights` must
+        // record the POST-cap chunks, or the fan-in slices the flat vector list at the
+        // wrong offsets and texts silently receive each other's vectors — or their
+        // neighbours' WEIGHTS, which is the subtler half.
+        //
+        // Asserting exact vector VALUES (not just `is_ok` and a pass count) is what
+        // makes this bite: hoisting `chunk_weights.extend(..)` above
+        // `chunks.truncate(..)` keeps every text `Ok` and the pass count identical
+        // while pooling texts with their neighbours' weights.
+        let (long, windows) = text_overflowing_the_cap();
+        let capped: Vec<&str> = windows[..MAX_DOCUMENT_CHUNKS]
+            .iter()
+            .map(String::as_str)
+            .collect();
+
         let (embedder, backend) = recording_embedder(4);
-        let results = embedder.embed_texts(&[long, "charlie", long, "delta"], EmbedKind::Document);
+        let texts = [long.as_str(), "charlie", long.as_str(), "delta"];
+        let results = embedder.embed_texts(&texts, EmbedKind::Document);
 
         assert_eq!(results.len(), 4);
-        assert!(results.iter().all(|r| r.is_ok()), "every text resolves");
         let seen = backend.seen.lock().expect("seen").clone();
-        // Two 3-chunk documents capped to MAX_DOCUMENT_CHUNKS, plus two single-chunk
-        // texts. Derived from the constant so the cap can move without rewriting this.
         assert_eq!(
             seen.len(),
-            2 * MAX_DOCUMENT_CHUNKS.min(3) + 2,
+            2 * MAX_DOCUMENT_CHUNKS + 2,
             "each overflowing document contributes exactly MAX_DOCUMENT_CHUNKS passes \
              and each short text exactly one"
         );
-        assert!(
-            seen.contains(&"charlie".to_string()) && seen.contains(&"delta".to_string()),
-            "the short texts are embedded as themselves, not swallowed by a bad slice"
+
+        // Each text equals the weighted pool of ITS OWN post-cap chunks, computed
+        // independently of the code under test.
+        for (index, want_chunks) in [
+            capped.as_slice(),
+            &["charlie"],
+            capped.as_slice(),
+            &["delta"],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let got = results[index]
+                .as_ref()
+                .unwrap_or_else(|error| panic!("text {index} must embed: {error}"));
+            assert_close(
+                got,
+                &expected_vector(want_chunks),
+                &format!("text {index} ({:?}) got the wrong vector", texts[index]),
+            );
+        }
+    }
+
+    #[test]
+    fn capped_documents_stay_aligned_across_sub_batch_boundaries() {
+        // The same alignment claim where the chunks span more than one length-sorted
+        // `EMBED_SUB_BATCH_SIZE` window, so the flat results are scattered back from
+        // sorted order rather than arriving in input order.
+        let (long, windows) = text_overflowing_the_cap();
+        let capped: Vec<&str> = windows[..MAX_DOCUMENT_CHUNKS]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let count = EMBED_SUB_BATCH_SIZE / MAX_DOCUMENT_CHUNKS.max(1) + 2;
+        let texts: Vec<&str> = std::iter::repeat(long.as_str()).take(count).collect();
+
+        let embedder = recording_embedder(4).0;
+        let results = embedder.embed_texts(&texts, EmbedKind::Document);
+
+        assert_eq!(results.len(), count);
+        let want = expected_vector(&capped);
+        for (index, got) in results.iter().enumerate() {
+            let got = got
+                .as_ref()
+                .unwrap_or_else(|error| panic!("text {index} must embed: {error}"));
+            assert_close(got, &want, &format!("text {index} across sub-batches"));
+        }
+    }
+
+    #[test]
+    fn an_invalid_or_partial_weight_list_falls_back_to_an_equal_share() {
+        // `weighted_mean_pool_l2` substitutes 1.0 for a missing, non-finite, zero or
+        // negative weight. Only the fully-empty list was covered; each of these four
+        // branches is a distinct `unwrap_or(1.0)` path and none of them had a test.
+        // A negative weight is the dangerous one: unguarded it would SUBTRACT a chunk
+        // out of the pool rather than contribute it.
+        let e0 = vec![1.0, 0.0];
+        let e1 = vec![0.0, 1.0];
+        let symmetric = weighted_mean_pool_l2(&[e0.clone(), e1.clone()], &[1.0, 1.0])
+            .expect("uniform pool");
+
+        for (label, weights) in [
+            ("a short list leaves the tail unweighted", vec![2.0]),
+            ("NaN", vec![f32::NAN, 1.0]),
+            ("infinity", vec![f32::INFINITY, 1.0]),
+            ("zero", vec![0.0, 1.0]),
+            ("negative", vec![-5.0, 1.0]),
+        ] {
+            let pooled = weighted_mean_pool_l2(&[e0.clone(), e1.clone()], &weights)
+                .unwrap_or_else(|| panic!("{label}: pooling must not fail"));
+            let want = if label.starts_with("a short list") {
+                // The present weight still counts; only the missing one defaults.
+                weighted_mean_pool_l2(&[e0.clone(), e1.clone()], &[2.0, 1.0]).expect("pool")
+            } else {
+                symmetric.clone()
+            };
+            assert_close(&pooled, &want, label);
+        }
+    }
+
+    #[test]
+    fn fan_in_pools_uniformly_when_the_weight_list_is_short() {
+        // The clamp in `fan_in_chunk_results`: a weight list shorter than the results
+        // must degrade to uniform pooling, never misalign. Every other call site
+        // passes a correctly-sized list, so this branch is otherwise dead in tests.
+        let v0 = vec![1.0, 0.0];
+        let v1 = vec![0.0, 1.0];
+        let v2 = vec![1.0, 1.0];
+        let results = fan_in_chunk_results(
+            &[2, 1],
+            &[],
+            vec![Ok(v0.clone()), Ok(v1.clone()), Ok(v2.clone())],
         );
+        assert_eq!(results.len(), 2);
+        assert_close(
+            results[0].as_ref().expect("text0"),
+            &weighted_mean_pool_l2(&[v0, v1], &[]).expect("pool"),
+            "an absent weight list pools uniformly",
+        );
+        assert_eq!(results[1].as_ref().expect("text1"), &v2);
     }
 
     fn whitespace_tokenizer() -> Tokenizer {
@@ -907,24 +1059,34 @@ mod tests {
         // End-to-end plumbing check: the per-chunk weights must reach the fan-in
         // aligned with their own chunk. Budget = 2 content tokens, so this splits
         // into a 41-byte head and a 1-byte tail.
-        let text = "aaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbb c";
+        let head = "aaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbb";
+        let tail = "c";
+        let text = format!("{head} {tail}");
         let (embedder, backend) = recording_embedder(4);
-        let results = embedder.embed_texts(&[text], EmbedKind::Document);
+        let results = embedder.embed_texts(&[text.as_str()], EmbedKind::Document);
         let pooled = results[0].as_ref().expect("pooled");
 
-        // The recording backend hands out `e_{index % 2}` in forward-pass order, so
-        // the head's own vector is whichever slot it occupied — read it back rather
-        // than assuming the length sort's direction.
         let seen = backend.seen.lock().expect("seen").clone();
         assert_eq!(seen.len(), 2, "the text splits into exactly two windows");
-        let head_slot = seen
-            .iter()
-            .position(|chunk| chunk.starts_with('a'))
-            .expect("head chunk");
+        assert!(seen.contains(&head.to_string()) && seen.contains(&tail.to_string()));
+
+        // The backend is content-keyed, so the head's and tail's own vectors are known
+        // independently. A 41-byte head against a 1-byte tail must land the pool
+        // essentially on the head — an unweighted mean would sit halfway between them.
+        let cosine = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+        let to_head = cosine(pooled, &content_vector(head));
+        let to_tail = cosine(pooled, &content_vector(tail));
         assert!(
-            pooled[head_slot % 2] > 0.99,
-            "the pooled vector must sit on the long head window, not halfway: {pooled:?}"
+            to_head > 0.999,
+            "a 1-byte tail must not pull the pool off a 41-byte head \
+             (cos to head {to_head}, to tail {to_tail})"
         );
+        assert!(
+            to_head > to_tail,
+            "the pool must sit nearer the window carrying more text"
+        );
+        // And it is exactly the independently-computed weighted pool.
+        assert_close(pooled, &expected_vector(&[head, tail]), "weighted pool");
     }
 
     #[test]

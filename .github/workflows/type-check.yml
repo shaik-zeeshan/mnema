@@ -102,3 +102,12 @@ jobs:
 
       - name: Run semantic-search descriptor drift guard
         run: cargo test -p semantic-search --locked
+
+      # The crate's `default = []`, so the run above never enables `metal` — and the
+      # ModernBERT F32-on-Metal workaround (`backend::candle::arch_dtype`) only has a
+      # code path under that feature. Without this step, deleting the workaround
+      # leaves the whole suite green while the shipped desktop build (which compiles
+      # `semantic-search` with `features = ["metal"]`) fails to embed at all. The
+      # Metal tests self-skip when no device is available, so this can only add signal.
+      - name: Run semantic-search Metal backend guard
+        run: cargo test -p semantic-search --features metal --locked
