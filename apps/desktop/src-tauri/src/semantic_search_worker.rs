@@ -102,7 +102,7 @@ const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
 /// forward passes, and batch wall time already varies with the CPU-pacing
 /// cooldown. Upgrade path: if candle ever sweeps `private_buffers`, delete this
 /// and the recycle check that reads it.
-const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(300);
+pub(crate) const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(300);
 
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
 /// blocks capture, so a failure just retries later rather than surfacing.
@@ -623,13 +623,19 @@ impl LoadedEmbedder {
     /// Whether this instance has been warm past [`MAX_EMBEDDER_WARM_LIFETIME`] and
     /// should be dropped so candle's Metal buffer pool goes back to the OS.
     pub(crate) fn is_stale(&self) -> bool {
-        Self::stale_at(self.loaded_at)
+        Self::stale_after(self.loaded_at.elapsed())
     }
 
-    /// [`is_stale`](Self::is_stale) over a bare load time, so the cap's boundary is
-    /// testable without a real model on disk.
-    fn stale_at(loaded_at: Instant) -> bool {
-        loaded_at.elapsed() >= MAX_EMBEDDER_WARM_LIFETIME
+    /// [`is_stale`](Self::is_stale) over a bare warm duration, so the cap's boundary
+    /// is testable without a real model on disk.
+    ///
+    /// Takes the elapsed `Duration`, NOT the load `Instant`: a test that wound a real
+    /// `Instant` back with `checked_sub(MAX_EMBEDDER_WARM_LIFETIME)` gets `None` on a
+    /// host whose uptime is under the cap (`Instant` is boot-relative on macOS), so
+    /// the `.expect(...)` panicked on a fresh CI VM for reasons unrelated to the
+    /// product. There is no clock to read here.
+    pub(crate) fn stale_after(warm_for: Duration) -> bool {
+        warm_for >= MAX_EMBEDDER_WARM_LIFETIME
     }
 }
 
@@ -651,7 +657,7 @@ static SHARED_EMBEDDER: Mutex<Weak<LoadedEmbedder>> = Mutex::new(Weak::new());
 
 /// Distinguishes a `load_embedder` failure from a successful-load-but-embed
 /// failure when both now run inside the one `spawn_blocking` (M1). The closure
-/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>), LoadError>`: an
+/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>, forward time), LoadError>`: an
 /// `Err(LoadError)` means the model never loaded (→ CT3 load-failure accounting:
 /// `consecutive_load_failures`, the corrupt-model signal), while an `Ok` with
 /// per-anchor `Err`s inside the `Vec` means the model loaded fine and individual
@@ -833,7 +839,6 @@ async fn run_sweep_pass(
     // `static` — proceed unpaced rather than dropping the batch.
     let _embed_slot = BACKGROUND_EMBED_SLOT.acquire().await.ok();
 
-    let embed_started_at = Instant::now();
     let app_data_dir_for_task = app_data_dir.clone();
     let descriptor_for_task = descriptor.clone();
     // CT2: race the blocking load+embed against the shutdown watch so a quit
@@ -862,6 +867,17 @@ async fn run_sweep_pass(
         // the blocking thread's default QoS. The embedder is `&self`-immutable for
         // embedding, so no `mut` is needed — it is still owned by (and returned out
         // of) this task so it survives across passes.
+        //
+        // The pacing clock starts HERE, after any (re)load: the cooldown governs the
+        // duty cycle of the FORWARD, so it must not see the model load. One pass in
+        // every `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (hundreds of MB off
+        // disk into the device) inside this same task, and the per-anchor DB re-checks
+        // + the batch write transaction run after it in the caller — timing the whole
+        // region would rest 3x all of that, and at
+        // `BACKFILL_BATCH_COOLDOWN_MAX = 30s` a recycle pass clamps at the ceiling,
+        // which is exactly the "cap is the governor" regime this band was retuned to
+        // leave.
+        let forward_started_at = Instant::now();
         let out: Vec<(i64, std::result::Result<Vec<f32>, String>)> = if per_anchor_isolation {
             // F3 per-anchor isolation: the batched embed has kept misclassifying this
             // exact window transient over repeated passes (the >=2-anchor poison
@@ -902,7 +918,7 @@ async fn run_sweep_pass(
                 .map(|(anchor_id, result)| (anchor_id, result.map_err(|error| error.to_string())))
                 .collect()
         };
-        Ok((loaded, out))
+        Ok((loaded, out, forward_started_at.elapsed()))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
@@ -945,12 +961,12 @@ async fn run_sweep_pass(
     //   - `Err(LoadError)` => CT3 load-failure accounting (distinct failure mode).
     //   - `Ok((loaded, embedded))` => the model loaded OK; per-anchor results carry
     //     any embed failures for the existing L3 handling below.
-    let (loaded, embedded) = match load_embed {
-        Ok(pair) => {
+    let (loaded, embedded, forward_elapsed) = match load_embed {
+        Ok(triple) => {
             // A successful load (or a reuse of the cached embedder, which also proves
             // the weights are fine) resets CT3.
             state.clear_load_failures();
-            pair
+            triple
         }
         Err(LoadError { error }) => {
             // CT3: availability is presence+marker only — it never validates that the
@@ -1184,10 +1200,12 @@ async fn run_sweep_pass(
             "semantic index backfill embedded {stored} anchor(s) (batch={}, embed_failures={embed_failures}, transient_errors={transient_errors}, backlog={backlog})",
             batch.len()
         ));
-        // CPU pacing: scale the inter-batch cooldown off this batch's wall time and
-        // clamp it, then loop. This replaces the old 0ms yield so a large backfill
-        // paces itself instead of sustaining a back-to-back multi-core burn.
-        return SweepPass::DidWork(backfill_batch_cooldown(embed_started_at.elapsed()));
+        // CPU pacing: scale the inter-batch cooldown off this batch's FORWARD time
+        // (measured inside the blocking task, so a `MAX_EMBEDDER_WARM_LIFETIME`
+        // reload and the DB tail above are excluded) and clamp it, then loop. This
+        // replaces the old 0ms yield so a large backfill paces itself instead of
+        // sustaining a back-to-back multi-core burn.
+        return SweepPass::DidWork(backfill_batch_cooldown(forward_elapsed));
     }
     if dimension_skips > 0 {
         // Every stored anchor was skipped on a dimension mismatch (a switch in
@@ -1275,8 +1293,9 @@ fn is_isolated_embed_failure(embed_failure_count: usize) -> bool {
     embed_failure_count == 1
 }
 
-/// CPU-pacing cooldown between backfill batches: the just-finished batch's wall
-/// time scaled by [`BACKFILL_BATCH_COOLDOWN_MULTIPLIER`] and clamped to
+/// CPU-pacing cooldown between backfill batches: the just-finished batch's
+/// **forward** wall time — not the whole pass — scaled by
+/// [`BACKFILL_BATCH_COOLDOWN_MULTIPLIER`] and clamped to
 /// `[BACKFILL_BATCH_COOLDOWN_MIN, BACKFILL_BATCH_COOLDOWN_MAX]`. This mirrors the
 /// shape of OCR's Execution Budget governor (`ocr_budget::cooldown_duration`),
 /// which clamps `work_ms * multiplier`, so the heavier a batch was the longer the
@@ -1858,6 +1877,43 @@ mod tests {
     }
 
     #[test]
+    fn the_pacing_band_has_room_for_the_forward_but_not_for_a_model_reload() {
+        // The band's HEADROOM: the largest input that still scales through
+        // unclamped. Above it the ceiling is the governor again, and the duty cycle
+        // stops responding proportionally to a slower device — the exact regime this
+        // band was retuned to leave.
+        let headroom = BACKFILL_BATCH_COOLDOWN_MAX.div_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
+        assert_eq!(
+            headroom,
+            Duration::from_secs(10),
+            "MAX / multiplier is the whole budget the paced input has to fit in"
+        );
+
+        // What the sweep actually paces over is the FORWARD alone, measured inside
+        // the blocking task. On an M4 Air at the shipped `MAX_DOCUMENT_CHUNKS = 2`
+        // the sweep drains 2.40 anchors/s at 26% duty, i.e. a SWEEP_BATCH_SIZE
+        // forward of ~1.7s — comfortably inside the headroom even several times
+        // slower under thermal/Low-Power throttling.
+        let measured_forward = Duration::from_millis(1_700);
+        assert!(
+            backfill_batch_cooldown(measured_forward) < BACKFILL_BATCH_COOLDOWN_MAX,
+            "the forward must scale through unclamped, or the ceiling governs again"
+        );
+
+        // What it must NOT pace over is the same task's model (re)load. One pass per
+        // `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (547 MB of F32
+        // safetensors cast into device memory for the default model) in the same
+        // blocking task; a reload alone eats the entire headroom, so timing the whole
+        // region would clamp that pass at the ceiling AND rest 3x a disk read that is
+        // not the GPU burn the duty cycle governs.
+        let measured_reload = Duration::from_secs(10);
+        assert!(
+            measured_reload >= headroom,
+            "a model reload does not fit the pacing band — keep it out of the input"
+        );
+    }
+
+    #[test]
     fn clustered_poison_trips_per_anchor_isolation_after_repeated_transient_passes() {
         // F3: a >=2-anchor poison cluster sharing the newest-first window fails the
         // batched embed as a whole-batch (transient) fault every pass, so it never
@@ -2106,17 +2162,36 @@ mod tests {
             "the warm cap must outlast one paced batch or the worker thrashes reloads"
         );
 
-        let just_loaded = Instant::now();
+        // Durations, not wound-back `Instant`s: `Instant::checked_sub` returns `None`
+        // on a host with less uptime than the cap, which panicked on fresh CI VMs.
         assert!(
-            !LoadedEmbedder::stale_at(just_loaded),
+            !LoadedEmbedder::stale_after(Duration::ZERO),
             "a freshly loaded embedder stays warm for the drain"
         );
-        let at_the_cap = just_loaded
-            .checked_sub(MAX_EMBEDDER_WARM_LIFETIME)
-            .expect("the cap is representable against a just-taken Instant");
         assert!(
-            LoadedEmbedder::stale_at(at_the_cap),
+            !LoadedEmbedder::stale_after(MAX_EMBEDDER_WARM_LIFETIME - Duration::from_secs(1)),
+            "one second short of the cap is still warm — the boundary is inclusive"
+        );
+        assert!(
+            LoadedEmbedder::stale_after(MAX_EMBEDDER_WARM_LIFETIME),
             "an embedder warm for the whole cap recycles on the next batch"
+        );
+    }
+
+    /// The pacing band's assertions must fail on a multiplier drift in EITHER
+    /// direction. `cooldown(mid) == mid * MULTIPLIER` restates the implementation
+    /// against itself and passes for any multiplier; `realistic < MAX` only catches a
+    /// multiplier raised past ~7.5. Nothing bounded it from BELOW, so dropping it to
+    /// 0.1 (duty 91% — the throttle-amplifying regime this band was retuned to leave)
+    /// kept every assertion green. One literal pins the shipped duty target.
+    #[test]
+    fn the_cooldown_band_pins_the_shipped_duty_target_with_a_literal() {
+        assert_eq!(
+            backfill_batch_cooldown(Duration::from_secs(4)),
+            Duration::from_secs(12),
+            "a 4s forward must earn 12s of rest — a 25% duty cycle. This literal is \
+             the only assertion that fails if BACKFILL_BATCH_COOLDOWN_MULTIPLIER \
+             drifts in either direction."
         );
     }
 }

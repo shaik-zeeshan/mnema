@@ -51,6 +51,29 @@ impl SemanticQueryEmbedderState {
     }
 }
 
+/// Whether the cached query embedder can still be handed to this search: the same
+/// provider/model AND still inside the shared warm cap
+/// ([`MAX_EMBEDDER_WARM_LIFETIME`](crate::semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME)).
+///
+/// The staleness half is not an optimization: this cache is the only holder of the
+/// process-wide `Arc` with no idle-drop and no per-pass recycle, so a stale `Arc`
+/// kept here pins the instance — and, on macOS, candle's never-swept Metal buffer
+/// pool — for the whole process lifetime, which makes both workers' recycle free
+/// nothing and leaves a second full model resident once they reload.
+/// `warm_for` is a `Duration` (`loaded_at.elapsed()`), not the `Instant`, so the
+/// boundary is testable without winding a real clock back — `Instant::checked_sub`
+/// returns `None` on a host whose uptime is under the cap.
+fn cached_embedder_is_reusable(
+    provider: &str,
+    model_id: &str,
+    warm_for: std::time::Duration,
+    descriptor: &semantic_search::SemanticSearchModelDescriptor,
+) -> bool {
+    provider == descriptor.provider
+        && model_id == descriptor.model_id
+        && warm_for < crate::semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME
+}
+
 /// Embed the search `query` into a **Semantic Search Vector** for **Hybrid
 /// Search**, or `None` when **Semantic Search** is inert: no model installed,
 /// the selection is disabled/unknown, an empty query, or a model load/embed
@@ -116,13 +139,18 @@ pub async fn embed_search_query(
         let mut guard = state.cached.lock().unwrap_or_else(|poison| poison.into_inner());
         match guard.take() {
             Some(loaded)
-                if loaded.provider == descriptor.provider
-                    && loaded.model_id == descriptor.model_id =>
+                if cached_embedder_is_reusable(
+                    &loaded.provider,
+                    &loaded.model_id,
+                    loaded.loaded_at.elapsed(),
+                    &descriptor,
+                ) =>
             {
                 Some(loaded)
             }
-            // A different model (Settings switch) or nothing cached: drop it and
-            // reload below.
+            // A different model (Settings switch), an instance warm past the shared
+            // cap, or nothing cached: drop the `Arc` here (so the shared instance can
+            // actually be freed) and reload below.
             _ => None,
         }
     };
@@ -166,8 +194,16 @@ pub async fn embed_search_query(
         }
     };
 
-    // Restore the embedder for the next search.
-    {
+    // Restore the embedder for the next search — unless it is already warm past the
+    // shared cap, in which case drop the `Arc` here instead of parking it. This
+    // holder has no idle timer of its own, so a cached stale `Arc` would otherwise
+    // sit until the *next* search (which may never come) and pin the process-wide
+    // instance, making both workers' recycle free nothing.
+    //
+    // ponytail: only re-checked around a search. A model loaded for one search and
+    // never searched again stays resident until the next search; add an idle sweep
+    // if that shows up in a real footprint measurement.
+    if !loaded.is_stale() {
         let mut guard = state.cached.lock().unwrap_or_else(|poison| poison.into_inner());
         *guard = Some(loaded);
     }
@@ -192,5 +228,56 @@ pub async fn embed_search_query(
             ));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME;
+    use capture_types::default_semantic_search_settings;
+    use std::time::Duration;
+
+    fn nomic_descriptor() -> semantic_search::SemanticSearchModelDescriptor {
+        resolve_selected_descriptor(&default_semantic_search_settings())
+            .expect("the default English tier resolves")
+    }
+
+    #[test]
+    fn the_query_cache_releases_an_embedder_warm_past_the_shared_cap() {
+        let descriptor = nomic_descriptor();
+
+        // A freshly loaded instance is reused across keystrokes (the whole point of
+        // the cache).
+        assert!(cached_embedder_is_reusable(
+            &descriptor.provider,
+            &descriptor.model_id,
+            Duration::ZERO,
+            &descriptor
+        ));
+
+        // A Settings model switch is still a miss.
+        assert!(!cached_embedder_is_reusable(
+            "some-other-provider",
+            &descriptor.model_id,
+            Duration::ZERO,
+            &descriptor
+        ));
+
+        // ...and so is an instance warm past the shared cap. This holder has no
+        // idle-drop and no per-pass recycle, so keeping its `Arc` past the cap pins
+        // the process-wide embedder (and candle's never-swept Metal buffer pool) for
+        // the process lifetime: both workers' recycle then frees nothing, and their
+        // reload leaves a SECOND full model resident.
+        assert!(
+            !cached_embedder_is_reusable(
+                &descriptor.provider,
+                &descriptor.model_id,
+                MAX_EMBEDDER_WARM_LIFETIME,
+                &descriptor
+            ),
+            "a query embedder warm past MAX_EMBEDDER_WARM_LIFETIME must be dropped, \
+             not pinned forever"
+        );
     }
 }

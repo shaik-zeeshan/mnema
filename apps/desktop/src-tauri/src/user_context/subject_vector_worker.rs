@@ -428,7 +428,6 @@ async fn run_sweep_pass(
         .await
         .ok();
 
-    let embed_started_at = Instant::now();
     let app_data_dir_for_task = app_data_dir.clone();
     let descriptor_for_task = descriptor.clone();
     let texts_for_task = texts.clone();
@@ -444,6 +443,12 @@ async fn run_sweep_pass(
                 Err(error) => return Err(error),
             },
         };
+        // The pacing clock starts HERE, after any (re)load: the cooldown governs the
+        // duty cycle of the FORWARD, so it must not see the model load (one pass per
+        // `MAX_EMBEDDER_WARM_LIFETIME` reloads hundreds of MB inside this same task)
+        // nor the per-subject write transactions the caller runs after it. See
+        // `semantic_search_worker::backfill_batch_cooldown`.
+        let forward_started_at = Instant::now();
         let out: Vec<(String, std::result::Result<Vec<f32>, String>)> = texts_for_task
             .iter()
             .map(|(subject, text)| {
@@ -454,7 +459,7 @@ async fn run_sweep_pass(
                 (subject.clone(), result)
             })
             .collect();
-        Ok((loaded, out))
+        Ok((loaded, out, forward_started_at.elapsed()))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
@@ -478,13 +483,13 @@ async fn run_sweep_pass(
         Either::Right((_, _)) => return SweepPass::Shutdown,
     };
 
-    let (loaded, embedded) = match load_embed {
-        Ok(pair) => {
+    let (loaded, embedded, forward_elapsed) = match load_embed {
+        Ok(triple) => {
             // A successful load (or a reuse of the cached embedder) clears the load
             // latch + counter.
             state.consecutive_load_failures = 0;
             state.load_failed_latch = None;
-            pair
+            triple
         }
         Err(error) => {
             state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
@@ -586,7 +591,7 @@ async fn run_sweep_pass(
             "subject vector backfill embedded {stored} subject(s) (batch={}, embed_failures={embed_failures}, quarantined={quarantined}, transient_errors={transient_errors})",
             texts.len()
         ));
-        return SweepPass::DidWork(backfill_batch_cooldown(embed_started_at.elapsed()));
+        return SweepPass::DidWork(backfill_batch_cooldown(forward_elapsed));
     }
     if quarantined > 0 && embed_failures == quarantined && transient_errors == 0 {
         // The only non-stored outcomes were newly-quarantined poison: idle rather than
