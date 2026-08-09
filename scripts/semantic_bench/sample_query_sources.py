@@ -1,7 +1,12 @@
 """Deterministically sample query-source anchors, stratified by kind, avoiding near-dups."""
 import json, random, sys, re
 from pathlib import Path
-COR = Path("corpus.jsonl"); OUT = Path("query_sources")
+# Defaults resolve next to this script, NOT to the CWD (repo commands run from the
+# repo root, which would drop real capture text in an un-ignored path). Both are
+# git-ignored here; pass scratchpad paths to keep it out of the repo entirely.
+HERE = Path(__file__).resolve().parent
+COR = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "corpus.jsonl"
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else HERE / "query_sources"
 def grams(t, n=5):
     t = re.sub(r"\s+", " ", t.lower())
     return {t[i:i+n] for i in range(0, max(0, len(t)-n+1), 3)}

@@ -3,5 +3,10 @@
 # queries.example.json).
 queries.json
 
+# Harvested capture text and everything derived from it. Real user data.
+corpus.jsonl
+corpus_stats.json
+query_sources/
+
 __pycache__/
 .venv/

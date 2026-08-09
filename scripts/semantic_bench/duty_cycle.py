@@ -43,11 +43,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from bench import MODELS, Embedder  # noqa: E402  (same-dir harness, reused wholesale)
 
-# Mirrors semantic_search_worker.rs.
+# Mirrors semantic_search_worker.rs BACKFILL_BATCH_COOLDOWN_*. These pin the duty
+# ratio (1/(1+multiplier)); a stale multiplier here reports a duty the app never runs.
 SWEEP_BATCH_SIZE = 16
-COOLDOWN_MULTIPLIER = 1.0
+COOLDOWN_MULTIPLIER = 3.0
 COOLDOWN_MIN_S = 0.150
-COOLDOWN_MAX_S = 2.000
+COOLDOWN_MAX_S = 30.000
+# Mirrors runtime.rs MAX_DOCUMENT_CHUNKS: a document is embedded from at most this
+# many windows, so it is also the per-anchor forward-pass cost this sweep measures.
+MAX_DOCUMENT_CHUNKS = 2
 
 _FOOTPRINT_RE = re.compile(r"Physical footprint:\s+([0-9.]+)([KMG])")
 
@@ -97,12 +101,14 @@ class Sampler(threading.Thread):
         self.interval = interval
         self.samples: list[dict] = []
         self.phase = "idle"
-        self._stop = threading.Event()
+        # NOT `_stop`: `threading.Thread._stop` is CPython's own internal method,
+        # called from `Thread.join`. Shadowing it with an Event makes join() raise.
+        self._done = threading.Event()
 
     def run(self):
         last_gpu = 0.0
         gpu = None
-        while not self._stop.is_set():
+        while not self._done.is_set():
             now = time.perf_counter()
             if now - last_gpu >= 0.25:  # ioreg is a fork+exec; don't do it every tick
                 gpu, last_gpu = gpu_util(), now
@@ -112,10 +118,10 @@ class Sampler(threading.Thread):
             except Exception:
                 break
             self.samples.append({"t": now, "phase": self.phase, "cpu": cpu, "rss_mb": rss, "gpu": gpu})
-            self._stop.wait(self.interval)
+            self._done.wait(self.interval)
 
     def stop(self):
-        self._stop.set()
+        self._done.set()
         self.join(timeout=5)
 
     def agg(self, phase: str | None = None) -> dict:
@@ -148,6 +154,9 @@ def main():
     p.add_argument("--batch", type=int, default=SWEEP_BATCH_SIZE)
     p.add_argument("--baseline-seconds", type=float, default=5.0)
     p.add_argument("--window", type=int, default=256)
+    p.add_argument("--max-doc-chunks", type=int, default=MAX_DOCUMENT_CHUNKS,
+                   help="cap each document at N windows (runtime.rs MAX_DOCUMENT_CHUNKS); "
+                        "0 = uncapped. This is the work lever the sweep exists to compare.")
     p.add_argument("--device", default=None)
     args = p.parse_args()
 
@@ -159,8 +168,10 @@ def main():
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
     corpus = [json.loads(l) for l in Path(args.corpus).read_text().splitlines() if l.strip()]
     texts = [d["text"] for d in corpus]
-    if len(texts) < args.batch:
-        raise SystemExit("corpus smaller than one batch")
+    # `<=`, not `<`: the pass cursor advances modulo `len(texts) - batch`, which is a
+    # divide-by-zero at exactly one batch.
+    if len(texts) <= args.batch:
+        raise SystemExit("corpus must hold more than one batch")
 
     # Pay torch's Metal-context cost BEFORE the baseline, so the post-load
     # footprint delta is the model's weights + activations and not ~1.7 GB of
@@ -179,7 +190,7 @@ def main():
 
     sampler.phase = "load"
     t0 = time.perf_counter()
-    emb = Embedder(MODELS[args.model], device, args.window)
+    emb = Embedder(MODELS[args.model], device, args.window, args.max_doc_chunks)
     load_s = time.perf_counter() - t0
     loaded = {"footprint_mb": phys_footprint_mb(pid), "rss_mb": sampler.samples[-1]["rss_mb"]}
 
@@ -228,6 +239,8 @@ def main():
         "dim": MODELS[args.model]["dim"],
         "device": device,
         "window": args.window,
+        "max_doc_chunks": args.max_doc_chunks,
+        "cooldown_multiplier": COOLDOWN_MULTIPLIER,
         "snapshot_mb": round(emb.size_mb, 1),
         "batch": args.batch,
         "passes": args.passes,

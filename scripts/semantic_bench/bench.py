@@ -14,8 +14,9 @@ nomic-embed-text-v1.5 at Mnema's real 256-token window, on real Mnema anchors?
 
 Mirrors `crates/semantic-search/src/runtime.rs`: 256-token window, per-side
 instruction prompt prepended to EVERY chunk, split budget reduced by the prompt
-tokens + 2 special-token headroom, chunk vectors mean-pooled then L2-normalized
-into one vector per text, exhaustive brute-force cosine over the whole corpus.
+tokens + 2 special-token headroom, chunk vectors pooled weighted by chunk byte
+length then L2-normalized into one vector per text, exhaustive brute-force cosine
+over the whole corpus.
 
 See README.md. Smoke test (no personal data):
 
@@ -272,11 +273,14 @@ class Embedder:
             return 0
         return len(self.tok(prompt, add_special_tokens=False)["input_ids"])
 
-    def chunk(self, texts: list[str], kind: str) -> tuple[list[str], list[int]]:
-        """Prompt-prefixed chunk strings + per-text chunk counts."""
+    def chunk(self, texts: list[str], kind: str) -> tuple[list[str], list[int], list[float]]:
+        """Prompt-prefixed chunk strings + per-text chunk counts + per-chunk
+        fan-in weights (byte length, measured BEFORE the prompt is prepended —
+        runtime.rs weights the same way, and the constant prompt would flatten the
+        ratio a short trailing window depends on)."""
         prompt = self.spec[f"{kind}_prompt"]
         budget = self.window - self._prompt_tokens(prompt)
-        chunks, counts = [], []
+        chunks, counts, weights = [], [], []
         for text in texts:
             parts = split_on_overflow(self._offsets, text, budget)
             # Mirrors runtime.rs MAX_DOCUMENT_CHUNKS: a DOCUMENT contributes at most
@@ -285,8 +289,9 @@ class Embedder:
             if kind == "document" and self.max_doc_chunks:
                 parts = parts[: self.max_doc_chunks]
             counts.append(len(parts))
+            weights.extend(float(len(p.encode())) for p in parts)
             chunks.extend((prompt + p) if prompt else p for p in parts)
-        return chunks, counts
+        return chunks, counts, weights
 
     def forward(self, chunks: list[str]):
         """One unit-norm vector per chunk, in input order. Length-sorted
@@ -329,18 +334,22 @@ class Embedder:
         return out
 
     def embed(self, texts: list[str], kind: str):
-        """One vector per text: single chunk passes through, multi-chunk is
-        mean-pooled then L2-normalized (runtime.rs `fan_in_chunk_results`)."""
+        """One vector per text: single chunk passes through, multi-chunk is pooled
+        WEIGHTED BY CHUNK BYTE LENGTH then L2-normalized — runtime.rs
+        `weighted_mean_pool_l2`, so a short trailing window does not count as much
+        as a full one."""
         import numpy as np
 
-        chunks, counts = self.chunk(texts, kind)
+        chunks, counts, weights = self.chunk(texts, kind)
         vecs = self.forward(chunks)
         out = np.zeros((len(texts), self.out_dim), dtype=np.float32)
         cursor = 0
         for i, count in enumerate(counts):
             group = vecs[cursor : cursor + count]
+            # Mirrors runtime.rs: a non-positive weight falls back to 1.0.
+            w = np.asarray(weights[cursor : cursor + count], dtype=np.float32)
             cursor += count
-            out[i] = group[0] if count == 1 else l2(group.mean(axis=0))
+            out[i] = group[0] if count == 1 else l2((group * np.where(w > 0, w, 1.0)[:, None]).sum(axis=0))
         return out, len(chunks)
 
 
@@ -405,7 +414,9 @@ def run_model(name, spec, corpus, queries, device, window, cache_dir, args):
     corpus_hash = sha(*(d["id"] + "\0" + d["text"] for d in corpus))
     # The chunk cap changes the DOC vectors, so it must key the doc cache (the
     # query cache derives from `key`, and queries are never capped — harmless).
-    key = sha(name, spec["revision"], corpus_hash, str(window), f"cap{args.max_doc_chunks}")
+    # "wmean" = the fan-in rule; bump it whenever the pooling changes, or a cache
+    # written by the old rule is silently re-scored as if it were the new one.
+    key = sha(name, spec["revision"], corpus_hash, str(window), f"cap{args.max_doc_chunks}", "wmean")
     cache = cache_dir / f"{name}-{key}.npz"
     qkey = sha(key, *(q["query"] for q in queries))
     qcache = cache_dir / f"{name}-q-{qkey}.npz"
@@ -520,6 +531,21 @@ def self_test():
 
     pooled = l2(np.array([[3.0, 0.0], [0.0, 3.0]]).mean(axis=0))
     assert abs(np.linalg.norm(pooled) - 1) < 1e-6 and abs(pooled[0] - pooled[1]) < 1e-6
+
+    # Cross-chunk fan-in mirrors runtime.rs `weighted_mean_pool_l2`: a long window
+    # and a 1-byte tail must NOT count the same. Stub Embedder — no model download.
+    stub = object.__new__(Embedder)
+    stub.spec = {"document_prompt": None, "query_prompt": None}
+    stub.window, stub.max_doc_chunks, stub.out_dim = 4, 0, 2
+    stub._offsets = ws_offsets
+    stub._prompt_tokens = lambda prompt: 0
+    stub.forward = lambda chunks: np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    # "aaa… bbb… c" -> chunks "aaa… bbb…" (39 bytes) and "c" (1 byte).
+    vec, _ = stub.embed(["a" * 19 + " " + "b" * 19 + " c"], "document")
+    assert abs(np.linalg.norm(vec[0]) - 1) < 1e-5
+    assert abs(vec[0][0] - 39 / math.hypot(39, 1)) < 1e-4, (
+        f"fan-in is not byte-length weighted: {vec[0]} (uniform pooling gives 0.707)"
+    )
 
     assert ndcg_at_k(["a", "b"], {"a"}) == 1.0
     assert abs(ndcg_at_k(["b", "a"], {"a"}) - 0.6309) < 1e-3

@@ -28,13 +28,17 @@ Read alongside `crates/semantic-search/src/runtime.rs` — the harness reproduce
 
 - `MAX_EMBED_WINDOW_TOKENS = 256`; effective window `min(model.max_tokens, 256)`
   (every candidate's native window is ≥ 256, so all run at 256).
-- Text is **never silently truncated**. Overflowing text is split into token-window
-  chunks (`split_on_overflow`, a port of `split_text_on_token_overflow`).
+- Overflowing text is split into token-window chunks (`split_on_overflow`, a port of
+  `split_text_on_token_overflow`). Production then caps a **document** at
+  `runtime::MAX_DOCUMENT_CHUNKS` windows and drops the rest; the harness is
+  **uncapped by default** — pass `--max-doc-chunks 2` to mirror the shipped cap.
 - The per-side instruction prompt is prepended to **each chunk string**, and the
   split budget is `256 − prompt_tokens − 2` (`SPECIAL_TOKEN_HEADROOM`), so
   `prompt + chunk + specials` fits the window.
-- Chunk vectors are **mean-pooled then L2-normalized** into one vector per text; a
-  single-chunk text passes its vector through unchanged.
+- Chunk vectors are pooled **weighted by chunk byte length** then L2-normalized into
+  one vector per text (`runtime::weighted_mean_pool_l2` — a short trailing window must
+  not count as much as a full one); a single-chunk text passes its vector through
+  unchanged.
 - Output vectors are unit-norm (asserted at run time), so brute-force dot product
   ordering ≡ cosine ordering.
 - Length-sorted sub-batches of 8, matching `EMBED_SUB_BATCH_SIZE`.
@@ -104,6 +108,7 @@ uv run scripts/semantic_bench/bench.py --self-test   # maths only, no downloads
 ```
 
 Useful flags: `--models nomic,granite` (subset), `--dup-threshold`, `--window`,
+`--max-doc-chunks` (mirror `runtime::MAX_DOCUMENT_CHUNKS`; `0` = uncapped, the default),
 `--device cpu`, `--no-cache`, `--cache-dir`.
 
 **Never point `--out` at a repo path** — results and caches belong in the scratchpad.
