@@ -24,6 +24,7 @@ import {
 } from "./model-budget";
 import { NOMIC_BYTES, SPEAKRS_BYTES, WHISPER_BASE_BYTES } from "./resolve-setup";
 import { RESERVE_FLOOR_BYTES, storageNeedBytes } from "./gates";
+import { EMBED_DIMS_BY_MODEL } from "./feature-cost";
 
 // ── The manifests, re-derived ──────────────────────────────────────────────
 
@@ -355,6 +356,41 @@ describe("slice 10 — the download budget", () => {
 
   test("nothing selected reads 'Nothing to download'", () => {
     expect(totalLabel(0, false)).toBe("Nothing to download");
+  });
+
+  test("every semantic model dimension matches the Rust catalog", () => {
+    // `EMBED_DIMS_BY_MODEL` is hand-mirrored from
+    // `crates/semantic-search/src/models.rs`, and it decides the disk figure
+    // onboarding shows for Semantic Search. Re-derive it from the Rust rather than
+    // trusting the copy — the same drift guard this file already applies to sizes.
+    //
+    // Both directions matter: a WRONG width misprices a tier, and a MISSING entry
+    // silently falls back to 768, which is exactly how the 384-dim tier came to be
+    // quoted at double its real cost.
+    // Scoped to `fn catalog()` — `models.rs` also names model ids inside its own
+    // test module, and those are not shipped descriptors.
+    const catalogStart = SEMANTIC_RS.indexOf("fn catalog()");
+    if (catalogStart < 0) throw new Error("no fn catalog() in the manifest");
+    const catalogEnd = SEMANTIC_RS.indexOf("\n}", catalogStart);
+    const catalogBody = SEMANTIC_RS.slice(catalogStart, catalogEnd);
+
+    const catalogDims = new Map<string, number>();
+    for (const match of catalogBody.matchAll(/model_id:\s*"([^"]+)"\.to_string\(\)/g)) {
+      const modelId = match[1];
+      const after = catalogBody.slice(match.index ?? 0);
+      const dimension = after.match(/\n\s*dimension:\s*(\d+),/);
+      if (!dimension) throw new Error(`no dimension for ${modelId}`);
+      catalogDims.set(modelId, Number(dimension[1]));
+    }
+    expect(catalogDims.size).toBeGreaterThanOrEqual(8);
+
+    for (const [modelId, dimension] of catalogDims) {
+      expect(EMBED_DIMS_BY_MODEL[modelId]).toBe(dimension);
+    }
+    // And no stale entries pointing at models the catalog dropped.
+    for (const modelId of Object.keys(EMBED_DIMS_BY_MODEL)) {
+      expect(catalogDims.has(modelId)).toBe(true);
+    }
   });
 });
 

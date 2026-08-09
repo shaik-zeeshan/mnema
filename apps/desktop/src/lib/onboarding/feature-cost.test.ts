@@ -111,14 +111,45 @@ describe("featureCost — disk per row", () => {
   it("prices a vector at one byte per dimension, not four", () => {
     // Migration 0039 stores every vector through `vec_quantize_int8(?, 'unit')`,
     // so an f32 figure here overstates the row by 4× on the screen where the
-    // user decides whether to keep Semantic Search on.
-    expect(frameVectorMb(ANCHOR_INTERVAL_S)).toBeCloseTo(
-      (framesPerDay(ANCHOR_INTERVAL_S) * DEFAULT_EMBED_DIMS) / 1e6,
-      6,
-    );
+    // user decides whether to keep Semantic Search on. The literal is what pins
+    // int8 — recomputing `framesPerDay * DIMS / 1e6` here would just restate the
+    // implementation against itself and pass for any formula.
+    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(7);
     // A narrower model tier (issue #190) costs proportionally less.
     expect(frameVectorMb(ANCHOR_INTERVAL_S, 384)).toBeCloseTo(
       frameVectorMb(ANCHOR_INTERVAL_S) / 2,
+      6,
+    );
+  });
+
+  it("prices the SELECTED model's width, not a fixed 768", () => {
+    // The `dims` parameter existed for this and had no caller passing it, so
+    // onboarding quoted every tier at the default width. `granite-small-r2` is
+    // 384-dim, so its row was shown at 2× its real disk — the same class of
+    // overstatement as the f32 bug above, on the same screen.
+    const wide = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "nomic-embed-text-v1.5" },
+    });
+    const narrow = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "granite-embedding-small-english-r2" },
+    });
+
+    expect(narrow.diskByFeature.semanticSearch).toBeCloseTo(
+      frameVectorMb(ANCHOR_INTERVAL_S, 384) + 2,
+      6,
+    );
+    expect(narrow.diskByFeature.semanticSearch).toBeLessThan(
+      wide.diskByFeature.semanticSearch,
+    );
+    // An unknown or absent id falls back to the default tier rather than throwing.
+    const unknown = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "a-model-that-does-not-exist" },
+    });
+    expect(unknown.diskByFeature.semanticSearch).toBeCloseTo(
+      wide.diskByFeature.semanticSearch,
       6,
     );
   });

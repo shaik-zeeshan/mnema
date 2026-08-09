@@ -100,6 +100,40 @@ export function framesPerDay(intervalSeconds: number): number {
 }
 
 /**
+ * Stored vector width per Semantic Search model id, mirroring each descriptor's
+ * `dimension` in `crates/semantic-search/src/models.rs`.
+ *
+ * A hand-mirrored table rather than a new field threaded through
+ * `SelectedModelFacts`/`ModelInventory`: the disk estimate is the only consumer,
+ * and `model-budget.test.ts` already re-derives the sizes straight out of the Rust
+ * catalog, so the same drift guard covers this (see
+ * `every_semantic_model_dimension_matches_the_rust_catalog`).
+ *
+ * The widths are NOT all equal, which is the whole point — this catalog ships a
+ * 384-dim model, so pricing every tier at 768 overstates its disk by 2x on the
+ * screen where the user decides whether to keep the feature on.
+ */
+export const EMBED_DIMS_BY_MODEL: Record<string, number> = {
+  "nomic-embed-text-v1.5": 768,
+  "multilingual-e5-small": 384,
+  "bge-m3": 1024,
+  // Stella's STORED width is its 2048-dim dense head, not the 1024 backbone; Arctic
+  // stores 256 (Matryoshka-truncated from 1024). Both are easy to get wrong by
+  // reading the backbone instead of the descriptor — hence the drift guard.
+  stella_en_400M_v5: 2048,
+  "snowflake-arctic-embed-l-v2.0": 256,
+  "gte-modernbert-base": 768,
+  "granite-embedding-english-r2": 768,
+  "granite-embedding-small-english-r2": 384,
+};
+
+/** The stored vector width for `modelId`, or the default tier's when unknown. */
+export function embedDimsFor(modelId: string | null | undefined): number {
+  if (!modelId) return DEFAULT_EMBED_DIMS;
+  return EMBED_DIMS_BY_MODEL[modelId] ?? DEFAULT_EMBED_DIMS;
+}
+
+/**
  * MB/day of embedding vectors over the captured frames — a CEILING.
  *
  * One int8 vector per frame-document. It is an over-estimate on purpose: an
@@ -134,8 +168,13 @@ export function featureCost(state: FeatureState, ctx: CostContext = {}): Feature
     : 0;
   // Diarization writes speaker labels onto turns that already exist, and AI
   // features and privacy write nothing at all.
+  // Priced at the SELECTED model's width, not a fixed 768: the catalog ships a
+  // 384-dim tier, and quoting it at 768 doubles the disk figure the user is deciding
+  // against. `frameVectorMb`'s `dims` argument existed for exactly this and had no
+  // caller passing it.
+  const embedDims = embedDimsFor(ctx.models?.semanticSearchModelId);
   diskByFeature.semanticSearch = state.semanticSearch
-    ? (reads ? frameVectorMb(interval) : 0) +
+    ? (reads ? frameVectorMb(interval, embedDims) : 0) +
       (state.transcription ? TRANSCRIPT_VECTOR_MB : 0)
     : 0;
 
