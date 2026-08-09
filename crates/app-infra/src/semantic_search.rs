@@ -55,6 +55,36 @@ use crate::Result;
 /// rather than wrong ones.
 const VECTORS_MODEL_KEY: &str = "semantic_search.vectors_model_id";
 
+/// The **embedding recipe** the stored vectors were produced under — everything
+/// outside the model weights that changes what vector a given text becomes.
+///
+/// The model id alone is not the whole embedding space. `semantic-search`'s
+/// document path also decides how many token windows a document contributes
+/// (`runtime::MAX_DOCUMENT_CHUNKS`) and how those windows are pooled
+/// (`weighted_mean_pool_l2`, byte-length weighted). Change either and the same text
+/// under the same weights produces a *different* vector — but `model_id` does not
+/// move, so a stamp keyed on the id alone reads "healthy" while the index silently
+/// holds two incomparable generations of vector: pre-change rows keep their old
+/// values forever, because `anchors_missing_vector` only re-derives anchors with
+/// **no** vector at all.
+///
+/// Bumping this string is therefore the one switch that forces a full re-index.
+/// Bump it whenever the document embed path changes shape:
+/// - `MAX_DOCUMENT_CHUNKS` moves (more or fewer windows per document), or
+/// - the cross-chunk pooling rule changes (uniform → weighted, weights redefined), or
+/// - the per-model prompt strings or the window budget change.
+///
+/// `v2` is this change: cap 2 windows + byte-length-weighted pooling. `v1` was the
+/// uncapped uniform mean that shipped before it.
+const EMBED_INDEX_RECIPE: &str = "v2-cap2-wmean";
+
+/// The full identity of the embedding space a vec0 table holds: the model id AND
+/// the [`EMBED_INDEX_RECIPE`] it was produced under. This composite — not the bare
+/// model id — is what the stamp stores and every gate compares.
+pub fn vectors_index_epoch(model_id: &str) -> String {
+    format!("{model_id}@{EMBED_INDEX_RECIPE}")
+}
+
 /// One **Search Result Anchor** that needs a **Semantic Search Vector**: its
 /// `search_documents.id` (which is also its `vec0` rowid) and the raw `body_text`
 /// to embed. Raw, not redacted: the vector lives inside the **Encrypted Capture
@@ -184,6 +214,11 @@ impl SemanticSearchStore {
     /// [`SemanticSearchStore::store_vector_if_model_matches`]; the worker calls
     /// only that. Narrowing visibility to `pub(crate)` keeps the in-crate tests
     /// compiling while making it impossible for external code to skip the gate.
+    ///
+    /// No production caller remains: the gate now owns its write transaction (so the
+    /// stamp it checks is the stamp the write lands under), and the tests keep this
+    /// as their deliberately UNGATED primitive for seeding a pre-stamp table.
+    #[allow(dead_code)]
     pub(crate) async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<bool> {
         if vector.iter().any(|component| !component.is_finite()) {
             return Err(crate::AppInfraError::InvalidSearchRequest(format!(
@@ -250,23 +285,16 @@ impl SemanticSearchStore {
         anchor_id: i64,
         vector: &[f32],
     ) -> Result<bool> {
-        if self.live_vector_model().await?.as_deref() != Some(model_id) {
-            // The table holds another model's embedding space (or is unstamped):
-            // skip without error so the sweep idles until reconciliation re-aligns
-            // it, rather than writing a vector from the wrong space.
-            return Ok(false);
-        }
-        match self.live_vector_dimension().await? {
-            // Length matches the live column: attempt the atomic row-conditioned
-            // store. It still returns `false` if the anchor vanished mid-embed, so
-            // a delete racing this store leaves nothing behind.
-            Some(dimension) if dimension == vector.len() => {
-                self.store_vector(anchor_id, vector).await
-            }
-            // Mismatch or no table: skip without error so the sweep idles rather
-            // than error-looping a vector the live column can never accept.
-            _ => Ok(false),
-        }
+        // One anchor is just a batch of one: delegating keeps the stamp/width gate
+        // in ONE place, evaluated inside the write transaction it guards. Checking
+        // here and storing through a second transaction would reopen the
+        // check-then-write window a model switch lands in.
+        Ok(self
+            .store_vectors_if_model_matches(model_id, &[(anchor_id, vector.to_vec())])
+            .await?
+            .first()
+            .copied()
+            .unwrap_or(false))
     }
 
     /// Batched counterpart to [`store_vector_if_model_matches`]: stores a whole
@@ -303,17 +331,29 @@ impl SemanticSearchStore {
                 )));
             }
         }
-        // The table holds another model's embedding space (or is unstamped) → every
-        // anchor is a skip, awaiting reconciliation. Checked BEFORE the write
-        // transaction is opened so a mid-switch sweep never even takes the lock.
-        if self.live_vector_model().await?.as_deref() != Some(model_id) {
+        let mut tx = self.db.begin_write().await?;
+        // The gate is read INSIDE the write transaction. `begin_write` is BEGIN
+        // IMMEDIATE, so once it returns no other writer can commit a
+        // `recreate_vectors_table` until this batch commits — the gate therefore
+        // describes the table this batch actually writes into. Reading the stamp
+        // BEFORE taking the writer lock leaves the classic check-then-write window,
+        // and a Settings model switch is exactly what lands in it (the sweep embeds
+        // for seconds, then queues for the lock behind the switch's rebuild). With
+        // two catalog models sharing a width the length check below cannot catch it
+        // either, so the stale-model vector would be stored silently AND
+        // permanently: the anchor leaves the missing set (never re-embedded) and
+        // startup reconciliation no-ops because the stamp agrees with the selection.
+        //
+        // The table holds another model's embedding space, another embedding RECIPE
+        // (see [`EMBED_INDEX_RECIPE`]), or is unstamped → every anchor is a skip,
+        // awaiting reconciliation. Dropping `tx` here rolls back an empty transaction.
+        if stamped_vectors_model(&mut tx).await? != Some(vectors_index_epoch(model_id)) {
             return Ok(vec![false; pairs.len()]);
         }
         // No live table → every anchor is a skip (awaiting re-index), no write needed.
-        let Some(dimension) = self.live_vector_dimension().await? else {
+        let Some(dimension) = live_vector_dimension_in_tx(&mut tx).await? else {
             return Ok(vec![false; pairs.len()]);
         };
-        let mut tx = self.db.begin_write().await?;
         let mut outcomes = Vec::with_capacity(pairs.len());
         for (anchor_id, vector) in pairs {
             // Length mismatch with the live column: skip (not an error), exactly as
@@ -362,16 +402,19 @@ impl SemanticSearchStore {
         live_vector_dimension(self.db.read()).await
     }
 
-    /// The **model id stamped on the live `search_document_vectors` table** — which
-    /// embedding space its vectors belong to — or `None` when no stamp has been
-    /// written yet (see [`VECTORS_MODEL_KEY`]).
+    /// The **index epoch stamped on the live `search_document_vectors` table** —
+    /// which embedding space its vectors belong to — or `None` when no stamp has
+    /// been written yet (see [`VECTORS_MODEL_KEY`]).
     ///
-    /// `None` is possible on exactly one path: a table created by migration `0039`
-    /// (or a `0039`-era install) that has never been through
-    /// [`recreate_vectors_table`]. Because 768 was the only English width that
-    /// existed then, an unstamped table can only hold `nomic-embed-text-v1.5`
-    /// vectors, which is what [`reconcile_vectors_table`] relies on to adopt it
-    /// rather than wipe it.
+    /// The value is the composite [`vectors_index_epoch`] (`model_id@recipe`), not a
+    /// bare model id: compare it against `vectors_index_epoch(model_id)`, never
+    /// against `model_id`. It is returned raw so callers can log what is actually
+    /// stamped when it disagrees.
+    ///
+    /// `None` means a table that predates the stamp entirely (migration `0039`, or a
+    /// `0039`-era install that never went through [`recreate_vectors_table`]).
+    /// [`reconcile_vectors_table`] rebuilds it rather than adopting it — its recipe
+    /// is unknowable.
     pub async fn live_vector_model(&self) -> Result<Option<String>> {
         let value: Option<String> =
             sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
@@ -396,54 +439,58 @@ impl SemanticSearchStore {
     /// brings the table back into agreement so the sweep can backfill under it.
     /// Idempotent: a matching table is left untouched.
     ///
-    /// **Adopting an unstamped table.** A table that predates the model stamp
-    /// (created by migration `0039` or a `0039`-era `recreate_vectors_table`) is
-    /// *stamped in place* rather than wiped, when its width already matches the
-    /// selected model. That is sound because the pre-stamp regime enforced the very
-    /// same invariant by a different mechanism: catalog dimensions were pairwise
-    /// distinct and reconciliation rebuilt on any width disagreement, so a matching
-    /// width back then *did* imply the table belonged to the selected model. Wiping
-    /// instead would cost every existing install one full re-embed for no safety.
+    /// **An unstamped table is rebuilt, not adopted.** An earlier revision stamped a
+    /// pre-stamp table in place when its width matched, reasoning that the old
+    /// pairwise-distinct-dimension regime made a matching width imply a matching
+    /// model. Adding [`EMBED_INDEX_RECIPE`] to the stamp retires that argument: the
+    /// width tells us nothing about which *recipe* produced the rows, and an
+    /// unstamped table is by definition one written before the recipe was recorded —
+    /// i.e. under the uncapped uniform-mean `v1` path. Adopting it would stamp `v2`
+    /// onto `v1` vectors, which is exactly the silent two-generation index the recipe
+    /// exists to prevent. Rebuilding costs a re-embed on a dev machine and nothing on
+    /// a fresh install (migration `0039`'s table is empty, so `Some(0)` is discarded).
     pub async fn reconcile_vectors_table(
         &self,
         model_id: &str,
         expected_dimension: usize,
     ) -> Result<Option<u64>> {
-        let live_model = self.live_vector_model().await?;
-        let live_dimension = self.live_vector_dimension().await?;
+        // Decide INSIDE a write transaction (`begin_write` is BEGIN IMMEDIATE), so a
+        // concurrent `recreate_vectors_table` — a Settings model switch, which the
+        // user can run the moment the window opens, while this runs on the
+        // deferred-startup seam — cannot commit between the observation and the
+        // adopt-stamp. Reading first and stamping after would let adoption stamp the
+        // model it *saw* onto a table that has since been rebuilt for another one:
+        // a stamp naming an embedding space the table does not hold, which the write
+        // gate then rejects on every batch for the rest of the session (search
+        // silently stays keyword-only until the next restart).
+        let mut tx = self.db.begin_write().await?;
+        let live_model = stamped_vectors_model(&mut tx).await?;
+        let live_dimension = live_vector_dimension_in_tx(&mut tx).await?;
+        let expected_epoch = vectors_index_epoch(model_id);
         match (live_model.as_deref(), live_dimension) {
-            // Stamp and width both agree with the selection: nothing to do.
+            // Stamp (model AND recipe) and width both agree with the selection:
+            // nothing to do. This is the common case on every launch after the first.
             (Some(stamped), Some(dimension))
-                if stamped == model_id && dimension == expected_dimension =>
+                if stamped == expected_epoch && dimension == expected_dimension =>
             {
                 Ok(None)
             }
-            // Unstamped table at the right width: adopt it (see above) — stamp only,
-            // no rebuild, no vectors discarded.
-            (None, Some(dimension)) if dimension == expected_dimension => {
-                self.stamp_vectors_model(model_id).await?;
-                Ok(None)
+            // Anything else — a different model's stamp, a stamp from an older
+            // embedding recipe, an unstamped (pre-recipe) table, a width
+            // disagreement, or no table at all — rebuilds under the selected model so
+            // the worker's index authority agrees with the selection again. Release
+            // the writer first: `recreate_vectors_table` opens its own
+            // `BEGIN IMMEDIATE`, which would otherwise queue behind this
+            // transaction's lock. The rebuild is self-consistent on its own (table and
+            // stamp commit together), so it needs no state carried over from the
+            // observation above.
+            _ => {
+                drop(tx);
+                Ok(Some(
+                    self.recreate_vectors_table(model_id, expected_dimension).await?,
+                ))
             }
-            // Anything else — a different model's stamp, a width disagreement, or no
-            // table at all — rebuilds under the selected model so the worker's index
-            // authority agrees with the selection again.
-            _ => Ok(Some(
-                self.recreate_vectors_table(model_id, expected_dimension).await?,
-            )),
         }
-    }
-
-    /// Write the [`VECTORS_MODEL_KEY`] stamp on its own, WITHOUT touching the table.
-    ///
-    /// Only for adopting a pre-stamp table in [`reconcile_vectors_table`], where the
-    /// table is already known to hold this model's vectors. Every other stamp write
-    /// rides inside [`recreate_vectors_table`]'s transaction, which is what keeps the
-    /// stamp and the table impossible to disagree.
-    async fn stamp_vectors_model(&self, model_id: &str) -> Result<()> {
-        let mut tx = self.db.begin_write().await?;
-        stamp_vectors_model(&mut tx, model_id).await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// Drop and recreate the `search_document_vectors` vec0 table at `dimension`,
@@ -651,6 +698,31 @@ pub(crate) async fn live_vector_dimension(pool: &SqlitePool) -> Result<Option<us
     Ok(sql.as_deref().and_then(parse_vec0_dimension))
 }
 
+/// Read the [`VECTORS_MODEL_KEY`] stamp inside a caller-owned write transaction —
+/// the read half of the gate, taken under the writer lock so no `recreate_vectors_table`
+/// can commit between the check and the write it guards.
+async fn stamped_vectors_model(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<Option<String>> {
+    let value: Option<String> = sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+        .bind(VECTORS_MODEL_KEY)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(value)
+}
+
+/// [`live_vector_dimension`] read inside a caller-owned write transaction, so the
+/// width the gate checks is the width of the table the write lands in.
+async fn live_vector_dimension_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<Option<usize>> {
+    let sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master \
+         WHERE type = 'table' AND name = 'search_document_vectors'",
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(sql.as_deref().and_then(parse_vec0_dimension))
+}
+
 /// Write the [`VECTORS_MODEL_KEY`] stamp inside a caller-owned write transaction.
 ///
 /// Taking the transaction (rather than the pool) is the point: the stamp must land
@@ -665,7 +737,7 @@ async fn stamp_vectors_model(
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
     )
     .bind(VECTORS_MODEL_KEY)
-    .bind(model_id)
+    .bind(vectors_index_epoch(model_id))
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -691,6 +763,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    use super::{vectors_index_epoch, VECTORS_MODEL_KEY};
     use crate::{
         AppInfra, NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingResultDraft,
     };
@@ -1312,8 +1385,16 @@ mod tests {
         });
     }
 
+    /// An unstamped table is REBUILT, not adopted in place.
+    ///
+    /// An earlier revision stamped it and kept the rows, arguing that the pre-stamp
+    /// pairwise-distinct-dimension regime made a matching width imply a matching
+    /// model. Recording the embedding recipe in the stamp retires that argument: the
+    /// width says nothing about which pooling rule produced the rows, and an
+    /// unstamped table is by construction pre-recipe (uncapped uniform mean).
+    /// Adopting it would stamp the current recipe onto vectors that do not have it.
     #[test]
-    fn reconcile_adopts_an_unstamped_table_of_the_right_width_instead_of_wiping_it() {
+    fn reconcile_rebuilds_an_unstamped_table_because_its_recipe_is_unknowable() {
         run_async_test(async {
             let dir = test_dir("reconcile-match");
             let infra = AppInfra::initialize(&dir)
@@ -1327,27 +1408,30 @@ mod tests {
                 .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
                 .await
                 .expect("store a 768-dim vector");
-            // The migration-0039 table carries no model stamp at all.
+            // The migration-0039 table carries no stamp at all.
             assert_eq!(store.live_vector_model().await.expect("stamp"), None);
 
-            // Reconciliation ADOPTS it rather than rebuilding: the width already
-            // matches the selected model, and under the pre-stamp regime a matching
-            // width implied a matching model. Wiping here would cost every existing
-            // install a full re-embed for no safety.
             let discarded = store
                 .reconcile_vectors_table(MODEL_A, 768)
                 .await
                 .expect("reconcile succeeds");
-            assert_eq!(discarded, None, "an adopted table is left untouched");
+            assert_eq!(
+                discarded,
+                Some(1),
+                "the pre-recipe vector is discarded, not adopted"
+            );
             assert_eq!(
                 store.live_vector_model().await.expect("stamp"),
-                Some(MODEL_A.to_string()),
-                "adoption stamps the table"
+                Some(vectors_index_epoch(MODEL_A)),
+                "the rebuild stamps model AND recipe"
             );
-            assert!(!store
-                .anchor_still_missing_vector(anchor.anchor_id)
-                .await
-                .expect("recheck"));
+            assert!(
+                store
+                    .anchor_still_missing_vector(anchor.anchor_id)
+                    .await
+                    .expect("recheck"),
+                "the anchor is re-queued so it is re-embedded under the current recipe"
+            );
 
             // And a second run is a plain no-op — stamp and width both agree now.
             assert_eq!(
@@ -1357,6 +1441,134 @@ mod tests {
                     .expect("reconcile succeeds"),
                 None
             );
+        });
+    }
+
+    /// The recipe half of the epoch: the SAME model at the SAME width, but vectors
+    /// produced under a different document-embed recipe, must be rebuilt and must not
+    /// be written into.
+    ///
+    /// This is the failure a model-id-only stamp cannot see. `MAX_DOCUMENT_CHUNKS`
+    /// and the cross-chunk pooling rule both change what vector a text becomes while
+    /// `model_id` stays put, and `anchors_missing_vector` only re-derives anchors
+    /// with NO vector — so without this, pre-change rows would keep their old values
+    /// forever and the index would silently hold two incomparable generations.
+    #[test]
+    fn a_recipe_change_at_the_same_model_and_width_rebuilds_the_index() {
+        run_async_test(async {
+            let dir = test_dir("recipe-change");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A at the current recipe");
+            assert!(store
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("stores under the matching epoch"));
+
+            // Simulate the next recipe bump by stamping an older epoch for the SAME
+            // model at the SAME width — byte-identical table shape, different rows.
+            let mut tx = infra.database.begin_write().await.expect("writer");
+            sqlx::query(
+                "INSERT INTO app_settings (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            )
+            .bind(VECTORS_MODEL_KEY)
+            .bind(format!("{MODEL_A}@v1-uncapped-mean"))
+            .execute(&mut *tx)
+            .await
+            .expect("stamp the old recipe");
+            tx.commit().await.expect("commit");
+
+            // The write gate rejects it: same model, same width, wrong recipe.
+            assert!(
+                !store
+                    .store_vector_if_model_matches(
+                        MODEL_A,
+                        anchor.anchor_id,
+                        &unit_vector(768, 0.5)
+                    )
+                    .await
+                    .expect("a recipe mismatch is a skip, not an error"),
+                "a vector from the current recipe must not join an older recipe's index"
+            );
+
+            // And reconciliation rebuilds, even though model and width both match.
+            assert_eq!(
+                store
+                    .reconcile_vectors_table(MODEL_A, 768)
+                    .await
+                    .expect("reconcile succeeds"),
+                Some(1),
+                "a stale-recipe index is discarded, not left in place"
+            );
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(vectors_index_epoch(MODEL_A))
+            );
+        });
+    }
+
+    /// The reconcile cells no other test reaches: a width disagreement while the
+    /// stamp AGREES, and a missing table while a stamp survives. Both must rebuild.
+    ///
+    /// The first is reachable if a catalog descriptor's dimension is ever corrected
+    /// for an existing id; the second is the "absent → rebuild" self-heal the
+    /// function exists for. Neither is covered by the model-mismatch tests, because
+    /// in both of these the stamped MODEL is the selected one.
+    #[test]
+    fn reconcile_rebuilds_on_a_width_disagreement_and_on_a_missing_table() {
+        run_async_test(async {
+            let dir = test_dir("reconcile-matrix");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.semantic_search();
+
+            // (stamp matches, width differs) → rebuild at the expected width, stamp
+            // unchanged.
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A at 768");
+            assert_eq!(
+                store
+                    .reconcile_vectors_table(MODEL_A, 1024)
+                    .await
+                    .expect("reconcile succeeds"),
+                Some(0),
+                "a width disagreement rebuilds even when the stamp agrees"
+            );
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(1024));
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(vectors_index_epoch(MODEL_A))
+            );
+
+            // (stamp survives, table absent) → rebuild. The stamp outliving its table
+            // is only reachable by dropping the table out from under it, which is what
+            // a failed/partial rebuild in an older build could leave behind.
+            sqlx::query("DROP TABLE search_document_vectors")
+                .execute(infra.pool())
+                .await
+                .expect("drop the table, leaving the stamp behind");
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), None);
+            assert_eq!(
+                store
+                    .reconcile_vectors_table(MODEL_A, 768)
+                    .await
+                    .expect("reconcile succeeds"),
+                Some(0),
+                "an absent table rebuilds rather than being reported healthy"
+            );
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(768));
         });
     }
 
@@ -1393,7 +1605,7 @@ mod tests {
             );
             assert_eq!(
                 store.live_vector_model().await.expect("stamp"),
-                Some(MODEL_B.to_string())
+                Some(vectors_index_epoch(MODEL_B))
             );
 
             // An in-flight vector from the OLD model is the right length for the live
@@ -1429,6 +1641,176 @@ mod tests {
         });
     }
 
+    /// The write gate must be evaluated against the table the batch actually
+    /// writes into, not against a snapshot read before the writer lock is taken.
+    ///
+    /// A Settings model switch (`recreate_vectors_table`) is exactly what lands in
+    /// that window: the backfill worker embeds a batch under MODEL_A (~3.5s), the
+    /// user picks MODEL_B in Settings, and the rebuild commits while the worker's
+    /// store is still waiting for the write lock. When the two models share a width
+    /// (768 = nomic / gte-modernbert), the length check cannot catch it either — so
+    /// a stale-model vector lands in MODEL_B's index, the anchor is no longer in the
+    /// missing set (never re-embedded), and startup reconciliation is a NO-OP
+    /// because the stamp agrees with the selection. Permanent, silent contamination.
+    #[test]
+    fn a_switch_committing_mid_store_cannot_contaminate_the_new_index() {
+        run_async_test(async {
+            let dir = test_dir("switch-races-store");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A");
+
+            // Hold the writer so the in-flight store parks between its gate check and
+            // its INSERT — the window a Settings switch lands in.
+            let mut switch = store.db.begin_write().await.expect("hold the writer");
+
+            let store_for_task = store.clone();
+            let anchor_id = anchor.anchor_id;
+            let pending = tokio::spawn(async move {
+                store_for_task
+                    .store_vectors_if_model_matches(MODEL_A, &[(anchor_id, unit_vector(768, 0.5))])
+                    .await
+                    .expect("the store returns cleanly")
+            });
+            // Let the batch read the gate (the stamp still says MODEL_A) and block on
+            // the write lock.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            // The switch to MODEL_B — same 768 width — commits while the store waits.
+            sqlx::query("DROP TABLE IF EXISTS search_document_vectors")
+                .execute(&mut *switch)
+                .await
+                .expect("drop");
+            sqlx::query(
+                "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[768])",
+            )
+            .execute(&mut *switch)
+            .await
+            .expect("create");
+            super::stamp_vectors_model(&mut switch, MODEL_B)
+                .await
+                .expect("stamp MODEL_B");
+            switch.commit().await.expect("the switch commits");
+
+            let outcomes = pending.await.expect("the store task joins");
+
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(vectors_index_epoch(MODEL_B)),
+                "the table now names MODEL_B"
+            );
+            assert_eq!(
+                outcomes,
+                vec![false],
+                "a MODEL_A vector must not be written into MODEL_B's index"
+            );
+            assert_eq!(
+                store.count_vectors().await.expect("count"),
+                0,
+                "MODEL_B's fresh index must hold no MODEL_A vector"
+            );
+            assert!(
+                store
+                    .anchor_still_missing_vector(anchor.anchor_id)
+                    .await
+                    .expect("recheck"),
+                "the anchor must stay queued for re-embedding under MODEL_B"
+            );
+        });
+    }
+
+    /// Adopting a pre-stamp table must not write a stamp decided BEFORE the writer
+    /// lock was taken.
+    ///
+    /// Startup reconciliation runs on the deferred-startup seam — i.e. after the
+    /// window is already open — so a Settings model switch can commit between
+    /// reconciliation observing "unstamped, 768 wide" and its adopt-stamp landing.
+    /// The stamp then names a model the table does not hold (here: a 768-model
+    /// stamped on a freshly rebuilt 1024-wide table), which nothing self-heals until
+    /// the next restart: the write gate rejects every batch and search silently
+    /// stays keyword-only for the whole session.
+    #[test]
+    fn an_adopt_racing_a_switch_never_stamps_a_table_it_did_not_inspect() {
+        run_async_test(async {
+            let dir = test_dir("adopt-races-switch");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("seed the pre-stamp migration table");
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                None,
+                "the migration-0039 table carries no stamp"
+            );
+
+            // The user's model switch holds the writer while startup reconciliation
+            // makes its observation.
+            let mut switch = store.db.begin_write().await.expect("hold the writer");
+
+            let store_for_task = store.clone();
+            let pending = tokio::spawn(async move {
+                store_for_task
+                    .reconcile_vectors_table(MODEL_A, 768)
+                    .await
+                    .expect("reconcile returns cleanly")
+            });
+            // Let reconciliation observe "unstamped at 768" and block on the writer.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            // The switch to the 1024-wide model rebuilds and stamps, then commits.
+            sqlx::query("DROP TABLE IF EXISTS search_document_vectors")
+                .execute(&mut *switch)
+                .await
+                .expect("drop");
+            sqlx::query(
+                "CREATE VIRTUAL TABLE search_document_vectors USING vec0(embedding int8[1024])",
+            )
+            .execute(&mut *switch)
+            .await
+            .expect("create");
+            super::stamp_vectors_model(&mut switch, MODEL_WIDE)
+                .await
+                .expect("stamp MODEL_WIDE");
+            switch.commit().await.expect("the switch commits");
+
+            pending.await.expect("the reconcile task joins");
+
+            // Whichever way reconciliation went, the stamp must name an embedding
+            // space the live table can actually hold. Both orderings are legitimate —
+            // the switch's 1024 table may survive, or reconciliation's rebuild may
+            // land last at 768 — but the (stamp, width) PAIR must be coherent, which
+            // is the thing the pre-fix code could violate.
+            let stamp = store.live_vector_model().await.expect("stamp");
+            let width = store.live_vector_dimension().await.expect("dim");
+            let coherent = [
+                (vectors_index_epoch(MODEL_WIDE), 1024usize),
+                (vectors_index_epoch(MODEL_A), 768usize),
+            ];
+            assert!(
+                coherent
+                    .iter()
+                    .any(|(epoch, dim)| stamp.as_deref() == Some(epoch.as_str())
+                        && width == Some(*dim)),
+                "stamp {stamp:?} names an embedding space the live {width:?}-wide table cannot hold"
+            );
+        });
+    }
+
     /// Reconciliation must rebuild on a stamp disagreement even when the width is
     /// identical — the startup self-heal counterpart of the write gate above.
     #[test]
@@ -1460,7 +1842,7 @@ mod tests {
             assert_eq!(discarded, Some(1), "the stale MODEL_A vector is discarded");
             assert_eq!(
                 store.live_vector_model().await.expect("stamp"),
-                Some(MODEL_B.to_string())
+                Some(vectors_index_epoch(MODEL_B))
             );
             assert!(store
                 .anchor_still_missing_vector(anchor.anchor_id)
@@ -1493,7 +1875,7 @@ mod tests {
             );
             assert_eq!(
                 store.live_vector_model().await.expect("stamp"),
-                Some(MODEL_A.to_string()),
+                Some(vectors_index_epoch(MODEL_A)),
                 "a rolled-back rebuild leaves the previous stamp, never the new one"
             );
             assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(768));
@@ -1564,6 +1946,15 @@ mod tests {
 
             let store = infra.semantic_search();
             let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            // Stamp the table for MODEL_A first. Without this the gated call below
+            // returns `false` at the STAMP gate and never reaches the row-conditioned
+            // INSERT it is supposed to be exercising — the assertion would hold
+            // whether or not the anchor was deleted, i.e. it would pass for the wrong
+            // reason and stop guarding the delete race entirely.
+            store
+                .reconcile_vectors_table(MODEL_A, 768)
+                .await
+                .expect("stamp the table so the gated path actually runs");
 
             // Simulate the M1 delete-races-store window: the anchor's
             // search_documents row is removed (retention / Delete Recent cascade)

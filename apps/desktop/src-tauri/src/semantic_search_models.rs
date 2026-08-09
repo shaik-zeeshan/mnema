@@ -606,8 +606,12 @@ pub async fn select_semantic_search_model(
     // models in the catalog (gte-modernbert / granite-r2 are 768 like nomic,
     // granite-small is 384 like multilingual-e5-small), a width compare would read
     // green on exactly the switches most in need of detection.
+    // Compared against the composite INDEX EPOCH (`model_id@recipe`), not the bare
+    // id: the stamp also records the embedding recipe, so a stale-recipe table must
+    // read as a mismatch here too.
+    let expected_epoch = ::app_infra::vectors_index_epoch(&model_id);
     match infra.semantic_search().live_vector_model().await {
-        Ok(Some(live)) if live == model_id => {}
+        Ok(Some(live)) if live == expected_epoch => {}
         Ok(other) => {
             crate::native_capture::debug_log::log_error(format!(
                 "semantic search model switch to '{model_id}': the live vec0 table is stamped {other:?}, NOT the selected model, after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
@@ -643,8 +647,16 @@ pub async fn select_semantic_search_model(
 ///
 /// Two `None`-shaped inputs must NOT be conflated:
 ///   - `model_id == None` (a fresh/never-selected profile) => the English default
-///     tier: the migration default is correct, a fresh DB is already a 768-wide
-///     table, and adopting it under the default model's name is exactly right.
+///     tier, resolved THROUGH the catalog so the id and the dimension cannot
+///     disagree. Pairing the default id with a hardcoded
+///     [`DEFAULT_SEMANTIC_SEARCH_DIMENSION`] was a live trap: issue #190 is about
+///     changing the English default, and the moment that default is a non-768 model
+///     startup would build a 768 table stamped with (say) a 384 model. The write
+///     gate then passes the stamp check and fails the width check on every anchor
+///     forever — no error, no self-heal, a permanently empty index. Resolving the
+///     descriptor makes that unrepresentable. If the default id somehow does not
+///     resolve, this returns `None` and reconciliation is skipped, which is the same
+///     safe behaviour as catalog drift below.
 ///   - `model_id == Some(unresolvable)` (catalog/config drift — the id no longer
 ///     resolves to a descriptor) => `None`: we do NOT know what the table holds, so
 ///     falling back to the default here would DROP a populated 384/1024 table and
@@ -655,14 +667,22 @@ pub async fn select_semantic_search_model(
 fn reconcile_expected_model(
     settings: &capture_types::SemanticSearchSettings,
 ) -> Option<(String, usize)> {
-    match settings.model_id.as_deref() {
-        None => Some((
+    // A never-selected profile resolves against the DEFAULT provider, not
+    // `settings.provider`: `model_id == None` only happens on a hand-edited or
+    // partially-deserialized config, where the provider field may be junk, and the
+    // previous revision ignored it entirely on this branch. A selected model keeps
+    // using its own provider.
+    let (provider, model_id) = match settings.model_id.as_deref() {
+        None => (
+            capture_types::default_semantic_search_provider(),
             capture_types::default_semantic_search_model_id()?,
-            DEFAULT_SEMANTIC_SEARCH_DIMENSION,
-        )),
-        Some(model_id) => resolve_descriptor(&settings.provider, model_id)
-            .map(|descriptor| (descriptor.model_id, descriptor.dimension)),
-    }
+        ),
+        Some(model_id) => (settings.provider.clone(), model_id.to_string()),
+    };
+    // One resolution path for both cases, so the dimension always comes from the
+    // same descriptor as the id it is paired with.
+    resolve_descriptor(&provider, &model_id)
+        .map(|descriptor| (descriptor.model_id, descriptor.dimension))
 }
 
 /// Reconcile the `vec0` table against the selected model on startup — the
@@ -2239,6 +2259,24 @@ mod tests {
             "no model ever selected => the English default tier at the migration width"
         );
         assert_eq!(DEFAULT_SEMANTIC_SEARCH_DIMENSION, 768);
+
+        // The pairing itself, not the two literals: whatever the English default
+        // becomes, its id and its dimension must come from the SAME descriptor.
+        // Issue #190 is precisely "change the English default", and pairing the
+        // default id with a hardcoded 768 meant the first non-768 default would build
+        // a 768 table stamped with a narrower model — the write gate then passes the
+        // stamp check and fails the width check on every anchor forever, with no
+        // error and no self-heal. This assertion is what makes that unrepresentable.
+        let (default_id, default_dimension) =
+            reconcile_expected_model(&never_selected).expect("the default tier resolves");
+        assert_eq!(
+            resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, &default_id)
+                .expect("the default id is in the catalog")
+                .dimension,
+            default_dimension,
+            "the default tier's dimension must come from its own descriptor, never a \
+             hardcoded constant that can drift away from the id it is paired with"
+        );
 
         // An enabled non-default model resolves the same way (enabled is irrelevant).
         let enabled_bge = capture_types::SemanticSearchSettings {
