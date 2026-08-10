@@ -61,6 +61,8 @@
     installed?: Partial<ModelInventory> | null;
     /** Chosen capture rate, so the disk figures track the sentence's. */
     captureIntervalSeconds?: number;
+    /** Pixels per frame at the draft resolution (`flow.videoPixels`). */
+    videoPixels?: number;
   }
 
   let {
@@ -74,9 +76,10 @@
     models = null,
     installed = null,
     captureIntervalSeconds,
+    videoPixels = undefined,
   }: Props = $props();
 
-  const costCtx = $derived({ models, installed, captureIntervalSeconds });
+  const costCtx = $derived({ models, installed, captureIntervalSeconds, videoPixels });
   const cost = $derived(featureCost(features, costCtx));
 
   // ── Preview ───────────────────────────────────────────────────────────────

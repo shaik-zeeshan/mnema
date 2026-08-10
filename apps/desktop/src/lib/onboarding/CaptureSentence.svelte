@@ -65,6 +65,7 @@
     probeState,
     onRecheck,
     requiredBytes,
+    videoPixels = undefined,
     semanticSearchOn = false,
     onDisableSemanticSearch,
     onError,
@@ -86,6 +87,8 @@
     onRecheck: () => void;
     /** `flow.downloadBytes` — what the downloads will fetch. */
     requiredBytes: number;
+    /** `flow.videoPixels` — pixels per frame at the draft resolution. */
+    videoPixels?: number;
     semanticSearchOn?: boolean;
     /** Omit and the "turn Semantic Search off" escape is not offered. */
     onDisableSemanticSearch?: () => void;
@@ -111,6 +114,7 @@
   const verdict = $derived(
     sentenceVerdict({
       intervalSeconds: viewInterval,
+      videoPixels,
       retention: viewRetention,
       path: shownPath,
       probe,
@@ -145,7 +149,7 @@
     width: RATE_GHOST_WIDTH,
     textAt: (i) => shortRate(LADDER[i]!),
     titleAt: (i) =>
-      `${captureIntervalPhrase(LADDER[i]!)} — ${formatBytes(dailyBytes(LADDER[i]!))} a day`,
+      `${captureIntervalPhrase(LADDER[i]!)} — ${formatBytes(dailyBytes(LADDER[i]!, videoPixels))} a day`,
     peekAt: (i) => ({ rate: i }),
     commit: (i) => onFrameRateChange(intervalSToFps(LADDER[i]!)),
   });

@@ -68,6 +68,17 @@ describe("the measured anchor", () => {
   it("defaults to the 2 s ladder default when no interval is given", () => {
     expect(featureCost(state()).diskMbPerDay).toBeCloseTo(405, 5);
   });
+
+  it("scales only the screen row with resolution, summing to the estimate", () => {
+    const pixels = 1920 * 1080; // 2.25× the 720p anchor
+    const cost = featureCost(state(), { ...anchorCtx, videoPixels: pixels });
+    expect(cost.diskByFeature.screen).toBeCloseTo(ANCHOR_SHARE_MB.screen * 2.25, 6);
+    expect(cost.diskByFeature.ocr).toBeCloseTo(ANCHOR_SHARE_MB.ocr, 6);
+    expect(cost.diskMbPerDay).toBeCloseTo(
+      estimateDailyStorageMb(ANCHOR_INTERVAL_S, pixels),
+      1,
+    );
+  });
 });
 
 describe("featureCost — disk per row", () => {

@@ -99,7 +99,7 @@
   });
   const daily = $derived.by(() => {
     const fps = flow.controller.draftFrameRate;
-    const mb = estimateDailyStorageMb(fps > 0 ? 1 / fps : 0);
+    const mb = estimateDailyStorageMb(fps > 0 ? 1 / fps : 0, flow.videoPixels);
     return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${Math.round(mb)} MB`;
   });
 

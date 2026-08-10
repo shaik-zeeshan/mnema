@@ -20,7 +20,12 @@
 // vectors, so its cost is computed (one int8 vector per frame-document) rather
 // than carved out of the 270.
 import { DEFAULT_CAPTURE_INTERVAL_S } from "../components/capture-rate";
-import { ANCHOR_MB_PER_DAY, estimateDailyStorageMb } from "./disk-estimate";
+import {
+  ANCHOR_MB_PER_DAY,
+  ANCHOR_VIDEO_MB,
+  ANCHOR_VIDEO_PIXELS,
+  estimateDailyStorageMb,
+} from "./disk-estimate";
 import { FEATURE_ORDER, type FeatureId, type FeatureState } from "./feature-rules";
 import {
   resolveSetup,
@@ -36,8 +41,8 @@ import {
  * keeps summing to `estimateDailyStorageMb(interval)`.
  */
 export const ANCHOR_SHARE_MB = {
-  /** Video frames. */
-  screen: 168,
+  /** Video frames — the one share that also scales with resolution (pixels). */
+  screen: ANCHOR_VIDEO_MB,
   /** The OCR half of the index — one pass per frame. */
   ocr: 47,
   /** Per audio source (microphone, system audio). */
@@ -67,6 +72,8 @@ export interface CostContext {
   installed?: Partial<ModelInventory> | null;
   /** Seconds between snapshots. Defaults to the ladder default (2 s). */
   captureIntervalSeconds?: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Defaults to the anchor's 720p. */
+  videoPixels?: number;
 }
 
 export interface FeatureCost {
@@ -158,14 +165,18 @@ export function frameVectorMb(
 /** What `state` costs: MB/day on disk, bytes still to download, per row and total. */
 export function featureCost(state: FeatureState, ctx: CostContext = {}): FeatureCost {
   const interval = ctx.captureIntervalSeconds ?? DEFAULT_CAPTURE_INTERVAL_S;
+  const videoPixels = ctx.videoPixels ?? ANCHOR_VIDEO_PIXELS;
   // Scale the decomposition by the ladder stop, so the shares always sum back to
-  // the anchor-derived total for this capture rate.
+  // the anchor-derived total for this capture rate. The screen row additionally
+  // scales with the pixel ratio, matching `estimateDailyStorageMb`'s video term.
   const scale = estimateDailyStorageMb(interval) / ANCHOR_MB_PER_DAY;
   const sources = (state.microphone ? 1 : 0) + (state.systemAudio ? 1 : 0);
   const reads = state.screen && state.ocr;
 
   const diskByFeature = zeroByFeature();
-  diskByFeature.screen = state.screen ? ANCHOR_SHARE_MB.screen * scale : 0;
+  diskByFeature.screen = state.screen
+    ? ANCHOR_SHARE_MB.screen * scale * (videoPixels / ANCHOR_VIDEO_PIXELS)
+    : 0;
   diskByFeature.ocr = reads ? ANCHOR_SHARE_MB.ocr * scale : 0;
   diskByFeature.microphone = state.microphone ? ANCHOR_SHARE_MB.audioSource * scale : 0;
   diskByFeature.systemAudio = state.systemAudio ? ANCHOR_SHARE_MB.audioSource * scale : 0;

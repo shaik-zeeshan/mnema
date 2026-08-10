@@ -263,11 +263,13 @@ export function diskVerdict(input: {
   budget: DownloadBudget;
   freeBytes: number | null;
   captureIntervalSeconds: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Omitted = anchor 720p. */
+  videoPixels?: number;
 }): DiskVerdict | null {
-  const { budget, freeBytes, captureIntervalSeconds } = input;
+  const { budget, freeBytes, captureIntervalSeconds, videoPixels } = input;
   if (freeBytes === null) return null;
-  const needBytes = storageNeedBytes(budget.bytes, captureIntervalSeconds);
-  const dayBytes = estimateDailyStorageMb(captureIntervalSeconds) * 1e6;
+  const needBytes = storageNeedBytes(budget.bytes, captureIntervalSeconds, videoPixels);
+  const dayBytes = estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6;
   const roomForDownloadsBytes = Math.max(
     0,
     freeBytes - RESERVE_FLOOR_BYTES - dayBytes,
@@ -280,6 +282,7 @@ export function diskVerdict(input: {
   const withoutSemantic = storageNeedBytes(
     budget.bytes - budget.semanticBytes,
     captureIntervalSeconds,
+    videoPixels,
   );
   const clears = budget.semanticBytes > 0 && freeBytes >= withoutSemantic;
   const tail =

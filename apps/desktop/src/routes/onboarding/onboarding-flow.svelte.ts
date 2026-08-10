@@ -37,7 +37,15 @@ import {
   type ResolvedSettings,
   type SavedChoices,
 } from "$lib/onboarding/resolve-setup";
+import { draftVideoPixels } from "$lib/onboarding/disk-estimate";
 import { OnboardingController } from "./onboarding.svelte";
+
+/** The display's true backing pixels, for pricing `original` resolution. */
+function nativeScreenPixels(): number | null {
+  if (typeof window === "undefined" || !window.screen) return null;
+  const dpr = window.devicePixelRatio || 1;
+  return window.screen.width * window.screen.height * dpr * dpr;
+}
 
 export type { StorageProbe };
 
@@ -185,9 +193,22 @@ export class OnboardingFlow {
   captureIntervalSeconds = $derived(
     CAPTURE_INTERVAL_LADDER_S[nearestLadderIndex(this.controller.draftFrameRate)]!,
   );
+  /** Pixels per captured frame under the draft resolution — every disk figure
+   *  the flow prints scales its video share by this. */
+  videoPixels = $derived(
+    draftVideoPixels(
+      {
+        resolutionMode: this.controller.draftResolutionMode,
+        resolutionPreset: this.controller.draftResolutionPreset,
+        customWidth: this.controller.draftCustomWidth,
+        customHeight: this.controller.draftCustomHeight,
+      },
+      nativeScreenPixels(),
+    ),
+  );
   /** Everything the volume must hold: reserve + downloads + a day of capture. */
   requiredBytes = $derived(
-    storageNeedBytes(this.downloadBytes, this.captureIntervalSeconds),
+    storageNeedBytes(this.downloadBytes, this.captureIntervalSeconds, this.videoPixels),
   );
   blockReason = $derived(
     this.step === "captureStorage"
@@ -195,6 +216,7 @@ export class OnboardingFlow {
           probe: this.storageProbe,
           requiredBytes: this.downloadBytes,
           captureIntervalSeconds: this.captureIntervalSeconds,
+          videoPixels: this.videoPixels,
           customResolutionErrors: this.controller.customResolutionErrors,
           customBitrateErrors: this.controller.customBitrateErrors,
         })

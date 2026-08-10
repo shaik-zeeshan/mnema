@@ -97,8 +97,17 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         capture_system_audio: false,
         segment_duration_seconds: 60,
         screen_frame_rate: 0.5,
+        // 720p, not Original: the disk estimates are anchored on a 720p
+        // measurement, and native Retina frames cost several times as much for
+        // recall screenshots that OCR reads equally well. Original remains a
+        // choice — and the only valid value where SCK scaling is unavailable
+        // (macOS < 15), where validation rejects everything else.
         screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::Original,
+            preset: if supports_non_original_screen_resolution() {
+                ScreenResolutionPreset::P720
+            } else {
+                ScreenResolutionPreset::Original
+            },
         },
         video_bitrate: default_video_bitrate(),
         save_directory: default_save_directory(),

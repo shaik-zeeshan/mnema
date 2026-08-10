@@ -95,6 +95,8 @@
     freeBytes: number | null;
     /** Seconds between snapshots — the gate's capture term needs it. */
     captureIntervalSeconds: number;
+    /** Pixels per frame at the draft resolution (`flow.videoPixels`). */
+    videoPixels?: number;
   }
 
   let {
@@ -116,6 +118,7 @@
     speakerBytes,
     freeBytes,
     captureIntervalSeconds,
+    videoPixels = undefined,
   }: Props = $props();
 
   // Last build chosen inside each family, so leaving Whisper Medium for Parakeet
@@ -182,7 +185,7 @@
   // "Download anyway" dismisses the shortfall until something changes it.
   let dismissed = $state(false);
   const verdict = $derived(
-    diskVerdict({ budget, freeBytes, captureIntervalSeconds }),
+    diskVerdict({ budget, freeBytes, captureIntervalSeconds, videoPixels }),
   );
   // A new figure is a new decision — an earlier dismissal must not suppress a
   // fresh shortfall.
@@ -190,6 +193,7 @@
     void budget.bytes;
     void freeBytes;
     void captureIntervalSeconds;
+    void videoPixels;
     dismissed = false;
   });
 
@@ -202,7 +206,7 @@
           0,
           freeBytes -
             RESERVE_FLOOR_BYTES -
-            estimateDailyStorageMb(captureIntervalSeconds) * 1e6,
+            estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6,
         ),
   );
   // One axis for bytes AND room, so "it doesn't fit" is a picture. 6% headroom
