@@ -467,15 +467,29 @@ fn scope_prose(scope: &str) -> &'static str {
 /// the "An unnamed local tool" fallback below and the dialog names no requester at
 /// all; and an override reverses the display order of the rest of the sentence
 /// stating what the client asked for.
+///
+/// The set is Unicode's `Default_Ignorable_Code_Point` — the closed, stable list
+/// of "this is meant to render as nothing", which is exactly the property that
+/// matters here and covers the bidi controls, the zero-widths, the fillers
+/// (U+3164 HANGUL FILLER is the classic invisible-name trick) and the variation
+/// selectors in one go — plus the two blank-glyph outliers it leaves out:
+/// U+2800 BRAILLE PATTERN BLANK and the U+FFF9..=U+FFFB annotation controls.
+/// Enumerating "invisible" any other way is a blocklist that leaks; this one is
+/// a Unicode property with a fixed definition.
 fn is_invisible_or_reordering(ch: char) -> bool {
     matches!(ch,
-        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{FEFF}'
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{2800}' | '\u{3164}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
         | '\u{200B}'..='\u{200F}'
         | '\u{202A}'..='\u{202E}'
-        | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}'
+        | '\u{2060}'..='\u{206F}'
         | '\u{FE00}'..='\u{FE0F}'
-        | '\u{E0000}'..='\u{E007F}'
+        | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
@@ -883,6 +897,34 @@ mod tests {
             body.starts_with("Mnema CLI wants access to"),
             "the visible name survives, the reordering does not: {body:?}"
         );
+    }
+
+    /// The same invariant, for names the enumeration misses. `is_invisible_or_reordering`
+    /// lists BMP format blocks only, so characters that render as blank in every
+    /// mainstream font — HANGUL FILLER (the classic invisible-name trick), BRAILLE
+    /// PATTERN BLANK, the interlinear-annotation controls, the supplementary-plane
+    /// musical format controls — survive it, defeat the `is_empty()` fallback, and
+    /// leave the consent dialog naming NO requester while it asks for the user's
+    /// entire retained history.
+    #[test]
+    fn quick_prompt_falls_back_for_every_blank_client_name() {
+        for label in [
+            "\u{3164}",                 // HANGUL FILLER
+            "\u{2800}",                 // BRAILLE PATTERN BLANK
+            "\u{FFF9}\u{FFFA}\u{FFFB}", // interlinear annotation controls
+            "\u{1D173}\u{1D17A}",       // musical symbol format controls
+            "\u{E0100}",                // variation selector supplement
+        ] {
+            let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+            request.client.label = label.to_string();
+
+            let body = default_prompt_body(&request);
+
+            assert!(
+                body.starts_with("An unnamed local tool wants access to"),
+                "a name that renders as nothing must fall back to the unnamed wording: {body:?}"
+            );
+        }
     }
 
     /// `mnema access request --duration 1h` sends `preferred_seconds = 3600`, but
