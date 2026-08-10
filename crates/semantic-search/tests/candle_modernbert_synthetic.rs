@@ -38,7 +38,10 @@ use std::path::Path;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::modernbert::{Config as ModernBertConfig, ModernBert};
-use semantic_search::{CandleBackend, SemanticSearchBackend, SemanticSearchModelDescriptor};
+use semantic_search::{
+    CandleBackend, EmbedKind, SemanticSearchBackend, SemanticSearchEmbedder,
+    SemanticSearchModelDescriptor,
+};
 
 /// A tiny ModernBERT — small enough to mint random weights fast, large enough to
 /// exercise every load key and BOTH attention paths (`global_attn_every_n_layers = 3`
@@ -204,7 +207,14 @@ fn write_tokenizer(path: &Path) {
 /// from JSON so the test does not hand-construct the large struct; `pooling` is
 /// parameterised so one model dir covers both strategies.
 fn synthetic_descriptor(pooling: &str) -> SemanticSearchModelDescriptor {
-    let json = serde_json::json!({
+    serde_json::from_value(synthetic_descriptor_json(pooling))
+        .expect("synthetic descriptor deserializes")
+}
+
+/// The raw descriptor JSON, so a test can vary one hand-coded field (the registry's
+/// declared `dimension`) against the same on-disk model.
+fn synthetic_descriptor_json(pooling: &str) -> serde_json::Value {
+    serde_json::json!({
         "provider": "local",
         "modelId": "synthetic-modernbert",
         "displayName": "Synthetic ModernBERT (test)",
@@ -227,8 +237,7 @@ fn synthetic_descriptor(pooling: &str) -> SemanticSearchModelDescriptor {
             "weightsRelativePath": "model.safetensors",
             "auxWeightsRelativePath": null
         }
-    });
-    serde_json::from_value(json).expect("synthetic descriptor deserializes")
+    })
 }
 
 /// A synthetic model dir whose weights use `prefix`. The default
@@ -423,6 +432,53 @@ fn modernbert_loads_both_the_bare_and_the_model_prefixed_weight_layouts() {
         similarity > 0.9999,
         "the same weights under either naming must embed identically (cosine {similarity})"
     );
+}
+
+/// **The width the embedder PROMISES must be the width it PRODUCES.**
+///
+/// The ModernBert arm takes its native width from the model's own `config.json`
+/// (`hidden_size`), while [`SemanticSearchEmbedder::dimension`] reports the
+/// hand-coded registry `dimension` — and nothing compares the two at load. A model
+/// directory whose `config.json` disagrees with its registry entry (a hand-edited /
+/// mis-copied install; every required file present, so `detect_model_status` reports
+/// Installed and the marker is written) therefore loads happily and then hands back
+/// vectors of a width its own `dimension()` denies.
+///
+/// Downstream that is silent data loss, not a crash: the desktop sizes its `vec0`
+/// table from `descriptor.dimension`, and `store_vectors_if_model_matches` SKIPS a
+/// wrong-width vector without erroring, so every anchor stays in the missing set and
+/// is re-embedded forever while never becoming searchable.
+///
+/// Either outcome is acceptable here — refuse the load, or produce the promised
+/// width — but "load fine, return a different width" is not.
+#[test]
+fn a_model_whose_config_width_disagrees_with_the_registry_cannot_load_silently() {
+    let dir = synthetic_model_dir();
+    // The on-disk config declares HIDDEN_SIZE; the registry entry claims double it.
+    let mut json = synthetic_descriptor_json("cls");
+    json["dimension"] = serde_json::json!(HIDDEN_SIZE * 2);
+    let descriptor: SemanticSearchModelDescriptor =
+        serde_json::from_value(json).expect("descriptor deserializes");
+
+    match SemanticSearchEmbedder::load_from_dir(dir.path(), &descriptor) {
+        // Refusing the load is the loud outcome: nothing is embedded at the wrong
+        // width and the caller sees why.
+        Err(_) => {}
+        Ok(embedder) => {
+            let vector = embedder
+                .embed_text("the quick brown fox", EmbedKind::Document)
+                .expect("embed");
+            assert_eq!(
+                vector.len(),
+                embedder.dimension(),
+                "the embedder returned a {}-wide vector while promising {} — a model whose \
+                 config.json disagrees with its registry dimension must fail the load, not \
+                 silently emit vectors the vector store will skip forever",
+                vector.len(),
+                embedder.dimension()
+            );
+        }
+    }
 }
 
 /// The real backend loads and forwards on Metal. Self-skipping: `try_load_metal`

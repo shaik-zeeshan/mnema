@@ -204,6 +204,39 @@ impl SemanticSearchEmbedder {
             .with_truncation(None)
             .map_err(|error| EmbeddingError::LoadTokenizer(error.to_string()))?;
 
+        // The width this wrapper PROMISES (`dimension()`, the hand-coded registry
+        // `dimension`) must be a width the loaded backend can actually produce. Two
+        // arms take their native width from the model's own `config.json`
+        // (`XlmRoberta` and `ModernBert` read `hidden_size`), so a model directory
+        // whose config disagrees with its registry entry — every required file
+        // present, so `detect_model_status` reports Installed — would otherwise load
+        // happily and then emit vectors of a width `dimension()` denies. Downstream
+        // that is silent: the desktop sizes its `vec0` table from
+        // `descriptor.dimension` and `store_vectors_if_model_matches` SKIPS a
+        // wrong-width vector without erroring, so every anchor stays in the missing
+        // set and is re-embedded forever while never becoming searchable. Fail the
+        // load instead.
+        let native_dimension = backend.dimension();
+        let widths_agree = match descriptor.mrl_truncate_dim {
+            // Matryoshka: the stored vector is a prefix of the native one, so the
+            // truncated width must be the declared width AND must fit inside native
+            // (`truncate_and_renormalize` clamps, so a too-large `d` would silently
+            // store a short vector).
+            Some(truncate) => truncate == descriptor.dimension && truncate <= native_dimension,
+            None => native_dimension == descriptor.dimension,
+        };
+        if !widths_agree {
+            return Err(EmbeddingError::LoadModel(format!(
+                "{}/{}: the loaded model produces {native_dimension}-dimensional vectors but the \
+                 catalog declares dimension {} (mrl_truncate_dim {:?}) — refusing to embed at a \
+                 width the vector index will reject",
+                descriptor.provider,
+                descriptor.model_id,
+                descriptor.dimension,
+                descriptor.mrl_truncate_dim,
+            )));
+        }
+
         Ok(Self {
             backend,
             split_tokenizer,
