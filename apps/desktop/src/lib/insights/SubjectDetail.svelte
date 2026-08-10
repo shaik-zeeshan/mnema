@@ -21,7 +21,6 @@
   //   subject: string     — the Subject name being inspected.
   //   onBack: () => void  — return to the Subjects index.
 
-  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
@@ -152,18 +151,18 @@
   // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
   // cached so re-selecting a conclusion is free.
   async function loadTimelineThumbnails(): Promise<void> {
-    // Read the cache untracked: this loader runs synchronously inside a $effect
-    // keyed on timelineEvents, so a tracked thumbnailCache.has() read before the
-    // first await would make the cache a dependency — and the `thumbnailCache =
-    // next` write below would then re-run the effect for one wasted pass.
-    const cache = untrack(() => thumbnailCache);
+    // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
+    // keeps the LRU ordered by what is still on screen. It also reads no $state,
+    // so this loader (called synchronously from a $effect keyed on
+    // timelineEvents) no longer needs the cache untracked to avoid re-running
+    // itself off its own `thumbnailCache` write.
     const wanted = timelineEvents
       .map((ev) =>
         ev.kind === "evidence" && ev.sourceType === "screen"
           ? ev.frameId
           : null,
       )
-      .filter((id): id is number => id != null && !cache.has(id));
+      .filter((id): id is number => id != null && !thumbnailUrls.touch(id));
     const uniqueIds = Array.from(new Set(wanted));
     if (uniqueIds.length === 0) return;
     try {

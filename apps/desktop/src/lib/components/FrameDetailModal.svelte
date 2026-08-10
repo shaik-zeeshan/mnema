@@ -96,8 +96,14 @@
   // Teardown-only (no reactive reads): the `open`-goes-false effect below only
   // runs while this component is alive. A parent destroyed with the modal still
   // open (route change, subject back-out) would otherwise strand the full-size
-  // hero's blob — bytes and decoded surface both.
-  $effect(() => () => previewUrls.clear());
+  // hero's blob — bytes and decoded surface both. The token bump covers the
+  // load still awaiting its IPCs at that moment: `clear()` only invalidates a
+  // `swap` already running, so without it the late load swaps AFTER teardown,
+  // mints a fresh hero URL into a dead component, and nothing ever revokes it.
+  $effect(() => () => {
+    previewUrls.clear();
+    loadToken++;
+  });
   let imgSrc = $state<string | null>(null);
   // Resolved via `resolve_app_icons` off the loaded frame's bundle id (best
   // effort; a letter avatar covers the null case). Same command the timeline uses.

@@ -268,9 +268,13 @@ export class SearchStore {
     frameResults: FrameSearchResultDto[],
     generation: number,
   ): Promise<void> {
+    // `touch`, not `thumbnailCache.has`: the held ones are skipped either way,
+    // but touching them marks them most-recently-used, so the LRU evicts by what
+    // is off screen instead of by first mint (a frame that matches every search
+    // is the OLDEST, and its revoked URL would blank its own card).
     const frameIds = frameResults
       .map((result) => result.thumbnailFrameId)
-      .filter((id) => !this.thumbnailCache.has(id));
+      .filter((id) => !this.thumbnailUrls.touch(id));
 
     const uniqueIds = Array.from(new Set(frameIds));
     if (uniqueIds.length === 0) {

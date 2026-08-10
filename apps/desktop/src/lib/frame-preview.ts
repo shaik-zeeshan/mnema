@@ -23,10 +23,11 @@ export function framePreviewAssetUrl(
 export async function readFramePreviewBytes(
   filePath: string,
   deps: FramePreviewFetchDependencies = {},
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const assetUrl = framePreviewAssetUrl(filePath, deps);
-  const response = await fetchImpl(assetUrl);
+  const response = await fetchImpl(assetUrl, signal ? { signal } : undefined);
   if (!response.ok) {
     throw new Error(`frame preview fetch failed: ${response.status} ${response.statusText}`.trim());
   }
@@ -56,6 +57,9 @@ export class FramePreviewUrlHolder {
   // `settle`. More than one only piles up when swaps outrun paints.
   #retired = new Set<string>();
   #generation = 0;
+  // The read behind the swap in flight, so the next swap can cancel it — see
+  // `swap`.
+  #inFlight: AbortController | null = null;
 
   constructor(deps: FramePreviewUrlDependencies = {}) {
     this.#deps = deps;
@@ -72,12 +76,23 @@ export class FramePreviewUrlHolder {
    * route that to their existing preview-error path — but only while this swap
    * is still the current one; a superseded failure reports `null` like any
    * other superseded swap.
+   *
+   * The read it supersedes is CANCELLED, not just ignored: DetailPane swaps once
+   * per selection (macOS key repeat holds ↓ at ~15-30/s) and the timeline stage
+   * once per 80 ms of scrubbing, so leaving them running materialises a hero's
+   * worth of bytes per dead frame in the JS heap and makes the webview's
+   * scheme-handler queue serve them ahead of the frame the user stopped on. The
+   * `<img src>` this replaced got that for free — the browser cancels the
+   * outgoing load on every src change.
    */
   async swap(filePath: string, mimeType?: string | null): Promise<string | null> {
     const generation = ++this.#generation;
+    this.#abortInFlight();
+    const controller = typeof AbortController === "undefined" ? null : new AbortController();
+    this.#inFlight = controller;
     let bytes: Uint8Array;
     try {
-      bytes = await readFramePreviewBytes(filePath, this.#deps);
+      bytes = await readFramePreviewBytes(filePath, this.#deps, controller?.signal);
     } catch (error) {
       // A swap that already lost the race reports "superseded", never the
       // failure: callers route a rejection to their no-hero path (DetailPane
@@ -85,6 +100,8 @@ export class FramePreviewUrlHolder {
       // which would revoke and blank the newer preview that painted fine.
       if (generation !== this.#generation) return null;
       throw error;
+    } finally {
+      if (this.#inFlight === controller) this.#inFlight = null;
     }
     if (generation !== this.#generation) return null;
     const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
@@ -118,6 +135,13 @@ export class FramePreviewUrlHolder {
     this.#current = null;
     // Invalidate in-flight swaps so a late one cannot resurrect a URL.
     this.#generation += 1;
+    // ...and stop their reads: an unmounted pane's hero is bytes nobody wants.
+    this.#abortInFlight();
+  }
+
+  #abortInFlight(): void {
+    this.#inFlight?.abort();
+    this.#inFlight = null;
   }
 
   #revoke(url: string): void {
@@ -137,8 +161,8 @@ export class FramePreviewUrlHolder {
 export const FRAME_PREVIEW_URL_CAP = 256;
 
 /**
- * How many preview reads a single {@link FramePreviewUrlMap.merge} keeps in
- * flight.
+ * How many preview reads a {@link FramePreviewUrlMap} keeps in flight — across
+ * every `merge` running against it, not per call.
  *
  * A cold merge is all-or-nothing — the caller assigns the snapshot to reactive
  * state only once the whole batch resolves — and the batches are big: Quick
@@ -185,6 +209,13 @@ export class FramePreviewUrlMap {
   // Bumped by `clear()` so an in-flight `merge` stops minting into a map the
   // owner has already released.
   #generation = 0;
+  // The map's ONE read pool — see `#schedule`.
+  #queue: (() => Promise<void>)[] = [];
+  #active = 0;
+  // `clear()` is a RELEASE, not a reset: the owner is gone (component teardown,
+  // discarded results) and will never call it again. Merges that start after it
+  // must mint nothing — see `merge`. Reuse means a fresh map, not a cleared one.
+  #released = false;
 
   /**
    * `onDropped` fires for each frame whose URL was just revoked (eviction,
@@ -219,11 +250,17 @@ export class FramePreviewUrlMap {
    * batch returns: 24 reads through a 6-worker pool is four SEQUENTIAL asset round
    * trips, where the `asset://` code this replaced assigned the map synchronously
    * and painted after one.
+   *
+   * A released map (see `clear`) merges nothing: its owner's teardown has already
+   * run, so every consumer of these loaders reads the IPC FIRST and merges when it
+   * returns — the destroy lands in that gap, and a URL minted after it has nobody
+   * left to revoke it.
    */
   async merge(
     entries: Iterable<{ frameId: number; preview: { filePath: string; mimeType: string } }>,
     onMinted?: (frameId: number, url: string) => void,
   ): Promise<Map<number, string>> {
+    if (this.#released) return this.snapshot();
     // `get` (not `peek`) so an already-held frame is still marked
     // most-recently-used — a re-search over the same results must not make its
     // own thumbnails the next eviction candidates.
@@ -244,35 +281,78 @@ export class FramePreviewUrlMap {
     // which is the leak blob URLs exist to stop. The generation makes `clear`
     // abort the workers instead of racing them.
     const generation = this.#generation;
-    let next = 0;
-    const worker = async (): Promise<void> => {
-      while (next < pending.length) {
-        if (generation !== this.#generation) return;
-        const { frameId, preview } = pending[next++];
-        try {
-          const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
-          if (generation !== this.#generation) return; // cleared mid-read
-          const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
-          const url = create(new Blob([bytes], { type: preview.mimeType }));
-          this.#urls.set(frameId, url);
-          // Publish now, not at the end of the batch: the caller repaints this one
-          // cell a round trip after the read that produced it.
-          onMinted?.(frameId, url);
-        } catch {
-          // Best-effort: leave the frame out so a later pass can retry it.
-        }
+    const read = async (entry: {
+      frameId: number;
+      preview: { filePath: string; mimeType: string };
+    }): Promise<void> => {
+      if (generation !== this.#generation) return; // cleared before its turn
+      const { frameId, preview } = entry;
+      try {
+        const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
+        if (generation !== this.#generation) return; // cleared mid-read
+        const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
+        const url = create(new Blob([bytes], { type: preview.mimeType }));
+        this.#urls.set(frameId, url);
+        // Publish now, not at the end of the batch: the caller repaints this one
+        // cell a round trip after the read that produced it.
+        onMinted?.(frameId, url);
+      } catch {
+        // Best-effort: leave the frame out so a later pass can retry it.
       }
     };
     try {
-      await Promise.all(
-        Array.from({ length: Math.min(FRAME_PREVIEW_MERGE_CONCURRENCY, pending.length) }, worker),
-      );
+      // Through the map's ONE pool, not a pool per call — see `#schedule`.
+      await Promise.all(pending.map((entry) => this.#schedule(() => read(entry))));
     } finally {
       // Every exit path (resolved, aborted mid-batch, thrown) hands the claims back,
       // or a later merge would skip those frames forever.
       for (const frameId of claimed) this.#reading.delete(frameId);
     }
     return this.snapshot();
+  }
+
+  /**
+   * Run `job` when the map's read pool has a free slot.
+   *
+   * The pool belongs to the MAP, not to one `merge` call: callers fan merges out
+   * over the same map — `Chat.hydrateConversation` fires one per turn (`for
+   * (const t of turns) void loadSourceThumbnails(t.sources)`), Quick Recall
+   * overlaps a debounced search with the answer-source pass — so a per-call pool
+   * multiplies {@link FRAME_PREVIEW_MERGE_CONCURRENCY} by the number of merges
+   * in flight. A 20-turn thread opened 120 simultaneous asset reads, each
+   * materialising its bytes on the main thread in one burst.
+   */
+  #schedule(job: () => Promise<void>): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.#queue.push(() => job().finally(resolve));
+      this.#drain();
+    });
+  }
+
+  #drain(): void {
+    while (this.#active < FRAME_PREVIEW_MERGE_CONCURRENCY && this.#queue.length > 0) {
+      const job = this.#queue.shift();
+      if (!job) return;
+      this.#active += 1;
+      void job().finally(() => {
+        this.#active -= 1;
+        this.#drain();
+      });
+    }
+  }
+
+  /**
+   * Mark a frame the caller is STILL SHOWING as most-recently-used, and report
+   * whether it is held.
+   *
+   * Every caller filters the frames it already holds out of the request BEFORE
+   * `merge` ever sees them, so the touch inside `merge` never fires on the real
+   * path: without this the live set is ordered by FIRST MINT, and the frame that
+   * matches search after search is the oldest one — evicted (and revoked) while
+   * its own card is on screen, with nothing to re-request it for that view.
+   */
+  touch(frameId: number): boolean {
+    return this.#urls.get(frameId) !== undefined;
   }
 
   /** The live frame-id → URL pairs. Reads without disturbing LRU order. */
@@ -285,11 +365,21 @@ export class FramePreviewUrlMap {
     return out;
   }
 
-  /** Revoke everything — call on unmount, or when results are discarded. */
+  /**
+   * Release the map: revoke everything and mint nothing ever again. Call it on
+   * unmount, or when the results it belongs to are discarded.
+   *
+   * Permanent on purpose. The generation alone only aborts a merge that is
+   * ALREADY running, and every consumer awaits `get_frame_scrub_previews` before
+   * it merges — so the teardown routinely lands BEFORE the merge starts, and a
+   * URL minted then is stranded for the life of the WebContent process. An owner
+   * that needs the map again (a new activity's filmstrip) builds a fresh one.
+   */
   clear(): void {
     // Bump first: an in-flight `merge` must not mint into a map that will
     // never be cleared again.
     this.#generation += 1;
+    this.#released = true;
     this.#urls.clear();
   }
 }

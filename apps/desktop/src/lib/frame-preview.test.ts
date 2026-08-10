@@ -134,6 +134,47 @@ describe("FramePreviewUrlHolder", () => {
     expect(revoked).toEqual([]);
   });
 
+  test("a swap that supersedes another cancels the read nobody will paint", async () => {
+    // Workload: holding ↓ in Quick Recall's result list (macOS key repeat is
+    // ~15-30/s, and DetailPane's `$effect` calls `swap` per selection with no
+    // debounce), or dragging the timeline scrubber (a display swap every 80 ms).
+    // Each superseded `swap` discards its URL, but its READ still runs to
+    // completion: a 1280px hero is ~300 KB materialised into the JS heap for
+    // nothing, and the webview's scheme-handler queue serves those dead reads
+    // AHEAD of the one frame the user actually stopped on. The `<img src>` this
+    // replaced was cancelled by the browser on every src change.
+    const signals: (AbortSignal | undefined)[] = [];
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let minted = 0;
+    const holder = new FramePreviewUrlHolder({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async (_url: string, init?: { signal?: AbortSignal }) => {
+        signals.push(init?.signal);
+        await gate; // every read is still open when the scrub moves on
+        if (init?.signal?.aborted) {
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        }
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: () => {},
+    });
+
+    const swaps = [];
+    for (let i = 1; i <= 10; i++) swaps.push(holder.swap(`/frames/${i}.png`));
+    release!();
+    const painted = await Promise.all(swaps);
+
+    // Nine dead reads, one live one.
+    expect(signals.filter((signal) => signal?.aborted).length).toBe(9);
+    expect(painted.slice(0, 9)).toEqual(Array(9).fill(null));
+    expect(painted[9]).toBe("blob:1"); // only the survivor mints
+    expect(holder.current).toBe("blob:1");
+  });
+
   test("clear revokes the painted URL and disarms in-flight swaps", async () => {
     let release: (() => void) | null = null;
     const slow = new Promise<void>((resolve) => {
@@ -391,6 +432,32 @@ describe("FramePreviewUrlMap", () => {
     expect(new Set(revoked).size).toBe(minted);
   });
 
+  test("a merge that starts after the owner released the map strands nothing", async () => {
+    // Chat and SubjectDetail read `get_frame_scrub_previews` FIRST and merge only
+    // when it returns, so the insights tab switch / subject back-out that destroys
+    // them lands in that gap: their teardown `clear()` runs BEFORE the merge even
+    // starts. The generation guard only aborts a merge already running — a merge
+    // that starts afterwards mints a fresh blob URL per frame into a map nobody
+    // will ever clear again, and a blob URL outlives the component that minted it,
+    // so those are stranded for the life of the WebContent process.
+    const revoked: string[] = [];
+    let minted = 0;
+    const urls = new FramePreviewUrlMap({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }),
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: (url: string) => revoked.push(url),
+    });
+
+    urls.clear(); // the component was destroyed while the scrub-preview IPC ran
+
+    const painted = await urls.merge(entries(1, 3));
+
+    expect(minted).toBe(0); // nothing minted → nothing to strand
+    expect(painted.size).toBe(0);
+    expect(urls.snapshot().size).toBe(0);
+  });
+
   test("one frame failing to fetch leaves the rest painted", async () => {
     // Thumbnails are best-effort: a broken frame must not blank its neighbours,
     // and must stay out of the map so a later pass can retry it.
@@ -410,6 +477,47 @@ describe("FramePreviewUrlMap", () => {
 
     expect([...painted.keys()]).toEqual([1, 3]);
     expect(revoked).toEqual([]);
+  });
+
+  test("the read pool is shared across concurrent merges, not per call", async () => {
+    // Workload: opening a chat thread. `Chat.hydrateConversation` fires
+    // `loadSourceThumbnails` per TURN (`for (const t of turns) void
+    // loadSourceThumbnails(t.sources)`), each up to ASK_AI_SOURCE_FRAME_CAP = 6
+    // frame sources, all into the ONE component-scoped map. A per-call pool
+    // means a 20-turn thread opens 120 simultaneous `asset://` reads — 20x the
+    // documented "browser per-origin connection budget" — each materialising a
+    // full ArrayBuffer + Blob copy on the main thread in one burst.
+    let live = 0;
+    let peak = 0;
+    let minted = 0;
+    const urls = new FramePreviewUrlMap(
+      {
+        convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+        fetchImpl: async () => {
+          live += 1;
+          peak = Math.max(peak, live);
+          await Promise.resolve();
+          await Promise.resolve();
+          live -= 1;
+          return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+        },
+        createObjectUrlImpl: () => `blob:${++minted}`,
+        revokeObjectUrlImpl: () => {},
+      },
+      256,
+    );
+
+    // Four turns' worth of sources, disjoint ids, started in one tick — exactly
+    // what hydration does.
+    await Promise.all([
+      urls.merge(entries(1, 6)),
+      urls.merge(entries(7, 12)),
+      urls.merge(entries(13, 18)),
+      urls.merge(entries(19, 24)),
+    ]);
+
+    expect(urls.snapshot().size).toBe(24);
+    expect(peak).toBeLessThanOrEqual(6); // FRAME_PREVIEW_MERGE_CONCURRENCY, in total
   });
 
   test("a cold merge fetches with bounded concurrency, not one at a time", async () => {

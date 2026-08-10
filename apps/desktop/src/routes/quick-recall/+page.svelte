@@ -142,7 +142,9 @@
     const frameIds = sources
       .filter((source) => source.kind === "frame" && source.frameId != null)
       .map((source) => source.frameId as number)
-      .filter((id) => !search.thumbnailCache.has(id));
+      // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
+      // keeps the LRU ordered by what is still on screen.
+      .filter((id) => !search.thumbnailUrls.touch(id));
 
     const uniqueIds = Array.from(new Set(frameIds));
     if (uniqueIds.length === 0) {
