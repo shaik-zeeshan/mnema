@@ -1961,11 +1961,17 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // REBUILT, not adopted in place (its embedding recipe is unknowable — see
     // `reconcile_vectors_table`); on a fresh install that rebuild discards nothing
     // because migration 0039's table is empty.
+    //
+    // The selection is passed as a READER, not a snapshot: this pass queues behind an
+    // in-flight Settings model switch, and that switch is exactly what changes the
+    // selection while we wait. Reading it here would decide from a value the switch
+    // has already superseded — re-DROPping the table it just rebuilt and stamping the
+    // OLD model on it, which the write gate then rejects for the whole session.
     {
-        let settings = crate::semantic_search_worker::effective_semantic_search_settings(app_handle);
         tauri::async_runtime::block_on(
             crate::semantic_search_models::reconcile_semantic_search_index_on_startup(
-                &infra, &settings,
+                &infra,
+                || crate::semantic_search_worker::effective_semantic_search_settings(app_handle),
             ),
         );
     }

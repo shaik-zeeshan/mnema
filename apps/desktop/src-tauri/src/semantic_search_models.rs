@@ -712,9 +712,14 @@ fn reconcile_expected_model(
 /// and leave the existing table as-is, so a transient resolve failure can never
 /// silently DROP a populated index. The real selection re-aligns the table the next
 /// time the id resolves.
+///
+/// `read_settings` is a READER, not a snapshot, on purpose: it is called after
+/// [`SELECT_MODEL_LOCK`] is held, so the decision is made against the selection as it
+/// stands once no switch can be in flight. Passing a value read on the caller's side
+/// would reopen the check-then-act window the lock closes.
 pub(crate) async fn reconcile_semantic_search_index_on_startup(
     infra: &crate::app_infra::AppInfraState,
-    settings: &capture_types::SemanticSearchSettings,
+    read_settings: impl Fn() -> capture_types::SemanticSearchSettings,
 ) {
     // Serialize against a Settings model switch. `select_semantic_search_model` holds
     // this same lock across its rebuild+persist pair; this pass runs on the
@@ -729,7 +734,15 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
     // the deferred-startup thread for the length of one switch is the intended cost.
     let _switch_guard = select_model_lock().lock().await;
 
-    let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(settings) else {
+    // The selection is READ HERE, under the lock — never handed in as a snapshot
+    // taken before it. A snapshot read on the way to the lock is stale by exactly the
+    // window the lock exists to close: the switch that made us wait is the one that
+    // persisted the new `model_id`, so acting on the pre-lock value re-DROPs the table
+    // it just rebuilt and stamps the OLD model onto it. Same permanent, silent
+    // keyword-only session as the no-lock case, just one step later.
+    let settings = read_settings();
+
+    let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(&settings) else {
         crate::native_capture::debug_log::log_info(format!(
             "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",
             settings.model_id.as_deref().unwrap_or("<none>"),
@@ -2334,6 +2347,97 @@ mod tests {
             None,
             "an unresolvable model_id must skip reconciliation, not wipe to the default"
         );
+    }
+
+    fn run_async_test(test: impl std::future::Future<Output = ()>) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(test);
+    }
+
+    fn selection_for(model_id: &str) -> capture_types::SemanticSearchSettings {
+        capture_types::SemanticSearchSettings {
+            enabled: true,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some(model_id.to_string()),
+        }
+    }
+
+    /// Startup reconciliation must decide from the selection as it stands when it
+    /// OWNS `SELECT_MODEL_LOCK`, not from a snapshot read before it queued for the
+    /// lock.
+    ///
+    /// The pass runs on the deferred-startup seam — after the window opens — so a
+    /// Settings model switch can be mid-flight (holding the lock across its
+    /// rebuild+persist) at the exact moment the deferred-startup thread reads the
+    /// settings and calls in. Deciding from that pre-lock snapshot re-DROPs the table
+    /// the switch just rebuilt and stamps the OLD model onto it, while the persisted
+    /// selection names the new one: the model-stamp write gate then skips every batch
+    /// (a skip, so the sweep idles instead of erroring), and the only other reconciler
+    /// is the next launch — search silently stays keyword-only for the whole session.
+    ///
+    /// Same-width models make it invisible to every width check on the way
+    /// (gte-modernbert is 768, like nomic), so the stamp is the only observable.
+    #[test]
+    fn startup_reconciliation_reads_the_selection_after_taking_the_switch_lock() {
+        run_async_test(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let infra: crate::app_infra::AppInfraState = std::sync::Arc::new(
+                ::app_infra::AppInfra::initialize(dir.path())
+                    .await
+                    .expect("infra should initialize"),
+            );
+
+            // The live persisted selection, as both the Settings switch and the
+            // deferred-startup pass observe it.
+            let selection = std::sync::Arc::new(std::sync::Mutex::new(selection_for(
+                "nomic-embed-text-v1.5",
+            )));
+
+            // A model switch is already in flight when deferred startup reaches the
+            // reconciler: `select_semantic_search_model` holds this lock across its
+            // rebuild+persist pair.
+            let switch = select_model_lock().lock().await;
+
+            let infra_for_task = std::sync::Arc::clone(&infra);
+            let selection_for_task = std::sync::Arc::clone(&selection);
+            let pending = tokio::spawn(async move {
+                reconcile_semantic_search_index_on_startup(&infra_for_task, move || {
+                    selection_for_task.lock().expect("selection").clone()
+                })
+                .await;
+            });
+            // Let the pass reach the lock and park behind the switch.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            // The switch rebuilds the table for gte-modernbert (the SAME 768 width, so
+            // only the stamp distinguishes it), persists the new selection, and
+            // releases the lock.
+            infra
+                .semantic_search()
+                .recreate_vectors_table("gte-modernbert-base", 768)
+                .await
+                .expect("the switch rebuilds the table");
+            *selection.lock().expect("selection") = selection_for("gte-modernbert-base");
+            drop(switch);
+
+            pending.await.expect("the reconcile task joins");
+
+            assert_eq!(
+                infra
+                    .semantic_search()
+                    .live_vector_model()
+                    .await
+                    .expect("stamp"),
+                Some(::app_infra::vectors_index_epoch("gte-modernbert-base")),
+                "reconciliation clobbered the just-switched table with a pre-lock \
+                 settings snapshot: the stamp now names a model the persisted \
+                 selection does not, so the write gate skips every batch until the \
+                 next restart"
+            );
+        });
     }
 
     /// B2: the guided-tier fail-closed gate refuses to finalize a guided tier whose
