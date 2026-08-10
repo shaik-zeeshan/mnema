@@ -318,7 +318,11 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
 
   const free = probe.freeBytes;
   const downloads = input.requiredBytes;
-  const need = storageNeedBytes(downloads, input.intervalSeconds);
+  const need = storageNeedBytes(
+    downloads,
+    input.intervalSeconds,
+    input.videoPixels,
+  );
   const usable = free - downloads - RESERVE_FLOOR_BYTES;
   const about = input.semanticSearchOn ? "about " : "";
 

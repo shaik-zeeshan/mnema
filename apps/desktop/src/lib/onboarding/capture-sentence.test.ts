@@ -24,7 +24,11 @@ import {
   CAPTURE_INTERVAL_LADDER_S,
   DEFAULT_CAPTURE_INTERVAL_S,
 } from "../components/capture-rate";
-import { RESERVE_FLOOR_BYTES, storageNeedBytes } from "./gates";
+import {
+  RESERVE_FLOOR_BYTES,
+  captureStorageBlockReason,
+  storageNeedBytes,
+} from "./gates";
 import { formatBytes } from "../settings/state/format";
 
 /** The default work-list (SPEC.md): speakrs + Whisper base + nomic. */
@@ -317,6 +321,30 @@ describe("the healthy readings", () => {
         input({ probe: { exists: true, writable: true, freeBytes: free } }),
       );
       expect(v.blocking).toBe(free < storageNeedBytes(WORK_LIST, 2));
+    }
+  });
+
+  test("the same invariant holds at a non-720p capture resolution", () => {
+    // The sentence now PRINTS a resolution-scaled day (`videoPixels`), so the
+    // shortfall it tests must be scaled by the same figure the gate uses — else
+    // a 1080p/original draft on a volume that clears the 720p need but not the
+    // real one disables Continue while the panel says it fits.
+    const pixels = 1920 * 1080;
+    for (const free of [2.6e9, 2.8e9, 2.9e9, 3.5e9]) {
+      const probe = { exists: true, writable: true, freeBytes: free };
+      const v = sentenceVerdict(input({ videoPixels: pixels, probe }));
+      const gate = captureStorageBlockReason({
+        probe,
+        requiredBytes: WORK_LIST,
+        captureIntervalSeconds: 2,
+        videoPixels: pixels,
+        customResolutionErrors: [],
+        customBitrateErrors: [],
+      });
+      expect({ free, blocking: v.blocking }).toEqual({
+        free,
+        blocking: gate !== null,
+      });
     }
   });
 });
