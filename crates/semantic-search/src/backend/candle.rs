@@ -321,7 +321,7 @@ impl CandleBackend {
                 // the queries at the unprefixed names when the prefixed embedding
                 // tensor is absent — every name `ModernBert::load` asks for starts with
                 // `model.`, so the strip is uniform. Pinned by
-                // `modernbert_parity::*_loads_unprefixed_modernbertmodel_weights`.
+                // `candle_modernbert_synthetic::modernbert_loads_both_the_bare_and_the_model_prefixed_weight_layouts`.
                 let vb = if vb.contains_tensor("model.embeddings.tok_embeddings.weight") {
                     vb
                 } else {

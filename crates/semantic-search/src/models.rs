@@ -518,11 +518,11 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             description: "Custom English option (Alibaba-NLP/gte-modernbert-base), \
                 768-dimensional, Apache-2.0, CLS-pooled. Matches the default Nomic \
                 tier's retrieval quality on real capture data at roughly half the \
-                disk (~302 MB vs ~548 MB), but embeds slower AND is the one option \
-                that uses more memory running than it does on disk (~596 MB \
-                resident against Nomic's ~273 MB, because candle cannot run \
-                ModernBERT in half precision). Pick it to save disk, not memory, \
-                speed or quality."
+                disk (~302 MB vs ~548 MB), but embeds slower AND — like every \
+                ModernBERT option here — uses more memory running than it does on \
+                disk (~596 MB resident against Nomic's ~273 MB, because candle \
+                cannot run ModernBERT in half precision). Pick it to save disk, not \
+                memory, speed or quality."
                 .to_string(),
             tier: SemanticSearchModelTier::Custom,
             architecture: SemanticSearchArchitecture::ModernBert,
@@ -1090,6 +1090,40 @@ mod tests {
                     descriptor.model_id
                 );
             }
+        }
+    }
+
+    /// An **exclusivity** claim in one picker description has to hold across the whole
+    /// catalog, because the picker renders whichever description the user is looking at
+    /// and nothing reconciles the set.
+    ///
+    /// `backend::candle::arch_dtype` forces F32 for EVERY `ModernBert` descriptor —
+    /// that is an architecture rule, not a per-model one — while all three ship
+    /// half-precision weights on disk, so all three are resident at roughly twice their
+    /// advertised download. A description that says one of them is "the one option"
+    /// with that property is false about its own two siblings, whose descriptions state
+    /// the same doubling for themselves.
+    #[test]
+    fn no_catalog_description_claims_a_property_all_its_siblings_share() {
+        let modernbert: Vec<SemanticSearchModelDescriptor> = catalog()
+            .into_iter()
+            .filter(|d| d.architecture == SemanticSearchArchitecture::ModernBert)
+            .collect();
+        assert!(
+            modernbert.len() > 1,
+            "this guard is about the shared arch_dtype rule; it needs >1 ModernBert model"
+        );
+        for descriptor in &modernbert {
+            let description = descriptor.description.to_lowercase();
+            assert!(
+                !description.contains("the one option"),
+                "{} claims to be \"the one option\" with a property all {} ModernBERT \
+                 models share (arch_dtype pins the ARCHITECTURE to F32, so every one of \
+                 them is resident at ~2x its half-precision download) — the description \
+                 is rendered verbatim in the Settings picker",
+                descriptor.model_id,
+                modernbert.len()
+            );
         }
     }
 
