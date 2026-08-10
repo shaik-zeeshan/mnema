@@ -695,8 +695,10 @@ fn reconcile_expected_model(
 /// early-returns on an unchanged pick). Run once on the deferred-startup seam, this
 /// rebuilds the table under the selected model so the worker can backfill again.
 /// Idempotent: a table that already matches is left untouched (the common case — no
-/// rebuild, no vectors discarded), and a table predating the model stamp is adopted
-/// in place rather than wiped (see `reconcile_vectors_table`).
+/// rebuild, no vectors discarded). A table predating the model stamp is REBUILT, not
+/// adopted in place: its embedding recipe is unknowable, so adopting it would stamp
+/// the current recipe onto vectors produced by an older one (see
+/// `reconcile_vectors_table`).
 ///
 /// The expected model is resolved from `model_id` **ignoring `enabled`** (see
 /// [`reconcile_expected_model`]): a disabled-but-previously-selected non-default
@@ -714,6 +716,19 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
     infra: &crate::app_infra::AppInfraState,
     settings: &capture_types::SemanticSearchSettings,
 ) {
+    // Serialize against a Settings model switch. `select_semantic_search_model` holds
+    // this same lock across its rebuild+persist pair; this pass runs on the
+    // deferred-startup seam — AFTER the window opens — so the user can switch models
+    // while it is deciding. Without the lock a switch that commits mid-pass is
+    // silently clobbered: `reconcile_vectors_table` DROPs the table the switch just
+    // rebuilt and stamps the model from THIS pass's (now stale) settings snapshot
+    // onto it, while the persisted selection names the new one. Nothing self-heals
+    // that for the rest of the session — the model-stamp write gate skips every
+    // batch (the sweep idles rather than errors) and the only other reconciler is the
+    // next launch, so search silently stays keyword-only until a restart. Blocking
+    // the deferred-startup thread for the length of one switch is the intended cost.
+    let _switch_guard = select_model_lock().lock().await;
+
     let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(settings) else {
         crate::native_capture::debug_log::log_info(format!(
             "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",

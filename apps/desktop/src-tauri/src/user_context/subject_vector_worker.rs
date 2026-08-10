@@ -44,7 +44,7 @@ use futures_util::{
     future::{select, Either},
     pin_mut,
 };
-use semantic_search::EmbedKind;
+use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
 use tauri::Manager;
 use tokio::sync::watch;
 
@@ -338,10 +338,10 @@ async fn run_sweep_pass(
     // clears the load latch, the quarantine map, and the stale cached embedder.
     state.reconcile_selection(&descriptor.provider, &descriptor.model_id);
 
-    // The active model's identity string (`provider/model_id`): keys both the
-    // "needs embedding" backlog query (so stale-model vectors are re-claimed) and
-    // each upsert's `embedded_model` stamp.
-    let active_model = format!("{}/{}", descriptor.provider, descriptor.model_id);
+    // The active model's identity string: keys both the "needs embedding" backlog
+    // query (so stale vectors are re-claimed) and each upsert's `embedded_model`
+    // stamp.
+    let active_model = subject_vector_model_identity(&descriptor);
 
     // If the current selection has been given up on for loading this stretch, idle
     // quietly rather than re-attempting the doomed load every tick.
@@ -606,6 +606,34 @@ async fn run_sweep_pass(
     SweepPass::DidWork(BACKFILL_BATCH_COOLDOWN_MIN)
 }
 
+/// The identity stamped on every stored **Subject Vector** and used to claim stale
+/// ones (`user_context_subject_vectors.embedded_model`).
+///
+/// `provider/<index epoch>`, where the epoch is app-infra's
+/// `model_id@EMBED_INDEX_RECIPE` — the SAME composite the vec0 table is stamped
+/// with. The recipe half is load-bearing, not decoration: Subject Vectors are
+/// embedded with [`EmbedKind::Document`], so they go through exactly the document
+/// path the recipe names (`MAX_DOCUMENT_CHUNKS` + weighted cross-chunk pooling),
+/// and [`SubjectVectorStore::list_subjects_needing_embedding`] re-claims a row ONLY
+/// when its `embedded_model` differs. A recipe-blind identity would therefore leave
+/// every pre-change row at its old value forever while new rows use the new recipe
+/// — two incomparable generations inside one brute-force cosine ranking, which is
+/// precisely what the vec0 epoch stamp exists to prevent on the search side.
+///
+/// The ONE composition point for both readers of that column — this worker's
+/// backlog query/upsert and the candidate scorer's KNN filter
+/// (`subject_candidates.rs`). They must produce byte-identical strings or the KNN
+/// silently ranks nothing.
+pub(crate) fn subject_vector_model_identity(
+    descriptor: &SemanticSearchModelDescriptor,
+) -> String {
+    format!(
+        "{}/{}",
+        descriptor.provider,
+        ::app_infra::vectors_index_epoch(&descriptor.model_id)
+    )
+}
+
 /// Compose the embedding text for a Subject: the handle joined with its canonical
 /// statement (`"{subject}: {statement}"`) so a terse handle carries context, or the
 /// bare handle when there is no usable statement.
@@ -642,6 +670,7 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capture_types::default_semantic_search_settings;
 
     #[test]
     fn compose_embed_text_enriches_with_statement_else_bare_handle() {
@@ -731,6 +760,44 @@ mod tests {
         // No embedder was ever loaded, so nothing to release and the streak just grows.
         assert!(state.embedder.is_none());
         assert!(state.consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP);
+    }
+
+    /// A **Subject Vector**'s stored identity must carry the embedding RECIPE, not
+    /// just the model id — the same reason `semantic_search.rs` stamps
+    /// `model_id@EMBED_INDEX_RECIPE` on the vec0 table instead of a bare id.
+    ///
+    /// Subject Vectors are embedded with `EmbedKind::Document`, so they go through
+    /// exactly the document path the recipe describes (`MAX_DOCUMENT_CHUNKS` +
+    /// weighted cross-chunk pooling). `list_subjects_needing_embedding` re-claims a
+    /// row ONLY when its `embedded_model` differs from the active identity, so an
+    /// identity that omits the recipe leaves every pre-change row at its old value
+    /// forever while new rows use the new recipe — two incomparable generations in
+    /// one brute-force cosine space, which is precisely what the vec0 epoch stamp
+    /// was added to prevent on the search side.
+    #[test]
+    fn a_recipe_change_invalidates_stored_subject_vectors() {
+        let descriptor = resolve_selected_descriptor(&default_semantic_search_settings())
+            .expect("the default English tier resolves");
+
+        // What a recipe-blind identity would produce — and what every row written
+        // under the previous (uncapped, uniform-mean) document path was stamped with.
+        let recipe_blind = format!("{}/{}", descriptor.provider, descriptor.model_id);
+        assert_ne!(
+            subject_vector_model_identity(&descriptor),
+            recipe_blind,
+            "a subject vector produced under a different document-embed recipe must \
+             not be claimed as current: `list_subjects_needing_embedding` only \
+             re-embeds rows whose `embedded_model` differs from the active identity"
+        );
+
+        // ...and it must move in LOCKSTEP with the vec0 table's epoch stamp, so one
+        // recipe bump invalidates both vector stores rather than only the search one.
+        assert!(
+            subject_vector_model_identity(&descriptor)
+                .ends_with(&::app_infra::vectors_index_epoch(&descriptor.model_id)),
+            "the subject-vector identity must carry the same index epoch the vec0 \
+             table is stamped with"
+        );
     }
 
     #[test]

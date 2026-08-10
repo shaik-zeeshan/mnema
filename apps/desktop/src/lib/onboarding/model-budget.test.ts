@@ -382,7 +382,15 @@ describe("slice 10 — the download budget", () => {
       if (!dimension) throw new Error(`no dimension for ${modelId}`);
       catalogDims.set(modelId, Number(dimension[1]));
     }
-    expect(catalogDims.size).toBeGreaterThanOrEqual(8);
+    // Every descriptor DECLARED in the body must have been PARSED. `>= 8` was only a
+    // floor, and a descriptor the regex misses is invisible to BOTH directions below
+    // — the forward loop iterates only what was parsed, the reverse loop only what is
+    // in the TS table. A 9th model written `model_id: "…".into()` (or `String::from`,
+    // or `format!`) therefore slipped through silently and got priced at the default
+    // 768, which is exactly the bug this guard exists to prevent.
+    const declared = [...catalogBody.matchAll(/SemanticSearchModelDescriptor\s*\{/g)].length;
+    expect(catalogDims.size).toBe(declared);
+    expect(declared).toBeGreaterThanOrEqual(8);
 
     for (const [modelId, dimension] of catalogDims) {
       expect(EMBED_DIMS_BY_MODEL[modelId]).toBe(dimension);
@@ -390,6 +398,41 @@ describe("slice 10 — the download budget", () => {
     // And no stale entries pointing at models the catalog dropped.
     for (const modelId of Object.keys(EMBED_DIMS_BY_MODEL)) {
       expect(catalogDims.has(modelId)).toBe(true);
+    }
+  });
+
+  test("every catalog model gets a pill-sized short label", () => {
+    // `shortLabel` falls back to `stripTierSuffix(displayName)`, and the three
+    // ModernBERT descriptors strip to "GTE ModernBERT Base" / "Granite Embedding
+    // English R2" / "Granite Embedding Small English R2" (34 chars) — the pill
+    // overflow the SHORT_LABELS entries exist to prevent. The hand-written
+    // 5-model fixture above never sees them, so drive `semanticPicks` off the REAL
+    // catalog instead.
+    const start = SEMANTIC_RS.indexOf("fn catalog()");
+    const body = SEMANTIC_RS.slice(start, SEMANTIC_RS.indexOf("\n}", start));
+    const catalog = [...body.matchAll(/model_id:\s*"([^"]+)"\.to_string\(\)/g)].map((match) => {
+      const after = body.slice(match.index ?? 0);
+      const displayName = after.match(/\n\s*display_name:\s*"([^"]+)"/)?.[1] ?? "";
+      return {
+        modelId: match[1],
+        displayName,
+        modelCode: "",
+        dimension: EMBED_DIMS_BY_MODEL[match[1]],
+        description: "",
+        multilingual: /\(Multilingual/.test(displayName),
+        approxDownloadBytes: 1,
+      };
+    });
+
+    const picks = semanticPicks([], catalog);
+    expect(picks).toHaveLength(catalog.length);
+    for (const pick of picks) {
+      // Object form so a failure names WHICH model overflowed.
+      expect({ id: pick.id, short: pick.short, fits: pick.short.length <= 14 }).toEqual({
+        id: pick.id,
+        short: pick.short,
+        fits: true,
+      });
     }
   });
 });

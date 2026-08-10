@@ -457,9 +457,32 @@ fn scope_prose(scope: &str) -> &'static str {
 /// length would let that name restructure the dialog — fabricating the app's own
 /// copy, or pushing the disclosure out of the dialog entirely. Same normalization
 /// app-infra applies to a stored grant label (`display_client_label`), plus a cap.
+/// Characters that render as nothing, or that reorder the text around them.
+///
+/// `char::is_control()` covers only the C0/C1 blocks (Unicode `Cc`), so bidi
+/// overrides/isolates (U+202E, U+2066..=U+2069) and zero-width characters (U+200B,
+/// U+FEFF, tag characters) sail straight past it — they are `Cf`, and none of them
+/// is `White_Space`. In a consent prompt that is not cosmetic: a label made
+/// entirely of zero-width characters is non-empty by `is_empty()`, so it defeats
+/// the "An unnamed local tool" fallback below and the dialog names no requester at
+/// all; and an override reverses the display order of the rest of the sentence
+/// stating what the client asked for.
+fn is_invisible_or_reordering(ch: char) -> bool {
+    matches!(ch,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{FEFF}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
 fn client_label_prose(label: &str) -> String {
     let cleaned = label
         .chars()
+        .filter(|ch| !is_invisible_or_reordering(*ch))
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect::<String>()
         .split_whitespace()
@@ -818,6 +841,47 @@ mod tests {
         assert!(
             !body.contains("Allow grants only"),
             "no downgrade to disclose, so no second paragraph: {body}"
+        );
+    }
+
+    /// A name made only of invisible characters is not a name. `is_control()` does
+    /// not cover them, so an all-zero-width label survives the empty check and the
+    /// consent dialog renders with NO visible requester at all — defeating the
+    /// fallback that exists to guarantee one.
+    #[test]
+    fn quick_prompt_falls_back_when_a_client_name_renders_as_nothing() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{2060}".to_string();
+
+        let body = default_prompt_body(&request);
+
+        assert!(
+            body.starts_with("An unnamed local tool wants access to"),
+            "an invisible name must fall back to the unnamed wording: {body:?}"
+        );
+    }
+
+    /// Bidi overrides and isolates reorder every character after them when the
+    /// dialog renders, so a client name must not be able to smuggle one into the
+    /// sentence that states what it is asking for.
+    #[test]
+    fn quick_prompt_strips_bidi_reordering_from_a_client_name() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = "Mnema CLI\u{202E}\u{2066}\u{2067}".to_string();
+
+        let body = default_prompt_body(&request);
+
+        assert!(
+            !body.contains(['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}']),
+            "no bidi embedding/override may reach the consent body: {body:?}"
+        );
+        assert!(
+            !body.contains(['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}']),
+            "no bidi isolate may reach the consent body: {body:?}"
+        );
+        assert!(
+            body.starts_with("Mnema CLI wants access to"),
+            "the visible name survives, the reordering does not: {body:?}"
         );
     }
 

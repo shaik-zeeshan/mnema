@@ -135,6 +135,20 @@ catalog deliberately breaks it to add three ModernBERT-backbone English Custom o
 `config.json` drift guard are unchanged; the catalog test that enforced pairwise-distinct
 dimensions is replaced by one enforcing unique `model_id`s.
 
+The stamped value is **not** a bare `model_id`. It is the composite **index epoch**
+`model_id@EMBED_INDEX_RECIPE` (`vectors_index_epoch`), because the model weights are only
+half of what decides the vector a text becomes: the document chunk cap
+(`runtime::MAX_DOCUMENT_CHUNKS`), the cross-chunk pooling rule, the per-model prompts and the
+window budget all move the embedding space while `model_id` stays put, and
+`anchors_missing_vector` only re-derives anchors with NO vector — so an id-only stamp would
+read "healthy" over an index holding two incomparable generations. Bumping
+`EMBED_INDEX_RECIPE` (today `v2-cap2-wmean`; `v1` was the uncapped uniform mean) is therefore
+the one switch that forces a full re-index, and every gate compares the whole composite. Two
+consequences: an **unstamped** table is rebuilt rather than adopted (its recipe is
+unknowable), and any OTHER store of `EmbedKind::Document` vectors must key its staleness on
+the same epoch — `user_context_subject_vectors.embedded_model` does, via
+`subject_vector_model_identity`.
+
 That amendment also adds a **fourth architecture arm, `ModernBert`**, with one
 device-precision exception: candle 0.10.2's `modernbert` forward adds an F32-only attention
 mask to hidden states carrying the weight dtype, so this arm loads at **F32 on Metal as well

@@ -154,10 +154,12 @@
         request: { frameIds: uniqueIds },
       });
 
+      // Publish per thumbnail, not per batch — see searchStore.loadThumbnails.
       search.thumbnailCache = await search.thumbnailUrls.merge(
         response.previews.flatMap((entry) =>
           entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
         ),
+        () => (search.thumbnailCache = search.thumbnailUrls.snapshot()),
       );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.

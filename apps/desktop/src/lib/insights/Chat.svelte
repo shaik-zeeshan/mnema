@@ -865,10 +865,13 @@
         "get_frame_scrub_previews",
         { request: { frameIds: uniqueIds } },
       );
+      // Publish per thumbnail, not per batch: waiting for the whole merge keeps
+      // every Answer Source card on its glyph for four asset round trips.
       thumbnailCache = await thumbnailUrls.merge(
         response.previews.flatMap((entry) =>
           entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
         ),
+        () => (thumbnailCache = thumbnailUrls.snapshot()),
       );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.

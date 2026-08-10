@@ -286,10 +286,17 @@ export class SearchStore {
         return;
       }
 
+      // Publish per thumbnail, not per batch: 24 reads through the merge's 6-worker
+      // pool is four sequential asset round trips, and waiting for the last of them
+      // leaves every card on its glyph for the whole batch.
       this.thumbnailCache = await this.thumbnailUrls.merge(
         response.previews.flatMap((entry) =>
           entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
         ),
+        () => {
+          if (generation !== this.searchGeneration) return;
+          this.thumbnailCache = this.thumbnailUrls.snapshot();
+        },
       );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.

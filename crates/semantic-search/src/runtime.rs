@@ -618,7 +618,13 @@ fn fan_in_chunk_results(
         let end = (cursor + count).min(chunk_results.len());
         let slice = &chunk_results[start..end];
         // Same indices as `slice`, clamped against the weight list's own length so a
-        // short/absent weight list degrades to uniform pooling rather than misaligning.
+        // short/absent weight list cannot MISALIGN. Note the degradation is not
+        // uniform: `weighted_mean_pool_l2` substitutes 1.0 PER INDEX, so a partially
+        // short slice mixes real byte weights (hundreds) with 1.0 fallbacks and the
+        // weighted chunks dominate. Only a fully ABSENT slice pools uniformly. That
+        // asymmetry is unreachable from `embed_texts` — `chunk_weights` is extended in
+        // lockstep with `all_chunks` and `embed_chunks_bounded` fills every slot, so
+        // the three lengths are always equal — and this clamp is defensive only.
         let weights = chunk_weights
             .get(start.min(chunk_weights.len())..end.min(chunk_weights.len()))
             .unwrap_or(&[]);
@@ -792,9 +798,26 @@ mod tests {
     /// the test silently stopped testing the cap at all. Unknown words map to `[UNK]`
     /// through the whitespace tokenizer, still one token each, so arbitrary words work.
     fn text_overflowing_the_cap() -> (String, Vec<String>) {
+        text_overflowing_the_cap_tagged("w")
+    }
+
+    /// As above, but every window carries `tag` so two fixtures in one batch are
+    /// distinguishable by CONTENT (the recording backend is content-keyed, so a
+    /// misplaced vector is only detectable when the texts actually differ).
+    ///
+    /// Each window is also a DIFFERENT BYTE LENGTH, on purpose. The pooling weights
+    /// ARE byte lengths, so equal-length windows make a misaligned weight slice
+    /// numerically identical to the aligned one: with the old `"w{n}a w{n}b"` fixture
+    /// (7 bytes per window, same as the `"charlie"` neighbour) hoisting
+    /// `chunk_weights.extend(..)` above `chunks.truncate(..)` — the exact desync the
+    /// alignment tests below claim to pin — left every assertion in this file passing.
+    fn text_overflowing_the_cap_tagged(tag: &str) -> (String, Vec<String>) {
         // Budget = 4 - SPECIAL_TOKEN_HEADROOM = 2 content tokens per window.
         let windows: Vec<String> = (0..=MAX_DOCUMENT_CHUNKS)
-            .map(|w| format!("w{}a w{}b", w, w))
+            .map(|w| {
+                let pad = "z".repeat(w * 4);
+                format!("{tag}{pad}a {tag}{pad}b")
+            })
             .collect();
         (windows.join(" "), windows)
     }
@@ -886,24 +909,33 @@ mod tests {
         // The same alignment claim where the chunks span more than one length-sorted
         // `EMBED_SUB_BATCH_SIZE` window, so the flat results are scattered back from
         // sorted order rather than arriving in input order.
-        let (long, windows) = text_overflowing_the_cap();
-        let capped: Vec<&str> = windows[..MAX_DOCUMENT_CHUNKS]
-            .iter()
-            .map(String::as_str)
-            .collect();
+        //
+        // Every text must be DIFFERENT. Repeating one text made this vacuous: with
+        // identical inputs the content-keyed backend hands every slot the same
+        // vector, so any permutation — and any weight desync — still satisfied it.
         let count = EMBED_SUB_BATCH_SIZE / MAX_DOCUMENT_CHUNKS.max(1) + 2;
-        let texts: Vec<&str> = std::iter::repeat(long.as_str()).take(count).collect();
+        let fixtures: Vec<(String, Vec<String>)> = (0..count)
+            .map(|index| text_overflowing_the_cap_tagged(&format!("t{index}")))
+            .collect();
+        let texts: Vec<&str> = fixtures.iter().map(|(text, _)| text.as_str()).collect();
 
         let embedder = recording_embedder(4).0;
         let results = embedder.embed_texts(&texts, EmbedKind::Document);
 
         assert_eq!(results.len(), count);
-        let want = expected_vector(&capped);
         for (index, got) in results.iter().enumerate() {
             let got = got
                 .as_ref()
                 .unwrap_or_else(|error| panic!("text {index} must embed: {error}"));
-            assert_close(got, &want, &format!("text {index} across sub-batches"));
+            let capped: Vec<&str> = fixtures[index].1[..MAX_DOCUMENT_CHUNKS]
+                .iter()
+                .map(String::as_str)
+                .collect();
+            assert_close(
+                got,
+                &expected_vector(&capped),
+                &format!("text {index} across sub-batches"),
+            );
         }
     }
 

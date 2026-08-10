@@ -106,8 +106,8 @@ export function framesPerDay(intervalSeconds: number): number {
  * A hand-mirrored table rather than a new field threaded through
  * `SelectedModelFacts`/`ModelInventory`: the disk estimate is the only consumer,
  * and `model-budget.test.ts` already re-derives the sizes straight out of the Rust
- * catalog, so the same drift guard covers this (see
- * `every_semantic_model_dimension_matches_the_rust_catalog`).
+ * catalog, so the same drift guard covers this (see `model-budget.test.ts` →
+ * "every semantic model dimension matches the Rust catalog").
  *
  * The widths are NOT all equal, which is the whole point — this catalog ships a
  * 384-dim model, so pricing every tier at 768 overstates its disk by 2x on the
@@ -130,7 +130,13 @@ export const EMBED_DIMS_BY_MODEL: Record<string, number> = {
 /** The stored vector width for `modelId`, or the default tier's when unknown. */
 export function embedDimsFor(modelId: string | null | undefined): number {
   if (!modelId) return DEFAULT_EMBED_DIMS;
-  return EMBED_DIMS_BY_MODEL[modelId] ?? DEFAULT_EMBED_DIMS;
+  // `typeof`, not `??`: this is a plain object literal, so an id naming an
+  // inherited member ("constructor", "toString", "__proto__") indexes through to
+  // `Object.prototype` and yields a TRUTHY non-number, which `??` waves past and
+  // which then multiplies into the frame term as NaN — the whole screen prints
+  // "NaN MB a day" instead of falling back like any other unknown id.
+  const dims = EMBED_DIMS_BY_MODEL[modelId];
+  return typeof dims === "number" ? dims : DEFAULT_EMBED_DIMS;
 }
 
 /**

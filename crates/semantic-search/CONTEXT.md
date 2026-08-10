@@ -21,9 +21,11 @@ How a model collapses token hidden states into one vector — `Mean` over the at
 The per-model input text a model was trained to prepend, distinguished by **Query** vs **Document** because some models are asymmetric (e.g. e5 uses `query:` / `passage:`; nomic uses `search_query:` / `search_document:`). A symmetric or instruction-free model (e.g. bge-m3 dense) carries no prompt. Declared per descriptor and filled in for every model.
 _Avoid_: "prefix" (a prompt may be a full instruction, not just a token prefix).
 
-**Model Epoch**:
-Which model's embedding space the live vector table holds, recorded as a `model_id` stamp written in the same transaction that builds the table (`app-infra/src/semantic_search.rs`). It is what makes a **Semantic Search Model** switch detectable: every write is gated on it, and startup reconciliation rebuilds the table when it disagrees with the selection. It replaced dimension-as-identity, which stopped working the moment the catalog gained same-width models.
-_Avoid_: "dimension check", "column width" — those describe the mechanism it replaced.
+**Model Epoch** (a.k.a. **Index Epoch**):
+Which embedding space the live vector table holds, recorded as a `model_id@<embed recipe>` stamp written in the same transaction that builds the table (`app-infra/src/semantic_search.rs`, `vectors_index_epoch`). It is what makes a **Semantic Search Model** switch detectable: every write is gated on it, and startup reconciliation rebuilds the table when it disagrees with the selection. It replaced dimension-as-identity, which stopped working the moment the catalog gained same-width models.
+
+The **embed recipe** half (`EMBED_INDEX_RECIPE`, `v2-cap2-wmean` today) is not decoration: everything outside the model weights that changes what vector a text becomes — the document chunk cap (`runtime::MAX_DOCUMENT_CHUNKS`), the cross-chunk pooling rule, the prompts, the window budget — moves the embedding space while `model_id` stays put. Bumping the recipe string is the one switch that forces a full re-index; the stamp is compared as the whole composite, never as a bare `model_id`. An unstamped table is rebuilt, not adopted: its recipe is unknowable.
+_Avoid_: "dimension check", "column width" — those describe the mechanism it replaced. Also avoid calling the stamp a "`model_id` stamp": comparing against the bare id never matches.
 
 **Anchor**:
 The unit a single stored vector represents — "one stored vector per anchor" is the kept pooling/dedup invariant. Text overflowing the window is split into token-window chunks, each embedded, then mean-pooled **weighted by chunk length** back into the one anchor vector (a short trailing window must not count as much as a full one).

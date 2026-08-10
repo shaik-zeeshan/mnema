@@ -19,8 +19,21 @@ at Mnema's real 256-token window, on real Mnema anchor text?**
 | `granite-small` | `ibm-granite/granite-embedding-small-english-r2` | `2ab6fa8…` | 384 | CLS | — | — |
 | `gte-modernbert` | `Alibaba-NLP/gte-modernbert-base` | `e7f32e3…` | 768 | CLS | — | — |
 
+Plus seven more in `MODELS` that are not #191 finalists but are still candidates:
+`e5-small-ml`, `granite-ml-97m`, `granite-ml-311m`, `bge-m3`, `arctic-l-v2`,
+`stella`, `qwen3-0.6b`.
+
+**`--models` defaults to every key in `MODELS`, not just the four finalists** — the
+"real run" below downloads and embeds all eleven (roughly 10 GB of weights) unless
+you pass `--models`. For the #191 comparison alone use
+`--models nomic,granite,granite-small,gte-modernbert`.
+
 Full SHAs live in `MODELS` in `bench.py`. Trailing spaces in the nomic prefixes are
-significant.
+significant. `nomic` and `stella` set `trust_remote_code`, so they also pin
+`code_revision`: nomic's modeling file is `auto_map`'d to the **separate**
+`nomic-ai/nomic-bert-2048` repo, which transformers would otherwise fetch at that
+repo's moving `main` and execute on this machine. `bench.py --self-test` fails if
+any `trust_remote_code` spec loses its pin.
 
 ## What it mirrors from production
 
@@ -44,8 +57,12 @@ Read alongside `crates/semantic-search/src/runtime.rs` — the harness reproduce
 - Length-sorted sub-batches of 8, matching `EMBED_SUB_BATCH_SIZE`.
 - Retrieval is **exhaustive brute-force over the full corpus** — no ANN, as in prod.
 
-Not mirrored (irrelevant to ranking): per-chunk fault isolation, MRL truncation
-(no candidate uses it), the candle backend itself.
+MRL truncation IS mirrored: `arctic-l-v2` declares `"mrl": 256`, and each CHUNK
+vector is truncated to 256 and renormalized *before* the cross-chunk fan-in, as
+`runtime.rs` does — so its reported dim is the STORED 256, not the 1024 backbone.
+
+Not mirrored (irrelevant to ranking): per-chunk fault isolation, the candle backend
+itself.
 
 Known-and-intended parity detail: a chunk is sliced from the first token's start
 offset to the last token's end offset, so a whitespace character *between* two

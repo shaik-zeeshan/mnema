@@ -91,6 +91,17 @@ export class FramePreviewUrlHolder {
     const url = create(new Blob([bytes], mimeType ? { type: mimeType } : undefined));
     if (this.#current) this.#retired.add(this.#current);
     this.#current = url;
+    // Callers assign this URL from a `.then`, one microtask after the mint. A
+    // `clear()` already queued ahead of that continuation — the pane's `$effect`
+    // flush when the hero goes away, or its unmount teardown — would revoke `url`
+    // before the caller ever paints it, and nothing re-assigns afterwards, so the
+    // caller paints a dead blob URL for good (DetailPane gates its hero on
+    // `heroUrl`, not `heroPath`, so it never re-runs to correct itself). Yield once
+    // so an already-queued teardown lands first, then report it as superseded like
+    // any other swap the holder has disowned. Nothing is stranded either way:
+    // `clear` already revoked it, and a superseding `swap` retires it as usual.
+    await Promise.resolve();
+    if (generation !== this.#generation) return null;
     return url;
   }
 
@@ -166,6 +177,11 @@ export const FRAME_PREVIEW_MERGE_CONCURRENCY = 6;
 export class FramePreviewUrlMap {
   #deps: FramePreviewUrlDependencies;
   #urls: LruCache<string>;
+  // Frames a concurrent `merge` is already reading. Not in `#urls` yet, so without
+  // this a second merge re-reads them: Quick Recall debounces at 250 ms and filters
+  // candidates on `thumbnailCache`, which the first merge has not assigned yet — a
+  // pause-then-type query reads every overlapping frame twice.
+  #reading = new Set<number>();
   // Bumped by `clear()` so an in-flight `merge` stops minting into a map the
   // owner has already released.
   #generation = 0;
@@ -197,9 +213,16 @@ export class FramePreviewUrlMap {
    * re-fetched — repeated searches over the same results cost nothing. A fetch
    * failure is swallowed per frame: thumbnails are best-effort and the card falls
    * back to its glyph, exactly as before.
+   *
+   * `onMinted` fires as each URL lands, BEFORE the batch resolves. Callers should
+   * use it to publish, or the grid stays glyph-only until the slowest read in the
+   * batch returns: 24 reads through a 6-worker pool is four SEQUENTIAL asset round
+   * trips, where the `asset://` code this replaced assigned the map synchronously
+   * and painted after one.
    */
   async merge(
     entries: Iterable<{ frameId: number; preview: { filePath: string; mimeType: string } }>,
+    onMinted?: (frameId: number, url: string) => void,
   ): Promise<Map<number, string>> {
     // `get` (not `peek`) so an already-held frame is still marked
     // most-recently-used — a re-search over the same results must not make its
@@ -208,8 +231,10 @@ export class FramePreviewUrlMap {
     const claimed = new Set<number>();
     for (const entry of entries) {
       if (this.#urls.get(entry.frameId) !== undefined) continue;
+      if (this.#reading.has(entry.frameId)) continue; // a concurrent merge owns it
       if (claimed.has(entry.frameId)) continue; // a repeated id must not double-fetch
       claimed.add(entry.frameId);
+      this.#reading.add(entry.frameId);
       pending.push(entry);
     }
 
@@ -228,15 +253,25 @@ export class FramePreviewUrlMap {
           const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
           if (generation !== this.#generation) return; // cleared mid-read
           const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
-          this.#urls.set(frameId, create(new Blob([bytes], { type: preview.mimeType })));
+          const url = create(new Blob([bytes], { type: preview.mimeType }));
+          this.#urls.set(frameId, url);
+          // Publish now, not at the end of the batch: the caller repaints this one
+          // cell a round trip after the read that produced it.
+          onMinted?.(frameId, url);
         } catch {
           // Best-effort: leave the frame out so a later pass can retry it.
         }
       }
     };
-    await Promise.all(
-      Array.from({ length: Math.min(FRAME_PREVIEW_MERGE_CONCURRENCY, pending.length) }, worker),
-    );
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(FRAME_PREVIEW_MERGE_CONCURRENCY, pending.length) }, worker),
+      );
+    } finally {
+      // Every exit path (resolved, aborted mid-batch, thrown) hands the claims back,
+      // or a later merge would skip those frames forever.
+      for (const frameId of claimed) this.#reading.delete(frameId);
+    }
     return this.snapshot();
   }
 

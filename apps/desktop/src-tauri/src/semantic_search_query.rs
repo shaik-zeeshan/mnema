@@ -23,7 +23,7 @@ use semantic_search::EmbedKind;
 use tauri::Manager;
 
 use crate::semantic_search_worker::{
-    effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
+    effective_semantic_search_settings, load_embedder_private, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder,
 };
 
@@ -159,7 +159,12 @@ pub async fn embed_search_query(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let loaded = match cached {
             Some(loaded) => loaded,
-            None => match load_embedder(&app_data_dir, &descriptor) {
+            // A PRIVATE instance, not the shared background one: a search does not
+            // take `BACKGROUND_EMBED_SLOT`, so sharing the sweep's candle device
+            // would queue its kernels behind the sweep's on one device lock
+            // (measured p50 92ms -> 310ms, p95 233ms -> 995ms). See
+            // `load_embedder_private`.
+            None => match load_embedder_private(&app_data_dir, &descriptor) {
                 Ok(loaded) => loaded,
                 Err(error) => {
                     crate::native_capture::debug_log::log_error(format!(

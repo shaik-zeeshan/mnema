@@ -37,6 +37,66 @@ describe("FramePreviewUrlHolder", () => {
     expect(holder.current).toBe("blob:2");
   });
 
+  test("a teardown between the mint and the caller's continuation hands back nothing", async () => {
+    // `swap` mints and resolves in one microtask, but callers only see the value a
+    // microtask later, in `.then`. A `clear()` already queued in that gap — a Svelte
+    // `$effect` flush when the hero goes away, or unmount teardown — revokes the URL
+    // before the caller assigns it, and nothing re-assigns afterwards: DetailPane
+    // gates its hero on `heroUrl`, not `heroPath`, so it paints a dead blob URL for
+    // good. `swap` must report the same "superseded" null it reports for every other
+    // swap the holder has disowned.
+    const revoked: string[] = [];
+    let minted = 0;
+    let holder: FramePreviewUrlHolder;
+    holder = new FramePreviewUrlHolder({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }),
+      createObjectUrlImpl: () => {
+        // The teardown lands the instant the URL exists — i.e. queued strictly
+        // before `swap`'s own resolution continuation.
+        queueMicrotask(() => holder.clear());
+        return `blob:${++minted}`;
+      },
+      revokeObjectUrlImpl: (url: string) => {
+        revoked.push(url);
+      },
+    });
+
+    const painted = await holder.swap("/frames/1.png");
+
+    expect(revoked).toEqual(["blob:1"]); // the teardown did revoke it
+    expect(painted).toBeNull(); // ...so the caller must never be handed it
+    expect(holder.current).toBeNull();
+  });
+
+  test("the URL is minted from the fetched bytes, tagged with the preview's mime type", async () => {
+    // Every other fixture here throws the Blob away, so a regression that minted an
+    // EMPTY blob — or dropped the mime type the <img> decodes by — would pass this
+    // whole file while every preview in the app rendered as a broken image.
+    const blobs: Blob[] = [];
+    const holder = new FramePreviewUrlHolder({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async () => ({
+        ok: true,
+        arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13]).buffer,
+      }),
+      createObjectUrlImpl: (blob: Blob) => {
+        blobs.push(blob);
+        return `blob:${blobs.length}`;
+      },
+      revokeObjectUrlImpl: () => {},
+    });
+
+    await holder.swap("/frames/1.png", "image/png");
+    expect(blobs[0].size).toBe(5);
+    expect(blobs[0].type).toBe("image/png");
+
+    // Quick Recall's hero calls `swap` with no mime type, so its blob carries none
+    // and WebKit has to sniff the bytes.
+    await holder.swap("/frames/2.png");
+    expect(blobs[1].type).toBe("");
+  });
+
   test("swaps that outrun paints still retire every replaced URL", async () => {
     const { holder, revoked } = harness();
 
@@ -175,7 +235,94 @@ function entries(from: number, to: number) {
   return out;
 }
 
+/**
+ * A map whose reads park until the harness releases them, so one `advance()` is
+ * exactly one logical asset round trip and the wave counter is deterministic in CI
+ * (no timers, no wall clock).
+ */
+function wavedMapHarness(capacity = 64) {
+  let waiters: (() => void)[] = [];
+  let minted = 0;
+  let fetches = 0;
+  const urls = new FramePreviewUrlMap(
+    {
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async () => {
+        fetches += 1;
+        await new Promise<void>((resolve) => waiters.push(resolve)); // one round trip
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: () => {},
+    },
+    capacity,
+  );
+
+  /** Release every read currently in flight — exactly one asset round trip. */
+  async function advance(): Promise<void> {
+    const released = waiters;
+    waiters = [];
+    for (const resolve of released) resolve();
+    // Drain microtasks so freed workers can issue their next read.
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+  }
+
+  return { urls, advance, fetchCount: () => fetches };
+}
+
 describe("FramePreviewUrlMap", () => {
+  test("the first thumbnail reaches the caller after one asset round trip", async () => {
+    // Workload: one Quick Recall search — FRAME_FETCH_LIMIT (24) result rows, cold
+    // cache, one keystroke-settle. 24 reads through a 6-worker pool is four
+    // SEQUENTIAL round trips, and publishing only at the end holds every card on its
+    // glyph for all four. The `asset://` code this replaced assigned the map
+    // synchronously and painted after one, so batch-publishing is a 4x TTFT
+    // regression on the app's most latency-visible path.
+    const { urls, advance } = wavedMapHarness();
+
+    let settled = false;
+    const painted: number[] = [];
+    const merging = urls.merge(entries(1, 24), (frameId) => painted.push(frameId)).then(() => {
+      settled = true;
+    });
+
+    await advance(); // one round trip
+    expect(settled).toBe(false); // the batch is still running...
+    expect(painted.length).toBeGreaterThan(0); // ...but the first cells can already paint
+
+    let waves = 1;
+    while (!settled && waves < 50) {
+      await advance();
+      waves += 1;
+    }
+    await merging;
+    expect(waves).toBe(4); // 24 reads / 6 workers — the pool bound is unchanged
+    expect(painted.length).toBe(24);
+  });
+
+  test("concurrent merges do not re-read a frame another merge already has in flight", async () => {
+    // Quick Recall debounces at 250 ms, so a pause-then-type query starts search B's
+    // `loadThumbnails` while search A's merge is still reading. `thumbnailCache` has
+    // not been assigned yet, so B's own filter passes every overlapping id, and
+    // `merge` only skips frames ALREADY in the LRU — not ones being read. Every
+    // overlapping frame would be fetched twice.
+    const { urls, advance, fetchCount } = wavedMapHarness();
+
+    let done = 0;
+    const a = urls.merge(entries(1, 6)).then(() => done++);
+    await Promise.resolve();
+    const b = urls.merge(entries(1, 6)).then(() => done++);
+
+    let waves = 0;
+    while (done < 2 && waves < 50) {
+      await advance();
+      waves += 1;
+    }
+    await Promise.all([a, b]);
+
+    expect(fetchCount()).toBe(6); // 6 distinct frames, not 12
+  });
+
   test("the live set is capped, and eviction revokes what it drops", async () => {
     // The whole point: an afternoon of scrolling must not grow the decoded-surface
     // set without bound. Past the cap the oldest URL is revoked, not just dropped.

@@ -13,6 +13,14 @@ for name, cur in by.items():
     for scope in ("all", "screenText", "audioTranscript"):
         sub = [i for i in ids if scope == "all" or base[i]["kind"] == scope]
         d = [cur[i]["ndcg@10"] - base[i]["ndcg@10"] for i in sub]
+        if not d:
+            # A single-kind query set (screen-only or audio-only) has no rows for the
+            # other scope. Without this the division below raises mid-report, after
+            # some rows have already printed — so the median-rank line and every
+            # REMAINING model are silently lost behind a traceback that looks like a
+            # finished table.
+            print(f"{name:15s} {scope:15s} n=  0 (no queries of this kind)")
+            continue
         mean = sum(d)/len(d)
         boots = sorted(sum(random.choices(d, k=len(d)))/len(d) for _ in range(5000))
         lo, hi = boots[125], boots[4874]

@@ -154,6 +154,25 @@ describe("featureCost — disk per row", () => {
     );
   });
 
+  it("falls back for a model id that names an Object.prototype member", () => {
+    // `EMBED_DIMS_BY_MODEL` is a plain object literal, so indexing it with an
+    // INHERITED key returns a truthy non-number (`Object`, `Object.prototype`, a
+    // function) that `?? DEFAULT_EMBED_DIMS` does not catch. The width then
+    // multiplies into the frame term and the whole screen prints "NaN MB a day" —
+    // an unknown id must fall back exactly like any other unknown id.
+    for (const modelId of ["constructor", "toString", "__proto__", "valueOf"]) {
+      const cost = featureCost(state({ semanticSearch: true }), {
+        ...anchorCtx,
+        models: { semanticSearchModelId: modelId },
+      });
+      expect(Number.isFinite(cost.diskMbPerDay)).toBe(true);
+      expect(cost.diskByFeature.semanticSearch).toBeCloseTo(
+        frameVectorMb(ANCHOR_INTERVAL_S) + 2,
+        6,
+      );
+    }
+  });
+
   it("stops charging for frame vectors when there are no frames to read", () => {
     const noScreen = applyToggle(state({ semanticSearch: true }), "screen");
     // Transcript vectors survive; frame vectors do not.

@@ -1460,10 +1460,18 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
 ///
 /// Returns the [`SHARED_EMBEDDER`] instance when one is already alive for this
 /// exact provider/model id and is not [stale](LoadedEmbedder::is_stale), so a
-/// second caller (the Subject Vector backfill, a search query, the subject
-/// candidate scorer) reuses the loaded weights and the one candle device instead
-/// of building its own. Otherwise it loads a fresh one and publishes it as the
-/// shared instance.
+/// second BACKGROUND caller (the Subject Vector backfill, the subject candidate
+/// scorer) reuses the loaded weights and the one candle device instead of building
+/// its own. Otherwise it loads a fresh one and publishes it as the shared instance.
+///
+/// **For holders that take [`BACKGROUND_EMBED_SLOT`] only.** Sharing an instance
+/// means sharing its one candle `Device`, and candle 0.10.2's `MetalDevice` funnels
+/// every kernel dispatch through a single `commands: Arc<RwLock<Commands>>` — both
+/// `command_encoder()` and `wait_until_completed()` take the WRITE lock — so two
+/// threads embedding on one instance serialize at the device, not merely at the
+/// GPU. That is free between holders the permit already serializes, and a hard
+/// latency regression for one that does not. The user-facing query path therefore
+/// uses [`load_embedder_private`]; see its docs for the measurement.
 ///
 /// Callers must keep holding the returned `Arc` for exactly as long as they want
 /// the model resident — dropping every `Arc` is what frees the weights and, on
@@ -1489,19 +1497,50 @@ pub(crate) fn load_embedder(
         }
     }
 
+    let loaded = load_embedder_private(app_data_dir, descriptor)?;
+    *shared = Arc::downgrade(&loaded);
+    Ok(loaded)
+}
+
+/// Load a **private** embedder instance — its own weights and, on macOS, its own
+/// candle `Device` — bypassing [`SHARED_EMBEDDER`] entirely.
+///
+/// This is the query path's loader. A search is the one embed caller that
+/// deliberately does not take [`BACKGROUND_EMBED_SLOT`] ("making a search wait
+/// behind a backfill batch is the wrong trade"), so it is also the one caller for
+/// which sharing the background sweep's device turns that exclusion into a
+/// pessimisation: instead of two command queues the GPU can interleave, the query's
+/// kernels queue behind the sweep's on one `Commands` write lock, and its readback
+/// `wait_until_completed()` waits on the sweep's outstanding command buffer too.
+///
+/// Measured on an M4 Air, `nomic-embed-text-v1.5` on Metal, with one thread looping
+/// the worker's 16-anchor batch shape while a second times query embeds:
+///
+/// | query embedder     | p50    | p95    |
+/// |--------------------|--------|--------|
+/// | idle (no backfill) | 31 ms  | 38 ms  |
+/// | own device         | 92 ms  | 233 ms |
+/// | shared with sweep  | 310 ms | 995 ms |
+///
+/// The cost is one extra resident copy of the weights while a search is warm — the
+/// query cache drops it at [`MAX_EMBEDDER_WARM_LIFETIME`], and the two background
+/// workers still share one instance between them, so the four-devices-resident peak
+/// the shared cache was added to fix does not come back.
+pub(crate) fn load_embedder_private(
+    app_data_dir: &std::path::Path,
+    descriptor: &SemanticSearchModelDescriptor,
+) -> Result<Arc<LoadedEmbedder>, String> {
     let models_dir = semantic_search_models_dir(app_data_dir);
     let install_dir = model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id)
         .map_err(|error| error.to_string())?;
     let embedder = SemanticSearchEmbedder::load_from_dir(&install_dir, descriptor)
         .map_err(|error| error.to_string())?;
-    let loaded = Arc::new(LoadedEmbedder {
+    Ok(Arc::new(LoadedEmbedder {
         provider: descriptor.provider.clone(),
         model_id: descriptor.model_id.clone(),
         embedder,
         loaded_at: Instant::now(),
-    });
-    *shared = Arc::downgrade(&loaded);
-    Ok(loaded)
+    }))
 }
 
 #[cfg(test)]

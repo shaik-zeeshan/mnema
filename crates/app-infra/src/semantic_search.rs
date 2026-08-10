@@ -1572,6 +1572,71 @@ mod tests {
         });
     }
 
+    /// A stamp that outlives its table (a DROP that landed without a rebuild) makes
+    /// every anchor a SKIP — not an error, not a panic — so the sweep idles until
+    /// startup reconciliation rebuilds, instead of error-looping a doomed batch every
+    /// 30 s forever.
+    ///
+    /// This is the one gate arm no other test reaches: every other skip is decided by
+    /// the stamp comparison, this one by the in-transaction WIDTH read returning
+    /// `None` while the stamp AGREES. It is also the only place the multi-element
+    /// `vec![false; pairs.len()]` alignment is observable.
+    #[test]
+    fn a_stamped_but_missing_table_skips_the_batch_instead_of_erroring() {
+        run_async_test(async {
+            let dir = test_dir("stamped-no-table");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+            seed_frame_with_text(&infra, "2026-05-17T10:01:00Z", "beta").await;
+
+            let store = infra.semantic_search();
+            let missing = store.anchors_missing_vector(10).await.expect("query");
+            assert_eq!(missing.len(), 2);
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A");
+            sqlx::query("DROP TABLE search_document_vectors")
+                .execute(infra.pool())
+                .await
+                .expect("drop the table out from under its stamp");
+
+            let outcomes = store
+                .store_vectors_if_model_matches(
+                    MODEL_A,
+                    &[
+                        (missing[0].anchor_id, unit_vector(768, 0.5)),
+                        (missing[1].anchor_id, unit_vector(768, 0.25)),
+                    ],
+                )
+                .await
+                .expect("an absent table is a skip, not an error");
+            assert_eq!(
+                outcomes,
+                vec![false, false],
+                "one flag per input, in input order, even on the early-return arm"
+            );
+
+            // ...and the self-heal recovers it: the rebuild lands and BOTH anchors are
+            // still queued, so nothing was silently marked stored.
+            assert_eq!(
+                store
+                    .reconcile_vectors_table(MODEL_A, 768)
+                    .await
+                    .expect("reconcile succeeds"),
+                Some(0)
+            );
+            for anchor in &missing[..2] {
+                assert!(store
+                    .anchor_still_missing_vector(anchor.anchor_id)
+                    .await
+                    .expect("recheck"));
+            }
+        });
+    }
+
     /// The whole reason the model stamp exists: two DIFFERENT models at the SAME
     /// width. A width check reads green on every assertion here, so this is the
     /// regression that a revert to the old dimension-only gate would reintroduce.
@@ -1868,7 +1933,11 @@ mod tests {
                 .expect("build under MODEL_A");
 
             // A rebuild that fails inside its transaction (an invalid width vec0
-            // refuses) must roll BOTH the table and the stamp back to MODEL_A.
+            // refuses) must roll BOTH the table and the stamp back to MODEL_A. This
+            // half aborts at the CREATE — i.e. BEFORE `stamp_vectors_model` runs — so
+            // on its own it proves the DROP rolls back, NOT that the stamp shares the
+            // transaction: it stays green even if the stamp were written on a separate
+            // autocommit connection. The trigger case below is what pins that.
             assert!(
                 store.recreate_vectors_table(MODEL_B, 0).await.is_err(),
                 "a zero-width vec0 column is rejected"
@@ -1879,6 +1948,77 @@ mod tests {
                 "a rolled-back rebuild leaves the previous stamp, never the new one"
             );
             assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(768));
+        });
+    }
+
+    /// A rebuild that fails **after** the stamp write must roll the new table back
+    /// too — the reason the stamp rides inside the DROP+CREATE transaction.
+    ///
+    /// The zero-width case above cannot prove this: vec0 rejects the CREATE one
+    /// statement BEFORE `stamp_vectors_model` executes, so "the stamp is unchanged"
+    /// holds even if the stamp were written on its own autocommit connection — the
+    /// exact regression the doc comment claims to guard. Aborting the stamp itself is
+    /// the only failure that lands after the DROP+CREATE, so it is the only one that
+    /// observes the two committing together.
+    #[test]
+    fn a_rebuild_that_fails_at_the_stamp_rolls_the_table_back_too() {
+        run_async_test(async {
+            let dir = test_dir("stamp-rollback");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A");
+            assert!(store
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("stores under MODEL_A"));
+
+            // Fault injection at the LAST statement of the rebuild: any attempt to
+            // stamp MODEL_B aborts. Both trigger kinds are installed because the stamp
+            // is an upsert — an existing row takes the DO UPDATE path.
+            for event in ["INSERT", "UPDATE"] {
+                sqlx::query(&format!(
+                    "CREATE TRIGGER fail_stamp_on_{event} BEFORE {event} ON app_settings \
+                     WHEN NEW.key = '{VECTORS_MODEL_KEY}' AND NEW.value LIKE '{MODEL_B}@%' \
+                     BEGIN SELECT RAISE(ABORT, 'stamp refused'); END"
+                ))
+                .execute(infra.pool())
+                .await
+                .expect("install the fault-injection trigger");
+            }
+
+            // The DROP and the CREATE both succeed inside the rebuild's transaction;
+            // the stamp is what fails. Everything must go back.
+            assert!(
+                store.recreate_vectors_table(MODEL_B, 1024).await.is_err(),
+                "a refused stamp fails the whole rebuild"
+            );
+            assert_eq!(
+                store.live_vector_dimension().await.expect("dim"),
+                Some(768),
+                "the DROP+CREATE rolled back with the stamp — the old table is still live"
+            );
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(vectors_index_epoch(MODEL_A)),
+                "a failed rebuild leaves the previous epoch, never a half-applied one"
+            );
+            assert_eq!(
+                store.count_vectors().await.expect("count"),
+                1,
+                "a failed switch must not silently discard the existing index"
+            );
+            assert!(!store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
         });
     }
 

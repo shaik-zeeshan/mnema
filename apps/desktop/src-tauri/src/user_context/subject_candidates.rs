@@ -86,11 +86,11 @@ pub(crate) async fn select_semantic_subject_candidates(
     let Some(descriptor) = resolve_selected_descriptor(&settings) else {
         return Vec::new();
     };
-    // The active model's identity string (`provider/model_id`): the KNN only ranks
-    // Subject Vectors embedded under THIS model, so a stale-model vector never
-    // produces a garbage cosine. Computed before `descriptor` moves into the
-    // blocking embed task below.
-    let active_model = format!("{}/{}", descriptor.provider, descriptor.model_id);
+    // The active model's identity string: the KNN only ranks Subject Vectors
+    // embedded under THIS identity, so a stale vector never produces a garbage
+    // cosine. Composed by the one shared helper the writer uses. Computed before
+    // `descriptor` moves into the blocking embed task below.
+    let active_model = super::subject_vector_worker::subject_vector_model_identity(&descriptor);
 
     // Build one query text per Activity, mirroring what `build_distillation_prompt`
     // shows the engine (title + summary). Empty texts are dropped.
@@ -112,6 +112,18 @@ pub(crate) async fn select_semantic_subject_candidates(
     if texts.is_empty() {
         return Vec::new();
     }
+
+    // This is a THIRD background embed path (User Context distillation), so it takes
+    // the same slot as the two background sweeps — see
+    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT`. Without it a
+    // distillation overlapping the semantic backfill is exactly the two-concurrent-
+    // embedders case that slot exists to prevent (measured +38% GPU power, +9 °C),
+    // and — since `load_embedder` hands both the SAME candle device — it also
+    // serializes them on candle's device lock with neither side pacing for the other.
+    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
+        .acquire()
+        .await
+        .ok();
 
     // Embed all Activity texts as QUERIES (they are queries against the stored
     // Document-kind Subject corpus) on a blocking thread. Load the embedder once

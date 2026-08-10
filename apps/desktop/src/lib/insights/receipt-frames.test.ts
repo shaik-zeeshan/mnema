@@ -236,6 +236,27 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 		expect(calls[1]).toEqual([4]);
 	});
 
+	test("a new activity's strip is not blocked by the previous one's in-flight batch", async () => {
+		// `#pumpThumbs` is one-batch-at-a-time, gated on `#thumbInFlight`. `reset()`
+		// documents itself as "drop caches/queues and invalidate all in-flight work" —
+		// if it does not release that gate, the batch belonging to the activity the
+		// user just left holds the whole NEW filmstrip on its placeholders until the
+		// old IPC returns. That call GENERATES missing previews for up to 24 frames
+		// (disk read + decode + encode), and the observer unobserves each cell after
+		// one intersection, so nothing retries in the meantime.
+		const { loader, calls } = thumbHarness(scrubPreview);
+
+		loader.requestThumb(1);
+		await settle();
+		expect(calls).toEqual([[1]]); // activity A's batch is in flight, never flushed
+
+		loader.reset(); // the user opens a different activity
+		loader.requestThumb(100);
+		await settle();
+
+		expect(calls[1]).toEqual([100]);
+	});
+
 	test("a resolved cell is never re-requested; a missing one retries", async () => {
 		const { loader, calls, flush } = thumbHarness((fid) =>
 			fid === 2 ? null : scrubPreview(fid),

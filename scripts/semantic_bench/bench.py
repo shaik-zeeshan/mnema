@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,10 @@ MODELS = {
         "query_prompt": "search_query: ",
         "document_prompt": "search_document: ",
         "trust_remote_code": True,
+        # The weights SHA does NOT pin the code: this repo's `auto_map` points at the
+        # SEPARATE `nomic-ai/nomic-bert-2048`, which transformers otherwise fetches at
+        # that repo's moving `main` and execs on this machine.
+        "code_revision": "7710840340a098cfb869c4f65e87cf2b1b70caca",
     },
     "granite": {
         "repo": "ibm-granite/granite-embedding-english-r2",
@@ -155,6 +160,9 @@ MODELS = {
         ),
         "document_prompt": None,
         "trust_remote_code": True,
+        # In-repo `auto_map`, so this is the same SHA as the weights — stated, not
+        # inferred, so "is the exec'd code pinned?" is answerable locally.
+        "code_revision": "ffeb2b7ee715c226d4ffe5e4619f7dbb48624c20",
         # Backbone hidden is 1024; the dense head projects mean-pooled → 2048.
         "dense_head": "2_Dense_2048/model.safetensors",
         # Stella's remote code defaults to xformers memory-efficient attention +
@@ -246,10 +254,17 @@ class Embedder:
         self.path = snapshot(spec)
         self.size_mb = dir_bytes(self.path) / 1e6
         trust = spec["trust_remote_code"]
-        self.tok = AutoTokenizer.from_pretrained(self.path, trust_remote_code=trust)
+        # `code_revision` pins the .py transformers downloads and EXECUTES. Without
+        # it a cross-repo `auto_map` (nomic's points at `nomic-ai/nomic-bert-2048`)
+        # resolves that repo's moving `main` and execs it on the machine holding the
+        # capture DB key and the harvested corpus. See MODELS.
+        code_rev = spec.get("code_revision")
+        self.tok = AutoTokenizer.from_pretrained(
+            self.path, trust_remote_code=trust, code_revision=code_rev
+        )
         self.model = AutoModel.from_pretrained(
-            self.path, trust_remote_code=trust, torch_dtype=torch.float32,
-            **spec.get("model_kwargs", {}),
+            self.path, trust_remote_code=trust, code_revision=code_rev,
+            torch_dtype=torch.float32, **spec.get("model_kwargs", {}),
         )
         self.model.to(device).eval()
         # Stored vector width: the MRL-truncated width when the model is
@@ -555,6 +570,20 @@ def self_test():
     assert grams("abcde") == {"abcde"}
     j = lambda a, b: len(grams(a) & grams(b)) / len(grams(a) | grams(b))
     assert j("hello world", "hello world") == 1.0 and j("aaaaaaa", "zzzzzzz") == 0.0
+    # `trust_remote_code` downloads a .py from the Hub and EXECS it as this user — on
+    # the machine that holds the capture DB key and the harvested corpus. A spec whose
+    # `auto_map` points at ANOTHER repo is NOT pinned by its weights SHA (transformers
+    # falls back to that repo's `main`), so every such spec must pin `code_revision`.
+    for _name, _spec in MODELS.items():
+        if not _spec["trust_remote_code"]:
+            continue
+        _pin = _spec.get("code_revision")
+        assert _pin and re.fullmatch(r"[0-9a-f]{40}", _pin), (
+            f"{_name}: trust_remote_code without a pinned code_revision ({_pin!r}) — "
+            f"modeling code would be fetched from HEAD of {_spec['repo']}'s auto_map "
+            f"repo and executed"
+        )
+
     print("self-test ok")
 
 

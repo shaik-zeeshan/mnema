@@ -339,10 +339,14 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: "nomic-embed-text-v1.5".to_string(),
             display_name: "Nomic Embed Text v1.5 (English)".to_string(),
+            // No "long context makes truncation a non-issue" claim: a DOCUMENT is
+            // indexed from its first `runtime::MAX_DOCUMENT_CHUNKS` token windows and
+            // the rest is dropped, so the model's window no longer decides how much of
+            // an anchor is searchable. This string is rendered VERBATIM in the Settings
+            // picker — pinned by `no_catalog_description_promises_untruncated_documents`.
             description: "Default English tier: long-context (8192 tokens), \
-                Apache-2.0, 768-dimensional. Long context makes truncation a \
-                non-issue and the permissive license keeps the default path \
-                obligation-free."
+                Apache-2.0, 768-dimensional. The permissive license keeps the \
+                default path obligation-free."
                 .to_string(),
             tier: SemanticSearchModelTier::English,
             architecture: SemanticSearchArchitecture::NomicBert,
@@ -514,8 +518,11 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             description: "Custom English option (Alibaba-NLP/gte-modernbert-base), \
                 768-dimensional, Apache-2.0, CLS-pooled. Matches the default Nomic \
                 tier's retrieval quality on real capture data at roughly half the \
-                disk (~302 MB vs ~548 MB), but embeds slower — pick it for disk, \
-                not for speed or quality."
+                disk (~302 MB vs ~548 MB), but embeds slower AND is the one option \
+                that uses more memory running than it does on disk (~596 MB \
+                resident against Nomic's ~273 MB, because candle cannot run \
+                ModernBERT in half precision). Pick it to save disk, not memory, \
+                speed or quality."
                 .to_string(),
             tier: SemanticSearchModelTier::Custom,
             architecture: SemanticSearchArchitecture::ModernBert,
@@ -542,9 +549,10 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             display_name: "Granite Embedding English R2 (English, Custom)".to_string(),
             description: "Custom English option (ibm-granite/granite-embedding-english-r2), \
                 768-dimensional, Apache-2.0, CLS-pooled. Same ~302 MB footprint as \
-                GTE ModernBERT and competitive on screen text, but measurably worse \
-                on audio transcripts — prefer GTE ModernBERT unless you index \
-                screen text only."
+                GTE ModernBERT (and the same ~596 MB resident while running) and \
+                competitive on screen text, but measurably worse on audio \
+                transcripts — prefer GTE ModernBERT unless you index screen text \
+                only."
                 .to_string(),
             tier: SemanticSearchModelTier::Custom,
             architecture: SemanticSearchArchitecture::ModernBert,
@@ -570,8 +578,9 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             description: "Custom English option \
                 (ibm-granite/granite-embedding-small-english-r2), 384-dimensional, \
                 Apache-2.0, CLS-pooled. The low-disk, high-throughput end: ~99 MB \
-                and roughly 2.4× the indexing speed of the default, paying for it \
-                with clearly weaker retrieval — especially on audio transcripts."
+                on disk (~191 MB resident while running) and roughly 2.4× the \
+                indexing speed of the default, paying for it with clearly weaker \
+                retrieval — especially on audio transcripts."
                 .to_string(),
             tier: SemanticSearchModelTier::Custom,
             architecture: SemanticSearchArchitecture::ModernBert,
@@ -1050,6 +1059,38 @@ mod tests {
         assert_eq!(default.dimension, 768);
         assert_eq!(default.max_tokens, 8192);
         assert_eq!(default.license_label.as_deref(), Some("Apache-2.0"));
+    }
+
+    /// A descriptor's `description` is rendered VERBATIM in the Settings model picker
+    /// (`SemanticSearch.svelte`: `<p class="group-hint">{picked.description}</p>`), so
+    /// it is a user-facing claim about what the model does *in this app*, not a note
+    /// about the upstream checkpoint.
+    ///
+    /// `runtime::MAX_DOCUMENT_CHUNKS` caps a DOCUMENT at its first two token windows
+    /// and drops the rest, so no description may tell the user that overflowing text
+    /// is fully represented — whatever the model's window is.
+    #[test]
+    fn no_catalog_description_promises_untruncated_documents() {
+        // Phrasings that assert the indexed text is complete. The cap makes every one
+        // of them false for any anchor past ~2 windows.
+        const FORBIDDEN: [&str; 4] = [
+            "truncation a non-issue",
+            "never truncated",
+            "no truncation",
+            "without truncation",
+        ];
+        for descriptor in catalog() {
+            let description = descriptor.description.to_lowercase();
+            for claim in FORBIDDEN {
+                assert!(
+                    !description.contains(claim),
+                    "{}'s picker description claims \"{claim}\", but documents are capped \
+                     at runtime::MAX_DOCUMENT_CHUNKS token windows and the rest is never \
+                     indexed — the description is shown verbatim in Settings",
+                    descriptor.model_id
+                );
+            }
+        }
     }
 
     #[test]

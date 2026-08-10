@@ -112,6 +112,12 @@ export class ReceiptFrameLoader {
 		this.#inFlight.clear();
 		this.#failed.clear();
 		this.#thumbQueue.length = 0;
+		// `#pumpThumbs` is one-batch-at-a-time, gated on this set. The batch that
+		// belongs to the activity we just left is still in flight and its `finally` is
+		// generation-guarded, so without this the NEW strip never pumps at all: every
+		// newly-intersecting cell calls `requestThumb`, `#pumpThumbs` returns early on
+		// the stale claim, and the filmstrip stays blank until the old IPC returns.
+		this.#thumbInFlight.clear();
 		this.#thumbDone.clear();
 		this.#stripIds = [];
 		this.#index = 0;
@@ -251,26 +257,32 @@ export class ReceiptFrameLoader {
 			if (gen !== this.#gen) return;
 			// A `missingReason` entry has no preview — leave it out of `#thumbDone`
 			// so a later re-intersection retries it.
-			const painted = await this.#thumbUrls.merge(
+			// Painted per cell as each read lands, not after the whole batch: 24
+			// thumbnails through the merge's 6-worker pool is four SEQUENTIAL asset
+			// round trips, and waiting for the last one holds every cell on its
+			// placeholder for the entire batch. The per-mint generation check is the
+			// same one the batch used to do — a `reset` mid-batch already revoked
+			// these URLs, so nothing may be handed to the strip after it.
+			await this.#thumbUrls.merge(
 				response.previews.flatMap((entry) =>
 					entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
 				),
+				(frameId, url) => {
+					if (gen !== this.#gen) return;
+					this.#thumbDone.add(frameId);
+					this.#events.onThumb(frameId, url);
+				},
 			);
-			// Minting awaits, so re-check the generation before painting: a `reset`
-			// during the fetch already revoked these URLs.
-			if (gen !== this.#gen) return;
-			for (const entry of response.previews) {
-				if (!entry.preview) continue;
-				const url = painted.get(entry.frameId);
-				if (url === undefined) continue; // mint failed; retried on re-intersection
-				this.#thumbDone.add(entry.frameId);
-				this.#events.onThumb(entry.frameId, url);
-			}
 		} catch {
 			// cells keep their placeholders
 		} finally {
-			for (const fid of fids) this.#thumbInFlight.delete(fid);
-			this.#pumpThumbs();
+			// A superseded batch owns none of this state any more — `reset` already
+			// dropped its claims, and deleting them here would release ids the new
+			// activity has in flight (and pump a second concurrent batch).
+			if (gen === this.#gen) {
+				for (const fid of fids) this.#thumbInFlight.delete(fid);
+				this.#pumpThumbs();
+			}
 		}
 	}
 

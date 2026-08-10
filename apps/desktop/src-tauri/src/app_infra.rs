@@ -1957,8 +1957,10 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     //
     // Running BEFORE the worker also matters for a fresh install: migration 0039's
     // table carries no model stamp, and the worker's store gate requires one, so
-    // this pass is what adopts it (stamp only, no rebuild — see
-    // `reconcile_vectors_table`) before the first sweep runs.
+    // this pass is what stamps it before the first sweep runs. An unstamped table is
+    // REBUILT, not adopted in place (its embedding recipe is unknowable — see
+    // `reconcile_vectors_table`); on a fresh install that rebuild discards nothing
+    // because migration 0039's table is empty.
     {
         let settings = crate::semantic_search_worker::effective_semantic_search_settings(app_handle);
         tauri::async_runtime::block_on(
