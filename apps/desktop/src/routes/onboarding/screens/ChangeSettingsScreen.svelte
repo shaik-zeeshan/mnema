@@ -138,6 +138,7 @@
       models={flow.models}
       installed={flow.modelFacts}
       captureIntervalSeconds={flow.captureIntervalSeconds}
+      videoPixels={flow.videoPixels}
     />
   {:else if active === "engines"}
     <!-- ── Which engine turns speech into text, and why one is picked ────── -->
@@ -174,6 +175,7 @@
       speakerBytes={c.selectedSpeakerModel?.download?.byteSize ?? SPEAKRS_BYTES}
       freeBytes={flow.storageProbe?.freeBytes ?? null}
       captureIntervalSeconds={flow.captureIntervalSeconds}
+      videoPixels={flow.videoPixels}
     />
   {:else}
     <!-- ── AI features ──────────────────────────────────────────────────── -->

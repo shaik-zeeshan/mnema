@@ -55,11 +55,12 @@ export function formatMeasuredBytes(bytes: number): string {
 export function storageNeedBytes(
   downloadBytes: number,
   captureIntervalSeconds: number,
+  videoPixels?: number,
 ): number {
   return (
     RESERVE_FLOOR_BYTES +
     downloadBytes +
-    estimateDailyStorageMb(captureIntervalSeconds) * 1e6
+    estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6
   );
 }
 
@@ -80,6 +81,8 @@ export interface CaptureStorageGateInput {
   requiredBytes: number;
   /** Seconds between snapshots at the chosen capture rate (ladder stop). */
   captureIntervalSeconds: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Omitted = anchor 720p. */
+  videoPixels?: number;
   /** From `onboarding-attention.ts`, unchanged. */
   customResolutionErrors: readonly string[];
   customBitrateErrors: readonly string[];
@@ -107,6 +110,7 @@ export function captureStorageBlockReason(
     const need = storageNeedBytes(
       input.requiredBytes,
       input.captureIntervalSeconds,
+      input.videoPixels,
     );
     if (probe.freeBytes !== null && probe.freeBytes < need) {
       const figures = `${formatMeasuredBytes(probe.freeBytes)} free · ${formatBytes(need)} needed.`;

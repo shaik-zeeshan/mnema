@@ -21,7 +21,6 @@
   //   subject: string     — the Subject name being inspected.
   //   onBack: () => void  — return to the Subjects index.
 
-  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
@@ -34,7 +33,7 @@
     ActivityEvidenceRef,
   } from "$lib/types/recording";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { FramePreviewUrlMap } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import ConclusionStrip from "$lib/insights/ConclusionStrip.svelte";
@@ -72,6 +71,15 @@
   // Frame previews for screen-sourced timeline events. Maps frameId → asset URL.
   // Best-effort; events without a resolved preview keep the colored placeholder.
   let thumbnailCache = $state<Map<number, string>>(new Map());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  const thumbnailUrls = new FramePreviewUrlMap();
+  // Teardown-only (no reactive reads): this component is destroyed on every
+  // back/subject switch, and a blob URL survives the object that minted it —
+  // without this, each visit strands its whole live set (bytes AND decoded
+  // surface) and the next visit mints brand-new URLs for the same frames.
+  $effect(() => () => thumbnailUrls.clear());
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
     const m = new Map<number, SubjectTrajectory>();
@@ -143,18 +151,18 @@
   // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
   // cached so re-selecting a conclusion is free.
   async function loadTimelineThumbnails(): Promise<void> {
-    // Read the cache untracked: this loader runs synchronously inside a $effect
-    // keyed on timelineEvents, so a tracked thumbnailCache.has() read before the
-    // first await would make the cache a dependency — and the `thumbnailCache =
-    // next` write below would then re-run the effect for one wasted pass.
-    const cache = untrack(() => thumbnailCache);
+    // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
+    // keeps the LRU ordered by what is still on screen. It also reads no $state,
+    // so this loader (called synchronously from a $effect keyed on
+    // timelineEvents) no longer needs the cache untracked to avoid re-running
+    // itself off its own `thumbnailCache` write.
     const wanted = timelineEvents
       .map((ev) =>
         ev.kind === "evidence" && ev.sourceType === "screen"
           ? ev.frameId
           : null,
       )
-      .filter((id): id is number => id != null && !cache.has(id));
+      .filter((id): id is number => id != null && !thumbnailUrls.touch(id));
     const uniqueIds = Array.from(new Set(wanted));
     if (uniqueIds.length === 0) return;
     try {
@@ -162,13 +170,14 @@
         "get_frame_scrub_previews",
         { request: { frameIds: uniqueIds } },
       );
-      const next = new Map(thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      thumbnailCache = next;
+      // Publish per thumbnail, not per batch: waiting for the whole merge keeps
+      // every timeline event on its placeholder for four asset round trips.
+      thumbnailCache = await thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+        () => (thumbnailCache = thumbnailUrls.snapshot()),
+      );
     } catch {
       // Thumbnails are best-effort; events fall back to the colored placeholder.
     }

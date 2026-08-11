@@ -24,7 +24,12 @@ import {
   CAPTURE_INTERVAL_LADDER_S,
   DEFAULT_CAPTURE_INTERVAL_S,
 } from "../components/capture-rate";
-import { RESERVE_FLOOR_BYTES, storageNeedBytes } from "./gates";
+import { ANCHOR_INTERVAL_S, estimateDailyStorageMb } from "./disk-estimate";
+import {
+  RESERVE_FLOOR_BYTES,
+  captureStorageBlockReason,
+  storageNeedBytes,
+} from "./gates";
 import { formatBytes } from "../settings/state/format";
 
 /** The default work-list (SPEC.md): speakrs + Whisper base + nomic. */
@@ -126,6 +131,30 @@ describe("the plan line always reads rate · horizon", () => {
   test("the horizon moves when the rate moves", () => {
     expect(text(planSegments(60, "days_30"))).toContain("405.0 MB held");
     expect(text(planSegments(60, "days_30"))).toContain("13.5 MB a day");
+  });
+
+  test("the sentence's plan prices the draft resolution", () => {
+    // The daily figure the plan renders is the resolution-scaled estimate, not
+    // the 720p anchor: at the anchor interval, a 1080p draft prints the 1080p
+    // day and a 540p draft prints a strictly smaller one.
+    const hi = sentenceVerdict(
+      input({ intervalSeconds: ANCHOR_INTERVAL_S, videoPixels: 1920 * 1080 }),
+    );
+    expect(hi.plan[0].text).toBe(
+      formatBytes(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 1920 * 1080) * 1e6),
+    );
+    expect(text(hi.plan)).toContain(" a day");
+
+    const lo = sentenceVerdict(
+      input({ intervalSeconds: ANCHOR_INTERVAL_S, videoPixels: 960 * 540 }),
+    );
+    expect(lo.plan[0].text).toBe(
+      formatBytes(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 960 * 540) * 1e6),
+    );
+    expect(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 960 * 540)).toBeLessThan(
+      estimateDailyStorageMb(ANCHOR_INTERVAL_S, 1920 * 1080),
+    );
+    expect(lo.plan[0].text).not.toBe(hi.plan[0].text);
   });
 });
 
@@ -317,6 +346,30 @@ describe("the healthy readings", () => {
         input({ probe: { exists: true, writable: true, freeBytes: free } }),
       );
       expect(v.blocking).toBe(free < storageNeedBytes(WORK_LIST, 2));
+    }
+  });
+
+  test("the same invariant holds at a non-720p capture resolution", () => {
+    // The sentence now PRINTS a resolution-scaled day (`videoPixels`), so the
+    // shortfall it tests must be scaled by the same figure the gate uses — else
+    // a 1080p/original draft on a volume that clears the 720p need but not the
+    // real one disables Continue while the panel says it fits.
+    const pixels = 1920 * 1080;
+    for (const free of [2.6e9, 2.8e9, 2.9e9, 3.5e9]) {
+      const probe = { exists: true, writable: true, freeBytes: free };
+      const v = sentenceVerdict(input({ videoPixels: pixels, probe }));
+      const gate = captureStorageBlockReason({
+        probe,
+        requiredBytes: WORK_LIST,
+        captureIntervalSeconds: 2,
+        videoPixels: pixels,
+        customResolutionErrors: [],
+        customBitrateErrors: [],
+      });
+      expect({ free, blocking: v.blocking }).toEqual({
+        free,
+        blocking: gate !== null,
+      });
     }
   });
 });

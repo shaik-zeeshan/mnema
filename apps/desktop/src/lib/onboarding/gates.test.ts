@@ -125,6 +125,30 @@ describe("test 7 — capture & storage gate predicates", () => {
     ).toBe("Bitrate must be 1–40 Mbps.");
   });
 
+  test("the storage gate's requirement grows with capture resolution", () => {
+    const need720 = storageNeedBytes(0, 2, 1280 * 720);
+    const need1080 = storageNeedBytes(0, 2, 1920 * 1080);
+    expect(need1080).toBeGreaterThan(need720);
+    // 720p is the anchor: omitting `videoPixels` prices exactly the 720p need.
+    expect(storageNeedBytes(0, 2)).toBe(need720);
+
+    // Free space strictly between the two needs: the SAME volume passes at
+    // 720p and blocks at 1080p — the pixels reach the decision, not just the
+    // leaf arithmetic.
+    const freeBytes = Math.round((need720 + need1080) / 2);
+    const probe = { exists: true, writable: true, freeBytes };
+    expect(
+      captureStorageBlockReason(
+        input({ requiredBytes: 0, probe, videoPixels: 1280 * 720 }),
+      ),
+    ).toBeNull();
+    expect(
+      captureStorageBlockReason(
+        input({ requiredBytes: 0, probe, videoPixels: 1920 * 1080 }),
+      ),
+    ).not.toBeNull();
+  });
+
   test("nothing else gates — an empty work-list on a roomy disk still passes", () => {
     expect(
       captureStorageBlockReason(

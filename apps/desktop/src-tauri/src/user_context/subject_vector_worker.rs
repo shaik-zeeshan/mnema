@@ -44,7 +44,7 @@ use futures_util::{
     future::{select, Either},
     pin_mut,
 };
-use semantic_search::EmbedKind;
+use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
 use tauri::Manager;
 use tokio::sync::watch;
 
@@ -98,9 +98,14 @@ const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 /// sustain a back-to-back burn concurrent with capture/OCR. Mirrors the search
 /// backfill's pacing band (kept under candle: on macOS the Metal forward leaves the
 /// CPU idle, but on candle-CPU the forward is the burn this paces).
-const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 1.0;
+/// Mirrors the search backfill's band exactly — see the long rationale on
+/// `semantic_search_worker::BACKFILL_BATCH_COOLDOWN_MULTIPLIER`. Short version:
+/// the multiplier sets the duty cycle (`1 / (1 + multiplier)`), the MAX is only a
+/// safety bound and must stay well above `multiplier * typical_batch` or it becomes
+/// the governor and makes a throttled GPU press harder instead of backing off.
+const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 3.0;
 const BACKFILL_BATCH_COOLDOWN_MIN: Duration = Duration::from_millis(150);
-const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
 
 /// The outcome of one sweep pass, deciding the loop's next sleep.
 enum SweepPass {
@@ -123,8 +128,11 @@ enum SweepPass {
 #[derive(Default)]
 struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until the
-    /// first pass that needs it with an installed model.
-    embedder: Option<LoadedEmbedder>,
+    /// first pass that needs it with an installed model. An `Arc` because the
+    /// instance is shared with the Semantic Index Backfill and the query path
+    /// (`semantic_search_worker::SHARED_EMBEDDER`) — one set of weights, and on
+    /// macOS one candle Metal device, for the whole process.
+    embedder: Option<std::sync::Arc<LoadedEmbedder>>,
     /// Log the "no model installed" no-op only once per inert stretch.
     logged_no_model: bool,
     /// Per-subject **consecutive** deterministic-embed-failure counts. Keyed by the
@@ -330,10 +338,10 @@ async fn run_sweep_pass(
     // clears the load latch, the quarantine map, and the stale cached embedder.
     state.reconcile_selection(&descriptor.provider, &descriptor.model_id);
 
-    // The active model's identity string (`provider/model_id`): keys both the
-    // "needs embedding" backlog query (so stale-model vectors are re-claimed) and
-    // each upsert's `embedded_model` stamp.
-    let active_model = format!("{}/{}", descriptor.provider, descriptor.model_id);
+    // The active model's identity string: keys both the "needs embedding" backlog
+    // query (so stale vectors are re-claimed) and each upsert's `embedded_model`
+    // stamp.
+    let active_model = subject_vector_model_identity(&descriptor);
 
     // If the current selection has been given up on for loading this stretch, idle
     // quietly rather than re-attempting the doomed load every tick.
@@ -411,7 +419,15 @@ async fn run_sweep_pass(
         None
     };
 
-    let embed_started_at = Instant::now();
+    // Share the one background GPU slot with the search backfill sweep so the two
+    // never embed concurrently — see
+    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
+    // of letting them overlap (+38% GPU power, +9°C).
+    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
+        .acquire()
+        .await
+        .ok();
+
     let app_data_dir_for_task = app_data_dir.clone();
     let descriptor_for_task = descriptor.clone();
     let texts_for_task = texts.clone();
@@ -427,6 +443,12 @@ async fn run_sweep_pass(
                 Err(error) => return Err(error),
             },
         };
+        // The pacing clock starts HERE, after any (re)load: the cooldown governs the
+        // duty cycle of the FORWARD, so it must not see the model load (one pass per
+        // `MAX_EMBEDDER_WARM_LIFETIME` reloads hundreds of MB inside this same task)
+        // nor the per-subject write transactions the caller runs after it. See
+        // `semantic_search_worker::backfill_batch_cooldown`.
+        let forward_started_at = Instant::now();
         let out: Vec<(String, std::result::Result<Vec<f32>, String>)> = texts_for_task
             .iter()
             .map(|(subject, text)| {
@@ -437,7 +459,7 @@ async fn run_sweep_pass(
                 (subject.clone(), result)
             })
             .collect();
-        Ok((loaded, out))
+        Ok((loaded, out, forward_started_at.elapsed()))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
@@ -461,13 +483,13 @@ async fn run_sweep_pass(
         Either::Right((_, _)) => return SweepPass::Shutdown,
     };
 
-    let (loaded, embedded) = match load_embed {
-        Ok(pair) => {
+    let (loaded, embedded, forward_elapsed) = match load_embed {
+        Ok(triple) => {
             // A successful load (or a reuse of the cached embedder) clears the load
             // latch + counter.
             state.consecutive_load_failures = 0;
             state.load_failed_latch = None;
-            pair
+            triple
         }
         Err(error) => {
             state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
@@ -487,8 +509,19 @@ async fn run_sweep_pass(
             return SweepPass::Error;
         }
     };
-    // Restore the embedder for the next pass.
-    state.embedder = Some(loaded);
+    // Restore the embedder for the next pass — unless it has been warm past the
+    // shared cap, in which case release this holder's `Arc` so a long drain (which
+    // never goes idle) still lets candle's Metal buffer pool go back to the OS.
+    // See `semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME`.
+    if loaded.is_stale() {
+        crate::native_capture::debug_log::log_info(format!(
+            "subject vector backfill recycled the embedder after {}s warm \
+             (bounds candle's Metal buffer pool; reloads on next batch)",
+            loaded.loaded_at.elapsed().as_secs()
+        ));
+    } else {
+        state.embedder = Some(loaded);
+    }
 
     let now = super::worker::now_ms();
     let mut stored = 0u64;
@@ -558,7 +591,7 @@ async fn run_sweep_pass(
             "subject vector backfill embedded {stored} subject(s) (batch={}, embed_failures={embed_failures}, quarantined={quarantined}, transient_errors={transient_errors})",
             texts.len()
         ));
-        return SweepPass::DidWork(backfill_batch_cooldown(embed_started_at.elapsed()));
+        return SweepPass::DidWork(backfill_batch_cooldown(forward_elapsed));
     }
     if quarantined > 0 && embed_failures == quarantined && transient_errors == 0 {
         // The only non-stored outcomes were newly-quarantined poison: idle rather than
@@ -571,6 +604,34 @@ async fn run_sweep_pass(
     // Non-empty batch but nothing stored and nothing failed (shouldn't happen):
     // treat as a minimal-pace work pass so the loop continues.
     SweepPass::DidWork(BACKFILL_BATCH_COOLDOWN_MIN)
+}
+
+/// The identity stamped on every stored **Subject Vector** and used to claim stale
+/// ones (`user_context_subject_vectors.embedded_model`).
+///
+/// `provider/<index epoch>`, where the epoch is app-infra's
+/// `model_id@EMBED_INDEX_RECIPE` — the SAME composite the vec0 table is stamped
+/// with. The recipe half is load-bearing, not decoration: Subject Vectors are
+/// embedded with [`EmbedKind::Document`], so they go through exactly the document
+/// path the recipe names (`MAX_DOCUMENT_CHUNKS` + weighted cross-chunk pooling),
+/// and [`SubjectVectorStore::list_subjects_needing_embedding`] re-claims a row ONLY
+/// when its `embedded_model` differs. A recipe-blind identity would therefore leave
+/// every pre-change row at its old value forever while new rows use the new recipe
+/// — two incomparable generations inside one brute-force cosine ranking, which is
+/// precisely what the vec0 epoch stamp exists to prevent on the search side.
+///
+/// The ONE composition point for both readers of that column — this worker's
+/// backlog query/upsert and the candidate scorer's KNN filter
+/// (`subject_candidates.rs`). They must produce byte-identical strings or the KNN
+/// silently ranks nothing.
+pub(crate) fn subject_vector_model_identity(
+    descriptor: &SemanticSearchModelDescriptor,
+) -> String {
+    format!(
+        "{}/{}",
+        descriptor.provider,
+        ::app_infra::vectors_index_epoch(&descriptor.model_id)
+    )
 }
 
 /// Compose the embedding text for a Subject: the handle joined with its canonical
@@ -609,6 +670,7 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capture_types::default_semantic_search_settings;
 
     #[test]
     fn compose_embed_text_enriches_with_statement_else_bare_handle() {
@@ -700,6 +762,44 @@ mod tests {
         assert!(state.consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP);
     }
 
+    /// A **Subject Vector**'s stored identity must carry the embedding RECIPE, not
+    /// just the model id — the same reason `semantic_search.rs` stamps
+    /// `model_id@EMBED_INDEX_RECIPE` on the vec0 table instead of a bare id.
+    ///
+    /// Subject Vectors are embedded with `EmbedKind::Document`, so they go through
+    /// exactly the document path the recipe describes (`MAX_DOCUMENT_CHUNKS` +
+    /// weighted cross-chunk pooling). `list_subjects_needing_embedding` re-claims a
+    /// row ONLY when its `embedded_model` differs from the active identity, so an
+    /// identity that omits the recipe leaves every pre-change row at its old value
+    /// forever while new rows use the new recipe — two incomparable generations in
+    /// one brute-force cosine space, which is precisely what the vec0 epoch stamp
+    /// was added to prevent on the search side.
+    #[test]
+    fn a_recipe_change_invalidates_stored_subject_vectors() {
+        let descriptor = resolve_selected_descriptor(&default_semantic_search_settings())
+            .expect("the default English tier resolves");
+
+        // What a recipe-blind identity would produce — and what every row written
+        // under the previous (uncapped, uniform-mean) document path was stamped with.
+        let recipe_blind = format!("{}/{}", descriptor.provider, descriptor.model_id);
+        assert_ne!(
+            subject_vector_model_identity(&descriptor),
+            recipe_blind,
+            "a subject vector produced under a different document-embed recipe must \
+             not be claimed as current: `list_subjects_needing_embedding` only \
+             re-embeds rows whose `embedded_model` differs from the active identity"
+        );
+
+        // ...and it must move in LOCKSTEP with the vec0 table's epoch stamp, so one
+        // recipe bump invalidates both vector stores rather than only the search one.
+        assert!(
+            subject_vector_model_identity(&descriptor)
+                .ends_with(&::app_infra::vectors_index_epoch(&descriptor.model_id)),
+            "the subject-vector identity must carry the same index epoch the vec0 \
+             table is stamped with"
+        );
+    }
+
     #[test]
     fn backfill_cooldown_clamps_to_the_pacing_band() {
         assert_eq!(
@@ -710,7 +810,23 @@ mod tests {
             backfill_batch_cooldown(Duration::from_secs(60)),
             BACKFILL_BATCH_COOLDOWN_MAX
         );
-        let mid = Duration::from_millis(500);
-        assert_eq!(backfill_batch_cooldown(mid), mid);
+        // The literal, not `mid * MULTIPLIER`: comparing the implementation to
+        // itself passes for ANY multiplier, so nothing bounded the duty cycle from
+        // below. A 4s forward earning 12s of rest (25% duty) is the shipped target;
+        // this is the only assertion that fails if the multiplier drifts in either
+        // direction. (Mirrors semantic_search_worker.rs's
+        // `the_cooldown_band_pins_the_shipped_duty_target_with_a_literal`.)
+        assert_eq!(
+            backfill_batch_cooldown(Duration::from_secs(4)),
+            Duration::from_secs(12)
+        );
+        // REGRESSION GUARD (mirrors the search backfill's): a realistic batch must
+        // not hit the ceiling, or MAX becomes the governor and the duty cycle stops
+        // responding to a throttled GPU.
+        let realistic = Duration::from_secs(4);
+        assert!(
+            backfill_batch_cooldown(realistic) < BACKFILL_BATCH_COOLDOWN_MAX,
+            "MAX must stay a safety bound, not the governor, for a realistic batch"
+        );
     }
 }

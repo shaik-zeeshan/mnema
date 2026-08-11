@@ -8,8 +8,10 @@
 import { describe, expect, it } from "bun:test";
 import {
   ANCHOR_SHARE_MB,
+  DEFAULT_EMBED_DIMS,
   costDelta,
   featureCost,
+  framesPerDay,
   frameVectorMb,
 } from "./feature-cost";
 import { normalizeFeatures, applyToggle, preview } from "./feature-rules";
@@ -66,6 +68,17 @@ describe("the measured anchor", () => {
   it("defaults to the 2 s ladder default when no interval is given", () => {
     expect(featureCost(state()).diskMbPerDay).toBeCloseTo(405, 5);
   });
+
+  it("scales only the screen row with resolution, summing to the estimate", () => {
+    const pixels = 1920 * 1080; // 2.25× the 720p anchor
+    const cost = featureCost(state(), { ...anchorCtx, videoPixels: pixels });
+    expect(cost.diskByFeature.screen).toBeCloseTo(ANCHOR_SHARE_MB.screen * 2.25, 6);
+    expect(cost.diskByFeature.ocr).toBeCloseTo(ANCHOR_SHARE_MB.ocr, 6);
+    expect(cost.diskMbPerDay).toBeCloseTo(
+      estimateDailyStorageMb(ANCHOR_INTERVAL_S, pixels),
+      1,
+    );
+  });
 });
 
 describe("featureCost — disk per row", () => {
@@ -94,7 +107,7 @@ describe("featureCost — disk per row", () => {
   it("puts Semantic Search on top of the anchor, never inside it", () => {
     const base = featureCost(state(), anchorCtx).diskMbPerDay;
     const withSearch = featureCost(state({ semanticSearch: true }), anchorCtx);
-    // One 768-dim f32 per frame-document, plus a flat term for the transcripts.
+    // One 768-dim int8 vector per frame-document, plus a flat transcript term.
     expect(withSearch.diskByFeature.semanticSearch).toBeCloseTo(
       frameVectorMb(ANCHOR_INTERVAL_S) + 2,
       6,
@@ -103,7 +116,71 @@ describe("featureCost — disk per row", () => {
       base + withSearch.diskByFeature.semanticSearch,
       6,
     );
-    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(29);
+  });
+
+  it("prices a vector at one byte per dimension, not four", () => {
+    // Migration 0039 stores every vector through `vec_quantize_int8(?, 'unit')`,
+    // so an f32 figure here overstates the row by 4× on the screen where the
+    // user decides whether to keep Semantic Search on. The literal is what pins
+    // int8 — recomputing `framesPerDay * DIMS / 1e6` here would just restate the
+    // implementation against itself and pass for any formula.
+    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(7);
+    // A narrower model tier (issue #190) costs proportionally less.
+    expect(frameVectorMb(ANCHOR_INTERVAL_S, 384)).toBeCloseTo(
+      frameVectorMb(ANCHOR_INTERVAL_S) / 2,
+      6,
+    );
+  });
+
+  it("prices the SELECTED model's width, not a fixed 768", () => {
+    // The `dims` parameter existed for this and had no caller passing it, so
+    // onboarding quoted every tier at the default width. `granite-small-r2` is
+    // 384-dim, so its row was shown at 2× its real disk — the same class of
+    // overstatement as the f32 bug above, on the same screen.
+    const wide = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "nomic-embed-text-v1.5" },
+    });
+    const narrow = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "granite-embedding-small-english-r2" },
+    });
+
+    expect(narrow.diskByFeature.semanticSearch).toBeCloseTo(
+      frameVectorMb(ANCHOR_INTERVAL_S, 384) + 2,
+      6,
+    );
+    expect(narrow.diskByFeature.semanticSearch).toBeLessThan(
+      wide.diskByFeature.semanticSearch,
+    );
+    // An unknown or absent id falls back to the default tier rather than throwing.
+    const unknown = featureCost(state({ semanticSearch: true }), {
+      ...anchorCtx,
+      models: { semanticSearchModelId: "a-model-that-does-not-exist" },
+    });
+    expect(unknown.diskByFeature.semanticSearch).toBeCloseTo(
+      wide.diskByFeature.semanticSearch,
+      6,
+    );
+  });
+
+  it("falls back for a model id that names an Object.prototype member", () => {
+    // `EMBED_DIMS_BY_MODEL` is a plain object literal, so indexing it with an
+    // INHERITED key returns a truthy non-number (`Object`, `Object.prototype`, a
+    // function) that `?? DEFAULT_EMBED_DIMS` does not catch. The width then
+    // multiplies into the frame term and the whole screen prints "NaN MB a day" —
+    // an unknown id must fall back exactly like any other unknown id.
+    for (const modelId of ["constructor", "toString", "__proto__", "valueOf"]) {
+      const cost = featureCost(state({ semanticSearch: true }), {
+        ...anchorCtx,
+        models: { semanticSearchModelId: modelId },
+      });
+      expect(Number.isFinite(cost.diskMbPerDay)).toBe(true);
+      expect(cost.diskByFeature.semanticSearch).toBeCloseTo(
+        frameVectorMb(ANCHOR_INTERVAL_S) + 2,
+        6,
+      );
+    }
   });
 
   it("stops charging for frame vectors when there are no frames to read", () => {

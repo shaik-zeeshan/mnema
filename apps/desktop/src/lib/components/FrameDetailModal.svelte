@@ -19,7 +19,7 @@
   import { trapTabKey } from "$lib/keyboard";
   import { tip } from "$lib/components/tooltip";
   import FrameOcrOverlay from "$lib/components/FrameOcrOverlay.svelte";
-  import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import { FramePreviewUrlHolder, readFramePreviewBytes } from "$lib/frame-preview";
   import { formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import {
@@ -86,9 +86,25 @@
     frame?.width && frame?.height ? `${frame.width}×${frame.height}` : null,
   );
   const frameUrl = $derived(frame?.url ?? null);
-  const imgSrc = $derived(
-    preview ? framePreviewAssetUrl(preview.filePath) : null,
-  );
+  // The hero is a FULL-SIZE frame (~30 MB decoded at retina), and WebKit parks a
+  // decoded surface per `asset://` URL it has ever loaded, for the life of the
+  // window — so painting the asset URL here stranded one per frame the user ever
+  // opened. The holder mints a blob URL instead and revokes the one it replaces
+  // once the replacement has actually painted, so exactly one hero is decoded at
+  // a time however long the session runs.
+  const previewUrls = new FramePreviewUrlHolder();
+  // Teardown-only (no reactive reads): the `open`-goes-false effect below only
+  // runs while this component is alive. A parent destroyed with the modal still
+  // open (route change, subject back-out) would otherwise strand the full-size
+  // hero's blob — bytes and decoded surface both. The token bump covers the
+  // load still awaiting its IPCs at that moment: `clear()` only invalidates a
+  // `swap` already running, so without it the late load swaps AFTER teardown,
+  // mints a fresh hero URL into a dead component, and nothing ever revokes it.
+  $effect(() => () => {
+    previewUrls.clear();
+    loadToken++;
+  });
+  let imgSrc = $state<string | null>(null);
   // Resolved via `resolve_app_icons` off the loaded frame's bundle id (best
   // effort; a letter avatar covers the null case). Same command the timeline uses.
   let appIconSrc = $state<string | null>(null);
@@ -121,6 +137,11 @@
     loadError = false;
     frame = null;
     preview = null;
+    // Blank the hero while the new frame loads (the placeholder shows), and
+    // revoke the outgoing URL now — nothing is painting it any more. `clear`
+    // before the `swap` below, never after: `swap` claims a fresh generation.
+    previewUrls.clear();
+    imgSrc = null;
     appIconSrc = null;
     try {
       const [frameDto, previewDto] = await Promise.all([
@@ -132,6 +153,14 @@
       if (token !== loadToken) return; // superseded
       frame = frameDto;
       preview = previewDto;
+      if (previewDto) {
+        const url = await previewUrls.swap(previewDto.filePath, previewDto.mimeType);
+        // `swap` returns null when a newer load already superseded this one.
+        if (url !== null && token === loadToken) imgSrc = url;
+      } else {
+        previewUrls.clear();
+        imgSrc = null;
+      }
       if (!frameDto) loadError = true;
       const bundleId = frameDto?.appBundleId?.trim();
       if (bundleId) void resolveAppIcon(bundleId, token);
@@ -159,6 +188,8 @@
       loadToken++;
       frame = null;
       preview = null;
+      previewUrls.clear();
+      imgSrc = null;
       appIconSrc = null;
       loading = false;
       loadError = false;
@@ -437,7 +468,12 @@
               bind:this={heroImgEl}
               src={imgSrc}
               alt={displayTitle ? `Captured frame: ${displayTitle}` : "Captured frame"}
-              onload={measureOcrRect}
+              onload={() => {
+                // The replacement is on screen — now the superseded URL is safe to
+                // revoke (revoking earlier blanks the hero mid-swap).
+                previewUrls.settle();
+                measureOcrRect();
+              }}
             />
           {:else if loadError}
             <p class="frame-hero__placeholder">Frame unavailable</p>

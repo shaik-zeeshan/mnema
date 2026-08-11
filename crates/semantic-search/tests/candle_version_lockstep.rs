@@ -2,8 +2,14 @@
 //!
 //! `candle-core`, `candle-nn`, and `candle-transformers` MUST move together: a
 //! non-lockstep bump (e.g. `candle-transformers` to a version whose `nomic_bert` /
-//! `xlm_roberta` modules drift while `candle-core` stays put) can silently change
-//! the architecture the catalog dispatches to. The three are EXACT-pinned (`=x.y.z`)
+//! `xlm_roberta` / `stella_en_v5` / `modernbert` modules drift while `candle-core`
+//! stays put) can silently change the architecture the catalog dispatches to. Those
+//! four modules are the full dispatch surface of `backend::candle`; add any new arm
+//! to this list. `modernbert` is the one whose behaviour is *already* known to be
+//! version-sensitive: `backend::candle::arch_dtype` pins it to F32 to work around an
+//! F32-only attention mask in `0.10.2`, and
+//! `candle_modernbert_synthetic::modernbert_f16_weights_are_not_loadable_in_candle_0_10_2`
+//! fails the moment a bump changes that. The three crates are EXACT-pinned (`=x.y.z`)
 //! in `Cargo.toml`; this test parses those three pins straight out of the manifest
 //! and asserts they are (a) all `=` exact pins and (b) the SAME version — so a
 //! one-crate bump fails CI here. This is the candle-era replacement for the retired

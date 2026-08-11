@@ -17,10 +17,15 @@
 //    exactly, so the totals here and the capture-rate sentence never disagree.
 //
 // Semantic Search sits ON TOP of the anchor: the measured machine shipped no
-// vectors, so its cost is computed (one 768-dim f32 per frame-document) rather
+// vectors, so its cost is computed (one int8 vector per frame-document) rather
 // than carved out of the 270.
 import { DEFAULT_CAPTURE_INTERVAL_S } from "../components/capture-rate";
-import { ANCHOR_MB_PER_DAY, estimateDailyStorageMb } from "./disk-estimate";
+import {
+  ANCHOR_MB_PER_DAY,
+  ANCHOR_VIDEO_MB,
+  ANCHOR_VIDEO_PIXELS,
+  estimateDailyStorageMb,
+} from "./disk-estimate";
 import { FEATURE_ORDER, type FeatureId, type FeatureState } from "./feature-rules";
 import {
   resolveSetup,
@@ -36,8 +41,8 @@ import {
  * keeps summing to `estimateDailyStorageMb(interval)`.
  */
 export const ANCHOR_SHARE_MB = {
-  /** Video frames. */
-  screen: 168,
+  /** Video frames — the one share that also scales with resolution (pixels). */
+  screen: ANCHOR_VIDEO_MB,
   /** The OCR half of the index — one pass per frame. */
   ocr: 47,
   /** Per audio source (microphone, system audio). */
@@ -48,8 +53,14 @@ export const ANCHOR_SHARE_MB = {
 
 /** Hours of activity a day, from the anchor's pause-on-inactivity measurement. */
 const ACTIVE_HOURS = 8;
-/** nomic-embed-text-v1.5 output width, f32. */
-const EMBED_DIMS = 768;
+/**
+ * Output width of the default Semantic Search Model (nomic-embed-text-v1.5).
+ * One byte per dimension at rest: migration `0039` stores every vector through
+ * `vec_quantize_int8(?, 'unit')`, so the f32 the embedder produces is NOT what
+ * lands on disk. `frameVectorMb` takes this as an argument so a model tier with
+ * another width (issue #190) moves one call, not this constant.
+ */
+export const DEFAULT_EMBED_DIMS = 768;
 /** Vectors over a day of transcripts — small and flat next to the frame side. */
 const TRANSCRIPT_VECTOR_MB = 2;
 
@@ -61,6 +72,8 @@ export interface CostContext {
   installed?: Partial<ModelInventory> | null;
   /** Seconds between snapshots. Defaults to the ladder default (2 s). */
   captureIntervalSeconds?: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Defaults to the anchor's 720p. */
+  videoPixels?: number;
 }
 
 export interface FeatureCost {
@@ -93,22 +106,77 @@ export function framesPerDay(intervalSeconds: number): number {
   return (ACTIVE_HOURS * 3600) / interval;
 }
 
-/** MB/day of embedding vectors over the captured frames. */
-export function frameVectorMb(intervalSeconds: number): number {
-  return (framesPerDay(intervalSeconds) * EMBED_DIMS * 4) / 1e6;
+/**
+ * Stored vector width per Semantic Search model id, mirroring each descriptor's
+ * `dimension` in `crates/semantic-search/src/models.rs`.
+ *
+ * A hand-mirrored table rather than a new field threaded through
+ * `SelectedModelFacts`/`ModelInventory`: the disk estimate is the only consumer,
+ * and `model-budget.test.ts` already re-derives the sizes straight out of the Rust
+ * catalog, so the same drift guard covers this (see `model-budget.test.ts` →
+ * "every semantic model dimension matches the Rust catalog").
+ *
+ * The widths are NOT all equal, which is the whole point — this catalog ships a
+ * 384-dim model, so pricing every tier at 768 overstates its disk by 2x on the
+ * screen where the user decides whether to keep the feature on.
+ */
+export const EMBED_DIMS_BY_MODEL: Record<string, number> = {
+  "nomic-embed-text-v1.5": 768,
+  "multilingual-e5-small": 384,
+  "bge-m3": 1024,
+  // Stella's STORED width is its 2048-dim dense head, not the 1024 backbone; Arctic
+  // stores 256 (Matryoshka-truncated from 1024). Both are easy to get wrong by
+  // reading the backbone instead of the descriptor — hence the drift guard.
+  stella_en_400M_v5: 2048,
+  "snowflake-arctic-embed-l-v2.0": 256,
+  "gte-modernbert-base": 768,
+  "granite-embedding-english-r2": 768,
+  "granite-embedding-small-english-r2": 384,
+};
+
+/** The stored vector width for `modelId`, or the default tier's when unknown. */
+export function embedDimsFor(modelId: string | null | undefined): number {
+  if (!modelId) return DEFAULT_EMBED_DIMS;
+  // `typeof`, not `??`: this is a plain object literal, so an id naming an
+  // inherited member ("constructor", "toString", "__proto__") indexes through to
+  // `Object.prototype` and yields a TRUTHY non-number, which `??` waves past and
+  // which then multiplies into the frame term as NaN — the whole screen prints
+  // "NaN MB a day" instead of falling back like any other unknown id.
+  const dims = EMBED_DIMS_BY_MODEL[modelId];
+  return typeof dims === "number" ? dims : DEFAULT_EMBED_DIMS;
+}
+
+/**
+ * MB/day of embedding vectors over the captured frames — a CEILING.
+ *
+ * One int8 vector per frame-document. It is an over-estimate on purpose: an
+ * `equivalent_reuse` anchor (a frame whose screen did not change) is never
+ * embedded and has no `vec0` row at all, and how much of a real day dedups away
+ * is a habit, not a constant. Erring high on the screen where the user decides
+ * whether to keep the feature is the right direction to be wrong in.
+ */
+export function frameVectorMb(
+  intervalSeconds: number,
+  dims: number = DEFAULT_EMBED_DIMS,
+): number {
+  return (framesPerDay(intervalSeconds) * dims) / 1e6;
 }
 
 /** What `state` costs: MB/day on disk, bytes still to download, per row and total. */
 export function featureCost(state: FeatureState, ctx: CostContext = {}): FeatureCost {
   const interval = ctx.captureIntervalSeconds ?? DEFAULT_CAPTURE_INTERVAL_S;
+  const videoPixels = ctx.videoPixels ?? ANCHOR_VIDEO_PIXELS;
   // Scale the decomposition by the ladder stop, so the shares always sum back to
-  // the anchor-derived total for this capture rate.
+  // the anchor-derived total for this capture rate. The screen row additionally
+  // scales with the pixel ratio, matching `estimateDailyStorageMb`'s video term.
   const scale = estimateDailyStorageMb(interval) / ANCHOR_MB_PER_DAY;
   const sources = (state.microphone ? 1 : 0) + (state.systemAudio ? 1 : 0);
   const reads = state.screen && state.ocr;
 
   const diskByFeature = zeroByFeature();
-  diskByFeature.screen = state.screen ? ANCHOR_SHARE_MB.screen * scale : 0;
+  diskByFeature.screen = state.screen
+    ? ANCHOR_SHARE_MB.screen * scale * (videoPixels / ANCHOR_VIDEO_PIXELS)
+    : 0;
   diskByFeature.ocr = reads ? ANCHOR_SHARE_MB.ocr * scale : 0;
   diskByFeature.microphone = state.microphone ? ANCHOR_SHARE_MB.audioSource * scale : 0;
   diskByFeature.systemAudio = state.systemAudio ? ANCHOR_SHARE_MB.audioSource * scale : 0;
@@ -117,8 +185,13 @@ export function featureCost(state: FeatureState, ctx: CostContext = {}): Feature
     : 0;
   // Diarization writes speaker labels onto turns that already exist, and AI
   // features and privacy write nothing at all.
+  // Priced at the SELECTED model's width, not a fixed 768: the catalog ships a
+  // 384-dim tier, and quoting it at 768 doubles the disk figure the user is deciding
+  // against. `frameVectorMb`'s `dims` argument existed for exactly this and had no
+  // caller passing it.
+  const embedDims = embedDimsFor(ctx.models?.semanticSearchModelId);
   diskByFeature.semanticSearch = state.semanticSearch
-    ? (reads ? frameVectorMb(interval) : 0) +
+    ? (reads ? frameVectorMb(interval, embedDims) : 0) +
       (state.transcription ? TRANSCRIPT_VECTOR_MB : 0)
     : 0;
 

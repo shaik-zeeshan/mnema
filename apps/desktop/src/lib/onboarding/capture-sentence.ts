@@ -62,8 +62,8 @@ export function retentionIndex(policy: RetentionPolicy): number {
 }
 
 /** Daily capture cost in bytes — `disk-estimate`'s MB figure, not a re-derivation. */
-export function dailyBytes(intervalSeconds: number): number {
-  return estimateDailyStorageMb(intervalSeconds) * 1e6;
+export function dailyBytes(intervalSeconds: number, videoPixels?: number): number {
+  return estimateDailyStorageMb(intervalSeconds, videoPixels) * 1e6;
 }
 
 /**
@@ -162,6 +162,8 @@ export interface SentenceVerdict {
 
 export interface SentenceInput {
   intervalSeconds: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Omitted = anchor 720p. */
+  videoPixels?: number;
   retention: RetentionPolicy;
   /** The path the probe measured (or the draft, before the first reply). */
   path: string;
@@ -191,8 +193,9 @@ const repair = (label: string, act: RepairAct, primary = false): Repair => ({
 export function planSegments(
   intervalSeconds: number,
   retention: RetentionPolicy,
+  videoPixels?: number,
 ): Seg[] {
-  const daily = dailyBytes(intervalSeconds);
+  const daily = dailyBytes(intervalSeconds, videoPixels);
   const stop = RETENTION_STOPS[retentionIndex(retention)]!;
   const head = [fig(formatBytes(daily)), t(" a day")];
   return stop.days === null
@@ -216,10 +219,10 @@ export function planSegments(
  * and the gate always name the same problem.
  */
 export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
-  const daily = dailyBytes(input.intervalSeconds);
+  const daily = dailyBytes(input.intervalSeconds, input.videoPixels);
   const stop = RETENTION_STOPS[retentionIndex(input.retention)]!;
   const held = stop.days === null ? null : daily * stop.days;
-  const plan = planSegments(input.intervalSeconds, input.retention);
+  const plan = planSegments(input.intervalSeconds, input.retention, input.videoPixels);
   const base = { probing: false, clause: null, plan, blocking: false } as const;
   const probe = input.probe;
 
@@ -315,7 +318,11 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
 
   const free = probe.freeBytes;
   const downloads = input.requiredBytes;
-  const need = storageNeedBytes(downloads, input.intervalSeconds);
+  const need = storageNeedBytes(
+    downloads,
+    input.intervalSeconds,
+    input.videoPixels,
+  );
   const usable = free - downloads - RESERVE_FLOOR_BYTES;
   const about = input.semanticSearchOn ? "about " : "";
 

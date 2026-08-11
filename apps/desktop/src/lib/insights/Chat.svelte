@@ -33,7 +33,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { FramePreviewUrlMap } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
   import { humanizeError } from "$lib/format-error";
@@ -242,6 +242,15 @@
 
   // Per-frame thumbnail cache for Answer Source cards (best-effort).
   let thumbnailCache = $state(new Map<number, string>());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  const thumbnailUrls = new FramePreviewUrlMap();
+  // Teardown-only (no reactive reads): Chat is destroyed on every insights tab
+  // switch, and a blob URL survives the object that minted it — without this,
+  // each visit strands its whole live set (bytes AND decoded surface) and the
+  // next visit mints brand-new URLs for the same frames.
+  $effect(() => () => thumbnailUrls.clear());
 
   let composerInput = $state("");
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -848,7 +857,9 @@
     const frameIds = sources
       .filter((s) => s.kind === "frame" && s.frameId != null)
       .map((s) => s.frameId as number)
-      .filter((id) => !thumbnailCache.has(id));
+      // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
+      // keeps the LRU ordered by what is still on screen.
+      .filter((id) => !thumbnailUrls.touch(id));
     const uniqueIds = Array.from(new Set(frameIds));
     if (uniqueIds.length === 0) return;
     try {
@@ -856,13 +867,14 @@
         "get_frame_scrub_previews",
         { request: { frameIds: uniqueIds } },
       );
-      const next = new Map(thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      thumbnailCache = next;
+      // Publish per thumbnail, not per batch: waiting for the whole merge keeps
+      // every Answer Source card on its glyph for four asset round trips.
+      thumbnailCache = await thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+        () => (thumbnailCache = thumbnailUrls.snapshot()),
+      );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

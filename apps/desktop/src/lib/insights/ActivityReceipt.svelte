@@ -23,7 +23,6 @@
   import IconPlay from "~icons/lucide/play";
   import Segmented from "$lib/components/Segmented.svelte";
   import { tip } from "$lib/components/tooltip";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { setPendingTimelineFocus } from "$lib/timeline/pending-focus";
   import {
     CATEGORY_COLOR,
@@ -100,9 +99,24 @@
   // the reactive state through these three callbacks.
   const loader = new ReceiptFrameLoader({
     onPreview: () => cacheBump++,
-    onThumb: (fid, url) => (thumbUrls[fid] = url),
+    onThumb: (fid, url) => {
+      if (url !== null) {
+        thumbUrls[fid] = url;
+        return;
+      }
+      // The loader revoked this cell's URL (LRU eviction past the cap on a long
+      // strip, or a reset). Drop it — painting a revoked blob URL leaves a dead
+      // cell — and re-observe so scrolling back re-requests it: `thumbCell`
+      // unobserves after the first intersection, so nothing else would.
+      delete thumbUrls[fid];
+      const cell = thumbCells.get(fid);
+      if (cell) thumbObserver?.observe(cell);
+    },
     onMeta: (meta) => (currentMeta = meta),
   });
+  // Teardown-only (no reactive reads): the loader's cached previews are object
+  // URLs, so closing the receipt has to revoke them or they outlive the modal.
+  $effect(() => () => loader.dispose());
   // Cited-audio hydration: shared profiles + the span's ordered TurnView[].
   const audioLoader = new ReceiptAudioLoader({
     onProfiles: (p) => (profiles = p),
@@ -124,6 +138,9 @@
   let scrubbing = false;
   let wasPlaying = false; // audio play state captured at scrub start; resume on release iff true
   let thumbObserver: IntersectionObserver | null = null;
+  // frameId → cell node, so an evicted thumbnail can be re-observed (and thus
+  // re-requested) instead of staying blank for the rest of the receipt.
+  const thumbCells = new Map<number, HTMLElement>();
 
   // ── Derived view model ───────────────────────────────────────────────
   const catColorVar = $derived(activity.category ? CATEGORY_COLOR[activity.category] : UNCATEGORIZED_COLOR);
@@ -146,7 +163,11 @@
     const id = currentFrameId;
     return id == null ? null : loader.peekPreview(id);
   });
-  const currentUrl = $derived(currentPreview ? framePreviewAssetUrl(currentPreview.filePath) : null);
+  const currentUrl = $derived.by<string | null>(() => {
+    cacheBump; // recompute when a preview lands
+    const id = currentFrameId;
+    return id == null ? null : loader.peekPreviewUrl(id);
+  });
 
   const metaApp = $derived(currentMeta?.appName ?? null);
   const metaTitle = $derived(currentMeta?.windowTitle ?? null);
@@ -257,6 +278,7 @@
   // <button> per frame; virtualize the strip if that ever gets janky.
   function thumbCell(node: HTMLElement, fid: number) {
     node.dataset.fid = String(fid);
+    thumbCells.set(fid, node);
     thumbObserver ??= new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
@@ -265,7 +287,12 @@
       }
     });
     thumbObserver.observe(node);
-    return { destroy: () => thumbObserver?.unobserve(node) };
+    return {
+      destroy: () => {
+        thumbCells.delete(fid);
+        thumbObserver?.unobserve(node);
+      },
+    };
   }
 
   // ── Playback loop (frame-swap timelapse; silent 2×/8×/16× only) ──────

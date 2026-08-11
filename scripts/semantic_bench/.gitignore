@@ -1,0 +1,12 @@
+# Queries are paraphrases of the author's real capture data — regenerate
+# locally with harvest_corpus.py + sample_query_sources.py (shape in
+# queries.example.json).
+queries.json
+
+# Harvested capture text and everything derived from it. Real user data.
+corpus.jsonl
+corpus_stats.json
+query_sources/
+
+__pycache__/
+.venv/

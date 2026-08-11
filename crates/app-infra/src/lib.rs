@@ -128,7 +128,7 @@ pub use search::{
     SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement,
     SearchStore, SearchableApp,
 };
-pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
+pub use semantic_search::{vectors_index_epoch, AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::SubjectVectorStore;

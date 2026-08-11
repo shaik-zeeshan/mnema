@@ -66,6 +66,11 @@ const SHORT_LABELS: Record<string, string> = {
   "multilingual-e5-small": "E5 Small",
   "bge-m3": "BGE-M3",
   "snowflake-arctic-embed-l-v2.0": "Snowflake",
+  // The ModernBERT English trio. Their display names strip to three or four
+  // words, which is too long for a pill, so they get explicit short labels.
+  "gte-modernbert-base": "GTE",
+  "granite-embedding-english-r2": "Granite R2",
+  "granite-embedding-small-english-r2": "Granite Small",
 };
 
 /** Memory while running, keyed by model id first, then provider. */
@@ -258,11 +263,13 @@ export function diskVerdict(input: {
   budget: DownloadBudget;
   freeBytes: number | null;
   captureIntervalSeconds: number;
+  /** Pixels per captured frame (`draftVideoPixels`). Omitted = anchor 720p. */
+  videoPixels?: number;
 }): DiskVerdict | null {
-  const { budget, freeBytes, captureIntervalSeconds } = input;
+  const { budget, freeBytes, captureIntervalSeconds, videoPixels } = input;
   if (freeBytes === null) return null;
-  const needBytes = storageNeedBytes(budget.bytes, captureIntervalSeconds);
-  const dayBytes = estimateDailyStorageMb(captureIntervalSeconds) * 1e6;
+  const needBytes = storageNeedBytes(budget.bytes, captureIntervalSeconds, videoPixels);
+  const dayBytes = estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6;
   const roomForDownloadsBytes = Math.max(
     0,
     freeBytes - RESERVE_FLOOR_BYTES - dayBytes,
@@ -275,6 +282,7 @@ export function diskVerdict(input: {
   const withoutSemantic = storageNeedBytes(
     budget.bytes - budget.semanticBytes,
     captureIntervalSeconds,
+    videoPixels,
   );
   const clears = budget.semanticBytes > 0 && freeBytes >= withoutSemantic;
   const tail =

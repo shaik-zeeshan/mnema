@@ -24,6 +24,7 @@ import {
 } from "./model-budget";
 import { NOMIC_BYTES, SPEAKRS_BYTES, WHISPER_BASE_BYTES } from "./resolve-setup";
 import { RESERVE_FLOOR_BYTES, storageNeedBytes } from "./gates";
+import { EMBED_DIMS_BY_MODEL } from "./feature-cost";
 
 // ── The manifests, re-derived ──────────────────────────────────────────────
 
@@ -356,6 +357,84 @@ describe("slice 10 — the download budget", () => {
   test("nothing selected reads 'Nothing to download'", () => {
     expect(totalLabel(0, false)).toBe("Nothing to download");
   });
+
+  test("every semantic model dimension matches the Rust catalog", () => {
+    // `EMBED_DIMS_BY_MODEL` is hand-mirrored from
+    // `crates/semantic-search/src/models.rs`, and it decides the disk figure
+    // onboarding shows for Semantic Search. Re-derive it from the Rust rather than
+    // trusting the copy — the same drift guard this file already applies to sizes.
+    //
+    // Both directions matter: a WRONG width misprices a tier, and a MISSING entry
+    // silently falls back to 768, which is exactly how the 384-dim tier came to be
+    // quoted at double its real cost.
+    // Scoped to `fn catalog()` — `models.rs` also names model ids inside its own
+    // test module, and those are not shipped descriptors.
+    const catalogStart = SEMANTIC_RS.indexOf("fn catalog()");
+    if (catalogStart < 0) throw new Error("no fn catalog() in the manifest");
+    const catalogEnd = SEMANTIC_RS.indexOf("\n}", catalogStart);
+    const catalogBody = SEMANTIC_RS.slice(catalogStart, catalogEnd);
+
+    const catalogDims = new Map<string, number>();
+    for (const match of catalogBody.matchAll(/model_id:\s*"([^"]+)"\.to_string\(\)/g)) {
+      const modelId = match[1];
+      const after = catalogBody.slice(match.index ?? 0);
+      const dimension = after.match(/\n\s*dimension:\s*(\d+),/);
+      if (!dimension) throw new Error(`no dimension for ${modelId}`);
+      catalogDims.set(modelId, Number(dimension[1]));
+    }
+    // Every descriptor DECLARED in the body must have been PARSED. `>= 8` was only a
+    // floor, and a descriptor the regex misses is invisible to BOTH directions below
+    // — the forward loop iterates only what was parsed, the reverse loop only what is
+    // in the TS table. A 9th model written `model_id: "…".into()` (or `String::from`,
+    // or `format!`) therefore slipped through silently and got priced at the default
+    // 768, which is exactly the bug this guard exists to prevent.
+    const declared = [...catalogBody.matchAll(/SemanticSearchModelDescriptor\s*\{/g)].length;
+    expect(catalogDims.size).toBe(declared);
+    expect(declared).toBeGreaterThanOrEqual(8);
+
+    for (const [modelId, dimension] of catalogDims) {
+      expect(EMBED_DIMS_BY_MODEL[modelId]).toBe(dimension);
+    }
+    // And no stale entries pointing at models the catalog dropped.
+    for (const modelId of Object.keys(EMBED_DIMS_BY_MODEL)) {
+      expect(catalogDims.has(modelId)).toBe(true);
+    }
+  });
+
+  test("every catalog model gets a pill-sized short label", () => {
+    // `shortLabel` falls back to `stripTierSuffix(displayName)`, and the three
+    // ModernBERT descriptors strip to "GTE ModernBERT Base" / "Granite Embedding
+    // English R2" / "Granite Embedding Small English R2" (34 chars) — the pill
+    // overflow the SHORT_LABELS entries exist to prevent. The hand-written
+    // 5-model fixture above never sees them, so drive `semanticPicks` off the REAL
+    // catalog instead.
+    const start = SEMANTIC_RS.indexOf("fn catalog()");
+    const body = SEMANTIC_RS.slice(start, SEMANTIC_RS.indexOf("\n}", start));
+    const catalog = [...body.matchAll(/model_id:\s*"([^"]+)"\.to_string\(\)/g)].map((match) => {
+      const after = body.slice(match.index ?? 0);
+      const displayName = after.match(/\n\s*display_name:\s*"([^"]+)"/)?.[1] ?? "";
+      return {
+        modelId: match[1],
+        displayName,
+        modelCode: "",
+        dimension: EMBED_DIMS_BY_MODEL[match[1]],
+        description: "",
+        multilingual: /\(Multilingual/.test(displayName),
+        approxDownloadBytes: 1,
+      };
+    });
+
+    const picks = semanticPicks([], catalog);
+    expect(picks).toHaveLength(catalog.length);
+    for (const pick of picks) {
+      // Object form so a failure names WHICH model overflowed.
+      expect({ id: pick.id, short: pick.short, fits: pick.short.length <= 14 }).toEqual({
+        id: pick.id,
+        short: pick.short,
+        fits: true,
+      });
+    }
+  });
 });
 
 // ── The over-disk state ────────────────────────────────────────────────────
@@ -437,6 +516,32 @@ describe("slice 10 — the over-disk state", () => {
     });
     expect(hopeless.escapeSavingBytes).toBeNull();
     expect(hopeless.message).toContain("is still not enough");
+  });
+
+  test("diskVerdict prices the draft resolution", () => {
+    const need720 = storageNeedBytes(budget.bytes, INTERVAL_S, 1280 * 720);
+    const need1080 = storageNeedBytes(budget.bytes, INTERVAL_S, 1920 * 1080);
+    expect(need1080).toBeGreaterThan(need720);
+
+    // Free space strictly between the two needs: the SAME volume fits at 720p
+    // and shortfalls at 1080p — `videoPixels` must reach the verdict.
+    const freeBytes = Math.round((need720 + need1080) / 2);
+    expect(
+      diskVerdict({
+        budget,
+        freeBytes,
+        captureIntervalSeconds: INTERVAL_S,
+        videoPixels: 1280 * 720,
+      }),
+    ).toBeNull();
+    const verdict = diskVerdict({
+      budget,
+      freeBytes,
+      captureIntervalSeconds: INTERVAL_S,
+      videoPixels: 1920 * 1080,
+    });
+    expect(verdict).not.toBeNull();
+    expect(verdict.needBytes).toBe(need1080);
   });
 
   test("with Semantic Search already off, no escape is invented", () => {

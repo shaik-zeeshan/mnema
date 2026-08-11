@@ -20,6 +20,7 @@
     subscribeRuntimeSources,
     toggleSourceSelected,
   } from "$lib/capture-controls.svelte";
+  import { initRenderIdle } from "$lib/render-idle.svelte";
   import { initTheme } from "$lib/theme.svelte";
   import { theme, persistAppearance } from "$lib/theme.svelte";
   import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
@@ -124,6 +125,10 @@
   initAppNotifications();
   initKeyboardBindings();
   initLicenseStatus();
+  // Render-idle gating for periodic DOM updaters + offscreen-window clamp.
+  // Dedicated surface windows (quick recall, onboarding, debug) manage their
+  // own placement, so only the main window self-clamps onto a live monitor.
+  initRenderIdle({ clampWindow: !isDedicatedSurfaceWindow() && !isQuickRecallWindow() });
 
   $effect(() => {
     chromeAppearance = theme.appearance;
@@ -2522,7 +2527,6 @@
   .titlebar__status--running .titlebar__status-dot {
     background: var(--app-status-running-dot);
     box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
   }
   .titlebar__status--paused {
     color: var(--app-status-paused-fg);
@@ -2533,22 +2537,10 @@
     box-shadow: 0 0 0 3px var(--app-status-paused-dot-glow);
   }
 
-  @keyframes titlebar-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .titlebar__status--running .titlebar__status-dot,
-    .titlebar__source-dot {
-      animation: none;
-    }
-  }
-
   /* ── Per-source recording pills ───────────────────────────────
      One pill per requested capture source (screen / microphone /
      system audio), rendered after the Record/Stop button. Each pill
-     pairs the source's icon with a status icon: a pulsing red dot
+     pairs the source's icon with a status icon: a solid red dot
      while live, pause bars while inactivity-paused, or a hollow ring
      while the source is still spinning up. Sources not requested for
      the current session aren't rendered. The pill chrome mirrors
@@ -2583,7 +2575,6 @@
     border-radius: 50%;
     background: var(--app-status-running-dot);
     box-shadow: 0 0 0 2px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
   }
   .titlebar__source-ring {
     width: 7px;

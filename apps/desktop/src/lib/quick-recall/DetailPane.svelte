@@ -9,6 +9,7 @@
      never blanks the pane. -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
+  import { FramePreviewUrlHolder } from "$lib/frame-preview";
   import { formatRelativeTime, formatTimestampCompact } from "$lib/format-time";
   import { quickRecallSearch as search } from "./searchStore.svelte";
   import { quickRecallDetail as detail, type DetailData } from "./detailStore.svelte";
@@ -60,11 +61,43 @@
 
   const terms = $derived(residualTerms(search.residualQuery));
 
+  // The hero paints a blob URL, never the preview's `asset://` URL: WebKit
+  // keeps a decoded IOSurface per asset URL it has ever loaded and only drops
+  // them on an explicit purge, so a session's worth of selections parks a
+  // 1280px surface each for the life of the window. The holder keeps exactly
+  // one alive; `settle()` on load revokes the one it replaced.
+  const heroUrlHolder = new FramePreviewUrlHolder();
+  let heroUrl = $state<string | null>(null);
+  const heroPath = $derived(frameData?.heroPath ?? null);
+
+  $effect(() => {
+    const path = heroPath;
+    if (path === null) {
+      heroUrlHolder.clear();
+      heroUrl = null;
+      return;
+    }
+    void heroUrlHolder
+      .swap(path)
+      .then((url) => {
+        if (url) heroUrl = url;
+      })
+      // A hero that cannot be read falls back to the glyph, same as a preview
+      // the backend reported missing.
+      .catch(() => {
+        heroUrlHolder.clear();
+        heroUrl = null;
+      });
+  });
+
+  // Teardown-only (no reactive reads): revoke whatever is still live on unmount.
+  $effect(() => () => heroUrlHolder.clear());
+
   // Fade the hero in once decoded (same pattern as the row thumbnails);
   // reset whenever the source changes so a new hero re-fades.
   let heroLoaded = $state(false);
   $effect(() => {
-    frameData?.heroUrl;
+    heroPath;
     heroLoaded = false;
   });
 
@@ -161,13 +194,16 @@
         <path d="M4 12h6" />
         <path d="M7 10v2" />
       </svg>
-      {#if frameData?.heroUrl}
+      {#if heroUrl}
         <img
           class="qr-detail__hero-img"
           class:qr-detail__hero-img--loaded={heroLoaded}
-          src={frameData.heroUrl}
+          src={heroUrl}
           alt=""
-          onload={() => (heroLoaded = true)}
+          onload={() => {
+            heroUrlHolder.settle();
+            heroLoaded = true;
+          }}
         />
       {/if}
     </div>

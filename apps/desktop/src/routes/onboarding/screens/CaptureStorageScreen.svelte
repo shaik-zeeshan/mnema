@@ -153,6 +153,7 @@
       {probeState}
       onRecheck={() => runProbe(c.draftSaveDirectory)}
       requiredBytes={flow.downloadBytes}
+      videoPixels={flow.videoPixels}
       semanticSearchOn={flow.features.semanticSearch}
       onDisableSemanticSearch={() => flow.toggleFeature("semanticSearch")}
       onError={(message) => (c.errorMessage = message)}

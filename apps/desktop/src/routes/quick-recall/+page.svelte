@@ -7,7 +7,6 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
   import type {
     SemanticSearchModelDownloadProgress,
@@ -143,7 +142,9 @@
     const frameIds = sources
       .filter((source) => source.kind === "frame" && source.frameId != null)
       .map((source) => source.frameId as number)
-      .filter((id) => !search.thumbnailCache.has(id));
+      // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
+      // keeps the LRU ordered by what is still on screen.
+      .filter((id) => !search.thumbnailUrls.touch(id));
 
     const uniqueIds = Array.from(new Set(frameIds));
     if (uniqueIds.length === 0) {
@@ -155,13 +156,13 @@
         request: { frameIds: uniqueIds },
       });
 
-      const next = new Map(search.thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      search.thumbnailCache = next;
+      // Publish per thumbnail, not per batch — see searchStore.loadThumbnails.
+      search.thumbnailCache = await search.thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+        () => (search.thumbnailCache = search.thumbnailUrls.snapshot()),
+      );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

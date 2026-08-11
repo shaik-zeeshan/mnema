@@ -26,3 +26,5 @@ pi-session-*.html
 
 # /design-sync generated upload bundle
 ds-bundle/
+
+.firecrawl

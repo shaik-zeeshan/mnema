@@ -10,7 +10,7 @@
 // (ResultsList / FilterPicker / SyntaxHelp) render off this singleton.
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
-import { framePreviewAssetUrl } from "$lib/frame-preview";
+import { FramePreviewUrlMap } from "$lib/frame-preview";
 import { openCapturedUrl } from "$lib/open-captured-url";
 import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
 import { humanizeError } from "$lib/format-error";
@@ -64,6 +64,10 @@ export class SearchStore {
   // The query string that the currently-displayed results belong to.
   resultsQuery = $state("");
   thumbnailCache = $state(new Map<number, string>());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  readonly thumbnailUrls = new FramePreviewUrlMap();
 
   // Parsed search scope (advanced search syntax): `search_capture` runs the
   // backend operator parser on EVERY raw query and returns three fields we
@@ -264,9 +268,13 @@ export class SearchStore {
     frameResults: FrameSearchResultDto[],
     generation: number,
   ): Promise<void> {
+    // `touch`, not `thumbnailCache.has`: the held ones are skipped either way,
+    // but touching them marks them most-recently-used, so the LRU evicts by what
+    // is off screen instead of by first mint (a frame that matches every search
+    // is the OLDEST, and its revoked URL would blank its own card).
     const frameIds = frameResults
       .map((result) => result.thumbnailFrameId)
-      .filter((id) => !this.thumbnailCache.has(id));
+      .filter((id) => !this.thumbnailUrls.touch(id));
 
     const uniqueIds = Array.from(new Set(frameIds));
     if (uniqueIds.length === 0) {
@@ -282,13 +290,22 @@ export class SearchStore {
         return;
       }
 
-      const next = new Map(this.thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      this.thumbnailCache = next;
+      // Publish per thumbnail, not per batch: 24 reads through the merge's 6-worker
+      // pool is four sequential asset round trips, and waiting for the last of them
+      // leaves every card on its glyph for the whole batch.
+      const merged = await this.thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+        () => {
+          if (generation !== this.searchGeneration) return;
+          this.thumbnailCache = this.thumbnailUrls.snapshot();
+        },
+      );
+      // Re-check after the await: a search that superseded this one mid-merge
+      // owns the displayed cache now — same guard as the incremental publish.
+      if (generation !== this.searchGeneration) return;
+      this.thumbnailCache = merged;
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

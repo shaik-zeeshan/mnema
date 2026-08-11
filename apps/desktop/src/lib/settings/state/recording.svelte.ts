@@ -162,7 +162,7 @@ export class RecordingStore {
 
   // Resolution drafts
   draftResolutionMode = $state<ResolutionMode>("original");
-  draftResolutionPreset = $state<ResolutionPreset>("1080p");
+  draftResolutionPreset = $state<ResolutionPreset>("720p");
   draftCustomWidth = $state<number | null>(null);
   draftCustomHeight = $state<number | null>(null);
   customWidthRaw = $state("");
@@ -315,7 +315,7 @@ export class RecordingStore {
       this.customHeightRaw = String(s.screenResolution.height);
     } else if (s.screenResolution.preset === "original") {
       this.draftResolutionMode = "original";
-      this.draftResolutionPreset = "1080p";
+      this.draftResolutionPreset = "720p";
       this.draftCustomWidth = null;
       this.draftCustomHeight = null;
       this.customWidthRaw = "";

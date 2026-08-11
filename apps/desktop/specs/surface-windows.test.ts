@@ -21,6 +21,9 @@ mock.module("@tauri-apps/api/core", () => ({
 }));
 mock.module("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ label: "main" }),
+  // Same export-name-set trap as convertFileSrc above: render-idle.test.ts
+  // imports availableMonitors, so the name must exist in the first mock.
+  availableMonitors: async () => [],
 }));
 mock.module("$app/navigation", () => ({
   goto: async () => {},

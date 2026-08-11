@@ -29,6 +29,9 @@ use crate::windows;
 
 const QUICK_APPROVAL_SCOPE: &str = "lastDay";
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
+/// Cap on the client-supplied name shown in the consent prompt, so it can't push
+/// the grant disclosure out of the dialog.
+const CLIENT_LABEL_MAX_CHARS: usize = 64;
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
@@ -437,6 +440,136 @@ fn scope_satisfies_minimum(selected: &str, minimum: &str) -> bool {
     selected == minimum || selected == "allRetained"
 }
 
+/// Plain-language noun phrase for a wire scope, for the consent prompt's prose.
+/// Mirrors the `scopeProse` map in `routes/access/request/+page.svelte` so the
+/// quick dialog and the full sheet describe the same grant the same way.
+fn scope_prose(scope: &str) -> &'static str {
+    if scope == "allRetained" {
+        "your entire retained capture history"
+    } else {
+        "searchable Mnema text from the last day"
+    }
+}
+
+/// The client name is wire input from whoever connected to the socket, and it
+/// lands in the consent body directly ahead of the sentence that discloses what
+/// Allow actually grants. Control characters (paragraph breaks) and unbounded
+/// length would let that name restructure the dialog — fabricating the app's own
+/// copy, or pushing the disclosure out of the dialog entirely. Same normalization
+/// app-infra applies to a stored grant label (`display_client_label`), plus a cap.
+/// Characters that render as nothing, or that reorder the text around them.
+///
+/// `char::is_control()` covers only the C0/C1 blocks (Unicode `Cc`), so bidi
+/// overrides/isolates (U+202E, U+2066..=U+2069) and zero-width characters (U+200B,
+/// U+FEFF, tag characters) sail straight past it — they are `Cf`, and none of them
+/// is `White_Space`. In a consent prompt that is not cosmetic: a label made
+/// entirely of zero-width characters is non-empty by `is_empty()`, so it defeats
+/// the "An unnamed local tool" fallback below and the dialog names no requester at
+/// all; and an override reverses the display order of the rest of the sentence
+/// stating what the client asked for.
+///
+/// The set is Unicode's `Default_Ignorable_Code_Point` — the closed, stable list
+/// of "this is meant to render as nothing", which is exactly the property that
+/// matters here and covers the bidi controls, the zero-widths, the fillers
+/// (U+3164 HANGUL FILLER is the classic invisible-name trick) and the variation
+/// selectors in one go — plus the two blank-glyph outliers it leaves out:
+/// U+2800 BRAILLE PATTERN BLANK and the U+FFF9..=U+FFFB annotation controls.
+/// Enumerating "invisible" any other way is a blocklist that leaks; this one is
+/// a Unicode property with a fixed definition.
+fn is_invisible_or_reordering(ch: char) -> bool {
+    matches!(ch,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{2800}' | '\u{3164}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+fn client_label_prose(label: &str) -> String {
+    let cleaned = label
+        .chars()
+        .filter(|ch| !is_invisible_or_reordering(*ch))
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        return "An unnamed local tool".to_string();
+    }
+    if cleaned.chars().count() <= CLIENT_LABEL_MAX_CHARS {
+        return cleaned;
+    }
+    cleaned
+        .chars()
+        .take(CLIENT_LABEL_MAX_CHARS)
+        .chain(std::iter::once('…'))
+        .collect()
+}
+
+/// Plain-language duration for the consent prompt ("24 hours", "7 days").
+fn duration_prose(seconds: u64) -> String {
+    let hours = seconds.div_ceil(60 * 60).max(1);
+    match hours {
+        1 => "1 hour".to_string(),
+        h if h % 24 == 0 && h > 24 => format!("{} days", h / 24),
+        24 => "24 hours".to_string(),
+        h => format!("{h} hours"),
+    }
+}
+
+/// Body copy for the quick "Allow CLI Access?" dialog.
+///
+/// This must describe the access the client ACTUALLY asked for, and — when Allow
+/// would grant less than that — say so. The prompt previously hardcoded "from the
+/// last day for 24 hours" regardless of the request, so a client asking for the
+/// entire retained history was consented to under a description of a much narrower
+/// grant, and Allow silently minted the narrow one. Neither side learned that the
+/// request had been downgraded: `validate_cli_access_approval` only rejects a quick
+/// approval that fails the request's MINIMUM, and every CLI request sends a
+/// `lastDay` minimum, so the quick path always "succeeded".
+///
+/// The safe default is deliberately kept — Allow still grants only
+/// [`QUICK_APPROVAL_SCOPE`] for [`QUICK_APPROVAL_DURATION_SECONDS`], so an
+/// inattentive click can never hand over full history. What changes is that the
+/// dialog stops misdescribing the request and points at More Options, which opens
+/// the full sheet already seeded with what the client asked for.
+fn default_prompt_body(request: &AuthorizationChannelRequest) -> String {
+    let wants = format!(
+        "{} wants access to {} for {}.",
+        client_label_prose(&request.client.label),
+        scope_prose(&request.scope.preferred),
+        duration_prose(request.duration.preferred_seconds),
+    );
+    let quick_covers_scope = scope_satisfies_minimum(QUICK_APPROVAL_SCOPE, &request.scope.preferred);
+    let quick_covers_duration = QUICK_APPROVAL_DURATION_SECONDS >= request.duration.preferred_seconds;
+    if quick_covers_scope && QUICK_APPROVAL_DURATION_SECONDS == request.duration.preferred_seconds {
+        return wants;
+    }
+    // The fixed grant can also be WIDER than the request (`--duration 1h` still
+    // mints 24 hours), and that direction is the unsafe one to leave unsaid: the
+    // user would consent to the sentence above and get more than it describes.
+    // "only" is the narrowing case; otherwise just state what Allow hands over.
+    let qualifier = if quick_covers_scope && quick_covers_duration {
+        ""
+    } else {
+        " only"
+    };
+    format!(
+        "{wants}\n\nAllow grants{qualifier} {} for {}. Use More Options to review and grant what it asked for.",
+        scope_prose(QUICK_APPROVAL_SCOPE),
+        duration_prose(QUICK_APPROVAL_DURATION_SECONDS),
+    )
+}
+
 enum AuthorizationDecision {
     Approved,
     MoreOptions,
@@ -450,10 +583,7 @@ async fn prompt_for_default_access(
     let app = app.clone();
     let request = request.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let body = format!(
-            "{} wants access to searchable Mnema text from the last day for 24 hours.",
-            request.client.label
-        );
+        let body = default_prompt_body(&request);
         match app
             .dialog()
             .message(body)
@@ -677,6 +807,217 @@ mod tests {
     #[test]
     fn last_day_does_not_satisfy_all_retained_minimum() {
         assert!(!scope_satisfies_minimum("lastDay", "allRetained"));
+    }
+
+    /// Build a request whose MINIMUM stays `lastDay`/1h — as every real CLI request
+    /// does — while the PREFERRED side asks for more. This is the shape the quick
+    /// prompt used to misdescribe.
+    fn request_preferring(preferred_scope: &str, preferred_seconds: u64) -> AuthorizationChannelRequest {
+        let mut request = test_authorization_request("lastDay", 60 * 60);
+        request.scope.preferred = preferred_scope.to_string();
+        request.duration.preferred_seconds = preferred_seconds;
+        request
+    }
+
+    #[test]
+    fn quick_prompt_names_the_scope_the_client_actually_asked_for() {
+        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
+
+        assert!(
+            body.contains("your entire retained capture history"),
+            "the prompt must not describe a broad request as a narrow one: {body}"
+        );
+    }
+
+    #[test]
+    fn quick_prompt_discloses_that_allow_grants_less_than_requested() {
+        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
+
+        assert!(
+            body.contains("Allow grants only"),
+            "a downgrade must be disclosed, not silent: {body}"
+        );
+        assert!(body.contains("More Options"), "and must point at the way to grant it: {body}");
+    }
+
+    #[test]
+    fn quick_prompt_discloses_a_duration_downgrade_too() {
+        let body = default_prompt_body(&request_preferring("lastDay", 7 * 24 * 60 * 60));
+
+        assert!(body.contains("7 days"), "names the requested duration: {body}");
+        assert!(body.contains("Allow grants only"), "discloses the downgrade: {body}");
+    }
+
+    #[test]
+    fn quick_prompt_stays_a_single_sentence_when_allow_grants_exactly_what_was_asked() {
+        let body = default_prompt_body(&request_preferring("lastDay", 24 * 60 * 60));
+
+        assert!(
+            !body.contains("Allow grants only"),
+            "no downgrade to disclose, so no second paragraph: {body}"
+        );
+    }
+
+    /// A name made only of invisible characters is not a name. `is_control()` does
+    /// not cover them, so an all-zero-width label survives the empty check and the
+    /// consent dialog renders with NO visible requester at all — defeating the
+    /// fallback that exists to guarantee one.
+    #[test]
+    fn quick_prompt_falls_back_when_a_client_name_renders_as_nothing() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{2060}".to_string();
+
+        let body = default_prompt_body(&request);
+
+        assert!(
+            body.starts_with("An unnamed local tool wants access to"),
+            "an invisible name must fall back to the unnamed wording: {body:?}"
+        );
+    }
+
+    /// Bidi overrides and isolates reorder every character after them when the
+    /// dialog renders, so a client name must not be able to smuggle one into the
+    /// sentence that states what it is asking for.
+    #[test]
+    fn quick_prompt_strips_bidi_reordering_from_a_client_name() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = "Mnema CLI\u{202E}\u{2066}\u{2067}".to_string();
+
+        let body = default_prompt_body(&request);
+
+        assert!(
+            !body.contains(['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}']),
+            "no bidi embedding/override may reach the consent body: {body:?}"
+        );
+        assert!(
+            !body.contains(['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}']),
+            "no bidi isolate may reach the consent body: {body:?}"
+        );
+        assert!(
+            body.starts_with("Mnema CLI wants access to"),
+            "the visible name survives, the reordering does not: {body:?}"
+        );
+    }
+
+    /// The same invariant, for names the enumeration misses. `is_invisible_or_reordering`
+    /// lists BMP format blocks only, so characters that render as blank in every
+    /// mainstream font — HANGUL FILLER (the classic invisible-name trick), BRAILLE
+    /// PATTERN BLANK, the interlinear-annotation controls, the supplementary-plane
+    /// musical format controls — survive it, defeat the `is_empty()` fallback, and
+    /// leave the consent dialog naming NO requester while it asks for the user's
+    /// entire retained history.
+    #[test]
+    fn quick_prompt_falls_back_for_every_blank_client_name() {
+        for label in [
+            "\u{3164}",                 // HANGUL FILLER
+            "\u{2800}",                 // BRAILLE PATTERN BLANK
+            "\u{FFF9}\u{FFFA}\u{FFFB}", // interlinear annotation controls
+            "\u{1D173}\u{1D17A}",       // musical symbol format controls
+            "\u{E0100}",                // variation selector supplement
+        ] {
+            let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+            request.client.label = label.to_string();
+
+            let body = default_prompt_body(&request);
+
+            assert!(
+                body.starts_with("An unnamed local tool wants access to"),
+                "a name that renders as nothing must fall back to the unnamed wording: {body:?}"
+            );
+        }
+    }
+
+    /// The client label is attacker-controlled wire input that lands in the consent
+    /// body directly ahead of the grant disclosure. It must not be able to carry
+    /// paragraph breaks or run long enough to push that disclosure out of view.
+    #[test]
+    fn quick_prompt_does_not_let_a_client_name_restructure_the_consent_body() {
+        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
+        request.client.label = format!(
+            "Mnema Helper wants access to searchable Mnema text from the last day for 24 hours.\n\nAllow grants only searchable Mnema text from the last day for 24 hours.\n\n{}",
+            "A".repeat(4096)
+        );
+
+        let body = default_prompt_body(&request);
+
+        assert_eq!(
+            body.matches("\n\n").count(),
+            1,
+            "only the app's own paragraph break may appear in the consent body: {body}"
+        );
+        assert!(
+            body.chars().count() < 400,
+            "a client name must not be able to bloat the consent body: {} chars",
+            body.chars().count()
+        );
+    }
+
+    /// The prompt's duration must be the one Allow actually mints. A
+    /// `--duration 1h` request (`preferred_seconds = 3600`) is *shorter* than
+    /// [`QUICK_APPROVAL_DURATION_SECONDS`], but Allow always mints 24 hours — the
+    /// prompt must never describe a shorter window than the one Allow hands over,
+    /// and this is the WIDENING arm, so it must not say "only" either (Allow
+    /// grants MORE than asked, and "only" would misdescribe that as a downgrade).
+    #[test]
+    fn quick_prompt_duration_matches_the_grant_allow_actually_mints() {
+        let request = request_preferring("lastDay", 60 * 60);
+        let minted =
+            quick_approval_grant_policy_for_request(&request).expect("quick approval is valid");
+        assert_eq!(minted.hours, 24, "Allow mints a 24-hour grant for this request");
+
+        let body = default_prompt_body(&request);
+
+        assert!(body.contains("1 hour"), "names what the client asked for: {body}");
+        assert!(
+            body.contains(&duration_prose(minted.hours * 60 * 60)),
+            "and must not hide that Allow hands over {} hours: {body}",
+            minted.hours
+        );
+        assert!(
+            !body.contains("Allow grants only"),
+            "Allow grants MORE than asked here — 'only' would be false: {body}"
+        );
+        assert!(
+            body.contains("Allow grants searchable Mnema text from the last day for 24 hours"),
+            "the widening arm still states exactly what Allow hands over: {body}"
+        );
+    }
+
+    /// The truncation boundary itself: a label of exactly
+    /// [`CLIENT_LABEL_MAX_CHARS`] chars survives verbatim in the consent body, and
+    /// one char more is cut to exactly that many chars plus a single '…'.
+    #[test]
+    fn a_client_label_is_capped_at_the_disclosure_boundary() {
+        let at_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS);
+        assert_eq!(client_label_prose(&at_cap), at_cap);
+        let mut request = request_preferring("lastDay", 24 * 60 * 60);
+        request.client.label = at_cap.clone();
+        assert!(
+            default_prompt_body(&request).contains(&at_cap),
+            "a label at the cap survives verbatim in the body"
+        );
+
+        let over_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS + 1);
+        let prose = client_label_prose(&over_cap);
+        assert_eq!(
+            prose,
+            format!("{}…", "A".repeat(CLIENT_LABEL_MAX_CHARS)),
+            "one char over the cap truncates to the cap plus a single ellipsis"
+        );
+        assert_eq!(prose.chars().count(), CLIENT_LABEL_MAX_CHARS + 1);
+    }
+
+    /// Every duration band the wire can send renders as prose. Sub-hour (and
+    /// zero) inputs round UP to "1 hour" — the prose must never understate how
+    /// long a grant lasts — and partial hours round up for the same reason;
+    /// exact multi-day multiples collapse to days.
+    #[test]
+    fn duration_prose_names_every_band_the_wire_can_send() {
+        assert_eq!(duration_prose(0), "1 hour");
+        assert_eq!(duration_prose(3 * 3600), "3 hours");
+        // 90 minutes is deliberately "2 hours", not "1 hour": round-up.
+        assert_eq!(duration_prose(90 * 60), "2 hours");
+        assert_eq!(duration_prose(48 * 3600), "2 days");
     }
 
     #[test]

@@ -29,7 +29,7 @@
 //! cooldown is kept (still useful to pace candle-CPU on non-macOS).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use capture_types::{default_semantic_search_settings, SemanticSearchSettings};
@@ -78,6 +78,31 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(20);
 /// process that exits when drained returns *everything*, including the base
 /// runtime — this only frees the model).
 const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
+
+/// Maximum time a loaded embedder stays warm across *consecutive working* passes
+/// before it is recycled (dropped and reloaded on the next batch).
+///
+/// [`IDLE_PASSES_BEFORE_EMBEDDER_DROP`] only fires when the backlog is *drained*,
+/// so a long historical backfill keeps `did_work = true` for hours and never
+/// releases. That matters because of what the embedder holds on macOS: candle
+/// 0.10.2's Metal backend pools every buffer it allocates in
+/// `MetalDevice::{buffers, private_buffers}`, and its only reclaim path
+/// (`drop_unused_buffers`) sweeps `buffers` alone — `private_buffers`, which the
+/// StorageModePrivate intermediate allocator (`new_buffer`) fills on every forward
+/// pass, is never swept. So GPU memory only comes back when the whole `Device`
+/// drops. Measured on a 10h-old session: 574 MB of unmapped-graphics footprint
+/// returned the instant this worker released its embedder; the process peaked at
+/// 2.0 GB with embedders warm. Upstream: huggingface/candle#3464, #2271
+/// (PR #3755 open, unmerged).
+///
+/// Recycling on a wall-clock bound turns that unbounded growth into a sawtooth
+/// with a known ceiling, for the price of one model reload per interval.
+///
+/// ponytail: a wall-clock bound, not a per-batch counter — pool growth tracks
+/// forward passes, and batch wall time already varies with the CPU-pacing
+/// cooldown. Upgrade path: if candle ever sweeps `private_buffers`, delete this
+/// and the recycle check that reads it.
+pub(crate) const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(300);
 
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
 /// blocks capture, so a failure just retries later rather than surfacing.
@@ -152,13 +177,51 @@ const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 /// is not importable wholesale, so the same clamp-scaled-by-work-time pattern is
 /// replicated here at backfill granularity. See the report for the exact
 /// vs-OCR delta.
-const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 1.0;
+/// The multiplier is what actually sets the steady-state duty cycle:
+/// `duty = 1 / (1 + multiplier)`. At 3.0 the worker embeds ~25% of the time.
+///
+/// It was 1.0 (a 50% target) — but measurement showed the multiplier was inert in
+/// practice, because a real batch of 16 anchors takes ~3.5s while
+/// [`BACKFILL_BATCH_COOLDOWN_MAX`] was 2s, so the CAP bound on every single pass
+/// and the multiplier never applied. Two consequences, both measured on an M4 Air
+/// against real capture text: the GPU sat at 65% duty / 7.4W sustained, and — worse
+/// — duty *rose* when the GPU slowed (to 86% under Low Power Mode), because a
+/// longer batch still got the same fixed 2s rest. A throttled machine was made to
+/// press HARDER.
+///
+/// With the cap raised out of the way (below) the multiplier governs again and the
+/// duty cycle is **self-correcting**: a slower forward earns proportionally more
+/// rest, so thermal throttling backs the worker off instead of amplifying it. This
+/// is why the worker deliberately does NOT read `NSProcessInfo.thermalState` or the
+/// power source — proportional pacing already responds to a throttled GPU, and a
+/// thermal-state reader would duplicate it.
+const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 3.0;
 /// Lower bound of the inter-batch cooldown — a real yield even for a trivially
 /// fast batch (the old 0ms gave none), so the sweep never busy-loops the cores.
 const BACKFILL_BATCH_COOLDOWN_MIN: Duration = Duration::from_millis(150);
-/// Upper bound of the inter-batch cooldown, so a slow batch still drains the
-/// backlog in reasonable time rather than stalling.
-const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+/// Safety bound only — NOT the governor. It exists so a pathologically slow batch
+/// cannot park the sweep for minutes; it must stay well above
+/// `multiplier * typical_batch` (~10.5s today) or it silently becomes the governor
+/// again and reintroduces the throttle-amplifying bug described above.
+const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
+
+/// Serialises the two BACKGROUND embed workers — this one and
+/// `user_context::subject_vector_worker` — onto one GPU slot, so they never run
+/// forwards concurrently.
+///
+/// Each worker holds its own embedder and paces itself independently, with nothing
+/// coordinating them. Measured on an M4 Air against real capture text, two
+/// concurrent workers cost **+38% GPU power (7.4W → 10.2W) and +9°C** for only +45%
+/// throughput — and 10.2W is 86% of the device's saturation ceiling, i.e. two
+/// background embedders effectively saturate the GPU. Serialising them removes that
+/// worst case; the pacing cooldowns then compose instead of stacking.
+///
+/// The QUERY path (`semantic_search_query.rs`) deliberately does NOT take this
+/// permit: it is user-facing and latency-sensitive, and making a search wait behind
+/// a backfill batch (~3.5s) to save background watts is the wrong trade. Only the
+/// two background sweeps share the slot.
+pub(crate) static BACKGROUND_EMBED_SLOT: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
 
 /// The outcome of one sweep pass, deciding the loop's next sleep.
 enum SweepPass {
@@ -182,8 +245,11 @@ enum SweepPass {
 /// deliberately non-persistent — see [`MAX_CONSECUTIVE_ANCHOR_FAILURES`].
 struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until
-    /// the first pass that needs it with an installed model.
-    embedder: Option<LoadedEmbedder>,
+    /// the first pass that needs it with an installed model. An `Arc` because the
+    /// instance is shared with the other holders via [`SHARED_EMBEDDER`]; holding
+    /// it here is what keeps the weights resident, and clearing it is this
+    /// worker's half of freeing them.
+    embedder: Option<Arc<LoadedEmbedder>>,
     /// Log the "no model installed" no-op only once per inert stretch.
     logged_no_model: bool,
     /// Per-anchor **consecutive** deterministic-embed-failure counts (L3). Keyed
@@ -546,11 +612,52 @@ pub(crate) struct LoadedEmbedder {
     pub(crate) provider: String,
     pub(crate) model_id: String,
     pub(crate) embedder: SemanticSearchEmbedder,
+    /// When this instance was built — the clock
+    /// [`MAX_EMBEDDER_WARM_LIFETIME`] is measured against. Set once at load and
+    /// shared by every holder, so all of them recycle the same instance within one
+    /// pass of each other rather than each running its own staggered timer.
+    pub(crate) loaded_at: Instant,
 }
+
+impl LoadedEmbedder {
+    /// Whether this instance has been warm past [`MAX_EMBEDDER_WARM_LIFETIME`] and
+    /// should be dropped so candle's Metal buffer pool goes back to the OS.
+    pub(crate) fn is_stale(&self) -> bool {
+        Self::stale_after(self.loaded_at.elapsed())
+    }
+
+    /// [`is_stale`](Self::is_stale) over a bare warm duration, so the cap's boundary
+    /// is testable without a real model on disk.
+    ///
+    /// Takes the elapsed `Duration`, NOT the load `Instant`: a test that wound a real
+    /// `Instant` back with `checked_sub(MAX_EMBEDDER_WARM_LIFETIME)` gets `None` on a
+    /// host whose uptime is under the cap (`Instant` is boot-relative on macOS), so
+    /// the `.expect(...)` panicked on a fresh CI VM for reasons unrelated to the
+    /// product. There is no clock to read here.
+    pub(crate) fn stale_after(warm_for: Duration) -> bool {
+        warm_for >= MAX_EMBEDDER_WARM_LIFETIME
+    }
+}
+
+/// The one process-wide loaded **Semantic Search Model**, held as a [`Weak`] so
+/// the four independent holders — this worker, the **Subject Vector** backfill,
+/// the query path's cache, and the subject-candidate scorer — share a single set
+/// of model weights and, on macOS, a single candle `MetalDevice`.
+///
+/// Before this each holder called `load_embedder` for itself, so up to four
+/// devices could be resident at once, each with its own never-reclaimed Metal
+/// buffer pool (see [`MAX_EMBEDDER_WARM_LIFETIME`] for why the pool only frees on
+/// device drop). Measured peak with several warm: 2.0 GB of process footprint.
+///
+/// ponytail: `Weak`, not `Arc`, and no refcount of our own — the cache must not
+/// be the thing that keeps the model alive, or every holder's idle-drop would
+/// stop freeing anything. The last holder to drop its `Arc` frees the weights and
+/// the GPU pool; `upgrade()` returning `None` is exactly "nobody is using it".
+static SHARED_EMBEDDER: Mutex<Weak<LoadedEmbedder>> = Mutex::new(Weak::new());
 
 /// Distinguishes a `load_embedder` failure from a successful-load-but-embed
 /// failure when both now run inside the one `spawn_blocking` (M1). The closure
-/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>), LoadError>`: an
+/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>, load time, forward time), LoadError>`: an
 /// `Err(LoadError)` means the model never loaded (→ CT3 load-failure accounting:
 /// `consecutive_load_failures`, the corrupt-model signal), while an `Ok` with
 /// per-anchor `Err`s inside the `Vec` means the model loaded fine and individual
@@ -725,7 +832,13 @@ async fn run_sweep_pass(
     let batch_ids: Vec<i64> = batch.iter().map(|anchor| anchor.anchor_id).collect();
     let per_anchor_isolation = state.is_stuck_on(&batch_ids);
 
-    let embed_started_at = Instant::now();
+    // Take the shared background GPU slot before the forward, so this sweep and the
+    // subject-vector sweep never embed concurrently (see [`BACKGROUND_EMBED_SLOT`]).
+    // Held until this pass returns; the wait is bounded by one sibling batch. An
+    // `Err` here would mean the semaphore was closed, which never happens for a
+    // `static` — proceed unpaced rather than dropping the batch.
+    let _embed_slot = BACKGROUND_EMBED_SLOT.acquire().await.ok();
+
     let app_data_dir_for_task = app_data_dir.clone();
     let descriptor_for_task = descriptor.clone();
     // CT2: race the blocking load+embed against the shutdown watch so a quit
@@ -742,6 +855,7 @@ async fn run_sweep_pass(
         // (consecutive-load-failure counter, corrupt-model signal) — kept DISTINCT
         // from a successful-load-but-per-anchor-embed-failure, which is carried in
         // the returned per-anchor `Vec` for the existing L3 handling.
+        let load_started_at = Instant::now();
         let loaded = match cached {
             Some(loaded) => loaded,
             None => match load_embedder(&app_data_dir_for_task, &descriptor_for_task) {
@@ -749,11 +863,23 @@ async fn run_sweep_pass(
                 Err(error) => return Err(LoadError { error }),
             },
         };
+        let load_elapsed = load_started_at.elapsed();
         // candle on Metal frees the P-cores by construction, so the retired
         // per-thread background-QoS downclock is gone (ADR 0037); the embed runs at
         // the blocking thread's default QoS. The embedder is `&self`-immutable for
         // embedding, so no `mut` is needed — it is still owned by (and returned out
         // of) this task so it survives across passes.
+        //
+        // The pacing clock starts HERE, after any (re)load: the cooldown governs the
+        // duty cycle of the FORWARD, so it must not see the model load. One pass in
+        // every `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (hundreds of MB off
+        // disk into the device) inside this same task, and the per-anchor DB re-checks
+        // + the batch write transaction run after it in the caller — timing the whole
+        // region would rest 3x all of that, and at
+        // `BACKFILL_BATCH_COOLDOWN_MAX = 30s` a recycle pass clamps at the ceiling,
+        // which is exactly the "cap is the governor" regime this band was retuned to
+        // leave.
+        let forward_started_at = Instant::now();
         let out: Vec<(i64, std::result::Result<Vec<f32>, String>)> = if per_anchor_isolation {
             // F3 per-anchor isolation: the batched embed has kept misclassifying this
             // exact window transient over repeated passes (the >=2-anchor poison
@@ -794,7 +920,7 @@ async fn run_sweep_pass(
                 .map(|(anchor_id, result)| (anchor_id, result.map_err(|error| error.to_string())))
                 .collect()
         };
-        Ok((loaded, out))
+        Ok((loaded, out, load_elapsed, forward_started_at.elapsed()))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
@@ -837,12 +963,12 @@ async fn run_sweep_pass(
     //   - `Err(LoadError)` => CT3 load-failure accounting (distinct failure mode).
     //   - `Ok((loaded, embedded))` => the model loaded OK; per-anchor results carry
     //     any embed failures for the existing L3 handling below.
-    let (loaded, embedded) = match load_embed {
-        Ok(pair) => {
+    let (loaded, embedded, load_elapsed, forward_elapsed) = match load_embed {
+        Ok(result) => {
             // A successful load (or a reuse of the cached embedder, which also proves
             // the weights are fine) resets CT3.
             state.clear_load_failures();
-            pair
+            result
         }
         Err(LoadError { error }) => {
             // CT3: availability is presence+marker only — it never validates that the
@@ -873,8 +999,26 @@ async fn run_sweep_pass(
             return SweepPass::Error;
         }
     };
-    // Restore the embedder for the next pass.
-    state.embedder = Some(loaded);
+    // Everything from here to the pacing return is the DB tail (per-anchor
+    // re-checks + the batch write transaction) — measured only so `paced_input`
+    // can prove it is excluded from the cooldown input.
+    let db_tail_started_at = Instant::now();
+    // Restore the embedder for the next pass — unless it has been warm past
+    // [`MAX_EMBEDDER_WARM_LIFETIME`], in which case drop it here so a long drain
+    // (which never goes idle, so `maybe_release_embedder_on_idle_decay` never
+    // fires) still returns candle's Metal buffer pool to the OS. The next batch
+    // pays one reload. Dropping this `Arc` only frees when the other holders have
+    // dropped theirs too — they check the same `loaded_at`, so they recycle within
+    // a pass of each other.
+    if loaded.is_stale() {
+        crate::native_capture::debug_log::log_info(format!(
+            "semantic index backfill recycled the embedder after {}s warm \
+             (bounds candle's Metal buffer pool; reloads on next batch)",
+            loaded.loaded_at.elapsed().as_secs()
+        ));
+    } else {
+        state.embedder = Some(loaded);
+    }
 
     // Whole-batch vs per-anchor failure (data-integrity gate): `embed_texts` now
     // isolates a true poison input to its own text (a failing chunk fails only its
@@ -928,15 +1072,16 @@ async fn run_sweep_pass(
                 // row-conditioned store is the real correctness boundary (M1); this
                 // re-check is an early-out optimization.
                 match infra.semantic_search().anchor_still_missing_vector(anchor_id).await {
-                    // `store_vector_if_dimension_matches` is the worker half of the
-                    // single dimension authority (the live vec0 column width). If the
-                    // embedder reloaded at a new dimension but the table has not yet
+                    // `store_vectors_if_model_matches` is the worker half of the index
+                    // authority (the model id stamped on the live vec0 table). If the
+                    // embedder reloaded under a new model but the table has not yet
                     // been rebuilt — the non-atomic model-switch window, or
                     // permanently after a failed rebuild — the store is **skipped, not
                     // errored**, so the sweep idles instead of error-looping a doomed
-                    // batch every 30s forever. Startup reconciliation rebuilds the
-                    // stuck table so the dimensions agree again and the skipped
-                    // anchors re-embed.
+                    // batch every 30s forever, and never writes a vector from one
+                    // model's embedding space into another's index. Startup
+                    // reconciliation rebuilds the stuck table so the stamp agrees
+                    // again and the skipped anchors re-embed.
                     Ok(true) => {
                         // Defer the write: collect this anchor's vector and store the
                         // whole batch in one transaction after the loop (see
@@ -1011,7 +1156,7 @@ async fn run_sweep_pass(
     if !to_store.is_empty() {
         match infra
             .semantic_search()
-            .store_vectors_if_dimension_matches(&to_store)
+            .store_vectors_if_model_matches(&descriptor.model_id, &to_store)
             .await
         {
             Ok(outcomes) => {
@@ -1061,10 +1206,16 @@ async fn run_sweep_pass(
             "semantic index backfill embedded {stored} anchor(s) (batch={}, embed_failures={embed_failures}, transient_errors={transient_errors}, backlog={backlog})",
             batch.len()
         ));
-        // CPU pacing: scale the inter-batch cooldown off this batch's wall time and
-        // clamp it, then loop. This replaces the old 0ms yield so a large backfill
-        // paces itself instead of sustaining a back-to-back multi-core burn.
-        return SweepPass::DidWork(backfill_batch_cooldown(embed_started_at.elapsed()));
+        // CPU pacing: scale the inter-batch cooldown off this batch's FORWARD time
+        // (measured inside the blocking task, so a `MAX_EMBEDDER_WARM_LIFETIME`
+        // reload and the DB tail above are excluded) and clamp it, then loop. This
+        // replaces the old 0ms yield so a large backfill paces itself instead of
+        // sustaining a back-to-back multi-core burn.
+        return SweepPass::DidWork(backfill_batch_cooldown(paced_input(
+            load_elapsed,
+            forward_elapsed,
+            db_tail_started_at.elapsed(),
+        )));
     }
     if dimension_skips > 0 {
         // Every stored anchor was skipped on a dimension mismatch (a switch in
@@ -1152,8 +1303,9 @@ fn is_isolated_embed_failure(embed_failure_count: usize) -> bool {
     embed_failure_count == 1
 }
 
-/// CPU-pacing cooldown between backfill batches: the just-finished batch's wall
-/// time scaled by [`BACKFILL_BATCH_COOLDOWN_MULTIPLIER`] and clamped to
+/// CPU-pacing cooldown between backfill batches: the just-finished batch's
+/// **forward** wall time — not the whole pass — scaled by
+/// [`BACKFILL_BATCH_COOLDOWN_MULTIPLIER`] and clamped to
 /// `[BACKFILL_BATCH_COOLDOWN_MIN, BACKFILL_BATCH_COOLDOWN_MAX]`. This mirrors the
 /// shape of OCR's Execution Budget governor (`ocr_budget::cooldown_duration`),
 /// which clamps `work_ms * multiplier`, so the heavier a batch was the longer the
@@ -1162,6 +1314,17 @@ fn is_isolated_embed_failure(embed_failure_count: usize) -> bool {
 fn backfill_batch_cooldown(batch_duration: Duration) -> Duration {
     let scaled = batch_duration.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
     scaled.clamp(BACKFILL_BATCH_COOLDOWN_MIN, BACKFILL_BATCH_COOLDOWN_MAX)
+}
+
+/// The pacing input for [`backfill_batch_cooldown`] is the FORWARD alone — never
+/// the same task's model (re)load and never the caller's DB tail (per-anchor
+/// re-checks + the batch write). Neither is the GPU burn the duty cycle governs,
+/// and a reload alone eats the entire pacing band (`MAX / multiplier` = 10s), so
+/// folding either in would clamp that pass at the ceiling — the "cap is the
+/// governor" regime the band was retuned to leave. This seam exists so a test
+/// fails if either duration creeps back into the cooldown input.
+fn paced_input(_load: Duration, forward: Duration, _db_tail: Duration) -> Duration {
+    forward
 }
 
 /// Surface a "model appears corrupt — reinstall" signal on the model-status
@@ -1256,7 +1419,7 @@ pub(crate) fn selected_model_available(
 /// Whether the currently-loaded embedder is for `descriptor`'s exact
 /// provider/model id (so a Settings model switch reloads it).
 fn embedder_matches(
-    slot: &Option<LoadedEmbedder>,
+    slot: &Option<Arc<LoadedEmbedder>>,
     descriptor: &SemanticSearchModelDescriptor,
 ) -> bool {
     slot.as_ref().is_some_and(|loaded| {
@@ -1315,20 +1478,108 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
 /// `descriptor`. There is no ONNX intra-op thread cap to resolve (ADR 0037):
 /// candle runs the forward on the Metal GPU on macOS / candle-CPU elsewhere, with
 /// no thread-pool spin-wait to clamp.
+///
+/// Returns the [`SHARED_EMBEDDER`] instance when one is already alive for this
+/// exact provider/model id and is not [stale](LoadedEmbedder::is_stale), so a
+/// second BACKGROUND caller (the Subject Vector backfill, the subject candidate
+/// scorer) reuses the loaded weights and the one candle device instead of building
+/// its own. Otherwise it loads a fresh one and publishes it as the shared instance.
+///
+/// **For holders that take [`BACKGROUND_EMBED_SLOT`] only.** Sharing an instance
+/// means sharing its one candle `Device`, and candle 0.10.2's `MetalDevice` funnels
+/// every kernel dispatch through a single `commands: Arc<RwLock<Commands>>` — both
+/// `command_encoder()` and `wait_until_completed()` take the WRITE lock — so two
+/// threads embedding on one instance serialize at the device, not merely at the
+/// GPU. That is free between holders the permit already serializes, and a hard
+/// latency regression for one that does not. The user-facing query path therefore
+/// uses [`load_embedder_private`]; see its docs for the measurement.
+///
+/// Callers must keep holding the returned `Arc` for exactly as long as they want
+/// the model resident — dropping every `Arc` is what frees the weights and, on
+/// macOS, candle's Metal buffer pool.
+///
+/// The load runs under the shared lock on purpose: a concurrent second caller
+/// waits and then reuses the winner's instance rather than racing it into a
+/// duplicate multi-hundred-MB load. Every call site is already on a blocking
+/// thread, so this never parks the tokio reactor.
 pub(crate) fn load_embedder(
     app_data_dir: &std::path::Path,
     descriptor: &SemanticSearchModelDescriptor,
-) -> Result<LoadedEmbedder, String> {
+) -> Result<Arc<LoadedEmbedder>, String> {
+    let mut shared = SHARED_EMBEDDER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(existing) = shared.upgrade() {
+        if shared_embedder_is_reusable(
+            &existing.provider,
+            &existing.model_id,
+            existing.loaded_at.elapsed(),
+            descriptor,
+        ) {
+            return Ok(existing);
+        }
+    }
+
+    let loaded = load_embedder_private(app_data_dir, descriptor)?;
+    *shared = Arc::downgrade(&loaded);
+    Ok(loaded)
+}
+
+/// Whether the [`SHARED_EMBEDDER`] instance can be handed to a background caller
+/// asking for `descriptor`: same provider AND same model id AND not
+/// [stale](LoadedEmbedder::stale_after). Mirrors the query cache's
+/// `cached_embedder_is_reusable` (semantic_search_query.rs) — `warm_for` is the
+/// elapsed `Duration`, not the load `Instant`, for the same testability reason.
+fn shared_embedder_is_reusable(
+    provider: &str,
+    model_id: &str,
+    warm_for: Duration,
+    descriptor: &SemanticSearchModelDescriptor,
+) -> bool {
+    provider == descriptor.provider
+        && model_id == descriptor.model_id
+        && !LoadedEmbedder::stale_after(warm_for)
+}
+
+/// Load a **private** embedder instance — its own weights and, on macOS, its own
+/// candle `Device` — bypassing [`SHARED_EMBEDDER`] entirely.
+///
+/// This is the query path's loader. A search is the one embed caller that
+/// deliberately does not take [`BACKGROUND_EMBED_SLOT`] ("making a search wait
+/// behind a backfill batch is the wrong trade"), so it is also the one caller for
+/// which sharing the background sweep's device turns that exclusion into a
+/// pessimisation: instead of two command queues the GPU can interleave, the query's
+/// kernels queue behind the sweep's on one `Commands` write lock, and its readback
+/// `wait_until_completed()` waits on the sweep's outstanding command buffer too.
+///
+/// Measured on an M4 Air, `nomic-embed-text-v1.5` on Metal, with one thread looping
+/// the worker's 16-anchor batch shape while a second times query embeds:
+///
+/// | query embedder     | p50    | p95    |
+/// |--------------------|--------|--------|
+/// | idle (no backfill) | 31 ms  | 38 ms  |
+/// | own device         | 92 ms  | 233 ms |
+/// | shared with sweep  | 310 ms | 995 ms |
+///
+/// The cost is one extra resident copy of the weights while a search is warm — the
+/// query cache drops it at [`MAX_EMBEDDER_WARM_LIFETIME`], and the two background
+/// workers still share one instance between them, so the four-devices-resident peak
+/// the shared cache was added to fix does not come back.
+pub(crate) fn load_embedder_private(
+    app_data_dir: &std::path::Path,
+    descriptor: &SemanticSearchModelDescriptor,
+) -> Result<Arc<LoadedEmbedder>, String> {
     let models_dir = semantic_search_models_dir(app_data_dir);
     let install_dir = model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id)
         .map_err(|error| error.to_string())?;
     let embedder = SemanticSearchEmbedder::load_from_dir(&install_dir, descriptor)
         .map_err(|error| error.to_string())?;
-    Ok(LoadedEmbedder {
+    Ok(Arc::new(LoadedEmbedder {
         provider: descriptor.provider.clone(),
         model_id: descriptor.model_id.clone(),
         embedder,
-    })
+        loaded_at: Instant::now(),
+    }))
 }
 
 #[cfg(test)]
@@ -1387,6 +1638,51 @@ mod tests {
 
         // No loaded embedder => never matches.
         assert!(!embedder_matches(&None, nomic));
+    }
+
+    /// The sweep's store gate (`run_sweep_pass`) stamps every vector under
+    /// `descriptor.model_id` — the model it INTENDED to load — so if this reuse
+    /// predicate wrongly hands back a different model's shared instance, model A's
+    /// vectors are written under model B's stamp and the vec0 epoch stamp never
+    /// catches it. This predicate, not the stamp, is the last line of defence.
+    #[test]
+    fn the_shared_embedder_is_reused_only_for_the_exact_selection() {
+        let nomic =
+            resolve_descriptor(semantic_search::SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
+                .expect("nomic must resolve");
+
+        // Fresh + exact provider/model match: reuse (the point of the shared slot).
+        assert!(shared_embedder_is_reusable(
+            &nomic.provider,
+            &nomic.model_id,
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // A different model at the SAME 768 width (gte-modernbert-base vs nomic):
+        // still a miss — only the id distinguishes them, a width check cannot.
+        assert!(!shared_embedder_is_reusable(
+            &nomic.provider,
+            "gte-modernbert-base",
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // A different provider: miss.
+        assert!(!shared_embedder_is_reusable(
+            "some-other-provider",
+            &nomic.model_id,
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // Warm past the shared cap: miss, so recycling actually frees the weights.
+        assert!(!shared_embedder_is_reusable(
+            &nomic.provider,
+            &nomic.model_id,
+            MAX_EMBEDDER_WARM_LIFETIME,
+            &nomic
+        ));
     }
 
     #[test]
@@ -1672,11 +1968,68 @@ mod tests {
             BACKFILL_BATCH_COOLDOWN_MAX,
             "a very slow batch is capped at the ceiling"
         );
-        // A mid-band batch scales through unclamped (multiplier is 1.0).
+        // A mid-band batch stays inside the clamp band. (The multiplier itself is
+        // pinned by literal in
+        // `the_cooldown_band_pins_the_shipped_duty_target_with_a_literal` —
+        // `cooldown(mid) == mid * MULTIPLIER` here would restate the
+        // implementation against itself and pass for ANY multiplier.)
         let mid = Duration::from_millis(500);
-        assert_eq!(backfill_batch_cooldown(mid), mid);
         assert!(backfill_batch_cooldown(mid) >= BACKFILL_BATCH_COOLDOWN_MIN);
         assert!(backfill_batch_cooldown(mid) <= BACKFILL_BATCH_COOLDOWN_MAX);
+
+        // REGRESSION GUARD: a REALISTIC batch must not reach the ceiling. A batch of
+        // SWEEP_BATCH_SIZE real anchors measures ~3.5s on an M4 Air, and if the cap
+        // binds there it becomes the governor instead of the multiplier — which is
+        // the exact bug this band was retuned to fix (duty pinned at 65%, and RISING
+        // to 86% when the GPU throttled, because a slower batch still got the same
+        // fixed rest). Keep MAX well above `multiplier * typical_batch`.
+        let realistic = Duration::from_secs(4);
+        assert!(
+            backfill_batch_cooldown(realistic) < BACKFILL_BATCH_COOLDOWN_MAX,
+            "MAX must stay a safety bound, not the governor, for a realistic batch"
+        );
+        // ...and the duty cycle it produces is the multiplier's target, so a slower
+        // forward earns proportionally more rest (self-correcting under throttle).
+        let cooldown = backfill_batch_cooldown(realistic);
+        let duty = realistic.as_secs_f64() / (realistic + cooldown).as_secs_f64();
+        let target = 1.0 / (1.0 + BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
+        assert!(
+            (duty - target).abs() < 0.01,
+            "duty {duty:.3} should track the multiplier's target {target:.3}"
+        );
+    }
+
+    /// The cooldown input is the FORWARD alone, routed through [`paced_input`].
+    /// What it must NOT pace over is the same task's model (re)load — one pass per
+    /// `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (547 MB of F32 safetensors
+    /// cast into device memory for the default model) in the same blocking task,
+    /// and a reload alone eats the entire pacing band (`MAX / multiplier` = 10s) —
+    /// nor the caller's DB tail (per-anchor re-checks + the batch write). Timing
+    /// the whole region would clamp a recycle pass at the ceiling AND rest 3x a
+    /// disk read that is not the GPU burn the duty cycle governs.
+    #[test]
+    fn the_pacing_input_is_the_forward_alone() {
+        // Realistic magnitudes: a warm-cap reload, a SWEEP_BATCH_SIZE forward
+        // (measured ~1.7s on an M4 Air), the DB tail.
+        let load = Duration::from_secs(10);
+        let forward = Duration::from_millis(1_700);
+        let db_tail = Duration::from_secs(2);
+
+        assert_eq!(
+            paced_input(load, forward, db_tail),
+            forward,
+            "the pacing input is the forward alone"
+        );
+        assert!(
+            backfill_batch_cooldown(paced_input(load, forward, db_tail))
+                < BACKFILL_BATCH_COOLDOWN_MAX,
+            "the forward scales through unclamped — the multiplier stays the governor"
+        );
+        assert_eq!(
+            backfill_batch_cooldown(load + forward + db_tail),
+            BACKFILL_BATCH_COOLDOWN_MAX,
+            "timing the whole region would clamp a recycle pass at the ceiling"
+        );
     }
 
     #[test]
@@ -1906,6 +2259,58 @@ mod tests {
         assert!(
             advance_idle_drop(&mut idles, false, true),
             "a sustained error loop releases the embedder at the grace threshold"
+        );
+    }
+
+    #[test]
+    fn warm_embedder_recycles_at_the_cap_and_not_before() {
+        // The cap is what bounds candle's Metal buffer pool during a long drain (the
+        // idle-drop never fires there, because every pass is `DidWork`). Two ways it
+        // can silently stop doing its job, both pinned here:
+        //
+        // 1. A unit slip (`from_millis` for `from_secs`) would make it 0.3s, so every
+        //    batch would reload the multi-hundred-MB model — a self-inflicted stall
+        //    that still "passes" as a memory fix.
+        // 2. A cap under one batch's cooldown would recycle between every batch.
+        assert!(
+            MAX_EMBEDDER_WARM_LIFETIME >= Duration::from_secs(60),
+            "the warm cap must be a multi-minute wall clock, not sub-second"
+        );
+        assert!(
+            MAX_EMBEDDER_WARM_LIFETIME > BACKFILL_BATCH_COOLDOWN_MAX,
+            "the warm cap must outlast one paced batch or the worker thrashes reloads"
+        );
+
+        // Durations, not wound-back `Instant`s: `Instant::checked_sub` returns `None`
+        // on a host with less uptime than the cap, which panicked on fresh CI VMs.
+        assert!(
+            !LoadedEmbedder::stale_after(Duration::ZERO),
+            "a freshly loaded embedder stays warm for the drain"
+        );
+        assert!(
+            !LoadedEmbedder::stale_after(MAX_EMBEDDER_WARM_LIFETIME - Duration::from_secs(1)),
+            "one second short of the cap is still warm — the boundary is inclusive"
+        );
+        assert!(
+            LoadedEmbedder::stale_after(MAX_EMBEDDER_WARM_LIFETIME),
+            "an embedder warm for the whole cap recycles on the next batch"
+        );
+    }
+
+    /// The pacing band's assertions must fail on a multiplier drift in EITHER
+    /// direction. `cooldown(mid) == mid * MULTIPLIER` restates the implementation
+    /// against itself and passes for any multiplier; `realistic < MAX` only catches a
+    /// multiplier raised past ~7.5. Nothing bounded it from BELOW, so dropping it to
+    /// 0.1 (duty 91% — the throttle-amplifying regime this band was retuned to leave)
+    /// kept every assertion green. One literal pins the shipped duty target.
+    #[test]
+    fn the_cooldown_band_pins_the_shipped_duty_target_with_a_literal() {
+        assert_eq!(
+            backfill_batch_cooldown(Duration::from_secs(4)),
+            Duration::from_secs(12),
+            "a 4s forward must earn 12s of rest — a 25% duty cycle. This literal is \
+             the only assertion that fails if BACKFILL_BATCH_COOLDOWN_MULTIPLIER \
+             drifts in either direction."
         );
     }
 }

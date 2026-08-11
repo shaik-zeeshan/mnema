@@ -4,6 +4,9 @@ import { describe, expect, it } from "bun:test";
 import {
   ANCHOR_INTERVAL_S,
   ANCHOR_MB_PER_DAY,
+  ANCHOR_VIDEO_MB,
+  ANCHOR_VIDEO_PIXELS,
+  draftVideoPixels,
   estimateDailyStorageMb,
   estimateWindowStorageMb,
 } from "./disk-estimate";
@@ -52,6 +55,47 @@ describe("estimateDailyStorageMb", () => {
     const fallback = estimateDailyStorageMb(DEFAULT_CAPTURE_INTERVAL_S);
     expect(estimateDailyStorageMb(0)).toBe(fallback);
     expect(estimateDailyStorageMb(-1)).toBe(fallback);
+  });
+
+  it("scales only the video share with resolution", () => {
+    // 1080p is 2.25× the anchor's 720p pixels; the OCR/audio shares don't move.
+    const at1080 = estimateDailyStorageMb(ANCHOR_INTERVAL_S, 1920 * 1080);
+    expect(at1080).toBeCloseTo(
+      ANCHOR_MB_PER_DAY - ANCHOR_VIDEO_MB + ANCHOR_VIDEO_MB * 2.25,
+      1,
+    );
+    // Omitted pixels price the anchor (= default 720p) resolution.
+    expect(estimateDailyStorageMb(ANCHOR_INTERVAL_S, ANCHOR_VIDEO_PIXELS)).toBe(
+      estimateDailyStorageMb(ANCHOR_INTERVAL_S),
+    );
+  });
+});
+
+describe("draftVideoPixels", () => {
+  const draft = (over = {}) => ({
+    resolutionMode: "preset",
+    resolutionPreset: "720p",
+    customWidth: null,
+    customHeight: null,
+    ...over,
+  });
+
+  it("maps presets to their pixel counts", () => {
+    expect(draftVideoPixels(draft(), null)).toBe(1280 * 720);
+    expect(draftVideoPixels(draft({ resolutionPreset: "1080p" }), null)).toBe(1920 * 1080);
+    expect(draftVideoPixels(draft({ resolutionPreset: "540p" }), null)).toBe(960 * 540);
+  });
+
+  it("prices original at the display's backing pixels, 1080p when unknown", () => {
+    expect(draftVideoPixels(draft({ resolutionMode: "original" }), 3024 * 1964)).toBe(3024 * 1964);
+    expect(draftVideoPixels(draft({ resolutionMode: "original" }), null)).toBe(1920 * 1080);
+  });
+
+  it("prices a custom size at width × height, falling back while mid-edit", () => {
+    expect(
+      draftVideoPixels(draft({ resolutionMode: "custom", customWidth: 1600, customHeight: 900 }), null),
+    ).toBe(1600 * 900);
+    expect(draftVideoPixels(draft({ resolutionMode: "custom" }), null)).toBe(1920 * 1080);
   });
 });
 
