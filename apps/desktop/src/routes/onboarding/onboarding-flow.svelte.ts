@@ -40,8 +40,9 @@ import {
 import { draftVideoPixels } from "$lib/onboarding/disk-estimate";
 import { OnboardingController } from "./onboarding.svelte";
 
-/** The display's true backing pixels, for pricing `original` resolution. */
-function nativeScreenPixels(): number | null {
+/** The display's true backing pixels, for pricing `original` resolution.
+ *  Exported for tests only. */
+export function nativeScreenPixels(): number | null {
   if (typeof window === "undefined" || !window.screen) return null;
   const dpr = window.devicePixelRatio || 1;
   return window.screen.width * window.screen.height * dpr * dpr;

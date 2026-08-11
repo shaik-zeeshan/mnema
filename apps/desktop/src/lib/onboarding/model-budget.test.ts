@@ -518,6 +518,32 @@ describe("slice 10 — the over-disk state", () => {
     expect(hopeless.message).toContain("is still not enough");
   });
 
+  test("diskVerdict prices the draft resolution", () => {
+    const need720 = storageNeedBytes(budget.bytes, INTERVAL_S, 1280 * 720);
+    const need1080 = storageNeedBytes(budget.bytes, INTERVAL_S, 1920 * 1080);
+    expect(need1080).toBeGreaterThan(need720);
+
+    // Free space strictly between the two needs: the SAME volume fits at 720p
+    // and shortfalls at 1080p — `videoPixels` must reach the verdict.
+    const freeBytes = Math.round((need720 + need1080) / 2);
+    expect(
+      diskVerdict({
+        budget,
+        freeBytes,
+        captureIntervalSeconds: INTERVAL_S,
+        videoPixels: 1280 * 720,
+      }),
+    ).toBeNull();
+    const verdict = diskVerdict({
+      budget,
+      freeBytes,
+      captureIntervalSeconds: INTERVAL_S,
+      videoPixels: 1920 * 1080,
+    });
+    expect(verdict).not.toBeNull();
+    expect(verdict.needBytes).toBe(need1080);
+  });
+
   test("with Semantic Search already off, no escape is invented", () => {
     const withoutSemantic = budgetOf("medium", null);
     const verdict = diskVerdict({

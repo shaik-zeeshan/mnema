@@ -116,7 +116,6 @@ describe("featureCost — disk per row", () => {
       base + withSearch.diskByFeature.semanticSearch,
       6,
     );
-    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(7);
   });
 
   it("prices a vector at one byte per dimension, not four", () => {

@@ -24,6 +24,7 @@ import {
   CAPTURE_INTERVAL_LADDER_S,
   DEFAULT_CAPTURE_INTERVAL_S,
 } from "../components/capture-rate";
+import { ANCHOR_INTERVAL_S, estimateDailyStorageMb } from "./disk-estimate";
 import {
   RESERVE_FLOOR_BYTES,
   captureStorageBlockReason,
@@ -130,6 +131,30 @@ describe("the plan line always reads rate · horizon", () => {
   test("the horizon moves when the rate moves", () => {
     expect(text(planSegments(60, "days_30"))).toContain("405.0 MB held");
     expect(text(planSegments(60, "days_30"))).toContain("13.5 MB a day");
+  });
+
+  test("the sentence's plan prices the draft resolution", () => {
+    // The daily figure the plan renders is the resolution-scaled estimate, not
+    // the 720p anchor: at the anchor interval, a 1080p draft prints the 1080p
+    // day and a 540p draft prints a strictly smaller one.
+    const hi = sentenceVerdict(
+      input({ intervalSeconds: ANCHOR_INTERVAL_S, videoPixels: 1920 * 1080 }),
+    );
+    expect(hi.plan[0].text).toBe(
+      formatBytes(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 1920 * 1080) * 1e6),
+    );
+    expect(text(hi.plan)).toContain(" a day");
+
+    const lo = sentenceVerdict(
+      input({ intervalSeconds: ANCHOR_INTERVAL_S, videoPixels: 960 * 540 }),
+    );
+    expect(lo.plan[0].text).toBe(
+      formatBytes(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 960 * 540) * 1e6),
+    );
+    expect(estimateDailyStorageMb(ANCHOR_INTERVAL_S, 960 * 540)).toBeLessThan(
+      estimateDailyStorageMb(ANCHOR_INTERVAL_S, 1920 * 1080),
+    );
+    expect(lo.plan[0].text).not.toBe(hi.plan[0].text);
   });
 });
 

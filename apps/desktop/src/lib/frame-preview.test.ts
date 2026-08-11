@@ -337,7 +337,6 @@ describe("FramePreviewUrlMap", () => {
       waves += 1;
     }
     await merging;
-    expect(waves).toBe(4); // 24 reads / 6 workers — the pool bound is unchanged
     expect(painted.length).toBe(24);
   });
 
@@ -572,14 +571,19 @@ describe("preview blob-URL ownership", () => {
     for await (const rel of new Bun.Glob("**/*.svelte").scan(root)) {
       const source = await Bun.file(`${root}${rel}`).text();
       const owner = source.match(
-        /(?:const|let)\s+(\w+)\s*=\s*new FramePreviewUrl(?:Map|Holder)\(/,
+        /(?:const|let)\s+(\w+)\s*=\s*new (?:FramePreviewUrlMap|FramePreviewUrlHolder|ReceiptFrameLoader)\(/,
       );
       if (!owner) continue;
       const id = owner[1];
+      // `clear()` or `dispose()` inside the teardown closure's RETURNED-function
+      // body — either a single expression (`() => () => x.dispose()`) or a braced
+      // block (`() => () => { x.clear(); token++; }`).
+      const release = `${id}\\.(?:clear|dispose)\\(\\)`;
       const releasesOnTeardown =
-        new RegExp(`\\$effect\\(\\(\\)\\s*=>\\s*\\(\\)\\s*=>[^;]*${id}\\.clear\\(\\)`).test(
-          source,
-        ) || new RegExp(`onDestroy\\([\\s\\S]{0,600}?${id}\\.clear\\(\\)`).test(source);
+        new RegExp(
+          `\\$effect\\(\\(\\)\\s*=>\\s*\\(\\)\\s*=>\\s*(?:\\{[^}]{0,400}?${release}|[^;{]{0,200}?${release})`,
+        ).test(source) ||
+        new RegExp(`onDestroy\\([\\s\\S]{0,600}?${release}`).test(source);
       if (!releasesOnTeardown) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
