@@ -293,7 +293,7 @@ export class SearchStore {
       // Publish per thumbnail, not per batch: 24 reads through the merge's 6-worker
       // pool is four sequential asset round trips, and waiting for the last of them
       // leaves every card on its glyph for the whole batch.
-      this.thumbnailCache = await this.thumbnailUrls.merge(
+      const merged = await this.thumbnailUrls.merge(
         response.previews.flatMap((entry) =>
           entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
         ),
@@ -302,6 +302,10 @@ export class SearchStore {
           this.thumbnailCache = this.thumbnailUrls.snapshot();
         },
       );
+      // Re-check after the await: a search that superseded this one mid-merge
+      // owns the displayed cache now — same guard as the incremental publish.
+      if (generation !== this.searchGeneration) return;
+      this.thumbnailCache = merged;
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }
