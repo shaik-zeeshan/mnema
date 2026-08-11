@@ -673,3 +673,54 @@ fn l2_normalize(x: &Tensor) -> candle_core::Result<Tensor> {
         .clamp(1e-9, f64::INFINITY)?; // (B,1)
     x.broadcast_div(&norm)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `arch_dtype`'s scoping, pinned in both directions. Collapsing to
+    /// F32-everywhere would silently DOUBLE every Metal user's resident weights
+    /// (~274 MB → ~547 MB for nomic alone) with no functional failure to catch it;
+    /// widening F16 to ModernBERT breaks every forward pass on Metal, because
+    /// candle 0.10.2's `modernbert` hardcodes an F32 additive attention mask
+    /// (`dtype mismatch in add, lhs: F16, rhs: F32`). Only the Metal half can
+    /// catch the F32-everywhere collapse — on CPU every arm is legitimately F32.
+    #[test]
+    fn only_modernbert_forgoes_f16_on_metal() {
+        let all = [
+            SemanticSearchArchitecture::NomicBert,
+            SemanticSearchArchitecture::XlmRoberta,
+            SemanticSearchArchitecture::StellaEnV5,
+            SemanticSearchArchitecture::ModernBert,
+        ];
+        // CPU: F32 across the board.
+        for arch in all {
+            assert_eq!(arch_dtype(arch, &Device::Cpu), DType::F32, "{arch:?} on CPU");
+        }
+
+        // Metal: F16 for every arm except ModernBERT. Runtime self-skip when the
+        // host has no usable Metal device (the CPU half above still ran).
+        #[cfg(feature = "metal")]
+        {
+            let Ok(metal) = Device::new_metal(0) else {
+                return;
+            };
+            for arch in [
+                SemanticSearchArchitecture::NomicBert,
+                SemanticSearchArchitecture::XlmRoberta,
+                SemanticSearchArchitecture::StellaEnV5,
+            ] {
+                assert_eq!(
+                    arch_dtype(arch, &metal),
+                    DType::F16,
+                    "{arch:?} takes the F16 RAM win on Metal"
+                );
+            }
+            assert_eq!(
+                arch_dtype(SemanticSearchArchitecture::ModernBert, &metal),
+                DType::F32,
+                "ModernBERT must stay F32 on Metal until upstream casts its mask"
+            );
+        }
+    }
+}

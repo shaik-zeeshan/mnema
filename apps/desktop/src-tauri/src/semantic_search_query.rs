@@ -285,4 +285,20 @@ mod tests {
              not pinned forever"
         );
     }
+
+    /// `gte-modernbert-base` shares nomic's 768-dim width, so a dimension check
+    /// could never substitute for the `model_id` clause: reusing the cached nomic
+    /// embedder for a gte selection would embed the query with the wrong model and
+    /// still produce a "valid-looking" 768-wide vector. Only the id distinguishes
+    /// them.
+    #[test]
+    fn a_same_width_model_switch_is_still_a_cache_miss() {
+        let descriptor = nomic_descriptor();
+        assert!(!cached_embedder_is_reusable(
+            &descriptor.provider,
+            "gte-modernbert-base",
+            Duration::ZERO,
+            &descriptor
+        ));
+    }
 }

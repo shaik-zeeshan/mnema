@@ -657,7 +657,7 @@ static SHARED_EMBEDDER: Mutex<Weak<LoadedEmbedder>> = Mutex::new(Weak::new());
 
 /// Distinguishes a `load_embedder` failure from a successful-load-but-embed
 /// failure when both now run inside the one `spawn_blocking` (M1). The closure
-/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>, forward time), LoadError>`: an
+/// returns `Result<(LoadedEmbedder, Vec<per-anchor results>, load time, forward time), LoadError>`: an
 /// `Err(LoadError)` means the model never loaded (→ CT3 load-failure accounting:
 /// `consecutive_load_failures`, the corrupt-model signal), while an `Ok` with
 /// per-anchor `Err`s inside the `Vec` means the model loaded fine and individual
@@ -855,6 +855,7 @@ async fn run_sweep_pass(
         // (consecutive-load-failure counter, corrupt-model signal) — kept DISTINCT
         // from a successful-load-but-per-anchor-embed-failure, which is carried in
         // the returned per-anchor `Vec` for the existing L3 handling.
+        let load_started_at = Instant::now();
         let loaded = match cached {
             Some(loaded) => loaded,
             None => match load_embedder(&app_data_dir_for_task, &descriptor_for_task) {
@@ -862,6 +863,7 @@ async fn run_sweep_pass(
                 Err(error) => return Err(LoadError { error }),
             },
         };
+        let load_elapsed = load_started_at.elapsed();
         // candle on Metal frees the P-cores by construction, so the retired
         // per-thread background-QoS downclock is gone (ADR 0037); the embed runs at
         // the blocking thread's default QoS. The embedder is `&self`-immutable for
@@ -918,7 +920,7 @@ async fn run_sweep_pass(
                 .map(|(anchor_id, result)| (anchor_id, result.map_err(|error| error.to_string())))
                 .collect()
         };
-        Ok((loaded, out, forward_started_at.elapsed()))
+        Ok((loaded, out, load_elapsed, forward_started_at.elapsed()))
     });
     let shutdown_changed = shutdown_rx.changed();
     pin_mut!(embed_task, shutdown_changed);
@@ -961,12 +963,12 @@ async fn run_sweep_pass(
     //   - `Err(LoadError)` => CT3 load-failure accounting (distinct failure mode).
     //   - `Ok((loaded, embedded))` => the model loaded OK; per-anchor results carry
     //     any embed failures for the existing L3 handling below.
-    let (loaded, embedded, forward_elapsed) = match load_embed {
-        Ok(triple) => {
+    let (loaded, embedded, load_elapsed, forward_elapsed) = match load_embed {
+        Ok(result) => {
             // A successful load (or a reuse of the cached embedder, which also proves
             // the weights are fine) resets CT3.
             state.clear_load_failures();
-            triple
+            result
         }
         Err(LoadError { error }) => {
             // CT3: availability is presence+marker only — it never validates that the
@@ -997,6 +999,10 @@ async fn run_sweep_pass(
             return SweepPass::Error;
         }
     };
+    // Everything from here to the pacing return is the DB tail (per-anchor
+    // re-checks + the batch write transaction) — measured only so `paced_input`
+    // can prove it is excluded from the cooldown input.
+    let db_tail_started_at = Instant::now();
     // Restore the embedder for the next pass — unless it has been warm past
     // [`MAX_EMBEDDER_WARM_LIFETIME`], in which case drop it here so a long drain
     // (which never goes idle, so `maybe_release_embedder_on_idle_decay` never
@@ -1205,7 +1211,11 @@ async fn run_sweep_pass(
         // reload and the DB tail above are excluded) and clamp it, then loop. This
         // replaces the old 0ms yield so a large backfill paces itself instead of
         // sustaining a back-to-back multi-core burn.
-        return SweepPass::DidWork(backfill_batch_cooldown(forward_elapsed));
+        return SweepPass::DidWork(backfill_batch_cooldown(paced_input(
+            load_elapsed,
+            forward_elapsed,
+            db_tail_started_at.elapsed(),
+        )));
     }
     if dimension_skips > 0 {
         // Every stored anchor was skipped on a dimension mismatch (a switch in
@@ -1304,6 +1314,17 @@ fn is_isolated_embed_failure(embed_failure_count: usize) -> bool {
 fn backfill_batch_cooldown(batch_duration: Duration) -> Duration {
     let scaled = batch_duration.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
     scaled.clamp(BACKFILL_BATCH_COOLDOWN_MIN, BACKFILL_BATCH_COOLDOWN_MAX)
+}
+
+/// The pacing input for [`backfill_batch_cooldown`] is the FORWARD alone — never
+/// the same task's model (re)load and never the caller's DB tail (per-anchor
+/// re-checks + the batch write). Neither is the GPU burn the duty cycle governs,
+/// and a reload alone eats the entire pacing band (`MAX / multiplier` = 10s), so
+/// folding either in would clamp that pass at the ceiling — the "cap is the
+/// governor" regime the band was retuned to leave. This seam exists so a test
+/// fails if either duration creeps back into the cooldown input.
+fn paced_input(_load: Duration, forward: Duration, _db_tail: Duration) -> Duration {
+    forward
 }
 
 /// Surface a "model appears corrupt — reinstall" signal on the model-status
@@ -1489,10 +1510,12 @@ pub(crate) fn load_embedder(
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     if let Some(existing) = shared.upgrade() {
-        if existing.provider == descriptor.provider
-            && existing.model_id == descriptor.model_id
-            && !existing.is_stale()
-        {
+        if shared_embedder_is_reusable(
+            &existing.provider,
+            &existing.model_id,
+            existing.loaded_at.elapsed(),
+            descriptor,
+        ) {
             return Ok(existing);
         }
     }
@@ -1500,6 +1523,22 @@ pub(crate) fn load_embedder(
     let loaded = load_embedder_private(app_data_dir, descriptor)?;
     *shared = Arc::downgrade(&loaded);
     Ok(loaded)
+}
+
+/// Whether the [`SHARED_EMBEDDER`] instance can be handed to a background caller
+/// asking for `descriptor`: same provider AND same model id AND not
+/// [stale](LoadedEmbedder::stale_after). Mirrors the query cache's
+/// `cached_embedder_is_reusable` (semantic_search_query.rs) — `warm_for` is the
+/// elapsed `Duration`, not the load `Instant`, for the same testability reason.
+fn shared_embedder_is_reusable(
+    provider: &str,
+    model_id: &str,
+    warm_for: Duration,
+    descriptor: &SemanticSearchModelDescriptor,
+) -> bool {
+    provider == descriptor.provider
+        && model_id == descriptor.model_id
+        && !LoadedEmbedder::stale_after(warm_for)
 }
 
 /// Load a **private** embedder instance — its own weights and, on macOS, its own
@@ -1599,6 +1638,51 @@ mod tests {
 
         // No loaded embedder => never matches.
         assert!(!embedder_matches(&None, nomic));
+    }
+
+    /// The sweep's store gate (`run_sweep_pass`) stamps every vector under
+    /// `descriptor.model_id` — the model it INTENDED to load — so if this reuse
+    /// predicate wrongly hands back a different model's shared instance, model A's
+    /// vectors are written under model B's stamp and the vec0 epoch stamp never
+    /// catches it. This predicate, not the stamp, is the last line of defence.
+    #[test]
+    fn the_shared_embedder_is_reused_only_for_the_exact_selection() {
+        let nomic =
+            resolve_descriptor(semantic_search::SEMANTIC_SEARCH_PROVIDER_ID, "nomic-embed-text-v1.5")
+                .expect("nomic must resolve");
+
+        // Fresh + exact provider/model match: reuse (the point of the shared slot).
+        assert!(shared_embedder_is_reusable(
+            &nomic.provider,
+            &nomic.model_id,
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // A different model at the SAME 768 width (gte-modernbert-base vs nomic):
+        // still a miss — only the id distinguishes them, a width check cannot.
+        assert!(!shared_embedder_is_reusable(
+            &nomic.provider,
+            "gte-modernbert-base",
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // A different provider: miss.
+        assert!(!shared_embedder_is_reusable(
+            "some-other-provider",
+            &nomic.model_id,
+            Duration::ZERO,
+            &nomic
+        ));
+
+        // Warm past the shared cap: miss, so recycling actually frees the weights.
+        assert!(!shared_embedder_is_reusable(
+            &nomic.provider,
+            &nomic.model_id,
+            MAX_EMBEDDER_WARM_LIFETIME,
+            &nomic
+        ));
     }
 
     #[test]
@@ -1884,12 +1968,12 @@ mod tests {
             BACKFILL_BATCH_COOLDOWN_MAX,
             "a very slow batch is capped at the ceiling"
         );
-        // A mid-band batch scales by the multiplier and passes through unclamped.
+        // A mid-band batch stays inside the clamp band. (The multiplier itself is
+        // pinned by literal in
+        // `the_cooldown_band_pins_the_shipped_duty_target_with_a_literal` —
+        // `cooldown(mid) == mid * MULTIPLIER` here would restate the
+        // implementation against itself and pass for ANY multiplier.)
         let mid = Duration::from_millis(500);
-        assert_eq!(
-            backfill_batch_cooldown(mid),
-            mid.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER)
-        );
         assert!(backfill_batch_cooldown(mid) >= BACKFILL_BATCH_COOLDOWN_MIN);
         assert!(backfill_batch_cooldown(mid) <= BACKFILL_BATCH_COOLDOWN_MAX);
 
@@ -1915,40 +1999,36 @@ mod tests {
         );
     }
 
+    /// The cooldown input is the FORWARD alone, routed through [`paced_input`].
+    /// What it must NOT pace over is the same task's model (re)load — one pass per
+    /// `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (547 MB of F32 safetensors
+    /// cast into device memory for the default model) in the same blocking task,
+    /// and a reload alone eats the entire pacing band (`MAX / multiplier` = 10s) —
+    /// nor the caller's DB tail (per-anchor re-checks + the batch write). Timing
+    /// the whole region would clamp a recycle pass at the ceiling AND rest 3x a
+    /// disk read that is not the GPU burn the duty cycle governs.
     #[test]
-    fn the_pacing_band_has_room_for_the_forward_but_not_for_a_model_reload() {
-        // The band's HEADROOM: the largest input that still scales through
-        // unclamped. Above it the ceiling is the governor again, and the duty cycle
-        // stops responding proportionally to a slower device — the exact regime this
-        // band was retuned to leave.
-        let headroom = BACKFILL_BATCH_COOLDOWN_MAX.div_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
+    fn the_pacing_input_is_the_forward_alone() {
+        // Realistic magnitudes: a warm-cap reload, a SWEEP_BATCH_SIZE forward
+        // (measured ~1.7s on an M4 Air), the DB tail.
+        let load = Duration::from_secs(10);
+        let forward = Duration::from_millis(1_700);
+        let db_tail = Duration::from_secs(2);
+
         assert_eq!(
-            headroom,
-            Duration::from_secs(10),
-            "MAX / multiplier is the whole budget the paced input has to fit in"
+            paced_input(load, forward, db_tail),
+            forward,
+            "the pacing input is the forward alone"
         );
-
-        // What the sweep actually paces over is the FORWARD alone, measured inside
-        // the blocking task. On an M4 Air at the shipped `MAX_DOCUMENT_CHUNKS = 2`
-        // the sweep drains 2.40 anchors/s at 26% duty, i.e. a SWEEP_BATCH_SIZE
-        // forward of ~1.7s — comfortably inside the headroom even several times
-        // slower under thermal/Low-Power throttling.
-        let measured_forward = Duration::from_millis(1_700);
         assert!(
-            backfill_batch_cooldown(measured_forward) < BACKFILL_BATCH_COOLDOWN_MAX,
-            "the forward must scale through unclamped, or the ceiling governs again"
+            backfill_batch_cooldown(paced_input(load, forward, db_tail))
+                < BACKFILL_BATCH_COOLDOWN_MAX,
+            "the forward scales through unclamped — the multiplier stays the governor"
         );
-
-        // What it must NOT pace over is the same task's model (re)load. One pass per
-        // `MAX_EMBEDDER_WARM_LIFETIME` reloads the weights (547 MB of F32
-        // safetensors cast into device memory for the default model) in the same
-        // blocking task; a reload alone eats the entire headroom, so timing the whole
-        // region would clamp that pass at the ceiling AND rest 3x a disk read that is
-        // not the GPU burn the duty cycle governs.
-        let measured_reload = Duration::from_secs(10);
-        assert!(
-            measured_reload >= headroom,
-            "a model reload does not fit the pacing band — keep it out of the input"
+        assert_eq!(
+            backfill_batch_cooldown(load + forward + db_tail),
+            BACKFILL_BATCH_COOLDOWN_MAX,
+            "timing the whole region would clamp a recycle pass at the ceiling"
         );
     }
 

@@ -810,10 +810,15 @@ mod tests {
             backfill_batch_cooldown(Duration::from_secs(60)),
             BACKFILL_BATCH_COOLDOWN_MAX
         );
-        let mid = Duration::from_millis(500);
+        // The literal, not `mid * MULTIPLIER`: comparing the implementation to
+        // itself passes for ANY multiplier, so nothing bounded the duty cycle from
+        // below. A 4s forward earning 12s of rest (25% duty) is the shipped target;
+        // this is the only assertion that fails if the multiplier drifts in either
+        // direction. (Mirrors semantic_search_worker.rs's
+        // `the_cooldown_band_pins_the_shipped_duty_target_with_a_literal`.)
         assert_eq!(
-            backfill_batch_cooldown(mid),
-            mid.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER)
+            backfill_batch_cooldown(Duration::from_secs(4)),
+            Duration::from_secs(12)
         );
         // REGRESSION GUARD (mirrors the search backfill's): a realistic batch must
         // not hit the ceiling, or MAX becomes the governor and the duty cycle stops

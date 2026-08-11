@@ -927,19 +927,6 @@ mod tests {
         }
     }
 
-    /// `mnema access request --duration 1h` sends `preferred_seconds = 3600`, but
-    /// Allow always mints [`QUICK_APPROVAL_DURATION_SECONDS`] (24 hours). The prompt
-    /// must never describe a shorter window than the one Allow hands over.
-    #[test]
-    fn quick_prompt_never_understates_how_long_allow_grants_access() {
-        let body = default_prompt_body(&request_preferring("lastDay", 60 * 60));
-
-        assert!(
-            body.contains("24 hours"),
-            "Allow mints a 24-hour grant, so the prompt must say so: {body}"
-        );
-    }
-
     /// The client label is attacker-controlled wire input that lands in the consent
     /// body directly ahead of the grant disclosure. It must not be able to carry
     /// paragraph breaks or run long enough to push that disclosure out of view.
@@ -966,9 +953,11 @@ mod tests {
     }
 
     /// The prompt's duration must be the one Allow actually mints. A
-    /// `--duration 1h` request is *shorter* than [`QUICK_APPROVAL_DURATION_SECONDS`],
-    /// so nothing is downgraded and the body stays a single sentence — one that
-    /// says "for 1 hour" while Allow hands over a 24-hour grant.
+    /// `--duration 1h` request (`preferred_seconds = 3600`) is *shorter* than
+    /// [`QUICK_APPROVAL_DURATION_SECONDS`], but Allow always mints 24 hours — the
+    /// prompt must never describe a shorter window than the one Allow hands over,
+    /// and this is the WIDENING arm, so it must not say "only" either (Allow
+    /// grants MORE than asked, and "only" would misdescribe that as a downgrade).
     #[test]
     fn quick_prompt_duration_matches_the_grant_allow_actually_mints() {
         let request = request_preferring("lastDay", 60 * 60);
@@ -984,6 +973,51 @@ mod tests {
             "and must not hide that Allow hands over {} hours: {body}",
             minted.hours
         );
+        assert!(
+            !body.contains("Allow grants only"),
+            "Allow grants MORE than asked here — 'only' would be false: {body}"
+        );
+        assert!(
+            body.contains("Allow grants searchable Mnema text from the last day for 24 hours"),
+            "the widening arm still states exactly what Allow hands over: {body}"
+        );
+    }
+
+    /// The truncation boundary itself: a label of exactly
+    /// [`CLIENT_LABEL_MAX_CHARS`] chars survives verbatim in the consent body, and
+    /// one char more is cut to exactly that many chars plus a single '…'.
+    #[test]
+    fn a_client_label_is_capped_at_the_disclosure_boundary() {
+        let at_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS);
+        assert_eq!(client_label_prose(&at_cap), at_cap);
+        let mut request = request_preferring("lastDay", 24 * 60 * 60);
+        request.client.label = at_cap.clone();
+        assert!(
+            default_prompt_body(&request).contains(&at_cap),
+            "a label at the cap survives verbatim in the body"
+        );
+
+        let over_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS + 1);
+        let prose = client_label_prose(&over_cap);
+        assert_eq!(
+            prose,
+            format!("{}…", "A".repeat(CLIENT_LABEL_MAX_CHARS)),
+            "one char over the cap truncates to the cap plus a single ellipsis"
+        );
+        assert_eq!(prose.chars().count(), CLIENT_LABEL_MAX_CHARS + 1);
+    }
+
+    /// Every duration band the wire can send renders as prose. Sub-hour (and
+    /// zero) inputs round UP to "1 hour" — the prose must never understate how
+    /// long a grant lasts — and partial hours round up for the same reason;
+    /// exact multi-day multiples collapse to days.
+    #[test]
+    fn duration_prose_names_every_band_the_wire_can_send() {
+        assert_eq!(duration_prose(0), "1 hour");
+        assert_eq!(duration_prose(3 * 3600), "3 hours");
+        // 90 minutes is deliberately "2 hours", not "1 hour": round-up.
+        assert_eq!(duration_prose(90 * 60), "2 hours");
+        assert_eq!(duration_prose(48 * 3600), "2 days");
     }
 
     #[test]

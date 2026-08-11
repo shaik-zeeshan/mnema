@@ -2288,6 +2288,25 @@ mod tests {
         );
         assert_eq!(DEFAULT_SEMANTIC_SEARCH_DIMENSION, 768);
 
+        // The `model_id == None` arm resolves against the DEFAULT provider on
+        // purpose, never `settings.provider`: a never-selected profile only exists
+        // on a hand-edited or partially-deserialized config, where the provider
+        // field may be junk. Resolving through `settings.provider` would return
+        // `None` here and silently skip reconciliation forever.
+        let never_selected_with_junk_provider = capture_types::SemanticSearchSettings {
+            enabled: false,
+            provider: "not-a-provider".to_string(),
+            model_id: None,
+        };
+        assert_eq!(
+            reconcile_expected_model(&never_selected_with_junk_provider),
+            Some((
+                "nomic-embed-text-v1.5".to_string(),
+                DEFAULT_SEMANTIC_SEARCH_DIMENSION
+            )),
+            "a junk provider with no model ever selected still resolves the default tier"
+        );
+
         // The pairing itself, not the two literals: whatever the English default
         // becomes, its id and its dimension must come from the SAME descriptor.
         // Issue #190 is precisely "change the English default", and pairing the
