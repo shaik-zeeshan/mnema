@@ -13,7 +13,9 @@
 //! depend on `capture-types` or `app-infra`; the Tauri layer maps its own wire
 //! settings onto [`EngineConfig`] and supplies the keychain-resident key.
 
-use rig_core::client::CompletionClient;
+// `.extractor::<T>(model)` on a provider client is classic-runtime
+// construction, provided by `AgentClientExt` since the 0.41 core/agent split.
+use rig_agent::client::AgentClientExt;
 use rig_core::providers::{anthropic, llamafile, ollama, openai};
 
 use std::net::{TcpStream, ToSocketAddrs};
@@ -119,7 +121,7 @@ pub enum AiRuntimeError {
     ClientBuild(#[from] rig_core::client::ProviderClientError),
     /// The structured-extraction round trip failed.
     #[error("structured extraction failed: {0}")]
-    Extraction(#[from] rig_core::extractor::ExtractionError),
+    Extraction(#[from] rig_agent::extractor::ExtractionError),
     /// The streaming agent loop ([`run_agent_loop`]) failed mid-stream — a
     /// provider/completion error or an unrecoverable prompt error. Hitting the
     /// tool-call cap is *not* surfaced here; it ends the loop cleanly.

@@ -8,24 +8,28 @@
 //!
 //! The crate keeps its dependency posture: tools are injected as opaque async
 //! callbacks (the "Reasoning Engine" never imports the capture broker,
-//! `capture-types`, or `app-infra`). Each [`AgentTool`] is wrapped in a
-//! [`BrokeredTool`] that implements rig's [`ToolDyn`] and forwards `call` to the
-//! executor, so rig's own multi-turn machinery resolves tool calls and feeds the
-//! results back to the model.
+//! `capture-types`, or `app-infra`). Each [`AgentTool`] is wrapped in a rig
+//! [`DynamicTool`] whose callback forwards to the executor, so rig's own
+//! multi-turn machinery resolves tool calls and feeds the results back to the
+//! model.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use rig_core::agent::{Agent, MultiTurnStreamItem};
-use rig_core::client::CompletionClient;
-use rig_core::completion::{CompletionModel, GetTokenUsage, PromptError, ToolDefinition};
+use rig_agent::agent::{Agent, MultiTurnStreamItem};
+// `.agent(model)` on a provider client is classic-runtime construction,
+// provided by `AgentClientExt` since the 0.41 core/agent split.
+use rig_agent::client::AgentClientExt;
+use rig_agent::completion::PromptError;
+use rig_core::completion::{CompletionModel, GetTokenUsage};
 use rig_core::message::Message;
 use rig_core::providers::{anthropic, llamafile, ollama, openai};
-use rig_core::streaming::{StreamedAssistantContent, StreamingPrompt};
-use rig_core::tool::{ToolDyn, ToolError};
-use rig_core::wasm_compat::{WasmBoxedFuture, WasmCompatSend};
+use rig_agent::streaming::StreamingChat;
+use rig_core::streaming::StreamedAssistantContent;
+use rig_agent::tool::{DynamicTool, ToolExecutionError, ToolOutput};
+use rig_core::wasm_compat::WasmCompatSend;
 
 use crate::{AiRuntimeError, CloudProvider, EngineConfig, LocalKind};
 
@@ -129,66 +133,48 @@ pub enum AgentLoopEvent {
     Done,
 }
 
-/// A [`ToolDyn`] wrapper that forwards execution to a caller-supplied
-/// [`ToolExecutor`].
+/// Build the dynamic-tool set handed to the agent builder.
 ///
 /// rig owns tool dispatch inside its multi-turn loop: when the model calls a
-/// tool by name, rig looks it up in the agent's tool set and invokes
-/// [`ToolDyn::call`]. This wrapper parses the JSON args, runs the executor, and
-/// maps the `Result<String, String>` onto rig's `Result<String, ToolError>` so
-/// the result (or error text) is streamed back to the model as a tool result.
-struct BrokeredTool {
-    name: String,
-    description: String,
-    parameters_schema: serde_json::Value,
-    executor: ToolExecutor,
-}
-
-impl ToolDyn for BrokeredTool {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn definition<'a>(&'a self, _prompt: String) -> WasmBoxedFuture<'a, ToolDefinition> {
-        let definition = ToolDefinition {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            parameters: self.parameters_schema.clone(),
-        };
-        Box::pin(async move { definition })
-    }
-
-    fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
-        let name = self.name.clone();
-        let executor = self.executor.clone();
-        Box::pin(async move {
-            // The model usually sends a JSON object; tolerate an empty/`null`
-            // payload by treating it as an empty object so all-optional tools
-            // still dispatch.
-            let params: serde_json::Value = if args.trim().is_empty() || args.trim() == "null" {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                serde_json::from_str(&args).map_err(ToolError::JsonError)?
-            };
-
-            executor(name, params).await.map_err(|message| {
-                ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(message))
-            })
-        })
-    }
-}
-
-/// Build the boxed dynamic-tool set handed to the agent builder.
-fn brokered_tools(tools: Vec<AgentTool>, executor: &ToolExecutor) -> Vec<Box<dyn ToolDyn>> {
+/// tool by name, rig looks it up in the agent's tool set and invokes the
+/// [`DynamicTool`] callback with the parsed JSON args. The callback forwards to
+/// the caller-supplied [`ToolExecutor`] and maps its `Result<String, String>`
+/// onto rig's `Result<ToolOutput, ToolExecutionError>` so the result (or error
+/// text) is streamed back to the model as a tool result.
+fn brokered_tools(tools: Vec<AgentTool>, executor: &ToolExecutor) -> Vec<DynamicTool> {
     tools
         .into_iter()
         .map(|tool| {
-            Box::new(BrokeredTool {
-                name: tool.name,
-                description: tool.description,
-                parameters_schema: tool.parameters_schema,
-                executor: executor.clone(),
-            }) as Box<dyn ToolDyn>
+            let name = tool.name.clone();
+            let executor = executor.clone();
+            DynamicTool::new(
+                tool.name,
+                tool.description,
+                tool.parameters_schema,
+                move |_context, params| {
+                    let name = name.clone();
+                    let executor = executor.clone();
+                    Box::pin(async move {
+                        // The model usually sends a JSON object; tolerate a
+                        // `null` payload by treating it as an empty object so
+                        // all-optional tools still dispatch. (rig itself parses
+                        // the raw argument string before this callback runs.)
+                        let params = if params.is_null() {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        } else {
+                            params
+                        };
+
+                        executor(name, params)
+                            .await
+                            // The executor returns the result pre-serialized as a
+                            // JSON string; pass it through verbatim as the
+                            // model-facing text, exactly as the pre-0.41 loop did.
+                            .map(ToolOutput::text)
+                            .map_err(ToolExecutionError::other)
+                    })
+                },
+            )
         })
         .collect()
 }
@@ -253,7 +239,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(DEFAULT_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -264,7 +250,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(DEFAULT_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -286,7 +272,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -312,7 +298,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -323,7 +309,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -370,9 +356,8 @@ where
     }
 
     let mut stream = agent
-        .stream_prompt(prompt.to_string())
-        .with_history(history)
-        .multi_turn(max_turns)
+        .stream_chat(prompt.to_string(), history)
+        .max_turns(max_turns)
         .await;
 
     while let Some(item) = stream.next().await {
@@ -406,9 +391,11 @@ where
                 on_event(AgentLoopEvent::Reasoning(reasoning.display_text()));
             }
             Ok(MultiTurnStreamItem::CompletionCall(call)) => {
-                // rig normalizes zero-valued usage to None (missing provider
-                // metrics), so a Usage event always carries a real report.
-                if let Some(usage) = call.usage {
+                // Zero-valued usage is rig's documented sentinel for missing
+                // provider metrics (0.41 made `usage` non-optional), so only a
+                // non-zero report surfaces as a Usage event.
+                let usage = call.usage;
+                if usage.input_tokens > 0 || usage.output_tokens > 0 {
                     on_event(AgentLoopEvent::Usage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
@@ -421,7 +408,7 @@ where
             Err(err) => {
                 // Hitting the multi-turn bound is the expected effect of the
                 // tool-call cap, not a failure.
-                if matches!(err, rig_core::agent::StreamingError::Prompt(ref prompt_err)
+                if matches!(err, rig_agent::agent::StreamingError::Prompt(ref prompt_err)
                     if matches!(**prompt_err, PromptError::MaxTurnsError { .. }))
                 {
                     break;
@@ -438,7 +425,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig_core::agent::AgentBuilder;
+    use rig_agent::agent::AgentBuilder;
     use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
     use std::sync::Mutex;
 
@@ -446,7 +433,7 @@ mod tests {
     fn mock_agent(model: MockCompletionModel, tools: Vec<AgentTool>, executor: &ToolExecutor) -> Agent<MockCompletionModel> {
         AgentBuilder::new(model)
             .preamble("test preamble")
-            .tools(brokered_tools(tools, executor))
+            .dynamic_tools(brokered_tools(tools, executor))
             .build()
     }
 
