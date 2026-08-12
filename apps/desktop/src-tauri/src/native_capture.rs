@@ -852,6 +852,9 @@ fn browser_url_metadata_source(
 }
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
+    // Every wake path funnels through here, so this is where hidden webviews
+    // come back — a missed `screens_did_wake` must never leave the app blank.
+    crate::windows::set_all_webview_views_hidden(app_handle, false);
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
 }
 
@@ -1528,6 +1531,12 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
         {
             let app_handle = app_handle.clone();
             move |_notification| {
+                // Hide the webview VIEWS (not windows) while no display is lit:
+                // the lock/sleep-entry transition otherwise repaints the whole
+                // layer tree into permanently stranded IOSurfaces, and a hidden
+                // view is the one state whose backing stores WebKit marks
+                // volatile. See `set_all_webview_views_hidden`.
+                crate::windows::set_all_webview_views_hidden(&app_handle, true);
                 let _ = app_handle.emit(SCREENS_DID_SLEEP_EVENT, ());
             }
         },
@@ -1539,6 +1548,7 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
         {
             let app_handle = app_handle.clone();
             move |_notification| {
+                crate::windows::set_all_webview_views_hidden(&app_handle, false);
                 let _ = app_handle.emit(SCREENS_DID_WAKE_EVENT, ());
             }
         },

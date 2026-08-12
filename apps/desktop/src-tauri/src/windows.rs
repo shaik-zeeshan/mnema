@@ -797,6 +797,43 @@ fn order_out_quick_recall_panel(window: &WebviewWindow) {
     }
 }
 
+/// Hide (or reveal) every window's WKWebView view — `setHidden:` on the view,
+/// never `orderOut:` on the window, so z-order, key state and the window stack
+/// stay exactly as the user left them.
+///
+/// Called with `true` when the screens sleep and `false` on every wake signal.
+/// A hidden WKWebView drops WebKit's view-visible state, which parks the
+/// render-idle gate frontend-side (`document.visibilityState` goes hidden) and
+/// marks layer backing stores volatile — WebKit's one designed reclaim trigger.
+/// Without this, the lock/sleep-entry transition repaints the whole layer tree
+/// while no display is lit and permanently strands a handful of non-purgeable
+/// IOSurfaces per cycle (~40 MB, Apple FB16462982); measured live 2026-08-12:
+/// hiding the view recovered exactly the surfaces the last lock cycle stranded.
+///
+/// The wake side rides `emit_system_did_wake` — the single funnel every wake
+/// path goes through — because webviews still hidden after a missed wake would
+/// leave the app a blank window. Revealing an already-visible view is a no-op,
+/// so over-calling is safe.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+pub fn set_all_webview_views_hidden(app_handle: &tauri::AppHandle, hidden: bool) {
+    use cocoa::base::{id, NO, YES};
+    use objc::{msg_send, sel, sel_impl};
+    let flag = if hidden { YES } else { NO };
+    for window in app_handle.webview_windows().values() {
+        let _ = window.with_webview(move |webview| unsafe {
+            let wv = webview.inner() as id;
+            if wv.is_null() {
+                return;
+            }
+            let _: () = msg_send![wv, setHidden: flag];
+        });
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_all_webview_views_hidden(_app_handle: &tauri::AppHandle, _hidden: bool) {}
+
 fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     let config = AppWindow::QuickRecall.config();
     let built = WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()))
