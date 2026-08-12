@@ -1532,7 +1532,7 @@ async fn generate_conversation_title(
     question: String,
 ) {
     let settings = read_ai_runtime_settings(&app_handle);
-    let config = match crate::ai_runtime::resolve_engine_config(&settings, None, None) {
+    let config = match crate::ai_runtime::resolve_engine_config_live(&settings, None, None).await {
         Ok(config) => config,
         Err(reason) => {
             tauri_plugin_log::log::debug!(
@@ -1686,11 +1686,12 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config(
+    let config_result = crate::ai_runtime::resolve_engine_config_live(
         &settings.ai_runtime,
         pin_ref,
         settings.access.ask_ai_model.as_deref(),
-    );
+    )
+    .await;
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {

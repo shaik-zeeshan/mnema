@@ -555,6 +555,9 @@ pub enum AiProviderKind {
     Anthropic,
     Openai,
     OpenaiCompatible,
+    /// ChatGPT subscription (Plus/Pro) via OAuth device-code login — the
+    /// credential is a vault-held OAuth token set, not a pasted API key.
+    Chatgpt,
     Ollama,
     Llamafile,
 }
@@ -566,6 +569,7 @@ impl AiProviderKind {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::OpenaiCompatible => "openai_compatible",
+            Self::Chatgpt => "chatgpt",
             Self::Ollama => "ollama",
             Self::Llamafile => "llamafile",
         }
@@ -578,6 +582,7 @@ impl AiProviderKind {
             "anthropic" => Some(Self::Anthropic),
             "openai" => Some(Self::Openai),
             "openai_compatible" => Some(Self::OpenaiCompatible),
+            "chatgpt" => Some(Self::Chatgpt),
             "ollama" => Some(Self::Ollama),
             "llamafile" => Some(Self::Llamafile),
             _ => None,

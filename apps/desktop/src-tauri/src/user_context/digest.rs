@@ -731,7 +731,7 @@ pub async fn get_or_generate_digest(
         ));
         return Ok(None);
     }
-    let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime, None, None) else {
+    let Ok(engine) = crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await else {
         crate::native_capture::debug_log::log_info(format!(
             "digest: skipped {range_kind} (engine config did not resolve)"
         ));

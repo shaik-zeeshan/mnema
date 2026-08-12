@@ -338,6 +338,7 @@ fn cloud_provider_kind(kind: AiProviderKind) -> Option<ai_engine::CloudProvider>
         AiProviderKind::Anthropic => Some(ai_engine::CloudProvider::Anthropic),
         AiProviderKind::Openai => Some(ai_engine::CloudProvider::Openai),
         AiProviderKind::OpenaiCompatible => Some(ai_engine::CloudProvider::OpenAiCompatible),
+        AiProviderKind::Chatgpt => Some(ai_engine::CloudProvider::Chatgpt),
         AiProviderKind::Ollama | AiProviderKind::Llamafile => None,
     }
 }
@@ -419,6 +420,26 @@ fn engine_config_for_ref(
     if matches!(kind, AiProviderKind::OpenaiCompatible) && !base_url.is_empty() {
         validate_provider_base_url(provider_id, base_url)?;
     }
+    // ChatGPT's vault slot holds an OAuth token set (JSON), not an API key. The
+    // sync resolver hands the engine the *stored* access token — possibly
+    // stale; [`resolve_engine_config_live`] refreshes it before any real call.
+    // A missing/unreadable set is `needs_reconnect` (the connect flow is a
+    // login, not a key paste), keeping `no_provider_key` for the pasted-key
+    // kinds.
+    if matches!(kind, AiProviderKind::Chatgpt) {
+        let token_set = crate::chatgpt_auth::load_token_set(provider_id)
+            .map_err(|error| {
+                tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
+                format!("needs_reconnect:{provider_id}")
+            })?
+            .ok_or_else(|| format!("needs_reconnect:{provider_id}"))?;
+        return Ok(ai_engine::EngineConfig::Cloud {
+            provider: ai_engine::CloudProvider::Chatgpt,
+            model: model.to_string(),
+            api_key: token_set.access_token,
+            base_url: None,
+        });
+    }
     let api_key = app_infra::load_ai_provider_key(provider_id)
         .map_err(|error| error.to_string())?
         .filter(|key| !key.is_empty())
@@ -456,6 +477,18 @@ pub(crate) fn resolve_engine_config(
     pin: Option<(&str, &str)>,
     feature_override_model: Option<&str>,
 ) -> Result<ai_engine::EngineConfig, String> {
+    resolve_engine_ref(settings, pin, feature_override_model).map(|(_, config)| config)
+}
+
+/// [`resolve_engine_config`] plus the resolved provider *instance id* — the
+/// internal shape shared by the sync resolver and the freshness-aware
+/// [`resolve_engine_config_live`], which needs the id to key the ChatGPT
+/// token-set vault slot.
+fn resolve_engine_ref(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<(String, ai_engine::EngineConfig), String> {
     // 1. Thread pin.
     if let Some((provider, model)) = pin {
         let provider = provider.trim();
@@ -466,7 +499,8 @@ pub(crate) fn resolve_engine_config(
             // unknown or removed provider falls through to the override/default
             // layers below instead of failing the thread.
             if provider_config(settings, provider).is_some() {
-                return engine_config_for_ref(settings, provider, model);
+                return engine_config_for_ref(settings, provider, model)
+                    .map(|config| (provider.to_string(), config));
             }
         }
     }
@@ -482,7 +516,33 @@ pub(crate) fn resolve_engine_config(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .unwrap_or_else(|| default_model.model.trim());
-    engine_config_for_ref(settings, default_model.provider.trim(), model)
+    let provider = default_model.provider.trim();
+    engine_config_for_ref(settings, provider, model)
+        .map(|config| (provider.to_string(), config))
+}
+
+/// [`resolve_engine_config`] for call sites about to *use* the engine: same
+/// precedence chain, plus the ChatGPT freshness gate — a resolved `chatgpt`
+/// engine gets its access token refreshed (and the rotated set persisted)
+/// when expired or about to expire. Failures surface as
+/// `needs_reconnect:<id>`; no interactive login is ever started. Other
+/// providers pass through untouched, so this is safe as the default resolver
+/// everywhere an async context is available.
+pub(crate) async fn resolve_engine_config_live(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<ai_engine::EngineConfig, String> {
+    let (provider_id, mut config) = resolve_engine_ref(settings, pin, feature_override_model)?;
+    if let ai_engine::EngineConfig::Cloud {
+        provider: ai_engine::CloudProvider::Chatgpt,
+        api_key,
+        ..
+    } = &mut config
+    {
+        *api_key = crate::chatgpt_auth::fresh_access_token(&provider_id).await?;
+    }
+    Ok(config)
 }
 
 /// The static (no-network) half of the engine-configured prerequisite: master
@@ -569,6 +629,23 @@ pub async fn ai_runtime_has_provider_key(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+/// Start a ChatGPT device-code login for one `chatgpt` provider instance.
+/// Returns the user code + verify URL for the UI to show; the terminal
+/// outcome arrives as a `chatgpt_login_update` event (see `chatgpt_auth`).
+/// Disconnect reuses [`ai_runtime_clear_provider_key`] — the token set lives
+/// in the same vault slot — and "is connected" is [`ai_runtime_has_provider_key`].
+#[tauri::command]
+pub async fn ai_runtime_chatgpt_begin_login(
+    app: tauri::AppHandle,
+    request: AiRuntimeProviderRequest,
+) -> Result<crate::chatgpt_auth::ChatgptLoginPrompt, String> {
+    let provider = request.provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    crate::chatgpt_auth::begin_login(app, provider).await
 }
 
 // MCP connector secrets: same keychain-off-the-main-thread pattern as the
@@ -659,7 +736,7 @@ pub async fn ai_runtime_test_connection(
         .clone()
         .filter(|model| !model.model.trim().is_empty())
         .ok_or_else(|| "no_default_model".to_string())?;
-    let config = resolve_engine_config(&settings, None, None)?;
+    let config = resolve_engine_config_live(&settings, None, None).await?;
 
     let probe = ai_engine::run_connection_probe(&config)
         .await
@@ -772,6 +849,19 @@ async fn list_models_for_provider(
         return list_fireworks_models(client, &base_host(base_url), &api_key).await;
     }
 
+    // The ChatGPT subscription backend has no model-discovery endpoint; the
+    // picker gets the static list (owned in `chatgpt_auth`, not rig, so it can
+    // be updated without a rig release). No context-window metadata either.
+    if provider.kind == AiProviderKind::Chatgpt {
+        return Ok(crate::chatgpt_auth::CHATGPT_MODEL_IDS
+            .iter()
+            .map(|id| DiscoveredModel {
+                id: (*id).to_string(),
+                context_window: None,
+            })
+            .collect());
+    }
+
     let http_request = match provider.kind {
         AiProviderKind::Anthropic | AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => {
             // The key lives in the keychain at the provider's instance id.
@@ -797,6 +887,9 @@ async fn list_models_for_provider(
         }
         AiProviderKind::Ollama | AiProviderKind::Llamafile => {
             client.get(models_endpoint_url(&local_endpoint(provider)))
+        }
+        AiProviderKind::Chatgpt => {
+            unreachable!("chatgpt is answered by the static-list early return above")
         }
     };
 
@@ -1519,6 +1612,33 @@ mod tests {
                 "custom compat host must not be rejected by the binding, got {reason}"
             );
         }
+    }
+
+    #[test]
+    fn chatgpt_without_token_set_resolves_to_needs_reconnect() {
+        // A connected chatgpt provider whose vault slot is empty (never logged
+        // in, or the set was cleared) must surface the dedicated reconnect
+        // reason — not `no_provider_key`, which UI copy treats as "paste a
+        // key". In the test environment the vault has no entry (or is not
+        // unlockable), and both of those paths collapse to the same code.
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "chatgpt".to_string(),
+                kind: AiProviderKind::Chatgpt,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
     }
 
     #[test]

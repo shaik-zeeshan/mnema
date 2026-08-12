@@ -25,7 +25,7 @@ use rig_agent::client::AgentClientExt;
 use rig_agent::completion::PromptError;
 use rig_core::completion::{CompletionModel, GetTokenUsage};
 use rig_core::message::Message;
-use rig_core::providers::{anthropic, llamafile, ollama, openai};
+use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
 use rig_agent::streaming::StreamingChat;
 use rig_core::streaming::StreamedAssistantContent;
 use rig_agent::tool::{DynamicTool, ToolExecutionError, ToolOutput};
@@ -250,6 +250,27 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(DEFAULT_MAX_TOKENS)
+                        .dynamic_tools(tool_set)
+                        .build();
+                    drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
+                        .await
+                }
+                CloudProvider::Chatgpt => {
+                    // ChatGPT subscription backend (mirrors `extract_with_preamble`):
+                    // `api_key` carries the caller-managed OAuth access token.
+                    // Every model on this backend is a reasoning model
+                    // (gpt-5.3/5.4 family) whose chain-of-thought bills against
+                    // the output budget, so give it the reasoning ceiling.
+                    let client = chatgpt::Client::builder()
+                        .api_key(chatgpt::ChatGPTAuth::AccessToken {
+                            access_token: api_key.clone(),
+                            account_id: None,
+                        })
+                        .build()?;
+                    let agent = client
+                        .agent(model.as_str())
+                        .preamble(preamble)
+                        .max_tokens(REASONING_MAX_TOKENS)
                         .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)

@@ -533,6 +533,29 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_provider_kind_round_trips_with_stable_id() {
+        // The serde tag doubles as the vault-slot / pin / model-tag identity,
+        // so it must stay exactly "chatgpt".
+        assert_eq!(AiProviderKind::Chatgpt.id(), "chatgpt");
+        assert_eq!(
+            AiProviderKind::from_id("chatgpt"),
+            Some(AiProviderKind::Chatgpt)
+        );
+        assert!(!AiProviderKind::Chatgpt.is_local());
+
+        let config = AiProviderConfig {
+            id: "chatgpt".to_string(),
+            kind: AiProviderKind::Chatgpt,
+            label: String::new(),
+            base_url: String::new(),
+        };
+        let json = serde_json::to_value(&config).expect("serialize");
+        assert_eq!(json["kind"], "chatgpt");
+        let round: AiProviderConfig = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(round, config);
+    }
+
+    #[test]
     fn ai_runtime_settings_empty_object_deserializes_to_defaults() {
         // Neither shape present (e.g. `#[serde(default)]`-adjacent partials):
         // no providers, no default model.

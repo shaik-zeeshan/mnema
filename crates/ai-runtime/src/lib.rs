@@ -16,7 +16,7 @@
 // `.extractor::<T>(model)` on a provider client is classic-runtime
 // construction, provided by `AgentClientExt` since the 0.41 core/agent split.
 use rig_agent::client::AgentClientExt;
-use rig_core::providers::{anthropic, llamafile, ollama, openai};
+use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
 
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -66,6 +66,11 @@ pub enum CloudProvider {
     Anthropic,
     Openai,
     OpenAiCompatible,
+    /// ChatGPT subscription backend (`chatgpt.com/backend-api/codex`). The
+    /// credential in [`EngineConfig::Cloud::api_key`] is an OAuth *access
+    /// token* (acquired and refreshed by the caller), not an API key; rig
+    /// extracts the account id from the token itself.
+    Chatgpt,
 }
 
 /// Local LLM runtime exposed on a user-controlled endpoint with no credential.
@@ -290,6 +295,23 @@ where
                 }
                 CloudProvider::Openai => {
                     let client = openai::Client::builder().api_key(api_key).build()?;
+                    let extractor = client
+                        .extractor::<T>(model.as_str())
+                        .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
+                        .build();
+                    Ok(extractor.extract(prompt).await?)
+                }
+                CloudProvider::Chatgpt => {
+                    // ChatGPT subscription backend. `api_key` carries the OAuth
+                    // access token the caller acquired/refreshed; rig extracts
+                    // the account id from the token itself.
+                    let client = chatgpt::Client::builder()
+                        .api_key(chatgpt::ChatGPTAuth::AccessToken {
+                            access_token: api_key.clone(),
+                            account_id: None,
+                        })
+                        .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)

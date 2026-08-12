@@ -18,6 +18,7 @@ import type { AiProviderConfig, AiProviderKind } from "$lib/types";
 export const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
   "anthropic",
   "openai",
+  "chatgpt",
   "openai_compatible",
   "ollama",
   "llamafile",
@@ -27,8 +28,19 @@ export const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
 export const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
   "anthropic",
   "openai",
+  "chatgpt",
   "openai_compatible",
 ];
+
+/**
+ * `chatgpt` is the one cloud kind whose credential is NOT a pasted API key: it
+ * connects via an OAuth device-code login ("Sign in with ChatGPT") and the
+ * backend stores the token set in the vault slot the key would occupy. UI
+ * surfaces branch on this to render a Connect button instead of a key field.
+ */
+export function isOauthAiProviderKind(kind: string): boolean {
+  return kind === "chatgpt";
+}
 
 /** Default localhost endpoint for each local (on-device) provider kind. */
 export const AI_LOCAL_DEFAULT_ENDPOINTS: Partial<Record<AiProviderKind, string>> = {
@@ -46,6 +58,7 @@ export function aiProviderKindLabel(kind: string): string {
   switch (kind) {
     case "anthropic": return "Anthropic";
     case "openai": return "OpenAI";
+    case "chatgpt": return "ChatGPT";
     case "openai_compatible": return "OpenAI-compatible";
     case "ollama": return "Ollama";
     case "llamafile": return "Llamafile";
@@ -58,6 +71,7 @@ export function aiProviderKindDescription(kind: AiProviderKind): string {
   switch (kind) {
     case "anthropic": return "Claude models — your own API key";
     case "openai": return "GPT models — your own API key";
+    case "chatgpt": return "Your ChatGPT Plus/Pro subscription — sign in, no API key";
     case "openai_compatible": return "Fireworks, OpenRouter, Together — custom base URL + key";
     case "ollama": return "Local runtime, default endpoint http://localhost:11434";
     case "llamafile": return "Local OpenAI-compatible server, default http://localhost:8080";
