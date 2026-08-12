@@ -8,10 +8,12 @@
 //
 // Interval-driven pollers need no resume wiring: their timer keeps firing
 // and the first tick after resume passes the gate.
+import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 
+import { setFramePreviewRenderGate } from "$lib/frame-preview";
 import { clampTarget } from "$lib/render-idle-clamp";
 
 const _state = $state({ screensAsleep: false, resumeTick: 0 });
@@ -28,15 +30,43 @@ export function renderResumeTick(): number {
   return _state.resumeTick;
 }
 
+// Callers parked in `whenRenderable`, flushed the moment rendering resumes.
+const _renderableWaiters: (() => void)[] = [];
+
+/**
+ * Resolves the moment pixels can reach a lit display — immediately when they
+ * already can. `untrack`ed so awaiting it inside an `$effect` (the preview
+ * blob-swap effects do) does not make that effect re-run on every sleep/wake.
+ */
+export function whenRenderable(): Promise<void> {
+  if (!untrack(renderIdle)) return Promise.resolve();
+  return new Promise((resolve) => {
+    _renderableWaiters.push(resolve);
+  });
+}
+
+function flushRenderableWaiters(): void {
+  if (_renderableWaiters.length === 0 || renderIdle()) return;
+  for (const resolve of _renderableWaiters.splice(0)) resolve();
+}
+
 let _initialized = false;
 
 export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   if (_initialized || typeof window === "undefined") return;
   _initialized = true;
 
+  // The frame-preview holders park their blob swaps behind this gate: a URL
+  // painted while nothing can render strands a non-purgeable IOSurface. Armed
+  // here (not statically in frame-preview) so plain unit tests and SSR never
+  // park. `null` while renderable — the swap sync-prefix contract requires no
+  // added await on the open path.
+  setFramePreviewRenderGate(() => (untrack(renderIdle) ? whenRenderable() : null));
+
   const wake = () => {
     _state.screensAsleep = false;
     _state.resumeTick += 1;
+    flushRenderableWaiters();
   };
   void listen("screens_did_sleep", () => {
     _state.screensAsleep = true;
@@ -51,7 +81,10 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   // wake trigger — so it un-gates here too. Redundant on a normal wake.
   void listen("system_did_wake", wake);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") _state.resumeTick += 1;
+    if (document.visibilityState === "visible") {
+      _state.resumeTick += 1;
+      flushRenderableWaiters();
+    }
   });
 
   // A display disconnect can park the window (almost) entirely outside every
@@ -65,7 +98,11 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
       if (clampTimer != null) clearTimeout(clampTimer);
       clampTimer = setTimeout(() => {
         clampTimer = null;
-        void clampWindowOntoScreen();
+        // Never move the window while nothing can render: a `setPosition`
+        // relayout mid-sleep-transition repaints the whole layer tree into
+        // stranded IOSurfaces, and the monitor list is transient anyway.
+        // Deferred, the clamp runs against the final post-wake configuration.
+        void whenRenderable().then(() => clampWindowOntoScreen());
       }, 500);
     });
   }

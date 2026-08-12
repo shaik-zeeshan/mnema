@@ -131,6 +131,53 @@ describe("render-idle", () => {
     expect(mod.renderResumeTick()).toBe(before + 1);
   });
 
+  test("whenRenderable parks while screens sleep and resolves on wake", async () => {
+    emit("screens_did_sleep");
+    let resolved = false;
+    const parked = mod.whenRenderable().then(() => {
+      resolved = true;
+    });
+    await drain();
+    expect(resolved).toBe(false);
+
+    emit("screens_did_wake");
+    await parked;
+    expect(resolved).toBe(true);
+    // And while renderable it never parks.
+    let immediate = false;
+    void mod.whenRenderable().then(() => {
+      immediate = true;
+    });
+    await drain();
+    expect(immediate).toBe(true);
+  });
+
+  test("initRenderIdle arms the frame-preview render gate: a parked swap paints on wake", async () => {
+    const { FramePreviewUrlHolder } = await import("$lib/frame-preview");
+    const holder = new FramePreviewUrlHolder({
+      convertFileSrcImpl: (path) => `asset://${path}`,
+      fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }),
+      createObjectUrlImpl: () => "blob:armed",
+      revokeObjectUrlImpl: () => {},
+    });
+
+    emit("screens_did_sleep");
+    let url = null;
+    let settled = false;
+    const pending = holder.swap("/frames/asleep.png").then((swapped) => {
+      settled = true;
+      url = swapped;
+    });
+    await drain();
+    // The one assertion proving the halves connect: with no explicit gate
+    // wiring here, the swap parked because `initRenderIdle` armed it.
+    expect(settled).toBe(false);
+
+    emit("screens_did_wake");
+    await pending;
+    expect(url).toBe("blob:armed");
+  });
+
   test("screens_did_wake clears the sleep gate", () => {
     emit("screens_did_sleep");
     expect(mod.renderIdle()).toBe(true);
@@ -192,6 +239,23 @@ describe("offscreen clamp", () => {
     emit("display_configuration_changed");
     await runPendingClamp();
 
+    expect(setPositionCalls).toHaveLength(1);
+  });
+
+  test("a clamp due while screens sleep waits for wake", async () => {
+    resetClampHarness();
+    winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+
+    emit("screens_did_sleep");
+    emit("display_configuration_changed");
+    // The debounce fires, but moving the window while nothing can render
+    // repaints the whole layer tree into stranded IOSurfaces — so no move yet.
+    await runPendingClamp();
+    expect(setPositionCalls).toHaveLength(0);
+
+    emit("screens_did_wake");
+    await drain();
     expect(setPositionCalls).toHaveLength(1);
   });
 

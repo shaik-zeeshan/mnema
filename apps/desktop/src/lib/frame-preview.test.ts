@@ -1,7 +1,11 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { FramePreviewUrlHolder, FramePreviewUrlMap } from "./frame-preview";
+import {
+  FramePreviewUrlHolder,
+  FramePreviewUrlMap,
+  setFramePreviewRenderGate,
+} from "./frame-preview";
 
 /** A holder wired to fakes, plus the revoke log the assertions read. */
 function harness(options: { fetchImpl?: typeof fetch } = {}) {
@@ -242,6 +246,76 @@ describe("FramePreviewUrlHolder", () => {
     expect(holder.swap("/frames/2.png")).rejects.toThrow("frame preview fetch failed");
     expect(holder.current).toBe("blob:1");
     expect(revoked).toEqual([]);
+  });
+});
+
+describe("render gate", () => {
+  // Restore the default open gate so these tests can't poison the rest of
+  // the file.
+  const openGate = () => setFramePreviewRenderGate(() => null);
+
+  test("swap parks behind a closed gate, fetches nothing, and paints on resume", async () => {
+    let fetches = 0;
+    const { holder } = harness({
+      fetchImpl: async () => {
+        fetches++;
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+    });
+    let release: () => void = () => {};
+    setFramePreviewRenderGate(() => new Promise((resolve) => (release = resolve)));
+    try {
+      let settled = false;
+      const pending = holder.swap("/frames/parked.png").then((url) => {
+        settled = true;
+        return url;
+      });
+      // Drain enough microtasks to prove the park is a park, not a slow path.
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(fetches).toBe(0);
+      expect(holder.current).toBe(null);
+
+      release();
+      expect(await pending).toBe("blob:1");
+      expect(holder.current).toBe("blob:1");
+    } finally {
+      openGate();
+    }
+  });
+
+  test("a swap superseded while parked reports null and mints nothing for the loser", async () => {
+    const { holder, revoked } = harness();
+    const releases: (() => void)[] = [];
+    setFramePreviewRenderGate(() => new Promise((resolve) => releases.push(resolve)));
+    try {
+      const first = holder.swap("/frames/1.png");
+      const second = holder.swap("/frames/2.png");
+      for (const release of releases) release();
+      // The stale swap wakes, sees a newer generation, and bows out without
+      // fetching or minting; only the latest one paints.
+      expect(await first).toBe(null);
+      expect(await second).toBe("blob:1");
+      expect(holder.current).toBe("blob:1");
+      expect(revoked).toEqual([]);
+    } finally {
+      openGate();
+    }
+  });
+
+  test("clear while parked disowns the swap", async () => {
+    const { holder } = harness();
+    let release: () => void = () => {};
+    setFramePreviewRenderGate(() => new Promise((resolve) => (release = resolve)));
+    try {
+      const parked = holder.swap("/frames/1.png");
+      holder.clear();
+      release();
+      expect(await parked).toBe(null);
+      expect(holder.current).toBe(null);
+    } finally {
+      openGate();
+    }
   });
 });
 

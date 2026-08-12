@@ -12,6 +12,20 @@ export type FramePreviewUrlDependencies = FramePreviewFetchDependencies & {
   revokeObjectUrlImpl?: (url: string) => void;
 };
 
+// The render gate every `FramePreviewUrlHolder.swap` consults before painting
+// a fresh URL: `null` = renderable, proceed synchronously (the sync prefix of
+// `swap` — supersede, abort — must not grow an await when nothing parks); a
+// Promise = park until it resolves. Armed by `initRenderIdle`; permanently
+// `null` until then, so unit tests and SSR never park. Lives here
+// (set-injection, not a static import) because `render-idle.svelte.ts` is a
+// rune module and this file is imported by plain `bun test` suites that can't
+// compile runes.
+let framePreviewRenderGate: () => Promise<void> | null = () => null;
+
+export function setFramePreviewRenderGate(gate: () => Promise<void> | null): void {
+  framePreviewRenderGate = gate;
+}
+
 export function framePreviewAssetUrl(
   filePath: string,
   deps: Pick<FramePreviewFetchDependencies, "convertFileSrcImpl"> = {},
@@ -88,6 +102,19 @@ export class FramePreviewUrlHolder {
   async swap(filePath: string, mimeType?: string | null): Promise<string | null> {
     const generation = ++this.#generation;
     this.#abortInFlight();
+    // Park while the window's pixels can't reach a lit display: WebKit strands
+    // a non-purgeable IOSurface for every fresh URL painted in that state
+    // (Apple FB16462982), and the entry-point renderIdle() guards don't cover
+    // swaps driven by cache writes that land AFTER the gate closes — armed
+    // settle timers and in-flight preview fetches. Parking before the fetch
+    // keeps a sleeping display from buffering hero bytes it will never paint;
+    // the latest swap proceeds on resume, superseded ones report `null` like
+    // any other lost race.
+    const parked = framePreviewRenderGate();
+    if (parked) {
+      await parked;
+      if (generation !== this.#generation) return null;
+    }
     const controller = typeof AbortController === "undefined" ? null : new AbortController();
     this.#inFlight = controller;
     let bytes: Uint8Array;
