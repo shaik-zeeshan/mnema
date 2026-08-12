@@ -4,6 +4,7 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
+  import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -120,7 +121,7 @@
                   <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                   <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
                   {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
-                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />key in keychain</span>
+                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />{provider.kind === "chatgpt" ? "connected" : "key in keychain"}</span>
                   {/if}
                   <button
                     class="btn btn--danger btn--sm provider-row__remove"
@@ -166,7 +167,19 @@
                   />
                   <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
                 {/if}
-                {#if isCloudAiProviderKind(provider.kind)}
+                {#if provider.kind === "chatgpt"}
+                  <!-- The one cloud kind with no key field: an OAuth device-code
+                       login stores a token set in the same vault slot, so key
+                       presence doubles as "connected". -->
+                  <ChatgptConnect
+                    providerId={provider.id}
+                    connected={!!aiProviderKeySavedByProvider[provider.id]}
+                    onchange={() => {
+                      void aiRuntime.handleChatgptConnectionChange();
+                      void loadSettingsModels();
+                    }}
+                  />
+                {:else if isCloudAiProviderKind(provider.kind)}
                   <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>
                   <input
                     id="ai-provider-key-{provider.id}"

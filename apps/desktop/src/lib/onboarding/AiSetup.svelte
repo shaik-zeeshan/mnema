@@ -24,6 +24,7 @@
 -->
 <script lang="ts">
   import { untrack } from "svelte";
+  import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import {
     AI_LOCAL_DEFAULT_ENDPOINTS,
@@ -74,7 +75,7 @@
     { port: 1234, kind: "llamafile", name: "OpenAI-compatible server" },
   ];
   const LOCAL_KINDS: AiProviderKind[] = ["ollama", "llamafile"];
-  const CLOUD_KINDS: AiProviderKind[] = ["anthropic", "openai", "openai_compatible"];
+  const CLOUD_KINDS: AiProviderKind[] = ["anthropic", "openai", "chatgpt", "openai_compatible"];
 
   const VAULT_NOTE =
     "The key goes into the app's encrypted vault (day.mnema.vault, unlocked by one keychain item) — " +
@@ -105,7 +106,16 @@
 
   const local = $derived(!isCloudAiProviderKind(kind));
   const compat = $derived(kind === "openai_compatible");
+  // ChatGPT is the one cloud kind with no key field: it connects via an OAuth
+  // device-code login (the shared ChatgptConnect component), and the token set
+  // lands in the vault slot a key would occupy.
+  const oauth = $derived(kind === "chatgpt");
+  // Set by the "Sign in with ChatGPT" click that also creates the instance, so
+  // the freshly-mounted connect component starts the login without a second
+  // click. Never armed on remount of an existing (still unconnected) instance.
+  let chatgptAutostart = $state(false);
   const providers = $derived(ai.draftAiProviders);
+  const chatgptInstance = $derived(providers.find((p) => p.kind === "chatgpt") ?? null);
   const rack = $derived(providers.length > 1);
   // The card owning the default model is pinned to the top of the rack.
   const racked = $derived(
@@ -165,7 +175,9 @@
         ? "api.anthropic.com"
         : kind === "openai"
           ? "api.openai.com"
-          : baseUrlHost(compatUrl) || "the host you type",
+          : kind === "chatgpt"
+            ? "chatgpt.com"
+            : baseUrlHost(compatUrl) || "the host you type",
   );
 
   // ── Connecting ────────────────────────────────────────────────────────────
@@ -218,6 +230,14 @@
     } else {
       setStatus("");
     }
+  }
+
+  /** A ChatGPT sign-in or disconnect landed — re-prove the instance. */
+  async function onChatgptChanged(id: string): Promise<void> {
+    ai.invalidateVerification(id);
+    setStatus("checking the ChatGPT connection…");
+    await ai.verifyProvider(id);
+    reportVerification(id);
   }
 
   function onKeyInput(): void {
@@ -363,7 +383,9 @@
     <div class="d gap">
       {local
         ? "If one is already running here, nothing has to be typed."
-        : "Your own account. There is no Save — the key proves itself."}
+        : oauth
+          ? "Your own ChatGPT Plus/Pro plan. Sign in in the browser — no API key."
+          : "Your own account. There is no Save — the key proves itself."}
     </div>
 
     <div class="line">
@@ -387,6 +409,19 @@
         <button class="ob-btn sm" type="button" disabled={scanning} onclick={() => void runScan()}>
           {scanning ? "Scanning…" : scan ? "Scan again" : "Scan this Mac"}
         </button>
+      {:else if oauth}
+        {#if !chatgptInstance}
+          <button
+            class="ob-btn sm"
+            type="button"
+            onclick={() => {
+              chatgptAutostart = true;
+              ai.addProvider("chatgpt");
+            }}
+          >
+            Sign in with ChatGPT
+          </button>
+        {/if}
       {:else}
         <!-- No `value` binding: the string is read from this node once and cleared. -->
         <input
@@ -413,6 +448,17 @@
         placeholder="https://api.example.com/v1"
         bind:value={compatUrl}
       />
+    {/if}
+
+    {#if oauth && chatgptInstance}
+      <div class="top">
+        <ChatgptConnect
+          providerId={chatgptInstance.id}
+          connected={!!ai.aiProviderKeySaved[chatgptInstance.id]}
+          autostart={chatgptAutostart}
+          onchange={() => chatgptInstance && void onChatgptChanged(chatgptInstance.id)}
+        />
+      </div>
     {/if}
 
     <div class="flow" class:out={!local}>
@@ -479,7 +525,7 @@
           Connect
         </button>
       </div>
-    {:else}
+    {:else if !oauth}
       <div class="ob-acts top">
         <button
           class="ob-btn sm"
@@ -522,7 +568,9 @@
           {aiVerificationWord(verificationOf(provider.id))}
         </span>
         {#if isCloudAiProviderKind(provider.kind) && ai.aiProviderKeySaved[provider.id]}
-          <span class="pill" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>
+          <span class="pill" title="stored in the app vault, day.mnema.vault">
+            {provider.kind === "chatgpt" ? "✓ signed in" : "✓ key in vault"}
+          </span>
         {/if}
       </div>
 
@@ -542,6 +590,21 @@
       {/if}
 
       {#if editing === provider.id}
+        {#if provider.kind === "chatgpt"}
+          <!-- Editing a ChatGPT card is a re-login, not a key replacement. -->
+          <div class="top">
+            <ChatgptConnect
+              providerId={provider.id}
+              connected={!!ai.aiProviderKeySaved[provider.id]}
+              onchange={() => void onChatgptChanged(provider.id)}
+            />
+          </div>
+          <div class="ob-acts top">
+            <button class="ob-btn sm ghost" type="button" onclick={() => (editing = null)}>
+              Done
+            </button>
+          </div>
+        {:else}
         <div class="line top">
           {#if isCloudAiProviderKind(provider.kind)}
             <input
@@ -573,6 +636,7 @@
             Cancel
           </button>
         </div>
+        {/if}
       {:else}
         <div class="ob-acts top">
           <button

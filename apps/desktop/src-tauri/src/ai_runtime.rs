@@ -852,7 +852,19 @@ async fn list_models_for_provider(
     // The ChatGPT subscription backend has no model-discovery endpoint; the
     // picker gets the static list (owned in `chatgpt_auth`, not rig, so it can
     // be updated without a rig release). No context-window metadata either.
+    // Gate the list on a stored token set: "models listed" doubles as the
+    // provider-verification signal (onboarding readiness, Settings lamps), and
+    // a never-connected instance must read as needing its login, not as live.
     if provider.kind == AiProviderKind::Chatgpt {
+        let connected = crate::chatgpt_auth::load_token_set(&provider.id)
+            .map_err(|error| {
+                tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
+                format!("needs_reconnect:{}", provider.id)
+            })?
+            .is_some();
+        if !connected {
+            return Err(format!("needs_reconnect:{}", provider.id));
+        }
         return Ok(crate::chatgpt_auth::CHATGPT_MODEL_IDS
             .iter()
             .map(|id| DiscoveredModel {

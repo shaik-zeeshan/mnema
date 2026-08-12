@@ -75,6 +75,10 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       const provider = reason.slice("provider_not_connected:".length);
       return `The default model's provider (${deps.labelForProvider(provider)}) is not connected.`;
     }
+    if (reason.startsWith("needs_reconnect:")) {
+      const provider = reason.slice("needs_reconnect:".length);
+      return `${deps.labelForProvider(provider)} needs to be reconnected — sign in with ChatGPT again.`;
+    }
     switch (reason) {
       case "user_context_disabled": return "Continuous derivation is turned off.";
       case "ai_runtime_disabled": return "AI features are turned off.";
@@ -436,6 +440,16 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     await refreshMcpOAuthStates();
   }
 
+  // A ChatGPT connect/disconnect changed the vault credential outside the
+  // key-input flow — run the same refresh sequence a key save runs so the
+  // presence badge, runtime status, and Ask AI readiness all flip live.
+  async function handleChatgptConnectionChange(): Promise<void> {
+    resetTestResult();
+    await refreshAiProviderKeyPresence();
+    await loadAiRuntimeStatus();
+    deps.loadAskAiAvailability();
+  }
+
   // Clear the last test-connection banner (result + error). The banner reports
   // the provider/model that was tested; after the user changes the default model
   // or removes the tested provider it no longer reflects the live config, so the
@@ -480,6 +494,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     saveAiProviderKey,
     clearAiProviderKey,
     clearKeyForRemovedProvider,
+    handleChatgptConnectionChange,
     resetTestResult,
     runAiRuntimeTestConnection,
     // MCP connector secrets.

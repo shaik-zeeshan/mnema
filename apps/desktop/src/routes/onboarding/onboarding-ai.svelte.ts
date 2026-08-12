@@ -148,9 +148,16 @@ export function createOnboardingAiStore() {
       };
     } catch (error) {
       if (stale()) return;
+      // The chatgpt kind verifies against its vault token set; the backend's
+      // `needs_reconnect:<id>` reason code reads as line noise in the card
+      // pill, so translate it at this edge (Settings maps it in its own store).
+      const raw = humanizeError(error);
+      const reason = raw.startsWith("needs_reconnect:")
+        ? "sign in with ChatGPT to finish connecting"
+        : raw;
       aiVerifications = {
         ...aiVerifications,
-        [id]: { status: "error", reason: humanizeError(error) },
+        [id]: { status: "error", reason },
       };
     }
   }
