@@ -41,6 +41,9 @@
   // by the markup, so they reference the store directly (`about.X`, which has
   // setters) rather than read-only `$derived` aliases.
 
+  // ponytail: channel picker hidden until preview builds exist — flip to true to restore
+  const showUpdateChannelPicker = false;
+
   // ─── canInstall/canRestart are getter PROPERTIES on the store, but the
   //     markup calls them as arg-ignoring FUNCTIONS — recreate verbatim. ──
   const canInstallAppUpdate = (_s: AppUpdateStatus | null) => about.canInstallAppUpdate;
@@ -116,37 +119,39 @@
   <p class="error-text about-error" role="alert">{aboutActionError}</p>
 {/if}
 
-<SettingGroup title="Updates" hint="Mnema checks the selected channel at startup after onboarding.">
-  <SettingRow label="Update channel" description={switchingAppUpdateChannel ? "Saving channel and checking for updates." : `Current channel: ${updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.`} full>
-    {#snippet control()}
-      <RadioGroup
-        value={appUpdateStatus?.channel === "preview" ? "preview" : "stable"}
-        onValueChange={(v) => chooseAppUpdateChannel(v as AppUpdateChannel)}
-        disabled={switchingAppUpdateChannel || installingAppUpdate}
-        label="Update channel"
-        options={[
-          { value: "stable", label: "Stable", description: "Published releases" },
-          { value: "preview", label: "Preview", description: "Opt-in prereleases" },
-        ]}
-      />
-    {/snippet}
-  </SettingRow>
-
-  {#if about.previewConfirmationVisible}
-    <SettingRow label="Confirm preview channel" description="Preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available." warn full>
+<SettingGroup title="Updates" hint="Mnema checks for updates at startup after onboarding.">
+  {#if showUpdateChannelPicker}
+    <SettingRow label="Update channel" description={switchingAppUpdateChannel ? "Saving channel and checking for updates." : `Current channel: ${updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.`} full>
       {#snippet control()}
-        <div class="preview-warning" role="alert">
-          <div class="row-actions">
-            <button class="btn btn--primary btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
-              Use Preview Updates
-            </button>
-            <button class="btn btn--ghost btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
-              Keep Stable
-            </button>
-          </div>
-        </div>
+        <RadioGroup
+          value={appUpdateStatus?.channel === "preview" ? "preview" : "stable"}
+          onValueChange={(v) => chooseAppUpdateChannel(v as AppUpdateChannel)}
+          disabled={switchingAppUpdateChannel || installingAppUpdate}
+          label="Update channel"
+          options={[
+            { value: "stable", label: "Stable", description: "Published releases" },
+            { value: "preview", label: "Preview", description: "Opt-in prereleases" },
+          ]}
+        />
       {/snippet}
     </SettingRow>
+
+    {#if about.previewConfirmationVisible}
+      <SettingRow label="Confirm preview channel" description="Preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available." warn full>
+        {#snippet control()}
+          <div class="preview-warning" role="alert">
+            <div class="row-actions">
+              <button class="btn btn--primary btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
+                Use Preview Updates
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
+                Keep Stable
+              </button>
+            </div>
+          </div>
+        {/snippet}
+      </SettingRow>
+    {/if}
   {/if}
 
   <SettingRow label="Status" description="Check for a new build and install it from here." full divider={false}>

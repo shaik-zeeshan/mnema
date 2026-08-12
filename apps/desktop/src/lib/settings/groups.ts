@@ -256,7 +256,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "about",
         anchor: "settings-section-about",
         label: "About",
-        keywords: ["version", "update channel", "third-party notices", "acknowledgements"],
+        keywords: ["version", "updates", "third-party notices", "acknowledgements"],
       },
       {
         id: "developer",
