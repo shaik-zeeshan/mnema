@@ -17,6 +17,9 @@ futures-util = "0.3"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reads the `chatgpt_account_id` claim off a ChatGPT access token — see
+# `chatgpt_account_id`. Same version app-infra and the desktop crate already use.
+base64 = "0.22"
 thiserror = "2"
 # `rt` only: used by the reachability probe to offload its blocking DNS/connect
 # onto the runtime's blocking pool when one is present. The engine stays

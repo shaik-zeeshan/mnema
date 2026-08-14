@@ -42,8 +42,13 @@ experimental flag — with the auth lifecycle split at the rig boundary:
   key-store commands unchanged. rig's `auth_file` persistence is deliberately
   unused.
 - **Completions are rig-owned**: the engine crate builds the rig chatgpt
-  client from a per-call `ChatGPTAuth::AccessToken`; rig extracts the account
-  id from the token JWT itself.
+  client from a per-call `ChatGPTAuth::AccessToken`. rig derives the account id
+  from the token *only* on its own OAuth/`auth.json` login path, which we do
+  not use — on the `AccessToken` path it passes the field through verbatim and
+  sends the `ChatGPT-Account-Id` header only when it is `Some`. So the engine
+  crate reads the same `chatgpt_account_id` claim off the access token itself
+  (`ai_runtime::chatgpt_account_id`); omitting it sends no header at all, which
+  is wrong for multi-workspace ChatGPT accounts.
 - **Freshness is a resolver concern**: the sync resolver
   (`resolve_engine_config`) stays sync/no-network and hands over the stored
   access token; every real call site goes through the async

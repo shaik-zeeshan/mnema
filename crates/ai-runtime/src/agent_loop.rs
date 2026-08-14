@@ -258,13 +258,15 @@ pub async fn run_agent_loop(
                 CloudProvider::Chatgpt => {
                     // ChatGPT subscription backend (mirrors `extract_with_preamble`):
                     // `api_key` carries the caller-managed OAuth access token.
-                    // Every model on this backend is a reasoning model
-                    // (gpt-5.3/5.4 family) whose chain-of-thought bills against
-                    // the output budget, so give it the reasoning ceiling.
+                    // Every model on this backend is a reasoning model (the
+                    // catalog in `chatgpt_auth::CHATGPT_MODEL_IDS`) whose
+                    // chain-of-thought bills against the output budget, so give
+                    // it the reasoning ceiling. Note rig clears `max_tokens` for
+                    // this provider, so today the ceiling never reaches the wire.
                     let client = chatgpt::Client::builder()
                         .api_key(chatgpt::ChatGPTAuth::AccessToken {
                             access_token: api_key.clone(),
-                            account_id: None,
+                            account_id: crate::chatgpt_account_id(api_key),
                         })
                         .build()?;
                     let agent = client
@@ -365,10 +367,15 @@ where
     M: CompletionModel + 'static,
     <M as CompletionModel>::StreamingResponse: WasmCompatSend + GetTokenUsage,
 {
-    // Clamp the caller's cap onto rig's multi-turn depth: `0` floors to a single
-    // turn, and anything above the ceiling (including the `usize::MAX` "no cap"
-    // sentinel) caps at it rather than overflowing rig's internal counter.
-    let max_turns = max_tool_calls.clamp(1, MULTI_TURN_CEILING);
+    // Clamp the caller's cap onto rig's turn budget: `0` floors to a single
+    // tool call, and anything above the ceiling (including the `usize::MAX` "no
+    // cap" sentinel) caps at it rather than overflowing rig's internal counter.
+    //
+    // rig 0.41's `max_turns` is the *total model-call* budget, the initial call
+    // included (`rig-agent-0.41.0/src/agent/run/mod.rs:630`), where 0.38's
+    // `multi_turn` counted extra turns on top of it. So N tool calls need
+    // N + 1 turns: the N tool rounds plus the turn that lands the answer.
+    let max_turns = max_tool_calls.clamp(1, MULTI_TURN_CEILING) + 1;
 
     // Cancelled before we even started: emit Done and return.
     if cancel.load(Ordering::SeqCst) {
@@ -628,6 +635,44 @@ mod tests {
         assert!(
             larger > small,
             "a larger cap should allow more tool calls: small={small}, larger={larger}"
+        );
+    }
+
+    /// The cap counts *tool calls*, not total model calls: after its last
+    /// permitted tool call the model must still get a turn to write the answer.
+    /// With a cap of 1 it calls one tool and then answers.
+    #[tokio::test]
+    async fn tool_call_cap_leaves_room_for_the_answer_turn() {
+        let (executor, calls) = recording_executor();
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("done"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let deltas_sink = deltas.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        drive_agent_stream(agent, "find x", vec![], 1, cancel, move |event| {
+            if let AgentLoopEvent::Delta(text) = event {
+                deltas_sink.lock().unwrap().push(text);
+            }
+        })
+        .await
+        .expect("loop should complete");
+
+        assert_eq!(calls.lock().unwrap().len(), 1, "the one permitted tool call runs");
+        assert_eq!(
+            deltas.lock().unwrap().join(""),
+            "done",
+            "the model must still answer after its last permitted tool call"
         );
     }
 

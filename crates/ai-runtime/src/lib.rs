@@ -15,8 +15,28 @@
 
 // `.extractor::<T>(model)` on a provider client is classic-runtime
 // construction, provided by `AgentClientExt` since the 0.41 core/agent split.
+use base64::Engine as _;
 use rig_agent::client::AgentClientExt;
 use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
+
+/// Read the ChatGPT account id off an OAuth access token.
+///
+/// rig only *derives* this on its own OAuth/`auth.json` login path; on the
+/// `ChatGPTAuth::AccessToken` path we use, `auth_context` copies the field
+/// through verbatim (`rig-core-0.41.0/src/providers/chatgpt/auth/mod.rs:106`)
+/// and the `ChatGPT-Account-Id` header is sent only when it is `Some`
+/// (`.../chatgpt/mod.rs:435`). So the caller has to read the same claim rig
+/// reads. Unverified decode — the backend authenticates the token itself.
+pub(crate) fn chatgpt_account_id(access_token: &str) -> Option<String> {
+    let payload = access_token.split('.').nth(1)?;
+    let bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
 
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -68,8 +88,9 @@ pub enum CloudProvider {
     OpenAiCompatible,
     /// ChatGPT subscription backend (`chatgpt.com/backend-api/codex`). The
     /// credential in [`EngineConfig::Cloud::api_key`] is an OAuth *access
-    /// token* (acquired and refreshed by the caller), not an API key; rig
-    /// extracts the account id from the token itself.
+    /// token* (acquired and refreshed by the caller), not an API key. The
+    /// account id is read off that token by [`chatgpt_account_id`] — rig only
+    /// derives one on its own OAuth login path, not on this one.
     Chatgpt,
 }
 
@@ -304,12 +325,13 @@ where
                 }
                 CloudProvider::Chatgpt => {
                     // ChatGPT subscription backend. `api_key` carries the OAuth
-                    // access token the caller acquired/refreshed; rig extracts
-                    // the account id from the token itself.
+                    // access token the caller acquired/refreshed; the account id
+                    // is read off that token here (rig derives one only on its
+                    // own OAuth path, not on the `AccessToken` path).
                     let client = chatgpt::Client::builder()
                         .api_key(chatgpt::ChatGPTAuth::AccessToken {
                             access_token: api_key.clone(),
-                            account_id: None,
+                            account_id: chatgpt_account_id(api_key),
                         })
                         .build()?;
                     let extractor = client
@@ -554,5 +576,24 @@ mod tests {
         );
         assert_eq!(parse_host_port(""), None);
         assert_eq!(parse_host_port("not a url"), None);
+    }
+
+    #[test]
+    fn chatgpt_account_id_is_read_off_the_access_token() {
+        // rig 0.41 sends the `ChatGPT-Account-Id` header ONLY when the caller
+        // supplies `account_id`: on the `ChatGPTAuth::AccessToken` path it
+        // copies the field through verbatim and never derives one — its own
+        // `extract_account_id` runs on the OAuth/auth-file path only. So the
+        // token-set caller has to read the same claim rig reads.
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": { "chatgpt_account_id": "acct_123" }
+        })
+        .to_string();
+        let payload = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(claims);
+        assert_eq!(
+            chatgpt_account_id(&format!("header.{payload}.signature")).as_deref(),
+            Some("acct_123")
+        );
+        assert_eq!(chatgpt_account_id("not-a-jwt"), None);
     }
 }
