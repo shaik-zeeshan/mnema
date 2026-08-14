@@ -51,18 +51,20 @@ const TOKEN_EXPIRY_SKEW_SECONDS: i64 = 60;
 const DEVICE_CODE_TIMEOUT_SECONDS: u64 = 15 * 60;
 const DEVICE_CODE_POLL_SLEEP_SECONDS: u64 = 5;
 
-/// The models the ChatGPT subscription backend serves. There is no discovery
-/// endpoint on this backend, so the picker list is static — owned here (not
-/// re-exported from rig) so updating it never waits on a rig release. The
-/// backend gates some ids by plan tier (e.g. `gpt-5.4-pro` needs Pro); a
-/// mismatch surfaces as a provider error at call time.
+/// The models the ChatGPT subscription backend serves. The picker list is
+/// static — owned here (not re-exported from rig) so updating it never waits
+/// on a rig release; rig's constants proved stale live (`gpt-5.4` 400s with
+/// "not supported when using Codex with a ChatGPT account"). Source of truth:
+/// the `visibility: "list"` entries in openai/codex
+/// `codex-rs/models-manager/models.json` (retired ids like `gpt-5.4` carry an
+/// `upgrade` pointer there). A plan-tier mismatch surfaces as a provider
+/// error at call time.
 pub const CHATGPT_MODEL_IDS: &[&str] = &[
-    "gpt-5.4",
-    "gpt-5.4-pro",
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.3-instant",
-    "gpt-5.3-chat-latest",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.2",
 ];
 
 /// The vault-persisted OAuth token set for one `chatgpt` provider instance.
@@ -209,8 +211,35 @@ struct DeviceCodeResponse {
     device_auth_id: String,
     #[serde(alias = "usercode")]
     user_code: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_u64")]
     interval: Option<u64>,
+}
+
+/// OpenAI returns `interval` as either a number or a string ("5"); mirror rig
+/// 0.41's lenient parse.
+fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum U64OrString {
+        U64(u64),
+        String(String),
+    }
+
+    match Option::<U64OrString>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(U64OrString::U64(value)) => Ok(Some(value)),
+        Some(U64OrString::String(value)) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Ok(None)
+            } else {
+                value.parse::<u64>().map(Some).map_err(serde::de::Error::custom)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,6 +461,21 @@ mod tests {
         assert!(!fresh.expires_within_skew());
         assert!(expiring.expires_within_skew());
         assert!(unknown.expires_within_skew(), "missing exp must force a refresh attempt");
+    }
+
+    #[test]
+    fn device_code_response_accepts_string_or_numeric_interval() {
+        let as_string: DeviceCodeResponse = serde_json::from_str(
+            r#"{"device_auth_id":"d","user_code":"u","interval":"5"}"#,
+        )
+        .unwrap();
+        assert_eq!(as_string.interval, Some(5));
+        let as_number: DeviceCodeResponse =
+            serde_json::from_str(r#"{"device_auth_id":"d","usercode":"u","interval":5}"#).unwrap();
+        assert_eq!(as_number.interval, Some(5));
+        let missing: DeviceCodeResponse =
+            serde_json::from_str(r#"{"device_auth_id":"d","user_code":"u"}"#).unwrap();
+        assert_eq!(missing.interval, None);
     }
 
     #[test]

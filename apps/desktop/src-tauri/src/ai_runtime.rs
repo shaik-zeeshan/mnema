@@ -1643,7 +1643,7 @@ mod tests {
             }],
             default_model: Some(AiEngineRef {
                 provider: "chatgpt".to_string(),
-                model: "gpt-5.3-codex".to_string(),
+                model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
         };

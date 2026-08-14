@@ -52,8 +52,10 @@ experimental flag — with the auth lifecycle split at the rig boundary:
 - **No unattended login, ever**: a missing/unreadable/unrefreshable token set
   collapses to the `needs_reconnect:<id>` reason code, rendered as "Reconnect
   ChatGPT in Settings" — the analog of rig's `allow_device_flow(false)`.
-- **The model list is static** (`gpt-5.4`, `gpt-5.4-pro`, `gpt-5.3-codex`,
-  `gpt-5.3-codex-spark`, `gpt-5.3-instant`, `gpt-5.3-chat-latest`), owned in
+- **The model list is static** (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+  `gpt-5.5`, `gpt-5.2` — the `visibility: "list"` entries in openai/codex
+  `codex-rs/models-manager/models.json`; rig's exported constants proved stale
+  live), owned in
   `chatgpt_auth.rs`, and **gated on a stored token set** — model listing is the
   provider-verification proof (onboarding readiness, Settings lamps), so a
   never-connected instance must read "needs its login", never "live". Plan-tier
