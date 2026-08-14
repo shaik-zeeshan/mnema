@@ -152,7 +152,9 @@ export function createOnboardingAiStore() {
       // `needs_reconnect:<id>` reason code reads as line noise in the card
       // pill, so translate it at this edge (Settings maps it in its own store).
       const raw = humanizeError(error);
-      const reason = raw.startsWith("needs_reconnect:")
+      // Case-insensitive: `humanizeError` upper-cases the first letter of what
+      // it tidies, so a `startsWith("needs_reconnect:")` test never matches.
+      const reason = /^needs_reconnect:/i.test(raw)
         ? "sign in with ChatGPT to finish connecting"
         : raw;
       aiVerifications = {

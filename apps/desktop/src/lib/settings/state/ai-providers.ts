@@ -32,16 +32,6 @@ export const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
   "openai_compatible",
 ];
 
-/**
- * `chatgpt` is the one cloud kind whose credential is NOT a pasted API key: it
- * connects via an OAuth device-code login ("Sign in with ChatGPT") and the
- * backend stores the token set in the vault slot the key would occupy. UI
- * surfaces branch on this to render a Connect button instead of a key field.
- */
-export function isOauthAiProviderKind(kind: string): boolean {
-  return kind === "chatgpt";
-}
-
 /** Default localhost endpoint for each local (on-device) provider kind. */
 export const AI_LOCAL_DEFAULT_ENDPOINTS: Partial<Record<AiProviderKind, string>> = {
   ollama: "http://localhost:11434",

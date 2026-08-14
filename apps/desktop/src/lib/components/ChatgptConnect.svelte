@@ -68,6 +68,9 @@
     return () => {
       destroyed = true;
       unlisten?.();
+      // The "Copied" flash is scheduled work owned by this instance: left
+      // armed it writes to destroyed state 1.5s after the row is gone.
+      if (copiedTimer) clearTimeout(copiedTimer);
     };
   });
 
@@ -120,8 +123,15 @@
   let copied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
-  function copyCode(code: string): void {
-    void navigator.clipboard?.writeText(code).catch(() => {});
+  async function copyCode(code: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(code);
+    } catch (e) {
+      // A rejected write must not claim success — the user would paste nothing
+      // into the OpenAI page with no signal. The code stays selectable.
+      console.error("[ChatgptConnect] copy failed", e);
+      return;
+    }
     copied = true;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => (copied = false), 1500);
@@ -144,14 +154,14 @@
           type="button"
           class="chatgpt-connect__code"
           title="Click to copy"
-          onclick={() => phase.kind === "waiting" && copyCode(phase.prompt.userCode)}
+          onclick={() => phase.kind === "waiting" && void copyCode(phase.prompt.userCode)}
         >{phase.prompt.userCode}</button>
         <button
           type="button"
           class="chatgpt-connect__btn chatgpt-connect__copy"
           title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
-          onclick={() => phase.kind === "waiting" && copyCode(phase.prompt.userCode)}
+          onclick={() => phase.kind === "waiting" && void copyCode(phase.prompt.userCode)}
         >
           {#if copied}<IconCheck />{:else}<IconCopy />{/if}
         </button>

@@ -88,6 +88,9 @@ export function pendingReasonCopy(reason: string): string {
   if (reason.startsWith("provider_not_connected:")) {
     return "Summaries are paused — the engine's default provider isn't connected.";
   }
+  if (reason.startsWith("needs_reconnect:")) {
+    return "Summaries are paused — sign in with ChatGPT again in Settings.";
+  }
   switch (reason) {
     case "user_context_disabled":
       return "Summaries are paused — continuous derivation is turned off.";

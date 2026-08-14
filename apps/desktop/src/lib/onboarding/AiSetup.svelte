@@ -23,7 +23,7 @@
   progress, and it is dropped under prefers-reduced-motion.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import {
@@ -414,9 +414,16 @@
           <button
             class="ob-btn sm"
             type="button"
-            onclick={() => {
+            onclick={async () => {
               chatgptAutostart = true;
               ai.addProvider("chatgpt");
+              // One-shot: the connect component reads the flag once, on mount.
+              // Left armed, every later remount of this block (toggling the
+              // kind select, re-entering the step) starts ANOTHER device login
+              // — a fresh code that invalidates the one the user is typing,
+              // plus a second detached 15-minute poll.
+              await tick();
+              chatgptAutostart = false;
             }}
           >
             Sign in with ChatGPT
