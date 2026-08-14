@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
@@ -14,6 +16,31 @@
   const c = getSettingsController();
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
+
+  /** Presence + status + model list, after the vault credential changed. */
+  function refreshAfterChatgptChange(): void {
+    void aiRuntime.handleChatgptConnectionChange();
+    void loadSettingsModels();
+  }
+
+  // A ChatGPT sign-in lands up to 15 minutes after the click, by which time the
+  // provider row (and its ChatgptConnect) may well be collapsed. This panel
+  // outlives the row, so it owns the outcome — otherwise the badge and the
+  // model picker stay stale until the page is reloaded.
+  onMount(() => {
+    let unlisten: (() => void) | null = null;
+    let destroyed = false;
+    void listen<{ connected: boolean }>("chatgpt_login_update", (event) => {
+      if (event.payload.connected) refreshAfterChatgptChange();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      destroyed = true;
+      unlisten?.();
+    };
+  });
 
 
   // Re-exported constants the markup references verbatim.
@@ -174,10 +201,7 @@
                   <ChatgptConnect
                     providerId={provider.id}
                     connected={!!aiProviderKeySavedByProvider[provider.id]}
-                    onchange={() => {
-                      void aiRuntime.handleChatgptConnectionChange();
-                      void loadSettingsModels();
-                    }}
+                    onchange={refreshAfterChatgptChange}
                   />
                 {:else if isCloudAiProviderKind(provider.kind)}
                   <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>

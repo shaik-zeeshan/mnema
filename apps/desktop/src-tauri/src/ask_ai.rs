@@ -2139,6 +2139,7 @@ async fn run_ask_ai_turn(
             ai_engine::AgentLoopEvent::Usage {
                 input_tokens,
                 output_tokens,
+                total_tokens,
             } => {
                 record_last_turn_usage(AskAiTokenUsage {
                     input_tokens,
@@ -2149,13 +2150,16 @@ async fn run_ask_ai_turn(
                 });
                 // The latest completion request's input+output is the turn's
                 // current context-window occupancy (input already includes the
-                // system prompt, history, and tool results).
+                // system prompt, history, and tool results). A provider that
+                // reports only a lump sum leaves those two at 0, so fall back
+                // to its total rather than showing an empty context bar.
+                let split = input_tokens + output_tokens;
                 emit_live_update(
                     &app_handle,
                     &conversation_id,
                     turn_token,
                     TurnUpdate::ContextTokens {
-                        tokens: input_tokens + output_tokens,
+                        tokens: if split > 0 { split } else { total_tokens },
                     },
                 );
             }

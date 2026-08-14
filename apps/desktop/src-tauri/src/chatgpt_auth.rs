@@ -465,6 +465,75 @@ fn poll_sleep_seconds(interval: Option<u64>) -> u64 {
         .clamp(1, 60)
 }
 
+/// What one device-token poll response means. Split out from the loop so the
+/// endpoint's three-way answer is decided in one pure place.
+#[derive(Debug)]
+enum PollStep {
+    /// The user approved: the response carries the authorization code.
+    Approved(Box<DeviceTokenResponse>),
+    /// Not approved yet — sleep and ask again.
+    Pending,
+    /// Terminal failure; the login is over.
+    Failed(String),
+}
+
+fn classify_poll_response(status: reqwest::StatusCode, text: &str) -> PollStep {
+    if status.is_success() {
+        return match serde_json::from_str::<DeviceTokenResponse>(text) {
+            Ok(token) => PollStep::Approved(Box::new(token)),
+            Err(error) => PollStep::Failed(error.to_string()),
+        };
+    }
+    // 403/404 mean "not approved yet" on this endpoint; keep polling. Every
+    // other status is terminal — notably 429, where continuing to poll would
+    // deepen the rate limit we just hit.
+    if status.as_u16() == 403 || status.as_u16() == 404 {
+        return PollStep::Pending;
+    }
+    PollStep::Failed(format!(
+        "device authorization failed with status {status}: {}",
+        text.trim()
+    ))
+}
+
+/// Poll until the user approves, the endpoint refuses, or `timeout` elapses.
+///
+/// The HTTP call is injected so the loop's decisions — 403/404 keeps polling,
+/// anything else stops, and the deadline actually bounds the wait — are
+/// testable without a network or a 15-minute test.
+async fn await_authorization<P, Fut>(
+    poll: P,
+    interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Result<DeviceTokenResponse, String>
+where
+    P: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<(reqwest::StatusCode, String), String>>,
+{
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() >= timeout {
+            return Err("timed out waiting for ChatGPT device authorization".to_string());
+        }
+        let (status, text) = poll().await?;
+        match classify_poll_response(status, &text) {
+            PollStep::Approved(token) => return Ok(*token),
+            PollStep::Failed(error) => return Err(error),
+            // Never sleep past the deadline: it is only checked between polls,
+            // so a long interval would otherwise park the task well beyond it.
+            PollStep::Pending => {
+                let left = timeout.saturating_sub(start.elapsed());
+                if left.is_zero() {
+                    return Err(
+                        "timed out waiting for ChatGPT device authorization".to_string()
+                    );
+                }
+                tokio::time::sleep(interval.min(left)).await;
+            }
+        }
+    }
+}
+
 /// The background half of the device flow: poll for user approval, exchange
 /// the authorization code for tokens, persist the set.
 async fn poll_and_store(
@@ -473,44 +542,29 @@ async fn poll_and_store(
     provider_id: &str,
     generation: u64,
 ) -> Result<(), String> {
-    let interval = poll_sleep_seconds(device.interval);
     let poll_body = serde_json::json!({
         "device_auth_id": device.device_auth_id,
         "user_code": device.user_code,
     })
     .to_string();
 
-    let start = std::time::Instant::now();
-    let code = loop {
-        if start.elapsed().as_secs() >= DEVICE_CODE_TIMEOUT_SECONDS {
-            return Err("timed out waiting for ChatGPT device authorization".to_string());
-        }
-
-        let response = client
-            .post(DEVICE_TOKEN_URL)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(poll_body.clone())
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        let status = response.status();
-        let text = response.text().await.map_err(|e| e.to_string())?;
-
-        if status.is_success() {
-            let token: DeviceTokenResponse =
-                serde_json::from_str(&text).map_err(|e| e.to_string())?;
-            break token;
-        }
-        // 403/404 mean "not approved yet" on this endpoint; keep polling.
-        if status.as_u16() == 403 || status.as_u16() == 404 {
-            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-            continue;
-        }
-        return Err(format!(
-            "device authorization failed with status {status}: {}",
-            text.trim()
-        ));
-    };
+    let code = await_authorization(
+        || async {
+            let response = client
+                .post(DEVICE_TOKEN_URL)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(poll_body.clone())
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = response.status();
+            let text = response.text().await.map_err(|e| e.to_string())?;
+            Ok((status, text))
+        },
+        std::time::Duration::from_secs(poll_sleep_seconds(device.interval)),
+        std::time::Duration::from_secs(DEVICE_CODE_TIMEOUT_SECONDS),
+    )
+    .await?;
 
     let redirect_uri = "https://auth.openai.com/deviceauth/callback";
     let tokens = oauth_token_request(&[
@@ -891,15 +945,128 @@ mod tests {
         }
     }
 
+    /// Script a device-token endpoint: each call answers the next entry.
+    fn scripted_poll(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (
+        impl Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(reqwest::StatusCode, String), String>> + Send>,
+        >,
+        Arc<Mutex<usize>>,
+    ) {
+        let calls = Arc::new(Mutex::new(0usize));
+        let seen = calls.clone();
+        let poll = move || {
+            let responses = responses.clone();
+            let seen = seen.clone();
+            Box::pin(async move {
+                let mut at = seen.lock().expect("poll counter");
+                let (status, body) = responses
+                    .get(*at)
+                    .copied()
+                    .unwrap_or_else(|| panic!("poll called {} times, script has {}", *at + 1, responses.len()));
+                *at += 1;
+                Ok((reqwest::StatusCode::from_u16(status).unwrap(), body.to_string()))
+            })
+                as std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<(reqwest::StatusCode, String), String>> + Send>,
+                >
+        };
+        (poll, calls)
+    }
+
+    const APPROVED_BODY: &str =
+        r#"{"authorization_code":"the-code","code_verifier":"the-verifier"}"#;
+
+    #[tokio::test]
+    async fn the_poll_waits_through_not_approved_yet_and_stops_on_approval() {
+        // 403/404 is how this endpoint says "the user hasn't clicked yet" —
+        // treating either as a failure would abort the login the moment it
+        // starts.
+        let (poll, calls) = scripted_poll(vec![
+            (403, "not yet"),
+            (404, "not yet"),
+            (200, APPROVED_BODY),
+        ]);
+        let code = await_authorization(
+            poll,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("approval should land");
+
+        assert_eq!(code.authorization_code, "the-code");
+        assert_eq!(code.code_verifier, "the-verifier");
+        assert_eq!(*calls.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_poll_gives_up_on_any_other_status() {
+        // Anything that is not 403/404 is terminal. 429 especially: polling on
+        // would deepen the rate limit we just hit.
+        let (poll, calls) = scripted_poll(vec![(429, r#"{"error":"slow_down"}"#)]);
+        let error = await_authorization(
+            poll,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect_err("a rate limit must end the login");
+
+        assert!(error.contains("429"), "the status belongs in the message: {error}");
+        assert_eq!(*calls.lock().unwrap(), 1, "a terminal status is not retried");
+    }
+
+    #[tokio::test]
+    async fn the_poll_is_bounded_by_its_deadline() {
+        // The user walked away. The wait must end on its own rather than
+        // leaving a detached task polling OpenAI forever.
+        let (poll, calls) = scripted_poll(vec![(403, "not yet"); 8]);
+        let error = await_authorization(
+            poll,
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(12),
+        )
+        .await
+        .expect_err("an unapproved login must time out");
+
+        assert!(error.contains("timed out"), "{error}");
+        assert!(*calls.lock().unwrap() >= 1, "it polled at least once");
+    }
+
     #[test]
-    fn token_set_round_trips_through_json() {
+    fn a_malformed_approval_is_terminal_not_a_retry() {
+        // A 200 whose body we cannot read is not "not approved yet": retrying
+        // would spin against a response that will never parse.
+        let step = classify_poll_response(reqwest::StatusCode::OK, "{oops");
+        assert!(matches!(step, PollStep::Failed(_)), "{step:?}");
+    }
+
+    #[test]
+    fn a_token_set_tolerates_absent_optional_fields() {
+        // The `#[serde(default)]`s are load-bearing: a grant that omits the
+        // refresh token, or an access token with no readable `exp`, still has
+        // to parse out of the vault slot. And a set with no known expiry must
+        // read as expired, so the next use goes through a refresh attempt
+        // rather than presenting a token that may already be dead.
+        let minimal: ChatgptTokenSet =
+            serde_json::from_str(r#"{"access_token":"a"}"#).expect("a partial set must parse");
+        assert_eq!(minimal.refresh_token, None);
+        assert_eq!(minimal.expires_at, None);
+        assert!(
+            minimal.expires_within_skew(),
+            "an unknown expiry must force a refresh attempt"
+        );
+
+        // And the full shape survives the vault round trip it is stored in.
         let set = ChatgptTokenSet {
             access_token: "access".into(),
             refresh_token: Some("refresh".into()),
             expires_at: Some(42),
         };
-        let raw = serde_json::to_string(&set).unwrap();
-        let back: ChatgptTokenSet = serde_json::from_str(&raw).unwrap();
+        let back: ChatgptTokenSet =
+            serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
         assert_eq!(back.access_token, "access");
         assert_eq!(back.refresh_token.as_deref(), Some("refresh"));
         assert_eq!(back.expires_at, Some(42));

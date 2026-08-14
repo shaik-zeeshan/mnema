@@ -27,7 +27,11 @@
     providerId: string;
     /** Does the vault hold a token set for this instance (parent-owned)? */
     connected: boolean;
-    /** Fired after a login completes or a disconnect lands. */
+    /**
+     * Fired after a disconnect lands. NOT fired for a completed sign-in: the
+     * parent surface listens for `chatgpt_login_update` itself, because this
+     * component can be unmounted while the backend poll is still running.
+     */
     onchange: () => void;
     /**
      * Begin the login immediately on mount (used by onboarding, where the
@@ -56,11 +60,18 @@
     if (autostart && !connected) void beginLogin();
     let unlisten: (() => void) | null = null;
     let destroyed = false;
+    // Local phase/error only. The REFRESH on a landed sign-in is deliberately
+    // NOT ours: the backend poll runs for up to 15 minutes and this component
+    // is unmounted by an ordinary interaction long before that (toggling the
+    // onboarding kind select, collapsing the Settings row, "Done" on a card),
+    // which would drop the outcome on the floor. The parent surface — which
+    // outlives every one of those — owns `chatgpt_login_update` and refreshes
+    // from there. `onchange` is for the disconnect below, which is always
+    // user-initiated and therefore always mounted.
     void listen<LoginUpdate>("chatgpt_login_update", (event) => {
       if (event.payload.providerId !== providerId) return;
       phase = { kind: "idle" };
       error = event.payload.connected ? null : (event.payload.error ?? "Sign-in failed.");
-      if (event.payload.connected) onchange();
     }).then((fn) => {
       if (destroyed) fn();
       else unlisten = fn;

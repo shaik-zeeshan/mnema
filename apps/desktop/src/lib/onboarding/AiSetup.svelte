@@ -23,7 +23,8 @@
   progress, and it is dropped under prefers-reduced-motion.
 -->
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import {
@@ -231,6 +232,31 @@
       setStatus("");
     }
   }
+
+  // A ChatGPT sign-in can land up to 15 minutes after the click, long after
+  // ChatgptConnect was unmounted by a kind-select toggle or a card close. This
+  // panel outlives all of those, so it owns the outcome: without it the token
+  // set reaches the vault but the card stays "not tested" and Finish stays
+  // blocked until the user happens to press Test.
+  onMount(() => {
+    let unlisten: (() => void) | null = null;
+    let destroyed = false;
+    void listen<{ providerId: string; connected: boolean }>(
+      "chatgpt_login_update",
+      (event) => {
+        if (!event.payload.connected) return;
+        if (!providers.some((p) => p.id === event.payload.providerId)) return;
+        void onChatgptChanged(event.payload.providerId);
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      destroyed = true;
+      unlisten?.();
+    };
+  });
 
   /** A ChatGPT sign-in or disconnect landed — re-prove the instance. */
   async function onChatgptChanged(id: string): Promise<void> {

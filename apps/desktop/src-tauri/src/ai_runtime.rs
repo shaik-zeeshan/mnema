@@ -400,6 +400,37 @@ fn local_endpoint(provider: &AiProviderConfig) -> String {
 /// the looked-up instance, and the keychain key lives at that same instance id.
 /// Returns a reason-code string on failure: `provider_not_connected:<id>`,
 /// `no_base_url`, or `no_provider_key:<id>`.
+/// Map a `chatgpt` provider's stored token set onto an engine config.
+///
+/// The vault slot holds an OAuth token set (JSON), not an API key, so this
+/// hands the engine the *stored* access token — possibly stale;
+/// [`resolve_engine_config_live`] refreshes it before any real call. Both a
+/// missing set and an unreadable one are `needs_reconnect` (the connect flow
+/// is a login, not a key paste), which keeps `no_provider_key` meaning
+/// "paste a key" for the kinds where that is the fix.
+///
+/// Split from [`engine_config_for_ref`] so the mapping is testable without a
+/// vault: the caller supplies the load result.
+fn chatgpt_engine_config(
+    provider_id: &str,
+    model: &str,
+    loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
+) -> Result<ai_engine::EngineConfig, String> {
+    let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    let token_set = loaded
+        .map_err(|error| {
+            tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
+            needs_reconnect()
+        })?
+        .ok_or_else(needs_reconnect)?;
+    Ok(ai_engine::EngineConfig::Cloud {
+        provider: ai_engine::CloudProvider::Chatgpt,
+        model: model.to_string(),
+        api_key: token_set.access_token,
+        base_url: None,
+    })
+}
+
 fn engine_config_for_ref(
     settings: &AiRuntimeSettings,
     provider_id: &str,
@@ -432,25 +463,14 @@ fn engine_config_for_ref(
     if matches!(kind, AiProviderKind::OpenaiCompatible) && !base_url.is_empty() {
         validate_provider_base_url(provider_id, base_url)?;
     }
-    // ChatGPT's vault slot holds an OAuth token set (JSON), not an API key. The
-    // sync resolver hands the engine the *stored* access token — possibly
-    // stale; [`resolve_engine_config_live`] refreshes it before any real call.
-    // A missing/unreadable set is `needs_reconnect` (the connect flow is a
-    // login, not a key paste), keeping `no_provider_key` for the pasted-key
-    // kinds.
+    // ChatGPT's credential is an OAuth token set, not a pasted key — see
+    // `chatgpt_engine_config`.
     if matches!(kind, AiProviderKind::Chatgpt) {
-        let token_set = crate::chatgpt_auth::load_token_set(provider_id)
-            .map_err(|error| {
-                tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
-                format!("needs_reconnect:{provider_id}")
-            })?
-            .ok_or_else(|| format!("needs_reconnect:{provider_id}"))?;
-        return Ok(ai_engine::EngineConfig::Cloud {
-            provider: ai_engine::CloudProvider::Chatgpt,
-            model: model.to_string(),
-            api_key: token_set.access_token,
-            base_url: None,
-        });
+        return chatgpt_engine_config(
+            provider_id,
+            model,
+            crate::chatgpt_auth::load_token_set(provider_id),
+        );
     }
     let api_key = app_infra::load_ai_provider_key(provider_id)
         .map_err(|error| error.to_string())?
@@ -1643,30 +1663,73 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_without_token_set_resolves_to_needs_reconnect() {
-        // A connected chatgpt provider whose vault slot is empty (never logged
-        // in, or the set was cleared) must surface the dedicated reconnect
-        // reason — not `no_provider_key`, which UI copy treats as "paste a
-        // key". In the test environment the vault has no entry (or is not
-        // unlockable), and both of those paths collapse to the same code.
-        let settings = AiRuntimeSettings {
-            enabled: true,
-            providers: vec![AiProviderConfig {
-                id: "chatgpt".to_string(),
-                kind: AiProviderKind::Chatgpt,
-                label: String::new(),
-                base_url: String::new(),
-            }],
-            default_model: Some(AiEngineRef {
-                provider: "chatgpt".to_string(),
-                model: "gpt-5.6-terra".to_string(),
-            }),
-            mcp_servers: Vec::new(),
-        };
+    fn chatgpt_token_set_maps_to_an_access_token_config_or_needs_reconnect() {
+        // The whole mapping, with the vault result supplied rather than read —
+        // the previous version of this test resolved the real provider id
+        // "chatgpt" against the developer's actual vault, so it passed through
+        // whichever arm the machine happened to take and would fail outright on
+        // a machine with ChatGPT connected.
+        let connected = chatgpt_engine_config(
+            "chatgpt",
+            "gpt-5.6-terra",
+            Ok(Some(crate::chatgpt_auth::ChatgptTokenSet {
+                access_token: "the-access-token".to_string(),
+                refresh_token: Some("r".to_string()),
+                expires_at: Some(4_000_000_000),
+            })),
+        );
+        match connected {
+            Ok(ai_engine::EngineConfig::Cloud {
+                provider,
+                model,
+                api_key,
+                base_url,
+            }) => {
+                assert!(matches!(provider, ai_engine::CloudProvider::Chatgpt));
+                assert_eq!(model, "gpt-5.6-terra");
+                assert_eq!(api_key, "the-access-token", "the stored access token is the credential");
+                assert_eq!(base_url, None, "the chatgpt kind never carries a caller host");
+            }
+            other => panic!("expected a chatgpt cloud config, got {other:?}"),
+        }
+
+        // Never connected, and the vault refusing to answer, are both the
+        // reconnect code — NOT `no_provider_key`, whose UI copy says to paste a
+        // key, which is not the fix for a login.
         assert_eq!(
-            resolve_engine_config(&settings, None, None).map(|_| ()),
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Ok(None)).map(|_| ()),
             Err("needs_reconnect:chatgpt".to_string())
         );
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Err("vault locked".to_string()))
+                .map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_live_resolver_is_a_passthrough_for_every_non_chatgpt_kind() {
+        // Five real call sites moved from the sync resolver to the live one.
+        // For every kind but chatgpt the two must agree exactly, across the
+        // whole precedence chain — a drift here silently breaks Ask AI, the
+        // digest, and the derivation worker for the providers that were
+        // already working.
+        let settings = local_settings();
+        let cases: [(Option<(&str, &str)>, Option<&str>); 4] = [
+            (None, None),
+            (Some(("ollama", "pinned-model")), None),
+            (None, Some("override-model")),
+            (Some(("does-not-exist", "m")), None),
+        ];
+        for (pin, feature_override) in cases {
+            let sync = resolve_engine_config(&settings, pin, feature_override);
+            let live = resolve_engine_config_live(&settings, pin, feature_override).await;
+            assert_eq!(
+                format!("{sync:?}"),
+                format!("{live:?}"),
+                "sync and live resolvers disagree for pin={pin:?} override={feature_override:?}"
+            );
+        }
     }
 
     #[test]

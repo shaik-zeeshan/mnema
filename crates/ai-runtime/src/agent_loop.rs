@@ -124,10 +124,15 @@ pub enum AgentLoopEvent {
     },
     /// Provider-reported token usage for one completed completion request within
     /// the loop. The latest event's `input_tokens + output_tokens` approximates
-    /// the conversation's current context-window occupancy.
+    /// the conversation's current context-window occupancy — except on a
+    /// provider that reports only a lump sum, where those two are `0` and
+    /// [`total_tokens`](Self::Usage::total_tokens) carries the whole report.
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        /// rig keeps this separate "as some providers may only report one
+        /// number"; it is not necessarily `input + output`.
+        total_tokens: u64,
     },
     /// The loop finished (clean completion or cooperative cancellation).
     Done,
@@ -419,14 +424,17 @@ where
                 on_event(AgentLoopEvent::Reasoning(reasoning.display_text()));
             }
             Ok(MultiTurnStreamItem::CompletionCall(call)) => {
-                // Zero-valued usage is rig's documented sentinel for missing
-                // provider metrics (0.41 made `usage` non-optional), so only a
-                // non-zero report surfaces as a Usage event.
+                // An all-zero `Usage` is rig's sentinel for "the provider
+                // supplied no metrics" (0.41 made the field non-optional), and
+                // `has_values()` is rig's own predicate for it. Testing
+                // input/output by hand instead would drop a provider that
+                // reports only `total_tokens` — a real report, silently lost.
                 let usage = call.usage;
-                if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                if usage.has_values() {
                     on_event(AgentLoopEvent::Usage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
+                        total_tokens: usage.total_tokens,
                     });
                 }
             }
@@ -673,6 +681,72 @@ mod tests {
             deltas.lock().unwrap().join(""),
             "done",
             "the model must still answer after its last permitted tool call"
+        );
+    }
+
+    /// Usage is surfaced when the provider actually reported something, and
+    /// suppressed only for rig's all-zero "no metrics" sentinel. The middle
+    /// case is the one a hand-rolled `input > 0 || output > 0` check drops:
+    /// rig keeps `total_tokens` separate precisely because some providers
+    /// report a lump sum and nothing else.
+    #[tokio::test]
+    async fn usage_events_follow_rigs_missing_metrics_sentinel() {
+        async fn usage_for(event: MockStreamEvent) -> Vec<(u64, u64, u64)> {
+            let (executor, _calls) = recording_executor();
+            let model = MockCompletionModel::from_stream_turns([vec![
+                MockStreamEvent::text("hi"),
+                event,
+            ]]);
+            let agent = mock_agent(model, vec![], &executor);
+
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            drive_agent_stream(
+                agent,
+                "go",
+                vec![],
+                4,
+                Arc::new(AtomicBool::new(false)),
+                move |event| {
+                    if let AgentLoopEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    } = event
+                    {
+                        sink.lock()
+                            .unwrap()
+                            .push((input_tokens, output_tokens, total_tokens));
+                    }
+                },
+            )
+            .await
+            .expect("loop should complete");
+            let reports = seen.lock().unwrap().clone();
+            reports
+        }
+
+        let mut real = rig_core::completion::Usage::new();
+        real.input_tokens = 11;
+        real.output_tokens = 7;
+        real.total_tokens = 18;
+        assert_eq!(
+            usage_for(MockStreamEvent::final_response(real)).await,
+            vec![(11, 7, 18)],
+            "a real report surfaces verbatim"
+        );
+
+        assert_eq!(
+            usage_for(MockStreamEvent::final_response_with_total_tokens(123)).await,
+            vec![(0, 0, 123)],
+            "a total-only provider still made a report"
+        );
+
+        assert!(
+            usage_for(MockStreamEvent::final_response_with_default_usage())
+                .await
+                .is_empty(),
+            "the all-zero sentinel means no provider metrics"
         );
     }
 
