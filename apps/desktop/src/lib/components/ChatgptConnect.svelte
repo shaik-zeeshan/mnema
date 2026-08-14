@@ -15,6 +15,8 @@
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { humanizeError } from "$lib/format-error";
+  import IconCopy from "~icons/lucide/copy";
+  import IconCheck from "~icons/lucide/check";
 
   let {
     providerId,
@@ -115,8 +117,14 @@
     }
   }
 
+  let copied = $state(false);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
   function copyCode(code: string): void {
     void navigator.clipboard?.writeText(code).catch(() => {});
+    copied = true;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copied = false), 1500);
   }
 </script>
 
@@ -131,12 +139,23 @@
           onclick={() => phase.kind === "waiting" && void openUrl(phase.prompt.verifyUrl)}
         >auth.openai.com/codex/device</button> — waiting for approval…
       </p>
-      <button
-        type="button"
-        class="chatgpt-connect__code"
-        title="Click to copy"
-        onclick={() => phase.kind === "waiting" && copyCode(phase.prompt.userCode)}
-      >{phase.prompt.userCode}</button>
+      <div class="chatgpt-connect__code-row">
+        <button
+          type="button"
+          class="chatgpt-connect__code"
+          title="Click to copy"
+          onclick={() => phase.kind === "waiting" && copyCode(phase.prompt.userCode)}
+        >{phase.prompt.userCode}</button>
+        <button
+          type="button"
+          class="chatgpt-connect__btn chatgpt-connect__copy"
+          title={copied ? "Copied" : "Copy code"}
+          aria-label={copied ? "Copied" : "Copy code"}
+          onclick={() => phase.kind === "waiting" && copyCode(phase.prompt.userCode)}
+        >
+          {#if copied}<IconCheck />{:else}<IconCopy />{/if}
+        </button>
+      </div>
       <div class="chatgpt-connect__actions">
         <button type="button" class="chatgpt-connect__btn" onclick={beginLogin}>Start over</button>
       </div>
@@ -215,6 +234,18 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .chatgpt-connect__code-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .chatgpt-connect__copy {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px;
   }
 
   /* The code is the hero while waiting: big, monospace, one click to copy. */
