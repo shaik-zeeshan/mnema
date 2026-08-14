@@ -94,7 +94,14 @@ fn describe_error(error: &dyn std::error::Error) -> String {
 /// error still rides the warning log for debugging; this is the at-a-glance
 /// label a user sees next to the provider.
 fn classify_listing_failure(error: &str) -> String {
-    if error.starts_with("no_provider_key") {
+    if error.starts_with("needs_reconnect:") {
+        // The `chatgpt` kind's "no usable token set" code. It is NOT a network
+        // failure — the `contains("connect")` arm below would otherwise claim
+        // it as "unreachable" via the substring in *re-connect* — and both
+        // consumers (the onboarding card and the Settings store) map this exact
+        // prefix onto their own "sign in with ChatGPT" copy. Pass it through.
+        error.to_string()
+    } else if error.starts_with("no_provider_key") {
         "missing API key".to_string()
     } else if error.contains("keychain") && error.contains("denied") {
         // AppInfraError::SecretVaultDenied Display — a denied key store, NOT a
@@ -277,6 +284,11 @@ fn fixed_host_for_provider_id(provider_id: &str) -> Option<&'static str> {
     match provider_id {
         "anthropic" => Some("api.anthropic.com"),
         "openai" => Some("api.openai.com"),
+        // Reserved for the same reason and then some: this slot holds an OAuth
+        // token SET (access + long-lived refresh token), and the `chatgpt` kind
+        // never reads `base_url` at all — so the only way this id can carry a
+        // caller-chosen host is a kind-swapped record.
+        "chatgpt" => Some("chatgpt.com"),
         _ => None,
     }
 }
@@ -611,6 +623,10 @@ pub async fn ai_runtime_clear_provider_key(
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
+    // Disconnect is a revocation, so it must also invalidate any ChatGPT device
+    // poll or token refresh still in flight — either one landing afterwards
+    // writes the token set straight back into the slot we are clearing.
+    crate::chatgpt_auth::cancel_login(&provider);
     tokio::task::spawn_blocking(move || app_infra::delete_ai_provider_key(&provider))
         .await
         .map_err(|error| error.to_string())?
@@ -1650,6 +1666,51 @@ mod tests {
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
             Err("needs_reconnect:chatgpt".to_string())
+        );
+    }
+
+    #[test]
+    fn listing_failure_keeps_the_chatgpt_reconnect_reason_code() {
+        // `list_models_for_provider` answers a never-connected chatgpt instance
+        // with `needs_reconnect:<id>`, and both consumers branch on that literal
+        // prefix to render the sign-in copy. The code must survive this
+        // translation — note "needs_re*connect*" also matches the network arm's
+        // `contains("connect")`, which would mislabel it as "unreachable".
+        assert_eq!(
+            classify_listing_failure("needs_reconnect:chatgpt"),
+            "needs_reconnect:chatgpt"
+        );
+        assert_eq!(classify_listing_failure("error sending request"), "unreachable");
+    }
+
+    #[test]
+    fn chatgpt_id_is_bound_like_the_other_first_party_ids() {
+        // The `chatgpt` instance id holds an OAuth token set in the very vault
+        // slot the pasted-key kinds use, so a `{id:"chatgpt",
+        // kind:OpenaiCompatible, baseUrl:"…attacker…"}` record must not be able
+        // to ship that token set out as a Bearer credential.
+        assert!(validate_provider_base_url("chatgpt", "https://attacker.test/v1").is_err());
+        assert!(
+            validate_provider_base_url("chatgpt", "https://chatgpt.com/backend-api/codex").is_ok()
+        );
+
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "chatgpt".to_string(),
+                kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
+                base_url: "https://attacker.test/v1".to_string(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("base_url_host_mismatch:chatgpt".to_string())
         );
     }
 

@@ -1,4 +1,4 @@
-//! ChatGPT-subscription OAuth for the `chatgpt` provider kind (ADR pending).
+//! ChatGPT-subscription OAuth for the `chatgpt` provider kind (ADR 0058).
 //!
 //! The credential for a `chatgpt` provider is not a pasted API key but an OAuth
 //! token set (access + refresh token) acquired through OpenAI's device-code
@@ -20,7 +20,7 @@
 //! rig — the engine crate receives the access token as a per-call
 //! `ChatGPTAuth::AccessToken`.
 //!
-//! Endpooints, client id, and poll semantics mirror rig 0.41's implementation
+//! Endpoints, client id, and poll semantics mirror rig 0.41's implementation
 //! (which mirrors the Codex CLI): device-code poll answers 403/404 while the
 //! user has not approved yet, and the refresh grant preserves the previous
 //! refresh token when the response omits a rotated one. There is no unattended
@@ -28,8 +28,10 @@
 //! `needs_reconnect:<id>` reason code, never as a device-code prompt.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,10 @@ const TOKEN_EXPIRY_SKEW_SECONDS: i64 = 60;
 /// Give up on a device-code login the user never approves. Matches rig/Codex.
 const DEVICE_CODE_TIMEOUT_SECONDS: u64 = 15 * 60;
 const DEVICE_CODE_POLL_SLEEP_SECONDS: u64 = 5;
+/// Bound on one `auth.openai.com` round trip. Every AI call awaits a refresh
+/// before the engine runs — and holds the provider's refresh lock while it
+/// does — so a stalled connection must fail the call, not hang the feature.
+const OAUTH_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
 /// The models the ChatGPT subscription backend serves. The picker list is
 /// static — owned here (not re-exported from rig) so updating it never waits
@@ -131,44 +137,101 @@ fn store_token_set(provider_id: &str, set: &ChatgptTokenSet) -> Result<(), Strin
 /// so features render "Reconnect ChatGPT in Settings" instead of a raw error.
 /// Never starts an interactive login.
 pub async fn fresh_access_token(provider_id: &str) -> Result<String, String> {
-    let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    fresh_access_token_with(provider_id, refresh_grant).await
+}
 
+/// The network half of a refresh, named as a plain `fn` pointer so a test can
+/// stand in a fake OpenAI without a generic on the call path.
+type RefreshCall =
+    fn(String) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, String>> + Send>>;
+
+fn refresh_grant(
+    refresh_token: String,
+) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, String>> + Send>> {
+    Box::pin(async move {
+        oauth_token_request(&[
+            ("client_id", CHATGPT_CLIENT_ID),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("scope", "openid profile email"),
+        ])
+        .await
+    })
+}
+
+/// One in-flight refresh per provider instance. Ask AI turns, conversation
+/// titles, the user-context worker, digest and Test Connection each resolve
+/// their engine independently, so several can meet the same expiring token set
+/// at once. OpenAI rotates the refresh token on use, so a parallel second POST
+/// replays a consumed one and comes back `invalid_grant` — exactly what rig
+/// 0.41's `should_reauthenticate_after_refresh` classifies as "log in again",
+/// i.e. a spurious `needs_reconnect` for a healthy login.
+///
+/// ponytail: one lock per provider id, never evicted — bounded by the number of
+/// configured providers.
+static REFRESH_LOCKS: Mutex<Option<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    Mutex::new(None);
+
+fn refresh_lock(provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut map = REFRESH_LOCKS.lock().expect("chatgpt refresh locks");
+    map.get_or_insert_with(HashMap::new)
+        .entry(provider_id.to_string())
+        .or_default()
+        .clone()
+}
+
+async fn load_token_set_off_thread(provider_id: &str) -> Result<Option<ChatgptTokenSet>, String> {
     let id = provider_id.to_string();
-    let set = tokio::task::spawn_blocking(move || load_token_set(&id))
+    tokio::task::spawn_blocking(move || load_token_set(&id))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|error| {
-            tauri_plugin_log::log::warn!("chatgpt-auth: loading token set failed: {error}");
-            needs_reconnect()
-        })?
-        .ok_or_else(needs_reconnect)?;
+}
 
+async fn fresh_access_token_with(
+    provider_id: &str,
+    refresh: RefreshCall,
+) -> Result<String, String> {
+    let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    let load = || async move {
+        load_token_set_off_thread(provider_id)
+            .await
+            .map_err(|error| {
+                tauri_plugin_log::log::warn!("chatgpt-auth: loading token set failed: {error}");
+                needs_reconnect()
+            })?
+            .ok_or_else(needs_reconnect)
+    };
+
+    let set = load().await?;
     if !set.expires_within_skew() {
         return Ok(set.access_token);
     }
 
+    // Serialize the refresh for this provider, then re-read the slot: the
+    // caller we queued behind may already have rotated the set, and replaying
+    // its consumed refresh token fails this call *and* persists a dead token.
+    let lock = refresh_lock(provider_id);
+    let _guard = lock.lock().await;
+    let set = load().await?;
+    if !set.expires_within_skew() {
+        return Ok(set.access_token);
+    }
+
+    // Captured under the lock so a disconnect landing during the round-trip
+    // invalidates the rotated write instead of resurrecting the credential.
+    let generation = current_login_generation(provider_id);
     let refresh_token = set.refresh_token.clone().ok_or_else(needs_reconnect)?;
-    let tokens = oauth_token_request(&[
-        ("client_id", CHATGPT_CLIENT_ID),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token.as_str()),
-        ("scope", "openid profile email"),
-    ])
-    .await
-    .map_err(|error| {
+    let tokens = refresh(refresh_token.clone()).await.map_err(|error| {
         tauri_plugin_log::log::warn!("chatgpt-auth: token refresh failed for {provider_id}: {error}");
         needs_reconnect()
     })?;
 
-    let rotated = ChatgptTokenSet {
-        expires_at: jwt_expiration_seconds(&tokens.access_token),
-        access_token: tokens.access_token,
-        // The refresh grant may omit a rotated refresh token; keep the old one.
-        refresh_token: tokens.refresh_token.or(Some(refresh_token)),
-    };
+    // The refresh grant may omit (or blank out) a rotated refresh token; keep
+    // the old one in both cases.
+    let rotated = token_set_from_grant(tokens, Some(refresh_token));
     let id = provider_id.to_string();
     let persisted = rotated.clone();
-    tokio::task::spawn_blocking(move || store_token_set(&id, &persisted))
+    tokio::task::spawn_blocking(move || persist_token_set_if_current(&id, generation, &persisted))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|error| {
@@ -184,6 +247,53 @@ struct OAuthTokenResponse {
     access_token: String,
     #[serde(default)]
     refresh_token: Option<String>,
+    /// Seconds until the access token expires. Only consulted when the access
+    /// token is not a readable JWT — see [`token_set_from_grant`].
+    #[serde(default)]
+    expires_in: Option<i64>,
+}
+
+/// Build the persisted token set from a grant response.
+///
+/// Two things the raw response cannot be trusted to give us directly:
+/// `expires_at` (the access token is usually a JWT, but an opaque one still
+/// comes with the standard `expires_in`, and treating an unknown expiry as
+/// "expired" forces a full refresh — and a refresh-token rotation — before
+/// *every* completion), and a *blank* rotated refresh token, which is not a
+/// rotation: persisting it kills the next refresh and silently signs the user
+/// out one access-token lifetime later.
+fn token_set_from_grant(
+    tokens: OAuthTokenResponse,
+    previous_refresh_token: Option<String>,
+) -> ChatgptTokenSet {
+    let expires_at = jwt_expiration_seconds(&tokens.access_token).or_else(|| {
+        let expires_in = tokens.expires_in?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs() as i64;
+        Some(now + expires_in)
+    });
+    ChatgptTokenSet {
+        expires_at,
+        access_token: tokens.access_token,
+        refresh_token: tokens
+            .refresh_token
+            .filter(|token| !token.trim().is_empty())
+            .or(previous_refresh_token),
+    }
+}
+
+/// The client for every `auth.openai.com` round trip.
+fn oauth_http_client() -> reqwest::Client {
+    http_client_with_timeout(std::time::Duration::from_secs(OAUTH_REQUEST_TIMEOUT_SECONDS))
+}
+
+fn http_client_with_timeout(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// POST an `application/x-www-form-urlencoded` grant to `oauth/token`.
@@ -191,7 +301,7 @@ async fn oauth_token_request(form: &[(&str, &str)]) -> Result<OAuthTokenResponse
     let body = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(form)
         .finish();
-    let response = reqwest::Client::new()
+    let response = oauth_http_client()
         .post(OAUTH_TOKEN_URL)
         .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .body(body)
@@ -221,25 +331,16 @@ fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::E
 where
     D: serde::Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum U64OrString {
-        U64(u64),
-        String(String),
-    }
-
-    match Option::<U64OrString>::deserialize(deserializer)? {
-        None => Ok(None),
-        Some(U64OrString::U64(value)) => Ok(Some(value)),
-        Some(U64OrString::String(value)) => {
-            let value = value.trim();
-            if value.is_empty() {
-                Ok(None)
-            } else {
-                value.parse::<u64>().map(Some).map_err(serde::de::Error::custom)
-            }
-        }
-    }
+    // `interval` is an optional poll hint with a default, so ANY shape we do
+    // not recognise (a float, a negative, a bool) falls back to the default
+    // rather than failing the response that carries the mandatory user code.
+    Ok(
+        match Option::<serde_json::Value>::deserialize(deserializer)? {
+            Some(serde_json::Value::Number(value)) => value.as_u64(),
+            Some(serde_json::Value::String(value)) => value.trim().parse::<u64>().ok(),
+            _ => None,
+        },
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,7 +398,7 @@ pub async fn begin_login(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ChatgptLoginPrompt, String> {
-    let client = reqwest::Client::new();
+    let client = oauth_http_client();
     let body = serde_json::json!({ "client_id": CHATGPT_CLIENT_ID }).to_string();
     let response = client
         .post(DEVICE_CODE_URL)
@@ -323,7 +424,7 @@ pub async fn begin_login(
 
     let generation = bump_login_generation(&provider_id);
     tauri::async_runtime::spawn(async move {
-        let outcome = poll_and_store(&client, &device, &provider_id).await;
+        let outcome = poll_and_store(&client, &device, &provider_id, generation).await;
         if !login_generation_is_current(&provider_id, generation) {
             return;
         }
@@ -353,14 +454,26 @@ pub async fn begin_login(
     Ok(prompt)
 }
 
+/// How long to wait between device-code polls.
+/// The server's hint is advisory: `0` would turn the detached poll into a hot
+/// loop against the device endpoint, and an oversized value would park the task
+/// in one sleep long past the 15-minute deadline (only checked at the top of
+/// the loop).
+fn poll_sleep_seconds(interval: Option<u64>) -> u64 {
+    interval
+        .unwrap_or(DEVICE_CODE_POLL_SLEEP_SECONDS)
+        .clamp(1, 60)
+}
+
 /// The background half of the device flow: poll for user approval, exchange
 /// the authorization code for tokens, persist the set.
 async fn poll_and_store(
     client: &reqwest::Client,
     device: &DeviceCodeResponse,
     provider_id: &str,
+    generation: u64,
 ) -> Result<(), String> {
-    let interval = device.interval.unwrap_or(DEVICE_CODE_POLL_SLEEP_SECONDS);
+    let interval = poll_sleep_seconds(device.interval);
     let poll_body = serde_json::json!({
         "device_auth_id": device.device_auth_id,
         "user_code": device.user_code,
@@ -409,15 +522,55 @@ async fn poll_and_store(
     ])
     .await?;
 
-    let set = ChatgptTokenSet {
-        expires_at: jwt_expiration_seconds(&tokens.access_token),
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-    };
+    let set = token_set_from_grant(tokens, None);
     let id = provider_id.to_string();
-    tokio::task::spawn_blocking(move || store_token_set(&id, &set))
+    tokio::task::spawn_blocking(move || persist_token_set_if_current(&id, generation, &set))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Persist a token set produced by the login (or refresh) of `generation` —
+/// but only while that login is still the current one for this provider.
+fn persist_token_set_if_current(
+    provider_id: &str,
+    generation: u64,
+    set: &ChatgptTokenSet,
+) -> Result<(), String> {
+    // The generation lock is held across the vault write, so a concurrent
+    // disconnect either bumps first (we skip) or clears afterwards — it can
+    // never interleave into "cleared, then written back".
+    let map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    if map
+        .as_ref()
+        .and_then(|m| m.get(provider_id))
+        .copied()
+        .unwrap_or(0)
+        != generation
+    {
+        tauri_plugin_log::log::info!(
+            "chatgpt-auth: dropping a token set from a superseded login for {provider_id}"
+        );
+        return Ok(());
+    }
+    store_token_set(provider_id, set)
+}
+
+/// Invalidate any in-flight login poll or token refresh for a provider. Called
+/// by disconnect (`ai_runtime_clear_provider_key`): without it, work still in
+/// flight writes the credential back into the vault slot the user just cleared.
+pub fn cancel_login(provider_id: &str) {
+    bump_login_generation(provider_id);
+}
+
+/// The generation an in-flight refresh must still see when it persists. `0`
+/// means no login or disconnect was recorded for this provider in this process,
+/// so any later bump differs from it and a disconnect mid-refresh still wins.
+fn current_login_generation(provider_id: &str) -> u64 {
+    let map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    map.as_ref()
+        .and_then(|m| m.get(provider_id))
+        .copied()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -476,6 +629,266 @@ mod tests {
         let missing: DeviceCodeResponse =
             serde_json::from_str(r#"{"device_auth_id":"d","user_code":"u"}"#).unwrap();
         assert_eq!(missing.interval, None);
+    }
+
+    /// One scratch, file-key-backed vault for this test binary: the process
+    /// vault slot is global, so vault-touching tests share it and must use ids
+    /// unique to themselves.
+    fn install_test_vault() {
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+    }
+
+    fn token_set(access: &str, refresh: &str, expires_at: i64) -> ChatgptTokenSet {
+        ChatgptTokenSet {
+            access_token: access.to_string(),
+            refresh_token: Some(refresh.to_string()),
+            expires_at: Some(expires_at),
+        }
+    }
+
+    fn unix_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    /// A fake OpenAI that rotates the refresh token on every grant and answers
+    /// a replay with `invalid_grant` — the behaviour rig 0.41 encodes in
+    /// `should_reauthenticate_after_refresh` (400/401 + `invalid_grant` means
+    /// "log in again").
+    static FAKE_CONSUMED_REFRESH_TOKENS: Mutex<Option<std::collections::HashSet<String>>> =
+        Mutex::new(None);
+    static FAKE_REFRESH_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn rotating_refresh_grant(
+        refresh_token: String,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, String>> + Send>> {
+        Box::pin(async move {
+            // Stand in for the round-trip, so both callers are genuinely in
+            // flight at the same time.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            FAKE_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+            let mut consumed = FAKE_CONSUMED_REFRESH_TOKENS
+                .lock()
+                .expect("consumed refresh tokens");
+            let consumed = consumed.get_or_insert_with(std::collections::HashSet::new);
+            if !consumed.insert(refresh_token.clone()) {
+                return Err(
+                    "token request failed with status 400 Bad Request: {\"error\":\"invalid_grant\"}"
+                        .to_string(),
+                );
+            }
+            Ok(OAuthTokenResponse {
+                access_token: jwt_with_exp(unix_now() + 3600),
+                refresh_token: Some(format!("{refresh_token}-rotated")),
+                expires_in: None,
+            })
+        })
+    }
+
+    /// Two AI features (say an Ask AI turn and the user-context worker) meet the
+    /// same expiring token set at once. Each one runs load -> refresh -> store
+    /// on the same vault slot, so without single-flight both POST the *same*
+    /// refresh token; OpenAI consumes it on first use, the loser gets
+    /// `invalid_grant`, and the user is told to reconnect a healthy login.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_refreshes_never_replay_a_consumed_refresh_token() {
+        install_test_vault();
+        let provider = "chatgpt-concurrent-refresh";
+        let now = unix_now();
+        store_token_set(provider, &token_set(&jwt_with_exp(now - 10), "refresh-0", now - 10))
+            .expect("seed an expiring token set");
+
+        let first = tokio::spawn(fresh_access_token_with(provider, rotating_refresh_grant));
+        let second = tokio::spawn(fresh_access_token_with(provider, rotating_refresh_grant));
+        let (first, second) = (first.await.unwrap(), second.await.unwrap());
+
+        assert!(
+            first.is_ok() && second.is_ok(),
+            "a healthy login must survive two concurrent AI calls: {first:?} / {second:?}"
+        );
+        assert_eq!(
+            FAKE_REFRESH_CALLS.load(Ordering::SeqCst),
+            1,
+            "one refresh per provider instance, not one per caller"
+        );
+        assert_eq!(
+            load_token_set(provider)
+                .expect("load")
+                .and_then(|set| set.refresh_token),
+            Some("refresh-0-rotated".to_string()),
+            "the persisted refresh token must be the live one"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// Connect twice ("Start over", or connecting a second ChatGPT account):
+    /// the superseded poll must not clobber the token set the newer login
+    /// stored — `poll_and_store` persists *before* `begin_login`'s generation
+    /// check ever runs.
+    #[tokio::test]
+    async fn a_superseded_login_cannot_overwrite_the_newer_token_set() {
+        install_test_vault();
+        let provider = "chatgpt-superseded-login";
+        let stale = bump_login_generation(provider);
+        let current = bump_login_generation(provider);
+
+        persist_token_set_if_current(provider, current, &token_set("account-two", "r2", 4_000_000_000))
+            .expect("the current login persists");
+        let _ = persist_token_set_if_current(
+            provider,
+            stale,
+            &token_set("account-one", "r1", 4_000_000_000),
+        );
+
+        assert_eq!(
+            load_token_set(provider).expect("load").map(|set| set.access_token),
+            Some("account-two".to_string()),
+            "a superseded login must not overwrite the newer login's token set"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// Disconnect is a revocation. A device poll (or a refresh) still in flight
+    /// when the user disconnects must not write the credential back into the
+    /// slot that was just cleared.
+    #[tokio::test]
+    async fn a_disconnect_mid_login_keeps_the_provider_disconnected() {
+        install_test_vault();
+        let provider = "chatgpt-disconnect-mid-login";
+        let generation = bump_login_generation(provider);
+
+        // What disconnect does: cancel in-flight work, then clear the slot.
+        cancel_login(provider);
+        let _ = app_infra::delete_ai_provider_key(provider);
+
+        let _ = persist_token_set_if_current(
+            provider,
+            generation,
+            &token_set("resurrected", "r", 4_000_000_000),
+        );
+
+        assert_eq!(
+            load_token_set(provider).expect("load").map(|set| set.access_token),
+            None,
+            "a disconnected chatgpt provider must stay disconnected"
+        );
+    }
+
+    /// The poll interval is whatever `auth.openai.com` puts in the response.
+    /// `0` (or a junk `0`-ish hint) turns the background poll into a hot loop
+    /// hammering the device endpoint for a full 15 minutes; an oversized hint
+    /// parks the detached task in one `sleep` far past the 15-minute bound the
+    /// loop believes it enforces (the deadline is only checked at the top).
+    #[test]
+    fn the_device_poll_sleep_is_bounded_on_both_ends() {
+        assert_eq!(poll_sleep_seconds(None), DEVICE_CODE_POLL_SLEEP_SECONDS);
+        assert_eq!(poll_sleep_seconds(Some(3)), 3);
+        assert!(
+            poll_sleep_seconds(Some(0)) >= 1,
+            "a zero interval must not turn the poll into a hot loop"
+        );
+        assert!(
+            poll_sleep_seconds(Some(86_400)) < DEVICE_CODE_TIMEOUT_SECONDS,
+            "one sleep must not outlive the login timeout"
+        );
+    }
+
+    /// `fresh_access_token` is awaited by every AI call before the engine runs,
+    /// and (with single-flight) it holds the provider's refresh lock while it
+    /// waits. An endpoint that accepts the connection and then says nothing
+    /// must fail the call, not hang every ChatGPT feature forever. Driven at a
+    /// test-sized bound; production wires the same builder to
+    /// `OAUTH_REQUEST_TIMEOUT_SECONDS`.
+    #[tokio::test]
+    async fn an_auth_round_trip_gives_up_on_a_stalled_endpoint() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            // Accept and hold: never write a byte of response.
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(stream) => held.push(stream),
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let request = http_client_with_timeout(std::time::Duration::from_millis(200))
+            .post(format!("http://127.0.0.1:{port}/oauth/token"))
+            .body("grant_type=refresh_token")
+            .send();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), request).await;
+        assert!(
+            matches!(outcome, Ok(Err(_))),
+            "a stalled auth endpoint must time out the request, not hang the caller"
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_the_previous_refresh_token_when_the_grant_blanks_it() {
+        // A blank rotated refresh token is not a rotation: storing it fails the
+        // NEXT refresh, so a working login silently degrades into
+        // needs_reconnect one access-token lifetime later.
+        let rotated = token_set_from_grant(
+            OAuthTokenResponse {
+                access_token: jwt_with_exp(1_234_567),
+                refresh_token: Some(String::new()),
+                expires_in: None,
+            },
+            Some("previous-refresh".to_string()),
+        );
+        assert_eq!(
+            rotated.refresh_token.as_deref(),
+            Some("previous-refresh"),
+            "a blank rotated refresh token must not replace a working one"
+        );
+    }
+
+    #[test]
+    fn a_non_jwt_access_token_keeps_its_expiry_from_expires_in() {
+        // An opaque access token still comes with the grant's `expires_in`.
+        // Dropping it makes every later call treat the set as expired: a
+        // refresh, a vault rewrite, and another rotation per completion.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let set = token_set_from_grant(
+            OAuthTokenResponse {
+                access_token: "opaque-access-token".into(),
+                refresh_token: Some("refresh-1".into()),
+                expires_in: Some(3600),
+            },
+            Some("refresh-0".into()),
+        );
+        let expires_at = set
+            .expires_at
+            .expect("the grant's expires_in must survive into the stored set");
+        assert!((expires_at - (now + 3600)).abs() <= 5, "expected ~now+3600, got {expires_at}");
+        assert!(
+            !set.expires_within_skew(),
+            "a token good for an hour must not force a refresh on the very next call"
+        );
+    }
+
+    #[test]
+    fn device_code_response_tolerates_a_junk_interval() {
+        // `interval` is an optional poll hint with a default; a shape drift in
+        // it must not fail the response that carries the user code. This
+        // endpoint already drifted once (string vs number).
+        for body in [
+            r#"{"device_auth_id":"d","user_code":"u","interval":5.0}"#,
+            r#"{"device_auth_id":"d","user_code":"u","interval":-1}"#,
+            r#"{"device_auth_id":"d","user_code":"u","interval":null}"#,
+            r#"{"device_auth_id":"d","user_code":"u","interval":true}"#,
+        ] {
+            let parsed: DeviceCodeResponse = serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("a junk interval hint must not fail the login: {body} ({e})"));
+            assert_eq!(parsed.user_code, "u");
+        }
     }
 
     #[test]
