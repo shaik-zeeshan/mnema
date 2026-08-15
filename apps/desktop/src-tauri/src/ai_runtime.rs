@@ -321,7 +321,13 @@ fn validate_provider_base_url(provider_id: &str, base_url: &str) -> Result<(), S
         return Err("invalid_base_url_scheme".to_string());
     }
     if let Some(fixed_host) = fixed_host_for_provider_id(provider_id) {
-        if base_host(trimmed) != fixed_host {
+        // Compare the host the URL *parser* resolves — the same one reqwest
+        // dials — not a hand-split of the string. `base_host` reads
+        // `https://attacker.test?@chatgpt.com/v1` as `chatgpt.com` (it splits on
+        // `/` then takes the last `@` segment), while WHATWG parsing puts
+        // `?@chatgpt.com/v1` in the query and dials `attacker.test`. `#` and `\`
+        // do the same. A pin that can be read two ways is not a pin.
+        if parsed.host_str().unwrap_or_default().to_ascii_lowercase() != fixed_host {
             return Err(format!("base_url_host_mismatch:{provider_id}"));
         }
     }
@@ -429,10 +435,13 @@ fn chatgpt_engine_config(
     loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
 ) -> Result<ai_engine::EngineConfig, String> {
     let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    // `load_token_set` already reports a broken credential as the reconnect
+    // code; anything else it returns is the vault refusing to answer, which is
+    // not a verdict on the login. Pass it through unchanged so it reads the
+    // same as it does for every pasted-key kind — "denied ≠ missing".
     let token_set = loaded
-        .map_err(|error| {
+        .inspect_err(|error| {
             tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
-            needs_reconnect()
         })?
         .ok_or_else(needs_reconnect)?;
     Ok(ai_engine::EngineConfig::Cloud {
@@ -460,10 +469,13 @@ fn chatgpt_static_models(
     loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
 ) -> Result<Vec<DiscoveredModel>, String> {
     let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    // Same split as `chatgpt_engine_config`: a broken credential arrives as the
+    // reconnect code already, and a vault that refused to answer keeps its own
+    // error so the picker row reads "keychain access denied" here exactly as it
+    // does for every other kind.
     let connected = loaded
-        .map_err(|error| {
+        .inspect_err(|error| {
             tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
-            needs_reconnect()
         })?
         .is_some();
     if !connected {
@@ -1758,10 +1770,13 @@ mod tests {
             chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Ok(None)).map(|_| ()),
             Err("needs_reconnect:chatgpt".to_string())
         );
+        // A vault that refused to answer still fails closed, but keeps its own
+        // error: it is not a verdict on the login (see
+        // `a_denied_vault_is_not_a_verdict_on_the_chatgpt_login`).
         assert_eq!(
             chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Err("vault locked".to_string()))
                 .map(|_| ()),
-            Err("needs_reconnect:chatgpt".to_string())
+            Err("vault locked".to_string())
         );
     }
 
@@ -1887,10 +1902,12 @@ mod tests {
             Err("needs_reconnect:chatgpt".to_string())
         );
         // A vault that refuses to answer is not a licence to report "live"
-        // either — fail closed.
+        // either — fail closed. It keeps its own error rather than becoming the
+        // reconnect code, because it is not a verdict on the login (see
+        // `a_denied_vault_is_not_a_verdict_on_the_chatgpt_login`).
         assert_eq!(
             chatgpt_static_models("chatgpt", Err("vault locked".to_string())).map(|_| ()),
-            Err("needs_reconnect:chatgpt".to_string())
+            Err("vault locked".to_string())
         );
 
         let connected = chatgpt_static_models(
@@ -1916,6 +1933,91 @@ mod tests {
             connected.iter().all(|m| m.context_window.is_none()),
             "this backend reports no context-window metadata"
         );
+    }
+
+    #[test]
+    fn a_denied_vault_is_not_a_verdict_on_the_chatgpt_login() {
+        // "Denied ≠ missing" (the ADR 0048 amendment `classify_listing_failure`
+        // already implements for every other kind): a vault that REFUSED to
+        // answer says nothing about the credential inside it. The user denied
+        // the keychain prompt, or the vault is cached-denied for this process
+        // lifetime — the ChatGPT login is untouched and still healthy.
+        //
+        // Collapsing that into `needs_reconnect` renders "Reconnect ChatGPT in
+        // Settings", and the button next to that copy is Disconnect — which
+        // destroys the OAuth token set (access AND the long-lived refresh
+        // token) the vault merely declined to hand over. That is precisely the
+        // harm ADR 0058 splits `provider_unreachable` out to avoid: never tell
+        // a user to sign in again over something that never rendered a verdict
+        // on their grant.
+        let denied =
+            app_infra::AppInfraError::SecretVaultDenied("user denied prompt".to_string())
+                .to_string();
+
+        // Still fails closed — a denied vault never reads as "live".
+        let listing = chatgpt_static_models("chatgpt", Err(denied.clone()))
+            .map(|_| ())
+            .expect_err("a denied vault must not list models");
+        assert_ne!(
+            listing, "needs_reconnect:chatgpt",
+            "a denied vault is not a bad login; this copy invites Disconnect"
+        );
+        assert_eq!(
+            classify_listing_failure(&listing),
+            "keychain access denied",
+            "the picker row must read the same for chatgpt as for every other kind"
+        );
+
+        // Same on the egress path: the engine must not resolve, and must not
+        // blame the login for it.
+        let engine = chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Err(denied))
+            .map(|_| ())
+            .expect_err("a denied vault must not resolve an engine");
+        assert_ne!(
+            engine, "needs_reconnect:chatgpt",
+            "a denied vault is not a bad login"
+        );
+
+        // The genuine credential problems keep the reconnect code.
+        assert_eq!(
+            chatgpt_static_models("chatgpt", Ok(None)).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Ok(None)).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+
+        // …including the OTHER thing `load_token_set` can fail on: slot content
+        // this module did not write. That IS a broken credential, so signing in
+        // again really is the fix — and the split has to happen where the two
+        // are still distinguishable (inside `load_token_set`), not by handing
+        // both callers one indistinguishable `Err`.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        let corrupt_id = "chatgpt-corrupt-slot";
+        app_infra::store_ai_provider_key(corrupt_id, "sk-not-a-token-set")
+            .expect("seed an unparseable token set");
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: corrupt_id.to_string(),
+                kind: AiProviderKind::Chatgpt,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: corrupt_id.to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err(format!("needs_reconnect:{corrupt_id}")),
+            "an unreadable token SET is a login problem, and must not leak a \
+             serde message the surfaces cannot classify"
+        );
+        let _ = app_infra::delete_ai_provider_key(corrupt_id);
     }
 
     #[test]
@@ -2059,6 +2161,44 @@ mod tests {
             resolve_engine_config(&settings, None, None).map(|_| ()),
             Err("base_url_host_mismatch:chatgpt-2".to_string())
         );
+    }
+
+    #[test]
+    fn the_first_party_host_pin_survives_url_authority_tricks() {
+        // The pin compares a hand-split of the base-URL string, but the request
+        // is dialled by reqwest's real (WHATWG) URL parser. Any string the two
+        // read differently turns the pin into a rubber stamp — and the
+        // `chatgpt` slot holds an OAuth token SET (access + long-lived refresh
+        // token) that a kind-swapped settings record would then ship out as an
+        // `Authorization: Bearer` header.
+        for hostile in [
+            "https://attacker.test?@chatgpt.com/v1",
+            "https://attacker.test#@chatgpt.com/v1",
+            "https://attacker.test\\@chatgpt.com/v1",
+        ] {
+            assert_eq!(
+                url::Url::parse(hostile).expect("parses").host_str(),
+                Some("attacker.test"),
+                "the request really does go to the attacker: {hostile}"
+            );
+            assert_eq!(
+                validate_provider_base_url("chatgpt", hostile).map(|_| ()),
+                Err("base_url_host_mismatch:chatgpt".to_string()),
+                "the chatgpt token set must not be sent to {hostile}"
+            );
+        }
+
+        // Same instrument, same fix, for the other pinned first-party slots.
+        assert!(validate_provider_base_url("openai", "https://attacker.test?@api.openai.com/v1").is_err());
+        assert!(validate_provider_base_url(
+            "anthropic-2",
+            "https://attacker.test#@api.anthropic.com/v1"
+        )
+        .is_err());
+
+        // …and the legitimate hosts still pass.
+        assert!(validate_provider_base_url("chatgpt", "https://chatgpt.com/backend-api/codex").is_ok());
+        assert!(validate_provider_base_url("openai-2", "https://api.openai.com/v1").is_ok());
     }
 
     #[test]
