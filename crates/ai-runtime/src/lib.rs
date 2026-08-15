@@ -181,9 +181,28 @@ impl AiRuntimeError {
     /// quota, unreachable, provider outage, context overflow). Callers should log
     /// `to_string()` and display this.
     pub fn user_facing_message(&self) -> String {
+        self.user_facing_message_for(None)
+    }
+
+    /// [`Self::user_facing_message`], worded for the cloud provider that
+    /// produced the failure.
+    ///
+    /// Only the credential sentences differ, and only for
+    /// [`CloudProvider::Chatgpt`]: that kind's credential is an OAuth sign-in,
+    /// not a pasted key, and its Settings card has no key field at all — so
+    /// "check your API key in Settings" names a field the user cannot find and
+    /// leaves Disconnect as the only obvious button, which destroys the login
+    /// (ADR 0058). Every other provider, and the local engines, keep the exact
+    /// wording they had.
+    pub fn user_facing_message_for(&self, provider: Option<CloudProvider>) -> String {
+        let chatgpt = matches!(provider, Some(CloudProvider::Chatgpt));
         match self {
             AiRuntimeError::MissingModel => {
                 "No model is selected. Choose one in Settings and try again.".to_string()
+            }
+            AiRuntimeError::MissingKey if chatgpt => {
+                "You're not signed in to ChatGPT. Sign in again in Settings and try again."
+                    .to_string()
             }
             AiRuntimeError::MissingKey => {
                 "No API key is set for this provider. Add your key in Settings and try again."
@@ -195,8 +214,22 @@ impl AiRuntimeError {
             AiRuntimeError::Build(_) | AiRuntimeError::ClientBuild(_) => {
                 "Couldn't reach the AI provider. Check your connection and try again.".to_string()
             }
-            AiRuntimeError::Extraction(error) => classify_provider_failure(&error.to_string()),
-            AiRuntimeError::AgentLoop(message) => classify_provider_failure(message),
+            AiRuntimeError::Extraction(error) => {
+                classify_provider_failure(&error.to_string(), provider)
+            }
+            AiRuntimeError::AgentLoop(message) => classify_provider_failure(message, provider),
+        }
+    }
+}
+
+impl EngineConfig {
+    /// The cloud provider this config talks to, or `None` for a local runtime.
+    /// Lets a caller word a failure for the engine that produced it
+    /// ([`AiRuntimeError::user_facing_message_for`]).
+    pub fn cloud_provider(&self) -> Option<CloudProvider> {
+        match self {
+            EngineConfig::Cloud { provider, .. } => Some(*provider),
+            EngineConfig::Local { .. } => None,
         }
     }
 }
@@ -209,7 +242,7 @@ impl AiRuntimeError {
 /// generic 5xx/transport buckets so a "402 insufficient quota" doesn't read as a
 /// plain outage. Anything unrecognised falls back to a neutral retry sentence so
 /// the surface never shows a raw JSON body.
-fn classify_provider_failure(raw: &str) -> String {
+fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
     let lower = raw.to_lowercase();
     let has = |needle: &str| lower.contains(needle);
 
@@ -232,7 +265,14 @@ fn classify_provider_failure(raw: &str) -> String {
         || has("authentication")
         || has("permission")
     {
-        "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
+        if matches!(provider, Some(CloudProvider::Chatgpt)) {
+            // The subscription backend rejected the OAuth grant. There is no key
+            // to check — the fix is a fresh sign-in.
+            "ChatGPT rejected the sign-in. Sign in with ChatGPT again in Settings and try again."
+                .to_string()
+        } else {
+            "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
+        }
     } else if has("context")
         && (has("length") || has("maximum") || has("too long") || has("token"))
     {
@@ -555,7 +595,7 @@ mod tests {
             ),
         ];
         for (raw, expected) in cases {
-            let message = classify_provider_failure(raw);
+            let message = classify_provider_failure(raw, None);
             assert!(
                 message.contains(expected),
                 "raw {raw:?} should classify to contain {expected:?}, got: {message}"
@@ -564,8 +604,62 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_chatgpt_sign_in_is_not_reported_as_a_bad_api_key() {
+        // The `chatgpt` kind's credential is an OAuth sign-in, not a pasted key:
+        // its Settings card has no key field at all (Providers.svelte renders the
+        // connect/disconnect pair instead). So the generic auth sentence sends the
+        // user looking for a field that does not exist, and the only button there
+        // is Disconnect — which destroys the login. ADR 0058 splits exactly this
+        // case out as "sign in again".
+        let rejected = AiRuntimeError::AgentLoop(
+            "Invalid status code 401 Unauthorized: token expired".to_string(),
+        );
+        let message = rejected.user_facing_message_for(Some(CloudProvider::Chatgpt));
+        assert!(
+            !message.to_lowercase().contains("api key"),
+            "a ChatGPT subscription user has no API key to check, got: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("sign in")
+                || message.to_lowercase().contains("sign-in"),
+            "expected the sign-in sentence, got: {message}"
+        );
+
+        // The five pasted-key kinds keep the wording they had, verbatim.
+        for provider in [
+            CloudProvider::Anthropic,
+            CloudProvider::Openai,
+            CloudProvider::OpenAiCompatible,
+        ] {
+            assert_eq!(
+                rejected.user_facing_message_for(Some(provider)),
+                rejected.user_facing_message(),
+                "non-chatgpt providers must not change wording"
+            );
+            assert!(rejected
+                .user_facing_message_for(Some(provider))
+                .contains("rejected your API key"));
+        }
+        // A local engine (no provider) is unchanged too.
+        assert_eq!(
+            rejected.user_facing_message_for(None),
+            rejected.user_facing_message()
+        );
+
+        // Only the credential bucket is re-worded: an outage still reads as an
+        // outage, or the user retries a sign-in that was never the problem.
+        let offline = AiRuntimeError::AgentLoop("error sending request: dns error".to_string());
+        assert!(
+            offline
+                .user_facing_message_for(Some(CloudProvider::Chatgpt))
+                .contains("Check your connection"),
+            "an unreachable ChatGPT backend is not a rejected sign-in"
+        );
+    }
+
+    #[test]
     fn unrecognised_failure_falls_back_without_leaking_detail() {
-        let message = classify_provider_failure("some entirely novel { json: true } blob");
+        let message = classify_provider_failure("some entirely novel { json: true } blob", None);
         assert!(message.contains("couldn't complete this request"));
         assert!(!message.contains('{'));
     }

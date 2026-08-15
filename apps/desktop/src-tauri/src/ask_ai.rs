@@ -2351,7 +2351,10 @@ async fn run_ask_ai_turn(
             tauri_plugin_log::log::warn!(
                 "Ask AI agent loop failed for {conversation_id}: {error}"
             );
-            let message = error.user_facing_message();
+            // Worded for the engine that failed: on the ChatGPT subscription
+            // backend a rejected credential is a sign-in problem, and there is
+            // no API key field to send the user to.
+            let message = error.user_facing_message_for(config.cloud_provider());
             persist_turn(
                 &infra,
                 &conversation_id,
