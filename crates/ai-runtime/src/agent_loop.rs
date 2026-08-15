@@ -199,7 +199,7 @@ fn history_messages(history: &[AgentHistoryTurn]) -> Vec<Message> {
 ///
 /// Builds the appropriate provider client+agent for `config` (mirroring the
 /// per-provider arms of [`crate::extract_with_preamble`]) with `preamble` as the
-/// system instruction and `tools` attached as dynamic [`ToolDyn`] wrappers whose
+/// system instruction and `tools` attached as rig [`DynamicTool`]s whose
 /// `call` invokes `executor(name, params)`. `history` is fed as the agent's chat
 /// history (oldest first). The model streams text deltas (surfaced as
 /// [`AgentLoopEvent::Delta`]); when it issues a tool call, rig executes it via the
@@ -269,10 +269,7 @@ pub async fn run_agent_loop(
                     // it the reasoning ceiling. Note rig clears `max_tokens` for
                     // this provider, so today the ceiling never reaches the wire.
                     let client = chatgpt::Client::builder()
-                        .api_key(chatgpt::ChatGPTAuth::AccessToken {
-                            access_token: api_key.clone(),
-                            account_id: crate::chatgpt_account_id(api_key),
-                        })
+                        .api_key(crate::chatgpt_auth_for(api_key))
                         .build()?;
                     let agent = client
                         .agent(model.as_str())
@@ -631,18 +628,165 @@ mod tests {
         let small = tool_calls_under_cap(1, 8).await;
         let larger = tool_calls_under_cap(4, 8).await;
 
-        // Hitting the cap is a clean stop (no error) and bounds the tool calls
-        // below the scripted turn count.
-        assert!(small >= 1, "at least one tool call should run, got {small}");
-        assert!(
-            small < 8 && larger < 8,
-            "tool calls should be bounded by the cap below the 8 scripted turns: small={small}, larger={larger}"
+        // Exact, not "bounded and scaling". Inequalities this loose are
+        // satisfied by `+1`, `+2` and `+3` alike, so they survived the 0.38
+        // `multi_turn` (extra turns on top) -> 0.41 `max_turns` (total
+        // model-call budget) flip without anyone noticing the allowance had
+        // moved. Pinning the exact ceiling is what makes a turn-budget
+        // regression visible — and on the ChatGPT subscription backend a stray
+        // turn is another request billed against the user's own Codex quota.
+        //
+        // `cap` bounds tool calls at `cap + 1`: rig's budget is `cap + 1` model
+        // calls, and the last permitted call's tool still runs before the
+        // budget check. That `+1` is what leaves room for the answer turn.
+        assert_eq!(small, 2, "cap=1 permits one tool round plus the answer turn's");
+        assert_eq!(larger, 5, "cap=4 scales the same way");
+    }
+
+    /// Collect every tool-result text block the model was handed back.
+    fn tool_result_texts(request: &rig_core::completion::CompletionRequest) -> Vec<String> {
+        use rig_core::message::{ToolResultContent, UserContent};
+        request
+            .chat_history
+            .iter()
+            .filter_map(|message| match message {
+                Message::User { content, .. } => Some(content),
+                _ => None,
+            })
+            .flat_map(|content| content.iter())
+            .filter_map(|item| match item {
+                UserContent::ToolResult(result) => Some(result.content.clone()),
+                _ => None,
+            })
+            .flat_map(|content| content.into_iter())
+            .map(|block| match block {
+                ToolResultContent::Text(text) => text.text,
+                ToolResultContent::Json { value } => value.to_string(),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// A failing tool must not kill the turn.
+    ///
+    /// The 0.41 rewrite changed this mapping from `ToolError::ToolCallError` to
+    /// `ToolExecutionError::other`, and the two would look identical at the
+    /// call site while differing on exactly this: whether rig streams the error
+    /// back as a tool result the model can recover from, or terminates the run
+    /// and loses the whole answer.
+    #[tokio::test]
+    async fn a_failing_tool_reaches_the_model_and_the_turn_still_answers() {
+        let executor: ToolExecutor = Arc::new(move |_name, _params| {
+            Box::pin(async move { Err("search failed: index offline".to_string()) })
+        });
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("sorry, the index is offline"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let probe = model.clone();
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let sink = deltas.clone();
+        drive_agent_stream(
+            agent,
+            "find x",
+            vec![],
+            4,
+            Arc::new(AtomicBool::new(false)),
+            move |event| {
+                if let AgentLoopEvent::Delta(text) = event {
+                    sink.lock().unwrap().push(text);
+                }
+            },
+        )
+        .await
+        .expect("a failed tool call must not abort the loop");
+
+        assert_eq!(
+            deltas.lock().unwrap().join(""),
+            "sorry, the index is offline",
+            "the model must still get its answer turn after a tool failure"
         );
-        // The bound scales with the cap: a larger cap permits strictly more tool
-        // rounds, proving the cap (not the script length) is the limiter.
-        assert!(
-            larger > small,
-            "a larger cap should allow more tool calls: small={small}, larger={larger}"
+        let requests = probe.requests();
+        assert_eq!(requests.len(), 2, "the model is called again after the failure");
+        assert_eq!(
+            tool_result_texts(&requests[1]),
+            vec!["search failed: index offline".to_string()],
+            "the executor's error text must reach the model verbatim"
+        );
+    }
+
+    /// A tool result reaches the model byte-identical.
+    ///
+    /// `.map(ToolOutput::text)` is one method away from `.map(Into::into)`,
+    /// which routes a JSON-shaped string through `ToolOutput::json` and changes
+    /// how it is presented. Ask AI tool results carry OCR text and transcripts,
+    /// so a silent re-encode here is a wrong answer the user cannot explain.
+    #[tokio::test]
+    async fn a_tool_result_reaches_the_model_byte_identical() {
+        const RESULT: &str = "{\"captures\":[{\"text\":\"line one\\nline \\\"two\\\"\"}]}";
+        let executor: ToolExecutor =
+            Arc::new(move |_name, _params| Box::pin(async move { Ok(RESULT.to_string()) }));
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("ok"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let probe = model.clone();
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        drive_agent_stream(agent, "find x", vec![], 4, Arc::new(AtomicBool::new(false)), |_| {})
+            .await
+            .expect("loop should complete");
+
+        assert_eq!(
+            tool_result_texts(&probe.requests()[1]),
+            vec![RESULT.to_string()],
+            "the executor's pre-serialized JSON must reach the model unchanged"
+        );
+    }
+
+    /// An all-optional-parameters tool the model calls with no arguments must
+    /// still dispatch. 0.38 tolerated `""`/`"null"` on a raw argument string;
+    /// 0.41 hands the callback a parsed `Value`, and only the `null` case is
+    /// still ours to handle — so that branch has to stay covered.
+    #[tokio::test]
+    async fn a_null_argument_tool_call_dispatches_with_an_empty_object() {
+        let (executor, calls) = recording_executor();
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::Value::Null),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("done"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        drive_agent_stream(agent, "go", vec![], 4, Arc::new(AtomicBool::new(false)), |_| {})
+            .await
+            .expect("loop should complete");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "a null-argument call still dispatches");
+        assert_eq!(
+            calls[0].1,
+            serde_json::json!({}),
+            "a null payload is normalized to an empty object, not passed through"
         );
     }
 

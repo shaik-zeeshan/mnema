@@ -731,12 +731,6 @@ pub async fn get_or_generate_digest(
         ));
         return Ok(None);
     }
-    let Ok(engine) = crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await else {
-        crate::native_capture::debug_log::log_info(format!(
-            "digest: skipped {range_kind} (engine config did not resolve)"
-        ));
-        return Ok(None);
-    };
 
     // 2./3. The range's Activities; a narrative over fewer than two is silly.
     //
@@ -843,6 +837,24 @@ pub async fn get_or_generate_digest(
         provider_label_for(ai_runtime),
         model_label_for(ai_runtime),
     ));
+
+    // The LIVE engine resolve belongs here, not at the step-1 gate: for the
+    // `chatgpt` kind it is a network round trip (an OAuth refresh against
+    // auth.openai.com, 30s timeout, serialized behind the per-provider refresh
+    // lock). Everything above this line — including the step-4 cache hit that
+    // "never re-bills the engine" and is what the Insights surfaces hit on
+    // every worker beat — needs no credential at all. Resolving it up front put
+    // that round trip in front of the cache and let an offline refresh failure
+    // withhold a digest already sitting on disk. Step 1's
+    // `engine_configured_prerequisite` still gates on a *resolvable* engine
+    // with no network.
+    let Ok(engine) = crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await
+    else {
+        crate::native_capture::debug_log::log_info(format!(
+            "digest: skipped {range_kind} (engine config did not resolve)"
+        ));
+        return Ok(None);
+    };
 
     let extracted =
         ai_engine::extract_with_preamble::<DigestNarrative>(&engine, &preamble, &prompt).await;

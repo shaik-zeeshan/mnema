@@ -54,9 +54,29 @@ experimental flag — with the auth lifecycle split at the rig boundary:
   access token; every real call site goes through the async
   `resolve_engine_config_live`, which refreshes an expiring token (60 s skew,
   `exp` read off the JWT) and persists the rotation before the engine runs.
-- **No unattended login, ever**: a missing/unreadable/unrefreshable token set
-  collapses to the `needs_reconnect:<id>` reason code, rendered as "Reconnect
-  ChatGPT in Settings" — the analog of rig's `allow_device_flow(false)`.
+- **No unattended login, ever**: a missing or unreadable token set collapses to
+  the `needs_reconnect:<id>` reason code, rendered as "Reconnect ChatGPT in
+  Settings" — the analog of rig's `allow_device_flow(false)`. A *failed refresh*
+  is split by whether OpenAI rendered a verdict on the credential: only a
+  400/401 carrying `invalid_grant` (rig's own
+  `should_reauthenticate_after_refresh` rule) is `needs_reconnect`; a transport
+  failure, timeout, 5xx or 429 is `provider_unreachable:<id>` and reads as "try
+  again", not "sign in again". Collapsing the two is actively harmful — the
+  obvious next step for a user told to reconnect is Disconnect, which destroys a
+  credential that was fine, so an offline moment would cost them their login.
+  Same reasoning as [ADR 0048](0048-cloud-transcription-errors-are-transient-liveness-not-job-failures.md).
+- **A granted rotation is never dropped**: once the refresh POST returns, OpenAI
+  has consumed the old refresh token, so a failed vault write would leave the
+  slot holding a credential that can never be accepted again — a working login
+  silently dead. The rotation is held in memory and re-tried (through the same
+  compare-and-swap, so a disconnect still wins) on the next call.
+- **A refresh write is guarded by the credential it rotated, not by a login
+  generation.** A generation bump means "a login started", which is neither
+  necessary nor sufficient: a login merely *starting* mid-refresh would strand
+  the consumed token, and a refresh starting *after* one began would overwrite
+  the account the finished login just stored. Revocation is what the generation
+  is for, and it clears the slot under the same lock the compare-and-swap holds
+  so the two cannot interleave.
 - **The model list is static** (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
   `gpt-5.5`, `gpt-5.2` — the `visibility: "list"` entries in openai/codex
   `codex-rs/models-manager/models.json`; rig's exported constants proved stale
@@ -82,4 +102,11 @@ confirm dialog.
 - The static model list goes stale until touched; updating it is a one-line
   diff that waits on no rig release.
 - A second `chatgpt` instance is possible (per ADR 0035) but pointless today —
-  nothing distinguishes two logins to the same backend except the account.
+  nothing distinguishes two logins to the same backend except the account. It is
+  not free of consequence, though: instance ids are derived (`chatgpt-2`), so
+  the first-party host pin in `fixed_host_for_provider_id` matches on the id
+  *root*. Pinning the bare kind id alone would leave a second login's token set
+  — access **and** long-lived refresh token — shippable to any host a rewritten
+  settings record names.
+- Disconnect clears the local slot; it does not revoke at OpenAI. The refresh
+  token stays valid there until it expires or the user revokes the app.

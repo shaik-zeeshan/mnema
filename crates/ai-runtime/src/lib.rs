@@ -27,6 +27,20 @@ use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
 /// and the `ChatGPT-Account-Id` header is sent only when it is `Some`
 /// (`.../chatgpt/mod.rs:435`). So the caller has to read the same claim rig
 /// reads. Unverified decode — the backend authenticates the token itself.
+/// The per-call rig credential for the ChatGPT subscription backend.
+///
+/// Shared by both entry points ([`extract_with_preamble`] and
+/// [`agent_loop::run_agent_loop`]) so the account-id derivation cannot drift
+/// between them — omitting it on one path only would send the
+/// `ChatGPT-Account-Id` header for chat but not extraction, which is wrong for
+/// multi-workspace accounts in exactly one of the two.
+pub(crate) fn chatgpt_auth_for(access_token: &str) -> chatgpt::ChatGPTAuth {
+    chatgpt::ChatGPTAuth::AccessToken {
+        access_token: access_token.to_string(),
+        account_id: chatgpt_account_id(access_token),
+    }
+}
+
 pub(crate) fn chatgpt_account_id(access_token: &str) -> Option<String> {
     let payload = access_token.split('.').nth(1)?;
     let bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -329,10 +343,7 @@ where
                     // is read off that token here (rig derives one only on its
                     // own OAuth path, not on the `AccessToken` path).
                     let client = chatgpt::Client::builder()
-                        .api_key(chatgpt::ChatGPTAuth::AccessToken {
-                            access_token: api_key.clone(),
-                            account_id: chatgpt_account_id(api_key),
-                        })
+                        .api_key(chatgpt_auth_for(api_key))
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
@@ -595,5 +606,47 @@ mod tests {
             Some("acct_123")
         );
         assert_eq!(chatgpt_account_id("not-a-jwt"), None);
+
+        // The discriminating negatives. Building the happy input from the same
+        // literal the implementation greps for proves only that base64url
+        // decoding works — if the claim PATH were wrong, the test would be
+        // wrong in the same way and still pass. These two pin the path itself.
+        let namespace_without_the_claim = serde_json::json!({
+            "https://api.openai.com/auth": { "user_id": "user_123" },
+            "chatgpt_account_id": "not-here-either",
+        })
+        .to_string();
+        assert_eq!(
+            chatgpt_account_id(&format!(
+                "h.{}.s",
+                base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(namespace_without_the_claim)
+            )),
+            None,
+            "the id lives under the auth namespace; a top-level lookalike is not it"
+        );
+
+        // …and it is found by name, not by position, among unrelated claims.
+        let crowded = serde_json::json!({
+            "iss": "https://auth.openai.com",
+            "exp": 4_000_000_000i64,
+            "https://api.openai.com/auth": {
+                "user_id": "user_123",
+                "chatgpt_account_id": "acct_456",
+                "chatgpt_plan_type": "pro",
+            },
+        })
+        .to_string();
+        assert_eq!(
+            chatgpt_account_id(&format!(
+                "h.{}.s",
+                base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(crowded)
+            ))
+            .as_deref(),
+            Some("acct_456")
+        );
+
+        // A token with no readable payload must not panic the call path.
+        assert_eq!(chatgpt_account_id("h..s"), None);
+        assert_eq!(chatgpt_account_id(""), None);
     }
 }

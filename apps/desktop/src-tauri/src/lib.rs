@@ -815,6 +815,7 @@ pub fn run() {
             ai_runtime::ai_runtime_clear_provider_key,
             ai_runtime::ai_runtime_has_provider_key,
             ai_runtime::ai_runtime_chatgpt_begin_login,
+            ai_runtime::ai_runtime_chatgpt_cancel_login,
             ai_runtime::mcp_set_server_secret,
             ai_runtime::mcp_clear_server_secret,
             ai_runtime::mcp_has_server_secret,
