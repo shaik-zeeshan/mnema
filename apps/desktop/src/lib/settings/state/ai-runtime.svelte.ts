@@ -67,26 +67,32 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // engine-configured prerequisite codes, plus user_context_disabled).
   function aiRuntimeReasonLabel(reason: string | null | undefined): string {
     if (!reason) return "Unavailable";
-    if (reason.startsWith("no_provider_key:")) {
+    // Case-insensitive: the same codes reach this labeller both RAW (the status
+    // snapshot's `reason` field) and via `humanizeError` (a command REJECTION —
+    // the test-connection banner), and `humanizeError` upper-cases the first
+    // letter of what it tidies, so a `startsWith` test would never match there.
+    // The id after the prefix is sliced off the ORIGINAL, which keeps its case.
+    const code = reason.toLowerCase();
+    if (code.startsWith("no_provider_key:")) {
       const provider = reason.slice("no_provider_key:".length);
       return `No API key saved for ${deps.labelForProvider(provider)}.`;
     }
-    if (reason.startsWith("provider_not_connected:")) {
+    if (code.startsWith("provider_not_connected:")) {
       const provider = reason.slice("provider_not_connected:".length);
       return `The default model's provider (${deps.labelForProvider(provider)}) is not connected.`;
     }
-    if (reason.startsWith("needs_reconnect:")) {
+    if (code.startsWith("needs_reconnect:")) {
       const provider = reason.slice("needs_reconnect:".length);
       return `${deps.labelForProvider(provider)} needs to be reconnected — sign in with ChatGPT again.`;
     }
-    if (reason.startsWith("provider_unreachable:")) {
+    if (code.startsWith("provider_unreachable:")) {
       // The sign-in is intact; the auth endpoint just didn't answer. Saying
       // "reconnect" here would push the user toward Disconnect, which destroys
       // a credential that is fine.
       const provider = reason.slice("provider_unreachable:".length);
       return `Couldn't reach ${deps.labelForProvider(provider)} — check your connection and try again.`;
     }
-    switch (reason) {
+    switch (code) {
       case "user_context_disabled": return "Continuous derivation is turned off.";
       case "ai_runtime_disabled": return "AI features are turned off.";
       case "no_providers": return "No AI providers connected yet.";
@@ -97,15 +103,28 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     }
   }
 
+  // Monotonic ticket per status load. `handleChatgptConnectionChange` is driven
+  // by the `chatgpt_login_update` event and is NOT serialised behind
+  // `aiProviderKeyInFlight`, so two status round trips can be in flight at once
+  // (the event's, and the one the user's Disconnect fires). Whichever answers
+  // last used to win, even when it read the runtime BEFORE the newer one did.
+  let aiRuntimeStatusSeq = 0;
+
   async function loadAiRuntimeStatus() {
+    const seq = ++aiRuntimeStatusSeq;
     aiRuntimeStatusLoading = true;
     aiRuntimeStatusError = null;
     try {
-      aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+      const status = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+      if (seq !== aiRuntimeStatusSeq) return;
+      aiRuntimeStatus = status;
     } catch (error) {
+      if (seq !== aiRuntimeStatusSeq) return;
       aiRuntimeStatusError = humanizeError(error);
     } finally {
-      aiRuntimeStatusLoading = false;
+      // A superseded load must not clear the spinner the newer one is still
+      // showing.
+      if (seq === aiRuntimeStatusSeq) aiRuntimeStatusLoading = false;
     }
   }
 
@@ -490,7 +509,12 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
     } catch (error) {
-      aiRuntimeTestError = humanizeError(error);
+      // This command resolves the default model's engine, so it rejects with the
+      // same reason codes the status snapshot carries — including the chatgpt
+      // kind's `needs_reconnect:<id>` / `provider_unreachable:<id>`. Label them
+      // here too, or the banner prints the machine code and hides the one action
+      // that fixes it (and, for unreachable, invites a needless Disconnect).
+      aiRuntimeTestError = aiRuntimeReasonLabel(humanizeError(error));
     } finally {
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();

@@ -212,6 +212,14 @@ export function createOnboardingAiStore() {
   function subscribeChatgptLoginUpdates(): void {
     if (chatgptLoginSubscribed) return;
     chatgptLoginSubscribed = true;
+    // `listen()` registers the handler asynchronously and only THEN hands back
+    // its unlisten. A teardown (or a re-subscribe) inside that window finds
+    // `chatgptLoginUnlisten` still null, so the ticket — not the null check — is
+    // what decides whether the handler that lands afterwards may live. Without
+    // it the listener is registered with nobody holding its unlisten: permanent,
+    // and duplicated on every later `init()`. Same guard every other listener in
+    // this app spells `destroyed` (`onboarding-listeners.ts`, `+page.svelte`).
+    const ticket = ++chatgptLoginTicket;
     void listen<{ providerId: string; connected: boolean; error?: string }>(
       "chatgpt_login_update",
       (event) => {
@@ -231,12 +239,18 @@ export function createOnboardingAiStore() {
         };
       },
     ).then((fn) => {
+      if (ticket !== chatgptLoginTicket) {
+        fn();
+        return;
+      }
       chatgptLoginUnlisten = fn;
     });
   }
 
   /** Drop the login subscription (the controller's teardown). */
   function disposeChatgptLoginUpdates(): void {
+    // Bump first: it retires a registration still in the `listen()` window.
+    chatgptLoginTicket += 1;
     chatgptLoginUnlisten?.();
     chatgptLoginUnlisten = null;
     chatgptLoginSubscribed = false;
@@ -338,6 +352,8 @@ export function createOnboardingAiStore() {
   // renders off them.
   let chatgptLoginSubscribed = false;
   let chatgptLoginUnlisten: (() => void) | null = null;
+  // Which subscription attempt is the live one — see `subscribeChatgptLoginUpdates`.
+  let chatgptLoginTicket = 0;
 
   function init(): void {
     void aiRuntime.refreshAiProviderKeyPresence();

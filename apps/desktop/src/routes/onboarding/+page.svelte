@@ -42,6 +42,13 @@
     untrack(() => {
       void flow.load();
     });
+    // `flow.load()` opens the ChatGPT device-login subscription (`ai.init()`),
+    // which is owned by the controller precisely so it survives every SCREEN —
+    // but not this page. Nothing else drops it, so without this the listener
+    // (and the whole controller graph it closes over) outlives the `goto("/")`
+    // at Finish/Skip and keeps re-verifying against a dead store on every later
+    // ChatGPT sign-in from Settings.
+    return () => c.ai.disposeChatgptLoginUpdates();
   });
 
   // Download-progress + recording-settings-changed listeners; guard against a

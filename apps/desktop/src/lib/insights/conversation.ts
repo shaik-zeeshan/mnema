@@ -265,6 +265,8 @@ export function engineProviderLabel(provider: string): string {
       return "OpenAI";
     case "openai_compatible":
       return "OpenAI-compatible";
+    case "chatgpt":
+      return "ChatGPT";
     case "ollama":
       return "Ollama";
     case "llamafile":
