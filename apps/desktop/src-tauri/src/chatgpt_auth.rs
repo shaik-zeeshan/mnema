@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,11 @@ const TOKEN_EXPIRY_SKEW_SECONDS: i64 = 60;
 /// Give up on a device-code login the user never approves. Matches rig/Codex.
 const DEVICE_CODE_TIMEOUT_SECONDS: u64 = 15 * 60;
 const DEVICE_CODE_POLL_SLEEP_SECONDS: u64 = 5;
+/// How many device-code polls in a row may fail to reach `auth.openai.com`
+/// before the login gives up. A dropped connection says nothing about the
+/// login, but an endpoint that never answers must not hold the code UI open
+/// for the full deadline either.
+const DEVICE_POLL_DROPPED_REQUEST_LIMIT: u32 = 3;
 /// Bound on one `auth.openai.com` round trip. Every AI call awaits a refresh
 /// before the engine runs — and holds the provider's refresh lock while it
 /// does — so a stalled connection must fail the call, not hang the feature.
@@ -116,7 +121,17 @@ fn jwt_expiration_seconds(token: &str) -> Option<i64> {
 }
 
 /// Load the persisted token set for a provider instance. `Ok(None)` when the
-/// provider was never connected; `Err` carries a vault/parse failure.
+/// provider was never connected.
+///
+/// The two failures are NOT the same verdict and must not share an error, so
+/// the split lives here rather than in every caller: unparseable slot CONTENT
+/// is a broken credential (`needs_reconnect:<id>` — signing in again is the
+/// fix), while a vault that refused to answer says nothing at all about the
+/// credential inside it and rides back as its own `AppInfraError` Display, the
+/// same string every pasted-key kind surfaces ("denied ≠ missing", the ADR 0048
+/// amendment). Telling a user with a healthy login to reconnect over a denied
+/// keychain prompt invites Disconnect, which destroys the access AND long-lived
+/// refresh token the vault merely declined to hand over.
 pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, String> {
     let Some(raw) = app_infra::load_ai_provider_key(provider_id).map_err(|e| e.to_string())?
     else {
@@ -125,11 +140,31 @@ pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, Stri
     if raw.trim().is_empty() {
         return Ok(None);
     }
-    serde_json::from_str(&raw).map(Some).map_err(|e| e.to_string())
+    serde_json::from_str(&raw).map(Some).map_err(|error| {
+        tauri_plugin_log::log::warn!(
+            "chatgpt-auth: the stored token set for {provider_id} is unreadable: {error}"
+        );
+        format!("needs_reconnect:{provider_id}")
+    })
 }
+
+/// Test-only: force the vault write to fail for ONE provider id, standing in
+/// for the disk that refuses a rotation (ADR 0040's `LowDisk` world). Keyed by
+/// provider so it cannot leak into another test sharing this binary's vault.
+#[cfg(test)]
+static WEDGED_VAULT_PROVIDER: Mutex<Option<String>> = Mutex::new(None);
 
 /// `pub(crate)` for tests in sibling modules that need a connected provider.
 pub(crate) fn store_token_set(provider_id: &str, set: &ChatgptTokenSet) -> Result<(), String> {
+    #[cfg(test)]
+    if WEDGED_VAULT_PROVIDER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_deref()
+        == Some(provider_id)
+    {
+        return Err("no space left on device".to_string());
+    }
     let raw = serde_json::to_string(set).map_err(|e| e.to_string())?;
     app_infra::store_ai_provider_key(provider_id, &raw).map_err(|e| e.to_string())
 }
@@ -185,7 +220,7 @@ static PENDING_ROTATIONS: Mutex<Option<HashMap<String, (String, ChatgptTokenSet)
     Mutex::new(None);
 
 fn stash_pending_rotation(provider_id: &str, consumed_refresh_token: &str, set: &ChatgptTokenSet) {
-    let mut map = PENDING_ROTATIONS.lock().expect("pending rotations lock");
+    let mut map = PENDING_ROTATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     map.get_or_insert_with(HashMap::new).insert(
         provider_id.to_string(),
         (consumed_refresh_token.to_string(), set.clone()),
@@ -193,7 +228,7 @@ fn stash_pending_rotation(provider_id: &str, consumed_refresh_token: &str, set: 
 }
 
 fn take_pending_rotation(provider_id: &str) -> Option<(String, ChatgptTokenSet)> {
-    let mut map = PENDING_ROTATIONS.lock().expect("pending rotations lock");
+    let mut map = PENDING_ROTATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     map.as_mut().and_then(|m| m.remove(provider_id))
 }
 
@@ -201,15 +236,21 @@ fn take_pending_rotation(provider_id: &str) -> Option<(String, ChatgptTokenSet)>
 /// the provider's refresh lock, so it cannot race another refresh; a `false`
 /// compare-and-swap means a disconnect or a newer login owns the slot now and
 /// the stale rotation is simply dropped.
-fn recover_pending_rotation(provider_id: &str) {
-    let Some((consumed, set)) = take_pending_rotation(provider_id) else {
-        return;
-    };
+///
+/// Returns the held set when the write failed *again* — the caller must use it
+/// rather than the slot, because the slot's refresh token is one OpenAI has
+/// already consumed. `None` means the slot is the truth (landed, or dropped by
+/// the compare-and-swap, or nothing was held).
+fn recover_pending_rotation(provider_id: &str) -> Option<ChatgptTokenSet> {
+    let (consumed, set) = take_pending_rotation(provider_id)?;
     match persist_refreshed_token_set(provider_id, &consumed, &set) {
-        Ok(true) => tauri_plugin_log::log::info!(
-            "chatgpt-auth: recovered a rotation for {provider_id} that an earlier write lost"
-        ),
-        Ok(false) => {}
+        Ok(true) => {
+            tauri_plugin_log::log::info!(
+                "chatgpt-auth: recovered a rotation for {provider_id} that an earlier write lost"
+            );
+            None
+        }
+        Ok(false) => None,
         Err(error) => {
             // Still failing: keep holding it rather than throwing the only copy
             // of a live credential away.
@@ -217,6 +258,7 @@ fn recover_pending_rotation(provider_id: &str) {
                 "chatgpt-auth: re-persisting a held rotation for {provider_id} failed: {error}"
             );
             stash_pending_rotation(provider_id, &consumed, &set);
+            Some(set)
         }
     }
 }
@@ -235,7 +277,7 @@ static REFRESH_LOCKS: Mutex<Option<HashMap<String, Arc<tokio::sync::Mutex<()>>>>
     Mutex::new(None);
 
 fn refresh_lock(provider_id: &str) -> Arc<tokio::sync::Mutex<()>> {
-    let mut map = REFRESH_LOCKS.lock().expect("chatgpt refresh locks");
+    let mut map = REFRESH_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
     map.get_or_insert_with(HashMap::new)
         .entry(provider_id.to_string())
         .or_default()
@@ -257,9 +299,8 @@ async fn fresh_access_token_with(
     let load = || async move {
         load_token_set_off_thread(provider_id)
             .await
-            .map_err(|error| {
+            .inspect_err(|error| {
                 tauri_plugin_log::log::warn!("chatgpt-auth: loading token set failed: {error}");
-                needs_reconnect()
             })?
             .ok_or_else(needs_reconnect)
     };
@@ -274,14 +315,27 @@ async fn fresh_access_token_with(
     // its consumed refresh token fails this call *and* persists a dead token.
     let lock = refresh_lock(provider_id);
     let _guard = lock.lock().await;
-    {
-        // Under the lock, before the re-read: an earlier call may hold a
-        // rotation whose vault write failed. Landing it now is what keeps a
-        // full disk from costing the user their login.
-        let id = provider_id.to_string();
-        tokio::task::spawn_blocking(move || recover_pending_rotation(&id))
-            .await
-            .map_err(|e| e.to_string())?;
+    // Under the lock, before the re-read: an earlier call may hold a rotation
+    // whose vault write failed. Landing it now is what keeps a full disk from
+    // costing the user their login.
+    let id = provider_id.to_string();
+    let still_held = tokio::task::spawn_blocking(move || recover_pending_rotation(&id))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(held) = still_held {
+        // The write failed a second time, so the slot still holds the token set
+        // whose refresh token OpenAI consumed granting this one. Falling
+        // through would replay it, earn a real `invalid_grant`, and tell a user
+        // whose only problem is a full disk to reconnect a healthy account.
+        // The rotation we are holding IS the live credential.
+        if !held.expires_within_skew() {
+            return Ok(held.access_token);
+        }
+        // Held long enough to expire and the vault is still refusing writes:
+        // there is no refresh we can run whose result we could store (the
+        // compare-and-swap keys off a slot that is now stale). Transient, so
+        // the user is not sent to Disconnect over a disk problem.
+        return Err(format!("provider_unreachable:{provider_id}"));
     }
     let set = load().await?;
     if !set.expires_within_skew() {
@@ -475,7 +529,7 @@ where
     )
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct DeviceTokenResponse {
     authorization_code: String,
     code_verifier: String,
@@ -508,14 +562,14 @@ static LOGIN_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn bump_login_generation(provider_id: &str) -> u64 {
     let generation = LOGIN_GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let mut map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    let mut map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     map.get_or_insert_with(HashMap::new)
         .insert(provider_id.to_string(), generation);
     generation
 }
 
 fn login_generation_is_current(provider_id: &str, generation: u64) -> bool {
-    let map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    let map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     map.as_ref().and_then(|m| m.get(provider_id)) == Some(&generation)
 }
 
@@ -530,6 +584,14 @@ pub async fn begin_login(
     app: tauri::AppHandle,
     provider_id: String,
 ) -> Result<ChatgptLoginPrompt, String> {
+    // Reserve this login's generation BEFORE the device-code round trip, not
+    // after. That request takes up to 30s, and Cancel / Disconnect are both
+    // reachable while it is in flight — each bumps the generation to invalidate
+    // whatever login is running. Bumping afterwards overwrites their bump, so
+    // the detached poll below considers itself current: it runs its full 15
+    // minutes and, on approval, writes a token set into the slot the user just
+    // cleared. Reserve first, then confirm nothing superseded us.
+    let generation = bump_login_generation(&provider_id);
     let client = oauth_http_client();
     let body = serde_json::json!({ "client_id": CHATGPT_CLIENT_ID }).to_string();
     let response = client
@@ -549,12 +611,18 @@ pub async fn begin_login(
     }
     let device: DeviceCodeResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
 
+    // A Cancel or Disconnect that landed while the request above was in flight
+    // already bumped past our reservation. Do not start the poll for a login
+    // the user has walked away from.
+    if !login_generation_is_current(&provider_id, generation) {
+        return Err("the ChatGPT sign-in was cancelled".to_string());
+    }
+
     let prompt = ChatgptLoginPrompt {
         user_code: device.user_code.clone(),
         verify_url: DEVICE_VERIFY_URL.to_string(),
     };
 
-    let generation = bump_login_generation(&provider_id);
     tauri::async_runtime::spawn(async move {
         let outcome = poll_and_store(&client, &device, &provider_id, generation).await;
         if !login_generation_is_current(&provider_id, generation) {
@@ -654,6 +722,7 @@ where
     Fut: std::future::Future<Output = Result<(reqwest::StatusCode, String), String>>,
 {
     let start = std::time::Instant::now();
+    let mut dropped_in_a_row = 0u32;
     loop {
         if !is_current() {
             return Err("the ChatGPT login was superseded".to_string());
@@ -661,23 +730,50 @@ where
         if start.elapsed() >= timeout {
             return Err("timed out waiting for ChatGPT device authorization".to_string());
         }
-        let (status, text) = poll().await?;
+        let (status, text) = match poll().await {
+            Ok(answer) => {
+                dropped_in_a_row = 0;
+                answer
+            }
+            // A request that never reached the endpoint is not a verdict on the
+            // login: the code is still on screen and the user is still typing
+            // it. A 15-minute wait is ~180 sends, so one WiFi roam, DNS hiccup
+            // or sleep/wake would otherwise end a login that was fine. Retry a
+            // few times — the deadline and `is_current` still bound the loop —
+            // but a network that is simply down still ends it rather than
+            // leaving the code UI up against an endpoint that will never
+            // answer.
+            Err(error) => {
+                dropped_in_a_row += 1;
+                if dropped_in_a_row >= DEVICE_POLL_DROPPED_REQUEST_LIMIT {
+                    return Err(error);
+                }
+                sleep_until_next_poll(start, interval, timeout).await?;
+                continue;
+            }
+        };
         match classify_poll_response(status, &text) {
             PollStep::Approved(token) => return Ok(*token),
             PollStep::Failed(error) => return Err(error),
-            // Never sleep past the deadline: it is only checked between polls,
-            // so a long interval would otherwise park the task well beyond it.
-            PollStep::Pending => {
-                let left = timeout.saturating_sub(start.elapsed());
-                if left.is_zero() {
-                    return Err(
-                        "timed out waiting for ChatGPT device authorization".to_string()
-                    );
-                }
-                tokio::time::sleep(interval.min(left)).await;
-            }
+            PollStep::Pending => sleep_until_next_poll(start, interval, timeout).await?,
         }
     }
+}
+
+/// Wait out one poll interval, or give up when the deadline is already spent.
+/// The deadline is only checked between polls, so a long interval must never
+/// park the task past it.
+async fn sleep_until_next_poll(
+    start: std::time::Instant,
+    interval: std::time::Duration,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let left = timeout.saturating_sub(start.elapsed());
+    if left.is_zero() {
+        return Err("timed out waiting for ChatGPT device authorization".to_string());
+    }
+    tokio::time::sleep(interval.min(left)).await;
+    Ok(())
 }
 
 /// The background half of the device flow: poll for user approval, exchange
@@ -702,6 +798,45 @@ fn exchange_authorization_code(
         ])
         .await
     })
+}
+
+/// How many times the approved code may be presented at `oauth/token`.
+/// Only the attempts that never rendered a verdict count — a refusal stops on
+/// the first answer.
+const CODE_EXCHANGE_ATTEMPTS: u32 = 3;
+
+/// Exchange the approved code, retrying the answers that were not answers.
+///
+/// This is the one hop with no second chance: by the time it runs the user has
+/// already approved in the browser and the code UI is gone, so a dropped
+/// connection here costs them the whole device flow — surfaced as a raw
+/// `error sending request for url (…)` in `ChatgptConnect.svelte` and as a
+/// Finish-blocking `status: "error"` in onboarding. The module already splits
+/// "OpenAI rejected the grant" from "OpenAI never answered" for the refresh
+/// (`OAuthError::transient`); the exchange threw that split away.
+///
+/// Retrying is safe in the direction that matters: if the lost request *was*
+/// processed, the code is spent and the retry comes back `invalid_grant` —
+/// terminal, so the loop stops on the real verdict rather than hiding it.
+async fn exchange_with_retry(
+    exchange: ExchangeCall,
+    code: DeviceTokenResponse,
+    backoff: std::time::Duration,
+) -> Result<OAuthTokenResponse, String> {
+    for attempt in 1..CODE_EXCHANGE_ATTEMPTS {
+        match exchange(code.clone()).await {
+            Ok(tokens) => return Ok(tokens),
+            Err(error) if error.transient => {
+                tauri_plugin_log::log::warn!(
+                    "chatgpt-auth: the code exchange did not reach OpenAI (attempt {attempt}): {}",
+                    error.message
+                );
+                tokio::time::sleep(backoff).await;
+            }
+            Err(error) => return Err(error.message),
+        }
+    }
+    exchange(code).await.map_err(|error| error.message)
 }
 
 async fn poll_and_store(
@@ -764,9 +899,16 @@ where
     )
     .await?;
 
-    let tokens = exchange(code).await.map_err(|error| error.message)?;
+    let tokens = exchange_with_retry(exchange, code, interval).await?;
 
     let set = token_set_from_grant(tokens, None);
+    // A set with no refresh token cannot be refreshed: it dies at the first
+    // expiry as `needs_reconnect`. Storing it is worse than failing, because
+    // Connect is reachable while already connected — the doomed set would
+    // overwrite a working credential whose refresh token is then gone for good.
+    if set.refresh_token.is_none() {
+        return Err("the ChatGPT sign-in returned no refresh token".to_string());
+    }
     let id = provider_id.to_string();
     tokio::task::spawn_blocking(move || persist_token_set_if_current(&id, generation, &set))
         .await
@@ -783,7 +925,7 @@ fn persist_token_set_if_current(
     // The generation lock is held across the vault write, so a concurrent
     // disconnect either bumps first (we skip) or clears afterwards — it can
     // never interleave into "cleared, then written back".
-    let map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    let map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     if map
         .as_ref()
         .and_then(|m| m.get(provider_id))
@@ -823,11 +965,17 @@ fn persist_refreshed_token_set(
 ) -> Result<bool, String> {
     // Held across the read-compare-write so a login's own check-then-write
     // cannot interleave into it.
-    let _map = LOGIN_GENERATIONS.lock().expect("login generations lock");
-    let holds_it = matches!(
-        load_token_set(provider_id),
-        Ok(Some(stored)) if stored.refresh_token.as_deref() == Some(consumed_refresh_token)
-    );
+    let _map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let holds_it = match load_token_set(provider_id) {
+        Ok(Some(stored)) => stored.refresh_token.as_deref() == Some(consumed_refresh_token),
+        Ok(None) => false,
+        // A slot we could not READ answers neither yes nor no, and "no" is the
+        // destructive answer: OpenAI has already consumed the refresh token
+        // this set rotated, so dropping the write throws the only live copy of
+        // the credential away. Fail instead — the callers hold the rotation and
+        // retry it on the next call.
+        Err(error) => return Err(error),
+    };
     if !holds_it {
         tauri_plugin_log::log::info!(
             "chatgpt-auth: dropping a refreshed token set for {provider_id}: the stored credential changed under it"
@@ -866,10 +1014,13 @@ pub fn cancel_login(provider_id: &str) {
 /// token set. Bumping the generation without also holding it across the delete
 /// reopens exactly that window.
 pub fn revoke_provider_credential(provider_id: &str) -> Result<(), String> {
-    let mut map = LOGIN_GENERATIONS.lock().expect("login generations lock");
+    let mut map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
     let generation = LOGIN_GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
     map.get_or_insert_with(HashMap::new)
         .insert(provider_id.to_string(), generation);
+    // The held rotation is a live access + refresh token for the account being
+    // revoked, kept alive by the one path whose job is writing it back.
+    let _ = take_pending_rotation(provider_id);
     app_infra::delete_ai_provider_key(provider_id).map_err(|error| error.to_string())
 }
 
@@ -1172,6 +1323,120 @@ mod tests {
         })
     }
 
+    /// A dropped connection on the CODE EXCHANGE must not throw away an
+    /// approval the user already gave.
+    ///
+    /// This is the one hop with no second chance. The poll loop now survives a
+    /// blip (`a_network_blip_mid_poll_does_not_kill_the_login`), but the
+    /// exchange right after it discards `OAuthError::transient` entirely
+    /// (`.map_err(|error| error.message)`) — so a WiFi roam in the second
+    /// between "the user approved in the browser" and "the vault holds a token
+    /// set" ends the login with a raw `error sending request for url (…)`. By
+    /// then the code UI is gone: `ChatgptConnect.svelte` renders that string as
+    /// the sign-in failure and drops back to idle, and onboarding
+    /// (`onboarding-ai.svelte.ts`) marks the instance `status: "error"`, which
+    /// blocks the Finish gate. The whole device flow has to be redone for a
+    /// request that never rendered a verdict — exactly what this module's own
+    /// transient/terminal split exists to prevent.
+    ///
+    /// Retrying is safe in the one direction that matters: if the server DID
+    /// process the lost request, the code is spent and the retry comes back
+    /// `invalid_grant`, which is terminal and stops the loop.
+    static BLIPPED_EXCHANGE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn exchange_after_one_dropped_connection(
+        code: DeviceTokenResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>> {
+        Box::pin(async move {
+            if BLIPPED_EXCHANGE_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(OAuthError::transport(
+                    "error sending request for url (https://auth.openai.com/oauth/token)",
+                ));
+            }
+            Ok(OAuthTokenResponse {
+                access_token: format!("access-for-{}", code.authorization_code),
+                refresh_token: Some("refresh-after-the-blip".to_string()),
+                expires_in: Some(3600),
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_dropped_connection_on_the_code_exchange_does_not_throw_away_an_approval() {
+        install_test_vault();
+        let provider = "chatgpt-login-exchange-blip";
+        let _ = app_infra::delete_ai_provider_key(provider);
+        let generation = bump_login_generation(provider);
+        BLIPPED_EXCHANGE_CALLS.store(0, Ordering::SeqCst);
+
+        let (poll, _calls) = scripted_poll(vec![(200, APPROVED_BODY)]);
+        poll_and_store_with(
+            poll,
+            exchange_after_one_dropped_connection,
+            provider,
+            generation,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("a dropped connection is not OpenAI refusing the sign-in the user just approved");
+
+        assert_eq!(
+            load_token_set(provider).expect("load").map(|set| set.access_token),
+            Some("access-for-the-code".to_string()),
+            "the approval must land in the vault, not be thrown away with the connection"
+        );
+        assert_eq!(
+            BLIPPED_EXCHANGE_CALLS.load(Ordering::SeqCst),
+            2,
+            "the lost request must be retried exactly once here, not abandoned"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// …but a code OpenAI actually REFUSED is terminal on the first answer:
+    /// retrying a rejected grant only delays the failure the user has to see.
+    #[tokio::test]
+    async fn a_refused_code_exchange_is_not_retried() {
+        install_test_vault();
+        let provider = "chatgpt-login-exchange-refusal-not-retried";
+        let _ = app_infra::delete_ai_provider_key(provider);
+        let generation = bump_login_generation(provider);
+        REFUSED_EXCHANGE_CALLS.store(0, Ordering::SeqCst);
+
+        let (poll, _calls) = scripted_poll(vec![(200, APPROVED_BODY)]);
+        let outcome = poll_and_store_with(
+            poll,
+            counting_refusing_exchange,
+            provider,
+            generation,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+
+        assert!(outcome.is_err(), "a refused code is a failed login");
+        assert_eq!(
+            REFUSED_EXCHANGE_CALLS.load(Ordering::SeqCst),
+            1,
+            "a verdict OpenAI already rendered must not be asked for again"
+        );
+    }
+
+    static REFUSED_EXCHANGE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn counting_refusing_exchange(
+        _code: DeviceTokenResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>> {
+        Box::pin(async move {
+            REFUSED_EXCHANGE_CALLS.fetch_add(1, Ordering::SeqCst);
+            Err(OAuthError {
+                transient: false,
+                message: "token request failed with status 400: bad code".to_string(),
+            })
+        })
+    }
+
     /// The second half of the device flow as one piece: wait through
     /// "not approved yet", exchange the approved code, persist the set.
     ///
@@ -1327,7 +1592,7 @@ mod tests {
         // and nothing left in the revocation touched this lock at all.
         bump_login_generation(provider);
 
-        let held = LOGIN_GENERATIONS.lock().expect("login generations lock");
+        let held = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
         let id = provider.to_string();
         let revoking = std::thread::spawn(move || revoke_provider_credential(&id));
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1583,7 +1848,7 @@ mod tests {
             &token_set(&jwt_with_exp(now + 3600), "rotated-refresh", now + 3600),
         );
 
-        recover_pending_rotation(provider);
+        assert!(recover_pending_rotation(provider).is_none());
 
         let stored = load_token_set(provider).expect("load").expect("still connected");
         assert_eq!(
@@ -1594,11 +1859,89 @@ mod tests {
         assert!(!stored.expires_within_skew());
         // One-shot: a second recovery has nothing left to do and must not
         // resurrect anything.
-        recover_pending_rotation(provider);
+        assert!(recover_pending_rotation(provider).is_none());
         assert_eq!(
             load_token_set(provider).expect("load").and_then(|s| s.refresh_token),
             Some("rotated-refresh".to_string())
         );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// A vault that keeps refusing the rotation.
+    ///
+    /// The held-rotation retry only covers ONE failed write: if the second
+    /// attempt fails too (the disk is still full — `LowDisk` is a state this
+    /// app parks in, not a millisecond), the call falls straight through to a
+    /// refresh using the token set still sitting in the slot — whose refresh
+    /// token OpenAI consumed on the first call. That replay is the one thing
+    /// `PENDING_ROTATIONS` exists to prevent: OpenAI answers `invalid_grant`,
+    /// which this module (correctly) classifies as terminal, and a user whose
+    /// only problem is a full disk is told to reconnect a perfectly healthy
+    /// ChatGPT account.
+    static WEDGED_CONSUMED_REFRESH_TOKENS: Mutex<Option<std::collections::HashSet<String>>> =
+        Mutex::new(None);
+    static WEDGED_GRANT_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    fn wedged_rotating_grant(
+        refresh_token: String,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>> {
+        Box::pin(async move {
+            WEDGED_GRANT_CALLS.fetch_add(1, Ordering::SeqCst);
+            let mut consumed = WEDGED_CONSUMED_REFRESH_TOKENS
+                .lock()
+                .expect("consumed refresh tokens");
+            let consumed = consumed.get_or_insert_with(std::collections::HashSet::new);
+            if !consumed.insert(refresh_token.clone()) {
+                return Err(OAuthError {
+                    transient: false,
+                    message:
+                        "token request failed with status 400 Bad Request: {\"error\":\"invalid_grant\"}"
+                            .to_string(),
+                });
+            }
+            Ok(OAuthTokenResponse {
+                access_token: jwt_with_exp(unix_now() + 3600),
+                refresh_token: Some(format!("{refresh_token}-rotated")),
+                expires_in: None,
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_vault_that_keeps_refusing_a_rotation_never_replays_the_consumed_refresh_token() {
+        install_test_vault();
+        let provider = "chatgpt-vault-stays-wedged";
+        let now = unix_now();
+        store_token_set(
+            provider,
+            &token_set(&jwt_with_exp(now - 10), "wedged-refresh-0", now - 10),
+        )
+        .expect("seed an expiring token set");
+        *WEDGED_VAULT_PROVIDER.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(provider.to_string());
+
+        // First call: the grant rotates, the write fails, the rotation is held.
+        assert_eq!(
+            fresh_access_token_with(provider, wedged_rotating_grant).await,
+            Err(format!("provider_unreachable:{provider}")),
+            "a failed vault write is a hiccup, not a signed-out account"
+        );
+
+        // Second call, disk still full: re-persisting the held rotation fails
+        // again — and the slot still holds the refresh token OpenAI consumed.
+        let second = fresh_access_token_with(provider, wedged_rotating_grant).await;
+
+        assert_eq!(
+            WEDGED_GRANT_CALLS.load(Ordering::SeqCst),
+            1,
+            "the consumed refresh token must never be replayed at OpenAI"
+        );
+        assert!(
+            second.is_ok(),
+            "the held rotation is a live credential; a wedged vault must not cost the user their login: {second:?}"
+        );
+
+        *WEDGED_VAULT_PROVIDER.lock().unwrap_or_else(PoisonError::into_inner) = None;
         let _ = app_infra::delete_ai_provider_key(provider);
     }
 
@@ -1617,7 +1960,7 @@ mod tests {
         );
         let _ = revoke_provider_credential(provider);
 
-        recover_pending_rotation(provider);
+        assert!(recover_pending_rotation(provider).is_none());
 
         assert_eq!(
             load_token_set(provider).expect("load").map(|s| s.access_token),
@@ -1699,6 +2042,74 @@ mod tests {
 
         assert!(error.contains("429"), "the status belongs in the message: {error}");
         assert_eq!(*calls.lock().unwrap(), 1, "a terminal status is not retried");
+    }
+
+    /// A 15-minute wait is ~180 `send()` calls against `auth.openai.com` while
+    /// the user reads the code, switches to a browser, signs in and clears 2FA.
+    /// One failed send in that window — WiFi roaming, a DNS hiccup, a VPN
+    /// reconnect, a sleep/wake — must not end the login: nothing about the
+    /// login changed, the code is still on screen, and this module's own rule
+    /// is that a request that never rendered a verdict is not a verdict. The
+    /// documented exits from this loop are approval, a refusal, a superseded
+    /// generation and the deadline; a dropped connection is none of them.
+    #[tokio::test]
+    async fn a_network_blip_mid_poll_does_not_kill_the_login() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let poll = move || {
+            let seen = seen.clone();
+            async move {
+                match seen.fetch_add(1, Ordering::SeqCst) {
+                    0 => Ok((reqwest::StatusCode::FORBIDDEN, "not yet".to_string())),
+                    1 => Err("error sending request for url (https://auth.openai.com/…)".to_string()),
+                    _ => Ok((reqwest::StatusCode::OK, APPROVED_BODY.to_string())),
+                }
+            }
+        };
+
+        let code = await_authorization(
+            || true,
+            poll,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("one dropped connection must not end a login the user is still completing");
+
+        assert_eq!(code.authorization_code, "the-code");
+    }
+
+    /// …but a network that is simply down still ends the login, rather than
+    /// leaving the code UI up against an endpoint that will never answer.
+    #[tokio::test]
+    async fn a_dead_network_still_ends_the_login() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let poll = move || {
+            let seen = seen.clone();
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Err::<(reqwest::StatusCode, String), String>(
+                    "error sending request for url (…)".to_string(),
+                )
+            }
+        };
+
+        let error = await_authorization(
+            || true,
+            poll,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect_err("an endpoint that never answers must end the login");
+
+        assert!(error.contains("error sending request"), "{error}");
+        assert!(
+            calls.load(Ordering::SeqCst) <= 5,
+            "a down network must give up quickly, not poll out the whole deadline: {} polls",
+            calls.load(Ordering::SeqCst)
+        );
     }
 
     #[tokio::test]
@@ -1865,6 +2276,67 @@ mod tests {
         );
     }
 
+    /// One panic anywhere under this module's std mutexes must not wedge the
+    /// app for the rest of the process.
+    ///
+    /// `LOGIN_GENERATIONS` is taken with `.expect()` in five places and held
+    /// across vault I/O (`persist_refreshed_token_set`,
+    /// `persist_token_set_if_current`, `revoke_provider_credential`);
+    /// `REFRESH_LOCKS` and `PENDING_ROTATIONS` the same way. A panic taken
+    /// while any of them is held poisons that static forever, and every later
+    /// `.lock().expect(...)` panics with it: Disconnect — which
+    /// `ai_runtime_clear_provider_key` routes through for EVERY provider kind —
+    /// panics for good, no ChatGPT login can start, and `fresh_access_token`
+    /// panics inside its `spawn_blocking`, reaching the UI as a raw
+    /// "task … panicked" string instead of the `needs_reconnect:` /
+    /// `provider_unreachable:` reason code this module's whole contract is
+    /// built on. `app_infra`'s vault handle already treats poison as
+    /// recoverable (`PoisonError::into_inner`); this module has to as well.
+    #[tokio::test]
+    async fn a_panic_under_the_module_locks_does_not_wedge_refresh_or_disconnect() {
+        install_test_vault();
+        let provider = "chatgpt-poisoned-locks";
+        let now = unix_now();
+        store_token_set(
+            provider,
+            &token_set(&jwt_with_exp(now - 10), "poison-refresh-0", now - 10),
+        )
+        .expect("seed a connected provider");
+
+        // Any panic taken while these are held leaves them poisoned: an
+        // `unreachable!` in the vault handle, a panicking blocking task, an
+        // assert in a test that holds the generation lock.
+        let _ = std::thread::spawn(|| {
+            let _refresh = REFRESH_LOCKS.lock().expect("refresh locks");
+            let _rotations = PENDING_ROTATIONS.lock().expect("pending rotations");
+            let _generations = LOGIN_GENERATIONS.lock().expect("login generations");
+            panic!("something panicked while holding the module's locks");
+        })
+        .join();
+
+        // A refresh must still answer with the module's reason-code contract.
+        assert_eq!(
+            fresh_access_token_with(provider, rejecting_grant).await,
+            Err(format!("needs_reconnect:{provider}")),
+            "a poisoned lock must not turn every AI call into a raw panic string"
+        );
+
+        // A login must still be startable.
+        let generation = bump_login_generation(provider);
+        assert!(
+            login_generation_is_current(provider, generation),
+            "a poisoned lock must not make every login unstartable"
+        );
+
+        // And Disconnect must still clear the slot.
+        revoke_provider_credential(provider).expect("disconnect must still work");
+        assert_eq!(
+            load_token_set(provider).expect("load").map(|set| set.access_token),
+            None,
+            "a poisoned lock must not make a provider impossible to disconnect"
+        );
+    }
+
     #[test]
     fn a_token_set_tolerates_absent_optional_fields() {
         // The `#[serde(default)]`s are load-bearing: a grant that omits the
@@ -1892,6 +2364,138 @@ mod tests {
         assert_eq!(back.access_token, "access");
         assert_eq!(back.refresh_token.as_deref(), Some("refresh"));
         assert_eq!(back.expires_at, Some(42));
+    }
+
+    /// A grant that carries an access token but no refresh token is not a
+    /// usable login: the set it produces has nothing to refresh with, so it
+    /// dies at the first expiry as `needs_reconnect`. Storing it anyway is a
+    /// silent credential loss, because Connect is reachable while already
+    /// connected ("start over", checking which account is attached) — the
+    /// doomed set overwrites the working one and the refresh token it replaced
+    /// is gone for good.
+    fn exchange_without_a_refresh_token(
+        code: DeviceTokenResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>> {
+        Box::pin(async move {
+            Ok(OAuthTokenResponse {
+                access_token: format!("access-for-{}", code.authorization_code),
+                refresh_token: None,
+                expires_in: Some(3600),
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn a_grant_with_no_refresh_token_fails_the_login_instead_of_replacing_a_working_one() {
+        install_test_vault();
+        let provider = "chatgpt-login-without-a-refresh-token";
+        let now = unix_now();
+        store_token_set(
+            provider,
+            &token_set(&jwt_with_exp(now + 3600), "working-refresh", now + 3600),
+        )
+        .expect("seed a connected provider");
+        let generation = bump_login_generation(provider);
+
+        let (poll, _calls) = scripted_poll(vec![(200, APPROVED_BODY)]);
+        let outcome = poll_and_store_with(
+            poll,
+            exchange_without_a_refresh_token,
+            provider,
+            generation,
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a grant with no refresh token cannot be refreshed: it is a failed login, not a connection"
+        );
+        let stored = load_token_set(provider)
+            .expect("load")
+            .expect("the working credential must survive a login that produced nothing usable");
+        assert_eq!(
+            stored.refresh_token.as_deref(),
+            Some("working-refresh"),
+            "a doomed grant must not overwrite the refresh token the provider was working with"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// The compare-and-swap asks "does the slot still hold the credential this
+    /// grant rotated?". A slot it cannot READ answers neither yes nor no — and
+    /// reading it as "no" is the destructive answer: by then OpenAI has already
+    /// consumed the old refresh token, so dropping the rotation is dropping the
+    /// only live copy of the credential.
+    #[test]
+    fn an_unreadable_slot_is_not_evidence_that_the_credential_moved_on() {
+        install_test_vault();
+        let provider = "chatgpt-cas-unreadable-slot";
+        let now = unix_now();
+        // What an unreadable slot looks like: a value this module did not write
+        // (a pasted API key left behind by a kind swap), a torn write, or a
+        // vault read that failed outright.
+        app_infra::store_ai_provider_key(provider, "sk-not-a-token-set")
+            .expect("seed an unreadable slot");
+
+        let outcome = persist_refreshed_token_set(
+            provider,
+            "consumed-refresh",
+            &token_set(&jwt_with_exp(now + 3600), "rotated-refresh", now + 3600),
+        );
+
+        assert!(
+            outcome.is_err(),
+            "a slot that cannot be read must fail the swap, not report the credential moved on: {outcome:?}"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    #[test]
+    fn a_held_rotation_survives_a_slot_the_swap_cannot_read() {
+        install_test_vault();
+        let provider = "chatgpt-recovery-unreadable-slot";
+        let now = unix_now();
+        app_infra::store_ai_provider_key(provider, "sk-not-a-token-set")
+            .expect("seed an unreadable slot");
+        stash_pending_rotation(
+            provider,
+            "consumed-refresh",
+            &token_set(&jwt_with_exp(now + 3600), "rotated-refresh", now + 3600),
+        );
+
+        recover_pending_rotation(provider);
+
+        assert!(
+            take_pending_rotation(provider).is_some(),
+            "a rotation OpenAI already granted must keep being held when the vault could not be \
+             read — dropping it is a login the user has to redo"
+        );
+        let _ = app_infra::delete_ai_provider_key(provider);
+    }
+
+    /// Disconnect destroys the credential. A rotation still held in memory for
+    /// that provider is a live access + refresh token for the account the user
+    /// just revoked, kept alive by the one code path whose whole job is writing
+    /// it back into the vault.
+    #[test]
+    fn disconnecting_drops_a_rotation_still_held_for_that_provider() {
+        install_test_vault();
+        let provider = "chatgpt-revoke-drops-the-held-rotation";
+        let now = unix_now();
+        stash_pending_rotation(
+            provider,
+            "consumed-refresh",
+            &token_set(&jwt_with_exp(now + 3600), "rotated-refresh", now + 3600),
+        );
+
+        revoke_provider_credential(provider).expect("revoke");
+
+        assert!(
+            take_pending_rotation(provider).is_none(),
+            "disconnect must not leave a live OAuth token set for the revoked account held in memory"
+        );
     }
 
     /// Every `resolve_engine_config_live` on an expiring token set is one
