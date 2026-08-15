@@ -74,8 +74,15 @@ fn rel_or_date(date: time::Date, today_d: time::Date) -> String {
     }
 }
 
-/// Build the human range suffix for a `recall_context` call's `from`/`to`
-/// window, in the user's LOCAL time with human-readable relative words.
+/// Build the human range suffix for a call's `from`/`to` window, in the user's
+/// LOCAL time with human-readable relative words. Shared by `recall_context`,
+/// `timeline`, and `activities`.
+///
+/// `recall_context`'s `to` is an exclusive next-midnight and `timeline`'s is
+/// documented inclusive, but the `-1ms` collapse below serves both: an inclusive
+/// `...T23:59:59` end lands on the same local day either way. The one divergence
+/// is an inclusive end at exactly local midnight, which renders as the previous
+/// day — the more useful reading of "up to midnight" regardless.
 ///
 /// Given the parsed bounds, `now_ms`, and `utc_offset_minutes`:
 /// - Each bound is shifted by the local offset before its calendar date is
@@ -92,7 +99,7 @@ fn rel_or_date(date: time::Date, today_d: time::Date) -> String {
 /// WITHOUT relativization — falling back to bare UTC ISO dates (no wrong
 /// "Today"): both bounds → `from \u{2013} to`; only `from` → `from \u{2013} now`;
 /// only `to` → `until to`.
-fn format_recall_range(params: &Value, now_ms: i64, utc_offset_minutes: Option<i32>) -> Option<String> {
+fn format_window_range(params: &Value, now_ms: i64, utc_offset_minutes: Option<i32>) -> Option<String> {
     let from = parse_bound(params, "from");
     let to = parse_bound(params, "to");
 
@@ -163,12 +170,22 @@ pub(crate) fn format_tool_activity(
                 app_icon_path: None,
             }
         }
-        "timeline" => ToolActivityEntry {
-            kind: "timeline".to_string(),
-            label: "Scanning timeline".to_string(),
-            app: read_string_param(params, "app"),
-            app_icon_path: None,
-        },
+        "timeline" => {
+            // `timeline` is the one tool whose entire job is a time window, and
+            // the window was the only thing the label never showed — so neither
+            // the user nor a bug report could tell which range came back empty.
+            let mut label = "Scanning timeline".to_string();
+            if let Some(range) = format_window_range(params, now_ms, utc_offset_minutes) {
+                label.push_str(" \u{00b7} ");
+                label.push_str(&range);
+            }
+            ToolActivityEntry {
+                kind: "timeline".to_string(),
+                label,
+                app: read_string_param(params, "app"),
+                app_icon_path: None,
+            }
+        }
         // Speaker discovery. Unknown kinds bucket into the frontend's generic
         // "steps" count, so this only has to read well as a line of its own —
         // without it the fallback says "Running speakers".
@@ -184,6 +201,21 @@ pub(crate) fn format_tool_activity(
             app: None,
             app_icon_path: None,
         },
+        "activities" => {
+            // Same ` · <range>` window suffix as `timeline`/`recall_context`: this
+            // tool IS its window, so a label without it says nothing.
+            let mut label = "Reviewing what you did".to_string();
+            if let Some(range) = format_window_range(params, now_ms, utc_offset_minutes) {
+                label.push_str(" \u{00b7} ");
+                label.push_str(&range);
+            }
+            ToolActivityEntry {
+                kind: "activities".to_string(),
+                label,
+                app: None,
+                app_icon_path: None,
+            }
+        }
         "recall_context" => {
             let mut label = match read_string_param(params, "query") {
                 // Curly double-quotes (U+201C / U+201D) to match `search`.
@@ -193,7 +225,7 @@ pub(crate) fn format_tool_activity(
             // When the call carries a `from`/`to` activity window, surface it as a
             // ` · <range>` suffix (middot U+00B7). Omitted when neither bound is
             // present or parseable, so the legacy label is byte-identical.
-            if let Some(range) = format_recall_range(params, now_ms, utc_offset_minutes) {
+            if let Some(range) = format_window_range(params, now_ms, utc_offset_minutes) {
                 label.push_str(" \u{00b7} ");
                 label.push_str(&range);
             }
@@ -361,8 +393,46 @@ mod tests {
     fn timeline_label_and_kind() {
         let entry = format_tool_activity("timeline", &json!({ "app": "Zen Browser" }), NOW, NO_OFFSET);
         assert_eq!(entry.kind, "timeline");
+        // No bounds in params → the legacy label, byte-identical.
         assert_eq!(entry.label, "Scanning timeline");
         assert_eq!(entry.app, Some("Zen Browser".to_string()));
+    }
+
+    #[test]
+    fn activities_label_names_the_window_it_reviewed() {
+        let offset = 330;
+        let now = local_now_ms(2026, 8, 15, 23, 40, offset);
+        let entry = format_tool_activity(
+            "activities",
+            &json!({
+                "from": "2026-08-14T18:30:00Z",
+                "to": "2026-08-15T18:29:59Z",
+            }),
+            now,
+            Some(offset),
+        );
+        assert_eq!(entry.kind, "activities");
+        assert_eq!(entry.label, "Reviewing what you did \u{00b7} Today");
+        assert_eq!(entry.app, None);
+    }
+
+    #[test]
+    fn timeline_label_carries_the_window_it_scanned() {
+        // A `+05:30` user asking about their local today: both bounds land on the
+        // same local day, so the window renders as the single word "Today" — and
+        // the label finally says which range came back empty when it does.
+        let offset = 330;
+        let now = local_now_ms(2026, 8, 15, 23, 40, offset);
+        let entry = format_tool_activity(
+            "timeline",
+            &json!({
+                "from": "2026-08-14T18:30:00Z",
+                "to": "2026-08-15T18:29:59Z",
+            }),
+            now,
+            Some(offset),
+        );
+        assert_eq!(entry.label, "Scanning timeline \u{00b7} Today");
     }
 
     #[test]
