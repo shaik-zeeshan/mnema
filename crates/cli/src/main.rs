@@ -293,6 +293,13 @@ struct TimelineData {
     limit: u32,
     /// True when the intervals filled the effective limit — see [`SearchData`].
     truncated: bool,
+    /// Oldest / newest `startedAt` returned: the slice of the requested window
+    /// this page actually covers. A truncated page is the window's NEWEST end, so
+    /// without these a caller reads the tail as the whole span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    covered_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    covered_to: Option<String>,
     /// Only on a `--speaker` timeline: how much audio the filter could NOT check.
     #[serde(skip_serializing_if = "Option::is_none")]
     speaker_coverage: Option<BrokerSpeakerCoverage>,
@@ -955,7 +962,12 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
 }
 
 fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineResponse) -> TimelineData {
-    let truncated = response.intervals.len() as u32 >= response.limit;
+    // `truncated` + the covered span come from the broker now (they used to be
+    // recomputed here, which left Ask AI with no equivalent at all). One rule,
+    // both doors.
+    let truncated = response.truncated;
+    let covered_from = response.covered_from.clone();
+    let covered_to = response.covered_to.clone();
     let speaker_coverage = response.speaker_coverage.clone();
     TimelineData {
         intervals: response
@@ -979,6 +991,8 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
             .collect(),
         limit: response.limit,
         truncated,
+        covered_from,
+        covered_to,
         speaker_coverage,
     }
 }
@@ -1244,8 +1258,8 @@ mod tests {
 
     #[test]
     fn timeline_mapping_preserves_allowlisted_context() {
-        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
-            intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse::page(
+            vec![app_infra::brokered_access::BrokerTimelineInterval {
                 kind: "frame".to_string(),
                 started_at: "2026-05-17T10:00:00Z".to_string(),
                 ended_at: Some("2026-05-17T10:00:00Z".to_string()),
@@ -1258,9 +1272,9 @@ mod tests {
                 }),
                 turns: Vec::new(),
             }],
-            limit: 1,
-            speaker_coverage: None,
-        });
+            1,
+            None,
+        ));
 
         let context = data.intervals[0]
             .context
@@ -1274,15 +1288,15 @@ mod tests {
 
     #[test]
     fn timeline_mapping_passes_broker_kinds_and_opaque_ids_through() {
-        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
-            intervals: vec![
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse::page(
+            vec![
                 timeline_interval("frame", Some("f1.signature")),
                 timeline_interval("audio_microphone", Some("a1.signature")),
                 timeline_interval("audio_system", None),
             ],
-            limit: 3,
-            speaker_coverage: None,
-        });
+            3,
+            None,
+        ));
 
         assert_eq!(
             data.intervals
@@ -1371,11 +1385,9 @@ mod tests {
 
         // Timeline has no cursor: it merges two independently-limited sources and
         // re-sorts, so a full page only reports that records may have been dropped.
-        let timeline = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
-            intervals: Vec::new(),
-            limit: 0,
-            speaker_coverage: None,
-        });
+        let timeline = map_timeline_data(
+            app_infra::brokered_access::BrokerTimelineResponse::page(Vec::new(), 0, None),
+        );
         assert!(timeline.truncated, "limit 0 can never be complete");
     }
 
@@ -1559,14 +1571,14 @@ mod tests {
 
     #[test]
     fn timeline_mapping_carries_speaker_turns_and_coverage() {
-        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
-            intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse::page(
+            vec![app_infra::brokered_access::BrokerTimelineInterval {
                 turns: vec![speaker_turn("we ship on Friday")],
                 ..timeline_interval("audio_microphone", Some("a1.signature"))
             }],
-            limit: 1,
-            speaker_coverage: Some(speaker_coverage()),
-        });
+            1,
+            Some(speaker_coverage()),
+        ));
 
         let json = serde_json::to_value(&data).expect("timeline data should serialize");
         assert_eq!(json["intervals"][0]["turns"][0]["text"], "we ship on Friday");
@@ -1574,11 +1586,11 @@ mod tests {
         assert_eq!(json["speakerCoverage"]["recordingsWithoutSpeakerData"], 7);
 
         let unfiltered = serde_json::to_value(map_timeline_data(
-            app_infra::brokered_access::BrokerTimelineResponse {
-                intervals: vec![timeline_interval("audio_microphone", Some("a1.signature"))],
-                limit: 1,
-                speaker_coverage: None,
-            },
+            app_infra::brokered_access::BrokerTimelineResponse::page(
+                vec![timeline_interval("audio_microphone", Some("a1.signature"))],
+                1,
+                None,
+            ),
         ))
         .expect("timeline data should serialize");
         assert!(unfiltered["intervals"][0].get("turns").is_none());

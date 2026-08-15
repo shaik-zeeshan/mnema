@@ -10,7 +10,8 @@
 //! turn task is detached, it finishes in the background regardless of whether the
 //! Quick Recall window is dismissed; a follow-up just runs another stateless turn.
 //!
-//! The brokered data tools (`search`, `timeline`, `show_text`, `recall_context`)
+//! The brokered data tools (`search`, `timeline`, `show_text`, `recall_context`,
+//! `activities`)
 //! plus the presentation-only `reference_captures` tool are described to the model
 //! and executed through the All-Retained broker seam
 //! (`BrokeredCaptureAccess::execute_for_ask_ai`) Rust-side, with redaction/audit
@@ -597,7 +598,7 @@ async fn execute_ask_ai_broker_request(
 /// Map an Ask AI tool name + camelCase params object onto a brokered request.
 ///
 /// Only the Ask AI data tools (`search`, `timeline`, `show_text`, `speakers`,
-/// `recall_context`) are accepted; `open`/`open_in_mnema`, the presentation-only
+/// `recall_context`, `activities`) are accepted; `open`/`open_in_mnema`, the presentation-only
 /// `reference_captures`, and anything else fall into the unknown branch and are
 /// rejected, so they can never be issued as Ask AI data tools.
 fn broker_request_from_tool(
@@ -630,6 +631,12 @@ fn broker_request_from_tool(
                 serde_json::from_value(params)
                     .map_err(|error| format!("invalid Ask AI speakers params: {error}"))?;
             Ok(BrokeredCaptureRequest::Speakers(request))
+        }
+        "activities" => {
+            let request: app_infra::brokered_access::BrokerActivitiesRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid Ask AI activities params: {error}"))?;
+            Ok(BrokeredCaptureRequest::Activities(request))
         }
         "recall_context" => {
             let request: BrokerRecallContextRequest = serde_json::from_value(params)
@@ -667,6 +674,8 @@ fn broker_response_to_tool_value(
             .map_err(|error| format!("failed to serialize Ask AI show_text result: {error}")),
         BrokeredCaptureResponse::RecallContext(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
+        BrokeredCaptureResponse::Activities(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI activities result: {error}")),
         BrokeredCaptureResponse::Speakers(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI speakers result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
@@ -724,6 +733,39 @@ fn retain_source_metadata(
                         context: interval.context.clone(),
                         // No sub-segment anchor on a timeline interval: the card
                         // opens at the segment start, as it always has.
+                        span_start_ms: None,
+                        span_end_ms: None,
+                        aligned_frame_id: None,
+                        turns: Vec::new(),
+                    });
+            }
+        }
+        BrokeredCaptureResponse::Activities(response) => {
+            for activity in &response.activities {
+                // Absent when every frame that grounded this episode has aged out
+                // of Retention — the episode outlives them (ADR 0029), so there is
+                // simply nothing left to open.
+                let Some(opaque_id) = activity.opaque_id.clone() else {
+                    continue;
+                };
+                metadata
+                    .entry(opaque_id.clone())
+                    .or_insert_with(|| BrokerSearchResult {
+                        opaque_id,
+                        // The evidence behind an episode is always a frame — the
+                        // broker's headline lookup filters to `subject_type =
+                        // 'frame'` — so the card renders as a screen capture with
+                        // no mic/system badge.
+                        kind: "frame".to_string(),
+                        // The card shows the episode's own words rather than a
+                        // text match, which is what the user is actually citing.
+                        snippet: activity.title.clone(),
+                        started_at: activity.started_at.clone(),
+                        ended_at: activity.ended_at.clone(),
+                        // The evidence frame's own app/window, NOT a claim about
+                        // the whole episode: this card renders that one capture,
+                        // and without it the card reads "Unknown app".
+                        context: activity.context.clone(),
                         span_start_ms: None,
                         span_end_ms: None,
                         aligned_frame_id: None,
@@ -998,7 +1040,13 @@ tools are the ONLY way you can act, and there is NO way to open files or access 
 them: `search` \
 finds redacted snippets plus opaque ids across the user's screen OCR and audio transcript \
 history (optionally narrowed by a `from`/`to` RFC3339 time range and `app`/`windowTitle` \
-filters); `timeline` returns coarse activity intervals for a bounded `from`/`to` window; \
+filters); `timeline` returns raw per-frame intervals for a bounded `from`/`to` window, NEWEST first and \
+capped — on a window wider than a few minutes it hands back only the tail, so treat it as a \
+drill-down, never as a summary of the window; `activities` is the tool for \"what did I do\" over \
+any stretch of time (today, this morning, last Tuesday): it walks the whole `from`/`to` window \
+chronologically and returns every derived episode in it, and its `derivedFrom`/`derivedUntil` say \
+which part of that window has actually been summarized yet — an empty list outside that covered \
+range means NOT SUMMARIZED YET, never that the user did nothing; \
 `speakers` lists who was heard in the user's audio, each with the opaque `handle` that `search` \
 and `timeline` take as `speaker` — a handle is the ONLY way to address a person, so for \"what \
 did X say\" or \"when was X talking\" call `speakers` FIRST and then ONE filtered `search` or \
@@ -1016,8 +1064,10 @@ habits, interests, projects, or what you know about them; it also accepts an opt
 UTC time window that scopes the returned ACTIVITIES by date (conclusions are standing beliefs and \
 are never time-scoped), so pass it when the question is about a specific day or period. You start \
 each turn with NO capture context, so ISSUE tool calls to gather what you need before answering \
-— prefer a concise `search` first, and use `show_text` sparingly \
-for the specific results you need to read in full. Cite times and apps when useful, but never \
+— prefer a concise `search` first for keyword questions and `activities` for \
+\"what did I do\" questions about a day or period, and use `show_text` sparingly \
+for the specific results you need to read in full. Never answer a question about a whole day \
+from a single capped `timeline` page: that page is the last few minutes of it. Cite times and apps when useful, but never \
 invent details. When the captured text you cite already contains a URL, render it as a labeled \
 Markdown link `[label](url)` rather than bare text so the user can open it. If you still cannot \
 answer, say so briefly. Be concise and direct. Do NOT lay answers out as Markdown tables — they \
@@ -1205,6 +1255,23 @@ fn show_text_tool_schema() -> serde_json::Value {
     })
 }
 
+/// JSON Schema (object) for the `activities` tool params.
+///
+/// No `query` and no `limit`, deliberately: this is the chronological
+/// walk-the-window door, and either knob turns it back into the
+/// relevance-ranked top-N that `recall_context` already is.
+fn activities_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "from": { "type": "string", "description": "Inclusive window start, RFC3339 (required)." },
+            "to": { "type": "string", "description": "Inclusive window end, RFC3339 (required)." }
+        },
+        "required": ["from", "to"]
+    })
+}
+
 /// JSON Schema (object) for the `recall_context` tool params.
 fn recall_context_tool_schema() -> serde_json::Value {
     serde_json::json!({
@@ -1275,7 +1342,12 @@ nothing."
             description:
                 "Return coarse activity intervals within a bounded time window. Without app/window \
 filters the result is audio-oriented; with an app or window title it returns matching screen \
-intervals instead. Pass `speaker` (a handle from `speakers`) for when one person was talking; \
+intervals instead. The page is the NEWEST `limit` intervals in the window, so `truncated: true` \
+means you were handed only its tail: `coveredFrom`/`coveredTo` say which slice you actually got, \
+and a truncated page is NEVER evidence about the rest of the window. To cover a long window (a \
+whole day), walk it in narrower sub-windows until each comes back untruncated, or use `search` \
+instead — do not report a truncated page as the whole span. Pass `speaker` (a handle from \
+`speakers`) for when one person was talking; \
 that response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + \
 `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above \
 zero makes the answer PARTIAL rather than proof the person was silent."
@@ -1305,6 +1377,24 @@ not everyone — narrow with `name`."
 `search` or `timeline`. Use sparingly, only when a snippet is insufficient to answer."
                     .to_string(),
             parameters_schema: show_text_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "activities".to_string(),
+            description:
+                "THE tool for \"what did I do\" over a stretch of time (today, yesterday, this \
+morning, last Tuesday). Returns every derived episode overlapping the window — title, summary, \
+category, start/end — oldest first, unfiltered and uncapped, so it walks the whole window instead \
+of sampling it. Prefer it over `timeline` for any question wider than a few minutes: `timeline` \
+returns the NEWEST page of raw per-frame intervals, so on a day-long window it hands back the last \
+few minutes, not the day. Episodes are summarized in the background a little behind live capture, \
+so ALWAYS read `derivedFrom`/`derivedUntil`: they say which part of your window has actually been \
+summarized. An empty list inside that covered range means a quiet stretch; an empty list OUTSIDE \
+it (or both fields absent) means NOT SUMMARIZED YET and is never evidence the user did nothing — \
+say so plainly, and use `search` or a narrow `timeline` to check the uncovered part. Each episode \
+carries an `opaqueId` for its best surviving evidence capture; pass those to `reference_captures` \
+so the user can see what the summary was built from."
+                    .to_string(),
+            parameters_schema: activities_tool_schema(),
         },
         ai_engine::AgentTool {
             name: "recall_context".to_string(),
@@ -2746,6 +2836,7 @@ tool that can answer it: {preamble}"
             "show_text",
             "speakers",
             "recall_context",
+            "activities",
             "mcp__",
             "mcp__nounderscore",
             "mcp__id__",
@@ -3035,6 +3126,117 @@ model believes the narrower contract: {}",
     }
 
     #[test]
+    fn broker_request_from_tool_activities_maps_to_activities_variant() {
+        let request = broker_request_from_tool(
+            "activities",
+            serde_json::json!({ "from": "2026-08-15T00:00:00Z", "to": "2026-08-15T18:00:00Z" }),
+        )
+        .expect("activities params should parse");
+
+        match request {
+            BrokeredCaptureRequest::Activities(req) => {
+                assert_eq!(req.from, "2026-08-15T00:00:00Z");
+                assert_eq!(req.to, "2026-08-15T18:00:00Z");
+            }
+            other => panic!("expected Activities, got {other:?}"),
+        }
+    }
+
+    /// The day-scale door has to be reachable and self-describing: the model picks
+    /// it over `timeline` only if the description says `timeline` samples the tail.
+    #[test]
+    fn activities_tool_is_offered_and_requires_a_window() {
+        let tools = build_ask_ai_tools(false, Vec::new());
+        let activities = tools
+            .iter()
+            .find(|tool| tool.name == "activities")
+            .expect("activities must be offered to the model");
+
+        let required = activities.parameters_schema["required"]
+            .as_array()
+            .expect("required list");
+        assert!(required.iter().any(|value| value == "from"));
+        assert!(required.iter().any(|value| value == "to"));
+        // No relevance knob and no caller cap — either one turns this back into
+        // the ranked top-N door it exists to complement.
+        let properties = activities.parameters_schema["properties"]
+            .as_object()
+            .expect("properties");
+        assert!(!properties.contains_key("query"));
+        assert!(!properties.contains_key("limit"));
+        assert!(
+            activities.description.contains("derivedFrom"),
+            "the coverage window is what keeps an empty list honest"
+        );
+    }
+
+    /// An episode the model summarized must be citable, or the answer renders with
+    /// no source cards and the user cannot check it.
+    #[test]
+    fn activities_opaque_ids_are_retained_so_the_model_can_cite_them() {
+        let response = BrokeredCaptureResponse::Activities(
+            app_infra::brokered_access::BrokerActivitiesResponse {
+                activities: vec![
+                    app_infra::brokered_access::BrokerActivity {
+                        title: "Morning triage".to_string(),
+                        summary: "cleared the queue".to_string(),
+                        category: None,
+                        focus: None,
+                        started_at: "2026-06-12T09:00:00Z".to_string(),
+                        ended_at: "2026-06-12T09:30:00Z".to_string(),
+                        opaque_id: Some("f2a:gask-ai.deadbeef".to_string()),
+                        context: Some(app_infra::brokered_access::BrokerSearchResultContext {
+                            app_bundle_id: Some("com.stablyai.orca".to_string()),
+                            app_name: Some("Orca".to_string()),
+                            window_title: Some("Orca".to_string()),
+                            url: None,
+                        }),
+                    },
+                    // Every grounding frame aged out: nothing to cite, and nothing
+                    // may be retained under an empty key.
+                    app_infra::brokered_access::BrokerActivity {
+                        title: "Fully aged out".to_string(),
+                        summary: "no surviving evidence".to_string(),
+                        category: None,
+                        focus: None,
+                        started_at: "2026-06-12T10:00:00Z".to_string(),
+                        ended_at: "2026-06-12T10:30:00Z".to_string(),
+                        opaque_id: None,
+                        context: None,
+                    },
+                ],
+                derived_from: Some("2026-06-12T09:00:00Z".to_string()),
+                derived_until: Some("2026-06-12T11:00:00Z".to_string()),
+                truncated: false,
+            },
+        );
+
+        let mut metadata: HashMap<String, BrokerSearchResult> = HashMap::new();
+        retain_source_metadata(&response, &mut metadata);
+
+        let retained = metadata
+            .get("f2a:gask-ai.deadbeef")
+            .expect("a citable episode must be retained");
+        assert_eq!(retained.kind, "frame");
+        assert_eq!(retained.snippet, "Morning triage");
+        assert_eq!(retained.started_at, "2026-06-12T09:00:00Z");
+        // Without this the card renders "Unknown app" for a frame whose app was
+        // captured and stored the whole time.
+        assert_eq!(
+            retained
+                .context
+                .as_ref()
+                .and_then(|context| context.app_name.as_deref()),
+            Some("Orca"),
+        );
+        assert_eq!(
+            metadata.len(),
+            1,
+            "an episode with no surviving evidence adds no citable source"
+        );
+    }
+
+    #[test]
     fn broker_request_from_tool_recall_context_maps_to_recall_context_variant() {
         let request = broker_request_from_tool(
             "recall_context",
@@ -3135,9 +3337,9 @@ model believes the narrower contract: {}",
     /// that answer unciteable, so the turn renders with no source cards at all.
     #[test]
     fn timeline_intervals_are_retained_so_the_model_can_cite_them() {
-        let response =
-            BrokeredCaptureResponse::Timeline(app_infra::brokered_access::BrokerTimelineResponse {
-                intervals: vec![
+        let response = BrokeredCaptureResponse::Timeline(
+            app_infra::brokered_access::BrokerTimelineResponse::page(
+                vec![
                     app_infra::brokered_access::BrokerTimelineInterval {
                         kind: "audio_microphone".to_string(),
                         started_at: "2026-06-12T09:00:00Z".to_string(),
@@ -3157,9 +3359,10 @@ model believes the narrower contract: {}",
                         turns: Vec::new(),
                     },
                 ],
-                limit: 8,
-                speaker_coverage: None,
-            });
+                8,
+                None,
+            ),
+        );
 
         let mut metadata: HashMap<String, BrokerSearchResult> = HashMap::new();
         retain_source_metadata(&response, &mut metadata);
@@ -3221,8 +3424,8 @@ model believes the narrower contract: {}",
         );
         retain_source_metadata(
             &BrokeredCaptureResponse::Timeline(
-                app_infra::brokered_access::BrokerTimelineResponse {
-                    intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+                app_infra::brokered_access::BrokerTimelineResponse::page(
+                    vec![app_infra::brokered_access::BrokerTimelineInterval {
                         kind: "audio_microphone".to_string(),
                         started_at: "2026-06-12T09:00:00Z".to_string(),
                         ended_at: Some("2026-06-12T09:05:00Z".to_string()),
@@ -3230,9 +3433,9 @@ model believes the narrower contract: {}",
                         context: None,
                         turns: Vec::new(),
                     }],
-                    limit: 8,
-                    speaker_coverage: None,
-                },
+                    8,
+                    None,
+                ),
             ),
             &mut metadata,
         );

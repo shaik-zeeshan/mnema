@@ -5780,3 +5780,572 @@ fn speaker_coverage_never_counts_a_recording_the_filter_returned() {
         );
     });
 }
+
+#[test]
+fn scoped_date_range_normalizes_offset_bounds_to_utc() {
+    // Offset-carrying bounds must come back as the SAME INSTANTS expressed with
+    // `Z`. Capture rows are stored RFC3339-with-`Z` and the audio-segment overlap
+    // predicate compares those strings lexicographically, so a surviving
+    // `+05:30` suffix would sort as that wall clock in UTC and drop every row on
+    // the far side of the UTC date boundary. Empty `grants` is fine here: with
+    // both bounds supplied, `scoped_date_range` proceeds from an epoch scope
+    // start, which is exactly the unbounded Ask AI case.
+    let range = scoped_date_range(
+        &[],
+        Some("2020-03-05T00:00:00+05:30".to_string()),
+        Some("2020-03-05T23:59:59+05:30".to_string()),
+    )
+    .expect("bounds parse")
+    .expect("both bounds were supplied");
+
+    assert_eq!(range.start_at, "2020-03-04T18:30:00Z");
+    assert_eq!(range.end_at, "2020-03-05T18:29:59Z");
+
+    // Already-`Z` bounds are untouched, so existing callers keep byte-identical
+    // strings.
+    let utc = scoped_date_range(
+        &[],
+        Some("2020-03-04T18:30:00Z".to_string()),
+        Some("2020-03-05T18:29:59Z".to_string()),
+    )
+    .expect("bounds parse")
+    .expect("both bounds were supplied");
+    assert_eq!(utc.start_at, range.start_at);
+    assert_eq!(utc.end_at, range.end_at);
+}
+
+#[test]
+fn timeline_page_reports_the_slice_it_actually_covers() {
+    let interval = |started_at: &str| BrokerTimelineInterval {
+        kind: "frame".to_string(),
+        started_at: started_at.to_string(),
+        ended_at: Some(started_at.to_string()),
+        opaque_id: None,
+        context: None,
+        turns: Vec::new(),
+    };
+
+    // A full page is the window's NEWEST end, so the covered span — not the
+    // requested window — is what the caller may reason about.
+    let full = BrokerTimelineResponse::page(
+        vec![
+            interval("2026-08-15T17:49:28Z"),
+            interval("2026-08-15T17:30:17Z"),
+        ],
+        2,
+        None,
+    );
+    assert!(full.truncated, "a page that filled the limit may have more");
+    assert_eq!(full.covered_from.as_deref(), Some("2026-08-15T17:30:17Z"));
+    assert_eq!(full.covered_to.as_deref(), Some("2026-08-15T17:49:28Z"));
+
+    // Bounds are derived from the intervals, not from their order: the same page
+    // reversed must report the same span.
+    let reversed = BrokerTimelineResponse::page(
+        vec![
+            interval("2026-08-15T17:30:17Z"),
+            interval("2026-08-15T17:49:28Z"),
+        ],
+        2,
+        None,
+    );
+    assert_eq!(reversed.covered_from, full.covered_from);
+    assert_eq!(reversed.covered_to, full.covered_to);
+
+    let partial = BrokerTimelineResponse::page(vec![interval("2026-08-15T17:49:28Z")], 20, None);
+    assert!(!partial.truncated, "a short page saw the whole window");
+
+    let empty = BrokerTimelineResponse::page(Vec::new(), 20, None);
+    assert!(!empty.truncated);
+    assert_eq!(empty.covered_from, None);
+    assert_eq!(empty.covered_to, None);
+
+    // Matches the CLI's long-standing reading: asking for nothing can never be a
+    // complete answer.
+    assert!(BrokerTimelineResponse::page(Vec::new(), 0, None).truncated);
+}
+
+/// The regression this exists for: an audio segment recorded at 03:21 local time
+/// in a `+05:30` zone is stored as the PREVIOUS UTC day (`21:51Z`). Asking for
+/// "my local today" with `+05:30` bounds used to drop it, because the audio
+/// overlap predicate compares the bound string lexicographically against
+/// `Z`-stored rows and `"2026-05-16T21:51:00Z" >= "2026-05-17T00:00:00+05:30"`
+/// is false — while the frame half of the SAME call, comparing with
+/// `julianday()`, saw it. One tool, two answers.
+#[test]
+fn broker_timeline_offset_bounds_reach_audio_on_the_far_side_of_the_utc_date() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("timeline-offset-bounds");
+        let save_dir = temp_save_dir("timeline-offset-bounds");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+
+        // 2026-05-17 03:21 IST — early on the user's local day, previous UTC day.
+        infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                save_dir
+                    .join("early-local-morning.m4a")
+                    .display()
+                    .to_string(),
+                "2026-05-16T21:51:00Z",
+                "2026-05-16T21:56:00Z",
+            ))
+            .await
+            .expect("audio segment should insert");
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        let response = broker_timeline(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerTimelineRequest {
+                // The user's local day, expressed the way a client that knows the
+                // user's offset naturally expresses it.
+                from: "2026-05-17T00:00:00+05:30".to_string(),
+                to: "2026-05-17T23:59:59+05:30".to_string(),
+                limit: Some(5),
+                app: None,
+                window_title: None,
+                url: None,
+                url_regex: None,
+                speaker: None,
+            },
+        )
+        .await
+        .expect("timeline should run")
+        .expect("timeline should be authorized");
+
+        assert_eq!(
+            response
+                .intervals
+                .iter()
+                .map(|interval| interval.started_at.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2026-05-16T21:51:00Z"],
+            "an offset-form local-day window must reach audio stored on the previous UTC day"
+        );
+        assert!(
+            !response.truncated,
+            "one interval under a limit of five is the whole window"
+        );
+        assert_eq!(
+            response.covered_from.as_deref(),
+            Some("2026-05-16T21:51:00Z")
+        );
+    });
+}
+
+/// Seed helpers for the `activities` door. Frames are inserted for real so the
+/// headline lookup's existence join has something to find.
+async fn seed_activity_with_frame(
+    infra: &AppInfra,
+    save_dir: &Path,
+    title: &str,
+    summary: &str,
+    started_at_ms: i64,
+    frame_captured_at: &str,
+) -> i64 {
+    use crate::user_context::store::{NewActivity, NewActivityEvidence};
+
+    let frame = infra
+        .insert_frame(
+            &NewFrame::new(
+                "screen-session",
+                save_dir
+                    .join(format!("{title}-{started_at_ms}.jpg"))
+                    .display()
+                    .to_string(),
+                frame_captured_at,
+            )
+            .with_metadata_snapshot(capture_metadata::FrameMetadataSnapshot {
+                app_bundle_id: Some("com.stablyai.orca".to_string()),
+                app_name: Some("Orca".to_string()),
+                window_title: Some("Orca".to_string()),
+                window_id: None,
+                browser_url: None,
+                display_id: Some(1),
+                metadata_redaction_reason: None,
+                metadata_redaction_source_id: None,
+            }),
+        )
+        .await
+        .expect("frame should insert");
+
+    infra
+        .user_context()
+        .insert_activity_with_evidence(NewActivity {
+            title: title.to_string(),
+            summary: summary.to_string(),
+            category: None,
+            focus: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + 60_000,
+            derivation_run_id: None,
+            evidence: vec![NewActivityEvidence {
+                subject_type: "frame".to_string(),
+                subject_id: frame.id,
+                captured_at_ms: Some(started_at_ms),
+                is_headline: true,
+            }],
+        })
+        .await
+        .expect("seed activity");
+
+    frame.id
+}
+
+async fn seed_covering_run(infra: &AppInfra, start_ms: i64, end_ms: i64, status: &str) {
+    use crate::user_context::store::{DistillationGateDrops, NewDerivationRun};
+
+    infra
+        .user_context()
+        .insert_derivation_run(NewDerivationRun {
+            kind: "activity".to_string(),
+            window_start_ms: Some(start_ms),
+            window_end_ms: Some(end_ms),
+            status: status.to_string(),
+            activities_derived: 0,
+            conclusions_derived: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            provider: None,
+            model: None,
+            error: None,
+            gate_drops: DistillationGateDrops::default(),
+        })
+        .await
+        .expect("seed derivation run");
+}
+
+/// The whole reason this door exists: a day-scale window comes back WHOLE and in
+/// order, not as the newest page of a relevance ranking. `timeline` answers the
+/// same window with its most recent handful of per-frame rows; this walks it.
+#[test]
+fn broker_activities_walks_the_window_oldest_first_and_uncapped() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("activities-walk");
+        let save_dir = temp_save_dir("activities-walk");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+
+        // Seeded newest-first so a pass-through of insertion order would fail.
+        for (offset, title) in [(3, "Evening review"), (1, "Morning triage"), (2, "Midday build")]
+        {
+            seed_activity_with_frame(
+                &infra,
+                &save_dir,
+                title,
+                "did the thing",
+                1_000_000 + offset * 60_000,
+                "2026-05-17T10:00:00Z",
+            )
+            .await;
+        }
+        seed_covering_run(&infra, 0, 10_000_000, "completed").await;
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        let response = broker_activities(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerActivitiesRequest {
+                from: "1970-01-01T00:00:00Z".to_string(),
+                to: "1970-01-01T02:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("activities should run")
+        .expect("activities should be authorized");
+
+        assert_eq!(
+            response
+                .activities
+                .iter()
+                .map(|activity| activity.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Morning triage", "Midday build", "Evening review"],
+            "the window is walked chronologically, not ranked"
+        );
+        assert!(!response.truncated);
+        assert!(
+            response
+                .activities
+                .iter()
+                .all(|activity| activity.opaque_id.is_some()),
+            "every episode with a surviving evidence frame is citable"
+        );
+        // The source card renders the EVIDENCE FRAME, so it must carry that
+        // frame's app. Without this the card falls back to "Unknown app" even
+        // though the app was captured and stored all along.
+        let context = response.activities[0]
+            .context
+            .as_ref()
+            .expect("the cited frame's app context must reach the card");
+        assert_eq!(context.app_name.as_deref(), Some("Orca"));
+        assert_eq!(context.app_bundle_id.as_deref(), Some("com.stablyai.orca"));
+    });
+}
+
+/// LOAD-BEARING, exactly as in `recall_context`: an Activity's title/summary is
+/// persisted UNFILTERED, so this broker-side guardrail is the only thing between
+/// a sensitive episode and a cloud engine. Unlike `recall_context` there is no
+/// query to hide behind here — an unfiltered window would hand over everything.
+#[test]
+fn sensitive_activity_never_egresses_via_activities() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("activities-sensitive");
+        let save_dir = temp_save_dir("activities-sensitive");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+
+        seed_activity_with_frame(
+            &infra,
+            &save_dir,
+            "Therapy appointment",
+            "attended a therapy appointment",
+            1_000_000,
+            "2026-05-17T10:00:00Z",
+        )
+        .await;
+        seed_activity_with_frame(
+            &infra,
+            &save_dir,
+            "Reviewed the parser",
+            "worked through the parser rewrite",
+            1_060_000,
+            "2026-05-17T10:01:00Z",
+        )
+        .await;
+        seed_covering_run(&infra, 0, 10_000_000, "completed").await;
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        let response = broker_activities(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerActivitiesRequest {
+                from: "1970-01-01T00:00:00Z".to_string(),
+                to: "1970-01-01T02:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("activities should run")
+        .expect("activities should be authorized");
+
+        assert_eq!(
+            response
+                .activities
+                .iter()
+                .map(|activity| activity.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Reviewed the parser"],
+            "the sensitive episode must not cross the broker boundary"
+        );
+        let serialized = serde_json::to_string(&response).expect("response serializes");
+        assert!(
+            !serialized.to_lowercase().contains("therapy"),
+            "no trace of the sensitive episode may reach the wire: {serialized}"
+        );
+    });
+}
+
+/// The anti-lie field. An empty (or short) list over an underived stretch must be
+/// distinguishable from a genuinely quiet one, or the model reports "you did
+/// nothing" for time that simply has not been summarized yet — the same failure
+/// as reading a truncated `timeline` page as a whole day.
+#[test]
+fn broker_activities_reports_only_the_derived_slice_of_the_window() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("activities-coverage");
+        let save_dir = temp_save_dir("activities-coverage");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+
+        seed_activity_with_frame(
+            &infra,
+            &save_dir,
+            "Morning triage",
+            "cleared the queue",
+            1_000_000,
+            "2026-05-17T10:00:00Z",
+        )
+        .await;
+        // Derivation covered 600_000..2_000_000 only: the request below starts
+        // before that and ends well after it.
+        seed_covering_run(&infra, 600_000, 2_000_000, "completed").await;
+        // A FAILED run over the later stretch summarized nothing, so it must not
+        // advance the watermark.
+        seed_covering_run(&infra, 2_000_000, 5_000_000, "failed").await;
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        let response = broker_activities(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerActivitiesRequest {
+                from: "1970-01-01T00:00:00Z".to_string(),
+                to: "1970-01-01T01:23:20Z".to_string(), // 5_000_000 ms
+            },
+        )
+        .await
+        .expect("activities should run")
+        .expect("activities should be authorized");
+
+        // Clamped to the intersection on BOTH edges: the window's own start is
+        // before coverage began, and its end is past the last covering run.
+        assert_eq!(
+            response.derived_from.as_deref(),
+            Some("1970-01-01T00:10:00Z"),
+            "coverage starts where derivation started, not where the window did"
+        );
+        assert_eq!(
+            response.derived_until.as_deref(),
+            Some("1970-01-01T00:33:20Z"),
+            "a failed run summarized nothing and must not raise the watermark"
+        );
+        assert_eq!(response.activities.len(), 1);
+    });
+}
+
+/// Activities outlive the captures that grounded them (ADR 0029), so the evidence
+/// rows carry no FK and can point at deleted frames. A dangling id would be worse
+/// than none: the model would cite something `show_text` cannot open.
+#[test]
+fn broker_activities_never_hands_out_an_id_for_an_aged_out_frame() {
+    run_async_test(async {
+        use crate::user_context::store::{NewActivity, NewActivityEvidence};
+
+        let config_dir = temp_config_dir("activities-retention");
+        let save_dir = temp_save_dir("activities-retention");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+
+        // The headline frame is aged out; a later evidence frame survives.
+        let surviving = infra
+            .insert_frame(&NewFrame::new(
+                "screen-session",
+                save_dir.join("surviving.jpg").display().to_string(),
+                "2026-05-17T10:05:00Z",
+            ))
+            .await
+            .expect("frame should insert");
+
+        infra
+            .user_context()
+            .insert_activity_with_evidence(NewActivity {
+                title: "Long episode".to_string(),
+                summary: "spanned a retention boundary".to_string(),
+                category: None,
+                focus: None,
+                started_at_ms: 1_000_000,
+                ended_at_ms: 1_060_000,
+                derivation_run_id: None,
+                evidence: vec![
+                    // Headline, but the frame no longer exists.
+                    NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: 999_999,
+                        captured_at_ms: Some(1_000_000),
+                        is_headline: true,
+                    },
+                    NewActivityEvidence {
+                        subject_type: "frame".to_string(),
+                        subject_id: surviving.id,
+                        captured_at_ms: Some(1_030_000),
+                        is_headline: false,
+                    },
+                ],
+            })
+            .await
+            .expect("seed activity");
+
+        // A second episode whose ONLY evidence is gone: citable by nothing.
+        infra
+            .user_context()
+            .insert_activity_with_evidence(NewActivity {
+                title: "Fully aged out".to_string(),
+                summary: "every grounding frame is gone".to_string(),
+                category: None,
+                focus: None,
+                started_at_ms: 1_100_000,
+                ended_at_ms: 1_160_000,
+                derivation_run_id: None,
+                evidence: vec![NewActivityEvidence {
+                    subject_type: "frame".to_string(),
+                    subject_id: 999_998,
+                    captured_at_ms: Some(1_100_000),
+                    is_headline: true,
+                }],
+            })
+            .await
+            .expect("seed activity");
+        seed_covering_run(&infra, 0, 10_000_000, "completed").await;
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        let response = broker_activities(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerActivitiesRequest {
+                from: "1970-01-01T00:00:00Z".to_string(),
+                to: "1970-01-01T02:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("activities should run")
+        .expect("activities should be authorized");
+
+        assert_eq!(response.activities.len(), 2, "both episodes still reported");
+        assert!(
+            response.activities[0].opaque_id.is_some(),
+            "a dead headline falls back to the surviving evidence frame"
+        );
+        assert_eq!(
+            response.activities[1].opaque_id, None,
+            "no surviving evidence means no id, never a dangling one"
+        );
+    });
+}

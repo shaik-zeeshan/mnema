@@ -547,6 +547,62 @@ impl UserContextStore {
         Ok(activities)
     }
 
+    /// The one still-capturable evidence frame that best represents each of
+    /// `activity_ids`, as `activity_id -> frame_id`, in ONE query.
+    ///
+    /// Three things this does that a per-activity `list_activity_evidence` loop
+    /// would not:
+    ///
+    /// 1. **Batched.** The brokered activities door hands back a whole day, so a
+    ///    per-row lookup is an N+1 on an interactive path (the same reason
+    ///    `broker_frame_timeline` batches its snapshot read).
+    /// 2. **Existence-checked.** Evidence rows deliberately carry NO FK to
+    ///    `frames` so derived data outlives Retention (ADR 0029) — which means an
+    ///    Activity can long outlive the frames that grounded it. Joining `frames`
+    ///    keeps a dead id from being handed out as a followable one.
+    /// 3. **Degrading.** The join is applied BEFORE ranking, so an Activity whose
+    ///    headline frame was aged out still resolves to its next surviving
+    ///    evidence frame instead of dropping out entirely.
+    ///
+    /// Ordering matches [`Self::list_activity_evidence`]: headline first, then
+    /// oldest. Activities with no surviving frame evidence are simply absent.
+    pub async fn headline_frames_for_activities(
+        &self,
+        activity_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, i64>> {
+        if activity_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT activity_id, subject_id FROM (\
+                 SELECT e.activity_id AS activity_id, e.subject_id AS subject_id, \
+                        ROW_NUMBER() OVER (\
+                            PARTITION BY e.activity_id \
+                            ORDER BY e.is_headline DESC, e.captured_at_ms ASC, e.id ASC\
+                        ) AS rn \
+                 FROM user_context_activity_evidence e \
+                 JOIN frames f ON f.id = e.subject_id \
+                 WHERE e.subject_type = 'frame' AND e.activity_id IN (",
+        );
+        let mut separated = query.separated(", ");
+        for activity_id in activity_ids {
+            separated.push_bind(*activity_id);
+        }
+        query.push(")) WHERE rn = 1");
+
+        let rows = query.build().fetch_all(self.db.read()).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<i64, _>("activity_id"),
+                    row.get::<i64, _>("subject_id"),
+                )
+            })
+            .collect())
+    }
+
     async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
         let rows = sqlx::query(
             "SELECT subject_type, subject_id, captured_at_ms, is_headline \

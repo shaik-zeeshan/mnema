@@ -11,7 +11,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Row, Sqlite};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 
 use crate::{
     AppInfra, AppInfraError, AudioSegmentSourceKind, ProcessingSubject, Result,
@@ -558,10 +558,63 @@ pub struct BrokerTimelineInterval {
 pub struct BrokerTimelineResponse {
     pub intervals: Vec<BrokerTimelineInterval>,
     pub limit: u32,
+    /// The page is the NEWEST `limit` intervals (every branch orders
+    /// `started_at DESC`), so a full page means the window almost certainly holds
+    /// more and what came back is only its TAIL. At the default limit of 20 an
+    /// 18-hour "what did I do today" window answers with the last few minutes;
+    /// without this flag a caller cannot tell that apart from a quiet day, and
+    /// reads a truncated tail as the whole span.
+    // Same rule the CLI has always applied to its own `truncated` (`limit 0` can
+    // never be complete), hoisted here so Ask AI and the CLI cannot disagree.
+    // ponytail: `len >= limit` over-reports the one window holding exactly
+    // `limit` intervals. An exact answer costs a COUNT over the same window, and
+    // narrow-the-window is the right response either way.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Oldest / newest `startedAt` actually returned — the slice of the requested
+    /// window this page really covers, which is what makes `truncated`
+    /// actionable. `None` when nothing matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_from: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_to: Option<String>,
     /// Only on a request that carried a `speaker` handle: how much audio the
     /// filter could not check. See [`BrokerSpeakerCoverage`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speaker_coverage: Option<BrokerSpeakerCoverage>,
+}
+
+impl BrokerTimelineResponse {
+    /// The one constructor for a timeline page: derives `truncated` + the covered
+    /// span from the intervals themselves, so no branch can return a page that
+    /// silently misreports its own coverage.
+    pub fn page(
+        intervals: Vec<BrokerTimelineInterval>,
+        limit: u32,
+        speaker_coverage: Option<BrokerSpeakerCoverage>,
+    ) -> Self {
+        // Bounds come from the intervals rather than from their order: both
+        // branches happen to sort `started_at DESC` today, but a page that lies
+        // about its coverage is exactly the failure this field exists to prevent.
+        // The values are `Z`-normalized RFC3339, so lexical min/max is
+        // chronological.
+        let covered_from = intervals
+            .iter()
+            .map(|interval| interval.started_at.clone())
+            .min();
+        let covered_to = intervals
+            .iter()
+            .map(|interval| interval.started_at.clone())
+            .max();
+        Self {
+            truncated: intervals.len() as u32 >= limit,
+            covered_from,
+            covered_to,
+            intervals,
+            limit,
+            speaker_coverage,
+        }
+    }
 }
 
 /// Who was heard **inside the grant's own time scope** — never the global people
@@ -663,6 +716,77 @@ pub struct BrokerRecallContextResponse {
     pub activities: Vec<BrokerRecalledActivity>,
 }
 
+/// An `activities` request: the window to report, as RFC3339 UTC bounds. No
+/// query and no `limit` — this is the chronological day-scale door, and a
+/// relevance filter or a caller-chosen cap is what makes it stop being one. The
+/// server-side [`MAX_ACTIVITIES`] cap is a runaway guard, not a paging knob.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerActivitiesRequest {
+    pub from: String,
+    pub to: String,
+}
+
+/// One derived episode returned by `activities`.
+///
+/// Deliberately NOT [`BrokerRecalledActivity`], despite sharing six fields: the
+/// two doors have different privacy contracts. `recall_context` emits no ids at
+/// all, by design. This one emits a followable `opaque_id` so the model can cite
+/// what it summarized — which grants nothing `search`/`timeline` do not already
+/// grant on the same grant scope, but IS a different boundary. Keeping them
+/// separate is what stops "just populate the optional field" from quietly
+/// erasing the distinction.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerActivity {
+    pub title: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    pub started_at: String,
+    pub ended_at: String,
+    /// The activity's best surviving evidence frame, for citation. Absent when
+    /// every frame that grounded it has aged out of Retention — the activity
+    /// itself outlives them (ADR 0029), so this is expected on old windows, not
+    /// an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opaque_id: Option<String>,
+    /// App / window / guarded url of THAT evidence frame — the one capture
+    /// `opaque_id` points at, not a claim about the whole episode. An episode can
+    /// span several apps, but the frame behind it was captured in exactly one,
+    /// and that is what a source card for this id renders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<BrokerSearchResultContext>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerActivitiesResponse {
+    /// Oldest-first: this answers "walk me through the window", so chronological
+    /// order IS the answer's shape.
+    pub activities: Vec<BrokerActivity>,
+    /// The sub-range of the REQUESTED window that derivation has actually
+    /// covered, as RFC3339 UTC. Activities are derived asynchronously in 2–30
+    /// minute windows, so the newest stretch of any live window has not been
+    /// summarized yet and the oldest may predate backfill.
+    ///
+    /// This is the field that keeps an empty list honest. Without it "no
+    /// activities" reads as "you did nothing", when it usually means "not
+    /// summarized yet" — the same failure mode as a truncated `timeline` page
+    /// read as a whole day. Both `None` means derivation has covered NO part of
+    /// this window, so the list says nothing about it either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_until: Option<String>,
+    /// The runaway guard tripped: more than [`MAX_ACTIVITIES`] episodes overlap
+    /// this window and the OLDEST were kept. Narrow the window.
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrokeredCaptureRequest {
     AuthStatus,
@@ -671,6 +795,7 @@ pub enum BrokeredCaptureRequest {
     Timeline(BrokerTimelineRequest),
     Speakers(BrokerSpeakersRequest),
     RecallContext(BrokerRecallContextRequest),
+    Activities(BrokerActivitiesRequest),
     OpenInMnema { opaque_id: String },
     OpenCapturedUrl { opaque_id: String },
 }
@@ -687,6 +812,7 @@ impl BrokeredCaptureRequest {
             // request parameters, deliberately.
             Self::Speakers(_) => Some("speakers"),
             Self::RecallContext(_) => Some("recall_context"),
+            Self::Activities(_) => Some("activities"),
             Self::OpenInMnema { .. } => Some("open_in_mnema"),
             Self::OpenCapturedUrl { .. } => Some("open_captured_url"),
         }
@@ -702,6 +828,11 @@ pub enum BrokeredCaptureResponse {
     Timeline(BrokerTimelineResponse),
     Speakers(BrokerSpeakersResponse),
     RecallContext(BrokerRecallContextResponse),
+    // AFTER `RecallContext`: this enum is `#[serde(untagged)]`, so variants are
+    // tried in declaration order and both carry an `activities` array. A
+    // recall payload also carries the required `conclusions`, which this variant
+    // lacks, so ordering it second means each shape lands on its own arm.
+    Activities(BrokerActivitiesResponse),
     OpenInMnema(BrokerOpenInMnemaResponse),
     OpenCapturedUrl(BrokerOpenCapturedUrlResponse),
     Error(BrokerErrorResponse),
@@ -717,6 +848,7 @@ impl BrokeredCaptureResponse {
             Self::RecallContext(response) => {
                 (response.conclusions.len() + response.activities.len()) as u32
             }
+            Self::Activities(response) => response.activities.len() as u32,
             Self::AuthStatus(_) | Self::Error(_) => 0,
         }
     }
@@ -907,6 +1039,13 @@ impl BrokeredCaptureAccess {
                 let infra = self.initialize_infra().await?;
                 match broker_recall_context(&infra, grants, request).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::RecallContext(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::Activities(request) => {
+                let infra = self.initialize_infra().await?;
+                match broker_activities(&self.config_dir, &infra, grants, request).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::Activities(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
             }
@@ -1347,6 +1486,20 @@ fn scoped_date_range(
             "requested broker time range is outside the grant scope".to_string(),
         ));
     }
+    // Normalize both bounds to UTC BEFORE they become strings. `parse_rfc3339`
+    // keeps whatever offset the caller sent, and `Rfc3339` formatting preserves
+    // it — but capture rows are stored as RFC3339-with-`Z`, and the audio-segment
+    // overlap predicate (`audio_segments::list_overlapping_range`, mirrored in
+    // `speakers::speaker_matched_segments_in_range`) compares those strings
+    // LEXICOGRAPHICALLY. An offset-carrying bound like `2026-08-15T00:00:00+05:30`
+    // then sorts as if that wall clock were UTC and silently drops every row on
+    // the other side of the UTC date boundary — for a `+05:30` caller, the first
+    // 5.5 hours of their local day. The frame timeline's `julianday()` compare was
+    // always offset-correct, so the two halves of one `timeline` call disagreed.
+    // Normalizing here fixes both call sites at once and keeps the predicates
+    // index-friendly (a `julianday(column)` compare could not use an index).
+    let start_dt = start_dt.to_offset(UtcOffset::UTC);
+    let end_dt = end_dt.to_offset(UtcOffset::UTC);
     Ok(Some(SearchDateRangeRefinement {
         start_at: start_dt
             .format(&Rfc3339)
@@ -1996,12 +2149,8 @@ async fn broker_timeline(
             &opaque_secret,
         )
         .await?;
-        return Ok(Ok(BrokerTimelineResponse {
-            intervals,
-            limit,
-            // Unreachable with a speaker filter: that combination errors above.
-            speaker_coverage: None,
-        }));
+        // Unreachable with a speaker filter: that combination errors above.
+        return Ok(Ok(BrokerTimelineResponse::page(intervals, limit, None)));
     }
     // The mirror of the context-filter branch above: a speaker filter narrows to
     // audio, because a captured frame carries no voice to match against. The one
@@ -2073,11 +2222,11 @@ async fn broker_timeline(
             .then_with(|| right.kind.cmp(&left.kind))
     });
     intervals.truncate(limit as usize);
-    Ok(Ok(BrokerTimelineResponse {
+    Ok(Ok(BrokerTimelineResponse::page(
         intervals,
         limit,
         speaker_coverage,
-    }))
+    )))
 }
 
 async fn broker_frame_timeline(
@@ -2459,6 +2608,142 @@ fn select_relevant_activities(
             ended_at: format_unix_ms(a.ended_at_ms.max(0) as u64),
         })
         .collect()
+}
+
+/// Runaway guard on the chronological activities door. A day of 2–30 minute
+/// derivation windows is tens of episodes, so this is far above any real day and
+/// exists only so a year-wide window cannot materialize the whole dossier.
+const MAX_ACTIVITIES: usize = 500;
+
+/// `activities`: the derived episodes overlapping a window, oldest-first.
+///
+/// This is the day-scale door the other tools could not be. `timeline` has the
+/// window but not the altitude (its intervals are per-frame rows, newest-first,
+/// capped — a full page is the tail of the window, not the window); and
+/// `recall_context` has the altitude but is keyword-filtered and hard-capped,
+/// because it answers "what do you know about me", not "what happened between
+/// these two times". Neither can walk a day.
+///
+/// Three properties are load-bearing:
+///
+/// - **Uncapped within the window** (short of [`MAX_ACTIVITIES`]) and in
+///   chronological order, because a relevance-ranked top-N is what made the
+///   existing door unable to answer this.
+/// - **Guardrailed.** An Activity's `title`/`summary` is persisted UNFILTERED, so
+///   `guardrail::is_sensitive` here is the only thing standing between a
+///   sensitive episode and a cloud engine — exactly as in
+///   `select_relevant_activities`, and load-bearing for the same reason. Do not
+///   drop it as redundant with derivation-time filtering; derivation does not
+///   filter these.
+/// - **Coverage-reporting.** See [`BrokerActivitiesResponse::derived_from`]: an
+///   empty list from an underived window must never read as an empty day.
+async fn broker_activities(
+    config_dir: &Path,
+    infra: &AppInfra,
+    grants: &[BrokerGrant],
+    request: BrokerActivitiesRequest,
+) -> Result<std::result::Result<BrokerActivitiesResponse, BrokerErrorResponse>> {
+    if grants.is_empty() {
+        return Ok(Err(BrokerErrorResponse::authorization_required()));
+    }
+    // Same clamp every dated tool uses: the caller can never widen past the
+    // grant's own scope, and bounds come back UTC-normalized.
+    let range = scoped_date_range(grants, Some(request.from), Some(request.to))?
+        .expect("activities always supplies a scoped date range");
+    let (Some(range_start_ms), Some(range_end_ms)) = (
+        recall_bound_to_unix_ms(Some(&range.start_at)),
+        recall_bound_to_unix_ms(Some(&range.end_at)),
+    ) else {
+        // `scoped_date_range` just formatted these from parsed instants, so a
+        // failure here is not a caller error to report back.
+        return Err(AppInfraError::InvalidSearchRequest(
+            "activities range could not be converted to unix milliseconds".to_string(),
+        ));
+    };
+
+    let store = infra.user_context();
+    let activities = store
+        .list_activities_in_range(range_start_ms, range_end_ms)
+        .await?;
+
+    // Guardrail BEFORE the cap, so a sensitive episode cannot consume a slot and
+    // silently push a reportable one past the limit.
+    let mut activities: Vec<capture_types::Activity> = activities
+        .into_iter()
+        .filter(|a| !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary))
+        .collect();
+    let truncated = activities.len() > MAX_ACTIVITIES;
+    activities.truncate(MAX_ACTIVITIES);
+
+    // Two batched lookups for the whole page, never one per activity: the
+    // headline frame ids, then those frames' metadata in a single IN-query (the
+    // same N+1 the timeline's snapshot read exists to avoid).
+    let activity_ids: Vec<i64> = activities.iter().map(|a| a.id).collect();
+    let headline_frames = store.headline_frames_for_activities(&activity_ids).await?;
+    let headline_frame_ids: Vec<i64> = headline_frames.values().copied().collect();
+    let snapshots = infra
+        .get_frame_metadata_snapshots(&headline_frame_ids)
+        .await?;
+    let opaque_secret = load_or_create_opaque_secret(config_dir)?;
+    let opaque_grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
+
+    let activities = activities
+        .into_iter()
+        .map(|activity| BrokerActivity {
+            // Read-time URL guard, exactly as on the timeline path: only a
+            // guarded http(s) host+path survives, everything else guards to
+            // `None`, and the raw frame id never crosses the boundary.
+            context: headline_frames
+                .get(&activity.id)
+                .and_then(|frame_id| snapshots.get(frame_id))
+                .and_then(|snapshot| {
+                    broker_search_result_context(
+                        snapshot.app_bundle_id.clone(),
+                        snapshot.app_name.clone(),
+                        snapshot.window_title.clone(),
+                        snapshot.browser_url.as_deref().and_then(url_guard::guard_url),
+                    )
+                }),
+            opaque_id: headline_frames.get(&activity.id).map(|frame_id| {
+                encode_signed_opaque_id("frame", *frame_id, opaque_grant_id, &opaque_secret)
+            }),
+            title: activity.title,
+            summary: activity.summary,
+            category: activity.category.as_ref().and_then(snake_case_enum_string),
+            focus: activity.focus.as_ref().and_then(snake_case_enum_string),
+            started_at: format_unix_ms(activity.started_at_ms.max(0) as u64),
+            ended_at: format_unix_ms(activity.ended_at_ms.max(0) as u64),
+        })
+        .collect();
+
+    // Coverage = the requested window intersected with what derivation has
+    // actually summarized. `covered_until_ms` excludes failed runs (a failed run
+    // summarized nothing), and the oldest windowed run start is the trailing edge
+    // backfill has reached. An empty intersection reports both as `None`.
+    let coverage_start = store.oldest_derivation_run_window_start().await?;
+    let coverage_end = store.covered_until_ms().await?;
+    let (derived_from, derived_until) = match (coverage_start, coverage_end) {
+        (Some(coverage_start), Some(coverage_end)) => {
+            let from = range_start_ms.max(coverage_start);
+            let until = range_end_ms.min(coverage_end);
+            if from <= until {
+                (
+                    Some(format_unix_ms(from.max(0) as u64)),
+                    Some(format_unix_ms(until.max(0) as u64)),
+                )
+            } else {
+                (None, None)
+            }
+        }
+        _ => (None, None),
+    };
+
+    Ok(Ok(BrokerActivitiesResponse {
+        activities,
+        derived_from,
+        derived_until,
+        truncated,
+    }))
 }
 
 fn encode_opaque_id(kind: &str, id: i64) -> String {
