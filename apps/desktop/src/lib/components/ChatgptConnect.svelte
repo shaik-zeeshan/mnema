@@ -78,6 +78,7 @@
     });
     return () => {
       destroyed = true;
+      gone = true;
       unlisten?.();
       // The "Copied" flash is scheduled work owned by this instance: left
       // armed it writes to destroyed state 1.5s after the row is gone.
@@ -103,8 +104,36 @@
     }
   }
 
+  /**
+   * Give up on a pending login.
+   *
+   * The code UI otherwise has no exit but the backend's 15-minute timeout, and
+   * "Start over" just arms a second poll. Cancelling tells the backend too:
+   * an abandoned poll keeps hitting `auth.openai.com`, and that endpoint treats
+   * a rate limit as terminal — so the login the user gives up on can be what
+   * kills the next one they actually want.
+   */
+  async function cancelLogin(): Promise<void> {
+    phase = { kind: "idle" };
+    error = null;
+    try {
+      await invoke("ai_runtime_chatgpt_cancel_login", { request: { provider: providerId } });
+    } catch (e) {
+      // The UI is already back to idle; a failed cancel just leaves the poll to
+      // time out on its own, which is what used to happen every time.
+      console.error("[ChatgptConnect] cancel login failed", e);
+    }
+  }
+
   async function disconnect(): Promise<void> {
     error = null;
+    // Arm the latch BEFORE the awaited dialog, not after: the Disconnect button
+    // reads `disconnecting`, so leaving it false for the whole confirm lets a
+    // second click open a second dialog and fire a second revocation (which
+    // also cancels a login the first one's `cancel_login` already re-armed).
+    // Same rule the store's `clearAiProviderKey` states for the same command.
+    if (disconnecting) return;
+    disconnecting = true;
     try {
       const confirmed = await confirm(
         "Disconnecting removes the ChatGPT sign-in token from the vault right away. Any AI feature using this provider stops working until you sign in again.",
@@ -115,12 +144,15 @@
           cancelLabel: "Stay Connected",
         },
       );
-      if (!confirmed) return;
+      if (!confirmed) {
+        disconnecting = false;
+        return;
+      }
     } catch {
       // A dialog failure must not silently delete the token — bail.
+      disconnecting = false;
       return;
     }
-    disconnecting = true;
     try {
       await invoke("ai_runtime_clear_provider_key", { request: { provider: providerId } });
       onchange();
@@ -133,6 +165,10 @@
 
   let copied = $state(false);
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+  // Set by the teardown above. `copyCode` awaits the clipboard write, so it can
+  // resolve after the row is gone — and arming the flash timer there would
+  // schedule work with no teardown left to clear it.
+  let gone = false;
 
   async function copyCode(code: string): Promise<void> {
     try {
@@ -143,6 +179,7 @@
       console.error("[ChatgptConnect] copy failed", e);
       return;
     }
+    if (gone) return;
     copied = true;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => (copied = false), 1500);
@@ -179,6 +216,9 @@
       </div>
       <div class="chatgpt-connect__actions">
         <button type="button" class="chatgpt-connect__btn" onclick={beginLogin}>Start over</button>
+        <button type="button" class="chatgpt-connect__btn" onclick={() => void cancelLogin()}>
+          Cancel
+        </button>
       </div>
     </div>
   {:else}

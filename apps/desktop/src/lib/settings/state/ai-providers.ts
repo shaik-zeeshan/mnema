@@ -68,6 +68,21 @@ export function aiProviderKindDescription(kind: AiProviderKind): string {
   }
 }
 
+/**
+ * Human copy for one `AiRuntimeProviderFailure.reason` (the per-provider model
+ * listing failure). `classify_listing_failure` already hands back an
+ * at-a-glance phrase for every kind EXCEPT the chatgpt reconnect code, which it
+ * passes through verbatim so the onboarding card can word it its own way — this
+ * is the translation for every other surface that shows a listing failure
+ * (ModelPickerMenu rows in Chat/Quick Recall/Settings, and the aggregated
+ * `modelsError` lines), which would otherwise print `needs_reconnect:chatgpt`.
+ */
+export function aiListingFailureCopy(reason: string): string {
+  if (reason.startsWith("needs_reconnect:")) return "sign in with ChatGPT again";
+  if (reason.startsWith("provider_unreachable:")) return "unreachable";
+  return reason;
+}
+
 /** Host portion of a base URL, or the trimmed string if it isn't a URL. */
 export function baseUrlHost(baseUrl: string): string {
   const trimmed = baseUrl.trim();

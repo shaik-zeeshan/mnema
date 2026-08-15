@@ -23,8 +23,7 @@
   progress, and it is dropped under prefers-reduced-motion.
 -->
 <script lang="ts">
-  import { onMount, tick, untrack } from "svelte";
-  import { listen } from "@tauri-apps/api/event";
+  import { tick, untrack } from "svelte";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import {
@@ -53,6 +52,8 @@
     removeProvider: (id: string) => Promise<void>;
     verifyProvider: (id: string) => Promise<void>;
     invalidateVerification: (id: string) => void;
+    /** Re-probe the vault credential, then re-verify — after a ChatGPT login. */
+    handleChatgptChanged: (id: string) => Promise<void>;
     saveKeyAndVerify: (id: string, key: string) => Promise<void>;
     probeEndpoint: (
       kind: AiProviderKind,
@@ -233,36 +234,19 @@
     }
   }
 
-  // A ChatGPT sign-in can land up to 15 minutes after the click, long after
-  // ChatgptConnect was unmounted by a kind-select toggle or a card close. This
-  // panel outlives all of those, so it owns the outcome: without it the token
-  // set reaches the vault but the card stays "not tested" and Finish stays
-  // blocked until the user happens to press Test.
-  onMount(() => {
-    let unlisten: (() => void) | null = null;
-    let destroyed = false;
-    void listen<{ providerId: string; connected: boolean }>(
-      "chatgpt_login_update",
-      (event) => {
-        if (!event.payload.connected) return;
-        if (!providers.some((p) => p.id === event.payload.providerId)) return;
-        void onChatgptChanged(event.payload.providerId);
-      },
-    ).then((fn) => {
-      if (destroyed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      destroyed = true;
-      unlisten?.();
-    };
-  });
+  // The `chatgpt_login_update` outcome is owned by the onboarding STORE, not
+  // this panel — see `subscribeChatgptLoginUpdates`. This panel is mounted
+  // inside ChangeSettingsScreen's tab fork, so it is unmounted by any tab click
+  // during the 15-minute approval wait, which is exactly when the user is away
+  // in the browser. A listener here would drop the one terminal event.
 
-  /** A ChatGPT sign-in or disconnect landed — re-prove the instance. */
+  /** A ChatGPT sign-in or disconnect landed — re-prove the instance. The
+   *  store re-probes vault presence first: the login writes the token set
+   *  outside the key-input flow, so nothing else refreshes the "✓ signed in"
+   *  pill or the connect button's Reconnect/Disconnect affordances. */
   async function onChatgptChanged(id: string): Promise<void> {
-    ai.invalidateVerification(id);
     setStatus("checking the ChatGPT connection…");
-    await ai.verifyProvider(id);
+    await ai.handleChatgptChanged(id);
     reportVerification(id);
   }
 
@@ -483,7 +467,11 @@
       />
     {/if}
 
-    {#if oauth && chatgptInstance}
+    <!-- Not while the same instance's CARD is open below: two mounted connect
+         components for one provider means two Connect buttons, and starting a
+         login in either bumps the backend generation — leaving the other
+         showing a code that is already dead, with no signal that it is. -->
+    {#if oauth && chatgptInstance && editing !== chatgptInstance.id}
       <div class="top">
         <ChatgptConnect
           providerId={chatgptInstance.id}
@@ -756,8 +744,18 @@
 
   <!-- `aiRestoredModelNote` is printed once, at screen level, so it survives all
        three modes (fork, "later", "now"). -->
-  {#if providers.some((p) => isCloudAiProviderKind(p.kind))}
+  <!-- Only where a key was actually typed. ChatGPT signs in in the browser, so
+       "the key goes into the vault … this window forgets the string" describes
+       nothing that happened, on the one flow with no key field. -->
+  {#if providers.some((p) => isCloudAiProviderKind(p.kind) && p.kind !== "chatgpt")}
     <p class="ob-fine top">{VAULT_NOTE}</p>
+  {/if}
+  {#if chatgptInstance}
+    <p class="ob-fine top">
+      The ChatGPT sign-in token is stored in the app's encrypted vault
+      (day.mnema.vault, unlocked by one keychain item) — never in a config file.
+      Usage counts against your own plan.
+    </p>
   {/if}
   {#if liveProviders.length > 0}
     <p class="ob-fine top">

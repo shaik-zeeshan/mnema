@@ -79,6 +79,13 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       const provider = reason.slice("needs_reconnect:".length);
       return `${deps.labelForProvider(provider)} needs to be reconnected — sign in with ChatGPT again.`;
     }
+    if (reason.startsWith("provider_unreachable:")) {
+      // The sign-in is intact; the auth endpoint just didn't answer. Saying
+      // "reconnect" here would push the user toward Disconnect, which destroys
+      // a credential that is fine.
+      const provider = reason.slice("provider_unreachable:".length);
+      return `Couldn't reach ${deps.labelForProvider(provider)} — check your connection and try again.`;
+    }
     switch (reason) {
       case "user_context_disabled": return "Continuous derivation is turned off.";
       case "ai_runtime_disabled": return "AI features are turned off.";
@@ -120,7 +127,18 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // current map at the end rather than replacing the whole object — an id a
   // concurrent call freshly probed (but this snapshot never saw) is preserved,
   // instead of being clobbered back to absent by whichever call resolves last.
+  // Monotonic ticket per presence refresh + the ticket that last WROTE each id.
+  // The merge below happens at the end of a SEQUENTIAL probe loop, so an older
+  // pass parked on a later id's probe would otherwise land its pre-mutation
+  // snapshot after a newer pass already wrote the fresh value (a ChatGPT
+  // disconnect's refresh racing the `chatgpt_login_update` listener's, which is
+  // not serialised behind `aiProviderKeyInFlight`). Plain values, not `$state`:
+  // nothing renders off them.
+  let presenceRefreshSeq = 0;
+  const presenceWrittenBy = new Map<string, number>();
+
   async function refreshAiProviderKeyPresence() {
+    const seq = ++presenceRefreshSeq;
     const cloudProviderIds = deps
       .getProviders()
       .filter((p) => deps.isCloudProviderKind(p.kind))
@@ -149,6 +167,12 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     // concurrent refresh probed in the meantime. (Removal drops a provider via
     // `clearKeyForRemovedProvider`, not here, so this never resurrects a removed
     // id — its kind is gone from `getProviders()`, so it isn't in `probed`.)
+    // ...and never overwrite an id a NEWER refresh already wrote: that pass read
+    // the vault after this one did.
+    for (const id of Object.keys(probed)) {
+      if ((presenceWrittenBy.get(id) ?? 0) > seq) delete probed[id];
+      else presenceWrittenBy.set(id, seq);
+    }
     aiProviderKeySavedByProvider = { ...aiProviderKeySavedByProvider, ...probed };
   }
 

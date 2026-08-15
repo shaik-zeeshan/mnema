@@ -121,7 +121,14 @@
     </div>
     <div class="row__value">
       {#if usage}
-        in {formatCount(usage.inputTokens)} <span class="dim">tok</span> · out {formatCount(usage.outputTokens)} <span class="dim">tok</span>
+        {#if usage.inputTokens > 0 || usage.outputTokens > 0}
+          in {formatCount(usage.inputTokens)} <span class="dim">tok</span> · out {formatCount(usage.outputTokens)} <span class="dim">tok</span>
+        {:else}
+          <!-- A provider that reports only a lump sum leaves the split at 0.
+               Printing "in 0 · out 0" next to a live context bar showing the
+               real number reads as a bug in the app, not in the provider. -->
+          {formatCount(usage.contextTokens)} <span class="dim">tok total</span>
+        {/if}
       {:else}
         <span class="dim" use:tip={"No Ask AI turn has run since the app started."}>no turns yet</span>
       {/if}

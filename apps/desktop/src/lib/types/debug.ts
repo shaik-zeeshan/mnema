@@ -292,6 +292,12 @@ export interface DerivationRun {
 export interface AskAiTokenUsage {
 	inputTokens: number;
 	outputTokens: number;
+	/**
+	 * Context-window occupancy for this report: `input + output`, or the
+	 * provider's lump-sum total when it reported no split. Show this rather than
+	 * summing the two — a total-only provider reports both as 0.
+	 */
+	contextTokens: number;
 	/** When the turn's agent loop started (unix ms). */
 	startedAtMs: number;
 	/** Visible tool calls this turn (excludes the `reference_captures` signal). */

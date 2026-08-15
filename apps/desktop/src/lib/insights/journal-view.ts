@@ -91,6 +91,12 @@ export function pendingReasonCopy(reason: string): string {
   if (reason.startsWith("needs_reconnect:")) {
     return "Summaries are paused — sign in with ChatGPT again in Settings.";
   }
+  if (reason.startsWith("provider_unreachable:")) {
+    // Deliberately NOT the sign-in sentence: the login is fine, the network
+    // isn't. Telling this user to sign in again invites them to disconnect a
+    // working account.
+    return "Summaries are paused — can't reach ChatGPT right now. They'll resume on their own.";
+  }
   switch (reason) {
     case "user_context_disabled":
       return "Summaries are paused — continuous derivation is turned off.";
