@@ -46,9 +46,12 @@ are the serde round-trip / exact-shape tests in `conversation.rs` and
   liveActivity, sources, errorMessage, contextTokens }`. `phase` is one of
   `thinking | streaming | done | error`. `sources` is opaque
   JSON the frontend round-trips into source cards. `contextTokens` is the
-  provider-reported context-window occupancy (input+output of the turn's latest
-  completion request); it is NOT persisted, so it is null on cold-loaded turns
-  and the Chat composer readout reappears on the next answer.
+  provider-reported context-window occupancy of the turn's latest completion
+  request: input+output, falling back to rig's separate `total_tokens` when a
+  provider reports only a lump sum and leaves the split at 0 (`ask_ai.rs`'s
+  `context_tokens()`, shared with the debug turn row so the two cannot
+  disagree). It is NOT persisted, so it is null on cold-loaded turns and the
+  Chat composer readout reappears on the next answer.
 - **`TurnSnapshot`** — `{ conversationId, version, view }`.
 - **`TurnUpdate`** — `#[serde(tag = "op")]`: `Phase`, `AppendProse { text }`,
   `OpenBlock { block }`, `Reasoning { text }`, `ToolActivity { entry }`,
