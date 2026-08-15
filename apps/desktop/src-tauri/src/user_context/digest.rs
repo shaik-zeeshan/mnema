@@ -731,12 +731,6 @@ pub async fn get_or_generate_digest(
         ));
         return Ok(None);
     }
-    let Ok(engine) = crate::ai_runtime::resolve_engine_config(ai_runtime, None, None) else {
-        crate::native_capture::debug_log::log_info(format!(
-            "digest: skipped {range_kind} (engine config did not resolve)"
-        ));
-        return Ok(None);
-    };
 
     // 2./3. The range's Activities; a narrative over fewer than two is silly.
     //
@@ -844,6 +838,51 @@ pub async fn get_or_generate_digest(
         model_label_for(ai_runtime),
     ));
 
+    // The LIVE engine resolve belongs here, not at the step-1 gate: for the
+    // `chatgpt` kind it is a network round trip (an OAuth refresh against
+    // auth.openai.com, 30s timeout, serialized behind the per-provider refresh
+    // lock). Everything above this line — including the step-4 cache hit that
+    // "never re-bills the engine" and is what the Insights surfaces hit on
+    // every worker beat — needs no credential at all. Resolving it up front put
+    // that round trip in front of the cache and let an offline refresh failure
+    // withhold a digest already sitting on disk. Step 1's
+    // `engine_configured_prerequisite` still gates on a *resolvable* engine
+    // with no network.
+    let engine = match crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await {
+        Ok(engine) => engine,
+        Err(reason) => {
+            crate::native_capture::debug_log::log_info(format!(
+                "digest: skipped {range_kind} (engine config did not resolve: {reason})"
+            ));
+            // A forced re-read is an explicit user action, and its `Ok(None)`
+            // renders as ONE sentence: "Not enough activity in this range to
+            // write a read." Now that this resolve is live — a ChatGPT token
+            // refresh that fails when offline or when the grant was rejected —
+            // that arm would blame the user's data for an engine failure, on a
+            // range full of Activities, with nothing in the run ledger either.
+            // Surface it (and record it) exactly like the extraction failure
+            // below. The lazy path stays silent: an ambient lede must not throw
+            // an error every time Insights opens without a network.
+            if force {
+                record_digest_run(
+                    store,
+                    ai_runtime,
+                    "failed",
+                    input_tokens,
+                    0,
+                    Some(reason.clone()),
+                )
+                .await;
+                return Err(if reason.starts_with("needs_reconnect:") {
+                    "The AI provider needs you to sign in again in Settings.".to_string()
+                } else {
+                    "The AI engine is not reachable right now. Try again in a moment.".to_string()
+                });
+            }
+            return Ok(None);
+        }
+    };
+
     let extracted =
         ai_engine::extract_with_preamble::<DigestNarrative>(&engine, &preamble, &prompt).await;
     let batch = match extracted {
@@ -869,7 +908,7 @@ pub async fn get_or_generate_digest(
                 Some(error.to_string()),
             )
             .await;
-            return Err(error.user_facing_message());
+            return Err(error.user_facing_message_for(engine.cloud_provider()));
         }
     };
     let output_tokens = estimate_tokens(&batch.narrative) + estimate_tokens(&batch.headline);
@@ -1464,4 +1503,118 @@ mod tests {
         let unbroken = "y".repeat(HEADLINE_CHAR_CAP + 20);
         assert_eq!(normalize_headline(&unbroken), Some("y".repeat(HEADLINE_CHAR_CAP)));
     }
+
+    /// A forced re-read that cannot resolve an engine must SAY so.
+    ///
+    /// `regenerate_user_context_digest` is the Overview's explicit re-read
+    /// button, and its contract is that `Ok(None)` means the range genuinely
+    /// has nothing to read — the Overview renders exactly one sentence for it:
+    /// "Not enough activity in this range to write a read."
+    ///
+    /// Since the engine resolve went LIVE (it now refreshes a ChatGPT OAuth
+    /// token), this call can fail for a credential/connectivity reason on a
+    /// range that is full of Activities. Collapsing that into `Ok(None)` tells
+    /// the user their data is thin when the truth is the engine never
+    /// resolved — and records nothing in the derivation-run ledger either, so
+    /// the failure is invisible on every surface.
+    #[tokio::test]
+    async fn a_forced_reread_surfaces_a_live_engine_failure_instead_of_reading_as_no_activity() {
+        use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("digest-live-resolve-{unique}"));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let infra = app_infra::AppInfra::initialize(&dir)
+            .await
+            .expect("app infra should initialize");
+        let store = infra.user_context();
+
+        // A ChatGPT provider that IS connected (so the no-network prerequisite
+        // at step 1 passes) but whose access token is long expired with no
+        // refresh token to spend — the live resolver's terminal failure, with
+        // no network involved.
+        let provider_id = format!("chatgpt-digest-live-resolve-{unique}");
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        crate::chatgpt_auth::store_token_set(
+            &provider_id,
+            &crate::chatgpt_auth::ChatgptTokenSet {
+                access_token: "expired-access-token".to_string(),
+                refresh_token: None,
+                expires_at: Some(0),
+            },
+        )
+        .expect("seed the expired token set");
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: provider_id.clone(),
+                kind: AiProviderKind::Chatgpt,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: provider_id.clone(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+
+        // A range with plenty to read: two ordinary, non-sensitive Activities.
+        let range_start_ms = 1_780_876_800_000_i64; // a UTC midnight
+        let range_end_ms = range_start_ms + DAY_MS;
+        for (offset, title) in [(0_i64, "Billing migration"), (2 * 3_600_000, "Code review")] {
+            store
+                .insert_activity_with_evidence(app_infra::NewActivity {
+                    title: title.to_string(),
+                    summary: format!("{title} work"),
+                    category: None,
+                    focus: None,
+                    started_at_ms: range_start_ms + offset,
+                    ended_at_ms: range_start_ms + offset + 1_800_000,
+                    derivation_run_id: None,
+                    evidence: Vec::new(),
+                })
+                .await
+                .expect("seed an activity");
+        }
+
+        let outcome = get_or_generate_digest(
+            &settings,
+            true,
+            store,
+            "day",
+            range_start_ms,
+            range_end_ms,
+            true,
+        )
+        .await;
+
+        match outcome {
+            Err(message) => assert!(
+                !message.trim().is_empty(),
+                "the failure must carry a reason the user can act on"
+            ),
+            other => panic!(
+                "a forced re-read whose engine never resolved must not read as \
+                 'not enough activity in this range': {other:?}"
+            ),
+        }
+
+        // …and it is on the record: the run ledger is where a failed engine
+        // pass is accounted for (the extraction-failure arm already writes one).
+        let runs = store
+            .list_derivation_runs(10)
+            .await
+            .expect("read the run ledger");
+        assert!(
+            runs.iter().any(|run| run.kind == "digest" && run.status == "failed"),
+            "a failed forced re-read must leave a failed digest run: {runs:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

@@ -13,8 +13,44 @@
 //! depend on `capture-types` or `app-infra`; the Tauri layer maps its own wire
 //! settings onto [`EngineConfig`] and supplies the keychain-resident key.
 
-use rig_core::client::CompletionClient;
-use rig_core::providers::{anthropic, llamafile, ollama, openai};
+// `.extractor::<T>(model)` on a provider client is classic-runtime
+// construction, provided by `AgentClientExt` since the 0.41 core/agent split.
+use base64::Engine as _;
+use rig_agent::client::AgentClientExt;
+use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
+
+/// Read the ChatGPT account id off an OAuth access token.
+///
+/// rig only *derives* this on its own OAuth/`auth.json` login path; on the
+/// `ChatGPTAuth::AccessToken` path we use, `auth_context` copies the field
+/// through verbatim (`rig-core-0.41.0/src/providers/chatgpt/auth/mod.rs:106`)
+/// and the `ChatGPT-Account-Id` header is sent only when it is `Some`
+/// (`.../chatgpt/mod.rs:435`). So the caller has to read the same claim rig
+/// reads. Unverified decode — the backend authenticates the token itself.
+/// The per-call rig credential for the ChatGPT subscription backend.
+///
+/// Shared by both entry points ([`extract_with_preamble`] and
+/// [`agent_loop::run_agent_loop`]) so the account-id derivation cannot drift
+/// between them — omitting it on one path only would send the
+/// `ChatGPT-Account-Id` header for chat but not extraction, which is wrong for
+/// multi-workspace accounts in exactly one of the two.
+pub(crate) fn chatgpt_auth_for(access_token: &str) -> chatgpt::ChatGPTAuth {
+    chatgpt::ChatGPTAuth::AccessToken {
+        access_token: access_token.to_string(),
+        account_id: chatgpt_account_id(access_token),
+    }
+}
+
+pub(crate) fn chatgpt_account_id(access_token: &str) -> Option<String> {
+    let payload = access_token.split('.').nth(1)?;
+    let bytes = base64::prelude::BASE64_URL_SAFE_NO_PAD.decode(payload).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("https://api.openai.com/auth")?
+        .get("chatgpt_account_id")?
+        .as_str()
+        .map(ToOwned::to_owned)
+}
 
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -64,6 +100,12 @@ pub enum CloudProvider {
     Anthropic,
     Openai,
     OpenAiCompatible,
+    /// ChatGPT subscription backend (`chatgpt.com/backend-api/codex`). The
+    /// credential in [`EngineConfig::Cloud::api_key`] is an OAuth *access
+    /// token* (acquired and refreshed by the caller), not an API key. The
+    /// account id is read off that token by [`chatgpt_account_id`] — rig only
+    /// derives one on its own OAuth login path, not on this one.
+    Chatgpt,
 }
 
 /// Local LLM runtime exposed on a user-controlled endpoint with no credential.
@@ -119,7 +161,7 @@ pub enum AiRuntimeError {
     ClientBuild(#[from] rig_core::client::ProviderClientError),
     /// The structured-extraction round trip failed.
     #[error("structured extraction failed: {0}")]
-    Extraction(#[from] rig_core::extractor::ExtractionError),
+    Extraction(#[from] rig_agent::extractor::ExtractionError),
     /// The streaming agent loop ([`run_agent_loop`]) failed mid-stream — a
     /// provider/completion error or an unrecoverable prompt error. Hitting the
     /// tool-call cap is *not* surfaced here; it ends the loop cleanly.
@@ -139,9 +181,28 @@ impl AiRuntimeError {
     /// quota, unreachable, provider outage, context overflow). Callers should log
     /// `to_string()` and display this.
     pub fn user_facing_message(&self) -> String {
+        self.user_facing_message_for(None)
+    }
+
+    /// [`Self::user_facing_message`], worded for the cloud provider that
+    /// produced the failure.
+    ///
+    /// Only the credential sentences differ, and only for
+    /// [`CloudProvider::Chatgpt`]: that kind's credential is an OAuth sign-in,
+    /// not a pasted key, and its Settings card has no key field at all — so
+    /// "check your API key in Settings" names a field the user cannot find and
+    /// leaves Disconnect as the only obvious button, which destroys the login
+    /// (ADR 0058). Every other provider, and the local engines, keep the exact
+    /// wording they had.
+    pub fn user_facing_message_for(&self, provider: Option<CloudProvider>) -> String {
+        let chatgpt = matches!(provider, Some(CloudProvider::Chatgpt));
         match self {
             AiRuntimeError::MissingModel => {
                 "No model is selected. Choose one in Settings and try again.".to_string()
+            }
+            AiRuntimeError::MissingKey if chatgpt => {
+                "You're not signed in to ChatGPT. Sign in again in Settings and try again."
+                    .to_string()
             }
             AiRuntimeError::MissingKey => {
                 "No API key is set for this provider. Add your key in Settings and try again."
@@ -153,8 +214,22 @@ impl AiRuntimeError {
             AiRuntimeError::Build(_) | AiRuntimeError::ClientBuild(_) => {
                 "Couldn't reach the AI provider. Check your connection and try again.".to_string()
             }
-            AiRuntimeError::Extraction(error) => classify_provider_failure(&error.to_string()),
-            AiRuntimeError::AgentLoop(message) => classify_provider_failure(message),
+            AiRuntimeError::Extraction(error) => {
+                classify_provider_failure(&error.to_string(), provider)
+            }
+            AiRuntimeError::AgentLoop(message) => classify_provider_failure(message, provider),
+        }
+    }
+}
+
+impl EngineConfig {
+    /// The cloud provider this config talks to, or `None` for a local runtime.
+    /// Lets a caller word a failure for the engine that produced it
+    /// ([`AiRuntimeError::user_facing_message_for`]).
+    pub fn cloud_provider(&self) -> Option<CloudProvider> {
+        match self {
+            EngineConfig::Cloud { provider, .. } => Some(*provider),
+            EngineConfig::Local { .. } => None,
         }
     }
 }
@@ -167,7 +242,7 @@ impl AiRuntimeError {
 /// generic 5xx/transport buckets so a "402 insufficient quota" doesn't read as a
 /// plain outage. Anything unrecognised falls back to a neutral retry sentence so
 /// the surface never shows a raw JSON body.
-fn classify_provider_failure(raw: &str) -> String {
+fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
     let lower = raw.to_lowercase();
     let has = |needle: &str| lower.contains(needle);
 
@@ -190,7 +265,14 @@ fn classify_provider_failure(raw: &str) -> String {
         || has("authentication")
         || has("permission")
     {
-        "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
+        if matches!(provider, Some(CloudProvider::Chatgpt)) {
+            // The subscription backend rejected the OAuth grant. There is no key
+            // to check — the fix is a fresh sign-in.
+            "ChatGPT rejected the sign-in. Sign in with ChatGPT again in Settings and try again."
+                .to_string()
+        } else {
+            "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
+        }
     } else if has("context")
         && (has("length") || has("maximum") || has("too long") || has("token"))
     {
@@ -288,6 +370,21 @@ where
                 }
                 CloudProvider::Openai => {
                     let client = openai::Client::builder().api_key(api_key).build()?;
+                    let extractor = client
+                        .extractor::<T>(model.as_str())
+                        .preamble(preamble)
+                        .retries(EXTRACT_RETRIES)
+                        .build();
+                    Ok(extractor.extract(prompt).await?)
+                }
+                CloudProvider::Chatgpt => {
+                    // ChatGPT subscription backend. `api_key` carries the OAuth
+                    // access token the caller acquired/refreshed; the account id
+                    // is read off that token here (rig derives one only on its
+                    // own OAuth path, not on the `AccessToken` path).
+                    let client = chatgpt::Client::builder()
+                        .api_key(chatgpt_auth_for(api_key))
+                        .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
@@ -498,7 +595,7 @@ mod tests {
             ),
         ];
         for (raw, expected) in cases {
-            let message = classify_provider_failure(raw);
+            let message = classify_provider_failure(raw, None);
             assert!(
                 message.contains(expected),
                 "raw {raw:?} should classify to contain {expected:?}, got: {message}"
@@ -507,8 +604,62 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_chatgpt_sign_in_is_not_reported_as_a_bad_api_key() {
+        // The `chatgpt` kind's credential is an OAuth sign-in, not a pasted key:
+        // its Settings card has no key field at all (Providers.svelte renders the
+        // connect/disconnect pair instead). So the generic auth sentence sends the
+        // user looking for a field that does not exist, and the only button there
+        // is Disconnect — which destroys the login. ADR 0058 splits exactly this
+        // case out as "sign in again".
+        let rejected = AiRuntimeError::AgentLoop(
+            "Invalid status code 401 Unauthorized: token expired".to_string(),
+        );
+        let message = rejected.user_facing_message_for(Some(CloudProvider::Chatgpt));
+        assert!(
+            !message.to_lowercase().contains("api key"),
+            "a ChatGPT subscription user has no API key to check, got: {message}"
+        );
+        assert!(
+            message.to_lowercase().contains("sign in")
+                || message.to_lowercase().contains("sign-in"),
+            "expected the sign-in sentence, got: {message}"
+        );
+
+        // The five pasted-key kinds keep the wording they had, verbatim.
+        for provider in [
+            CloudProvider::Anthropic,
+            CloudProvider::Openai,
+            CloudProvider::OpenAiCompatible,
+        ] {
+            assert_eq!(
+                rejected.user_facing_message_for(Some(provider)),
+                rejected.user_facing_message(),
+                "non-chatgpt providers must not change wording"
+            );
+            assert!(rejected
+                .user_facing_message_for(Some(provider))
+                .contains("rejected your API key"));
+        }
+        // A local engine (no provider) is unchanged too.
+        assert_eq!(
+            rejected.user_facing_message_for(None),
+            rejected.user_facing_message()
+        );
+
+        // Only the credential bucket is re-worded: an outage still reads as an
+        // outage, or the user retries a sign-in that was never the problem.
+        let offline = AiRuntimeError::AgentLoop("error sending request: dns error".to_string());
+        assert!(
+            offline
+                .user_facing_message_for(Some(CloudProvider::Chatgpt))
+                .contains("Check your connection"),
+            "an unreachable ChatGPT backend is not a rejected sign-in"
+        );
+    }
+
+    #[test]
     fn unrecognised_failure_falls_back_without_leaking_detail() {
-        let message = classify_provider_failure("some entirely novel { json: true } blob");
+        let message = classify_provider_failure("some entirely novel { json: true } blob", None);
         assert!(message.contains("couldn't complete this request"));
         assert!(!message.contains('{'));
     }
@@ -530,5 +681,66 @@ mod tests {
         );
         assert_eq!(parse_host_port(""), None);
         assert_eq!(parse_host_port("not a url"), None);
+    }
+
+    #[test]
+    fn chatgpt_account_id_is_read_off_the_access_token() {
+        // rig 0.41 sends the `ChatGPT-Account-Id` header ONLY when the caller
+        // supplies `account_id`: on the `ChatGPTAuth::AccessToken` path it
+        // copies the field through verbatim and never derives one — its own
+        // `extract_account_id` runs on the OAuth/auth-file path only. So the
+        // token-set caller has to read the same claim rig reads.
+        let claims = serde_json::json!({
+            "https://api.openai.com/auth": { "chatgpt_account_id": "acct_123" }
+        })
+        .to_string();
+        let payload = base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(claims);
+        assert_eq!(
+            chatgpt_account_id(&format!("header.{payload}.signature")).as_deref(),
+            Some("acct_123")
+        );
+        assert_eq!(chatgpt_account_id("not-a-jwt"), None);
+
+        // The discriminating negatives. Building the happy input from the same
+        // literal the implementation greps for proves only that base64url
+        // decoding works — if the claim PATH were wrong, the test would be
+        // wrong in the same way and still pass. These two pin the path itself.
+        let namespace_without_the_claim = serde_json::json!({
+            "https://api.openai.com/auth": { "user_id": "user_123" },
+            "chatgpt_account_id": "not-here-either",
+        })
+        .to_string();
+        assert_eq!(
+            chatgpt_account_id(&format!(
+                "h.{}.s",
+                base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(namespace_without_the_claim)
+            )),
+            None,
+            "the id lives under the auth namespace; a top-level lookalike is not it"
+        );
+
+        // …and it is found by name, not by position, among unrelated claims.
+        let crowded = serde_json::json!({
+            "iss": "https://auth.openai.com",
+            "exp": 4_000_000_000i64,
+            "https://api.openai.com/auth": {
+                "user_id": "user_123",
+                "chatgpt_account_id": "acct_456",
+                "chatgpt_plan_type": "pro",
+            },
+        })
+        .to_string();
+        assert_eq!(
+            chatgpt_account_id(&format!(
+                "h.{}.s",
+                base64::prelude::BASE64_URL_SAFE_NO_PAD.encode(crowded)
+            ))
+            .as_deref(),
+            Some("acct_456")
+        );
+
+        // A token with no readable payload must not panic the call path.
+        assert_eq!(chatgpt_account_id("h..s"), None);
+        assert_eq!(chatgpt_account_id(""), None);
     }
 }

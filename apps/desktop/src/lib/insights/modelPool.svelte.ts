@@ -9,6 +9,7 @@
 // list. The backend already times out an unresponsive provider per call, so the
 // fan-out caps the wait at the slowest single provider, not their sum.
 import { invoke } from "@tauri-apps/api/core";
+import { aiListingFailureCopy } from "$lib/settings/state/ai-providers";
 import type {
   AiProviderConfig,
   AiRuntimeModel,
@@ -52,7 +53,13 @@ export class ModelPoolLoader {
             request: { providers: [provider] },
           });
           models = result.models;
-          failure = result.failures[0] ?? null;
+          // The backend reason is rendered verbatim by every failure surface, so
+          // translate the one machine code it passes through here — at the one
+          // funnel all three pickers share.
+          const reported = result.failures[0] ?? null;
+          failure = reported
+            ? { ...reported, reason: aiListingFailureCopy(reported.reason) }
+            : null;
         } catch {
           failure = { provider: provider.id, reason: "couldn't list models" };
         }

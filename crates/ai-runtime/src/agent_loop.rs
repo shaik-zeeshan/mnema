@@ -8,24 +8,28 @@
 //!
 //! The crate keeps its dependency posture: tools are injected as opaque async
 //! callbacks (the "Reasoning Engine" never imports the capture broker,
-//! `capture-types`, or `app-infra`). Each [`AgentTool`] is wrapped in a
-//! [`BrokeredTool`] that implements rig's [`ToolDyn`] and forwards `call` to the
-//! executor, so rig's own multi-turn machinery resolves tool calls and feeds the
-//! results back to the model.
+//! `capture-types`, or `app-infra`). Each [`AgentTool`] is wrapped in a rig
+//! [`DynamicTool`] whose callback forwards to the executor, so rig's own
+//! multi-turn machinery resolves tool calls and feeds the results back to the
+//! model.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use rig_core::agent::{Agent, MultiTurnStreamItem};
-use rig_core::client::CompletionClient;
-use rig_core::completion::{CompletionModel, GetTokenUsage, PromptError, ToolDefinition};
+use rig_agent::agent::{Agent, MultiTurnStreamItem};
+// `.agent(model)` on a provider client is classic-runtime construction,
+// provided by `AgentClientExt` since the 0.41 core/agent split.
+use rig_agent::client::AgentClientExt;
+use rig_agent::completion::PromptError;
+use rig_core::completion::{CompletionModel, GetTokenUsage};
 use rig_core::message::Message;
-use rig_core::providers::{anthropic, llamafile, ollama, openai};
-use rig_core::streaming::{StreamedAssistantContent, StreamingPrompt};
-use rig_core::tool::{ToolDyn, ToolError};
-use rig_core::wasm_compat::{WasmBoxedFuture, WasmCompatSend};
+use rig_core::providers::{anthropic, chatgpt, llamafile, ollama, openai};
+use rig_agent::streaming::StreamingChat;
+use rig_core::streaming::StreamedAssistantContent;
+use rig_agent::tool::{DynamicTool, ToolExecutionError, ToolOutput};
+use rig_core::wasm_compat::WasmCompatSend;
 
 use crate::{AiRuntimeError, CloudProvider, EngineConfig, LocalKind};
 
@@ -120,75 +124,62 @@ pub enum AgentLoopEvent {
     },
     /// Provider-reported token usage for one completed completion request within
     /// the loop. The latest event's `input_tokens + output_tokens` approximates
-    /// the conversation's current context-window occupancy.
+    /// the conversation's current context-window occupancy — except on a
+    /// provider that reports only a lump sum, where those two are `0` and
+    /// [`total_tokens`](Self::Usage::total_tokens) carries the whole report.
     Usage {
         input_tokens: u64,
         output_tokens: u64,
+        /// rig keeps this separate "as some providers may only report one
+        /// number"; it is not necessarily `input + output`.
+        total_tokens: u64,
     },
     /// The loop finished (clean completion or cooperative cancellation).
     Done,
 }
 
-/// A [`ToolDyn`] wrapper that forwards execution to a caller-supplied
-/// [`ToolExecutor`].
+/// Build the dynamic-tool set handed to the agent builder.
 ///
 /// rig owns tool dispatch inside its multi-turn loop: when the model calls a
-/// tool by name, rig looks it up in the agent's tool set and invokes
-/// [`ToolDyn::call`]. This wrapper parses the JSON args, runs the executor, and
-/// maps the `Result<String, String>` onto rig's `Result<String, ToolError>` so
-/// the result (or error text) is streamed back to the model as a tool result.
-struct BrokeredTool {
-    name: String,
-    description: String,
-    parameters_schema: serde_json::Value,
-    executor: ToolExecutor,
-}
-
-impl ToolDyn for BrokeredTool {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn definition<'a>(&'a self, _prompt: String) -> WasmBoxedFuture<'a, ToolDefinition> {
-        let definition = ToolDefinition {
-            name: self.name.clone(),
-            description: self.description.clone(),
-            parameters: self.parameters_schema.clone(),
-        };
-        Box::pin(async move { definition })
-    }
-
-    fn call<'a>(&'a self, args: String) -> WasmBoxedFuture<'a, Result<String, ToolError>> {
-        let name = self.name.clone();
-        let executor = self.executor.clone();
-        Box::pin(async move {
-            // The model usually sends a JSON object; tolerate an empty/`null`
-            // payload by treating it as an empty object so all-optional tools
-            // still dispatch.
-            let params: serde_json::Value = if args.trim().is_empty() || args.trim() == "null" {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                serde_json::from_str(&args).map_err(ToolError::JsonError)?
-            };
-
-            executor(name, params).await.map_err(|message| {
-                ToolError::ToolCallError(Box::<dyn std::error::Error + Send + Sync>::from(message))
-            })
-        })
-    }
-}
-
-/// Build the boxed dynamic-tool set handed to the agent builder.
-fn brokered_tools(tools: Vec<AgentTool>, executor: &ToolExecutor) -> Vec<Box<dyn ToolDyn>> {
+/// tool by name, rig looks it up in the agent's tool set and invokes the
+/// [`DynamicTool`] callback with the parsed JSON args. The callback forwards to
+/// the caller-supplied [`ToolExecutor`] and maps its `Result<String, String>`
+/// onto rig's `Result<ToolOutput, ToolExecutionError>` so the result (or error
+/// text) is streamed back to the model as a tool result.
+fn brokered_tools(tools: Vec<AgentTool>, executor: &ToolExecutor) -> Vec<DynamicTool> {
     tools
         .into_iter()
         .map(|tool| {
-            Box::new(BrokeredTool {
-                name: tool.name,
-                description: tool.description,
-                parameters_schema: tool.parameters_schema,
-                executor: executor.clone(),
-            }) as Box<dyn ToolDyn>
+            let name = tool.name.clone();
+            let executor = executor.clone();
+            DynamicTool::new(
+                tool.name,
+                tool.description,
+                tool.parameters_schema,
+                move |_context, params| {
+                    let name = name.clone();
+                    let executor = executor.clone();
+                    Box::pin(async move {
+                        // The model usually sends a JSON object; tolerate a
+                        // `null` payload by treating it as an empty object so
+                        // all-optional tools still dispatch. (rig itself parses
+                        // the raw argument string before this callback runs.)
+                        let params = if params.is_null() {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        } else {
+                            params
+                        };
+
+                        executor(name, params)
+                            .await
+                            // The executor returns the result pre-serialized as a
+                            // JSON string; pass it through verbatim as the
+                            // model-facing text, exactly as the pre-0.41 loop did.
+                            .map(ToolOutput::text)
+                            .map_err(ToolExecutionError::other)
+                    })
+                },
+            )
         })
         .collect()
 }
@@ -208,7 +199,7 @@ fn history_messages(history: &[AgentHistoryTurn]) -> Vec<Message> {
 ///
 /// Builds the appropriate provider client+agent for `config` (mirroring the
 /// per-provider arms of [`crate::extract_with_preamble`]) with `preamble` as the
-/// system instruction and `tools` attached as dynamic [`ToolDyn`] wrappers whose
+/// system instruction and `tools` attached as rig [`DynamicTool`]s whose
 /// `call` invokes `executor(name, params)`. `history` is fed as the agent's chat
 /// history (oldest first). The model streams text deltas (surfaced as
 /// [`AgentLoopEvent::Delta`]); when it issues a tool call, rig executes it via the
@@ -253,7 +244,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(DEFAULT_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -264,7 +255,27 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(DEFAULT_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
+                        .build();
+                    drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
+                        .await
+                }
+                CloudProvider::Chatgpt => {
+                    // ChatGPT subscription backend (mirrors `extract_with_preamble`):
+                    // `api_key` carries the caller-managed OAuth access token.
+                    // Every model on this backend is a reasoning model (the
+                    // catalog in `chatgpt_auth::CHATGPT_MODEL_IDS`) whose
+                    // chain-of-thought bills against the output budget, so give
+                    // it the reasoning ceiling. Note rig clears `max_tokens` for
+                    // this provider, so today the ceiling never reaches the wire.
+                    let client = chatgpt::Client::builder()
+                        .api_key(crate::chatgpt_auth_for(api_key))
+                        .build()?;
+                    let agent = client
+                        .agent(model.as_str())
+                        .preamble(preamble)
+                        .max_tokens(REASONING_MAX_TOKENS)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -286,7 +297,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -312,7 +323,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -323,7 +334,7 @@ pub async fn run_agent_loop(
                         .agent(model.as_str())
                         .preamble(preamble)
                         .max_tokens(REASONING_MAX_TOKENS)
-                        .tools(tool_set)
+                        .dynamic_tools(tool_set)
                         .build();
                     drive_agent_stream(agent, prompt, history, max_tool_calls, cancel, on_event)
                         .await
@@ -358,10 +369,15 @@ where
     M: CompletionModel + 'static,
     <M as CompletionModel>::StreamingResponse: WasmCompatSend + GetTokenUsage,
 {
-    // Clamp the caller's cap onto rig's multi-turn depth: `0` floors to a single
-    // turn, and anything above the ceiling (including the `usize::MAX` "no cap"
-    // sentinel) caps at it rather than overflowing rig's internal counter.
-    let max_turns = max_tool_calls.clamp(1, MULTI_TURN_CEILING);
+    // Clamp the caller's cap onto rig's turn budget: `0` floors to a single
+    // tool call, and anything above the ceiling (including the `usize::MAX` "no
+    // cap" sentinel) caps at it rather than overflowing rig's internal counter.
+    //
+    // rig 0.41's `max_turns` is the *total model-call* budget, the initial call
+    // included (`rig-agent-0.41.0/src/agent/run/mod.rs:630`), where 0.38's
+    // `multi_turn` counted extra turns on top of it. So N tool calls need
+    // N + 1 turns: the N tool rounds plus the turn that lands the answer.
+    let max_turns = max_tool_calls.clamp(1, MULTI_TURN_CEILING) + 1;
 
     // Cancelled before we even started: emit Done and return.
     if cancel.load(Ordering::SeqCst) {
@@ -370,9 +386,8 @@ where
     }
 
     let mut stream = agent
-        .stream_prompt(prompt.to_string())
-        .with_history(history)
-        .multi_turn(max_turns)
+        .stream_chat(prompt.to_string(), history)
+        .max_turns(max_turns)
         .await;
 
     while let Some(item) = stream.next().await {
@@ -406,12 +421,17 @@ where
                 on_event(AgentLoopEvent::Reasoning(reasoning.display_text()));
             }
             Ok(MultiTurnStreamItem::CompletionCall(call)) => {
-                // rig normalizes zero-valued usage to None (missing provider
-                // metrics), so a Usage event always carries a real report.
-                if let Some(usage) = call.usage {
+                // An all-zero `Usage` is rig's sentinel for "the provider
+                // supplied no metrics" (0.41 made the field non-optional), and
+                // `has_values()` is rig's own predicate for it. Testing
+                // input/output by hand instead would drop a provider that
+                // reports only `total_tokens` — a real report, silently lost.
+                let usage = call.usage;
+                if usage.has_values() {
                     on_event(AgentLoopEvent::Usage {
                         input_tokens: usage.input_tokens,
                         output_tokens: usage.output_tokens,
+                        total_tokens: usage.total_tokens,
                     });
                 }
             }
@@ -421,7 +441,7 @@ where
             Err(err) => {
                 // Hitting the multi-turn bound is the expected effect of the
                 // tool-call cap, not a failure.
-                if matches!(err, rig_core::agent::StreamingError::Prompt(ref prompt_err)
+                if matches!(err, rig_agent::agent::StreamingError::Prompt(ref prompt_err)
                     if matches!(**prompt_err, PromptError::MaxTurnsError { .. }))
                 {
                     break;
@@ -438,7 +458,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig_core::agent::AgentBuilder;
+    use rig_agent::agent::AgentBuilder;
     use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
     use std::sync::Mutex;
 
@@ -446,7 +466,7 @@ mod tests {
     fn mock_agent(model: MockCompletionModel, tools: Vec<AgentTool>, executor: &ToolExecutor) -> Agent<MockCompletionModel> {
         AgentBuilder::new(model)
             .preamble("test preamble")
-            .tools(brokered_tools(tools, executor))
+            .dynamic_tools(brokered_tools(tools, executor))
             .build()
     }
 
@@ -608,18 +628,269 @@ mod tests {
         let small = tool_calls_under_cap(1, 8).await;
         let larger = tool_calls_under_cap(4, 8).await;
 
-        // Hitting the cap is a clean stop (no error) and bounds the tool calls
-        // below the scripted turn count.
-        assert!(small >= 1, "at least one tool call should run, got {small}");
-        assert!(
-            small < 8 && larger < 8,
-            "tool calls should be bounded by the cap below the 8 scripted turns: small={small}, larger={larger}"
+        // Exact, not "bounded and scaling". Inequalities this loose are
+        // satisfied by `+1`, `+2` and `+3` alike, so they survived the 0.38
+        // `multi_turn` (extra turns on top) -> 0.41 `max_turns` (total
+        // model-call budget) flip without anyone noticing the allowance had
+        // moved. Pinning the exact ceiling is what makes a turn-budget
+        // regression visible — and on the ChatGPT subscription backend a stray
+        // turn is another request billed against the user's own Codex quota.
+        //
+        // `cap` bounds tool calls at `cap + 1`: rig's budget is `cap + 1` model
+        // calls, and the last permitted call's tool still runs before the
+        // budget check. That `+1` is what leaves room for the answer turn.
+        assert_eq!(small, 2, "cap=1 permits one tool round plus the answer turn's");
+        assert_eq!(larger, 5, "cap=4 scales the same way");
+    }
+
+    /// Collect every tool-result text block the model was handed back.
+    fn tool_result_texts(request: &rig_core::completion::CompletionRequest) -> Vec<String> {
+        use rig_core::message::{ToolResultContent, UserContent};
+        request
+            .chat_history
+            .iter()
+            .filter_map(|message| match message {
+                Message::User { content, .. } => Some(content),
+                _ => None,
+            })
+            .flat_map(|content| content.iter())
+            .filter_map(|item| match item {
+                UserContent::ToolResult(result) => Some(result.content.clone()),
+                _ => None,
+            })
+            .flat_map(|content| content.into_iter())
+            .map(|block| match block {
+                ToolResultContent::Text(text) => text.text,
+                ToolResultContent::Json { value } => value.to_string(),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    /// A failing tool must not kill the turn.
+    ///
+    /// The 0.41 rewrite changed this mapping from `ToolError::ToolCallError` to
+    /// `ToolExecutionError::other`, and the two would look identical at the
+    /// call site while differing on exactly this: whether rig streams the error
+    /// back as a tool result the model can recover from, or terminates the run
+    /// and loses the whole answer.
+    #[tokio::test]
+    async fn a_failing_tool_reaches_the_model_and_the_turn_still_answers() {
+        let executor: ToolExecutor = Arc::new(move |_name, _params| {
+            Box::pin(async move { Err("search failed: index offline".to_string()) })
+        });
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("sorry, the index is offline"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let probe = model.clone();
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let sink = deltas.clone();
+        drive_agent_stream(
+            agent,
+            "find x",
+            vec![],
+            4,
+            Arc::new(AtomicBool::new(false)),
+            move |event| {
+                if let AgentLoopEvent::Delta(text) = event {
+                    sink.lock().unwrap().push(text);
+                }
+            },
+        )
+        .await
+        .expect("a failed tool call must not abort the loop");
+
+        assert_eq!(
+            deltas.lock().unwrap().join(""),
+            "sorry, the index is offline",
+            "the model must still get its answer turn after a tool failure"
         );
-        // The bound scales with the cap: a larger cap permits strictly more tool
-        // rounds, proving the cap (not the script length) is the limiter.
+        let requests = probe.requests();
+        assert_eq!(requests.len(), 2, "the model is called again after the failure");
+        assert_eq!(
+            tool_result_texts(&requests[1]),
+            vec!["search failed: index offline".to_string()],
+            "the executor's error text must reach the model verbatim"
+        );
+    }
+
+    /// A tool result reaches the model byte-identical.
+    ///
+    /// `.map(ToolOutput::text)` is one method away from `.map(Into::into)`,
+    /// which routes a JSON-shaped string through `ToolOutput::json` and changes
+    /// how it is presented. Ask AI tool results carry OCR text and transcripts,
+    /// so a silent re-encode here is a wrong answer the user cannot explain.
+    #[tokio::test]
+    async fn a_tool_result_reaches_the_model_byte_identical() {
+        const RESULT: &str = "{\"captures\":[{\"text\":\"line one\\nline \\\"two\\\"\"}]}";
+        let executor: ToolExecutor =
+            Arc::new(move |_name, _params| Box::pin(async move { Ok(RESULT.to_string()) }));
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("ok"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let probe = model.clone();
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        drive_agent_stream(agent, "find x", vec![], 4, Arc::new(AtomicBool::new(false)), |_| {})
+            .await
+            .expect("loop should complete");
+
+        assert_eq!(
+            tool_result_texts(&probe.requests()[1]),
+            vec![RESULT.to_string()],
+            "the executor's pre-serialized JSON must reach the model unchanged"
+        );
+    }
+
+    /// An all-optional-parameters tool the model calls with no arguments must
+    /// still dispatch. 0.38 tolerated `""`/`"null"` on a raw argument string;
+    /// 0.41 hands the callback a parsed `Value`, and only the `null` case is
+    /// still ours to handle — so that branch has to stay covered.
+    #[tokio::test]
+    async fn a_null_argument_tool_call_dispatches_with_an_empty_object() {
+        let (executor, calls) = recording_executor();
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::Value::Null),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("done"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        drive_agent_stream(agent, "go", vec![], 4, Arc::new(AtomicBool::new(false)), |_| {})
+            .await
+            .expect("loop should complete");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "a null-argument call still dispatches");
+        assert_eq!(
+            calls[0].1,
+            serde_json::json!({}),
+            "a null payload is normalized to an empty object, not passed through"
+        );
+    }
+
+    /// The cap counts *tool calls*, not total model calls: after its last
+    /// permitted tool call the model must still get a turn to write the answer.
+    /// With a cap of 1 it calls one tool and then answers.
+    #[tokio::test]
+    async fn tool_call_cap_leaves_room_for_the_answer_turn() {
+        let (executor, calls) = recording_executor();
+        let model = MockCompletionModel::from_stream_turns([
+            vec![
+                MockStreamEvent::tool_call("call_1", "search", serde_json::json!({ "query": "x" })),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+            vec![
+                MockStreamEvent::text("done"),
+                MockStreamEvent::final_response_with_default_usage(),
+            ],
+        ]);
+        let agent = mock_agent(model, vec![search_tool()], &executor);
+
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let deltas_sink = deltas.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        drive_agent_stream(agent, "find x", vec![], 1, cancel, move |event| {
+            if let AgentLoopEvent::Delta(text) = event {
+                deltas_sink.lock().unwrap().push(text);
+            }
+        })
+        .await
+        .expect("loop should complete");
+
+        assert_eq!(calls.lock().unwrap().len(), 1, "the one permitted tool call runs");
+        assert_eq!(
+            deltas.lock().unwrap().join(""),
+            "done",
+            "the model must still answer after its last permitted tool call"
+        );
+    }
+
+    /// Usage is surfaced when the provider actually reported something, and
+    /// suppressed only for rig's all-zero "no metrics" sentinel. The middle
+    /// case is the one a hand-rolled `input > 0 || output > 0` check drops:
+    /// rig keeps `total_tokens` separate precisely because some providers
+    /// report a lump sum and nothing else.
+    #[tokio::test]
+    async fn usage_events_follow_rigs_missing_metrics_sentinel() {
+        async fn usage_for(event: MockStreamEvent) -> Vec<(u64, u64, u64)> {
+            let (executor, _calls) = recording_executor();
+            let model = MockCompletionModel::from_stream_turns([vec![
+                MockStreamEvent::text("hi"),
+                event,
+            ]]);
+            let agent = mock_agent(model, vec![], &executor);
+
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            drive_agent_stream(
+                agent,
+                "go",
+                vec![],
+                4,
+                Arc::new(AtomicBool::new(false)),
+                move |event| {
+                    if let AgentLoopEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    } = event
+                    {
+                        sink.lock()
+                            .unwrap()
+                            .push((input_tokens, output_tokens, total_tokens));
+                    }
+                },
+            )
+            .await
+            .expect("loop should complete");
+            let reports = seen.lock().unwrap().clone();
+            reports
+        }
+
+        let mut real = rig_core::completion::Usage::new();
+        real.input_tokens = 11;
+        real.output_tokens = 7;
+        real.total_tokens = 18;
+        assert_eq!(
+            usage_for(MockStreamEvent::final_response(real)).await,
+            vec![(11, 7, 18)],
+            "a real report surfaces verbatim"
+        );
+
+        assert_eq!(
+            usage_for(MockStreamEvent::final_response_with_total_tokens(123)).await,
+            vec![(0, 0, 123)],
+            "a total-only provider still made a report"
+        );
+
         assert!(
-            larger > small,
-            "a larger cap should allow more tool calls: small={small}, larger={larger}"
+            usage_for(MockStreamEvent::final_response_with_default_usage())
+                .await
+                .is_empty(),
+            "the all-zero sentinel means no provider metrics"
         );
     }
 

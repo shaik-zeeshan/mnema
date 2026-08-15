@@ -18,6 +18,7 @@ import type { AiProviderConfig, AiProviderKind } from "$lib/types";
 export const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
   "anthropic",
   "openai",
+  "chatgpt",
   "openai_compatible",
   "ollama",
   "llamafile",
@@ -27,6 +28,7 @@ export const AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
 export const CLOUD_AI_PROVIDER_KINDS: readonly AiProviderKind[] = [
   "anthropic",
   "openai",
+  "chatgpt",
   "openai_compatible",
 ];
 
@@ -46,6 +48,7 @@ export function aiProviderKindLabel(kind: string): string {
   switch (kind) {
     case "anthropic": return "Anthropic";
     case "openai": return "OpenAI";
+    case "chatgpt": return "ChatGPT";
     case "openai_compatible": return "OpenAI-compatible";
     case "ollama": return "Ollama";
     case "llamafile": return "Llamafile";
@@ -58,10 +61,26 @@ export function aiProviderKindDescription(kind: AiProviderKind): string {
   switch (kind) {
     case "anthropic": return "Claude models — your own API key";
     case "openai": return "GPT models — your own API key";
+    case "chatgpt": return "Your ChatGPT Plus/Pro subscription — sign in, no API key";
     case "openai_compatible": return "Fireworks, OpenRouter, Together — custom base URL + key";
     case "ollama": return "Local runtime, default endpoint http://localhost:11434";
     case "llamafile": return "Local OpenAI-compatible server, default http://localhost:8080";
   }
+}
+
+/**
+ * Human copy for one `AiRuntimeProviderFailure.reason` (the per-provider model
+ * listing failure). `classify_listing_failure` already hands back an
+ * at-a-glance phrase for every kind EXCEPT the chatgpt reconnect code, which it
+ * passes through verbatim so the onboarding card can word it its own way — this
+ * is the translation for every other surface that shows a listing failure
+ * (ModelPickerMenu rows in Chat/Quick Recall/Settings, and the aggregated
+ * `modelsError` lines), which would otherwise print `needs_reconnect:chatgpt`.
+ */
+export function aiListingFailureCopy(reason: string): string {
+  if (reason.startsWith("needs_reconnect:")) return "sign in with ChatGPT again";
+  if (reason.startsWith("provider_unreachable:")) return "unreachable";
+  return reason;
 }
 
 /** Host portion of a base URL, or the trimmed string if it isn't a URL. */

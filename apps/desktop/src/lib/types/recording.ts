@@ -57,6 +57,7 @@ export type AiProviderKind =
 	| "anthropic"
 	| "openai"
 	| "openai_compatible"
+	| "chatgpt"
 	| "ollama"
 	| "llamafile";
 

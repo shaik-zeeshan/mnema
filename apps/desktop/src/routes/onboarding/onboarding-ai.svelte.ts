@@ -27,6 +27,7 @@
 // exempt, so an Ollama that is not answering blocks exactly like a rejected
 // cloud key. The rule itself is the pure `$lib/onboarding/ai-readiness`.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { humanizeError } from "$lib/format-error";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
 import {
@@ -148,11 +149,111 @@ export function createOnboardingAiStore() {
       };
     } catch (error) {
       if (stale()) return;
+      // The chatgpt kind verifies against its vault token set; the backend's
+      // `needs_reconnect:<id>` reason code reads as line noise in the card
+      // pill, so translate it at this edge (Settings maps it in its own store).
+      const raw = humanizeError(error);
+      // Case-insensitive: `humanizeError` upper-cases the first letter of what
+      // it tidies, so a `startsWith("needs_reconnect:")` test never matches.
+      const reason = /^needs_reconnect:/i.test(raw)
+        ? "sign in with ChatGPT to finish connecting"
+        : /^provider_unreachable:/i.test(raw)
+          ? "couldn't reach ChatGPT — check your connection"
+          : raw;
       aiVerifications = {
         ...aiVerifications,
-        [id]: { status: "error", reason: humanizeError(error) },
+        [id]: { status: "error", reason },
       };
     }
+  }
+
+  /**
+   * A ChatGPT sign-in or disconnect landed. The credential changed OUTSIDE the
+   * key-input flow (the device-code login writes the token set straight into the
+   * vault slot), so nothing has re-probed presence — `init()` and `addProvider`
+   * are the only other callers and both ran before the login. Without this the
+   * card keeps saying "Connect ChatGPT", never shows the "✓ signed in" pill and
+   * never offers Disconnect, however many models the verify then lists. Mirrors
+   * the Settings store's `handleChatgptConnectionChange`.
+   */
+  async function handleChatgptChanged(id: string): Promise<void> {
+    invalidateVerification(id);
+    await aiRuntime.refreshAiProviderKeyPresence();
+    await verifyProvider(id);
+    // First engine to answer seeds the default model, so the common case needs
+    // no second decision. `AiSetup.reportVerification` does this for every
+    // other connect path; a ChatGPT sign-in can land while that panel is
+    // unmounted, so the seeding has to live where the outcome is handled.
+    const verification = aiVerifications[id];
+    if (
+      verification?.status === "live" &&
+      verification.models.length > 0 &&
+      !draftAiDefaultModel
+    ) {
+      draftAiDefaultModel = { provider: id, model: verification.models[0] };
+    }
+  }
+
+  /**
+   * Own the terminal `chatgpt_login_update` for the whole onboarding run.
+   *
+   * The backend poll runs for up to 15 minutes and emits exactly ONE terminal
+   * event, with no snapshot command to re-read afterwards. `AiSetup` cannot own
+   * it: it is mounted inside the tab fork of `ChangeSettingsScreen`, so
+   * clicking Screen capture / Engines / Models — or stepping off the screen —
+   * unmounts it and its listener, and the user is in the browser approving a
+   * code precisely when that is most likely. The outcome would then land in the
+   * vault while the card stayed "not tested" and Finish stayed blocked.
+   *
+   * This store hangs off `OnboardingController`, which outlives every screen,
+   * so the subscription belongs here. Failures are surfaced too — dropping them
+   * leaves the user watching a spinner that will never resolve.
+   */
+  function subscribeChatgptLoginUpdates(): void {
+    if (chatgptLoginSubscribed) return;
+    chatgptLoginSubscribed = true;
+    // `listen()` registers the handler asynchronously and only THEN hands back
+    // its unlisten. A teardown (or a re-subscribe) inside that window finds
+    // `chatgptLoginUnlisten` still null, so the ticket — not the null check — is
+    // what decides whether the handler that lands afterwards may live. Without
+    // it the listener is registered with nobody holding its unlisten: permanent,
+    // and duplicated on every later `init()`. Same guard every other listener in
+    // this app spells `destroyed` (`onboarding-listeners.ts`, `+page.svelte`).
+    const ticket = ++chatgptLoginTicket;
+    void listen<{ providerId: string; connected: boolean; error?: string }>(
+      "chatgpt_login_update",
+      (event) => {
+        const { providerId, connected, error } = event.payload;
+        if (!draftAiProviders.some((p) => p.id === providerId)) return;
+        if (connected) {
+          void handleChatgptChanged(providerId);
+          return;
+        }
+        invalidateVerification(providerId);
+        aiVerifications = {
+          ...aiVerifications,
+          [providerId]: {
+            status: "error",
+            reason: error ?? "the ChatGPT sign-in didn't complete",
+          },
+        };
+      },
+    ).then((fn) => {
+      if (ticket !== chatgptLoginTicket) {
+        fn();
+        return;
+      }
+      chatgptLoginUnlisten = fn;
+    });
+  }
+
+  /** Drop the login subscription (the controller's teardown). */
+  function disposeChatgptLoginUpdates(): void {
+    // Bump first: it retires a registration still in the `listen()` window.
+    chatgptLoginTicket += 1;
+    chatgptLoginUnlisten?.();
+    chatgptLoginUnlisten = null;
+    chatgptLoginSubscribed = false;
   }
 
   /**
@@ -247,8 +348,16 @@ export function createOnboardingAiStore() {
 
   // Refresh which connected cloud providers already have a saved key (e.g. when
   // the user re-opens onboarding after a partial setup). No-op on a clean run.
+  // The ChatGPT device-login subscription. Plain values, not `$state`: nothing
+  // renders off them.
+  let chatgptLoginSubscribed = false;
+  let chatgptLoginUnlisten: (() => void) | null = null;
+  // Which subscription attempt is the live one — see `subscribeChatgptLoginUpdates`.
+  let chatgptLoginTicket = 0;
+
   function init(): void {
     void aiRuntime.refreshAiProviderKeyPresence();
+    subscribeChatgptLoginUpdates();
   }
 
   // ── Derived view state ────────────────────────────────────────────────────
@@ -345,6 +454,8 @@ export function createOnboardingAiStore() {
     invalidateVerification,
     probeEndpoint,
     saveKeyAndVerify,
+    handleChatgptChanged,
+    disposeChatgptLoginUpdates,
     loadModels,
     syncFromSettings,
     init,

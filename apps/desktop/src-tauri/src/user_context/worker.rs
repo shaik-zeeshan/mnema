@@ -1106,7 +1106,7 @@ async fn worker_tick(
         return IDLE_INTERVAL;
     }
 
-    let engine = match crate::ai_runtime::resolve_engine_config(&ai_runtime, None, None) {
+    let engine = match crate::ai_runtime::resolve_engine_config_live(&ai_runtime, None, None).await {
         Ok(engine) => engine,
         Err(_reason) => {
             // Defensive: the prerequisite already passed, but a local engine

@@ -4,13 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rig-core = "0.38"
+# rig 0.41 split the classic agent/extractor runtime out of `rig-core` into
+# `rig-agent`. Depend on the two crates directly rather than the `rig` facade:
+# the facade's *optional* companion integrations (rig-fastembed → ort =rc.9)
+# still enter Cargo's version resolution and conflict with the workspace's
+# `ort =rc.12` pin in `audio-transcription`.
+rig-core = "0.41"
+rig-agent = "0.41"
 # `StreamExt` for consuming rig's streaming agent loop; the engine itself stays
 # runtime-agnostic (`run_agent_loop` is a plain `async fn`).
 futures-util = "0.3"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Reads the `chatgpt_account_id` claim off a ChatGPT access token — see
+# `chatgpt_account_id`. Same version app-infra and the desktop crate already use.
+base64 = "0.22"
 thiserror = "2"
 # `rt` only: used by the reachability probe to offload its blocking DNS/connect
 # onto the runtime's blocking pool when one is present. The engine stays
@@ -22,5 +31,5 @@ url = "2"
 [dev-dependencies]
 # `test-utils` exposes `MockCompletionModel`/`MockStreamEvent` so the agent loop
 # can be exercised against a scripted provider with no network access.
-rig-core = { version = "0.38", features = ["test-utils"] }
+rig-core = { version = "0.41", features = ["test-utils"] }
 tokio = { version = "1", features = ["macros", "rt"] }

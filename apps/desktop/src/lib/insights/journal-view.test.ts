@@ -83,6 +83,22 @@ describe("pendingReasonCopy", () => {
     expect(pendingReasonCopy("no_provider_key:openai")).toContain("no API key");
     expect(pendingReasonCopy("provider_not_connected:x")).toContain("isn't connected");
   });
+  it("names the ChatGPT reconnect code instead of the generic fallback", () => {
+    // `needs_reconnect:<id>` is what the engine resolver returns for a chatgpt
+    // provider with no usable token set. It reaches this surface through
+    // UserContextStatus.reason exactly like the other prefixed codes, and the
+    // only fix the user can take is to sign in again.
+    expect(pendingReasonCopy("needs_reconnect:chatgpt")).toContain("sign in");
+  });
+  it("does not tell an offline user to sign in again", () => {
+    // `provider_unreachable:` is the live resolver's transient code: the
+    // ChatGPT login is intact, the auth endpoint just didn't answer. Rendering
+    // the sign-in sentence here pushes the user toward Disconnect, which
+    // destroys a working credential over a dropped Wi-Fi connection.
+    const copy = pendingReasonCopy("provider_unreachable:chatgpt");
+    expect(copy).not.toContain("sign in");
+    expect(copy).toContain("reach");
+  });
   it("falls back to a safe generic sentence for unknown codes", () => {
     expect(pendingReasonCopy("something_new")).toContain("isn't available right now");
     expect(pendingReasonCopy("")).toContain("isn't available right now");

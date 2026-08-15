@@ -67,15 +67,32 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // engine-configured prerequisite codes, plus user_context_disabled).
   function aiRuntimeReasonLabel(reason: string | null | undefined): string {
     if (!reason) return "Unavailable";
-    if (reason.startsWith("no_provider_key:")) {
+    // Case-insensitive: the same codes reach this labeller both RAW (the status
+    // snapshot's `reason` field) and via `humanizeError` (a command REJECTION —
+    // the test-connection banner), and `humanizeError` upper-cases the first
+    // letter of what it tidies, so a `startsWith` test would never match there.
+    // The id after the prefix is sliced off the ORIGINAL, which keeps its case.
+    const code = reason.toLowerCase();
+    if (code.startsWith("no_provider_key:")) {
       const provider = reason.slice("no_provider_key:".length);
       return `No API key saved for ${deps.labelForProvider(provider)}.`;
     }
-    if (reason.startsWith("provider_not_connected:")) {
+    if (code.startsWith("provider_not_connected:")) {
       const provider = reason.slice("provider_not_connected:".length);
       return `The default model's provider (${deps.labelForProvider(provider)}) is not connected.`;
     }
-    switch (reason) {
+    if (code.startsWith("needs_reconnect:")) {
+      const provider = reason.slice("needs_reconnect:".length);
+      return `${deps.labelForProvider(provider)} needs to be reconnected — sign in with ChatGPT again.`;
+    }
+    if (code.startsWith("provider_unreachable:")) {
+      // The sign-in is intact; the auth endpoint just didn't answer. Saying
+      // "reconnect" here would push the user toward Disconnect, which destroys
+      // a credential that is fine.
+      const provider = reason.slice("provider_unreachable:".length);
+      return `Couldn't reach ${deps.labelForProvider(provider)} — check your connection and try again.`;
+    }
+    switch (code) {
       case "user_context_disabled": return "Continuous derivation is turned off.";
       case "ai_runtime_disabled": return "AI features are turned off.";
       case "no_providers": return "No AI providers connected yet.";
@@ -86,15 +103,28 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     }
   }
 
+  // Monotonic ticket per status load. `handleChatgptConnectionChange` is driven
+  // by the `chatgpt_login_update` event and is NOT serialised behind
+  // `aiProviderKeyInFlight`, so two status round trips can be in flight at once
+  // (the event's, and the one the user's Disconnect fires). Whichever answers
+  // last used to win, even when it read the runtime BEFORE the newer one did.
+  let aiRuntimeStatusSeq = 0;
+
   async function loadAiRuntimeStatus() {
+    const seq = ++aiRuntimeStatusSeq;
     aiRuntimeStatusLoading = true;
     aiRuntimeStatusError = null;
     try {
-      aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+      const status = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+      if (seq !== aiRuntimeStatusSeq) return;
+      aiRuntimeStatus = status;
     } catch (error) {
+      if (seq !== aiRuntimeStatusSeq) return;
       aiRuntimeStatusError = humanizeError(error);
     } finally {
-      aiRuntimeStatusLoading = false;
+      // A superseded load must not clear the spinner the newer one is still
+      // showing.
+      if (seq === aiRuntimeStatusSeq) aiRuntimeStatusLoading = false;
     }
   }
 
@@ -116,7 +146,18 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // current map at the end rather than replacing the whole object — an id a
   // concurrent call freshly probed (but this snapshot never saw) is preserved,
   // instead of being clobbered back to absent by whichever call resolves last.
+  // Monotonic ticket per presence refresh + the ticket that last WROTE each id.
+  // The merge below happens at the end of a SEQUENTIAL probe loop, so an older
+  // pass parked on a later id's probe would otherwise land its pre-mutation
+  // snapshot after a newer pass already wrote the fresh value (a ChatGPT
+  // disconnect's refresh racing the `chatgpt_login_update` listener's, which is
+  // not serialised behind `aiProviderKeyInFlight`). Plain values, not `$state`:
+  // nothing renders off them.
+  let presenceRefreshSeq = 0;
+  const presenceWrittenBy = new Map<string, number>();
+
   async function refreshAiProviderKeyPresence() {
+    const seq = ++presenceRefreshSeq;
     const cloudProviderIds = deps
       .getProviders()
       .filter((p) => deps.isCloudProviderKind(p.kind))
@@ -145,6 +186,12 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     // concurrent refresh probed in the meantime. (Removal drops a provider via
     // `clearKeyForRemovedProvider`, not here, so this never resurrects a removed
     // id — its kind is gone from `getProviders()`, so it isn't in `probed`.)
+    // ...and never overwrite an id a NEWER refresh already wrote: that pass read
+    // the vault after this one did.
+    for (const id of Object.keys(probed)) {
+      if ((presenceWrittenBy.get(id) ?? 0) > seq) delete probed[id];
+      else presenceWrittenBy.set(id, seq);
+    }
     aiProviderKeySavedByProvider = { ...aiProviderKeySavedByProvider, ...probed };
   }
 
@@ -436,6 +483,16 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     await refreshMcpOAuthStates();
   }
 
+  // A ChatGPT connect/disconnect changed the vault credential outside the
+  // key-input flow — run the same refresh sequence a key save runs so the
+  // presence badge, runtime status, and Ask AI readiness all flip live.
+  async function handleChatgptConnectionChange(): Promise<void> {
+    resetTestResult();
+    await refreshAiProviderKeyPresence();
+    await loadAiRuntimeStatus();
+    deps.loadAskAiAvailability();
+  }
+
   // Clear the last test-connection banner (result + error). The banner reports
   // the provider/model that was tested; after the user changes the default model
   // or removes the tested provider it no longer reflects the live config, so the
@@ -452,7 +509,12 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
     } catch (error) {
-      aiRuntimeTestError = humanizeError(error);
+      // This command resolves the default model's engine, so it rejects with the
+      // same reason codes the status snapshot carries — including the chatgpt
+      // kind's `needs_reconnect:<id>` / `provider_unreachable:<id>`. Label them
+      // here too, or the banner prints the machine code and hides the one action
+      // that fixes it (and, for unreachable, invites a needless Disconnect).
+      aiRuntimeTestError = aiRuntimeReasonLabel(humanizeError(error));
     } finally {
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();
@@ -480,6 +542,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     saveAiProviderKey,
     clearAiProviderKey,
     clearKeyForRemovedProvider,
+    handleChatgptConnectionChange,
     resetTestResult,
     runAiRuntimeTestConnection,
     // MCP connector secrets.

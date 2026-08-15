@@ -164,7 +164,16 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "intelligence",
         anchor: "settings-section-intelligence",
         label: "Providers",
-        keywords: ["api key", "anthropic", "openai", "ollama", "default model", "ai runtime"],
+        keywords: [
+          "api key",
+          "anthropic",
+          "openai",
+          "chatgpt",
+          "subscription",
+          "ollama",
+          "default model",
+          "ai runtime",
+        ],
       },
       {
         id: "askAi",

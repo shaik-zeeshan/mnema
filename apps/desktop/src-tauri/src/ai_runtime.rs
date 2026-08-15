@@ -94,7 +94,15 @@ fn describe_error(error: &dyn std::error::Error) -> String {
 /// error still rides the warning log for debugging; this is the at-a-glance
 /// label a user sees next to the provider.
 fn classify_listing_failure(error: &str) -> String {
-    if error.starts_with("no_provider_key") {
+    if error.starts_with("needs_reconnect:") || error.starts_with("provider_unreachable:") {
+        // The `chatgpt` kind's two credential codes: "no usable token set" and
+        // "the auth endpoint never answered". Neither is a plain network
+        // failure the `contains("connect")` arm below should claim — it would
+        // match `needs_re*connect*` on the substring — and each maps to
+        // different advice downstream ("sign in again" vs "try again"). Pass
+        // them through; the frontend owns the wording.
+        error.to_string()
+    } else if error.starts_with("no_provider_key") {
         "missing API key".to_string()
     } else if error.contains("keychain") && error.contains("denied") {
         // AppInfraError::SecretVaultDenied Display — a denied key store, NOT a
@@ -274,9 +282,25 @@ fn is_fireworks_host(base: &str) -> bool {
 /// ids). Used to stop a request from pairing a first-party keychain key with an
 /// arbitrary `base_url`.
 fn fixed_host_for_provider_id(provider_id: &str) -> Option<&'static str> {
-    match provider_id {
+    // Instance ids are allocated by `newAiProviderId` (ai-providers.ts): the
+    // first instance of a kind keeps the bare kind id, later ones get
+    // `<kind>-2`, `<kind>-3`, … So a SECOND ChatGPT login lives at `chatgpt-2`
+    // and a second OpenAI key at `openai-2` — the derived ids hold exactly the
+    // same first-party credential and must be bound to the same host. Match on
+    // the id root so they are. (`openai_compatible` / `openai_compatible-2`
+    // have their own root and stay caller-chosen, as intended.)
+    let root = provider_id
+        .split_once('-')
+        .map(|(root, _)| root)
+        .unwrap_or(provider_id);
+    match root {
         "anthropic" => Some("api.anthropic.com"),
         "openai" => Some("api.openai.com"),
+        // Reserved for the same reason and then some: this slot holds an OAuth
+        // token SET (access + long-lived refresh token), and the `chatgpt` kind
+        // never reads `base_url` at all — so the only way this id can carry a
+        // caller-chosen host is a kind-swapped record.
+        "chatgpt" => Some("chatgpt.com"),
         _ => None,
     }
 }
@@ -297,7 +321,13 @@ fn validate_provider_base_url(provider_id: &str, base_url: &str) -> Result<(), S
         return Err("invalid_base_url_scheme".to_string());
     }
     if let Some(fixed_host) = fixed_host_for_provider_id(provider_id) {
-        if base_host(trimmed) != fixed_host {
+        // Compare the host the URL *parser* resolves — the same one reqwest
+        // dials — not a hand-split of the string. `base_host` reads
+        // `https://attacker.test?@chatgpt.com/v1` as `chatgpt.com` (it splits on
+        // `/` then takes the last `@` segment), while WHATWG parsing puts
+        // `?@chatgpt.com/v1` in the query and dials `attacker.test`. `#` and `\`
+        // do the same. A pin that can be read two ways is not a pin.
+        if parsed.host_str().unwrap_or_default().to_ascii_lowercase() != fixed_host {
             return Err(format!("base_url_host_mismatch:{provider_id}"));
         }
     }
@@ -338,6 +368,7 @@ fn cloud_provider_kind(kind: AiProviderKind) -> Option<ai_engine::CloudProvider>
         AiProviderKind::Anthropic => Some(ai_engine::CloudProvider::Anthropic),
         AiProviderKind::Openai => Some(ai_engine::CloudProvider::Openai),
         AiProviderKind::OpenaiCompatible => Some(ai_engine::CloudProvider::OpenAiCompatible),
+        AiProviderKind::Chatgpt => Some(ai_engine::CloudProvider::Chatgpt),
         AiProviderKind::Ollama | AiProviderKind::Llamafile => None,
     }
 }
@@ -387,6 +418,78 @@ fn local_endpoint(provider: &AiProviderConfig) -> String {
 /// the looked-up instance, and the keychain key lives at that same instance id.
 /// Returns a reason-code string on failure: `provider_not_connected:<id>`,
 /// `no_base_url`, or `no_provider_key:<id>`.
+/// Map a `chatgpt` provider's stored token set onto an engine config.
+///
+/// The vault slot holds an OAuth token set (JSON), not an API key, so this
+/// hands the engine the *stored* access token — possibly stale;
+/// [`resolve_engine_config_live`] refreshes it before any real call. Both a
+/// missing set and an unreadable one are `needs_reconnect` (the connect flow
+/// is a login, not a key paste), which keeps `no_provider_key` meaning
+/// "paste a key" for the kinds where that is the fix.
+///
+/// Split from [`engine_config_for_ref`] so the mapping is testable without a
+/// vault: the caller supplies the load result.
+fn chatgpt_engine_config(
+    provider_id: &str,
+    model: &str,
+    loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
+) -> Result<ai_engine::EngineConfig, String> {
+    let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    // `load_token_set` already reports a broken credential as the reconnect
+    // code; anything else it returns is the vault refusing to answer, which is
+    // not a verdict on the login. Pass it through unchanged so it reads the
+    // same as it does for every pasted-key kind — "denied ≠ missing".
+    let token_set = loaded
+        .inspect_err(|error| {
+            tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
+        })?
+        .ok_or_else(needs_reconnect)?;
+    Ok(ai_engine::EngineConfig::Cloud {
+        provider: ai_engine::CloudProvider::Chatgpt,
+        model: model.to_string(),
+        api_key: token_set.access_token,
+        base_url: None,
+    })
+}
+
+/// The ChatGPT picker list, gated on a stored token set.
+///
+/// The subscription backend has no model-discovery endpoint, so the list is
+/// static (owned in `chatgpt_auth`, not rig, so updating it never waits on a
+/// rig release) and carries no context-window metadata. The gate is the point:
+/// "models listed" doubles as the provider-verification proof — onboarding
+/// readiness, the Settings lamps, the Finish gate — so a never-connected
+/// instance has to read as needing its login, not as live.
+///
+/// Split from [`list_models_for_provider`] so that gate is testable without a
+/// `reqwest::Client`: the caller supplies the load result, exactly as
+/// [`chatgpt_engine_config`] does.
+fn chatgpt_static_models(
+    provider_id: &str,
+    loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
+) -> Result<Vec<DiscoveredModel>, String> {
+    let needs_reconnect = || format!("needs_reconnect:{provider_id}");
+    // Same split as `chatgpt_engine_config`: a broken credential arrives as the
+    // reconnect code already, and a vault that refused to answer keeps its own
+    // error so the picker row reads "keychain access denied" here exactly as it
+    // does for every other kind.
+    let connected = loaded
+        .inspect_err(|error| {
+            tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
+        })?
+        .is_some();
+    if !connected {
+        return Err(needs_reconnect());
+    }
+    Ok(crate::chatgpt_auth::CHATGPT_MODEL_IDS
+        .iter()
+        .map(|id| DiscoveredModel {
+            id: (*id).to_string(),
+            context_window: None,
+        })
+        .collect())
+}
+
 fn engine_config_for_ref(
     settings: &AiRuntimeSettings,
     provider_id: &str,
@@ -418,6 +521,15 @@ fn engine_config_for_ref(
     // `validate_provider_base_url`).
     if matches!(kind, AiProviderKind::OpenaiCompatible) && !base_url.is_empty() {
         validate_provider_base_url(provider_id, base_url)?;
+    }
+    // ChatGPT's credential is an OAuth token set, not a pasted key — see
+    // `chatgpt_engine_config`.
+    if matches!(kind, AiProviderKind::Chatgpt) {
+        return chatgpt_engine_config(
+            provider_id,
+            model,
+            crate::chatgpt_auth::load_token_set(provider_id),
+        );
     }
     let api_key = app_infra::load_ai_provider_key(provider_id)
         .map_err(|error| error.to_string())?
@@ -456,6 +568,18 @@ pub(crate) fn resolve_engine_config(
     pin: Option<(&str, &str)>,
     feature_override_model: Option<&str>,
 ) -> Result<ai_engine::EngineConfig, String> {
+    resolve_engine_ref(settings, pin, feature_override_model).map(|(_, config)| config)
+}
+
+/// [`resolve_engine_config`] plus the resolved provider *instance id* — the
+/// internal shape shared by the sync resolver and the freshness-aware
+/// [`resolve_engine_config_live`], which needs the id to key the ChatGPT
+/// token-set vault slot.
+fn resolve_engine_ref(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<(String, ai_engine::EngineConfig), String> {
     // 1. Thread pin.
     if let Some((provider, model)) = pin {
         let provider = provider.trim();
@@ -466,7 +590,8 @@ pub(crate) fn resolve_engine_config(
             // unknown or removed provider falls through to the override/default
             // layers below instead of failing the thread.
             if provider_config(settings, provider).is_some() {
-                return engine_config_for_ref(settings, provider, model);
+                return engine_config_for_ref(settings, provider, model)
+                    .map(|config| (provider.to_string(), config));
             }
         }
     }
@@ -482,7 +607,33 @@ pub(crate) fn resolve_engine_config(
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .unwrap_or_else(|| default_model.model.trim());
-    engine_config_for_ref(settings, default_model.provider.trim(), model)
+    let provider = default_model.provider.trim();
+    engine_config_for_ref(settings, provider, model)
+        .map(|config| (provider.to_string(), config))
+}
+
+/// [`resolve_engine_config`] for call sites about to *use* the engine: same
+/// precedence chain, plus the ChatGPT freshness gate — a resolved `chatgpt`
+/// engine gets its access token refreshed (and the rotated set persisted)
+/// when expired or about to expire. Failures surface as
+/// `needs_reconnect:<id>`; no interactive login is ever started. Other
+/// providers pass through untouched, so this is safe as the default resolver
+/// everywhere an async context is available.
+pub(crate) async fn resolve_engine_config_live(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<ai_engine::EngineConfig, String> {
+    let (provider_id, mut config) = resolve_engine_ref(settings, pin, feature_override_model)?;
+    if let ai_engine::EngineConfig::Cloud {
+        provider: ai_engine::CloudProvider::Chatgpt,
+        api_key,
+        ..
+    } = &mut config
+    {
+        *api_key = crate::chatgpt_auth::fresh_access_token(&provider_id).await?;
+    }
+    Ok(config)
 }
 
 /// The static (no-network) half of the engine-configured prerequisite: master
@@ -505,6 +656,8 @@ pub(crate) fn engine_prerequisite_static(
 /// (interactive Ask AI and continuous User-Context derivation). `Ok(())` means
 /// a usable engine exists; `Err(reason_code)` is one of `"ai_runtime_disabled"`,
 /// `"no_providers"`, `"no_default_model"`, `"provider_not_connected:<id>"`,
+/// `"needs_reconnect:<id>"` / `"provider_unreachable:<id>"` (the `chatgpt`
+/// kind's credential codes — the latter only from the live resolver),
 /// `"no_base_url"`, `"no_provider_key:<id>"`, `"local_endpoint_unreachable"`.
 /// Per ADR 0034 this is "master switch on + at least one usable provider + a
 /// default model chosen"; a local default additionally needs its endpoint to be
@@ -551,10 +704,16 @@ pub async fn ai_runtime_clear_provider_key(
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    tokio::task::spawn_blocking(move || app_infra::delete_ai_provider_key(&provider))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    // Disconnect is a revocation, so invalidating any ChatGPT device poll or
+    // token refresh still in flight and clearing the slot must happen together
+    // — `revoke_provider_credential` does both under the one lock a concurrent
+    // refresh's compare-and-swap also holds. Clearing the slot beside that lock
+    // lets a refresh write the token set straight back into it.
+    tokio::task::spawn_blocking(move || {
+        crate::chatgpt_auth::revoke_provider_credential(&provider)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -569,6 +728,42 @@ pub async fn ai_runtime_has_provider_key(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+/// Start a ChatGPT device-code login for one `chatgpt` provider instance.
+/// Returns the user code + verify URL for the UI to show; the terminal
+/// outcome arrives as a `chatgpt_login_update` event (see `chatgpt_auth`).
+/// Disconnect reuses [`ai_runtime_clear_provider_key`] — the token set lives
+/// in the same vault slot — and "is connected" is [`ai_runtime_has_provider_key`].
+#[tauri::command]
+pub async fn ai_runtime_chatgpt_begin_login(
+    app: tauri::AppHandle,
+    request: AiRuntimeProviderRequest,
+) -> Result<crate::chatgpt_auth::ChatgptLoginPrompt, String> {
+    let provider = request.provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    crate::chatgpt_auth::begin_login(app, provider).await
+}
+
+/// Abandon a ChatGPT device login the user walked away from.
+///
+/// Without this, dismissing the code UI only hides it: the detached poll keeps
+/// hitting `auth.openai.com` for the rest of its 15 minutes, and this endpoint
+/// treats a rate limit as terminal — so an abandoned login can be what kills
+/// the next real one. Leaves any existing token set alone; disconnecting is
+/// [`ai_runtime_clear_provider_key`].
+#[tauri::command]
+pub async fn ai_runtime_chatgpt_cancel_login(
+    request: AiRuntimeProviderRequest,
+) -> Result<(), String> {
+    let provider = request.provider.trim();
+    if provider.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    crate::chatgpt_auth::cancel_login(provider);
+    Ok(())
 }
 
 // MCP connector secrets: same keychain-off-the-main-thread pattern as the
@@ -659,7 +854,7 @@ pub async fn ai_runtime_test_connection(
         .clone()
         .filter(|model| !model.model.trim().is_empty())
         .ok_or_else(|| "no_default_model".to_string())?;
-    let config = resolve_engine_config(&settings, None, None)?;
+    let config = resolve_engine_config_live(&settings, None, None).await?;
 
     let probe = ai_engine::run_connection_probe(&config)
         .await
@@ -772,6 +967,19 @@ async fn list_models_for_provider(
         return list_fireworks_models(client, &base_host(base_url), &api_key).await;
     }
 
+    // The ChatGPT subscription backend has no model-discovery endpoint; the
+    // picker gets the static list (owned in `chatgpt_auth`, not rig, so it can
+    // be updated without a rig release). No context-window metadata either.
+    // Gate the list on a stored token set: "models listed" doubles as the
+    // provider-verification signal (onboarding readiness, Settings lamps), and
+    // a never-connected instance must read as needing its login, not as live.
+    if provider.kind == AiProviderKind::Chatgpt {
+        return chatgpt_static_models(
+            &provider.id,
+            crate::chatgpt_auth::load_token_set(&provider.id),
+        );
+    }
+
     let http_request = match provider.kind {
         AiProviderKind::Anthropic | AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => {
             // The key lives in the keychain at the provider's instance id.
@@ -797,6 +1005,9 @@ async fn list_models_for_provider(
         }
         AiProviderKind::Ollama | AiProviderKind::Llamafile => {
             client.get(models_endpoint_url(&local_endpoint(provider)))
+        }
+        AiProviderKind::Chatgpt => {
+            unreachable!("chatgpt is answered by the static-list early return above")
         }
     };
 
@@ -1519,6 +1730,475 @@ mod tests {
                 "custom compat host must not be rejected by the binding, got {reason}"
             );
         }
+    }
+
+    #[test]
+    fn chatgpt_token_set_maps_to_an_access_token_config_or_needs_reconnect() {
+        // The whole mapping, with the vault result supplied rather than read —
+        // the previous version of this test resolved the real provider id
+        // "chatgpt" against the developer's actual vault, so it passed through
+        // whichever arm the machine happened to take and would fail outright on
+        // a machine with ChatGPT connected.
+        let connected = chatgpt_engine_config(
+            "chatgpt",
+            "gpt-5.6-terra",
+            Ok(Some(crate::chatgpt_auth::ChatgptTokenSet {
+                access_token: "the-access-token".to_string(),
+                refresh_token: Some("r".to_string()),
+                expires_at: Some(4_000_000_000),
+            })),
+        );
+        match connected {
+            Ok(ai_engine::EngineConfig::Cloud {
+                provider,
+                model,
+                api_key,
+                base_url,
+            }) => {
+                assert!(matches!(provider, ai_engine::CloudProvider::Chatgpt));
+                assert_eq!(model, "gpt-5.6-terra");
+                assert_eq!(api_key, "the-access-token", "the stored access token is the credential");
+                assert_eq!(base_url, None, "the chatgpt kind never carries a caller host");
+            }
+            other => panic!("expected a chatgpt cloud config, got {other:?}"),
+        }
+
+        // Never connected, and the vault refusing to answer, are both the
+        // reconnect code — NOT `no_provider_key`, whose UI copy says to paste a
+        // key, which is not the fix for a login.
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Ok(None)).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+        // A vault that refused to answer still fails closed, but keeps its own
+        // error: it is not a verdict on the login (see
+        // `a_denied_vault_is_not_a_verdict_on_the_chatgpt_login`).
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Err("vault locked".to_string()))
+                .map(|_| ()),
+            Err("vault locked".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_live_resolver_is_a_passthrough_for_every_non_chatgpt_kind() {
+        // Five real call sites moved from the sync resolver to the live one.
+        // For every kind but chatgpt the two must agree exactly, across the
+        // whole precedence chain — a drift here silently breaks Ask AI, the
+        // digest, and the derivation worker for the providers that were
+        // already working.
+        let settings = local_settings();
+        let cases: [(Option<(&str, &str)>, Option<&str>); 4] = [
+            (None, None),
+            (Some(("ollama", "pinned-model")), None),
+            (None, Some("override-model")),
+            (Some(("does-not-exist", "m")), None),
+        ];
+        for (pin, feature_override) in cases {
+            let sync = resolve_engine_config(&settings, pin, feature_override);
+            let live = resolve_engine_config_live(&settings, pin, feature_override).await;
+            assert_eq!(
+                format!("{sync:?}"),
+                format!("{live:?}"),
+                "sync and live resolvers disagree for pin={pin:?} override={feature_override:?}"
+            );
+        }
+
+        // …and the CLOUD kinds, which are the ones the live resolver can
+        // actually damage. Local settings alone never produce an
+        // `EngineConfig::Cloud`, so they never enter the `if let Cloud {
+        // provider: Chatgpt, .. }` arm at all — widening that arm to every
+        // cloud provider (which would send Anthropic/OpenAI/compatible keys
+        // through the ChatGPT refresh and fail them all with
+        // `needs_reconnect`) leaves a local-only comparison completely green.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        let cloud_id = "anthropic-live-passthrough";
+        app_infra::store_ai_provider_key(cloud_id, "sk-live-passthrough")
+            .expect("seed a cloud key");
+        let cloud = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: cloud_id.to_string(),
+                kind: AiProviderKind::Anthropic,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: cloud_id.to_string(),
+                model: "claude-test".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        let sync = resolve_engine_config(&cloud, None, None).expect("sync resolves the cloud key");
+        let live = resolve_engine_config_live(&cloud, None, None)
+            .await
+            .expect("live must resolve it identically, with no network");
+        assert_eq!(format!("{sync:?}"), format!("{live:?}"));
+        match live {
+            ai_engine::EngineConfig::Cloud { api_key, .. } => assert_eq!(
+                api_key, "sk-live-passthrough",
+                "a non-chatgpt cloud provider must keep its own stored key"
+            ),
+            other => panic!("expected a cloud config, got {other:?}"),
+        }
+        let _ = app_infra::delete_ai_provider_key(cloud_id);
+    }
+
+    #[test]
+    fn listing_failure_keeps_the_chatgpt_reconnect_reason_code() {
+        // `list_models_for_provider` answers a never-connected chatgpt instance
+        // with `needs_reconnect:<id>`, and both consumers branch on that literal
+        // prefix to render the sign-in copy. The code must survive this
+        // translation — note "needs_re*connect*" also matches the network arm's
+        // `contains("connect")`, which would mislabel it as "unreachable".
+        assert_eq!(
+            classify_listing_failure("needs_reconnect:chatgpt"),
+            "needs_reconnect:chatgpt"
+        );
+        assert_eq!(classify_listing_failure("error sending request"), "unreachable");
+    }
+
+    #[test]
+    fn chatgpt_id_is_bound_like_the_other_first_party_ids() {
+        // The `chatgpt` instance id holds an OAuth token set in the very vault
+        // slot the pasted-key kinds use, so a `{id:"chatgpt",
+        // kind:OpenaiCompatible, baseUrl:"…attacker…"}` record must not be able
+        // to ship that token set out as a Bearer credential.
+        assert!(validate_provider_base_url("chatgpt", "https://attacker.test/v1").is_err());
+        assert!(
+            validate_provider_base_url("chatgpt", "https://chatgpt.com/backend-api/codex").is_ok()
+        );
+
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "chatgpt".to_string(),
+                kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
+                base_url: "https://attacker.test/v1".to_string(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("base_url_host_mismatch:chatgpt".to_string())
+        );
+    }
+
+    #[test]
+    fn the_chatgpt_model_gate_is_the_provider_verification_signal() {
+        // "Models listed" IS the proof this provider works — onboarding
+        // readiness, the Settings lamps and the Finish gate all read it. So a
+        // provider instance that exists but was never signed in has to fail,
+        // and it has to fail with the reconnect code specifically: the copy for
+        // `no_provider_key` says to paste a key, which is not the fix here.
+        let never_connected = chatgpt_static_models("chatgpt", Ok(None));
+        assert_eq!(
+            never_connected.map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+        // A vault that refuses to answer is not a licence to report "live"
+        // either — fail closed. It keeps its own error rather than becoming the
+        // reconnect code, because it is not a verdict on the login (see
+        // `a_denied_vault_is_not_a_verdict_on_the_chatgpt_login`).
+        assert_eq!(
+            chatgpt_static_models("chatgpt", Err("vault locked".to_string())).map(|_| ()),
+            Err("vault locked".to_string())
+        );
+
+        let connected = chatgpt_static_models(
+            "chatgpt",
+            Ok(Some(crate::chatgpt_auth::ChatgptTokenSet {
+                access_token: "a".to_string(),
+                refresh_token: Some("r".to_string()),
+                expires_at: Some(4_000_000_000),
+            })),
+        )
+        .expect("a connected instance lists its catalog");
+        assert_eq!(
+            connected.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            crate::chatgpt_auth::CHATGPT_MODEL_IDS.to_vec(),
+            "the picker gets the static catalog verbatim"
+        );
+        assert!(
+            !connected.is_empty(),
+            "an empty list would read as connected-but-no-models, which is the \
+             one outcome the gate exists to prevent"
+        );
+        assert!(
+            connected.iter().all(|m| m.context_window.is_none()),
+            "this backend reports no context-window metadata"
+        );
+    }
+
+    #[test]
+    fn a_denied_vault_is_not_a_verdict_on_the_chatgpt_login() {
+        // "Denied ≠ missing" (the ADR 0048 amendment `classify_listing_failure`
+        // already implements for every other kind): a vault that REFUSED to
+        // answer says nothing about the credential inside it. The user denied
+        // the keychain prompt, or the vault is cached-denied for this process
+        // lifetime — the ChatGPT login is untouched and still healthy.
+        //
+        // Collapsing that into `needs_reconnect` renders "Reconnect ChatGPT in
+        // Settings", and the button next to that copy is Disconnect — which
+        // destroys the OAuth token set (access AND the long-lived refresh
+        // token) the vault merely declined to hand over. That is precisely the
+        // harm ADR 0058 splits `provider_unreachable` out to avoid: never tell
+        // a user to sign in again over something that never rendered a verdict
+        // on their grant.
+        let denied =
+            app_infra::AppInfraError::SecretVaultDenied("user denied prompt".to_string())
+                .to_string();
+
+        // Still fails closed — a denied vault never reads as "live".
+        let listing = chatgpt_static_models("chatgpt", Err(denied.clone()))
+            .map(|_| ())
+            .expect_err("a denied vault must not list models");
+        assert_ne!(
+            listing, "needs_reconnect:chatgpt",
+            "a denied vault is not a bad login; this copy invites Disconnect"
+        );
+        assert_eq!(
+            classify_listing_failure(&listing),
+            "keychain access denied",
+            "the picker row must read the same for chatgpt as for every other kind"
+        );
+
+        // Same on the egress path: the engine must not resolve, and must not
+        // blame the login for it.
+        let engine = chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Err(denied))
+            .map(|_| ())
+            .expect_err("a denied vault must not resolve an engine");
+        assert_ne!(
+            engine, "needs_reconnect:chatgpt",
+            "a denied vault is not a bad login"
+        );
+
+        // The genuine credential problems keep the reconnect code.
+        assert_eq!(
+            chatgpt_static_models("chatgpt", Ok(None)).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.6-terra", Ok(None)).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+
+        // …including the OTHER thing `load_token_set` can fail on: slot content
+        // this module did not write. That IS a broken credential, so signing in
+        // again really is the fix — and the split has to happen where the two
+        // are still distinguishable (inside `load_token_set`), not by handing
+        // both callers one indistinguishable `Err`.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        let corrupt_id = "chatgpt-corrupt-slot";
+        app_infra::store_ai_provider_key(corrupt_id, "sk-not-a-token-set")
+            .expect("seed an unparseable token set");
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: corrupt_id.to_string(),
+                kind: AiProviderKind::Chatgpt,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: corrupt_id.to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err(format!("needs_reconnect:{corrupt_id}")),
+            "an unreadable token SET is a login problem, and must not leak a \
+             serde message the surfaces cannot classify"
+        );
+        let _ = app_infra::delete_ai_provider_key(corrupt_id);
+    }
+
+    #[test]
+    fn a_chatgpt_kind_never_falls_through_to_the_pasted_key_path() {
+        // Without the kind check in `engine_config_for_ref`, a chatgpt provider
+        // reads the same vault slot as every other kind — and finds the token
+        // SET, a JSON blob, which would be handed to rig as a raw Bearer key.
+        // Every call would then 401 with a reason code that tells the user to
+        // paste an API key they do not have.
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "chatgpt".to_string(),
+                kind: AiProviderKind::Chatgpt,
+                label: String::new(),
+                base_url: String::new(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        let _ = app_infra::delete_ai_provider_key("chatgpt");
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string()),
+            "a never-connected chatgpt provider is a login problem, not a key problem"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_live_resolver_refreshes_the_pinned_instance_not_the_default() {
+        // `resolve_engine_ref` hands the live resolver the provider id whose
+        // vault slot the token lives in. If it returned the DEFAULT model's id
+        // instead, a thread pinned to a second ChatGPT account would refresh —
+        // and rotate — the wrong account's credential.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![
+                AiProviderConfig {
+                    id: "chatgpt".to_string(),
+                    kind: AiProviderKind::Chatgpt,
+                    label: String::new(),
+                    base_url: String::new(),
+                },
+                AiProviderConfig {
+                    id: "chatgpt-2".to_string(),
+                    kind: AiProviderKind::Chatgpt,
+                    label: String::new(),
+                    base_url: String::new(),
+                },
+            ],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        // Only the SECOND instance is connected, and with a long-lived token so
+        // resolving it needs no network.
+        let _ = app_infra::delete_ai_provider_key("chatgpt");
+        crate::chatgpt_auth::store_token_set(
+            "chatgpt-2",
+            &crate::chatgpt_auth::ChatgptTokenSet {
+                access_token: "second-account-token".to_string(),
+                refresh_token: Some("r".to_string()),
+                expires_at: Some(4_000_000_000),
+            },
+        )
+        .expect("seed the second account");
+
+        let pinned = resolve_engine_config_live(&settings, Some(("chatgpt-2", "gpt-5.5")), None)
+            .await
+            .expect("the pin resolves against its own instance");
+        match pinned {
+            ai_engine::EngineConfig::Cloud { api_key, model, .. } => {
+                assert_eq!(api_key, "second-account-token");
+                assert_eq!(model, "gpt-5.5");
+            }
+            other => panic!("expected a cloud config, got {other:?}"),
+        }
+
+        // …and the unpinned default really is the other, unconnected instance.
+        assert_eq!(
+            resolve_engine_config_live(&settings, None, None)
+                .await
+                .map(|_| ()),
+            Err("needs_reconnect:chatgpt".to_string())
+        );
+        let _ = app_infra::delete_ai_provider_key("chatgpt-2");
+    }
+
+    #[test]
+    fn a_second_chatgpt_instance_is_bound_to_its_host_too() {
+        // `newAiProviderId` (ai-providers.ts) hands the FIRST instance of a kind
+        // the bare kind id and every later one `<kind>-2`, `<kind>-3`, … — so a
+        // user with two ChatGPT logins holds an OAuth token set (access AND
+        // long-lived refresh token) in the `chatgpt-2` vault slot. The settings
+        // record itself is plaintext JSON in the app config dir, i.e. writable
+        // by anything running as the user, while the vault is keychain-gated.
+        // Binding only the literal id `chatgpt` lets a rewritten
+        // `{id:"chatgpt-2", kind:OpenaiCompatible, baseUrl:"…attacker…"}` record
+        // make Mnema itself POST that token set to the attacker as a Bearer
+        // credential.
+        assert!(
+            validate_provider_base_url("chatgpt-2", "https://attacker.test/v1").is_err(),
+            "a derived chatgpt instance id must stay pinned to chatgpt.com"
+        );
+        assert!(
+            validate_provider_base_url("chatgpt-2", "https://chatgpt.com/backend-api/codex").is_ok()
+        );
+        // Same shape for the other first-party ids whose slot holds a key that
+        // only ever belongs to one host.
+        assert!(validate_provider_base_url("openai-2", "https://attacker.test/v1").is_err());
+        assert!(validate_provider_base_url("anthropic-3", "https://attacker.test/v1").is_err());
+        // Custom OpenAI-compatible instances keep their caller-chosen host.
+        assert!(
+            validate_provider_base_url("openai_compatible-2", "https://api.fireworks.ai/inference/v1")
+                .is_ok(),
+            "custom compatible instances must keep a caller-chosen host"
+        );
+
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: vec![AiProviderConfig {
+                id: "chatgpt-2".to_string(),
+                kind: AiProviderKind::OpenaiCompatible,
+                label: String::new(),
+                base_url: "https://attacker.test/v1".to_string(),
+            }],
+            default_model: Some(AiEngineRef {
+                provider: "chatgpt-2".to_string(),
+                model: "gpt-5.6-terra".to_string(),
+            }),
+            mcp_servers: Vec::new(),
+        };
+        assert_eq!(
+            resolve_engine_config(&settings, None, None).map(|_| ()),
+            Err("base_url_host_mismatch:chatgpt-2".to_string())
+        );
+    }
+
+    #[test]
+    fn the_first_party_host_pin_survives_url_authority_tricks() {
+        // The pin compares a hand-split of the base-URL string, but the request
+        // is dialled by reqwest's real (WHATWG) URL parser. Any string the two
+        // read differently turns the pin into a rubber stamp — and the
+        // `chatgpt` slot holds an OAuth token SET (access + long-lived refresh
+        // token) that a kind-swapped settings record would then ship out as an
+        // `Authorization: Bearer` header.
+        for hostile in [
+            "https://attacker.test?@chatgpt.com/v1",
+            "https://attacker.test#@chatgpt.com/v1",
+            "https://attacker.test\\@chatgpt.com/v1",
+        ] {
+            assert_eq!(
+                url::Url::parse(hostile).expect("parses").host_str(),
+                Some("attacker.test"),
+                "the request really does go to the attacker: {hostile}"
+            );
+            assert_eq!(
+                validate_provider_base_url("chatgpt", hostile).map(|_| ()),
+                Err("base_url_host_mismatch:chatgpt".to_string()),
+                "the chatgpt token set must not be sent to {hostile}"
+            );
+        }
+
+        // Same instrument, same fix, for the other pinned first-party slots.
+        assert!(validate_provider_base_url("openai", "https://attacker.test?@api.openai.com/v1").is_err());
+        assert!(validate_provider_base_url(
+            "anthropic-2",
+            "https://attacker.test#@api.anthropic.com/v1"
+        )
+        .is_err());
+
+        // …and the legitimate hosts still pass.
+        assert!(validate_provider_base_url("chatgpt", "https://chatgpt.com/backend-api/codex").is_ok());
+        assert!(validate_provider_base_url("openai-2", "https://api.openai.com/v1").is_ok());
     }
 
     #[test]

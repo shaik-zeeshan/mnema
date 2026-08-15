@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
+  import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -13,6 +16,31 @@
   const c = getSettingsController();
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
+
+  /** Presence + status + model list, after the vault credential changed. */
+  function refreshAfterChatgptChange(): void {
+    void aiRuntime.handleChatgptConnectionChange();
+    void loadSettingsModels();
+  }
+
+  // A ChatGPT sign-in lands up to 15 minutes after the click, by which time the
+  // provider row (and its ChatgptConnect) may well be collapsed. This panel
+  // outlives the row, so it owns the outcome — otherwise the badge and the
+  // model picker stay stale until the page is reloaded.
+  onMount(() => {
+    let unlisten: (() => void) | null = null;
+    let destroyed = false;
+    void listen<{ connected: boolean }>("chatgpt_login_update", (event) => {
+      if (event.payload.connected) refreshAfterChatgptChange();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      destroyed = true;
+      unlisten?.();
+    };
+  });
 
 
   // Re-exported constants the markup references verbatim.
@@ -120,7 +148,7 @@
                   <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                   <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
                   {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
-                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />key in keychain</span>
+                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />{provider.kind === "chatgpt" ? "connected" : "key in keychain"}</span>
                   {/if}
                   <button
                     class="btn btn--danger btn--sm provider-row__remove"
@@ -166,7 +194,16 @@
                   />
                   <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
                 {/if}
-                {#if isCloudAiProviderKind(provider.kind)}
+                {#if provider.kind === "chatgpt"}
+                  <!-- The one cloud kind with no key field: an OAuth device-code
+                       login stores a token set in the same vault slot, so key
+                       presence doubles as "connected". -->
+                  <ChatgptConnect
+                    providerId={provider.id}
+                    connected={!!aiProviderKeySavedByProvider[provider.id]}
+                    onchange={refreshAfterChatgptChange}
+                  />
+                {:else if isCloudAiProviderKind(provider.kind)}
                   <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>
                   <input
                     id="ai-provider-key-{provider.id}"

@@ -175,6 +175,12 @@ fn ask_ai_live_turns() -> &'static Mutex<HashMap<String, LiveTurn>> {
 pub struct AskAiTokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Context-window occupancy for this report — `input + output`, or the
+    /// provider's lump-sum total when it reported no split. Carried separately
+    /// so the debug row and the live context bar cannot disagree: the bar
+    /// applies the same fallback, and a total-only provider would otherwise
+    /// show a real number there and `in 0 / out 0` here.
+    pub context_tokens: u64,
     /// When the turn's agent loop started (unix ms) — the debug row's clock.
     pub started_at_ms: i64,
     /// Visible tool calls this turn (excludes the `reference_captures`
@@ -183,6 +189,25 @@ pub struct AskAiTokenUsage {
     /// Elapsed ms from loop start to the usage report. Usage arrives at the end
     /// of the final completion, so this is within a stream-tail of the full turn.
     pub duration_ms: i64,
+}
+
+/// Context-window occupancy for one provider usage report.
+///
+/// The latest completion request's input+output is the turn's occupancy —
+/// input already includes the system prompt, history, and tool results. rig
+/// keeps `total_tokens` separate "as some providers may only report one
+/// number", and such a provider leaves the split at 0, so fall back to its
+/// total rather than showing an empty context bar.
+///
+/// A plain `fn` so the two surfaces that show this number — the live context
+/// bar and the debug turn row — cannot drift apart.
+fn context_tokens(input_tokens: u64, output_tokens: u64, total_tokens: u64) -> u64 {
+    let split = input_tokens.saturating_add(output_tokens);
+    if split > 0 {
+        split
+    } else {
+        total_tokens
+    }
 }
 
 static ASK_AI_LAST_USAGE: OnceLock<Mutex<Option<AskAiTokenUsage>>> = OnceLock::new();
@@ -1532,7 +1557,7 @@ async fn generate_conversation_title(
     question: String,
 ) {
     let settings = read_ai_runtime_settings(&app_handle);
-    let config = match crate::ai_runtime::resolve_engine_config(&settings, None, None) {
+    let config = match crate::ai_runtime::resolve_engine_config_live(&settings, None, None).await {
         Ok(config) => config,
         Err(reason) => {
             tauri_plugin_log::log::debug!(
@@ -1686,11 +1711,12 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config(
+    let config_result = crate::ai_runtime::resolve_engine_config_live(
         &settings.ai_runtime,
         pin_ref,
         settings.access.ask_ai_model.as_deref(),
-    );
+    )
+    .await;
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {
@@ -2138,24 +2164,22 @@ async fn run_ask_ai_turn(
             ai_engine::AgentLoopEvent::Usage {
                 input_tokens,
                 output_tokens,
+                total_tokens,
             } => {
+                let context = context_tokens(input_tokens, output_tokens, total_tokens);
                 record_last_turn_usage(AskAiTokenUsage {
                     input_tokens,
                     output_tokens,
+                    context_tokens: context,
                     started_at_ms: turn_started_at_ms,
                     tool_calls: turn_tool_calls.load(Ordering::SeqCst),
                     duration_ms: (now_ms() - turn_started_at_ms).max(0),
                 });
-                // The latest completion request's input+output is the turn's
-                // current context-window occupancy (input already includes the
-                // system prompt, history, and tool results).
                 emit_live_update(
                     &app_handle,
                     &conversation_id,
                     turn_token,
-                    TurnUpdate::ContextTokens {
-                        tokens: input_tokens + output_tokens,
-                    },
+                    TurnUpdate::ContextTokens { tokens: context },
                 );
             }
             // `Done` is handled after the loop returns; the loop emits it last.
@@ -2327,7 +2351,10 @@ async fn run_ask_ai_turn(
             tauri_plugin_log::log::warn!(
                 "Ask AI agent loop failed for {conversation_id}: {error}"
             );
-            let message = error.user_facing_message();
+            // Worded for the engine that failed: on the ChatGPT subscription
+            // backend a rejected credential is a sign-in problem, and there is
+            // no API key field to send the user to.
+            let message = error.user_facing_message_for(config.cloud_provider());
             persist_turn(
                 &infra,
                 &conversation_id,
@@ -2511,6 +2538,26 @@ mod tests {
         BrokerAuthStatusKind, BrokerErrorResponse, BrokerSearchResponse, BrokerSearchResultContext,
         BrokerShowTextResponse,
     };
+
+    #[test]
+    fn the_context_bar_and_the_debug_row_agree_on_a_lump_sum_report() {
+        // The usual case: the provider reports a split and the occupancy is
+        // their sum.
+        assert_eq!(context_tokens(11, 7, 18), 18);
+        assert_eq!(context_tokens(11, 7, 0), 18, "a missing total is not authoritative");
+
+        // rig keeps `total_tokens` separate because some providers report only
+        // one number. Both surfaces that show occupancy read this one function,
+        // so a lump-sum report cannot render as a real context bar next to an
+        // "in 0 tok · out 0 tok" debug row.
+        assert_eq!(context_tokens(0, 0, 4321), 4321);
+
+        // No report at all stays zero rather than inventing a number.
+        assert_eq!(context_tokens(0, 0, 0), 0);
+
+        // Provider-supplied values are untrusted arithmetic inputs.
+        assert_eq!(context_tokens(u64::MAX, 1, 0), u64::MAX, "no overflow panic");
+    }
 
     #[test]
     fn ask_ai_broker_identity_uses_ask_ai_label() {
