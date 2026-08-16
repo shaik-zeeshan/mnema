@@ -89,12 +89,20 @@ export class ReceiptFrameLoader {
 		this.#events = events;
 		this.#invoke = invokeFn;
 		this.#urlDeps = urlDeps;
-		// The strip renders a cell per frame of the span and keeps whatever URL it
-		// was handed, so a receipt longer than the map's cap evicts (and revokes)
-		// URLs that are still assigned into the component's record. Retract them:
-		// the cell drops the dead URL, and clearing `#thumbDone` lets it re-fetch
-		// when it scrolls back into view.
-		this.#thumbUrls = new FramePreviewUrlMap(urlDeps, undefined, (fid) => {
+		this.#thumbUrls = this.#newThumbUrls();
+	}
+
+	/**
+	 * A fresh thumbnail URL map.
+	 *
+	 * The strip renders a cell per frame of the span and keeps whatever URL it
+	 * was handed, so a receipt longer than the map's cap evicts (and revokes)
+	 * URLs that are still assigned into the component's record. Retract them:
+	 * the cell drops the dead URL, and clearing `#thumbDone` lets it re-fetch
+	 * when it scrolls back into view.
+	 */
+	#newThumbUrls(): FramePreviewUrlMap {
+		return new FramePreviewUrlMap(this.#urlDeps, undefined, (fid) => {
 			if (this.#releasing) return; // reset/dispose: the strip drops the lot anyway
 			this.#thumbDone.delete(fid);
 			this.#events.onThumb(fid, null);
@@ -140,11 +148,21 @@ export class ReceiptFrameLoader {
 		this.#releaseThumbUrls();
 	}
 
-	/** Wholesale thumbnail release — revoke without retracting cell by cell. */
+	/**
+	 * Wholesale thumbnail release — revoke without retracting cell by cell, then
+	 * become a fresh map.
+	 *
+	 * `FramePreviewUrlMap.clear()` is a permanent RELEASE, not a reset: a cleared
+	 * map mints nothing ever again. This loader clears on every `reset()` — which
+	 * `loadStrip` runs before the FIRST activity too — so reusing the cleared map
+	 * left every filmstrip cell blank for the life of the receipt. The map's own
+	 * docs say it: an owner that needs it again builds a new one.
+	 */
 	#releaseThumbUrls(): void {
 		this.#releasing = true;
 		try {
 			this.#thumbUrls.clear();
+			this.#thumbUrls = this.#newThumbUrls();
 		} finally {
 			this.#releasing = false;
 		}

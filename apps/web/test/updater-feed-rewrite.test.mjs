@@ -16,7 +16,11 @@ const workflow = readFileSync(
   new URL("../../../.github/workflows/macos-release-promote.yml", import.meta.url),
   "utf8",
 );
-const jqProgram = workflow.match(/'(\.platforms \|= with_entries\([^']*\))'/)?.[1];
+// The program is single-quoted in the workflow and now spans two lines (the
+// URL rewrite, then `| .notes = $notes`), so match to the closing quote rather
+// than to a `)` — anchoring on the old shape is what let the reformat in
+// df27d1b6 silently disarm this whole file.
+const jqProgram = workflow.match(/'(\.platforms \|= with_entries\([^']*)'/)?.[1];
 assert.ok(jqProgram, "feed-rewrite jq program not found in macos-release-promote.yml");
 
 const feed = {
@@ -36,9 +40,20 @@ const feed = {
   },
 };
 
+const RELEASE_NOTES = "## What's Changed\n* Fixed a thing by @someone in #1";
+
 test("rewrites every platform url to the R2 release path, preserving signature and version", () => {
   const proc = Bun.spawnSync(
-    ["jq", "--arg", "base", "https://release.mnema.day/releases/v0.1.12", jqProgram],
+    [
+      "jq",
+      "--arg",
+      "base",
+      "https://release.mnema.day/releases/v0.1.12",
+      "--arg",
+      "notes",
+      RELEASE_NOTES,
+      jqProgram,
+    ],
     { stdin: Buffer.from(JSON.stringify(feed)) },
   );
   assert.equal(proc.exitCode, 0, proc.stderr.toString());
@@ -55,6 +70,9 @@ test("rewrites every platform url to the R2 release path, preserving signature a
   assert.equal(out.platforms["darwin-aarch64"].signature, "SIG-AARCH64");
   assert.equal(out.platforms["darwin-x86_64"].signature, "SIG-X64");
   assert.equal(out.version, "0.1.12");
-  assert.equal(out.notes, "See the release notes.");
+  // The program now overwrites notes with the release body: tauri-action only
+  // fills `notes` from a `releaseBody` we do not pass, so every feed shipped
+  // `notes: ""` and the in-app update window had nothing to render.
+  assert.equal(out.notes, RELEASE_NOTES);
   assert.equal(out.pub_date, "2026-07-11T00:00:00Z");
 });

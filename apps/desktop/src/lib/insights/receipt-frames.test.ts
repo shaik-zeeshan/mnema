@@ -295,6 +295,22 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 		expect(revoked).toEqual(["blob:thumb-1", "blob:thumb-2"]);
 	});
 
+	test("thumbnails still mint after a reset", async () => {
+		// `loadStrip` calls `reset()` before EVERY strip, the first one included, and
+		// `FramePreviewUrlMap.clear()` is a permanent release — a cleared map mints
+		// nothing ever again. Reusing it left every filmstrip cell blank while the
+		// full-size viewer painted fine.
+		const { loader, thumbs, flush } = thumbHarness(scrubPreview);
+
+		loader.reset();
+		loader.requestThumb(7);
+		await settle();
+		flush();
+		await settle();
+
+		expect(thumbs).toEqual([[7, "blob:thumb-1"]]);
+	});
+
 	test("a URL evicted past the cap is retracted, not left painted", async () => {
 		// The strip renders EVERY frame of the span as a cell and the component
 		// keeps whatever `onThumb` handed it, forever. The loader's URL map is

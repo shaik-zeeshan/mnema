@@ -7,7 +7,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
-  import { closeCurrentWindow, getLastMainSurface, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { closeCurrentWindow, currentWindowLabel, getLastMainSurface, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
   import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
   import {
     bootstrapCaptureControls,
@@ -80,6 +80,7 @@
   // lights stay (overlay titlebar), reserved for by the titlebar's left inset.
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
+  const isUpdateWindow = currentWindowLabel() === "update";
   const isPanelSurface = isQuickRecallWindow();
   // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
   // Insights (`/insights`). The shared main titlebar (record controls, source
@@ -796,7 +797,12 @@
   }
 
   function closeDedicatedWindowOnEscape(event: KeyboardEvent): boolean {
-    if (!showDedicatedTitlebar || (!isSettings && !isDebug)) return false;
+    // Keyed on the WINDOW, not the route, so it cannot drift again: a window
+    // that gets the dedicated titlebar's Close chip should honour Escape too.
+    // The update window is the one surface the app opens unsolicited, and it
+    // shipped as the only dismissible window Escape could not close (⌘W is
+    // inert as well — `decorations: false` strips NSWindowStyleMask::Closable).
+    if (!showDedicatedTitlebar || (!isSettings && !isDebug && !isUpdateWindow)) return false;
     if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return false;
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return false;
     if (isDedicatedWindowCloseSuppressedTarget(event.target)) return false;

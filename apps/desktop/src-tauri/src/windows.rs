@@ -74,6 +74,7 @@ enum AppWindow {
     CliAccessRequest,
     Debug,
     QuickRecall,
+    Update,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +246,28 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            // A small dedicated panel, sized like the CLI access dialog: it is a
+            // dialog, not a workspace. Never `ExitApp` on close (see
+            // `destroyed_window_action`) — dismissing an update nudge must not
+            // quit a menu-bar app that's mid-recording.
+            Self::Update => AppWindowConfig {
+                label: "update",
+                path: "update",
+                title: "mnema · Update",
+                // The page measures its rendered release notes and resizes the
+                // window to fit (`fitWindowToContent`), so this is the opening
+                // size, not the final one — and `min_inner_size` must stay under
+                // the page's own 360px floor or a short changelog can't shrink
+                // out of its dead space.
+                inner_size: (480.0, 520.0),
+                min_inner_size: (420.0, 340.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
             Self::QuickRecall => AppWindowConfig {
                 label: "quick-recall",
                 path: "quick-recall",
@@ -268,9 +291,31 @@ impl AppWindow {
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
+            "update" => Some(Self::Update),
             _ => None,
         }
     }
+
+    /// Every window the app can open. Used by the capability-coverage test —
+    /// Tauri resolves plugin IPC per window label, so a label missing from
+    /// `capabilities/default.json` silently loses `listen`, `setSize`,
+    /// `openUrl` and the titlebar drag region.
+    ///
+    /// ponytail: hand-maintained. `assert_all_windows_listed` below is an
+    /// exhaustive match, so adding a variant DOES break the build and points
+    /// here — but the compiler cannot prove this array then grew, so satisfying
+    /// that match without extending `ALL` would leave the new window unchecked.
+    /// Deriving it needs a variant-enumerating macro or a new dependency, which
+    /// is not worth it for six variants; upgrade if this list gets long.
+    #[cfg(test)]
+    const ALL: [Self; 6] = [
+        Self::Main,
+        Self::Onboarding,
+        Self::CliAccessRequest,
+        Self::Debug,
+        Self::QuickRecall,
+        Self::Update,
+    ];
 }
 
 fn now_unix_ms() -> u64 {
@@ -378,6 +423,10 @@ pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub(crate) fn open_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::Onboarding, None)
+}
+
+pub(crate) fn open_update_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Update, None)
 }
 
 fn open_or_focus_window(
@@ -1130,9 +1179,7 @@ fn complete_graceful_exit(app: &tauri::AppHandle) {
     exit_state.mark_final_graceful_exit_ready();
 
     if restart_requested {
-        crate::native_capture::debug_log::log_info(
-            "completed graceful app exit; relaunching",
-        );
+        crate::native_capture::debug_log::log_info("completed graceful app exit; relaunching");
         app.restart();
     }
 
@@ -1172,7 +1219,9 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
+        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall | AppWindow::Update) => {
+            DestroyedWindowAction::None
+        }
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -1190,7 +1239,10 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             Ok(())
         }
         Some(
-            AppWindow::Onboarding | AppWindow::CliAccessRequest | AppWindow::Debug,
+            AppWindow::Onboarding
+            | AppWindow::CliAccessRequest
+            | AppWindow::Debug
+            | AppWindow::Update,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1409,11 +1461,11 @@ pub fn complete_onboarding(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_window_focuses_main_before_close, destroyed_window_action, enqueue_cold_open_settings,
-        is_known_settings_tab, load_onboarding_state_from_path, normalize_settings_focus,
-        normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
-        AppExitCoordinatorState, DestroyedWindowAction, OnboardingState, OnboardingStateView,
-        OpenSettingsTabPayload, PendingOpenSettingsState,
+        close_window_focuses_main_before_close, destroyed_window_action,
+        enqueue_cold_open_settings, is_known_settings_tab, load_onboarding_state_from_path,
+        normalize_settings_focus, normalize_settings_tab, normalized_open_settings_payload,
+        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction, OnboardingState,
+        OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
     };
 
     #[test]
@@ -1422,6 +1474,143 @@ mod tests {
             destroyed_window_action("debug"),
             DestroyedWindowAction::FocusMainWindow
         );
+    }
+
+    #[test]
+    fn dismissing_the_update_window_never_quits_the_app() {
+        // It's a nudge, not a workspace: a menu-bar app mid-recording must not
+        // exit because someone closed an update prompt (Main does exit).
+        assert_eq!(
+            destroyed_window_action("update"),
+            DestroyedWindowAction::None
+        );
+        assert_eq!(
+            super::AppWindow::from_label("update"),
+            Some(super::AppWindow::Update)
+        );
+    }
+
+    /// Exhaustive on purpose: adding an `AppWindow` variant fails to compile
+    /// here, which is the reminder to extend `AppWindow::ALL` — what the
+    /// capability and route tests below iterate. The compiler enforces the
+    /// reminder, not the extension; see the note on `ALL`.
+    #[allow(dead_code)]
+    fn assert_all_windows_listed(window: super::AppWindow) {
+        use super::AppWindow::*;
+        match window {
+            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update => {}
+        }
+    }
+
+    #[test]
+    fn every_app_window_label_is_covered_by_a_capability() {
+        // Tauri v2 resolves plugin IPC per window LABEL: `RuntimeAuthority::
+        // resolve_access` glob-matches the calling window's label against each
+        // capability's `windows` list and returns nothing when none match, so
+        // the window gets ZERO plugin/core permissions. The failure is near
+        // invisible — app-defined `#[tauri::command]`s keep working (this app
+        // ships no ACL manifest of its own), so only `listen`, `setSize`,
+        // `openUrl` and the drag region die, and the pages swallow those
+        // rejections. The update window shipped exactly that way.
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/default.json"
+        ))
+        .expect("capabilities/default.json should exist");
+        let capability: serde_json::Value =
+            serde_json::from_str(&raw).expect("capabilities/default.json should be valid JSON");
+        let covered: Vec<&str> = capability["windows"]
+            .as_array()
+            .expect("the capability should list windows")
+            .iter()
+            .map(|value| value.as_str().expect("each window label should be a string"))
+            .collect();
+
+        for window in super::AppWindow::ALL {
+            let label = window.config().label;
+            assert!(
+                covered.contains(&label),
+                "window label {label:?} is not covered by capabilities/default.json \
+                 (covered: {covered:?}) — every plugin invoke from it would be ACL-rejected"
+            );
+        }
+
+        // Covering the label is necessary but not sufficient: the command still
+        // has to be in the permission set. None of these three is in
+        // `core:window:default`, and each one fails SILENTLY when absent —
+        // the pages swallow the rejection — so assert them by name.
+        let permissions: Vec<&str> = capability["permissions"]
+            .as_array()
+            .expect("the capability should list permissions")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        for (permission, why) in [
+            (
+                "core:window:allow-set-size",
+                "the update window fits itself to its release notes",
+            ),
+            (
+                "core:window:allow-start-dragging",
+                "borderless windows are moved by the titlebar drag region",
+            ),
+            (
+                "core:window:allow-close",
+                "the CLI access receipt closes its own window",
+            ),
+        ] {
+            assert!(
+                permissions.contains(&permission),
+                "capabilities/default.json is missing {permission:?} — {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_update_windows_fit_floor_clears_its_own_min_inner_size() {
+        // The page shrinks the window to fit short release notes, clamped at
+        // UPDATE_WINDOW_MIN_HEIGHT. A floor at or below `min_inner_size` would
+        // leave dead space the fit pass can never remove. The two constants
+        // live in different languages, so read the TS rather than restate it.
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/update-window.ts"
+        ))
+        .expect("update-window.ts should exist");
+        let floor: f64 = source
+            .split("UPDATE_WINDOW_MIN_HEIGHT = ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("UPDATE_WINDOW_MIN_HEIGHT should be declared")
+            .trim()
+            .parse()
+            .expect("UPDATE_WINDOW_MIN_HEIGHT should be a number");
+        let min_inner_height = super::AppWindow::Update.config().min_inner_size.1;
+        assert!(
+            floor > min_inner_height,
+            "UPDATE_WINDOW_MIN_HEIGHT ({floor}) must exceed the window's \
+             min_inner_size height ({min_inner_height})"
+        );
+    }
+
+    #[test]
+    fn every_app_window_path_resolves_to_a_sveltekit_route() {
+        // The window config's `path` is a route the webview loads at runtime;
+        // nothing links it to the filesystem, so renaming a route directory
+        // ships a window that loads a 404. Asserting the literal against itself
+        // (what this test used to do for "update") proves nothing.
+        for window in super::AppWindow::ALL {
+            let path = window.config().path;
+            let route = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/routes"))
+                .join(path.trim_start_matches('/'))
+                .join("+page.svelte");
+            assert!(
+                route.exists(),
+                "window {:?} points at route {path:?} but {} does not exist",
+                window,
+                route.display()
+            );
+        }
     }
 
     #[test]
@@ -1542,7 +1731,10 @@ mod tests {
         // Granular processing sub-tabs pass through (no longer collapsed to
         // "processing") so notifications can target a specific section.
         assert_eq!(normalize_settings_tab("ocr"), Some("ocr"));
-        assert_eq!(normalize_settings_tab("transcription"), Some("transcription"));
+        assert_eq!(
+            normalize_settings_tab("transcription"),
+            Some("transcription")
+        );
         assert_eq!(normalize_settings_tab("speakers"), Some("speakers"));
         // Legacy "processing" alias is still accepted for back-compat.
         assert_eq!(normalize_settings_tab("processing"), Some("processing"));
@@ -1693,7 +1885,8 @@ mod tests {
     fn onboarding_state_view_carries_ever_saved_signal_independently() {
         // The signal is independent of completion: a not-yet-completed onboarding
         // can still report a returning user (settings saved), and vice versa.
-        let returning = OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
+        let returning =
+            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
         assert!(returning.recording_settings_ever_saved);
         assert_eq!(returning.completed_at_unix_ms, None);
 

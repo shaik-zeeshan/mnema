@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main, onboarding, debug, and quick recall windows",
-  "windows": ["main", "onboarding", "debug", "quick-recall"],
+  "description": "Capability for every window the app opens. Tauri v2 resolves plugin IPC per window LABEL: a label matched by no capability here gets ZERO plugin/core permissions, so `listen`, `setSize`, `openUrl` and the titlebar drag region all fail inside it. Adding an AppWindow variant means adding its label here AND to `AppWindow::ALL`, which windows::tests::every_app_window_label_is_covered_by_a_capability then checks. Covering a label is necessary but not sufficient: the command the window calls must also be in the permission list below. core:window:default carries allow-inner-size (the getter) but not allow-set-size, which the update window needs to fit itself to its release notes.",
+  "windows": ["main", "onboarding", "cli-access-request", "debug", "quick-recall", "update"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-close",
     "dialog:allow-ask",
     "dialog:allow-open",
     "opener:default",

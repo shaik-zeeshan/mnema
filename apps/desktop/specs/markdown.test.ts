@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { registeredLanguageCount, renderMarkdown } from "../src/lib/markdown";
+import { isOpenableHref, registeredLanguageCount, renderMarkdown } from "../src/lib/markdown";
 import hljs from "highlight.js/lib/core";
 
 describe("renderMarkdown code highlighting", () => {
@@ -89,5 +89,40 @@ describe("highlight.js registration", () => {
 
   test("the toml alias resolves to ini", () => {
     expect(hljs.getLanguage("toml")).toBeTruthy();
+  });
+});
+
+describe("isOpenableHref", () => {
+  // The open-time gate, deliberately stricter than the render-time allowlist:
+  // every rendered href that reaches `openUrl` (Ask AI answers, the update
+  // window's release notes) is attacker-influenceable — model output over OCR'd
+  // content, and feed notes injected into latest.json after signing.
+  test("opens real web and mail links", () => {
+    expect(isOpenableHref("https://github.com/shaik-zeeshan/mnema/compare/v1...v2")).toBe(true);
+    expect(isOpenableHref("http://example.com")).toBe(true);
+    expect(isOpenableHref("mailto:hi@mnema.day")).toBe(true);
+  });
+
+  test("refuses scheme-less hrefs, which the renderer deliberately keeps", () => {
+    // These survive `isAllowedLinkHref` with an intact href AND a data-external
+    // tag, so neither the renderer nor the `a[data-external]` selector is the
+    // guard here. Asserted through the real renderer so the two stay in step.
+    for (const href of ["/Applications/Calculator.app", "/etc/passwd", "#anchor", "?q=1"]) {
+      expect(renderMarkdown(`[x](${href})`)).toContain('data-external="true"');
+      expect(isOpenableHref(href)).toBe(false);
+    }
+  });
+
+  test("refuses custom and dangerous schemes", () => {
+    expect(isOpenableHref("file:///etc/passwd")).toBe(false);
+    expect(isOpenableHref("javascript:alert(1)")).toBe(false);
+    expect(isOpenableHref("someapp://boom")).toBe(false);
+    expect(isOpenableHref("//evil.example.com")).toBe(false);
+  });
+
+  test("refuses nothing at all", () => {
+    expect(isOpenableHref(null)).toBe(false);
+    expect(isOpenableHref(undefined)).toBe(false);
+    expect(isOpenableHref("")).toBe(false);
   });
 });

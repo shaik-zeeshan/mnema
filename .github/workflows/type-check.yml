@@ -61,6 +61,12 @@ jobs:
       - name: Test frontend
         run: bun --cwd=apps/desktop test
 
+      # apps/web owns the regression guards for the release workflows' own jq
+      # programs (the updater-feed URL rewrite and notes copy). They ran nowhere
+      # in CI, so a reformat of the workflow YAML disarmed one of them silently.
+      - name: Test web
+        run: bun --cwd=apps/web test
+
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
 

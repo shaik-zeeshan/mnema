@@ -109,17 +109,28 @@ jobs:
 
       - name: Publish artifacts and update feed to R2
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
           CHANNEL: ${{ steps.release_version.outputs.channel }}
         run: |
           set -euo pipefail
           artifact_path="releases/$RELEASE_TAG"
 
+          # tauri-action only fills the feed's `notes` from a `releaseBody` we
+          # don't pass (we use `generateReleaseNotes` instead), so every feed
+          # shipped an empty `notes: ""` and the in-app update window had nothing
+          # to show. Copy the release body — Markdown, which the update window
+          # renders — into the feed here. Same safety as the URL rewrite below:
+          # the updater signature covers the archive contents, not this JSON, so
+          # notes can also be corrected by re-promoting without a rebuild.
+          notes="$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json body --jq .body)"
+
           # The draft's latest.json points at GitHub asset URLs; repoint each
           # platform at the immutable R2 copy. The updater signature covers the
           # archive contents, not its URL, so the rewrite is safe.
-          jq --arg base "$RELEASES_BASE_URL/$artifact_path" \
-            '.platforms |= with_entries(.value.url = ($base + "/" + (.value.url | split("/") | last)))' \
+          jq --arg base "$RELEASES_BASE_URL/$artifact_path" --arg notes "$notes" \
+            '.platforms |= with_entries(.value.url = ($base + "/" + (.value.url | split("/") | last)))
+             | .notes = $notes' \
             assets/latest.json > latest.json
 
           for file in assets/*; do
@@ -176,6 +187,9 @@ jobs:
           check "$RELEASES_BASE_URL/$CHANNEL/latest.json"
           feed="$(curl -s "$RELEASES_BASE_URL/$CHANNEL/latest.json?$bust")"
           jq -e --arg v "${{ steps.release_version.outputs.version }}" '.version == $v' <<<"$feed"
+          # Empty notes ship a blank in-app update window. `generateReleaseNotes`
+          # always writes a body, so an empty one here means the copy above broke.
+          jq -e '(.notes | length) > 0' <<<"$feed" > /dev/null
           # A broken feed rewrite would pass the version check while updaters
           # 404: every platform URL must point at this run's R2 artifacts and
           # resolve (HEAD, to avoid downloading the archives).

@@ -11,7 +11,7 @@
   // when the turn settles (`isStreaming` flips to false).
   import { onDestroy } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { renderMarkdown } from "$lib/markdown";
+  import { isOpenableHref, renderMarkdown } from "$lib/markdown";
 
   let {
     source,
@@ -44,10 +44,13 @@
   // suppress its panel blur-dismiss first) or open it directly.
   function openExternal(anchor: HTMLAnchorElement): void {
     const href = anchor.getAttribute("href");
-    if (href !== null && href.length > 0) {
-      if (onOpenLink) onOpenLink(href);
-      else void openUrl(href);
-    }
+    // `a[data-external]` is not proof the href is openable — the renderer tags
+    // scheme-less relative hrefs that way too. Ask AI prose can transitively
+    // carry attacker-influenced text (OCR of a hostile page), so gate it here,
+    // the one seam both the click and auxclick paths pass through.
+    if (href === null || !isOpenableHref(href)) return;
+    if (onOpenLink) onOpenLink(href);
+    else void openUrl(href);
   }
 
   // Delegated click handler over the rendered HTML. Two responsibilities, checked
@@ -83,10 +86,15 @@
     }
   }
 
-  // Middle-click / any non-primary button fires `auxclick`, not `click`, so it
-  // bypasses `handleClick` and the webview opens `target=_blank` natively —
-  // escaping the controlled opener. Intercept it and route the same way.
+  // Middle-click fires `auxclick`, not `click`, so it bypasses `handleClick` and
+  // the webview opens `target=_blank` natively — escaping the controlled opener.
+  // Intercept it and route the same way.
+  //
+  // RIGHT-click fires `auxclick` too (button 2), and it must fall through: the
+  // webview has no context-menu suppression, so handling it here both swallowed
+  // the native menu and opened the link the user was trying to copy.
   function handleAuxClick(event: MouseEvent): void {
+    if (event.button !== 1) return;
     const target = event.target as HTMLElement | null;
     const anchor = target?.closest("a[data-external]") as HTMLAnchorElement | null;
     if (anchor) {

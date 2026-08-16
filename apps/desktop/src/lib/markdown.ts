@@ -215,6 +215,38 @@ const mdHighlight = createRenderer(true);
 // Render Markdown source to a sanitized HTML string. `highlight` defaults to
 // false (plain mode — used on the streaming path: no token spans, cheap). When
 // true, fenced code blocks are syntax-highlighted via highlight.js.
+/**
+ * Whether a rendered link's href may be handed to the OS opener.
+ *
+ * This is the OPEN-time gate and it is deliberately stricter than the
+ * render-time `isAllowedLinkHref` above. That one answers "may this anchor keep
+ * its href?" and says yes to scheme-less relative hrefs (`#a`, `?q=1`,
+ * `/x`) — they navigate nowhere external in a document, so they are harmless to
+ * render, and they are tagged `data-external` along with everything else that
+ * keeps an href. This one answers a different question: "is this a real
+ * destination the OS should be asked to open?"
+ *
+ * So `a[data-external]` and a non-empty href are NOT proof a link is openable,
+ * and every call site that forwards a rendered href to `openUrl` (or to a host
+ * app's link handler) must run it through here first. `tauri-plugin-opener`'s
+ * URL scope happens to reject what slips past, but relying on that leaves the
+ * guarantee accidental and the failure a silent dead click.
+ */
+export function isOpenableHref(href: string | null | undefined): boolean {
+  if (!href) return false;
+  let url: URL;
+  try {
+    // Parsed with NO base on purpose: the href is handed to the OS opener
+    // verbatim, so anything that is not already an absolute URL is meaningless
+    // there. This is what rejects `/etc/passwd`, `#anchor`, `?q=1` and the
+    // protocol-relative `//host` — all of which throw without a base.
+    url = new URL(href);
+  } catch {
+    return false;
+  }
+  return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:";
+}
+
 export function renderMarkdown(source: string, options?: { highlight?: boolean }): string {
   const md = options?.highlight ? mdHighlight : mdPlain;
   return md.render(source);
