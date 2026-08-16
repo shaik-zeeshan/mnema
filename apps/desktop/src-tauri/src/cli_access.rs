@@ -28,24 +28,27 @@ pub async fn list_cli_access_grants(
         .map_err(|error| format!("failed to load CLI Access grants: {error}"))
 }
 
+/// Block a tool: a standing rejection. The row stays visible in Settings, is
+/// denied without ever opening the approval window, and never idle-expires
+/// (ADR 0059). Returns whether a row actually changed.
 #[tauri::command]
-pub async fn revoke_cli_access_grant(
+pub async fn block_cli_access_client(
     app_handle: tauri::AppHandle,
-    grant_id: String,
+    client_name: String,
 ) -> Result<bool, String> {
     access(&app_handle)?
-        .revoke_grant(&grant_id)
-        .map_err(|error| format!("failed to revoke CLI Access grant: {error}"))
+        .block_client(&client_name)
+        .map_err(|error| format!("failed to block CLI Access for this tool: {error}"))
 }
 
 #[tauri::command]
-pub async fn revoke_cli_access_for_client(
+pub async fn unblock_cli_access_client(
     app_handle: tauri::AppHandle,
     client_name: String,
-) -> Result<u32, String> {
+) -> Result<bool, String> {
     access(&app_handle)?
-        .revoke_grants_for_client(&client_name)
-        .map_err(|error| format!("failed to revoke CLI Access grants: {error}"))
+        .unblock_client(&client_name)
+        .map_err(|error| format!("failed to re-enable CLI Access for this tool: {error}"))
 }
 
 #[tauri::command]
@@ -66,13 +69,6 @@ pub async fn get_cli_access_status(
 
 #[tauri::command]
 pub async fn install_cli(
-    app_handle: tauri::AppHandle,
-) -> Result<crate::app_infra::MnemaCliStatus, String> {
-    crate::app_infra::install_cli_inner(app_handle).await
-}
-
-#[tauri::command]
-pub async fn reinstall_cli(
     app_handle: tauri::AppHandle,
 ) -> Result<crate::app_infra::MnemaCliStatus, String> {
     crate::app_infra::install_cli_inner(app_handle).await

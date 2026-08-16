@@ -194,7 +194,7 @@ struct MnemaMcp {
 #[tool_router]
 impl MnemaMcp {
     #[tool(
-        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app. Pass `speaker` (a handle from the speakers tool) to get only what one person said, their words included as `turns` — absent on a matched result when the voice was heard but no words could be attributed to it (overlapped speech), never a claim they were silent. An `id` names the recording, not the match, so one `id` can appear twice in a page with different `spanStartMs`; dedupe on (`id`, `spanStartMs`), never on `id` alone. `spanStartMs`/`spanEndMs` and `turns` timestamps are media-relative while `startedAt`/`endedAt` are wall-clock, so they can disagree by a few hundred ms — not an error. A speaker-filtered response also carries `speakerCoverage`: `recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this person, and labeling that voice in Mnema brings the recording into reach) and `recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you could attribute, and never report an empty or short filtered result as proof the person said nothing."
+        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app. Pass `speaker` (a handle from the speakers tool) to get only what one person said, their words included as `turns` — absent on a matched result when the voice was heard but no words could be attributed to it (overlapped speech), never a claim they were silent. An `id` names the recording, not the match, so one `id` can appear twice in a page with different `spanStartMs`; dedupe on (`id`, `spanStartMs`), never on `id` alone. `spanStartMs`/`spanEndMs` and `turns` timestamps are media-relative while `startedAt`/`endedAt` are wall-clock, so they can disagree by a few hundred ms — not an error. A speaker-filtered response also carries `speakerCoverage`: `recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this person, and labeling that voice in Mnema brings the recording into reach) and `recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you could attribute, and never report an empty or short filtered result as proof the person said nothing. `scopeClamped: true` means the user's access permission does not reach as far back as `from` asked and these results cover a SHORTER window than requested — `requiredScope` names the access that would cover it; say so rather than reporting the window as empty."
     )]
     async fn search(
         &self,
@@ -206,7 +206,7 @@ impl MnemaMcp {
     /// The MCP door serves `speakerCoverage` too, and a chat client never reads
     /// `SKILL.md` — these descriptions are its whole contract. See `search`.
     #[tool(
-        description = "List the user's capture activity intervals between two RFC3339 timestamps. Pass `speaker` (a handle from the speakers tool) for when one person was talking; matching intervals carry that speaker's words as `turns`, absent when the voice was heard but no words could be attributed to it — never a claim they were silent. That response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above zero makes the answer PARTIAL rather than proof the person was silent."
+        description = "List the user's capture activity intervals between two RFC3339 timestamps. Pass `speaker` (a handle from the speakers tool) for when one person was talking; matching intervals carry that speaker's words as `turns`, absent when the voice was heard but no words could be attributed to it — never a claim they were silent. That response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above zero makes the answer PARTIAL rather than proof the person was silent. `scopeClamped: true` means the user's access permission does not reach as far back as `from` asked and these intervals cover a SHORTER window than requested — `requiredScope` names the access that would cover it; say so rather than reporting the window as empty."
     )]
     async fn timeline(
         &self,
@@ -260,8 +260,9 @@ impl MnemaMcp {
         command: &str,
         request: BrokeredCaptureRequest,
     ) -> Result<CallToolResult, ErrorData> {
-        // No TTY under an MCP client, but the approval prompt is the Mnema
-        // app's own consent dialog — the user is present, so let it fire.
+        // Always allowed to prompt: approval is the Mnema app's own window, and
+        // an MCP client has a user sitting in front of it. The CLI door now agrees
+        // (the TTY gate is gone) — this is no longer the odd one out.
         match execute_data_request(command, &self.identity, request, true).await {
             Ok(value) => {
                 let text = serde_json::to_string(&value)
@@ -446,6 +447,27 @@ mod tests {
             assert!(
                 description.to_lowercase().contains("partial"),
                 "`{name}` must say a non-zero coverage count makes the answer partial: {description}"
+            );
+        }
+    }
+
+    /// Both tools can now return a page the user's permission cut short. A chat
+    /// client reads only these descriptions, so a `scopeClamped` field it was
+    /// never told about is exactly the silent under-report ADR 0059 exists to end.
+    #[test]
+    fn mcp_range_filterable_tools_name_the_clamp_marker() {
+        let tools = MnemaMcp::tool_router().list_all();
+        for name in ["search", "timeline"] {
+            let description = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("`{name}` must be offered"))
+                .description
+                .clone()
+                .unwrap_or_default();
+            assert!(
+                description.contains("scopeClamped") && description.contains("requiredScope"),
+                "`{name}` can return a clamped page but never names the marker: {description}"
             );
         }
     }

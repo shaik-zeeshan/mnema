@@ -8,6 +8,17 @@ use crate::{
     SearchDateRangeRefinement,
 };
 
+/// Test-only shorthand for the production upsert. Permissions no longer carry a
+/// duration, so this is `label + scope` and nothing else.
+fn create_grant(config_dir: &Path, label: &str, scope: BrokerGrantScope) -> Result<BrokerGrant> {
+    let identity = BrokerClientIdentity::new(label, BrokerClientIdentitySource::Explicit)?;
+    Ok(upsert_grant_for_identity(config_dir, identity, scope)?.grant)
+}
+
+fn stored_grants(config_dir: &Path) -> Vec<BrokerGrant> {
+    load_grants(config_dir).expect("grants should load").grants
+}
+
 fn run_async_test(test: impl std::future::Future<Output = ()>) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -507,8 +518,7 @@ fn recall_context_filters_activities_by_time_window_and_ignores_bad_bound() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -620,8 +630,7 @@ fn sensitive_activity_never_egresses_via_recall_context() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -722,8 +731,7 @@ fn recall_context_range_present_no_tokens_drops_conclusions_keeps_activities() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -756,7 +764,7 @@ fn recall_context_range_present_no_tokens_drops_conclusions_keeps_activities() {
 }
 
 #[test]
-fn capture_request_without_active_grants_returns_authorization_error_without_audit() {
+fn capture_request_without_active_grants_is_denied_and_audited_as_denied() {
     let config_dir = temp_config_dir("no-grants");
 
     let response = execute_request(
@@ -779,21 +787,20 @@ fn capture_request_without_active_grants_returns_authorization_error_without_aud
         response,
         BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required())
     );
-    assert!(load_audit_events(&config_dir).unwrap().events.is_empty());
+    // A permission log that records only successes cannot answer "did anything
+    // try and get turned away", which is the whole point of the activity list.
+    let audit = load_audit_events(&config_dir).unwrap();
+    assert_eq!(audit.events.len(), 1);
+    assert_eq!(audit.events[0].command_type, "search");
+    assert_eq!(audit.events[0].outcome.as_deref(), Some("denied"));
+    assert_eq!(audit.events[0].scope_class, "none");
+    assert_eq!(audit.events[0].grant_id, None);
 }
 
 #[test]
 fn invalid_open_request_is_shaped_and_audited_by_brokered_capture_access() {
     let config_dir = temp_config_dir("invalid-open");
-    create_grant_from_request(
-        &config_dir,
-        BrokerGrantCreateRequest {
-            label: Some("Local agent".to_string()),
-            duration_hours: Some(1),
-            all_retained_history: Some(false),
-        },
-    )
-    .unwrap();
+    create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY).unwrap();
 
     let response = execute_request(
         &config_dir,
@@ -815,28 +822,7 @@ fn invalid_open_request_is_shaped_and_audited_by_brokered_capture_access() {
     assert_eq!(audit.events[0].command_type, "open_in_mnema");
     assert_eq!(audit.events[0].result_count, 0);
     assert_eq!(audit.events[0].scope_class, "time_scoped");
-}
-
-#[test]
-fn grant_create_request_applies_default_label_and_duration_cap() {
-    let config_dir = temp_config_dir("create-grant");
-
-    let grant = create_grant_from_request(
-        &config_dir,
-        BrokerGrantCreateRequest {
-            label: None,
-            duration_hours: Some(24 * 31),
-            all_retained_history: Some(true),
-        },
-    )
-    .unwrap();
-
-    assert_eq!(grant.label, "Local agent");
-    assert_eq!(grant.scope, BrokerGrantScope::AllRetainedHistory);
-    assert_eq!(
-        grant.expires_at_unix_ms - grant.created_at_unix_ms,
-        24 * 30 * 60 * 60 * 1000
-    );
+    assert_eq!(audit.events[0].outcome.as_deref(), Some("scope_rejected"));
 }
 
 #[test]
@@ -1351,8 +1337,7 @@ fn broker_search_refuses_a_forged_cursor_offset_it_could_never_have_issued() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -1482,8 +1467,7 @@ fn broker_timeline_filters_screen_intervals_by_app_and_window_title() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -1682,8 +1666,7 @@ fn broker_timeline_interval_carries_guarded_url_of_representative_frame() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -1745,8 +1728,7 @@ fn broker_timeline_interval_without_browser_url_keeps_context_but_no_url() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -1883,8 +1865,7 @@ fn broker_timeline_interval_url_is_deterministically_the_max_id_landing_frame() 
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -1961,8 +1942,7 @@ fn broker_timeline_batches_representative_snapshot_loads_preserving_urls() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2064,8 +2044,7 @@ fn broker_timeline_without_context_filters_includes_frame_and_audio_intervals() 
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2143,8 +2122,7 @@ fn broker_timeline_audio_interval_opaque_id_round_trips_through_show_text() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2205,8 +2183,7 @@ fn broker_timeline_screen_interval_opaque_id_round_trips_through_show_text() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2283,8 +2260,7 @@ fn broker_show_text_reports_the_split_audio_kind_per_source() {
         let ended_at = format_unix_ms(now);
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -2403,8 +2379,7 @@ fn broker_show_text_authorizes_audio_by_segment_overlap() {
             .expect("job should complete");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -2486,15 +2461,15 @@ fn ask_ai_show_text_authorizes_all_retained_without_persisted_grant() {
             other => panic!("expected ShowText response, got {other:?}"),
         }
 
+        // The synthetic All Retained row is in-memory only: it authorizes, and it
+        // never reaches the permission file, so Ask AI can never render as a
+        // permission row with a Block button that would have to lie.
         assert!(load_grants(&config_dir).unwrap().grants.is_empty());
 
-        let audit = load_audit_events(&config_dir).unwrap();
-        assert_eq!(audit.events.len(), 1);
-        let event = &audit.events[0];
-        assert_eq!(event.scope_class, "all_retained_history");
-        assert_eq!(event.grant_id, Some(ASK_AI_BROKER_GRANT_ID.to_string()));
-        assert_eq!(event.command_type, "show_text");
-        assert_eq!(event.tool_identity, "PI");
+        // And it writes NO audit event. Ask AI runs an agent loop, so one event
+        // per tool call evicted every real CLI event from the 500-slot FIFO
+        // within a couple of dozen conversations (ADR 0059).
+        assert!(load_audit_events(&config_dir).unwrap().events.is_empty());
     });
 }
 
@@ -2652,7 +2627,6 @@ fn execute_rejects_open_captured_url_universally() {
         let grant = create_grant(
             &config_dir,
             "mnema-cli",
-            1,
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -2738,8 +2712,7 @@ fn broker_show_text_resolves_equivalent_reuse_frame_text() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2815,8 +2788,7 @@ fn broker_show_text_rejects_equivalent_reuse_source_outside_scope() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -2841,8 +2813,7 @@ fn broker_rejects_unsigned_opaque_ids_for_authorized_commands() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -2856,7 +2827,7 @@ fn broker_rejects_unsigned_opaque_ids_for_authorized_commands() {
 }
 
 #[test]
-fn active_opaque_authorization_rejects_revoked_grant_replay() {
+fn active_opaque_authorization_rejects_blocked_client_replay() {
     run_async_test(async {
         let config_dir = temp_config_dir("revoked-opaque-replay");
         let save_dir = temp_save_dir("revoked-opaque-replay");
@@ -2878,15 +2849,14 @@ fn active_opaque_authorization_rejects_revoked_grant_replay() {
             .frame;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
         let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
         let opaque_id = encode_signed_opaque_id("frame", frame.id, Some(&grant.id), &secret);
 
-        assert!(revoke_grant(&config_dir, &grant.id).expect("grant should revoke"));
+        assert!(block_client(&config_dir, "mnema CLI").expect("client should block"));
 
         let response = authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
             .await
@@ -2920,14 +2890,12 @@ fn active_opaque_authorization_rejects_ids_for_different_active_grant() {
         let original_grant = create_grant(
             &config_dir,
             "Original agent",
-            1,
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
         let _other_grant = create_grant(
             &config_dir,
             "Other agent",
-            1,
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("other grant should create");
@@ -2935,7 +2903,7 @@ fn active_opaque_authorization_rejects_ids_for_different_active_grant() {
         let opaque_id =
             encode_signed_opaque_id("frame", frame.id, Some(&original_grant.id), &secret);
 
-        assert!(revoke_grant(&config_dir, &original_grant.id).expect("grant should revoke"));
+        assert!(block_client(&config_dir, "Original agent").expect("client should block"));
 
         let response = authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
             .await
@@ -2987,8 +2955,7 @@ fn broker_search_with_zero_limit_does_not_claim_the_walk_is_exhausted() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -3137,13 +3104,8 @@ async fn seed_brokered_audio_segment(
         )
         .await
         .expect("transcription should complete");
-    let grant = create_grant(
-        config_dir,
-        "Local agent",
-        1,
-        BrokerGrantScope::RecentDays { days: 1 },
-    )
-    .expect("grant should create");
+    let grant = create_grant(config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+        .expect("grant should create");
     let secret = load_or_create_opaque_secret(config_dir).expect("secret should load");
     let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
     (segment.id, grant, opaque_id)
@@ -3302,8 +3264,7 @@ fn broker_show_text_for_a_frame_carries_no_speakers() {
             .expect("OCR job should complete");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -3789,8 +3750,7 @@ fn broker_speakers_flags_truncation_only_when_the_cap_bites() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -3840,8 +3800,7 @@ fn broker_speakers_name_fragment_reaches_a_person_below_the_cap() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -3904,8 +3863,7 @@ fn broker_speakers_gives_two_people_sharing_a_name_two_handles() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -3967,8 +3925,7 @@ fn broker_speakers_never_names_a_person_heard_outside_the_grant_scope() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -4034,8 +3991,7 @@ fn broker_speakers_reports_the_assigned_and_recognized_split_per_handle() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -4106,8 +4062,7 @@ fn broker_speakers_counts_an_auto_linked_owner_turn_as_recognized() {
             .expect("infra should initialize");
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -4126,10 +4081,7 @@ fn broker_speakers_counts_an_auto_linked_owner_turn_as_recognized() {
                 AudioSegmentSourceKind::Microphone,
                 "auto-link-session",
                 1,
-                save_dir
-                    .join("auto-link-session.m4a")
-                    .display()
-                    .to_string(),
+                save_dir.join("auto-link-session.m4a").display().to_string(),
                 format_unix_ms(now.saturating_sub(60 * 60 * 1000)),
                 format_unix_ms(now),
             ))
@@ -4165,7 +4117,12 @@ fn broker_speakers_counts_an_auto_linked_owner_turn_as_recognized() {
                     serde_json::to_string(&speaker_analysis_output(
                         "auto-link-session",
                         segment.id,
-                        vec![recognized_cluster("speaker_00", &[1.0, 0.0], owner.id, "You")],
+                        vec![recognized_cluster(
+                            "speaker_00",
+                            &[1.0, 0.0],
+                            owner.id,
+                            "You",
+                        )],
                         vec![speaker_turn("speaker_00", 0, 1_000)],
                     ))
                     .expect("output should encode"),
@@ -4223,8 +4180,7 @@ fn broker_speakers_is_audited_without_recording_who_it_named() {
             .expect("infra should initialize");
         create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -4455,8 +4411,7 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4530,8 +4485,7 @@ fn broker_search_speaker_filter_by_voice_handle_stays_inside_its_own_session() {
         .await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4622,8 +4576,7 @@ fn broker_search_speaker_filter_narrows_away_screen_results() {
         assign_cluster(&infra, "retro-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4694,8 +4647,7 @@ fn speaker_filter_combined_with_screen_filters_is_refused_on_search_and_timeline
         assign_cluster(&infra, "conflict-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4797,8 +4749,7 @@ fn broker_search_query_app_operator_cannot_smuggle_a_screen_filter_past_a_speake
         assign_cluster(&infra, "operator-conflict-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4886,8 +4837,7 @@ fn broker_timeline_speaker_filter_returns_only_that_speakers_audio() {
         .await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -4984,8 +4934,7 @@ fn broker_speaker_filter_rejects_a_handle_this_broker_did_not_sign_or_no_longer_
         assign_cluster(&infra, "forged-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5020,7 +4969,6 @@ fn broker_speaker_filter_rejects_a_handle_this_broker_did_not_sign_or_no_longer_
         let other_grant = create_grant(
             &config_dir,
             "Other agent",
-            1,
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5090,8 +5038,7 @@ fn broker_search_filtered_results_carry_only_the_matched_speakers_words() {
         assign_cluster(&infra, "inline-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5231,8 +5178,7 @@ fn broker_search_two_results_from_one_recording_both_carry_the_speakers_words() 
         assign_cluster(&infra, "two-anchor-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5294,8 +5240,7 @@ fn broker_timeline_filtered_intervals_carry_the_speakers_words() {
         assign_cluster(&infra, "timeline-words-session", "speaker_00", priya.id).await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5383,8 +5328,7 @@ fn broker_search_query_date_operator_cannot_widen_the_grant_window() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::RecentDays { days: 1 },
         )
         .expect("grant should create");
@@ -5428,8 +5372,7 @@ fn broker_search_query_date_operator_cannot_widen_the_grant_window() {
             &infra,
             &[create_grant(
                 &config_dir,
-                "Local agent",
-                1,
+                "mnema CLI",
                 BrokerGrantScope::RecentDays { days: 1 },
             )
             .expect("grant should create")],
@@ -5506,8 +5449,7 @@ fn broker_speaker_filter_counts_unnamed_voices_and_missing_speaker_data_apart() 
         .await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5600,8 +5542,7 @@ fn speakers_then_one_filtered_search_answers_what_a_person_said() {
         }
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5740,8 +5681,7 @@ fn speaker_coverage_never_counts_a_recording_the_filter_returned() {
         .await;
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -5787,15 +5727,16 @@ fn scoped_date_range_normalizes_offset_bounds_to_utc() {
     // `Z`. Capture rows are stored RFC3339-with-`Z` and the audio-segment overlap
     // predicate compares those strings lexicographically, so a surviving
     // `+05:30` suffix would sort as that wall clock in UTC and drop every row on
-    // the far side of the UTC date boundary. Empty `grants` is fine here: with
-    // both bounds supplied, `scoped_date_range` proceeds from an epoch scope
-    // start, which is exactly the unbounded Ask AI case.
+    // the far side of the UTC date boundary. An All Retained permission is the
+    // unbounded case: there is no scope start to clamp against.
+    let grant = ask_ai_all_retained_grant(&BrokerClientIdentity::default_cli());
     let range = scoped_date_range(
-        &[],
+        &grant,
         Some("2020-03-05T00:00:00+05:30".to_string()),
         Some("2020-03-05T23:59:59+05:30".to_string()),
     )
     .expect("bounds parse")
+    .refinement
     .expect("both bounds were supplied");
 
     assert_eq!(range.start_at, "2020-03-04T18:30:00Z");
@@ -5804,11 +5745,12 @@ fn scoped_date_range_normalizes_offset_bounds_to_utc() {
     // Already-`Z` bounds are untouched, so existing callers keep byte-identical
     // strings.
     let utc = scoped_date_range(
-        &[],
+        &grant,
         Some("2020-03-04T18:30:00Z".to_string()),
         Some("2020-03-05T18:29:59Z".to_string()),
     )
     .expect("bounds parse")
+    .refinement
     .expect("both bounds were supplied");
     assert_eq!(utc.start_at, range.start_at);
     assert_eq!(utc.end_at, range.end_at);
@@ -5899,8 +5841,7 @@ fn broker_timeline_offset_bounds_reach_audio_on_the_far_side_of_the_utc_date() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -6041,8 +5982,11 @@ fn broker_activities_walks_the_window_oldest_first_and_uncapped() {
             .expect("infra should initialize");
 
         // Seeded newest-first so a pass-through of insertion order would fail.
-        for (offset, title) in [(3, "Evening review"), (1, "Morning triage"), (2, "Midday build")]
-        {
+        for (offset, title) in [
+            (3, "Evening review"),
+            (1, "Morning triage"),
+            (2, "Midday build"),
+        ] {
             seed_activity_with_frame(
                 &infra,
                 &save_dir,
@@ -6057,8 +6001,7 @@ fn broker_activities_walks_the_window_oldest_first_and_uncapped() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -6140,8 +6083,7 @@ fn sensitive_activity_never_egresses_via_activities() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -6207,8 +6149,7 @@ fn broker_activities_reports_only_the_derived_slice_of_the_window() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -6319,8 +6260,7 @@ fn broker_activities_never_hands_out_an_id_for_an_aged_out_frame() {
 
         let grant = create_grant(
             &config_dir,
-            "Local agent",
-            1,
+            "mnema CLI",
             BrokerGrantScope::AllRetainedHistory,
         )
         .expect("grant should create");
@@ -6348,4 +6288,331 @@ fn broker_activities_never_hands_out_an_id_for_an_aged_out_frame() {
             "no surviving evidence means no id, never a dangling one"
         );
     });
+}
+
+// ---------------------------------------------------------------------------
+// ADR 0059 — CLI Access is a standing per-tool permission with idle expiry.
+// ---------------------------------------------------------------------------
+
+/// The invariant the whole redesign rests on: one row per identity. The old file
+/// was append-only, so every agent session that skipped the documented preamble
+/// minted another row and Settings rendered a graveyard.
+#[test]
+fn approving_the_same_client_twice_replaces_the_row_instead_of_appending() {
+    let config_dir = temp_config_dir("upsert-replaces");
+
+    create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("first approval should store");
+    create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("second approval should store");
+    // A different tool is a different permission, not a second row for this one.
+    create_grant(&config_dir, "Codex", BrokerGrantScope::LAST_DAY)
+        .expect("other tool should store");
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 2, "one row per identity: {stored:?}");
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|grant| grant.normalized_label == "claude code")
+            .count(),
+        1
+    );
+}
+
+/// The highest-risk property in the plan. Opaque result ids are HMAC-signed
+/// against the issuing grant id, so widening a permission must mutate the row in
+/// place — a fresh id would fail re-authorization for every id already handed to
+/// a running agent, mid-task.
+#[test]
+fn widening_a_permission_keeps_the_row_id_so_issued_opaque_ids_survive() {
+    let config_dir = temp_config_dir("upgrade-keeps-id");
+
+    let original = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("first approval should store");
+    let widened = upsert_grant_for_identity(
+        &config_dir,
+        BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+        BrokerGrantScope::AllRetainedHistory,
+    )
+    .expect("widen should store");
+
+    assert!(!widened.created, "a widen is an upgrade, not a new row");
+    assert_eq!(widened.grant.id, original.id);
+    assert_eq!(widened.grant.scope, BrokerGrantScope::AllRetainedHistory);
+    assert_eq!(
+        widened.grant.created_at_unix_ms, original.created_at_unix_ms,
+        "the row is the same permission, not a replacement"
+    );
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, original.id);
+}
+
+/// Blocking and idling out are different user intents. Idle expiry is benign
+/// disuse and re-prompts; a block is a standing rejection that must not quietly
+/// evaporate into a fresh prompt after 30 unused days.
+#[test]
+fn a_blocked_permission_is_never_idle_expired() {
+    let config_dir = temp_config_dir("blocked-never-idles");
+    create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY).expect("approval stores");
+    assert!(block_client(&config_dir, "Claude Code").expect("block should apply"));
+
+    // Age the block far past the idle threshold.
+    with_grants_lock(&config_dir, |grants| {
+        grants.grants[0].last_used_at_unix_ms = now_unix_ms()
+            .saturating_sub(BROKER_GRANT_IDLE_TTL_MS)
+            .saturating_sub(60 * 60 * 1000);
+        save_grants_locked(&config_dir, grants)
+    })
+    .expect("ageing should write");
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(
+        stored.len(),
+        1,
+        "a blocked row survives the prune: {stored:?}"
+    );
+    assert!(stored[0].blocked);
+    assert!(stored[0].blocked_at_unix_ms.is_some());
+    assert!(!grant_is_active(&stored[0], now_unix_ms()));
+
+    // Re-enabling restores access without a prompt, and restarts the idle clock.
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock should apply"));
+    let stored = stored_grants(&config_dir);
+    assert!(!stored[0].blocked);
+    assert!(grant_is_active(&stored[0], now_unix_ms()));
+}
+
+/// The stamp is coarse ON PURPOSE: a brokered read must stay a read (ADR 0041),
+/// not pay a flocked file rewrite per call. Written non-canonically so that any
+/// rewrite at all is visible in the bytes even when no field value would change.
+#[test]
+fn touch_last_used_does_not_rewrite_the_file_inside_the_stamp_interval() {
+    let config_dir = temp_config_dir("touch-coarse");
+    let grant = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("approval stores");
+
+    let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
+    let compact = serde_json::to_string(&BrokerGrantFile {
+        schema_version: 1,
+        grants: vec![grant.clone()],
+    })
+    .expect("grants serialize");
+    fs::write(&path, &compact).expect("compact file writes");
+
+    touch_last_used(&config_dir, "claude code").expect("touch should run");
+    assert_eq!(
+        fs::read_to_string(&path).expect("file reads"),
+        compact,
+        "a fresh stamp must not rewrite the permission file"
+    );
+
+    // An hour-plus stale value does get stamped.
+    with_grants_lock(&config_dir, |grants| {
+        grants.grants[0].last_used_at_unix_ms = now_unix_ms().saturating_sub(2 * 60 * 60 * 1000);
+        save_grants_locked(&config_dir, grants)
+    })
+    .expect("ageing should write");
+    touch_last_used(&config_dir, "claude code").expect("touch should run");
+    let stamped = stored_grants(&config_dir);
+    assert!(
+        now_unix_ms().saturating_sub(stamped[0].last_used_at_unix_ms) < 60 * 1000,
+        "a stale permission is stamped: {stamped:?}"
+    );
+    assert_eq!(stamped[0].id, grant.id, "stamping never re-mints the id");
+}
+
+/// Nothing dead sits in the access list: it is a control surface, not a log.
+#[test]
+fn loading_prunes_idle_expired_rows_but_keeps_blocked_ones() {
+    let config_dir = temp_config_dir("prune-on-load");
+    let stale = now_unix_ms()
+        .saturating_sub(BROKER_GRANT_IDLE_TTL_MS)
+        .saturating_sub(60 * 60 * 1000);
+    let row = |label: &str, blocked: bool| BrokerGrant {
+        id: label.to_string(),
+        label: label.to_string(),
+        normalized_label: normalize_client_label(label).unwrap(),
+        identity_source: BrokerClientIdentitySource::Explicit,
+        created_at_unix_ms: stale,
+        last_used_at_unix_ms: stale,
+        scope: BrokerGrantScope::LAST_DAY,
+        blocked,
+        blocked_at_unix_ms: blocked.then_some(stale),
+    };
+    let mut live = row("Live tool", false);
+    live.last_used_at_unix_ms = now_unix_ms();
+    fs::write(
+        config_dir.join(BROKER_GRANTS_FILE_NAME),
+        serde_json::to_string(&BrokerGrantFile {
+            schema_version: 1,
+            grants: vec![row("Idle tool", false), row("Blocked tool", true), live],
+        })
+        .expect("grants serialize"),
+    )
+    .expect("file writes");
+
+    let labels: Vec<String> = stored_grants(&config_dir)
+        .into_iter()
+        .map(|grant| grant.label)
+        .collect();
+    assert_eq!(labels, vec!["Blocked tool", "Live tool"]);
+
+    // And the prune reaches disk the next time anything opens the lock.
+    with_grants_lock(&config_dir, |_| Ok(())).expect("lock should open");
+    let raw = fs::read_to_string(config_dir.join(BROKER_GRANTS_FILE_NAME)).expect("file reads");
+    assert!(
+        !raw.contains("Idle tool"),
+        "idle row is gone from disk: {raw}"
+    );
+    assert!(raw.contains("Blocked tool"));
+}
+
+/// The live correctness bug slice 2 exists for: an agent that asked for two weeks
+/// with a `lastDay` permission got one day of results and reported there was
+/// nothing there. A confidently incomplete answer is the worst failure mode a
+/// recall product has.
+#[test]
+fn a_request_reaching_past_the_permission_returns_results_and_says_it_was_clamped() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("clamp-marker");
+        let save_dir = temp_save_dir("clamp-marker");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        write_recording_settings(&config_dir, &save_dir);
+        let now = now_unix_ms();
+        let recent = format_unix_ms(now.saturating_sub(60 * 60 * 1000));
+        infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "mic-session",
+                1,
+                save_dir.join("audio.m4a").display().to_string(),
+                recent.clone(),
+                recent.clone(),
+            ))
+            .await
+            .expect("segment should insert");
+
+        let grant = create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+            .expect("grant stores");
+        let timeline = |from: String| {
+            let grant = grant.clone();
+            let config_dir = config_dir.clone();
+            let infra = &infra;
+            async move {
+                broker_timeline(
+                    &config_dir,
+                    infra,
+                    &[grant],
+                    BrokerTimelineRequest {
+                        from,
+                        to: format_unix_ms(now),
+                        limit: Some(50),
+                        app: None,
+                        window_title: None,
+                        url: None,
+                        url_regex: None,
+                        speaker: None,
+                    },
+                )
+                .await
+                .expect("timeline should run")
+                .expect("timeline should authorize")
+            }
+        };
+
+        let clamped = timeline(format_unix_ms(now.saturating_sub(14 * 24 * 60 * 60 * 1000))).await;
+        assert!(
+            !clamped.intervals.is_empty(),
+            "the in-scope slice still comes back"
+        );
+        assert!(clamped.scope_clamped);
+        assert_eq!(clamped.required_scope.as_deref(), Some("allRetained"));
+
+        // Eight days back needs a week-plus, which is still `allRetained`; two
+        // days back is the `last7Days` band.
+        let two_days = timeline(format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000))).await;
+        assert!(two_days.scope_clamped);
+        assert_eq!(two_days.required_scope.as_deref(), Some("last7Days"));
+
+        // Inside the permission, nothing was narrowed and nothing is marked.
+        let unclamped = timeline(format_unix_ms(now.saturating_sub(60 * 60 * 1000))).await;
+        assert!(!unclamped.intervals.is_empty());
+        assert!(!unclamped.scope_clamped);
+        assert_eq!(unclamped.required_scope, None);
+
+        // `search` carries the same marker, and this is the shape of the actual
+        // bug: an EMPTY page for a window the caller was never allowed to see.
+        // Without the marker that reads as "nothing happened in two weeks".
+        let search = |from: String| {
+            let grant = grant.clone();
+            let config_dir = config_dir.clone();
+            let infra = &infra;
+            async move {
+                broker_search(
+                    &config_dir,
+                    infra,
+                    &[grant],
+                    BrokerSearchRequest {
+                        query: "roadmap".to_string(),
+                        from: Some(from),
+                        to: Some(format_unix_ms(now)),
+                        limit: Some(20),
+                        app: None,
+                        window_title: None,
+                        url: None,
+                        url_regex: None,
+                        speaker: None,
+                        cursor: None,
+                    },
+                )
+                .await
+                .expect("search should run")
+                .expect("search should authorize")
+            }
+        };
+        let clamped = search(format_unix_ms(now.saturating_sub(14 * 24 * 60 * 60 * 1000))).await;
+        assert!(clamped.results.is_empty());
+        assert!(clamped.scope_clamped);
+        assert_eq!(clamped.required_scope.as_deref(), Some("allRetained"));
+
+        let unclamped = search(format_unix_ms(now.saturating_sub(60 * 60 * 1000))).await;
+        assert!(!unclamped.scope_clamped);
+        assert_eq!(unclamped.required_scope, None);
+    });
+}
+
+#[test]
+fn minimum_scope_for_start_maps_each_band() {
+    let now = now_unix_ms();
+    let ago = |ms: u64| now.saturating_sub(ms);
+    assert_eq!(
+        minimum_scope_for_start(ago(60 * 60 * 1000), now),
+        BrokerGrantScope::LAST_DAY
+    );
+    assert_eq!(
+        minimum_scope_for_start(ago(3 * 24 * 60 * 60 * 1000), now),
+        BrokerGrantScope::LAST_7_DAYS
+    );
+    assert_eq!(
+        minimum_scope_for_start(ago(30 * 24 * 60 * 60 * 1000), now),
+        BrokerGrantScope::AllRetainedHistory
+    );
+    assert_eq!(BrokerGrantScope::LAST_DAY.wire_name(), "lastDay");
+    assert_eq!(BrokerGrantScope::LAST_7_DAYS.wire_name(), "last7Days");
+    assert_eq!(
+        BrokerGrantScope::AllRetainedHistory.wire_name(),
+        "allRetained"
+    );
+    assert_eq!(
+        BrokerGrantScope::from_wire_name("last7Days"),
+        Some(BrokerGrantScope::LAST_7_DAYS)
+    );
+    assert!(BrokerGrantScope::AllRetainedHistory.covers(&BrokerGrantScope::LAST_7_DAYS));
+    assert!(!BrokerGrantScope::LAST_DAY.covers(&BrokerGrantScope::LAST_7_DAYS));
+    assert!(BrokerGrantScope::LAST_7_DAYS.covers(&BrokerGrantScope::LAST_DAY));
 }

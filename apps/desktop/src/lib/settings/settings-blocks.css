@@ -368,11 +368,9 @@
     box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  .settings-shell .grant-row__status--expired {
-    background: var(--app-warn);
-  }
-
-  .settings-shell .grant-row__status--revoked {
+  /* Blocked is the only inactive state a permission can be in: idle-expired rows
+     are pruned backend-side and never reach this list (ADR 0059). */
+  .settings-shell .grant-row__status--blocked {
     background: var(--app-danger);
   }
 

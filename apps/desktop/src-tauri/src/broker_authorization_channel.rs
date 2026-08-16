@@ -10,13 +10,11 @@ use std::{
 };
 
 use app_infra::brokered_access::{
-    BrokerClientIdentity, BrokerClientIdentitySource, BrokerGrantScope, BrokeredCaptureAccess,
+    BrokerClientIdentity, BrokerClientIdentitySource, BrokerGrantFile, BrokerGrantScope,
+    BrokeredCaptureAccess,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
-use tauri_plugin_dialog::{
-    DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
-};
 use tokio::sync::oneshot;
 #[cfg(unix)]
 use tokio::{
@@ -27,10 +25,8 @@ use tokio::{
 
 use crate::windows;
 
-const QUICK_APPROVAL_SCOPE: &str = "lastDay";
-const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
-/// Cap on the client-supplied name shown in the consent prompt, so it can't push
-/// the grant disclosure out of the dialog.
+/// Cap on the client-supplied name shown in the approval window, so it can't push
+/// the rest of the consent copy off the sheet.
 const CLIENT_LABEL_MAX_CHARS: usize = 64;
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,7 +52,6 @@ pub struct AuthorizationChannelRequest {
     pub client: AuthorizationChannelClient,
     pub command: String,
     pub scope: AuthorizationChannelScope,
-    pub duration: AuthorizationChannelDuration,
     pub interactive: bool,
     pub created_at: String,
 }
@@ -75,13 +70,21 @@ pub struct AuthorizationChannelScope {
     pub preferred: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthorizationChannelDuration {
-    pub minimum_seconds: u64,
-    pub preferred_seconds: u64,
-}
-
+/// One response shape for every outcome. `decision` is the branch the caller
+/// switches on; `reason` names *which* of that branch's cases fired.
+///
+/// - `approved` — `grant` is present and states the scope actually granted. The
+///   caller MUST check it covers what it asked for: an existing permission is
+///   widened, never narrowed, but a user can approve exactly the minimum.
+/// - `denied` + `userCancelled` — the user denied, or the window was closed.
+/// - `denied` + `closed` — the approval waiter was dropped without a verdict.
+/// - `blocked` + `blocked` — a standing user rejection for this client. No
+///   window opened and none will; only Settings can lift it. Do not retry.
+/// - `unavailable` + `busy` — another approval is already in flight. The app IS
+///   running; do not relaunch it.
+/// - `unavailable` + `onboardingRequired` — onboarding is not finished.
+/// - `unavailable` + `invalidRequest` / `unsupportedVersion` — the request did
+///   not parse, was oversized, or carried a `schemaVersion` other than 1.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizationChannelResponse {
@@ -99,8 +102,13 @@ pub struct AuthorizationChannelResponse {
 pub struct AuthorizationChannelGrant {
     pub id: String,
     pub client_label: String,
+    /// The scope the standing permission now carries — `lastDay` | `last7Days` |
+    /// `allRetained`. There is no expiry: the row lives until it idles out or is
+    /// blocked in Settings.
     pub scope: String,
-    pub expires_at: String,
+    /// `true` when this approval created the permission, `false` when it widened
+    /// an existing one (which keeps its id, so opaque ids stay valid).
+    pub created: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,8 +119,6 @@ pub struct PendingCliAccessRequestDto {
     pub command: String,
     pub minimum_scope: String,
     pub preferred_scope: String,
-    pub minimum_duration_seconds: u64,
-    pub preferred_duration_seconds: u64,
     pub created_at: String,
 }
 
@@ -120,7 +126,6 @@ pub struct PendingCliAccessRequestDto {
 #[serde(rename_all = "camelCase")]
 pub struct ApproveCliAccessRequest {
     pub scope: String,
-    pub duration_seconds: u64,
 }
 
 struct ActiveRequestGuard {
@@ -217,6 +222,15 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
         }
     };
 
+    // Blocked is a STANDING rejection, so it is answered before anything else —
+    // ahead of the single-flight guard, so a blocked client can never be told
+    // `busy` (a code that invites a retry) and can never queue behind an
+    // unrelated approval. No window opens; only Settings lifts it.
+    if client_is_blocked(&app, &request.client.label) {
+        let _ = write_blocked(stream, request.request_id).await;
+        return;
+    }
+
     let state = app.state::<BrokerAuthorizationChannelState>();
     let Some(_guard) = ActiveRequestGuard::acquire(state.active.clone()) else {
         let _ = write_unavailable(stream, request.request_id, "busy").await;
@@ -229,37 +243,22 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
         return;
     }
 
-    match prompt_for_default_access(&app, &request).await {
-        AuthorizationDecision::Approved => {
-            let response = quick_approval_grant_policy_for_request(&request)
-                .and_then(|policy| create_grant_response(&app, &request, policy))
-                .unwrap_or_else(|_| AuthorizationChannelResponse {
-                    schema_version: 1,
-                    request_id: request.request_id.clone(),
-                    decision: "unavailable".to_string(),
-                    reason: Some("invalidRequest".to_string()),
-                    grant: None,
-                });
+    // The window is the only consent surface: approval now fires a few times in
+    // a tool's life, so a native fast path bought nothing and cost the identity
+    // provenance chip and the anti-reflex affordances (focus on Deny, Enter
+    // unbound, Esc denies).
+    let (send, receive) = oneshot::channel();
+    if !store_pending_request(&app, request.clone(), send) {
+        let _ = write_unavailable(stream, request.request_id, "busy").await;
+        return;
+    }
+    let _ = windows::open_cli_access_request_window(&app);
+    match receive.await {
+        Ok(response) => {
             let _ = write_response(stream, response).await;
         }
-        AuthorizationDecision::MoreOptions => {
-            let (send, receive) = oneshot::channel();
-            if !store_pending_request(&app, request.clone(), send) {
-                let _ = write_unavailable(stream, request.request_id, "busy").await;
-                return;
-            }
-            let _ = windows::open_cli_access_request_window(&app);
-            match receive.await {
-                Ok(response) => {
-                    let _ = write_response(stream, response).await;
-                }
-                Err(_) => {
-                    let _ = write_denied(stream, request.request_id, "closed").await;
-                }
-            }
-        }
-        AuthorizationDecision::Cancelled => {
-            let _ = write_denied(stream, request.request_id, "userCancelled").await;
+        Err(_) => {
+            let _ = write_denied(stream, request.request_id, "closed").await;
         }
     }
 }
@@ -319,14 +318,6 @@ fn take_pending_request(app: &tauri::AppHandle) -> Option<PendingAuthorizationRe
         .and_then(|mut pending| pending.take())
 }
 
-pub fn has_pending_cli_access_request(app: &tauri::AppHandle) -> bool {
-    app.state::<BrokerAuthorizationChannelState>()
-        .pending
-        .lock()
-        .map(|pending| pending.is_some())
-        .unwrap_or(false)
-}
-
 #[tauri::command]
 pub fn get_pending_cli_access_request(app: tauri::AppHandle) -> Option<PendingCliAccessRequestDto> {
     app.state::<BrokerAuthorizationChannelState>()
@@ -336,12 +327,15 @@ pub fn get_pending_cli_access_request(app: tauri::AppHandle) -> Option<PendingCl
         .and_then(|pending| pending.as_ref().map(|pending| pending.request.clone()))
         .map(|request| PendingCliAccessRequestDto {
             request_id: request.request_id,
-            client: request.client,
+            client: AuthorizationChannelClient {
+                // The window is now the ONLY consent surface, and it renders this
+                // name straight into the requester chip. Sanitize on the way out.
+                label: client_label_display(&request.client.label),
+                source: request.client.source,
+            },
             command: request.command,
             minimum_scope: request.scope.minimum,
             preferred_scope: request.scope.preferred,
-            minimum_duration_seconds: request.duration.minimum_seconds,
-            preferred_duration_seconds: request.duration.preferred_seconds,
             created_at: request.created_at,
         })
 }
@@ -354,19 +348,17 @@ pub fn approve_pending_cli_access_request(
     let pending = take_pending_request_for_approval(&app, &approval)?;
     let mut request = pending.request;
     request.scope.preferred = approval.scope;
-    request.duration.preferred_seconds = approval.duration_seconds;
-    let response = create_grant_response(
-        &app,
-        &request,
-        grant_policy(&request.scope.preferred, request.duration.preferred_seconds),
-    )
-    .unwrap_or_else(|_| AuthorizationChannelResponse {
-        schema_version: 1,
-        request_id: request.request_id,
-        decision: "unavailable".to_string(),
-        reason: Some("invalidRequest".to_string()),
-        grant: None,
-    });
+    let request_id = request.request_id.clone();
+    let response = BrokerGrantScope::from_wire_name(&request.scope.preferred)
+        .ok_or_else(|| "unknown scope".to_string())
+        .and_then(|scope| create_grant_response(&app, &request, scope))
+        .unwrap_or_else(|_| AuthorizationChannelResponse {
+            schema_version: 1,
+            request_id,
+            decision: "unavailable".to_string(),
+            reason: Some("invalidRequest".to_string()),
+            grant: None,
+        });
     let _ = pending.respond.send(response);
     let _ = close_cli_access_request_window(&app);
     Ok(())
@@ -403,9 +395,6 @@ fn validate_cli_access_approval(
     if !scope_satisfies_minimum(&approval.scope, &request.scope.minimum) {
         return Err("selected scope does not satisfy the pending command".to_string());
     }
-    if approval.duration_seconds < request.duration.minimum_seconds {
-        return Err("selected duration does not satisfy the pending command".to_string());
-    }
     Ok(())
 }
 
@@ -436,27 +425,26 @@ fn close_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String>
     Ok(())
 }
 
+/// Does the selected scope cover the request's minimum? Both sides are wire
+/// spellings, so both route through [`BrokerGrantScope`] rather than being
+/// compared as strings — an unrecognized spelling is a rejection, never a
+/// coincidental match.
 fn scope_satisfies_minimum(selected: &str, minimum: &str) -> bool {
-    selected == minimum || selected == "allRetained"
-}
-
-/// Plain-language noun phrase for a wire scope, for the consent prompt's prose.
-/// Mirrors the `scopeProse` map in `routes/access/request/+page.svelte` so the
-/// quick dialog and the full sheet describe the same grant the same way.
-fn scope_prose(scope: &str) -> &'static str {
-    if scope == "allRetained" {
-        "your entire retained capture history"
-    } else {
-        "searchable Mnema text from the last day"
+    match (
+        BrokerGrantScope::from_wire_name(selected),
+        BrokerGrantScope::from_wire_name(minimum),
+    ) {
+        (Some(selected), Some(minimum)) => selected.covers(&minimum),
+        _ => false,
     }
 }
 
 /// The client name is wire input from whoever connected to the socket, and it
-/// lands in the consent body directly ahead of the sentence that discloses what
-/// Allow actually grants. Control characters (paragraph breaks) and unbounded
-/// length would let that name restructure the dialog — fabricating the app's own
-/// copy, or pushing the disclosure out of the dialog entirely. Same normalization
-/// app-infra applies to a stored grant label (`display_client_label`), plus a cap.
+/// lands in the approval window's requester chip. Control characters and
+/// unbounded length would let that name restructure the sheet — fabricating the
+/// app's own copy, or pushing the consent controls out of view. Same
+/// normalization app-infra applies to a stored grant label
+/// (`display_client_label`), plus a cap.
 /// Characters that render as nothing, or that reorder the text around them.
 ///
 /// `char::is_control()` covers only the C0/C1 blocks (Unicode `Cc`), so bidi
@@ -464,9 +452,8 @@ fn scope_prose(scope: &str) -> &'static str {
 /// U+FEFF, tag characters) sail straight past it — they are `Cf`, and none of them
 /// is `White_Space`. In a consent prompt that is not cosmetic: a label made
 /// entirely of zero-width characters is non-empty by `is_empty()`, so it defeats
-/// the "An unnamed local tool" fallback below and the dialog names no requester at
-/// all; and an override reverses the display order of the rest of the sentence
-/// stating what the client asked for.
+/// the "An unnamed local tool" fallback below and the window names no requester at
+/// all; and an override reverses the display order of the copy around it.
 ///
 /// The set is Unicode's `Default_Ignorable_Code_Point` — the closed, stable list
 /// of "this is meant to render as nothing", which is exactly the property that
@@ -493,7 +480,7 @@ fn is_invisible_or_reordering(ch: char) -> bool {
     )
 }
 
-fn client_label_prose(label: &str) -> String {
+fn client_label_display(label: &str) -> String {
     let cleaned = label
         .chars()
         .filter(|ch| !is_invisible_or_reordering(*ch))
@@ -515,112 +502,38 @@ fn client_label_prose(label: &str) -> String {
         .collect()
 }
 
-/// Plain-language duration for the consent prompt ("24 hours", "7 days").
-fn duration_prose(seconds: u64) -> String {
-    let hours = seconds.div_ceil(60 * 60).max(1);
-    match hours {
-        1 => "1 hour".to_string(),
-        h if h % 24 == 0 && h > 24 => format!("{} days", h / 24),
-        24 => "24 hours".to_string(),
-        h => format!("{h} hours"),
-    }
-}
-
-/// Body copy for the quick "Allow CLI Access?" dialog.
+/// Is there a standing block for this client? Read before anything else in
+/// `handle_connection`, so a blocked tool never opens a window and never sees a
+/// retryable reason code.
 ///
-/// This must describe the access the client ACTUALLY asked for, and — when Allow
-/// would grant less than that — say so. The prompt previously hardcoded "from the
-/// last day for 24 hours" regardless of the request, so a client asking for the
-/// entire retained history was consented to under a description of a much narrower
-/// grant, and Allow silently minted the narrow one. Neither side learned that the
-/// request had been downgraded: `validate_cli_access_approval` only rejects a quick
-/// approval that fails the request's MINIMUM, and every CLI request sends a
-/// `lastDay` minimum, so the quick path always "succeeded".
-///
-/// The safe default is deliberately kept — Allow still grants only
-/// [`QUICK_APPROVAL_SCOPE`] for [`QUICK_APPROVAL_DURATION_SECONDS`], so an
-/// inattentive click can never hand over full history. What changes is that the
-/// dialog stops misdescribing the request and points at More Options, which opens
-/// the full sheet already seeded with what the client asked for.
-fn default_prompt_body(request: &AuthorizationChannelRequest) -> String {
-    let wants = format!(
-        "{} wants access to {} for {}.",
-        client_label_prose(&request.client.label),
-        scope_prose(&request.scope.preferred),
-        duration_prose(request.duration.preferred_seconds),
-    );
-    let quick_covers_scope = scope_satisfies_minimum(QUICK_APPROVAL_SCOPE, &request.scope.preferred);
-    let quick_covers_duration = QUICK_APPROVAL_DURATION_SECONDS >= request.duration.preferred_seconds;
-    if quick_covers_scope && QUICK_APPROVAL_DURATION_SECONDS == request.duration.preferred_seconds {
-        return wants;
-    }
-    // The fixed grant can also be WIDER than the request (`--duration 1h` still
-    // mints 24 hours), and that direction is the unsafe one to leave unsaid: the
-    // user would consent to the sentence above and get more than it describes.
-    // "only" is the narrowing case; otherwise just state what Allow hands over.
-    let qualifier = if quick_covers_scope && quick_covers_duration {
-        ""
-    } else {
-        " only"
+/// Failures (no config dir, an unreadable permission file) resolve to "not
+/// blocked": the cost is that the user is asked, and the window still lets them
+/// refuse.
+#[cfg(unix)]
+fn client_is_blocked(app: &tauri::AppHandle, label: &str) -> bool {
+    let Ok(config_dir) = app.path().app_config_dir() else {
+        return false;
     };
-    format!(
-        "{wants}\n\nAllow grants{qualifier} {} for {}. Use More Options to review and grant what it asked for.",
-        scope_prose(QUICK_APPROVAL_SCOPE),
-        duration_prose(QUICK_APPROVAL_DURATION_SECONDS),
-    )
+    let Ok(grants) = BrokeredCaptureAccess::from_config_dir(config_dir).list_grants() else {
+        return false;
+    };
+    grant_file_blocks(&grants, label)
 }
 
-enum AuthorizationDecision {
-    Approved,
-    MoreOptions,
-    Cancelled,
+fn grant_file_blocks(grants: &BrokerGrantFile, label: &str) -> bool {
+    let Some(normalized) = app_infra::brokered_access::normalize_client_label(label) else {
+        return false;
+    };
+    grants
+        .grants
+        .iter()
+        .any(|grant| grant.blocked && grant.normalized_label.eq_ignore_ascii_case(&normalized))
 }
 
-async fn prompt_for_default_access(
-    app: &tauri::AppHandle,
+fn identity_for_request(
     request: &AuthorizationChannelRequest,
-) -> AuthorizationDecision {
-    let app = app.clone();
-    let request = request.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let body = default_prompt_body(&request);
-        match app
-            .dialog()
-            .message(body)
-            .kind(MessageDialogKind::Info)
-            .title("Allow CLI Access?")
-            .buttons(MessageDialogButtons::YesNoCancelCustom(
-                "Allow".to_string(),
-                "More Options".to_string(),
-                "Cancel".to_string(),
-            ))
-            .blocking_show_with_result()
-        {
-            MessageDialogResult::Yes => AuthorizationDecision::Approved,
-            MessageDialogResult::No => AuthorizationDecision::MoreOptions,
-            MessageDialogResult::Custom(label) if label == "Allow" => {
-                AuthorizationDecision::Approved
-            }
-            MessageDialogResult::Custom(label) if label == "More Options" => {
-                AuthorizationDecision::MoreOptions
-            }
-            _ => AuthorizationDecision::Cancelled,
-        }
-    })
-    .await
-    .unwrap_or(AuthorizationDecision::Cancelled)
-}
-
-fn create_grant_response(
-    app: &tauri::AppHandle,
-    request: &AuthorizationChannelRequest,
-    policy: GrantPolicy,
-) -> Result<AuthorizationChannelResponse, String> {
-    let config_dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("failed to resolve app config dir: {error}"))?;
-    let identity = BrokerClientIdentity::new(
+) -> Result<BrokerClientIdentity, String> {
+    BrokerClientIdentity::new(
         request.client.label.clone(),
         match request.client.source.as_str() {
             "explicit" => BrokerClientIdentitySource::Explicit,
@@ -629,9 +542,37 @@ fn create_grant_response(
             _ => BrokerClientIdentitySource::Defaulted,
         },
     )
-    .map_err(|error| error.to_string())?;
-    let grant = BrokeredCaptureAccess::from_config_dir(config_dir)
-        .create_grant_for_identity(identity, policy.hours, policy.scope.clone())
+    .map_err(|error| error.to_string())
+}
+
+fn create_grant_response(
+    app: &tauri::AppHandle,
+    request: &AuthorizationChannelRequest,
+    scope: BrokerGrantScope,
+) -> Result<AuthorizationChannelResponse, String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("failed to resolve app config dir: {error}"))?;
+    create_grant_response_in(&config_dir, request, scope)
+}
+
+/// Upsert this identity's standing permission and describe what it now grants.
+///
+/// The response reports the scope the ROW carries after the approval, which is
+/// the scope the user picked — not the scope the client asked for. The picker
+/// can set a scope NARROWER than the preferred one, so the caller MUST check the
+/// returned grant covers its request instead of treating `approved` as a yes.
+/// The row keeps its id across the upsert, so opaque ids already handed to a
+/// running agent keep resolving.
+fn create_grant_response_in(
+    config_dir: &std::path::Path,
+    request: &AuthorizationChannelRequest,
+    scope: BrokerGrantScope,
+) -> Result<AuthorizationChannelResponse, String> {
+    let identity = identity_for_request(request)?;
+    let upsert = BrokeredCaptureAccess::from_config_dir(config_dir)
+        .upsert_grant_for_identity(identity, scope)
         .map_err(|error| error.to_string())?;
     Ok(AuthorizationChannelResponse {
         schema_version: 1,
@@ -639,48 +580,27 @@ fn create_grant_response(
         decision: "approved".to_string(),
         reason: None,
         grant: Some(AuthorizationChannelGrant {
-            id: grant.id,
-            client_label: grant.label,
-            scope: match policy.scope {
-                BrokerGrantScope::RecentDays { .. } => "lastDay",
-                BrokerGrantScope::AllRetainedHistory => "allRetained",
-            }
-            .to_string(),
-            expires_at: app_infra::brokered_access::format_broker_unix_ms(grant.expires_at_unix_ms),
+            id: upsert.grant.id,
+            client_label: upsert.grant.label,
+            scope: upsert.grant.scope.wire_name().to_string(),
+            created: upsert.created,
         }),
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct GrantPolicy {
-    scope: BrokerGrantScope,
-    hours: u64,
-}
-
-fn grant_policy(scope: &str, duration_seconds: u64) -> GrantPolicy {
-    GrantPolicy {
-        scope: if scope == "allRetained" {
-            BrokerGrantScope::AllRetainedHistory
-        } else {
-            BrokerGrantScope::RecentDays { days: 1 }
+#[cfg(unix)]
+async fn write_blocked(stream: UnixStream, request_id: String) -> std::io::Result<()> {
+    write_response(
+        stream,
+        AuthorizationChannelResponse {
+            schema_version: 1,
+            request_id,
+            decision: "blocked".to_string(),
+            reason: Some("blocked".to_string()),
+            grant: None,
         },
-        hours: duration_seconds.div_ceil(60 * 60).clamp(1, 24 * 7),
-    }
-}
-
-fn quick_approval_grant_policy() -> GrantPolicy {
-    grant_policy(QUICK_APPROVAL_SCOPE, QUICK_APPROVAL_DURATION_SECONDS)
-}
-
-fn quick_approval_grant_policy_for_request(
-    request: &AuthorizationChannelRequest,
-) -> Result<GrantPolicy, String> {
-    let approval = ApproveCliAccessRequest {
-        scope: QUICK_APPROVAL_SCOPE.to_string(),
-        duration_seconds: QUICK_APPROVAL_DURATION_SECONDS,
-    };
-    validate_cli_access_approval(request, &approval)?;
-    Ok(quick_approval_grant_policy())
+    )
+    .await
 }
 
 #[cfg(unix)]
@@ -766,12 +686,10 @@ fn default_app_config_dir_for_identifier(identifier: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_infra::brokered_access::BrokerGrant;
     use tokio::sync::oneshot::error::TryRecvError;
 
-    fn test_authorization_request(
-        minimum_scope: &str,
-        minimum_duration_seconds: u64,
-    ) -> AuthorizationChannelRequest {
+    fn test_authorization_request(minimum_scope: &str) -> AuthorizationChannelRequest {
         AuthorizationChannelRequest {
             schema_version: 1,
             request_id: "request-1".to_string(),
@@ -784,13 +702,15 @@ mod tests {
                 minimum: minimum_scope.to_string(),
                 preferred: minimum_scope.to_string(),
             },
-            duration: AuthorizationChannelDuration {
-                minimum_seconds: minimum_duration_seconds,
-                preferred_seconds: minimum_duration_seconds,
-            },
             interactive: true,
             created_at: "2026-05-23T00:00:00Z".to_string(),
         }
+    }
+
+    fn request_preferring(preferred_scope: &str) -> AuthorizationChannelRequest {
+        let mut request = test_authorization_request("lastDay");
+        request.scope.preferred = preferred_scope.to_string();
+        request
     }
 
     #[test]
@@ -799,275 +719,223 @@ mod tests {
         assert!(path.ends_with("com.example.mnema-test/cli-access.sock"));
     }
 
+    /// Every scope pair the wire can send, routed through `BrokerGrantScope` so
+    /// the window, the CLI and the permission row cannot disagree about which
+    /// spelling outranks which. `last7Days` is the band a string compare missed.
     #[test]
-    fn all_retained_satisfies_last_day_minimum() {
+    fn scope_ranking_matches_the_permission_scopes() {
         assert!(scope_satisfies_minimum("allRetained", "lastDay"));
-    }
-
-    #[test]
-    fn last_day_does_not_satisfy_all_retained_minimum() {
+        assert!(scope_satisfies_minimum("allRetained", "last7Days"));
+        assert!(scope_satisfies_minimum("last7Days", "lastDay"));
+        assert!(scope_satisfies_minimum("lastDay", "lastDay"));
         assert!(!scope_satisfies_minimum("lastDay", "allRetained"));
+        assert!(!scope_satisfies_minimum("lastDay", "last7Days"));
+        assert!(!scope_satisfies_minimum("last7Days", "allRetained"));
+        // An unrecognized spelling is never a coincidental match.
+        assert!(!scope_satisfies_minimum("forever", "forever"));
     }
 
-    /// Build a request whose MINIMUM stays `lastDay`/1h — as every real CLI request
-    /// does — while the PREFERRED side asks for more. This is the shape the quick
-    /// prompt used to misdescribe.
-    fn request_preferring(preferred_scope: &str, preferred_seconds: u64) -> AuthorizationChannelRequest {
-        let mut request = test_authorization_request("lastDay", 60 * 60);
-        request.scope.preferred = preferred_scope.to_string();
-        request.duration.preferred_seconds = preferred_seconds;
-        request
+    fn blocked_grant(label: &str) -> BrokerGrant {
+        BrokerGrant {
+            id: "grant-1".to_string(),
+            label: label.to_string(),
+            normalized_label: app_infra::brokered_access::normalize_client_label(label)
+                .expect("test label normalizes"),
+            identity_source: BrokerClientIdentitySource::Explicit,
+            created_at_unix_ms: 1,
+            last_used_at_unix_ms: 1,
+            scope: BrokerGrantScope::LAST_DAY,
+            blocked: true,
+            blocked_at_unix_ms: Some(2),
+        }
+    }
+
+    /// A blocked client is a STANDING rejection: the connection is answered from
+    /// the permission file alone, so no approval window ever opens and the user
+    /// is never asked again. This is the check `handle_connection` runs before it
+    /// even takes the single-flight guard.
+    #[test]
+    fn a_blocked_client_is_refused_from_the_permission_file_alone() {
+        let grants = BrokerGrantFile {
+            schema_version: 1,
+            grants: vec![blocked_grant("Claude Code")],
+        };
+
+        // Matched by the same normalization the permission row is keyed on, so
+        // case and separator variants of the name stay blocked.
+        assert!(grant_file_blocks(&grants, "Claude Code"));
+        assert!(grant_file_blocks(&grants, "claude-code"));
+        assert!(!grant_file_blocks(&grants, "Some Other Tool"));
+
+        let mut unblocked = grants.clone();
+        unblocked.grants[0].blocked = false;
+        assert!(!grant_file_blocks(&unblocked, "Claude Code"));
     }
 
     #[test]
-    fn quick_prompt_names_the_scope_the_client_actually_asked_for() {
-        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
+    fn a_blocked_response_names_the_block_on_both_fields() {
+        tauri::async_runtime::block_on(async {
+            let (client, server) = UnixStream::pair().expect("socket pair should open");
+            write_blocked(server, "request-1".to_string())
+                .await
+                .expect("blocked response should write");
 
-        assert!(
-            body.contains("your entire retained capture history"),
-            "the prompt must not describe a broad request as a narrow one: {body}"
+            let response = read_response(client).await;
+            assert_eq!(response.decision, "blocked");
+            assert_eq!(response.reason.as_deref(), Some("blocked"));
+            assert!(
+                response.grant.is_none(),
+                "a blocked client is granted nothing"
+            );
+        });
+    }
+
+    async fn read_response(mut stream: UnixStream) -> AuthorizationChannelResponse {
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .await
+            .expect("response should read");
+        serde_json::from_slice(&raw).expect("response should parse")
+    }
+
+    /// Widening a permission MUST keep the row's id: opaque result ids are
+    /// HMAC-signed against the issuing grant id, so a new id would invalidate
+    /// every id already handed to a running agent, mid-task. The response also
+    /// has to report the scope the ROW now carries.
+    #[test]
+    fn approving_an_existing_client_reuses_the_row_and_keeps_its_id() {
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let request = request_preferring("lastDay");
+
+        let first =
+            create_grant_response_in(config_dir.path(), &request, BrokerGrantScope::LAST_DAY)
+                .expect("first approval should mint a permission");
+        let first_grant = first.grant.expect("an approval carries its grant");
+        assert!(first_grant.created, "the first approval creates the row");
+        assert_eq!(first_grant.scope, "lastDay");
+
+        let second = create_grant_response_in(
+            config_dir.path(),
+            &request,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("widening should succeed");
+        let second_grant = second.grant.expect("an approval carries its grant");
+
+        assert_eq!(
+            second_grant.id, first_grant.id,
+            "a widen must reuse the row, so ids already issued keep resolving"
         );
-    }
-
-    #[test]
-    fn quick_prompt_discloses_that_allow_grants_less_than_requested() {
-        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
-
         assert!(
-            body.contains("Allow grants only"),
-            "a downgrade must be disclosed, not silent: {body}"
+            !second_grant.created,
+            "the second approval widened an existing row"
         );
-        assert!(body.contains("More Options"), "and must point at the way to grant it: {body}");
+        assert_eq!(second_grant.scope, "allRetained");
+        assert_eq!(second.decision, "approved");
+
+        let stored = BrokeredCaptureAccess::from_config_dir(config_dir.path())
+            .list_grants()
+            .expect("permissions should load");
+        assert_eq!(stored.grants.len(), 1, "one row per client, never a second");
     }
 
+    /// An approval SETS the row's scope, so it can hand back less than the client
+    /// asked for — the user picks in the window, and the picker only enforces the
+    /// request's minimum. That is exactly why the response has to state the scope
+    /// and why the caller has to verify it covers the request rather than reading
+    /// `approved` as a yes.
     #[test]
-    fn quick_prompt_discloses_a_duration_downgrade_too() {
-        let body = default_prompt_body(&request_preferring("lastDay", 7 * 24 * 60 * 60));
+    fn an_approval_reports_the_scope_the_row_actually_carries() {
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let request = request_preferring("allRetained");
 
-        assert!(body.contains("7 days"), "names the requested duration: {body}");
-        assert!(body.contains("Allow grants only"), "discloses the downgrade: {body}");
-    }
+        create_grant_response_in(
+            config_dir.path(),
+            &request,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("first approval should mint a permission");
+        let narrowed =
+            create_grant_response_in(config_dir.path(), &request, BrokerGrantScope::LAST_DAY)
+                .expect("a narrower approval still succeeds")
+                .grant
+                .expect("an approval carries its grant");
 
-    #[test]
-    fn quick_prompt_stays_a_single_sentence_when_allow_grants_exactly_what_was_asked() {
-        let body = default_prompt_body(&request_preferring("lastDay", 24 * 60 * 60));
-
-        assert!(
-            !body.contains("Allow grants only"),
-            "no downgrade to disclose, so no second paragraph: {body}"
+        assert_eq!(
+            narrowed.scope, "lastDay",
+            "the response states what the row carries, not what was asked for"
         );
+        let stored = BrokeredCaptureAccess::from_config_dir(config_dir.path())
+            .list_grants()
+            .expect("permissions should load");
+        assert_eq!(stored.grants.len(), 1);
+        assert_eq!(stored.grants[0].scope, BrokerGrantScope::LAST_DAY);
+        assert_eq!(stored.grants[0].id, narrowed.id, "still the same row");
     }
 
     /// A name made only of invisible characters is not a name. `is_control()` does
     /// not cover them, so an all-zero-width label survives the empty check and the
-    /// consent dialog renders with NO visible requester at all — defeating the
+    /// approval window renders with NO visible requester at all — defeating the
     /// fallback that exists to guarantee one.
     #[test]
-    fn quick_prompt_falls_back_when_a_client_name_renders_as_nothing() {
-        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
-        request.client.label = "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{2060}".to_string();
-
-        let body = default_prompt_body(&request);
-
-        assert!(
-            body.starts_with("An unnamed local tool wants access to"),
-            "an invisible name must fall back to the unnamed wording: {body:?}"
-        );
-    }
-
-    /// Bidi overrides and isolates reorder every character after them when the
-    /// dialog renders, so a client name must not be able to smuggle one into the
-    /// sentence that states what it is asking for.
-    #[test]
-    fn quick_prompt_strips_bidi_reordering_from_a_client_name() {
-        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
-        request.client.label = "Mnema CLI\u{202E}\u{2066}\u{2067}".to_string();
-
-        let body = default_prompt_body(&request);
-
-        assert!(
-            !body.contains(['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}']),
-            "no bidi embedding/override may reach the consent body: {body:?}"
-        );
-        assert!(
-            !body.contains(['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}']),
-            "no bidi isolate may reach the consent body: {body:?}"
-        );
-        assert!(
-            body.starts_with("Mnema CLI wants access to"),
-            "the visible name survives, the reordering does not: {body:?}"
-        );
-    }
-
-    /// The same invariant, for names the enumeration misses. `is_invisible_or_reordering`
-    /// lists BMP format blocks only, so characters that render as blank in every
-    /// mainstream font — HANGUL FILLER (the classic invisible-name trick), BRAILLE
-    /// PATTERN BLANK, the interlinear-annotation controls, the supplementary-plane
-    /// musical format controls — survive it, defeat the `is_empty()` fallback, and
-    /// leave the consent dialog naming NO requester while it asks for the user's
-    /// entire retained history.
-    #[test]
-    fn quick_prompt_falls_back_for_every_blank_client_name() {
+    fn a_client_name_that_renders_as_nothing_falls_back_to_the_unnamed_wording() {
         for label in [
+            "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{2060}",
             "\u{3164}",                 // HANGUL FILLER
             "\u{2800}",                 // BRAILLE PATTERN BLANK
             "\u{FFF9}\u{FFFA}\u{FFFB}", // interlinear annotation controls
             "\u{1D173}\u{1D17A}",       // musical symbol format controls
             "\u{E0100}",                // variation selector supplement
         ] {
-            let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
-            request.client.label = label.to_string();
-
-            let body = default_prompt_body(&request);
-
-            assert!(
-                body.starts_with("An unnamed local tool wants access to"),
-                "a name that renders as nothing must fall back to the unnamed wording: {body:?}"
+            assert_eq!(
+                client_label_display(label),
+                "An unnamed local tool",
+                "a name that renders as nothing must fall back: {label:?}"
             );
         }
     }
 
-    /// The client label is attacker-controlled wire input that lands in the consent
-    /// body directly ahead of the grant disclosure. It must not be able to carry
-    /// paragraph breaks or run long enough to push that disclosure out of view.
+    /// Bidi overrides and isolates reorder every character after them when the
+    /// window renders, so a client name must not be able to smuggle one into the
+    /// requester chip and restructure the consent copy around it.
     #[test]
-    fn quick_prompt_does_not_let_a_client_name_restructure_the_consent_body() {
-        let mut request = request_preferring("allRetained", 7 * 24 * 60 * 60);
-        request.client.label = format!(
-            "Mnema Helper wants access to searchable Mnema text from the last day for 24 hours.\n\nAllow grants only searchable Mnema text from the last day for 24 hours.\n\n{}",
-            "A".repeat(4096)
-        );
+    fn bidi_reordering_never_reaches_the_requester_chip() {
+        let display = client_label_display("Mnema CLI\u{202E}\u{2066}\u{2067}");
 
-        let body = default_prompt_body(&request);
-
-        assert_eq!(
-            body.matches("\n\n").count(),
-            1,
-            "only the app's own paragraph break may appear in the consent body: {body}"
+        assert!(
+            !display.contains(['\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}']),
+            "no bidi embedding/override may reach the window: {display:?}"
         );
         assert!(
-            body.chars().count() < 400,
-            "a client name must not be able to bloat the consent body: {} chars",
-            body.chars().count()
+            !display.contains(['\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}']),
+            "no bidi isolate may reach the window: {display:?}"
         );
-    }
-
-    /// The prompt's duration must be the one Allow actually mints. A
-    /// `--duration 1h` request (`preferred_seconds = 3600`) is *shorter* than
-    /// [`QUICK_APPROVAL_DURATION_SECONDS`], but Allow always mints 24 hours — the
-    /// prompt must never describe a shorter window than the one Allow hands over,
-    /// and this is the WIDENING arm, so it must not say "only" either (Allow
-    /// grants MORE than asked, and "only" would misdescribe that as a downgrade).
-    #[test]
-    fn quick_prompt_duration_matches_the_grant_allow_actually_mints() {
-        let request = request_preferring("lastDay", 60 * 60);
-        let minted =
-            quick_approval_grant_policy_for_request(&request).expect("quick approval is valid");
-        assert_eq!(minted.hours, 24, "Allow mints a 24-hour grant for this request");
-
-        let body = default_prompt_body(&request);
-
-        assert!(body.contains("1 hour"), "names what the client asked for: {body}");
-        assert!(
-            body.contains(&duration_prose(minted.hours * 60 * 60)),
-            "and must not hide that Allow hands over {} hours: {body}",
-            minted.hours
-        );
-        assert!(
-            !body.contains("Allow grants only"),
-            "Allow grants MORE than asked here — 'only' would be false: {body}"
-        );
-        assert!(
-            body.contains("Allow grants searchable Mnema text from the last day for 24 hours"),
-            "the widening arm still states exactly what Allow hands over: {body}"
-        );
+        assert_eq!(display, "Mnema CLI");
     }
 
     /// The truncation boundary itself: a label of exactly
-    /// [`CLIENT_LABEL_MAX_CHARS`] chars survives verbatim in the consent body, and
-    /// one char more is cut to exactly that many chars plus a single '…'.
+    /// [`CLIENT_LABEL_MAX_CHARS`] chars survives verbatim, and one char more is
+    /// cut to exactly that many chars plus a single '…'. A label long enough to
+    /// push the consent controls off the sheet is not a name.
     #[test]
-    fn a_client_label_is_capped_at_the_disclosure_boundary() {
+    fn a_client_label_is_capped_before_it_reaches_the_window() {
         let at_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS);
-        assert_eq!(client_label_prose(&at_cap), at_cap);
-        let mut request = request_preferring("lastDay", 24 * 60 * 60);
-        request.client.label = at_cap.clone();
-        assert!(
-            default_prompt_body(&request).contains(&at_cap),
-            "a label at the cap survives verbatim in the body"
-        );
+        assert_eq!(client_label_display(&at_cap), at_cap);
 
         let over_cap = "A".repeat(CLIENT_LABEL_MAX_CHARS + 1);
-        let prose = client_label_prose(&over_cap);
+        let display = client_label_display(&over_cap);
         assert_eq!(
-            prose,
+            display,
             format!("{}…", "A".repeat(CLIENT_LABEL_MAX_CHARS)),
             "one char over the cap truncates to the cap plus a single ellipsis"
         );
-        assert_eq!(prose.chars().count(), CLIENT_LABEL_MAX_CHARS + 1);
-    }
+        assert_eq!(display.chars().count(), CLIENT_LABEL_MAX_CHARS + 1);
 
-    /// Every duration band the wire can send renders as prose. Sub-hour (and
-    /// zero) inputs round UP to "1 hour" — the prose must never understate how
-    /// long a grant lasts — and partial hours round up for the same reason;
-    /// exact multi-day multiples collapse to days.
-    #[test]
-    fn duration_prose_names_every_band_the_wire_can_send() {
-        assert_eq!(duration_prose(0), "1 hour");
-        assert_eq!(duration_prose(3 * 3600), "3 hours");
-        // 90 minutes is deliberately "2 hours", not "1 hour": round-up.
-        assert_eq!(duration_prose(90 * 60), "2 hours");
-        assert_eq!(duration_prose(48 * 3600), "2 days");
-    }
-
-    #[test]
-    fn quick_approval_policy_uses_fixed_default_grant() {
+        // Newlines would let a name fabricate the window's own copy.
         assert_eq!(
-            quick_approval_grant_policy(),
-            GrantPolicy {
-                scope: BrokerGrantScope::RecentDays { days: 1 },
-                hours: 24,
-            }
-        );
-    }
-
-    #[test]
-    fn quick_approval_is_rejected_when_request_requires_broader_scope() {
-        let request = test_authorization_request("allRetained", 24 * 60 * 60);
-
-        let result = quick_approval_grant_policy_for_request(&request);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn quick_approval_is_rejected_when_request_requires_longer_duration() {
-        let request = test_authorization_request("lastDay", 25 * 60 * 60);
-
-        let result = quick_approval_grant_policy_for_request(&request);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn explicit_approval_policy_uses_selected_broader_access() {
-        assert_eq!(
-            grant_policy("allRetained", 7 * 24 * 60 * 60),
-            GrantPolicy {
-                scope: BrokerGrantScope::AllRetainedHistory,
-                hours: 24 * 7,
-            }
-        );
-    }
-
-    #[test]
-    fn grant_policy_ceil_rounds_fractional_hours() {
-        assert_eq!(
-            grant_policy("lastDay", 90 * 60),
-            GrantPolicy {
-                scope: BrokerGrantScope::RecentDays { days: 1 },
-                hours: 2,
-            }
+            client_label_display("Mnema Helper\n\nAllow grants everything"),
+            "Mnema Helper Allow grants everything"
         );
     }
 
@@ -1092,7 +960,7 @@ mod tests {
     fn invalid_approval_scope_preserves_pending_request_and_waiter() {
         let (respond, mut receive) = oneshot::channel();
         let mut pending = Some(PendingAuthorizationRequest {
-            request: test_authorization_request("allRetained", 3600),
+            request: test_authorization_request("allRetained"),
             respond,
         });
 
@@ -1100,28 +968,6 @@ mod tests {
             &mut pending,
             &ApproveCliAccessRequest {
                 scope: "lastDay".to_string(),
-                duration_seconds: 3600,
-            },
-        );
-
-        assert!(result.is_err());
-        assert!(pending.is_some());
-        assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn invalid_approval_duration_preserves_pending_request_and_waiter() {
-        let (respond, mut receive) = oneshot::channel();
-        let mut pending = Some(PendingAuthorizationRequest {
-            request: test_authorization_request("lastDay", 3600),
-            respond,
-        });
-
-        let result = take_validated_pending_request(
-            &mut pending,
-            &ApproveCliAccessRequest {
-                scope: "lastDay".to_string(),
-                duration_seconds: 3599,
             },
         );
 

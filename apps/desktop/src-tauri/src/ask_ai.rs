@@ -3417,6 +3417,8 @@ model believes the narrower contract: {}",
             &BrokeredCaptureResponse::Search(app_infra::brokered_access::BrokerSearchResponse {
                 results: vec![result],
                 limit: 8,
+                scope_clamped: false,
+                required_scope: None,
                 next_cursor: None,
                 speaker_coverage: None,
             }),
@@ -3560,6 +3562,8 @@ model believes the narrower contract: {}",
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![sample_result()],
             limit: 8,
+            scope_clamped: false,
+            required_scope: None,
             next_cursor: None,
             speaker_coverage: None,
         });
@@ -3581,6 +3585,8 @@ model believes the narrower contract: {}",
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![sample_result()],
             limit: 8,
+            scope_clamped: false,
+            required_scope: None,
             next_cursor: Some("v1:42:1:0".to_string()),
             speaker_coverage: None,
         });
@@ -3610,6 +3616,8 @@ model believes the narrower contract: {}",
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: Vec::new(),
             limit: 8,
+            scope_clamped: false,
+            required_scope: None,
             next_cursor: None,
             speaker_coverage: Some(app_infra::brokered_access::BrokerSpeakerCoverage {
                 recordings_with_unnamed_voices: 12,
@@ -3659,6 +3667,8 @@ model believes the narrower contract: {}",
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![audio],
             limit: 8,
+            scope_clamped: false,
+            required_scope: None,
             next_cursor: None,
             speaker_coverage: None,
         });

@@ -13,15 +13,14 @@
       source: string;
     };
     command: string;
-    minimumScope: "lastDay" | "allRetained";
-    preferredScope: "lastDay" | "allRetained";
-    minimumDurationSeconds: number;
-    preferredDurationSeconds: number;
+    minimumScope: Scope;
+    preferredScope: Scope;
     createdAt: string;
   };
 
-  let selectedScope = $state<"lastDay" | "allRetained">("lastDay");
-  let selectedDuration = $state<"1h" | "24h" | "7d">("24h");
+  type Scope = "lastDay" | "last7Days" | "allRetained";
+
+  let selectedScope = $state<Scope>("lastDay");
   let pendingRequest = $state<PendingCliAccessRequest | null>(null);
   // Action errors (approve/deny) surface inline at the foot of the dialog.
   let error = $state<string | null>(null);
@@ -33,9 +32,9 @@
   let cancelling = $state(false);
   // A resolved Ok from the backend approve means the grant really landed. We
   // capture the consent terms so the body can show a brief positive receipt
-  // (naming tool + scope + expiry) before/while the backend tears the window
-  // down — and so a delayed teardown is never misreported as a failure.
-  let granted = $state<{ tool: string; scopeProse: string; expiryLabel: string } | null>(null);
+  // (naming tool + scope) before/while the backend tears the window down — and
+  // so a delayed teardown is never misreported as a failure.
+  let granted = $state<{ tool: string; scopeProse: string } | null>(null);
   // Ticks so the request-age label stays honest while the dialog sits open.
   let now = $state(Date.now());
 
@@ -51,17 +50,16 @@
   // when the grant lands (the Deny anchor it replaced is gone by then).
   let grantedCloseButton = $state<HTMLButtonElement | null>(null);
 
-  const durationSeconds = {
-    "1h": 60 * 60,
-    "24h": 24 * 60 * 60,
-    "7d": 7 * 24 * 60 * 60,
-  } as const;
-
   const scopeOptions = [
     {
       value: "lastDay",
       label: "Last day",
       hint: "Reads only text captured in the last 24 hours.",
+    },
+    {
+      value: "last7Days",
+      label: "Last 7 days",
+      hint: "Reads text captured in the last 7 days.",
     },
     {
       value: "allRetained",
@@ -70,17 +68,19 @@
     },
   ] as const;
 
-  const durationOptions = [
-    { value: "1h", label: "1h" },
-    { value: "24h", label: "24h" },
-    { value: "7d", label: "7d" },
-  ] as const;
+  // Narrow → wide. Anything below the request's stated minimum is disabled.
+  const scopeRank: Record<Scope, number> = {
+    lastDay: 0,
+    last7Days: 1,
+    allRetained: 2,
+  };
 
   // Noun-phrase scope wording for prose sentences (the receipt), where the bare
   // Segmented label ("Last day") would read as "your Last day text".
   const scopeProse = {
-    lastDay: "text from the last 24 hours",
-    allRetained: "your entire retained capture history",
+    lastDay: "your last 24 hours",
+    last7Days: "your last 7 days",
+    allRetained: "your entire retained history",
   } as const;
 
   const scopeMeta = $derived(
@@ -89,12 +89,8 @@
   const isBroadScope = $derived(selectedScope === "allRetained");
 
   // Plain option arrays for the shared Segmented control (its Option type is
-  // {value,label}); the hint copy stays on scopeOptions/durationOptions.
+  // {value,label}); the hint copy stays on scopeOptions.
   const scopeSegments = scopeOptions.map((option) => ({
-    value: option.value,
-    label: option.label,
-  }));
-  const durationSegments = durationOptions.map((option) => ({
     value: option.value,
     label: option.label,
   }));
@@ -102,37 +98,12 @@
   const scopeDisabledValues = $derived(
     scopeOptions.filter((option) => scopeDisabled(option.value)).map((option) => option.value),
   );
-  const durationDisabledValues = $derived(
-    durationOptions
-      .filter((option) => durationDisabled(option.value))
-      .map((option) => option.value),
+
+  // "Why is this greyed out" signifier for the disabled choices.
+  const minScopeProse = $derived(
+    pendingRequest ? scopeProse[pendingRequest.minimumScope] : null,
   );
-
-  // "Why is this greyed out" signifiers for the disabled choices.
-  const scopeLocked = $derived(pendingRequest?.minimumScope === "allRetained");
-  const durationLocked = $derived(durationDisabledValues.length > 0);
-  const minDurationLabel = $derived(
-    durationLabelForSeconds(pendingRequest?.minimumDurationSeconds ?? 0),
-  );
-
-  // Format the expiry timestamp for a grant that starts at `baseMs` and lasts
-  // `selectedDuration`. Shared by the live label and the approve-time receipt so
-  // both read the same wording off the same clock.
-  function formatExpiry(baseMs: number) {
-    const endsAt = new Date(baseMs + durationSeconds[selectedDuration] * 1000);
-    return endsAt.toLocaleString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
-
-  // Reference the `now` ticker so the displayed expiry tracks elapsed dwell time
-  // rather than freezing at load (it would otherwise under-report by however long
-  // the dialog sat open).
-  const expiryLabel = $derived(formatExpiry(now));
+  const scopeLocked = $derived(scopeDisabledValues.length > 0);
 
   // How long this request has been waiting. The hard timeout is CLI-side (~120s),
   // so this is an honesty cue, not a countdown — if the tool stops waiting the
@@ -170,12 +141,21 @@
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
       if (pendingRequest) {
         selectedScope = pendingRequest.preferredScope;
-        selectedDuration = durationLabelForSeconds(pendingRequest.preferredDurationSeconds);
       }
     } catch (err) {
       loadError = friendlyError(err);
     } finally {
       loading = false;
+      // The skeleton→content swap drops the mount-time focus anchor onto <body>.
+      // Re-anchor on Deny — focus landing on a SAFE control is the anti-reflex
+      // guarantee of this window, not a nicety. Skipped when focus is already
+      // inside the dialog, so a user who tabbed during load isn't yanked back.
+      void tick().then(() =>
+        requestAnimationFrame(() => {
+          if (dialogEl?.contains(document.activeElement)) return;
+          (denyButton ?? dialogEl)?.focus();
+        }),
+      );
     }
   }
 
@@ -233,21 +213,15 @@
     error = null;
     approving = true;
     // Snapshot the consent terms now: the receipt must keep naming them even as
-    // the backend clears the pending request and tears the window down. Expiry is
-    // computed off a FRESH clock at approve time so the receipt reflects what was
-    // actually granted, not a stale load-time estimate.
+    // the backend clears the pending request and tears the window down.
     const receipt = {
       tool: pendingRequest.client.label,
       scopeProse: scopeProse[selectedScope],
-      expiryLabel: formatExpiry(Date.now()),
     };
     startActionWatchdog(() => (approving = false));
     try {
       await invoke("approve_pending_cli_access_request", {
-        approval: {
-          scope: selectedScope,
-          durationSeconds: durationSeconds[selectedDuration],
-        },
+        approval: { scope: selectedScope },
       });
       // The backend resolves Ok only on a real grant. Show the positive receipt
       // and stand the watchdog down so a slow teardown can't report failure.
@@ -267,18 +241,9 @@
     }
   }
 
-  function durationLabelForSeconds(seconds: number): "1h" | "24h" | "7d" {
-    if (seconds <= durationSeconds["1h"]) return "1h";
-    if (seconds <= durationSeconds["24h"]) return "24h";
-    return "7d";
-  }
-
-  function scopeDisabled(scope: "lastDay" | "allRetained") {
-    return pendingRequest?.minimumScope === "allRetained" && scope === "lastDay";
-  }
-
-  function durationDisabled(duration: "1h" | "24h" | "7d") {
-    return durationSeconds[duration] < (pendingRequest?.minimumDurationSeconds ?? 0);
+  function scopeDisabled(scope: Scope) {
+    const minimum = pendingRequest?.minimumScope;
+    return minimum ? scopeRank[scope] < scopeRank[minimum] : false;
   }
 
   function identitySourceLabel(source: string) {
@@ -366,7 +331,7 @@
         <p class="eyebrow">CLI Access</p>
         <h1 id="access-dialog-title">Review command-line tool access</h1>
         <p id="access-dialog-lede" class="lede">
-          A command-line tool is requesting time-bounded access to your searchable Mnema text.
+          A command-line tool is requesting standing access to your searchable Mnema text.
         </p>
       </div>
     </header>
@@ -381,11 +346,11 @@
           </span>
           <p class="receipt__title">Access granted</p>
           <p class="receipt__body">
-            <strong>{granted.tool}</strong> can read
-            <strong>{granted.scopeProse}</strong> until <strong>{granted.expiryLabel}</strong>.
+            <strong>{granted.tool}</strong> can read <strong>{granted.scopeProse}</strong>
+            until you revoke it in Settings.
           </p>
           <p class="receipt__hint">
-            Manage or revoke this in Settings → Data → Access.
+            Manage it in Settings → Data → Access. Unused access lapses after 30 days.
           </p>
         </div>
       {:else if loading}
@@ -461,11 +426,11 @@
             disabledValues={scopeDisabledValues}
             disabled={approving || cancelling}
             ariaLabel="What it can read"
-            onValueChange={(v) => (selectedScope = v as "lastDay" | "allRetained")}
+            onValueChange={(v) => (selectedScope = v as Scope)}
           />
-          {#if scopeLocked}
+          {#if scopeLocked && minScopeProse}
             <p class="choice-hint">
-              <span>This tool requires access to all retained history.</span>
+              <span>This tool requires access to at least {minScopeProse}.</span>
             </p>
           {/if}
           {#if isBroadScope}
@@ -484,25 +449,10 @@
               <span>{scopeMeta.hint}</span>
             </p>
           {/if}
-        </fieldset>
-
-        <fieldset class="request-section">
-          <legend class="group-label">For how long</legend>
-          <Segmented
-            options={durationSegments}
-            value={selectedDuration}
-            disabledValues={durationDisabledValues}
-            disabled={approving || cancelling}
-            ariaLabel="For how long"
-            onValueChange={(v) => (selectedDuration = v as "1h" | "24h" | "7d")}
-          />
-          {#if durationLocked}
-            <p class="choice-hint">
-              <span>This tool requires at least {minDurationLabel} of access.</span>
-            </p>
-          {/if}
           <p class="choice-hint">
-            <span>Access ends {expiryLabel}.</span>
+            <span>
+              Access stays until you revoke it in Settings, and lapses after 30 days unused.
+            </span>
           </p>
         </fieldset>
       {/if}
@@ -805,15 +755,10 @@
     border: 0;
   }
 
-  .request-section + .request-section {
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border);
-  }
-
   .group-label {
     padding: 0;
-    /* Load-bearing scope/duration legends on a consent screen — must clear the
-       contrast floor, so use the legible muted token, not faint subtle. */
+    /* Load-bearing scope legend on a consent screen — must clear the contrast
+       floor, so use the legible muted token, not faint subtle. */
     color: var(--app-text-muted);
     font-size: var(--text-xs);
     font-weight: 700;
@@ -831,7 +776,7 @@
     line-height: 1.4;
   }
 
-  /* The broad-scope warning must visibly outrank the benign expiry note:
+  /* The broad-scope warning must visibly outrank the benign terms note:
      warn-tinted container + a bold lead-in, not the same faint hint text. */
   .choice-hint--warn {
     gap: 8px;

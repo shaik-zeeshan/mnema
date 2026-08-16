@@ -1,12 +1,13 @@
 #[cfg(unix)]
 use std::time::Duration;
-use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
+use std::{env, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
-    BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
-    BrokerErrorResponse, BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerCoverage,
-    BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerTimelineRequest, BrokeredCaptureAccess,
-    BrokeredCaptureRequest, BrokeredCaptureResponse,
+    format_broker_unix_ms, minimum_scope_for_start, BrokerAuthStatus, BrokerAuthStatusKind,
+    BrokerClientIdentity, BrokerClientIdentitySource, BrokerErrorResponse, BrokerGrant,
+    BrokerGrantScope, BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerCoverage, BrokerSpeakerTurn,
+    BrokerSpeakersRequest, BrokerTimelineRequest, BrokeredCaptureAccess, BrokeredCaptureRequest,
+    BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,12 @@ mod mcp;
 const APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 #[cfg(unix)]
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
-const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
+/// How long to wait for an instant, windowless verdict before telling the user a
+/// window is opening. Long enough for the app to answer from its permission file,
+/// short enough to be invisible ahead of a window that takes longer than this to
+/// draw anyway.
+#[cfg(unix)]
+const WINDOW_ANNOUNCE_DELAY: Duration = Duration::from_millis(400);
 const INFERRED_AGENT_ENV_LABELS: &[(&str, &str)] = &[
     ("CLAUDECODE", "Claude Code"),
     ("CLAUDE_CODE", "Claude Code"),
@@ -81,20 +87,17 @@ enum AccessCommand {
         #[arg(long)]
         all_clients: bool,
     },
+    /// Pre-authorize this machine's Mnema access from the terminal. Agents do
+    /// not need it: a data command opens the same approval window by itself.
     Request {
         #[arg(long, value_enum, default_value = "last-day")]
         scope: AccessScope,
-        #[arg(long, value_enum, default_value = "24h")]
-        duration: AccessDuration,
     },
     KnownClients,
+    /// Block a tool's standing access. Re-enable it in Mnema under
+    /// Settings -> Data -> Access.
     Revoke {
-        grant_id: String,
-    },
-    RevokeClient {
-        client_name: String,
-        #[arg(long)]
-        yes: bool,
+        client: String,
     },
 }
 
@@ -180,26 +183,28 @@ enum OutputFormat {
 #[serde(rename_all = "kebab-case")]
 enum AccessScope {
     LastDay,
+    #[value(name = "last-7-days", alias = "last7days")]
+    Last7Days,
     AllRetained,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum, Serialize, Deserialize)]
-enum AccessDuration {
-    #[value(name = "1h")]
-    OneHour,
-    #[value(name = "24h")]
-    TwentyFourHours,
-    #[value(name = "7d")]
-    SevenDays,
+impl AccessScope {
+    fn grant_scope(self) -> BrokerGrantScope {
+        match self {
+            Self::LastDay => BrokerGrantScope::LAST_DAY,
+            Self::Last7Days => BrokerGrantScope::LAST_7_DAYS,
+            Self::AllRetained => BrokerGrantScope::AllRetainedHistory,
+        }
+    }
 }
 
-impl AccessDuration {
-    fn seconds(self) -> u64 {
-        match self {
-            Self::OneHour => 60 * 60,
-            Self::TwentyFourHours => 24 * 60 * 60,
-            Self::SevenDays => 7 * 24 * 60 * 60,
-        }
+/// The `--scope` spelling of a scope, for a message that tells the caller how to
+/// widen. Derived from the one wire name so the two cannot drift.
+fn scope_flag_name(scope: BrokerGrantScope) -> &'static str {
+    match scope.wire_name() {
+        "lastDay" => "last-day",
+        "last7Days" => "last-7-days",
+        _ => "all-retained",
     }
 }
 
@@ -244,6 +249,13 @@ struct SearchData {
     /// Only on a `--speaker` search: how much audio the filter could NOT check.
     #[serde(skip_serializing_if = "Option::is_none")]
     speaker_coverage: Option<BrokerSpeakerCoverage>,
+    /// This client's access does not reach as far back as `--from` asked, so
+    /// these results cover LESS than the window requested. Never read a thin page
+    /// as "nothing happened" while this is set. Always serialized.
+    scope_clamped: bool,
+    /// The `--scope` that would have covered the request. Only when clamped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required_scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +315,11 @@ struct TimelineData {
     /// Only on a `--speaker` timeline: how much audio the filter could NOT check.
     #[serde(skip_serializing_if = "Option::is_none")]
     speaker_coverage: Option<BrokerSpeakerCoverage>,
+    /// See [`SearchData::scope_clamped`]. Always serialized.
+    scope_clamped: bool,
+    /// The `--scope` that would have covered the request. Only when clamped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required_scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,7 +369,6 @@ struct AuthorizationRequest {
     client: AuthorizationClient,
     command: String,
     scope: AuthorizationScope,
-    duration: AuthorizationDuration,
     interactive: bool,
     created_at: String,
 }
@@ -373,18 +389,31 @@ struct AuthorizationScope {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AuthorizationDuration {
-    minimum_seconds: u64,
-    preferred_seconds: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct AuthorizationResponse {
     schema_version: u32,
     request_id: String,
     decision: String,
+    #[serde(default)]
     reason: Option<String>,
+    /// What the permission carries AFTER the approval — present on `approved`.
+    /// The approval window only enforces the request's `minimum`, so an approval
+    /// can land NARROWER than what was asked for; reading `approved` as a yes is
+    /// how a caller ends up silently under-served.
+    #[serde(default)]
+    grant: Option<AuthorizationGrant>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizationGrant {
+    #[allow(dead_code)]
+    id: String,
+    client_label: String,
+    /// `lastDay` | `last7Days` | `allRetained`. No expiry: a permission stands
+    /// until it idles out or is blocked in Settings.
+    scope: String,
+    #[allow(dead_code)]
+    created: bool,
 }
 
 #[derive(Debug)]
@@ -492,7 +521,11 @@ async fn run_data_command(
     no_prompt: bool,
 ) -> Result<(), CliError> {
     let format = format.unwrap_or(OutputFormat::Json);
-    let allow_prompt = !no_prompt && can_prompt_for_authorization();
+    // `--no-prompt` is the ONLY control for "do not bother anyone". The old TTY
+    // gate inspected the caller's file descriptors to guess whether a human was
+    // at the Mac — which they say nothing about — and every agent harness pipes
+    // stdout, so it dead-ended exactly the callers this surface exists for.
+    let allow_prompt = !no_prompt;
     match execute_data_request(command, identity, request, allow_prompt).await {
         Ok(value) => print_envelope(command, identity, format, &value),
         Err(error) => print_structured_error(command, identity, format, error),
@@ -515,21 +548,27 @@ async fn execute_data_request(
         .await
         .map_err(broker_error)?;
 
-    if response_requires_authorization(&response) {
+    // Two ways this client's access can fall short of the call: none at all, or
+    // one too narrow for the `--from` it asked for. Both take the same door —
+    // a clamp that only widened on the NEXT run is how an agent reports "nothing
+    // there" for a window it was never allowed to see.
+    if response_requires_authorization(&response) || response_scope_clamped(&response) {
         if !allow_prompt {
-            return Err(auth_required_error());
+            if response_requires_authorization(&response) {
+                return Err(auth_required_error());
+            }
+            // A clamped page is real data. Hand it back with its marker rather
+            // than throwing it away — the caller asked not to be prompted, not to
+            // be lied to.
+        } else {
+            let needed = needed_scope_for(&request);
+            let grant = request_authorization(command, identity, needed, needed).await?;
+            verify_granted_scope(needed, grant.as_ref())?;
+            response = access
+                .execute_for_identity(identity.clone(), request)
+                .await
+                .map_err(broker_error)?;
         }
-        request_authorization(
-            command,
-            identity,
-            AccessScope::LastDay,
-            AccessDuration::TwentyFourHours,
-        )
-        .await?;
-        response = access
-            .execute_for_identity(identity.clone(), request)
-            .await
-            .map_err(broker_error)?;
     }
 
     let value = match response {
@@ -581,29 +620,48 @@ async fn run_access_command(
     match command {
         AccessCommand::Status { all_clients } => {
             let grants = access.list_grants().map_err(broker_error)?;
-            let active = grants
-                .grants
-                .iter()
-                .filter(|grant| !grant.revoked && grant.expires_at_unix_ms > now_unix_ms())
-                .filter(|grant| all_clients || grant.normalized_label == identity.normalized_label)
-                .count();
             println!(
                 "Client: {} ({})",
                 identity.label,
                 identity_source_name(&identity.source)
             );
-            println!(
-                "CLI Access: {active} active grant(s){}",
-                if all_clients { "" } else { " for this client" }
-            );
+            let rows: Vec<&BrokerGrant> = grants
+                .grants
+                .iter()
+                .filter(|grant| all_clients || grant.normalized_label == identity.normalized_label)
+                .collect();
+            if rows.is_empty() {
+                println!(
+                    "CLI Access: none{}. Run a data command to ask for it.",
+                    if all_clients { "" } else { " for this client" }
+                );
+            }
+            for grant in rows {
+                println!("{}", access_status_line(grant));
+            }
             Ok(())
         }
-        AccessCommand::Request { scope, duration } => {
-            if !can_start_explicit_authorization_request(no_prompt) {
+        AccessCommand::Request { scope } => {
+            if no_prompt {
                 return Err(auth_required_error());
             }
-            request_authorization("access request", identity, scope, duration).await?;
-            println!("CLI Access request approved or queued. Run `mnema access status` to inspect grants.");
+            // A human pre-authorizing keeps the choice: `minimum` is the floor the
+            // window enforces, so sending the REQUESTED scope there would grey out
+            // every narrower option they might have preferred.
+            let grant = request_authorization(
+                "access request",
+                identity,
+                BrokerGrantScope::LAST_DAY,
+                scope.grant_scope(),
+            )
+            .await?;
+            match grant {
+                Some(grant) => println!(
+                    "CLI Access approved: {} can read {} until you block it in Settings.",
+                    grant.client_label, grant.scope
+                ),
+                None => println!("CLI Access approved."),
+            }
             Ok(())
         }
         AccessCommand::KnownClients => {
@@ -614,58 +672,99 @@ async fn run_access_command(
             println!("Use --client <name> or MNEMA_CLI_CLIENT for unlisted clients.");
             Ok(())
         }
-        AccessCommand::Revoke { grant_id } => {
-            let revoked = access.revoke_grant(&grant_id).map_err(broker_error)?;
+        AccessCommand::Revoke { client } => {
+            // Blocked, not deleted: a rejection the tool can re-prompt its way
+            // out of on the next run is not a rejection (ADR 0059).
+            let blocked = access.block_client(&client).map_err(broker_error)?;
             println!(
                 "{}",
-                if revoked {
-                    "Grant revoked."
+                if blocked {
+                    format!(
+                        "Blocked {client}. Re-enable it in Mnema under Settings -> Data -> Access."
+                    )
                 } else {
-                    "Grant not found or already inactive."
+                    format!("{client} has no access to block.")
                 }
             );
-            Ok(())
-        }
-        AccessCommand::RevokeClient { client_name, yes } => {
-            if !yes {
-                return Err(usage_error("revoke-client requires --yes"));
-            }
-            let count = access
-                .revoke_grants_for_client(&client_name)
-                .map_err(broker_error)?;
-            println!("Revoked {count} grant(s).");
             Ok(())
         }
     }
 }
 
-fn can_prompt_for_authorization() -> bool {
-    can_prompt_for_authorization_with(
-        || std::io::stdin().is_terminal(),
-        || std::io::stdout().is_terminal(),
-        || std::io::stderr().is_terminal(),
+/// One line per standing permission: scope, last use, blocked state. There is no
+/// expiry to report — a permission dies 30 days after its last use, and
+/// idle-expired rows are pruned on load, so nothing dead reaches here.
+fn access_status_line(grant: &BrokerGrant) -> String {
+    let state = if grant.blocked {
+        "blocked".to_string()
+    } else {
+        format!("active, {}", scope_flag_name(grant.scope))
+    };
+    format!(
+        "- {}: {} (last used {})",
+        grant.label,
+        state,
+        format_broker_unix_ms(grant.last_used_at_unix_ms)
     )
 }
 
-fn can_prompt_for_authorization_with(
-    stdin_is_terminal: impl FnOnce() -> bool,
-    stdout_is_terminal: impl FnOnce() -> bool,
-    stderr_is_terminal: impl FnOnce() -> bool,
-) -> bool {
-    stdin_is_terminal() && stdout_is_terminal() && stderr_is_terminal()
+/// The narrowest access this call actually needs, from its `--from`. Sent as the
+/// channel `minimum` so the approval window cannot offer an option that would
+/// leave the caller short. Shares [`minimum_scope_for_start`] with the broker's
+/// own clamp marker, so the two can never disagree about what a `--from` costs.
+fn needed_scope_for(request: &BrokeredCaptureRequest) -> BrokerGrantScope {
+    let from = match request {
+        BrokeredCaptureRequest::Search(request) => request.from.as_deref(),
+        BrokeredCaptureRequest::Timeline(request) => Some(request.from.as_str()),
+        _ => None,
+    };
+    // An unparseable bound is the broker's error to report, not ours to guess at.
+    let Some(start) = from.and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok()) else {
+        return BrokerGrantScope::LAST_DAY;
+    };
+    minimum_scope_for_start(
+        (start.unix_timestamp_nanos() / 1_000_000).max(0) as u64,
+        now_unix_ms(),
+    )
 }
 
-fn can_start_explicit_authorization_request(no_prompt: bool) -> bool {
-    !no_prompt
+/// An approval is not a yes. The window enforces only the request's `minimum`,
+/// and an existing permission is widened rather than replaced, so `approved` can
+/// still leave the row narrower than this call needs. Retrying on that produces
+/// a clamped page and a confident, incomplete answer.
+fn verify_granted_scope(
+    needed: BrokerGrantScope,
+    grant: Option<&AuthorizationGrant>,
+) -> Result<(), CliError> {
+    // ponytail: no `grant` field, or a scope name this build does not know, means
+    // we cannot verify — retry and let the broker's own clamp marker speak.
+    let Some(granted) = grant.and_then(|grant| BrokerGrantScope::from_wire_name(&grant.scope))
+    else {
+        return Ok(());
+    };
+    if granted.covers(&needed) {
+        return Ok(());
+    }
+    Err(CliError {
+        exit: 22,
+        code: "scope_not_granted",
+        message: format!(
+            "CLI Access was granted at `{}`, which does not cover this request (`{}`). Widen it in \
+             Mnema under Settings -> Data -> Access, or run `mnema access request --scope {}`.",
+            scope_flag_name(granted),
+            scope_flag_name(needed),
+            scope_flag_name(needed)
+        ),
+        retryable: false,
+    })
 }
 
 async fn request_authorization(
     command: &str,
     identity: &BrokerClientIdentity,
-    scope: AccessScope,
-    duration: AccessDuration,
-) -> Result<(), CliError> {
-    eprintln!("CLI Access approval required. Opening Mnema...");
+    minimum: BrokerGrantScope,
+    preferred: BrokerGrantScope,
+) -> Result<Option<AuthorizationGrant>, CliError> {
     let request = AuthorizationRequest {
         schema_version: 1,
         request_id: Uuid::new_v4().to_string(),
@@ -675,16 +774,8 @@ async fn request_authorization(
         },
         command: command.to_string(),
         scope: AuthorizationScope {
-            minimum: "lastDay".to_string(),
-            preferred: match scope {
-                AccessScope::LastDay => "lastDay",
-                AccessScope::AllRetained => "allRetained",
-            }
-            .to_string(),
-        },
-        duration: AuthorizationDuration {
-            minimum_seconds: 3600,
-            preferred_seconds: duration.seconds(),
+            minimum: minimum.wire_name().to_string(),
+            preferred: preferred.wire_name().to_string(),
         },
         interactive: true,
         created_at: OffsetDateTime::now_utc()
@@ -692,25 +783,26 @@ async fn request_authorization(
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
     };
     match send_authorization_request(&request).await {
-        Ok(()) => Ok(()),
+        Ok(grant) => Ok(grant),
         Err(first_error) if should_retry_authorization_with_app_launch(&first_error) => {
             let _ = launch_mnema_app().await;
-            let _ = write_legacy_wake_request();
             authorization_retry_result(first_error, send_authorization_request(&request).await)
         }
         Err(first_error) => Err(first_error),
     }
 }
 
-fn authorization_retry_result(
+fn authorization_retry_result<T>(
     _first_error: CliError,
-    retry_result: Result<(), CliError>,
-) -> Result<(), CliError> {
+    retry_result: Result<T, CliError>,
+) -> Result<T, CliError> {
     retry_result
 }
 
 #[cfg(unix)]
-async fn send_authorization_request(request: &AuthorizationRequest) -> Result<(), CliError> {
+async fn send_authorization_request(
+    request: &AuthorizationRequest,
+) -> Result<Option<AuthorizationGrant>, CliError> {
     let socket_path = authorization_socket_path();
     let mut stream = timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
         .await
@@ -727,29 +819,105 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
         .await
         .map_err(|_| app_unavailable_error())?;
     let mut response = String::new();
-    timeout(
-        AUTHORIZATION_TIMEOUT,
-        BufReader::new(stream).read_line(&mut response),
-    )
-    .await
-    .map_err(|_| timeout_error())?
-    .map_err(|_| app_unavailable_error())?;
+    let mut reader = BufReader::new(stream);
+    let read = reader.read_line(&mut response);
+    tokio::pin!(read);
+    // Every verdict a window cannot change — `blocked` above all, plus `busy`,
+    // `onboardingRequired` and the malformed-request codes — is answered from the
+    // app's permission file without anything being opened, so it lands in
+    // milliseconds. Announcing the window before that verdict arrives promises a
+    // window that will never appear (and for `blocked`, never can). Hold the line
+    // for one beat; only a request the app is still sitting on has a window.
+    match timeout(WINDOW_ANNOUNCE_DELAY, &mut read).await {
+        Ok(read) => {
+            read.map_err(|_| app_unavailable_error())?;
+        }
+        Err(_) => {
+            eprintln!("CLI Access approval required. Opening Mnema...");
+            timeout(AUTHORIZATION_TIMEOUT, &mut read)
+                .await
+                .map_err(|_| timeout_error())?
+                .map_err(|_| app_unavailable_error())?;
+        }
+    }
     let response: AuthorizationResponse =
         serde_json::from_str(&response).map_err(|_| app_unavailable_error())?;
     if response.request_id != request.request_id {
         return Err(app_unavailable_error());
     }
-    match response.decision.as_str() {
-        "approved" => Ok(()),
-        "denied" => Err(authorization_denied_error()),
-        "unavailable" => Err(app_unavailable_error()),
-        _ => Err(app_unavailable_error()),
+    if response.decision == "approved" {
+        return Ok(response.grant);
     }
+    Err(authorization_response_error(
+        &response.decision,
+        response.reason.as_deref(),
+    ))
 }
 
 #[cfg(not(unix))]
-async fn send_authorization_request(_request: &AuthorizationRequest) -> Result<(), CliError> {
+async fn send_authorization_request(
+    _request: &AuthorizationRequest,
+) -> Result<Option<AuthorizationGrant>, CliError> {
     Err(app_unavailable_error())
+}
+
+/// One error per channel reason code. Collapsing them into "Mnema app is
+/// unavailable" is what told a user with unfinished onboarding that their app was
+/// broken, and had the CLI relaunch an app that was merely mid-approval.
+///
+/// Only `app_unavailable` triggers the `open -b` relaunch (see
+/// [`should_retry_authorization_with_app_launch`]), so every code here that means
+/// "the app answered" stops the relaunch by construction.
+fn authorization_response_error(decision: &str, reason: Option<&str>) -> CliError {
+    // `blocked` rides on BOTH fields; either one is the standing rejection.
+    match (decision, reason.unwrap_or_default()) {
+        ("blocked", _) | (_, "blocked") => CliError {
+            exit: 15,
+            code: "access_blocked",
+            message: "Mnema access for this client is blocked. Only Mnema can lift it: \
+                      Settings -> Data -> Access."
+                .to_string(),
+            retryable: false,
+        },
+        ("denied", "closed") => CliError {
+            exit: 14,
+            code: "authorization_window_closed",
+            message: "The Mnema access approval closed without a decision.".to_string(),
+            retryable: true,
+        },
+        ("denied", _) => authorization_denied_error(),
+        (_, "busy") => CliError {
+            exit: 16,
+            code: "authorization_busy",
+            message: "Mnema is already showing another access approval. Answer it, then run \
+                      this again."
+                .to_string(),
+            retryable: true,
+        },
+        (_, "onboardingRequired") => CliError {
+            exit: 17,
+            code: "onboarding_required",
+            message: "Mnema onboarding is not finished. Open Mnema, complete setup, then run \
+                      this again."
+                .to_string(),
+            retryable: false,
+        },
+        (_, "invalidRequest") => CliError {
+            exit: 18,
+            code: "authorization_invalid_request",
+            message: "Mnema rejected the access request as malformed.".to_string(),
+            retryable: false,
+        },
+        (_, "unsupportedVersion") => CliError {
+            exit: 19,
+            code: "authorization_unsupported_version",
+            message: "This mnema CLI speaks a request version the Mnema app does not. Update \
+                      both to the same release."
+                .to_string(),
+            retryable: false,
+        },
+        _ => app_unavailable_error(),
+    }
 }
 
 fn should_retry_authorization_with_app_launch(error: &CliError) -> bool {
@@ -782,16 +950,6 @@ async fn launch_mnema_app() -> Result<(), CliError> {
         .filter(|status| status.success())
         .map(|_| ())
         .ok_or_else(app_unavailable_error)
-}
-
-fn write_legacy_wake_request() -> Result<(), CliError> {
-    let config_dir = default_app_config_dir().ok_or_else(app_unavailable_error)?;
-    std::fs::create_dir_all(&config_dir).map_err(|_| app_unavailable_error())?;
-    std::fs::write(
-        config_dir.join(BROKER_AUTHORIZATION_REQUEST_FILE_NAME),
-        r#"{"route":"/access/request","settingsTab":"access","focus":"cliAccess"}"#,
-    )
-    .map_err(|_| app_unavailable_error())
 }
 
 fn default_app_config_dir() -> Option<PathBuf> {
@@ -934,6 +1092,8 @@ fn print_serialized<T: Serialize>(value: &T, format: OutputFormat) -> Result<(),
 fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -> SearchData {
     let next_cursor = response.next_cursor.clone();
     let speaker_coverage = response.speaker_coverage.clone();
+    let scope_clamped = response.scope_clamped;
+    let required_scope = response.required_scope.clone();
     SearchData {
         results: response
             .results
@@ -958,6 +1118,8 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
         limit: response.limit,
         next_cursor,
         speaker_coverage,
+        scope_clamped,
+        required_scope,
     }
 }
 
@@ -969,6 +1131,8 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
     let covered_from = response.covered_from.clone();
     let covered_to = response.covered_to.clone();
     let speaker_coverage = response.speaker_coverage.clone();
+    let scope_clamped = response.scope_clamped;
+    let required_scope = response.required_scope.clone();
     TimelineData {
         intervals: response
             .intervals
@@ -994,6 +1158,8 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
         covered_from,
         covered_to,
         speaker_coverage,
+        scope_clamped,
+        required_scope,
     }
 }
 
@@ -1024,15 +1190,17 @@ fn response_requires_authorization(response: &BrokeredCaptureResponse) -> bool {
                 .unwrap_or_default()
 }
 
-fn map_broker_response_error(error: BrokerErrorResponse) -> CliError {
-    if error.message.contains("outside the grant scope") {
-        return CliError {
-            exit: 13,
-            code: "outside_grant_scope",
-            message: error.message,
-            retryable: false,
-        };
+/// The broker answered, but the permission's scope cut the requested window
+/// short. Marked, never silent — see `BrokerSearchResponse::scope_clamped`.
+fn response_scope_clamped(response: &BrokeredCaptureResponse) -> bool {
+    match response {
+        BrokeredCaptureResponse::Search(response) => response.scope_clamped,
+        BrokeredCaptureResponse::Timeline(response) => response.scope_clamped,
+        _ => false,
     }
+}
+
+fn map_broker_response_error(error: BrokerErrorResponse) -> CliError {
     if error.message
         == BrokerAuthStatus::authorization_required()
             .reason
@@ -1074,16 +1242,33 @@ fn authorization_denied_error() -> CliError {
     CliError {
         exit: 10,
         code: "authorization_denied",
+        // Not retryable: the user answered, and re-asking is the reflex-clicking
+        // this permission model exists to stop.
         message: "CLI Access approval was denied.".to_string(),
-        retryable: true,
+        retryable: false,
     }
 }
 
+/// The one place a broker failure becomes a `CliError`, so the out-of-scope
+/// classification cannot be reached by one door and missed by the other. The
+/// window case (`search`/`timeline`) surfaces as an `Err` on the transport and
+/// the result-id case (`show-text`/`open`) as a `BrokerErrorResponse`; both
+/// mean "widen the permission", not "the query blew up inside Mnema", and an
+/// agent told 20 goes looking for a Mnema fault instead of asking for scope.
 fn broker_failure(message: impl Into<String>) -> CliError {
+    let message = message.into();
+    if message.contains("outside the grant scope") {
+        return CliError {
+            exit: 13,
+            code: "outside_grant_scope",
+            message,
+            retryable: false,
+        };
+    }
     CliError {
         exit: 20,
         code: "broker_operation_failed",
-        message: message.into(),
+        message,
         retryable: false,
     }
 }
@@ -1146,8 +1331,15 @@ mod tests {
 
     #[test]
     fn cli_url_filters_are_mutually_exclusive() {
-        Cli::try_parse_from(["mnema", "search", "--query", "invoice", "--url", "github.com"])
-            .unwrap();
+        Cli::try_parse_from([
+            "mnema",
+            "search",
+            "--query",
+            "invoice",
+            "--url",
+            "github.com",
+        ])
+        .unwrap();
         Cli::try_parse_from([
             "mnema",
             "search",
@@ -1195,7 +1387,21 @@ mod tests {
     #[test]
     fn cli_accepts_access_commands() {
         Cli::try_parse_from(["mnema", "access", "status", "--all-clients"]).unwrap();
-        Cli::try_parse_from([
+        Cli::try_parse_from(["mnema", "access", "request", "--scope", "all-retained"]).unwrap();
+        Cli::try_parse_from(["mnema", "access", "request", "--scope", "last-7-days"]).unwrap();
+        Cli::try_parse_from(["mnema", "access", "request", "--scope", "last7days"]).unwrap();
+        Cli::try_parse_from(["mnema", "access", "known-clients"]).unwrap();
+        // One `revoke`, taking a CLIENT name: grant ids are no longer a surface
+        // any human sees, and `revoke-client` was the only one that ever worked
+        // on the thing a user actually thinks about.
+        Cli::try_parse_from(["mnema", "access", "revoke", "Codex"]).unwrap();
+    }
+
+    /// A permission has no expiry to choose, so `--duration` cannot mean
+    /// anything; and `revoke-client` collapsed into `revoke`.
+    #[test]
+    fn cli_rejects_the_removed_access_surface() {
+        assert!(Cli::try_parse_from([
             "mnema",
             "access",
             "request",
@@ -1204,10 +1410,10 @@ mod tests {
             "--duration",
             "7d",
         ])
-        .unwrap();
-        Cli::try_parse_from(["mnema", "access", "known-clients"]).unwrap();
-        Cli::try_parse_from(["mnema", "access", "revoke", "grant-1"]).unwrap();
-        Cli::try_parse_from(["mnema", "access", "revoke-client", "Codex", "--yes"]).unwrap();
+        .is_err());
+        assert!(
+            Cli::try_parse_from(["mnema", "access", "revoke-client", "Codex", "--yes"]).is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -1244,6 +1450,8 @@ mod tests {
             limit: 1,
             next_cursor: None,
             speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
         });
 
         let context = data.results[0]
@@ -1330,6 +1538,8 @@ mod tests {
             limit: 3,
             next_cursor: None,
             speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
         });
 
         assert_eq!(
@@ -1372,6 +1582,8 @@ mod tests {
             limit: 1,
             next_cursor: Some("v1:42:1:0".to_string()),
             speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
         });
         assert_eq!(paged.next_cursor.as_deref(), Some("v1:42:1:0"));
 
@@ -1380,14 +1592,18 @@ mod tests {
             limit: 20,
             next_cursor: None,
             speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
         });
         assert!(last.next_cursor.is_none());
 
         // Timeline has no cursor: it merges two independently-limited sources and
         // re-sorts, so a full page only reports that records may have been dropped.
-        let timeline = map_timeline_data(
-            app_infra::brokered_access::BrokerTimelineResponse::page(Vec::new(), 0, None),
-        );
+        let timeline = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse::page(
+            Vec::new(),
+            0,
+            None,
+        ));
         assert!(timeline.truncated, "limit 0 can never be complete");
     }
 
@@ -1395,8 +1611,15 @@ mod tests {
     fn cli_accepts_the_speaker_surface() {
         Cli::try_parse_from(["mnema", "speakers"]).unwrap();
         Cli::try_parse_from(["mnema", "speakers", "--name", "priya", "--limit", "5"]).unwrap();
-        Cli::try_parse_from(["mnema", "search", "--query", "standup", "--speaker", "p1.sig"])
-            .unwrap();
+        Cli::try_parse_from([
+            "mnema",
+            "search",
+            "--query",
+            "standup",
+            "--speaker",
+            "p1.sig",
+        ])
+        .unwrap();
         Cli::try_parse_from([
             "mnema",
             "timeline",
@@ -1416,7 +1639,14 @@ mod tests {
     #[test]
     fn cli_rejects_a_speaker_filter_beside_a_screen_filter() {
         assert!(Cli::try_parse_from([
-            "mnema", "search", "--query", "standup", "--speaker", "p1.sig", "--app", "Zoom",
+            "mnema",
+            "search",
+            "--query",
+            "standup",
+            "--speaker",
+            "p1.sig",
+            "--app",
+            "Zoom",
         ])
         .is_err());
         assert!(Cli::try_parse_from([
@@ -1519,6 +1749,8 @@ mod tests {
             limit: 1,
             next_cursor: None,
             speaker_coverage: Some(speaker_coverage()),
+            scope_clamped: false,
+            required_scope: None,
         });
 
         let json = serde_json::to_value(&data).expect("search data should serialize");
@@ -1533,6 +1765,8 @@ mod tests {
                 limit: 1,
                 next_cursor: None,
                 speaker_coverage: None,
+                scope_clamped: false,
+                required_scope: None,
             },
         ))
         .expect("search data should serialize");
@@ -1556,6 +1790,8 @@ mod tests {
             limit: 2,
             next_cursor: None,
             speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
         });
 
         let json = serde_json::to_value(&data).expect("search data should serialize");
@@ -1581,7 +1817,10 @@ mod tests {
         ));
 
         let json = serde_json::to_value(&data).expect("timeline data should serialize");
-        assert_eq!(json["intervals"][0]["turns"][0]["text"], "we ship on Friday");
+        assert_eq!(
+            json["intervals"][0]["turns"][0]["text"],
+            "we ship on Friday"
+        );
         assert_eq!(json["speakerCoverage"]["recordingsWithUnnamedVoices"], 3);
         assert_eq!(json["speakerCoverage"]["recordingsWithoutSpeakerData"], 7);
 
@@ -1705,38 +1944,279 @@ mod tests {
 
     #[test]
     fn authorization_retry_propagates_second_attempt_error() {
-        let error =
-            authorization_retry_result(app_unavailable_error(), Err(authorization_denied_error()))
-                .unwrap_err();
+        let error = authorization_retry_result::<Option<AuthorizationGrant>>(
+            app_unavailable_error(),
+            Err(authorization_denied_error()),
+        )
+        .unwrap_err();
 
         assert_eq!(error.code, "authorization_denied");
         assert_eq!(error.exit, 10);
     }
 
+    fn search_request_from(from: Option<String>) -> BrokeredCaptureRequest {
+        BrokeredCaptureRequest::Search(BrokerSearchRequest {
+            query: "invoice".to_string(),
+            from,
+            to: None,
+            limit: None,
+            app: None,
+            window_title: None,
+            url: None,
+            url_regex: None,
+            cursor: None,
+            speaker: None,
+        })
+    }
+
+    fn rfc3339_ms_ago(ms: u64) -> String {
+        format_broker_unix_ms(now_unix_ms() - ms)
+    }
+
+    const HOUR_MS: u64 = 60 * 60 * 1000;
+    const DAY_MS: u64 = 24 * HOUR_MS;
+
+    /// The `minimum` sent to the approval window. Under-derive it and the window
+    /// offers an option that leaves the caller short; the user approves, the CLI
+    /// retries, and the answer comes back quietly clipped.
     #[test]
-    fn authorization_prompt_requires_interactive_stdio() {
-        assert!(can_prompt_for_authorization_with(|| true, || true, || true));
-        assert!(!can_prompt_for_authorization_with(
-            || false,
-            || true,
-            || true
-        ));
-        assert!(!can_prompt_for_authorization_with(
-            || true,
-            || false,
-            || true
-        ));
-        assert!(!can_prompt_for_authorization_with(
-            || true,
-            || true,
-            || false
+    fn needed_scope_maps_each_from_band() {
+        assert_eq!(
+            needed_scope_for(&search_request_from(None)),
+            BrokerGrantScope::LAST_DAY,
+            "no --from asks for nothing older than today"
+        );
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some(rfc3339_ms_ago(3 * HOUR_MS)))),
+            BrokerGrantScope::LAST_DAY
+        );
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some(rfc3339_ms_ago(3 * DAY_MS)))),
+            BrokerGrantScope::LAST_7_DAYS
+        );
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some(rfc3339_ms_ago(30 * DAY_MS)))),
+            BrokerGrantScope::AllRetainedHistory
+        );
+        // An unparseable bound is the broker's error to report; the CLI must not
+        // silently escalate the ask on the strength of a typo.
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some("last tuesday".to_string()))),
+            BrokerGrantScope::LAST_DAY
+        );
+
+        let timeline = BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
+            from: rfc3339_ms_ago(14 * DAY_MS),
+            to: rfc3339_ms_ago(0),
+            limit: None,
+            app: None,
+            window_title: None,
+            url: None,
+            url_regex: None,
+            speaker: None,
+        });
+        assert_eq!(
+            needed_scope_for(&timeline),
+            BrokerGrantScope::AllRetainedHistory
+        );
+    }
+
+    fn approved_grant(scope: &str) -> AuthorizationGrant {
+        AuthorizationGrant {
+            id: "abcdef".to_string(),
+            client_label: "Claude Code".to_string(),
+            scope: scope.to_string(),
+            created: false,
+        }
+    }
+
+    /// `approved` is not a yes. The window enforces only the request's `minimum`,
+    /// so an approval can land narrower than the call needs — retrying on that
+    /// returns a clipped page the caller reads as the whole answer.
+    #[test]
+    fn a_narrowed_grant_fails_instead_of_retrying() {
+        let error = verify_granted_scope(
+            BrokerGrantScope::AllRetainedHistory,
+            Some(&approved_grant("lastDay")),
+        )
+        .expect_err("a lastDay approval does not cover an all-retained request");
+        assert_eq!(error.code, "scope_not_granted");
+        assert_eq!(error.exit, 22);
+        assert!(!error.retryable);
+        assert!(
+            error.message.contains("last-day") && error.message.contains("all-retained"),
+            "the failure names what was granted AND what was needed: {}",
+            error.message
+        );
+
+        verify_granted_scope(
+            BrokerGrantScope::LAST_7_DAYS,
+            Some(&approved_grant("allRetained")),
+        )
+        .expect("a wider approval covers a narrower request");
+        verify_granted_scope(
+            BrokerGrantScope::LAST_7_DAYS,
+            Some(&approved_grant("last7Days")),
+        )
+        .expect("an exact approval covers the request");
+        // Nothing to verify against: retry and let the broker's clamp marker
+        // speak, rather than failing a call the permission may well cover.
+        verify_granted_scope(BrokerGrantScope::LAST_DAY, None).expect("no grant field, no verdict");
+    }
+
+    /// Every reason gets its own message and exit: collapsing them told a user
+    /// with unfinished onboarding that Mnema was unavailable, and had the CLI
+    /// relaunch an app that was only mid-approval.
+    #[test]
+    fn each_authorization_reason_maps_to_its_own_exit() {
+        let cases = [
+            (
+                ("denied", Some("userCancelled")),
+                "authorization_denied",
+                10,
+            ),
+            (
+                ("denied", Some("closed")),
+                "authorization_window_closed",
+                14,
+            ),
+            (("blocked", Some("blocked")), "access_blocked", 15),
+            (("unavailable", Some("busy")), "authorization_busy", 16),
+            (
+                ("unavailable", Some("onboardingRequired")),
+                "onboarding_required",
+                17,
+            ),
+            (
+                ("unavailable", Some("invalidRequest")),
+                "authorization_invalid_request",
+                18,
+            ),
+            (
+                ("unavailable", Some("unsupportedVersion")),
+                "authorization_unsupported_version",
+                19,
+            ),
+            (("unavailable", None), "app_unavailable", 12),
+        ];
+        let mut exits = Vec::new();
+        for ((decision, reason), code, exit) in cases {
+            let error = authorization_response_error(decision, reason);
+            assert_eq!(error.code, code, "{decision}/{reason:?}");
+            assert_eq!(error.exit, exit, "{decision}/{reason:?}");
+            exits.push(error.exit);
+        }
+        let mut unique = exits.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), exits.len(), "each reason needs its OWN exit");
+
+        // `blocked` is emitted on both fields; either one is the standing
+        // rejection, and neither may look retryable.
+        for reason in [Some("blocked"), None] {
+            assert_eq!(
+                authorization_response_error("blocked", reason).code,
+                "access_blocked"
+            );
+        }
+        assert!(!authorization_response_error("blocked", Some("blocked")).retryable);
+    }
+
+    /// Only a socket that never answered means "the app is not running". `busy`
+    /// and `onboardingRequired` are the app ANSWERING, and relaunching it there
+    /// steals focus from the approval the user is already looking at.
+    #[test]
+    fn only_an_unanswered_channel_relaunches_the_app() {
+        for reason in ["busy", "onboardingRequired", "invalidRequest", "blocked"] {
+            let error = authorization_response_error("unavailable", Some(reason));
+            assert!(
+                !should_retry_authorization_with_app_launch(&error),
+                "{reason} must not relaunch the app"
+            );
+        }
+        assert!(should_retry_authorization_with_app_launch(
+            &app_unavailable_error()
         ));
     }
 
+    /// A clamped page is data plus a warning, and the CLI has to carry BOTH: the
+    /// marker is the only thing separating "your access stops here" from "nothing
+    /// happened in that window".
     #[test]
-    fn explicit_access_request_is_allowed_without_interactive_stdio() {
-        assert!(can_start_explicit_authorization_request(false));
-        assert!(!can_start_explicit_authorization_request(true));
+    fn the_clamp_marker_survives_into_the_envelope() {
+        let clamped = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![search_result("f1.signature")],
+            limit: 1,
+            next_cursor: None,
+            speaker_coverage: None,
+            scope_clamped: true,
+            required_scope: Some("allRetained".to_string()),
+        });
+        let json = serde_json::to_value(&clamped).expect("search data should serialize");
+        assert_eq!(json["scopeClamped"], true);
+        assert_eq!(json["requiredScope"], "allRetained");
+
+        let whole = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![search_result("f1.signature")],
+            limit: 1,
+            next_cursor: None,
+            speaker_coverage: None,
+            scope_clamped: false,
+            required_scope: None,
+        });
+        let json = serde_json::to_value(&whole).expect("search data should serialize");
+        // Always present, never null: an agent testing `scopeClamped === false`
+        // must not read a missing key as "unknown".
+        assert_eq!(json["scopeClamped"], false);
+        assert!(json.get("requiredScope").is_none());
+    }
+
+    /// The trigger for the widen prompt. Reading it off the response is what lets
+    /// the agent widen NOW instead of on some later run.
+    #[test]
+    fn a_clamped_response_is_what_triggers_the_widen_prompt() {
+        let clamped =
+            BrokeredCaptureResponse::Search(app_infra::brokered_access::BrokerSearchResponse {
+                results: Vec::new(),
+                limit: 1,
+                next_cursor: None,
+                speaker_coverage: None,
+                scope_clamped: true,
+                required_scope: Some("last7Days".to_string()),
+            });
+        assert!(response_scope_clamped(&clamped));
+        assert!(!response_requires_authorization(&clamped));
+
+        let timeline = BrokeredCaptureResponse::Timeline(
+            app_infra::brokered_access::BrokerTimelineResponse::page(Vec::new(), 1, None),
+        );
+        assert!(!response_scope_clamped(&timeline));
+    }
+
+    /// `status` reports what a standing permission actually has: a scope, a last
+    /// use, and whether it is blocked. There is no expiry left to print.
+    #[test]
+    fn access_status_reports_scope_last_use_and_blocked_state() {
+        let mut grant = BrokerGrant {
+            id: "abcdef".to_string(),
+            label: "Claude Code".to_string(),
+            normalized_label: "claude code".to_string(),
+            identity_source: BrokerClientIdentitySource::Inferred,
+            created_at_unix_ms: 1_700_000_000_000,
+            last_used_at_unix_ms: 1_700_000_000_000,
+            scope: BrokerGrantScope::LAST_7_DAYS,
+            blocked: false,
+            blocked_at_unix_ms: None,
+        };
+
+        let line = access_status_line(&grant);
+        assert!(line.contains("Claude Code"), "{line}");
+        assert!(line.contains("last-7-days"), "{line}");
+        assert!(line.contains("2023-11-14"), "{line}");
+        assert!(!line.contains("expire"), "there is no expiry: {line}");
+
+        grant.blocked = true;
+        assert!(access_status_line(&grant).contains("blocked"));
     }
 
     #[test]
@@ -1839,5 +2319,36 @@ mod tests {
         .expect("identity resolves");
         assert_eq!(identity.normalized_label, "some tool");
         assert!(matches!(identity.source, BrokerClientIdentitySource::Env));
+    }
+
+    /// The transport door. The search/timeline range check raises this as an
+    /// `Err` from app-infra, never as a `BrokerErrorResponse` — it reached the
+    /// CLI as `broker_operation_failed` (20) until the classification moved into
+    /// `broker_failure`, which told agents Mnema had faulted when the real answer
+    /// was "widen the scope".
+    #[test]
+    fn out_of_scope_window_maps_to_outside_grant_scope() {
+        let error = broker_error(app_infra::AppInfraError::InvalidSearchRequest(
+            "requested broker time range is outside the grant scope".to_string(),
+        ));
+        assert_eq!(error.code, "outside_grant_scope");
+        assert_eq!(error.exit, 13);
+        assert!(!error.retryable);
+    }
+
+    /// The response door, and the negative case that keeps the substring from
+    /// swallowing every unrelated broker failure into exit 13.
+    #[test]
+    fn out_of_scope_result_id_maps_to_outside_grant_scope() {
+        let error = map_broker_response_error(BrokerErrorResponse {
+            error: BrokerAuthStatusKind::AuthorizationRequired,
+            message: "result is unavailable or outside the grant scope".to_string(),
+        });
+        assert_eq!(error.code, "outside_grant_scope");
+        assert_eq!(error.exit, 13);
+
+        let other = broker_failure("unexpected search response");
+        assert_eq!(other.code, "broker_operation_failed");
+        assert_eq!(other.exit, 20);
     }
 }

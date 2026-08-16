@@ -1,22 +1,48 @@
-// CLI access state: the mnema-cli install status and the broker access grants
-// surfaced in the Access settings panel. Owns its own non-draft reactive state
-// (no `draft*` bindables here) and the load/install/revoke invokes.
+// CLI access state: the mnema-cli install status, the standing per-tool access
+// permissions, and the brokered-access activity log surfaced in the Access
+// settings panel. Owns its own non-draft reactive state (no `draft*` bindables
+// here) and the load/install/block invokes.
 
 import { invoke } from "@tauri-apps/api/core";
 import { describeError, errorText } from "./format";
 
+// Mirrors `app_infra::brokered_access::BrokerGrant` (camelCase on the wire).
+// A permission is standing: no expiry field. It dies 30 days after last use
+// (pruned backend-side on load, so this list never holds a lapsed row), or it
+// is `blocked` — a standing rejection that stays visible here (ADR 0059).
 export type BrokerGrant = {
   id: string;
   label: string;
+  normalizedLabel: string;
   createdAtUnixMs: number;
-  expiresAtUnixMs: number;
-  revoked: boolean;
+  lastUsedAtUnixMs: number;
   scope: { recent_days: { days: number } } | "all_retained_history" | Record<string, unknown>;
+  blocked: boolean;
+  blockedAtUnixMs: number | null;
 };
 
 type BrokerGrantFile = {
   grants: BrokerGrant[];
 };
+
+// Mirrors `app_infra::brokered_access::BrokerAuditEvent`. `outcome` records the
+// real result ("success" | "denied" | "scope_rejected"), and Ask AI no longer
+// writes here at all, so every row is an external tool.
+export type BrokerAuditEvent = {
+  toolIdentity: string;
+  commandType: string;
+  timestampUnixMs: number;
+  resultCount: number;
+  scopeClass: string;
+  outcome: string | null;
+};
+
+type BrokerAuditFile = {
+  events: BrokerAuditEvent[];
+};
+
+/** How many activity rows the panel shows. The file itself is capped at 500. */
+export const ACTIVITY_LIMIT = 20;
 
 export type MnemaCliStatus = {
   installPath: string;
@@ -28,14 +54,12 @@ export type MnemaCliStatus = {
   existingTarget: string | null;
 };
 
-export type GrantStatus = "active" | "expired" | "revoked";
+export type GrantStatus = "active" | "blocked";
 
 // ── Pure helpers (label/format) ─────────────────────────────────────────────
 
-export function grantStatus(grant: BrokerGrant, nowMs: number = Date.now()): GrantStatus {
-  if (grant.revoked) return "revoked";
-  if (grant.expiresAtUnixMs <= nowMs) return "expired";
-  return "active";
+export function grantStatus(grant: BrokerGrant): GrantStatus {
+  return grant.blocked ? "blocked" : "active";
 }
 
 export function formatGrantScope(scope: BrokerGrant["scope"]): string {
@@ -57,10 +81,31 @@ export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): str
 }
 
 export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now()): string {
-  const status = grantStatus(grant, nowMs);
-  if (status === "revoked") return "Revoked";
-  if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
-  return `Expires ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
+  if (grant.blocked) {
+    return grant.blockedAtUnixMs
+      ? `Blocked ${formatGrantTime(grant.blockedAtUnixMs, nowMs)}`
+      : "Blocked";
+  }
+  return `Used ${formatGrantTime(grant.lastUsedAtUnixMs, nowMs)}`;
+}
+
+/** Audit `outcome` → the word shown on an activity row. */
+export function formatOutcome(outcome: string | null): string {
+  if (!outcome || outcome === "success") return "";
+  if (outcome === "scope_rejected") return "Out of scope";
+  if (outcome === "denied") return "Denied";
+  return outcome;
+}
+
+/** Audit `command_type` → the subcommand the tool actually ran (`show_text` → `show-text`). */
+export function formatCommand(commandType: string): string {
+  return commandType.replaceAll("_", "-");
+}
+
+export function formatActivityDetail(event: BrokerAuditEvent): string {
+  const outcome = formatOutcome(event.outcome);
+  if (outcome) return outcome;
+  return event.resultCount === 1 ? "1 result" : `${event.resultCount} results`;
 }
 
 // ── Reactive store ──────────────────────────────────────────────────────────
@@ -68,12 +113,14 @@ export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now())
 export function createCliAccessStore() {
   let brokerGrants = $state<BrokerGrant[]>([]);
   let brokerGrantLoading = $state(false);
-  // Ids of grants whose revoke is currently in flight, so the panel can
+  // Ids of grants whose block/enable is currently in flight, so the panel can
   // spin/disable only those grants' buttons (mirrors aiProviderKeySavingProvider).
-  // A Set (not a single slot) so two concurrent revokes of different grants each
+  // A Set (not a single slot) so two concurrent writes to different grants each
   // track their own spinner — clearing one never prematurely stops another.
   let brokerGrantSavingIds = $state<Set<string>>(new Set());
   let brokerGrantError = $state<string | null>(null);
+  let brokerHistory = $state<BrokerAuditEvent[]>([]);
+  let brokerHistoryLoading = $state(false);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
   let mnemaCliLoading = $state(false);
   let mnemaCliInstalling = $state(false);
@@ -89,6 +136,23 @@ export function createCliAccessStore() {
       brokerGrantError = describeError(err);
     } finally {
       brokerGrantLoading = false;
+    }
+  }
+
+  async function loadBrokerHistory() {
+    brokerHistoryLoading = true;
+    try {
+      const response = await invoke<BrokerAuditFile>("list_cli_access_history");
+      // The audit file is append-ordered and capped at 500; the panel shows the
+      // newest handful. Reverse a copy — `events` is the invoke result, but
+      // reversing in place still reads badly next to a re-render.
+      brokerHistory = [...(response.events ?? [])].reverse().slice(0, ACTIVITY_LIMIT);
+    } catch (err) {
+      // Activity is evidence, not a control: a failed read must not blank the
+      // block/enable buttons above it, so it shares no error slot with them.
+      console.error("[cli-access] failed to load activity", err);
+    } finally {
+      brokerHistoryLoading = false;
     }
   }
 
@@ -108,9 +172,8 @@ export function createCliAccessStore() {
     mnemaCliInstalling = true;
     mnemaCliError = null;
     try {
-      mnemaCliStatus = await invoke<MnemaCliStatus>(
-        mnemaCliStatus?.installed ? "reinstall_cli" : "install_cli",
-      );
+      // `install_cli` relinks an existing install, so reinstall is the same call.
+      mnemaCliStatus = await invoke<MnemaCliStatus>("install_cli");
     } catch (err) {
       mnemaCliError = errorText(err);
     } finally {
@@ -118,17 +181,19 @@ export function createCliAccessStore() {
     }
   }
 
-  async function revokeAgentBrokerGrant(grantId: string) {
-    brokerGrantSavingIds = new Set(brokerGrantSavingIds).add(grantId);
+  async function setGrantBlocked(grant: BrokerGrant, blocked: boolean) {
+    brokerGrantSavingIds = new Set(brokerGrantSavingIds).add(grant.id);
     brokerGrantError = null;
     try {
-      await invoke<boolean>("revoke_cli_access_grant", { grantId });
+      await invoke<boolean>(blocked ? "block_cli_access_client" : "unblock_cli_access_client", {
+        clientName: grant.normalizedLabel,
+      });
       await loadBrokerGrants();
     } catch (err) {
       brokerGrantError = describeError(err);
     } finally {
       const next = new Set(brokerGrantSavingIds);
-      next.delete(grantId);
+      next.delete(grant.id);
       brokerGrantSavingIds = next;
     }
   }
@@ -137,16 +202,19 @@ export function createCliAccessStore() {
     get brokerGrants() { return brokerGrants; },
     get brokerGrantLoading() { return brokerGrantLoading; },
     get brokerGrantSaving() { return brokerGrantSavingIds.size > 0; },
-    isGrantRevoking(grantId: string) { return brokerGrantSavingIds.has(grantId); },
+    isGrantSaving(grantId: string) { return brokerGrantSavingIds.has(grantId); },
     get brokerGrantError() { return brokerGrantError; },
+    get brokerHistory() { return brokerHistory; },
+    get brokerHistoryLoading() { return brokerHistoryLoading; },
     get mnemaCliStatus() { return mnemaCliStatus; },
     get mnemaCliLoading() { return mnemaCliLoading; },
     get mnemaCliInstalling() { return mnemaCliInstalling; },
     get mnemaCliError() { return mnemaCliError; },
     loadBrokerGrants,
+    loadBrokerHistory,
     loadMnemaCliStatus,
     installMnemaCli,
-    revokeAgentBrokerGrant,
+    setGrantBlocked,
   };
 }
 

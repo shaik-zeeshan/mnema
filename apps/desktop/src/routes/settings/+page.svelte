@@ -254,6 +254,10 @@
         c.agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
         c.agentAccessSection?.focus({ preventScroll: true });
         if (c.agentAccessSection) setSpyTarget(c.agentAccessSection);
+        // The tint and callout are an arrival cue, not a state: nothing else
+        // ever cleared them, so the section stayed lit for the rest of the app
+        // session and on every later visit to Settings.
+        setTimeout(() => (c.brokerAuthorizationPromptVisible = false), 8000);
       });
     }
   });

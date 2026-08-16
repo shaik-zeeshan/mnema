@@ -4,11 +4,11 @@ use sqlx::{QueryBuilder, Row, Sqlite};
 
 use super::{
     broker_optional_filter, invalid_speaker_handle_error, load_or_create_opaque_secret,
-    opaque_issuing_grant, opaque_signature, opaque_signature_matches, outside_scope_error,
-    scoped_date_range, sqlite_contains_like_pattern, BrokerErrorResponse, BrokerGrant,
-    BrokerSpeaker, BrokerSpeakerCoverage, BrokerSpeakerHandle, BrokerSpeakerSummary,
-    BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT,
-    MAX_SEARCH_LIMIT, OPAQUE_SIGNATURE_HEX_LEN,
+    opaque_signature, opaque_signature_matches, outside_scope_error, scoped_date_range,
+    sqlite_contains_like_pattern, BrokerErrorResponse, BrokerGrant, BrokerSpeaker,
+    BrokerSpeakerCoverage, BrokerSpeakerHandle, BrokerSpeakerSummary, BrokerSpeakerTurn,
+    BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+    OPAQUE_SIGNATURE_HEX_LEN,
 };
 use crate::{AppInfra, AudioSegment, Result, SearchDateRangeRefinement, SearchSpeakerRefinement};
 
@@ -36,9 +36,9 @@ pub(super) async fn broker_speakers(
     grants: &[BrokerGrant],
     request: BrokerSpeakersRequest,
 ) -> Result<std::result::Result<BrokerSpeakersResponse, BrokerErrorResponse>> {
-    if grants.is_empty() {
+    let Some(grant) = grants.first() else {
         return Ok(Err(BrokerErrorResponse::authorization_required()));
-    }
+    };
     let limit = request
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
@@ -46,7 +46,8 @@ pub(super) async fn broker_speakers(
     let name = broker_optional_filter(request.name, "name")?;
     // No `from`/`to`: the grant IS the scope here. `None` means All Retained
     // History, which needs no time predicate at all.
-    let range = scoped_date_range(grants, None, None)?;
+    // No `from`/`to` means nothing can be clamped: the grant IS the window here.
+    let range = scoped_date_range(grant, None, None)?.refinement;
 
     let rows = broker_speakers_query(range.as_ref(), name.as_deref(), limit)
         .build()
@@ -54,7 +55,7 @@ pub(super) async fn broker_speakers(
         .await?;
     let truncated = rows.len() > limit as usize;
     let secret = load_or_create_opaque_secret(config_dir)?;
-    let grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
+    let grant_id = Some(grant.id.as_str());
     let speakers = rows
         .iter()
         .take(limit as usize)
