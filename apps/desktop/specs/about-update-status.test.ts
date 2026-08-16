@@ -30,7 +30,6 @@ function status(over: Partial<AppUpdateStatus> = {}): AppUpdateStatus {
     app: { productName: "mnema", version: "0.2.0", identifier: "day.mnema", platform: "macos", arch: "aarch64" },
     channel: "stable",
     state: "idle",
-    recordingActive: false,
     ...over,
   };
 }
@@ -68,7 +67,9 @@ describe("neighboring states stay distinct", () => {
       status({ state: "available", update: { version: "0.3.0", channel: "stable" } }),
     );
     expect(appUpdateStateLabel(status({ state: "available" }))).toBe("Update available");
-    expect(message).toBe("Version 0.3.0 is ready to download and install.");
+    expect(message).toBe(
+      "Version 0.3.0 is ready to download and install. Recording stops automatically for the install.",
+    );
     expect(message).not.toContain("Renew");
   });
 
@@ -78,14 +79,10 @@ describe("neighboring states stay distinct", () => {
     expect(appUpdateStateLabel(null)).toBe("Loading");
   });
 
-  test("recording-active override wins for available, but NOT for availableOutOfWindow", () => {
-    expect(
-      appUpdateStateLabel(status({ state: "available", recordingActive: true })),
-    ).toBe("Recording active");
-    // Out-of-window is a licensing condition, not an install action — recording
-    // doesn't mask it.
-    expect(
-      appUpdateStateLabel(status({ state: "availableOutOfWindow", recordingActive: true })),
-    ).toBe("Outside update window");
+  test("a live recording no longer masks either state — the install stops it itself", () => {
+    expect(appUpdateStateLabel(status({ state: "available" }))).toBe("Update available");
+    expect(appUpdateStateLabel(status({ state: "availableOutOfWindow" }))).toBe(
+      "Outside update window",
+    );
   });
 });

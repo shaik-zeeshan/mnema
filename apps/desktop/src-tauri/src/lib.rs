@@ -493,7 +493,7 @@ fn exit_request_action_for_exit_request(
 /// Startup work that runs after the main window is shown, off the window-open
 /// critical path: app-infra maintenance + background workers (see
 /// [`app_infra::run_deferred_startup_blocking`]) and, once onboarding is
-/// complete, capture auto-start and the startup update check. Auto-start runs
+/// complete, capture auto-start and the update-check timer. Auto-start runs
 /// only after the maintenance/repair passes complete so it preserves the
 /// ordering the previous synchronous startup path guaranteed.
 fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool) {
@@ -508,7 +508,7 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     // above already bails on this condition too (defense in depth).
     if windows::is_graceful_exit_in_progress(app_handle) {
         native_capture::debug_log::log_info(
-            "graceful exit in progress; skipping capture auto-start and startup update check",
+            "graceful exit in progress; skipping capture auto-start and the update-check timer",
         );
         return;
     }
@@ -519,7 +519,7 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     licensing::receipt_refresh::start_receipt_refresh_timer(app_handle.clone());
     if onboarding_complete {
         native_capture::maybe_auto_start_native_capture(app_handle);
-        app_updates::start_startup_update_check(app_handle);
+        app_updates::start_update_check_timer(app_handle);
     }
 }
 

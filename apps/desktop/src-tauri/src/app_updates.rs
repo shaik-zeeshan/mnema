@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -57,7 +57,6 @@ pub enum AppUpdateState {
     Downloading,
     Installing,
     RestartRequired,
-    RecordingBlocked,
     Incompatible,
     Failed,
 }
@@ -76,7 +75,6 @@ pub enum AppUpdateErrorKind {
     Incompatible,
     Verification,
     Install,
-    RecordingActive,
     Unknown,
 }
 
@@ -161,7 +159,6 @@ pub struct AppUpdateStatus {
     pub progress: Option<AppUpdateProgress>,
     pub error: Option<AppUpdateError>,
     pub last_checked_at_unix_ms: Option<u64>,
-    pub recording_active: bool,
 }
 
 #[derive(Default)]
@@ -173,6 +170,10 @@ pub struct AppUpdateRuntime {
     error: Option<AppUpdateError>,
     last_checked_at_unix_ms: Option<u64>,
     restart_required: bool,
+    /// Version the "update available" notification was last pushed for. The
+    /// periodic check re-finds the same update every tick; without this it would
+    /// re-push (and un-dismiss) the same notice every couple of hours.
+    notified_version: Option<String>,
 }
 
 pub type AppUpdateRuntimeState = Mutex<AppUpdateRuntime>;
@@ -273,51 +274,15 @@ fn app_info(app_handle: &tauri::AppHandle) -> AppUpdateAppInfo {
     }
 }
 
-fn active_capture_session_blocks_install(session: &capture_types::NativeCaptureSession) -> bool {
-    // Only the live-capture flags gate the install. `source_sessions` is NOT a
-    // liveness signal: a stopped session deliberately preserves it as finalized
-    // metadata (see `stopped_session_from_runtime`), so checking it left install
-    // blocked with "RECORDING ACTIVE" long after recording stopped.
-    session.is_running || session.is_user_paused
-}
-
-fn current_recording_active(app_handle: &tauri::AppHandle) -> bool {
-    active_capture_session_blocks_install(&native_capture::current_native_capture_session(
-        app_handle,
-    ))
-}
-
-/// Derive the user-facing state and error from raw runtime fields.
+/// Whether capture is live enough that the install must stop it first.
 ///
-/// When recording stops after an install was blocked, the runtime still carries
-/// the `RecordingBlocked` state and its `RecordingActive` error. We remap the
-/// state back to what the pending update warrants and drop the now-stale
-/// "stop recording" error so the surfaced status stays self-consistent (no
-/// `Available`/`recordingActive: false` paired with a "stop recording" error).
-fn derive_state_and_error(
-    runtime_state: AppUpdateState,
-    restart_required: bool,
-    has_update: bool,
-    recording_active: bool,
-    error: Option<AppUpdateError>,
-) -> (AppUpdateState, Option<AppUpdateError>) {
-    let recording_unblocked =
-        runtime_state == AppUpdateState::RecordingBlocked && !recording_active;
-    let state = if recording_unblocked {
-        if restart_required {
-            AppUpdateState::RestartRequired
-        } else if has_update {
-            AppUpdateState::Available
-        } else {
-            AppUpdateState::Idle
-        }
-    } else {
-        runtime_state
-    };
-    let error = error.filter(|error| {
-        !(recording_unblocked && error.kind == AppUpdateErrorKind::RecordingActive)
-    });
-    (state, error)
+/// Only the live-capture flags count. `source_sessions` is NOT a liveness
+/// signal: a stopped session deliberately preserves it as finalized metadata
+/// (see `stopped_session_from_runtime`).
+fn capture_session_needs_stop_before_install(
+    session: &capture_types::NativeCaptureSession,
+) -> bool {
+    session.is_running || session.is_user_paused
 }
 
 fn status_from_runtime(
@@ -325,15 +290,8 @@ fn status_from_runtime(
     settings: AppUpdateSettings,
     runtime: &AppUpdateRuntime,
 ) -> AppUpdateStatus {
-    let recording_active = current_recording_active(app_handle);
-    let (state, error) = derive_state_and_error(
-        runtime.state,
-        runtime.restart_required,
-        runtime.update.is_some(),
-        recording_active,
-        runtime.error.clone(),
-    );
-    let state = apply_running_build_window_gate(app_handle, state);
+    let state = apply_running_build_window_gate(app_handle, runtime.state);
+    let error = runtime.error.clone();
 
     AppUpdateStatus {
         app: app_info(app_handle),
@@ -343,7 +301,6 @@ fn status_from_runtime(
         progress: runtime.progress.clone(),
         error,
         last_checked_at_unix_ms: runtime.last_checked_at_unix_ms,
-        recording_active,
     }
 }
 
@@ -502,7 +459,6 @@ fn user_facing_error_message(kind: AppUpdateErrorKind) -> &'static str {
         AppUpdateErrorKind::Incompatible => "No compatible update is available for this Mac.",
         AppUpdateErrorKind::Verification => "Update could not be verified.",
         AppUpdateErrorKind::Install => "Update could not be installed.",
-        AppUpdateErrorKind::RecordingActive => "Stop recording to install this update.",
         AppUpdateErrorKind::Unknown => "Update failed.",
     }
 }
@@ -648,7 +604,11 @@ async fn run_update_check(
                     .lock()
                     .expect("app update runtime state poisoned");
                 runtime.state = decision.state;
-                runtime.pending_update = if decision.installable { Some(update) } else { None };
+                runtime.pending_update = if decision.installable {
+                    Some(update)
+                } else {
+                    None
+                };
                 runtime.update = Some(info.clone());
                 runtime.progress = None;
                 runtime.error = None;
@@ -679,7 +639,20 @@ async fn run_update_check(
             }
             // Out-of-window builds aren't installable, so don't push the
             // "ready to install from Settings" nudge — the Settings surface directs.
-            if decision.notify {
+            // Push once per version: the periodic check re-finds the same update
+            // every tick, and re-pushing would resurrect a dismissed notice.
+            let already_notified = {
+                let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
+                let mut runtime = runtime_state
+                    .lock()
+                    .expect("app update runtime state poisoned");
+                let already = runtime.notified_version.as_deref() == Some(info.version.as_str());
+                if decision.notify && !already {
+                    runtime.notified_version = Some(info.version.clone());
+                }
+                already
+            };
+            if decision.notify && !already_notified {
                 push_update_available_notification(app_handle, &info);
             }
             emit_current_status(app_handle);
@@ -759,10 +732,23 @@ pub fn initialize(app_handle: &tauri::AppHandle) {
     ));
 }
 
-pub fn start_startup_update_check(app_handle: &tauri::AppHandle) {
+/// How often a running app re-checks the feed. Mnema is left running for days,
+/// so a startup-only check means a user can sit on a stale build indefinitely.
+/// For reference: Sparkle defaults to 24 h (1 h hard minimum), Chrome's Omaha to
+/// ~5 h. A tick is one GET of a small static R2 file, so the interval is a
+/// notification-noise choice, not a bandwidth one.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Checks immediately (the first `interval` tick fires at once) and every
+/// `UPDATE_CHECK_INTERVAL` after that, for the life of the process.
+pub fn start_update_check_timer(app_handle: &tauri::AppHandle) {
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = run_update_check(&app_handle, true).await;
+        let mut interval = tokio::time::interval(UPDATE_CHECK_INTERVAL);
+        loop {
+            interval.tick().await;
+            let _ = run_update_check(&app_handle, true).await;
+        }
     });
 }
 
@@ -771,22 +757,6 @@ fn spawn_update_check(app_handle: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _ = run_update_check(&app_handle, false).await;
     });
-}
-
-/// Called whenever the native capture session changes. If install was previously
-/// blocked by an active recording, re-emit the update status so the frontend
-/// panel reflects the recording-stopped state immediately.
-pub fn on_capture_session_changed(app_handle: &tauri::AppHandle) {
-    let state = {
-        let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
-        let runtime = runtime_state
-            .lock()
-            .expect("app update runtime state poisoned");
-        runtime.state
-    };
-    if state == AppUpdateState::RecordingBlocked {
-        emit_current_status(app_handle);
-    }
 }
 
 #[tauri::command]
@@ -832,20 +802,33 @@ pub async fn set_app_update_channel(
     run_update_check(&app_handle, false).await
 }
 
+async fn stop_capture_before_install(app_handle: &tauri::AppHandle) {
+    let session = native_capture::current_native_capture_session(app_handle);
+    if !capture_session_needs_stop_before_install(&session) {
+        return;
+    }
+    native_capture::debug_log::log_info("stopping capture to install an app update");
+    let stop_app_handle = app_handle.clone();
+    match tauri::async_runtime::spawn_blocking(move || {
+        native_capture::stop_native_capture_from_app_handle(&stop_app_handle)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        // Best-effort: a failed stop must not strand an already-downloaded
+        // update. The install proceeds; the restart's graceful exit gets
+        // another chance to finalize capture.
+        Ok(Err(error)) => native_capture::debug_log::log_warn(format!(
+            "stopping capture before update install failed: {error:?}"
+        )),
+        Err(error) => native_capture::debug_log::log_warn(format!(
+            "stopping capture before update install panicked: {error}"
+        )),
+    }
+}
+
 #[tauri::command]
 pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus {
-    let session = native_capture::current_native_capture_session(&app_handle);
-    if active_capture_session_blocks_install(&session) {
-        return set_runtime_error(
-            &app_handle,
-            AppUpdateState::RecordingBlocked,
-            AppUpdateError::new(
-                AppUpdateErrorKind::RecordingActive,
-                user_facing_error_message(AppUpdateErrorKind::RecordingActive),
-            ),
-        );
-    }
-
     let update = {
         let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
         let mut runtime = runtime_state
@@ -949,17 +932,11 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
         }
     };
 
-    let session = native_capture::current_native_capture_session(&app_handle);
-    if active_capture_session_blocks_install(&session) {
-        return set_runtime_error(
-            &app_handle,
-            AppUpdateState::RecordingBlocked,
-            AppUpdateError::new(
-                AppUpdateErrorKind::RecordingActive,
-                user_facing_error_message(AppUpdateErrorKind::RecordingActive),
-            ),
-        );
-    }
+    // The download ran alongside capture; the bundle swap must not. Stop it
+    // ourselves rather than refusing the install and telling the user to —
+    // the graceful stop finalizes the in-flight segment, and the restart that
+    // follows re-arms capture through the normal auto-start path.
+    stop_capture_before_install(&app_handle).await;
 
     {
         let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
@@ -992,23 +969,16 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
     current_status(&app_handle)
 }
 
-fn restart_after_update_error(
-    restart_required: bool,
-    session: &capture_types::NativeCaptureSession,
-) -> Option<AppUpdateError> {
-    if !restart_required {
-        return Some(AppUpdateError::new(
+/// The only reason to refuse: nothing was installed. A live capture is NOT a
+/// reason — `request_graceful_restart_after_update` finalizes it before
+/// relaunching, same as any other graceful exit.
+fn restart_after_update_error(restart_required: bool) -> Option<AppUpdateError> {
+    (!restart_required).then(|| {
+        AppUpdateError::new(
             AppUpdateErrorKind::Install,
             "No installed update is waiting for restart.",
-        ));
-    }
-    if active_capture_session_blocks_install(session) {
-        return Some(AppUpdateError::new(
-            AppUpdateErrorKind::RecordingActive,
-            user_facing_error_message(AppUpdateErrorKind::RecordingActive),
-        ));
-    }
-    None
+        )
+    })
 }
 
 #[tauri::command]
@@ -1021,14 +991,8 @@ pub fn restart_after_app_update(app_handle: tauri::AppHandle) -> Result<(), AppU
             .restart_required;
         restart_required
     };
-    let session = native_capture::current_native_capture_session(&app_handle);
-    if let Some(error) = restart_after_update_error(restart_required, &session) {
-        let state = if error.kind == AppUpdateErrorKind::RecordingActive {
-            AppUpdateState::RecordingBlocked
-        } else {
-            AppUpdateState::Failed
-        };
-        set_runtime_error(&app_handle, state, error.clone());
+    if let Some(error) = restart_after_update_error(restart_required) {
+        set_runtime_error(&app_handle, AppUpdateState::Failed, error.clone());
         return Err(error);
     }
 
@@ -1110,26 +1074,26 @@ mod tests {
     }
 
     #[test]
-    fn install_is_blocked_when_current_capture_session_is_running() {
+    fn install_stops_a_running_capture_session_first() {
         let mut session = stopped_session();
         session.is_running = true;
 
-        assert!(active_capture_session_blocks_install(&session));
+        assert!(capture_session_needs_stop_before_install(&session));
     }
 
     #[test]
-    fn install_is_blocked_during_user_capture_pause() {
+    fn install_stops_a_user_paused_capture_session_first() {
         let mut session = stopped_session();
         session.is_user_paused = true;
 
-        assert!(active_capture_session_blocks_install(&session));
+        assert!(capture_session_needs_stop_before_install(&session));
     }
 
     #[test]
-    fn install_is_not_blocked_when_stopped_session_retains_finalized_source_metadata() {
+    fn stopped_session_with_finalized_source_metadata_needs_no_stop() {
         // A stopped session preserves `source_sessions` as finalized metadata
         // (see `stopped_session_from_runtime`). That is not a liveness signal, so
-        // it must not keep the install stuck on "Stop recording to install".
+        // it must not trigger a pointless stop before the install.
         let mut session = stopped_session();
         session.source_sessions = Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1140,7 +1104,7 @@ mod tests {
             system_audio: None,
         });
 
-        assert!(!active_capture_session_blocks_install(&session));
+        assert!(!capture_session_needs_stop_before_install(&session));
     }
 
     #[test]
@@ -1186,74 +1150,16 @@ mod tests {
 
     #[test]
     fn restart_command_rejects_when_no_installed_update_is_pending() {
-        let session = stopped_session();
-        let error = restart_after_update_error(false, &session)
+        let error = restart_after_update_error(false)
             .expect("missing pending update should reject restart");
 
         assert_eq!(error.kind, AppUpdateErrorKind::Install);
     }
 
     #[test]
-    fn restart_command_rejects_if_capture_starts_before_restart() {
-        let mut session = stopped_session();
-        session.is_running = true;
-
-        let error = restart_after_update_error(true, &session)
-            .expect("running capture should reject restart");
-
-        assert_eq!(error.kind, AppUpdateErrorKind::RecordingActive);
-    }
-
-    fn recording_active_error() -> AppUpdateError {
-        AppUpdateError::new(
-            AppUpdateErrorKind::RecordingActive,
-            user_facing_error_message(AppUpdateErrorKind::RecordingActive),
-        )
-    }
-
-    #[test]
-    fn stopping_recording_clears_stale_recording_blocked_error() {
-        let (state, error) = derive_state_and_error(
-            AppUpdateState::RecordingBlocked,
-            false,
-            true,
-            false,
-            Some(recording_active_error()),
-        );
-
-        assert_eq!(state, AppUpdateState::Available);
-        assert_eq!(error, None);
-    }
-
-    #[test]
-    fn stopping_recording_restores_restart_required_without_stale_error() {
-        let (state, error) = derive_state_and_error(
-            AppUpdateState::RecordingBlocked,
-            true,
-            true,
-            false,
-            Some(recording_active_error()),
-        );
-
-        assert_eq!(state, AppUpdateState::RestartRequired);
-        assert_eq!(error, None);
-    }
-
-    #[test]
-    fn recording_block_keeps_its_error_while_recording_is_active() {
-        let (state, error) = derive_state_and_error(
-            AppUpdateState::RecordingBlocked,
-            false,
-            true,
-            true,
-            Some(recording_active_error()),
-        );
-
-        assert_eq!(state, AppUpdateState::RecordingBlocked);
-        assert_eq!(
-            error.map(|error| error.kind),
-            Some(AppUpdateErrorKind::RecordingActive)
-        );
+    fn restart_command_allows_restart_while_capture_is_running() {
+        // The graceful restart stops and finalizes capture itself.
+        assert_eq!(restart_after_update_error(true), None);
     }
 
     #[test]
@@ -1322,7 +1228,6 @@ mod tests {
             AppUpdateState::Downloading,
             AppUpdateState::Installing,
             AppUpdateState::RestartRequired,
-            AppUpdateState::RecordingBlocked,
             AppUpdateState::Incompatible,
             AppUpdateState::Failed,
         ] {
@@ -1382,20 +1287,5 @@ mod tests {
                 notify: false,
             },
         );
-    }
-
-    #[test]
-    fn non_recording_failures_keep_their_error() {
-        let failure = AppUpdateError::new(AppUpdateErrorKind::Network, "boom");
-        let (state, error) = derive_state_and_error(
-            AppUpdateState::Failed,
-            false,
-            false,
-            false,
-            Some(failure.clone()),
-        );
-
-        assert_eq!(state, AppUpdateState::Failed);
-        assert_eq!(error, Some(failure));
     }
 }
