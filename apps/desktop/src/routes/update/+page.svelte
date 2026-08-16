@@ -15,7 +15,7 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
   import { closeCurrentWindow } from "$lib/surface-windows";
-  import { renderMarkdown } from "$lib/markdown";
+  import { isOpenableHref, renderMarkdown } from "$lib/markdown";
   import {
     appUpdateProgressPercent,
     appUpdateProgressText,
@@ -27,7 +27,6 @@
     canInstallUpdate,
     canRestartUpdate,
     fitUpdateWindowHeight,
-    isOpenableNoteHref,
     isUpdateBusy,
     updateChannelLine,
     updateWindowError,
@@ -78,13 +77,9 @@
   //     handler below the webview honours `target=_blank` natively and the
   //     link escapes the controlled opener. The feed's notes are NOT covered
   //     by the updater signature, so treat them as untrusted content.
-  //   - `renderMarkdown` does NOT leave only web links behind. It strips the
-  //     href of any link carrying a disallowed SCHEME, but `isAllowedLinkHref`
-  //     deliberately keeps scheme-less relative hrefs (`#a`, `?q=1`, `/x`) and
-  //     tags them `data-external` too — so "the anchor still has an href" is
-  //     not proof it is safe to hand to the OS. tauri-plugin-opener's default
-  //     URL scope happens to reject those, but that is a second layer this
-  //     window should not be silently relying on. Re-validate here.
+  //   - a rendered href is NOT proof of a safe destination: `renderMarkdown`
+  //     keeps scheme-less relative hrefs and tags them `data-external` too.
+  //     `isOpenableHref` is the open-time gate; see its doc comment.
   function openNoteLink(event: MouseEvent): boolean {
     const anchor = (event.target as HTMLElement | null)?.closest("a");
     const href = anchor?.getAttribute("href");
@@ -92,7 +87,7 @@
     // Always swallow the navigation, even for a link we refuse to open: this
     // webview has no back affordance, so navigating away is unrecoverable.
     event.preventDefault();
-    if (!isOpenableNoteHref(href)) return false;
+    if (!isOpenableHref(href)) return false;
     void openUrl(href).catch((err) => {
       // Not swallowed: a refused open is otherwise a dead click nobody can
       // explain.

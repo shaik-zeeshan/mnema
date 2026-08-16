@@ -100,32 +100,6 @@ export function updateChannelLine(status: AppUpdateStatus | null): string | null
   return status && status.channel !== "stable" ? "Preview channel" : null;
 }
 
-/**
- * Whether a release-note href may be handed to the OS opener.
- *
- * `renderMarkdown` is NOT sufficient proof on its own: it strips the href of
- * any link carrying a disallowed scheme, but `isAllowedLinkHref` deliberately
- * keeps scheme-less relative hrefs (`#a`, `?q=1`, `/x`) and tags them
- * `data-external` too. The feed's `notes` are injected after signing (the
- * promote workflow says so), so they are untrusted input and this window
- * re-validates rather than relying on tauri-plugin-opener's URL scope to
- * silently reject what slips through.
- */
-export function isOpenableNoteHref(href: string | null | undefined): boolean {
-  if (!href) return false;
-  let url: URL;
-  try {
-    // Parsed with NO base on purpose: the href is handed to the OS opener
-    // verbatim, so anything that is not already an absolute URL is meaningless
-    // there. This is what rejects `/etc/passwd`, `#anchor`, `?q=1` and the
-    // protocol-relative `//host` — all of which throw without a base.
-    url = new URL(href);
-  } catch {
-    return false;
-  }
-  return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:";
-}
-
 export const UPDATE_WINDOW_MIN_HEIGHT = 360;
 export const UPDATE_WINDOW_MAX_HEIGHT = 640;
 

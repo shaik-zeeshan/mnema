@@ -15,7 +15,6 @@ import {
   canInstallUpdate,
   canRestartUpdate,
   fitUpdateWindowHeight,
-  isOpenableNoteHref,
   isUpdateBusy,
   UPDATE_WINDOW_MAX_HEIGHT,
   UPDATE_WINDOW_MIN_HEIGHT,
@@ -188,38 +187,6 @@ describe("updateChannelLine", () => {
     expect(updateChannelLine(status({ channel: "stable" }))).toBeNull();
     expect(updateChannelLine(status({ channel: "preview" }))).toBe("Preview channel");
     expect(updateChannelLine(null)).toBeNull();
-  });
-});
-
-describe("isOpenableNoteHref", () => {
-  // The feed's `notes` are injected into latest.json AFTER signing, so this is
-  // untrusted content reaching an OS-level opener.
-  test("opens real web and mail links", () => {
-    expect(isOpenableNoteHref("https://github.com/shaik-zeeshan/mnema/compare/v1...v2")).toBe(true);
-    expect(isOpenableNoteHref("http://example.com")).toBe(true);
-    expect(isOpenableNoteHref("mailto:hi@mnema.day")).toBe(true);
-  });
-
-  test("refuses scheme-less hrefs, which renderMarkdown deliberately keeps", () => {
-    // markdown.ts's isAllowedLinkHref allows these THROUGH with an intact href
-    // and a data-external tag, so the renderer is not the guard here.
-    expect(isOpenableNoteHref("/Applications/Calculator.app")).toBe(false);
-    expect(isOpenableNoteHref("/etc/passwd")).toBe(false);
-    expect(isOpenableNoteHref("#anchor")).toBe(false);
-    expect(isOpenableNoteHref("?q=1")).toBe(false);
-  });
-
-  test("refuses custom and dangerous schemes", () => {
-    expect(isOpenableNoteHref("file:///etc/passwd")).toBe(false);
-    expect(isOpenableNoteHref("javascript:alert(1)")).toBe(false);
-    expect(isOpenableNoteHref("someapp://boom")).toBe(false);
-    expect(isOpenableNoteHref("//evil.example.com")).toBe(false);
-  });
-
-  test("refuses nothing at all", () => {
-    expect(isOpenableNoteHref(null)).toBe(false);
-    expect(isOpenableNoteHref(undefined)).toBe(false);
-    expect(isOpenableNoteHref("")).toBe(false);
   });
 });
 
