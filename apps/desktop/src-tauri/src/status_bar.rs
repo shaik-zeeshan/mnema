@@ -20,6 +20,7 @@ const EXCLUDE_CURRENT_APP_ID: &str = "tray_exclude_current_app";
 const SOURCE_SCREEN_ID: &str = "tray_source_screen";
 const SOURCE_MICROPHONE_ID: &str = "tray_source_microphone";
 const SOURCE_SYSTEM_AUDIO_ID: &str = "tray_source_system_audio";
+const UPDATE_ID: &str = "tray_install_update";
 const OPEN_MAIN_ID: &str = "tray_open_main";
 const OPEN_SETTINGS_ID: &str = "tray_open_settings";
 const QUIT_ID: &str = "tray_quit";
@@ -71,6 +72,9 @@ struct StatusBarMenuModel {
     pause_label: Option<&'static str>,
     pause_enabled: bool,
     source_items: Vec<SourceItemModel>,
+    /// Label + enabled for the update row, or `None` when there's nothing to
+    /// install. Owned by `app_updates::tray_update_menu_item`, not built here.
+    update_item: Option<(String, bool)>,
     tooltip: &'static str,
 }
 
@@ -171,6 +175,7 @@ fn build_menu_model(
             pause_label: None,
             pause_enabled: false,
             source_items: Vec::new(),
+            update_item: None,
             tooltip: "Mnema",
         };
     }
@@ -229,6 +234,7 @@ fn build_menu_model(
         }),
         pause_enabled: recording && operation == StatusBarOperation::Idle,
         source_items,
+        update_item: None,
         tooltip,
     }
 }
@@ -303,6 +309,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         .as_ref()
         .is_some_and(|status| !status.capture_allowed_at(crate::licensing::now_ms()));
     apply_read_only_status(&mut model, blocked, status.as_ref());
+    model.update_item = crate::app_updates::tray_update_item(app);
     model
 }
 
@@ -382,6 +389,22 @@ fn build_menu(
         .map(|_| PredefinedMenuItem::separator(app))
         .transpose()?;
 
+    // Sits above "Open Mnema" so the one surface a windowless user has can both
+    // announce the update and install it, without crowding the capture controls.
+    let update = model
+        .update_item
+        .as_ref()
+        .map(|(label, enabled)| {
+            MenuItemBuilder::with_id(UPDATE_ID, label)
+                .enabled(*enabled)
+                .build(app)
+        })
+        .transpose()?;
+    let update_separator = update
+        .as_ref()
+        .map(|_| PredefinedMenuItem::separator(app))
+        .transpose()?;
+
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
     if let (Some(header), Some(sep)) = (status_header.as_ref(), status_separator.as_ref()) {
         items.push(header);
@@ -394,7 +417,13 @@ fn build_menu(
         &exclude_current,
         &delete_recent,
         &separator_two,
-        &open_main,
+    ]);
+    if let (Some(update), Some(sep)) = (update.as_ref(), update_separator.as_ref()) {
+        items.push(update);
+        items.push(sep);
+    }
+    items.extend([
+        &open_main as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
         &settings,
         &separator,
         &quit,
@@ -665,6 +694,7 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         SOURCE_SCREEN_ID | SOURCE_MICROPHONE_ID | SOURCE_SYSTEM_AUDIO_ID => {
             handle_source_toggle(app, id)
         }
+        UPDATE_ID => crate::app_updates::install_and_restart(app.clone()),
         OPEN_MAIN_ID => {
             let _ = crate::windows::open_main_window(app);
         }
@@ -804,7 +834,11 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
+        apply_read_only_status(
+            &mut model,
+            true,
+            Some(&capture_types::LicenseStatus::ReadOnly),
+        );
         assert_eq!(model.status_label, Some("Read-Only — trial ended"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (trial ended)");
         assert!(!model.recording_enabled);
@@ -823,7 +857,11 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::Revoked));
+        apply_read_only_status(
+            &mut model,
+            true,
+            Some(&capture_types::LicenseStatus::Revoked),
+        );
         assert_eq!(model.status_label, Some("Read-Only — license revoked"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (license revoked)");
         assert!(!model.recording_enabled);
@@ -873,7 +911,11 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
+        apply_read_only_status(
+            &mut model,
+            true,
+            Some(&capture_types::LicenseStatus::ReadOnly),
+        );
         assert_eq!(model.recording_label, Some("Stop Recording"));
         assert!(model.recording_enabled);
         assert_eq!(model.status_label, None);

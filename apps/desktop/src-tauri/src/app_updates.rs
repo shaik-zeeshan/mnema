@@ -319,6 +319,31 @@ fn current_status(app_handle: &tauri::AppHandle) -> AppUpdateStatus {
 fn emit_current_status(app_handle: &tauri::AppHandle) {
     let status = current_status(app_handle);
     let _ = app_handle.emit(APP_UPDATE_STATUS_CHANGED_EVENT, status);
+    refresh_tray_update_item(app_handle);
+}
+
+/// Last update row pushed to the tray. `emit_current_status` fires once per
+/// downloaded chunk, and a menu rebuild per chunk is both wasteful and visibly
+/// flickery — the row only changes a handful of times per update, so rebuild
+/// only when it actually differs. Starts as `None`, matching the row-less menu
+/// `status_bar::initialize` builds before any check has run.
+static LAST_TRAY_UPDATE_ITEM: Mutex<Option<(String, bool)>> = Mutex::new(None);
+
+fn refresh_tray_update_item(app_handle: &tauri::AppHandle) {
+    // The tray carries the same update row, and it's the only surface a user
+    // with no window open can see. Callers always drop the runtime lock before
+    // emitting, so the rebuild's own `current_status` read can't deadlock.
+    let item = tray_update_item(app_handle);
+    {
+        let mut last = LAST_TRAY_UPDATE_ITEM
+            .lock()
+            .expect("tray update item state poisoned");
+        if *last == item {
+            return;
+        }
+        *last = item;
+    }
+    crate::status_bar::refresh(app_handle);
 }
 
 fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpdateInfo {
@@ -507,6 +532,84 @@ fn push_update_available_notification(app_handle: &tauri::AppHandle, update: &Ap
     );
 }
 
+/// The proactive "there's an update" nudge: Mnema's own small update window
+/// (`AppWindow::Update`), live-bound to `APP_UPDATE_STATUS_CHANGED_EVENT`.
+///
+/// It used to be a `tauri-plugin-dialog` message dialog, and that was a bug: a
+/// PARENTLESS dialog is not an in-process `NSAlert`. rfd routes it to
+/// `CFUserNotificationDisplayAlert`, drawn by the system's UserNotificationCenter
+/// agent, with no handle to dismiss it and no lifetime tie to us. Installing from
+/// the tray then restarts the app out from under it (`complete_graceful_exit`
+/// ends in `_exit(0)`, running no cleanup) and the alert was left on screen
+/// advertising a version the user already had. Any surface raised here has to
+/// die when the process does — only our own window does.
+fn prompt_update_available(app_handle: &tauri::AppHandle) {
+    if let Err(error) = windows::open_update_window(app_handle) {
+        native_capture::debug_log::log_warn(format!(
+            "failed to open the update window for an available update: {error}"
+        ));
+    }
+}
+
+/// Install the pending update and restart into it. Drives the tray item, which
+/// is reachable with no window open — hence the failure dialog, since the
+/// Settings error surface may not be on screen. A restart already staged (state
+/// `RestartRequired`) short-circuits inside `install_app_update`, so this is
+/// also the "finish the update" path.
+///
+/// The failure dialog is the same parentless system alert described on
+/// [`prompt_update_available`], but it's safe here: a failed install never
+/// restarts, so nothing exits out from under it.
+pub(crate) fn install_and_restart(app_handle: tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    tauri::async_runtime::spawn(async move {
+        let status = install_app_update(app_handle.clone()).await;
+        if status.state == AppUpdateState::RestartRequired {
+            windows::request_graceful_restart_after_update(&app_handle);
+            return;
+        }
+        let message = status
+            .error
+            .map(|error| error.message)
+            .unwrap_or_else(|| user_facing_error_message(AppUpdateErrorKind::Install).to_string());
+        app_handle
+            .dialog()
+            .message(message)
+            .title("Mnema couldn't install the update")
+            .kind(MessageDialogKind::Error)
+            .show(|_| {});
+    });
+}
+
+/// Label + enabled state for the tray's update item, or `None` when the menu
+/// should carry no update row at all. Out-of-window builds
+/// (`AvailableOutOfWindow`) are deliberately absent: they aren't installable, so
+/// the tray would offer a button that can only fail — Settings does the directing.
+pub(crate) fn tray_update_menu_item(
+    state: AppUpdateState,
+    version: Option<&str>,
+) -> Option<(String, bool)> {
+    match state {
+        AppUpdateState::RestartRequired => Some(("Restart to Finish Update".to_string(), true)),
+        AppUpdateState::Downloading | AppUpdateState::Installing => {
+            Some(("Updating\u{2026}".to_string(), false))
+        }
+        AppUpdateState::Available => {
+            version.map(|version| (format!("Install Update {version}\u{2026}"), true))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn tray_update_item(app_handle: &tauri::AppHandle) -> Option<(String, bool)> {
+    let status = current_status(app_handle);
+    tray_update_menu_item(
+        status.state,
+        status.update.as_ref().map(|update| update.version.as_str()),
+    )
+}
+
 #[cfg(test)]
 fn startup_update_notification_for_update(
     update: &AppUpdateInfo,
@@ -654,6 +757,7 @@ async fn run_update_check(
             };
             if decision.notify && !already_notified {
                 push_update_available_notification(app_handle, &info);
+                prompt_update_available(app_handle);
             }
             emit_current_status(app_handle);
             current_status(app_handle)
@@ -1105,6 +1209,39 @@ mod tests {
         });
 
         assert!(!capture_session_needs_stop_before_install(&session));
+    }
+
+    #[test]
+    fn tray_update_item_only_appears_for_installable_states() {
+        assert_eq!(
+            tray_update_menu_item(AppUpdateState::Available, Some("0.3.0")),
+            Some(("Install Update 0.3.0\u{2026}".to_string(), true))
+        );
+        assert_eq!(
+            tray_update_menu_item(AppUpdateState::RestartRequired, None),
+            Some(("Restart to Finish Update".to_string(), true))
+        );
+        // Mid-install the row shows progress but must not be clickable again.
+        assert_eq!(
+            tray_update_menu_item(AppUpdateState::Downloading, Some("0.3.0")),
+            Some(("Updating\u{2026}".to_string(), false))
+        );
+        for state in [
+            AppUpdateState::Idle,
+            AppUpdateState::Checking,
+            AppUpdateState::UpToDate,
+            AppUpdateState::AvailableOutOfWindow,
+            AppUpdateState::Incompatible,
+            AppUpdateState::Failed,
+        ] {
+            assert_eq!(
+                tray_update_menu_item(state, Some("0.3.0")),
+                None,
+                "{state:?}"
+            );
+        }
+        // Available with no version in the feed is a broken row, not a row.
+        assert_eq!(tray_update_menu_item(AppUpdateState::Available, None), None);
     }
 
     #[test]

@@ -74,6 +74,7 @@ enum AppWindow {
     CliAccessRequest,
     Debug,
     QuickRecall,
+    Update,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +246,28 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            // A small dedicated panel, sized like the CLI access dialog: it is a
+            // dialog, not a workspace. Never `ExitApp` on close (see
+            // `destroyed_window_action`) — dismissing an update nudge must not
+            // quit a menu-bar app that's mid-recording.
+            Self::Update => AppWindowConfig {
+                label: "update",
+                path: "update",
+                title: "mnema · Update",
+                // The page measures its rendered release notes and resizes the
+                // window to fit (`fitWindowToContent`), so this is the opening
+                // size, not the final one — and `min_inner_size` must stay under
+                // the page's own 360px floor or a short changelog can't shrink
+                // out of its dead space.
+                inner_size: (480.0, 520.0),
+                min_inner_size: (420.0, 340.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(12.0),
+            },
             Self::QuickRecall => AppWindowConfig {
                 label: "quick-recall",
                 path: "quick-recall",
@@ -268,6 +291,7 @@ impl AppWindow {
             "cli-access-request" => Some(Self::CliAccessRequest),
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
+            "update" => Some(Self::Update),
             _ => None,
         }
     }
@@ -378,6 +402,10 @@ pub(crate) fn open_main_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub(crate) fn open_onboarding_window(app: &tauri::AppHandle) -> Result<(), String> {
     open_or_focus_window(app, AppWindow::Onboarding, None)
+}
+
+pub(crate) fn open_update_window(app: &tauri::AppHandle) -> Result<(), String> {
+    open_or_focus_window(app, AppWindow::Update, None)
 }
 
 fn open_or_focus_window(
@@ -1130,9 +1158,7 @@ fn complete_graceful_exit(app: &tauri::AppHandle) {
     exit_state.mark_final_graceful_exit_ready();
 
     if restart_requested {
-        crate::native_capture::debug_log::log_info(
-            "completed graceful app exit; relaunching",
-        );
+        crate::native_capture::debug_log::log_info("completed graceful app exit; relaunching");
         app.restart();
     }
 
@@ -1172,7 +1198,9 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall) => DestroyedWindowAction::None,
+        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall | AppWindow::Update) => {
+            DestroyedWindowAction::None
+        }
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -1190,7 +1218,10 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             Ok(())
         }
         Some(
-            AppWindow::Onboarding | AppWindow::CliAccessRequest | AppWindow::Debug,
+            AppWindow::Onboarding
+            | AppWindow::CliAccessRequest
+            | AppWindow::Debug
+            | AppWindow::Update,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1409,11 +1440,11 @@ pub fn complete_onboarding(
 #[cfg(test)]
 mod tests {
     use super::{
-        close_window_focuses_main_before_close, destroyed_window_action, enqueue_cold_open_settings,
-        is_known_settings_tab, load_onboarding_state_from_path, normalize_settings_focus,
-        normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
-        AppExitCoordinatorState, DestroyedWindowAction, OnboardingState, OnboardingStateView,
-        OpenSettingsTabPayload, PendingOpenSettingsState,
+        close_window_focuses_main_before_close, destroyed_window_action,
+        enqueue_cold_open_settings, is_known_settings_tab, load_onboarding_state_from_path,
+        normalize_settings_focus, normalize_settings_tab, normalized_open_settings_payload,
+        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction, OnboardingState,
+        OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
     };
 
     #[test]
@@ -1422,6 +1453,21 @@ mod tests {
             destroyed_window_action("debug"),
             DestroyedWindowAction::FocusMainWindow
         );
+    }
+
+    #[test]
+    fn dismissing_the_update_window_never_quits_the_app() {
+        // It's a nudge, not a workspace: a menu-bar app mid-recording must not
+        // exit because someone closed an update prompt (Main does exit).
+        assert_eq!(
+            destroyed_window_action("update"),
+            DestroyedWindowAction::None
+        );
+        assert_eq!(
+            super::AppWindow::from_label("update"),
+            Some(super::AppWindow::Update)
+        );
+        assert_eq!(super::AppWindow::Update.config().path, "update");
     }
 
     #[test]
@@ -1542,7 +1588,10 @@ mod tests {
         // Granular processing sub-tabs pass through (no longer collapsed to
         // "processing") so notifications can target a specific section.
         assert_eq!(normalize_settings_tab("ocr"), Some("ocr"));
-        assert_eq!(normalize_settings_tab("transcription"), Some("transcription"));
+        assert_eq!(
+            normalize_settings_tab("transcription"),
+            Some("transcription")
+        );
         assert_eq!(normalize_settings_tab("speakers"), Some("speakers"));
         // Legacy "processing" alias is still accepted for back-compat.
         assert_eq!(normalize_settings_tab("processing"), Some("processing"));
@@ -1693,7 +1742,8 @@ mod tests {
     fn onboarding_state_view_carries_ever_saved_signal_independently() {
         // The signal is independent of completion: a not-yet-completed onboarding
         // can still report a returning user (settings saved), and vice versa.
-        let returning = OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
+        let returning =
+            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
         assert!(returning.recording_settings_ever_saved);
         assert_eq!(returning.completed_at_unix_ms, None);
 

@@ -14,7 +14,7 @@ import { goto } from "$app/navigation";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isMainAppRoute, normalizeAppPathname } from "$lib/route-path";
 
-export type SurfaceWindowLabel = "main" | "onboarding" | "cli-access-request" | "debug" | "quick-recall";
+export type SurfaceWindowLabel = "main" | "onboarding" | "cli-access-request" | "debug" | "quick-recall" | "update";
 
 export type SettingsWindowTab =
   | "about"
@@ -202,7 +202,8 @@ export function currentWindowLabel(): SurfaceWindowLabel | string {
 
 export function isDedicatedSurfaceWindow(): boolean {
   const label = currentWindowLabel();
-  return label === "onboarding" || label === "cli-access-request" || label === "debug";
+  return label === "onboarding" || label === "cli-access-request" || label === "debug"
+    || label === "update";
 }
 
 export function isQuickRecallWindow(): boolean {
