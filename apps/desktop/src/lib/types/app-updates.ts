@@ -9,7 +9,6 @@ export type AppUpdateState =
 	| "downloading"
 	| "installing"
 	| "restartRequired"
-	| "recordingBlocked"
 	| "incompatible"
 	| "failed";
 
@@ -19,7 +18,6 @@ export type AppUpdateErrorKind =
 	| "incompatible"
 	| "verification"
 	| "install"
-	| "recordingActive"
 	| "unknown";
 
 export interface AppUpdateStatus {
@@ -47,5 +45,4 @@ export interface AppUpdateStatus {
 		message: string;
 	} | null;
 	lastCheckedAtUnixMs?: number | null;
-	recordingActive: boolean;
 }

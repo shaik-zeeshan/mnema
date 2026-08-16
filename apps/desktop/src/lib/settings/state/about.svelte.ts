@@ -16,9 +16,6 @@ import { describeError, formatBytes } from "./format";
 
 export function appUpdateStateLabel(status: AppUpdateStatus | null): string {
   if (!status) return "Loading";
-  if (status.recordingActive && (status.state === "available" || status.state === "recordingBlocked")) {
-    return "Recording active";
-  }
   switch (status.state) {
     case "idle": return "Not checked";
     case "checking": return "Checking";
@@ -28,7 +25,6 @@ export function appUpdateStateLabel(status: AppUpdateStatus | null): string {
     case "downloading": return "Downloading";
     case "installing": return "Installing";
     case "restartRequired": return "Restart required";
-    case "recordingBlocked": return "Recording active";
     case "incompatible": return "Incompatible";
     case "failed": return "Failed";
     default: return "Unknown";
@@ -37,15 +33,12 @@ export function appUpdateStateLabel(status: AppUpdateStatus | null): string {
 
 export function appUpdateStatusMessage(status: AppUpdateStatus | null): string {
   if (!status) return "Loading update status.";
-  if (status.recordingActive && (status.state === "available" || status.state === "recordingBlocked")) {
-    return "Stop recording to install this update.";
-  }
   if (status.error?.message) return status.error.message;
   switch (status.state) {
     case "idle": return "Mnema has not checked for updates in this app session.";
     case "checking": return "Checking the selected update channel.";
     case "upToDate": return "Mnema is current on the selected channel.";
-    case "available": return `Version ${status.update?.version ?? "newer"} is ready to download and install.`;
+    case "available": return `Version ${status.update?.version ?? "newer"} is ready to download and install. Recording stops automatically for the install.`;
     case "availableOutOfWindow":
       // Two triggers, one state: a newer remote build past the window (update present),
       // or the running build itself past the window (fresh install after lapse).
@@ -155,19 +148,14 @@ export function createAboutStore() {
   // Depends only on reactive state, so these read live values.
   const canInstallAppUpdate = $derived(
     !!appUpdateStatus?.update
-      && (appUpdateStatus.state === "available"
-        || appUpdateStatus.state === "recordingBlocked"
-        || appUpdateStatus.state === "failed")
-      && !appUpdateStatus.recordingActive
+      && (appUpdateStatus.state === "available" || appUpdateStatus.state === "failed")
       && !installingAppUpdate
       && !checkingAppUpdate
       && !switchingAppUpdateChannel,
   );
 
   const canRestartAfterUpdate = $derived(
-    appUpdateStatus?.state === "restartRequired"
-      && !appUpdateStatus.recordingActive
-      && !restartingAfterUpdate,
+    appUpdateStatus?.state === "restartRequired" && !restartingAfterUpdate,
   );
 
   async function loadAppUpdateStatus() {

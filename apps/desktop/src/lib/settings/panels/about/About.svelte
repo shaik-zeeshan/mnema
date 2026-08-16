@@ -208,9 +208,6 @@
               {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}<ButtonSpinner />Installing{:else}Install Update{/if}
             </button>
           {/if}
-          {#if appUpdateStatus?.recordingActive && appUpdateStatus?.update}
-            <span class="action-hint action-hint--warn">Stop recording to install this update.</span>
-          {/if}
         </div>
 
         {#if about.appUpdateActionError}
