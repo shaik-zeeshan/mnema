@@ -83,10 +83,15 @@
     }
   }
 
-  // Middle-click / any non-primary button fires `auxclick`, not `click`, so it
-  // bypasses `handleClick` and the webview opens `target=_blank` natively —
-  // escaping the controlled opener. Intercept it and route the same way.
+  // Middle-click fires `auxclick`, not `click`, so it bypasses `handleClick` and
+  // the webview opens `target=_blank` natively — escaping the controlled opener.
+  // Intercept it and route the same way.
+  //
+  // RIGHT-click fires `auxclick` too (button 2), and it must fall through: the
+  // webview has no context-menu suppression, so handling it here both swallowed
+  // the native menu and opened the link the user was trying to copy.
   function handleAuxClick(event: MouseEvent): void {
+    if (event.button !== 1) return;
     const target = event.target as HTMLElement | null;
     const anchor = target?.closest("a[data-external]") as HTMLAnchorElement | null;
     if (anchor) {
