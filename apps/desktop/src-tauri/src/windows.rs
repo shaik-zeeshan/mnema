@@ -295,6 +295,27 @@ impl AppWindow {
             _ => None,
         }
     }
+
+    /// Every window the app can open. Used by the capability-coverage test —
+    /// Tauri resolves plugin IPC per window label, so a label missing from
+    /// `capabilities/default.json` silently loses `listen`, `setSize`,
+    /// `openUrl` and the titlebar drag region.
+    ///
+    /// ponytail: hand-maintained. `assert_all_windows_listed` below is an
+    /// exhaustive match, so adding a variant DOES break the build and points
+    /// here — but the compiler cannot prove this array then grew, so satisfying
+    /// that match without extending `ALL` would leave the new window unchecked.
+    /// Deriving it needs a variant-enumerating macro or a new dependency, which
+    /// is not worth it for six variants; upgrade if this list gets long.
+    #[cfg(test)]
+    const ALL: [Self; 6] = [
+        Self::Main,
+        Self::Onboarding,
+        Self::CliAccessRequest,
+        Self::Debug,
+        Self::QuickRecall,
+        Self::Update,
+    ];
 }
 
 fn now_unix_ms() -> u64 {
@@ -1467,7 +1488,102 @@ mod tests {
             super::AppWindow::from_label("update"),
             Some(super::AppWindow::Update)
         );
-        assert_eq!(super::AppWindow::Update.config().path, "update");
+    }
+
+    /// Exhaustive on purpose: adding an `AppWindow` variant fails to compile
+    /// here, which is the reminder to extend `AppWindow::ALL` — what the
+    /// capability and route tests below iterate. The compiler enforces the
+    /// reminder, not the extension; see the note on `ALL`.
+    #[allow(dead_code)]
+    fn assert_all_windows_listed(window: super::AppWindow) {
+        use super::AppWindow::*;
+        match window {
+            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update => {}
+        }
+    }
+
+    #[test]
+    fn every_app_window_label_is_covered_by_a_capability() {
+        // Tauri v2 resolves plugin IPC per window LABEL: `RuntimeAuthority::
+        // resolve_access` glob-matches the calling window's label against each
+        // capability's `windows` list and returns nothing when none match, so
+        // the window gets ZERO plugin/core permissions. The failure is near
+        // invisible — app-defined `#[tauri::command]`s keep working (this app
+        // ships no ACL manifest of its own), so only `listen`, `setSize`,
+        // `openUrl` and the drag region die, and the pages swallow those
+        // rejections. The update window shipped exactly that way.
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/default.json"
+        ))
+        .expect("capabilities/default.json should exist");
+        let capability: serde_json::Value =
+            serde_json::from_str(&raw).expect("capabilities/default.json should be valid JSON");
+        let covered: Vec<&str> = capability["windows"]
+            .as_array()
+            .expect("the capability should list windows")
+            .iter()
+            .map(|value| value.as_str().expect("each window label should be a string"))
+            .collect();
+
+        for window in super::AppWindow::ALL {
+            let label = window.config().label;
+            assert!(
+                covered.contains(&label),
+                "window label {label:?} is not covered by capabilities/default.json \
+                 (covered: {covered:?}) — every plugin invoke from it would be ACL-rejected"
+            );
+        }
+
+        // Covering the label is necessary but not sufficient: the command still
+        // has to be in the permission set. None of these three is in
+        // `core:window:default`, and each one fails SILENTLY when absent —
+        // the pages swallow the rejection — so assert them by name.
+        let permissions: Vec<&str> = capability["permissions"]
+            .as_array()
+            .expect("the capability should list permissions")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+        for (permission, why) in [
+            (
+                "core:window:allow-set-size",
+                "the update window fits itself to its release notes",
+            ),
+            (
+                "core:window:allow-start-dragging",
+                "borderless windows are moved by the titlebar drag region",
+            ),
+            (
+                "core:window:allow-close",
+                "the CLI access receipt closes its own window",
+            ),
+        ] {
+            assert!(
+                permissions.contains(&permission),
+                "capabilities/default.json is missing {permission:?} — {why}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_app_window_path_resolves_to_a_sveltekit_route() {
+        // The window config's `path` is a route the webview loads at runtime;
+        // nothing links it to the filesystem, so renaming a route directory
+        // ships a window that loads a 404. Asserting the literal against itself
+        // (what this test used to do for "update") proves nothing.
+        for window in super::AppWindow::ALL {
+            let path = window.config().path;
+            let route = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/routes"))
+                .join(path.trim_start_matches('/'))
+                .join("+page.svelte");
+            assert!(
+                route.exists(),
+                "window {:?} points at route {path:?} but {} does not exist",
+                window,
+                route.display()
+            );
+        }
     }
 
     #[test]
