@@ -452,7 +452,13 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-pub(crate) fn refresh(app: &tauri::AppHandle) {
+/// Rebuilds the tray menu from live state. Returns whether the new menu
+/// actually reached the tray: it can fail to build, and before
+/// `initialize` runs there is no tray at all. Callers that memoize what they
+/// last pushed (see `app_updates::refresh_tray_update_item`) must not record a
+/// menu that never landed, or the row stays wrong until the state changes
+/// again. Callers that just want a redraw can ignore the result.
+pub(crate) fn refresh(app: &tauri::AppHandle) -> bool {
     let model = current_model(app);
     let menu = match build_menu(app, &model) {
         Ok(menu) => menu,
@@ -460,25 +466,31 @@ pub(crate) fn refresh(app: &tauri::AppHandle) {
             crate::native_capture::debug_log::log_warn(format!(
                 "failed to rebuild status-bar menu: {error}"
             ));
-            return;
+            return false;
         }
     };
 
     let state = app.state::<StatusBarState>();
     let runtime = state.lock().expect("status bar state poisoned");
     let Some(tray) = runtime.tray.as_ref() else {
-        return;
+        return false;
     };
+    // Track the outcome rather than returning early: the other ten callers use
+    // `refresh` to redraw recording/licensing state and discard the bool, so
+    // bailing here would silently stop refreshing their tooltip too.
+    let mut menu_landed = true;
     if let Err(error) = tray.set_menu(Some(menu)) {
         crate::native_capture::debug_log::log_warn(format!(
             "failed to set status-bar menu: {error}"
         ));
+        menu_landed = false;
     }
     if let Err(error) = tray.set_tooltip(Some(model.tooltip)) {
         crate::native_capture::debug_log::log_warn(format!(
             "failed to set status-bar tooltip: {error}"
         ));
     }
+    menu_landed
 }
 
 fn show_capture_error(app: &tauri::AppHandle, title: &str, error: CaptureErrorResponse) {

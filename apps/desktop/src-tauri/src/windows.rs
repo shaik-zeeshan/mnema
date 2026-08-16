@@ -1567,6 +1567,33 @@ mod tests {
     }
 
     #[test]
+    fn the_update_windows_fit_floor_clears_its_own_min_inner_size() {
+        // The page shrinks the window to fit short release notes, clamped at
+        // UPDATE_WINDOW_MIN_HEIGHT. A floor at or below `min_inner_size` would
+        // leave dead space the fit pass can never remove. The two constants
+        // live in different languages, so read the TS rather than restate it.
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/update-window.ts"
+        ))
+        .expect("update-window.ts should exist");
+        let floor: f64 = source
+            .split("UPDATE_WINDOW_MIN_HEIGHT = ")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("UPDATE_WINDOW_MIN_HEIGHT should be declared")
+            .trim()
+            .parse()
+            .expect("UPDATE_WINDOW_MIN_HEIGHT should be a number");
+        let min_inner_height = super::AppWindow::Update.config().min_inner_size.1;
+        assert!(
+            floor > min_inner_height,
+            "UPDATE_WINDOW_MIN_HEIGHT ({floor}) must exceed the window's \
+             min_inner_size height ({min_inner_height})"
+        );
+    }
+
+    #[test]
     fn every_app_window_path_resolves_to_a_sveltekit_route() {
         // The window config's `path` is a route the webview loads at runtime;
         // nothing links it to the filesystem, so renaming a route directory
