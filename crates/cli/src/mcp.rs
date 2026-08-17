@@ -294,10 +294,19 @@ impl ServerHandler for MnemaMcp {
                 "Brokered read access to the user's Mnema screen and audio capture history. \
                  The first call may pause while the user approves access in the Mnema app."
             } else {
+                // Settings -> Data -> Access can only block and unblock tools Mnema
+                // already has a row for; it cannot grant a first permission, and a
+                // client it has never seen has no row there at all. Naming it as
+                // the fix leaves the model waiting on a grant that cannot arrive,
+                // and pushes the operator to drop the one flag that guarantees no
+                // consent window.
                 "Brokered read access to the user's Mnema screen and audio capture history. \
                  This server was started with --no-prompt: calls without an existing access \
-                 permission fail instead of asking the user, and the user must grant access in \
-                 the Mnema app (Settings -> Data -> Access) first."
+                 permission fail instead of asking the user. Settings -> Data -> Access only \
+                 blocks and unblocks tools Mnema has already seen, so a first permission is \
+                 granted by running `mnema access request` in a terminal as this tool (same \
+                 --client name or agent environment). Report that and stop; retrying without \
+                 it cannot succeed."
             }
             .to_string(),
         );
@@ -445,6 +454,57 @@ mod tests {
                 "timeline speaker + {field}"
             );
         }
+    }
+
+    /// Settings -> Data -> Access can only block and unblock clients Mnema
+    /// already holds a row for — a client it has never seen has no row there at
+    /// all — so it cannot grant a FIRST permission. Naming it as the fix under
+    /// `--no-prompt` (which is precisely the mode with no row and no window)
+    /// leaves the model waiting on a grant that can never arrive, and pushes the
+    /// operator to drop the one flag that guarantees no consent window.
+    /// `mnema access request` is the only door that creates the row.
+    #[test]
+    fn the_no_prompt_server_names_the_command_that_can_actually_grant_access() {
+        let identity = BrokerClientIdentity::new(
+            "Claude Desktop",
+            app_infra::brokered_access::BrokerClientIdentitySource::Explicit,
+        )
+        .expect("identity");
+
+        let no_prompt = MnemaMcp {
+            identity: identity.clone(),
+            allow_prompt: false,
+        }
+        .get_info()
+        .instructions
+        .expect("the server states its terms");
+        assert!(
+            no_prompt.contains("mnema access request"),
+            "the only door that can create a first permission has to be the one named: \
+             {no_prompt}"
+        );
+        assert!(
+            !no_prompt.contains("must grant access in the Mnema app"),
+            "Settings cannot grant anything, so it must not be left standing as the \
+             instruction: {no_prompt}"
+        );
+
+        let prompting = MnemaMcp {
+            identity,
+            allow_prompt: true,
+        }
+        .get_info()
+        .instructions
+        .expect("the server states its terms");
+        assert!(
+            prompting.contains("pause while the user approves access in the Mnema app"),
+            "a prompting server still gets its permission from the approval window: {prompting}"
+        );
+        assert!(
+            !prompting.contains("mnema access request"),
+            "sending a model to a terminal it does not have, for a window that will open \
+             on its own, is the same dead end in reverse: {prompting}"
+        );
     }
 
     #[test]
