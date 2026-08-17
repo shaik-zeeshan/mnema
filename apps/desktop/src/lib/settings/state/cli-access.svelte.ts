@@ -169,24 +169,40 @@ export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
   let mnemaCliInstalling = $state(false);
   let mnemaCliError = $state<string | null>(null);
 
+  // Newest read wins. The panel fires each loader from four places — its 30 s
+  // poll, its window-focus refetch, the Refresh button, and (for grants)
+  // `setGrantBlocked`'s reload — so several are routinely in flight at once, and
+  // each clears its error slot when it STARTS rather than when it succeeds.
+  // Without a ticket an older response that lands last overwrites the newer list,
+  // paints its failure over a read that already succeeded, or stops the spinner
+  // while the newer read is still running. Plain `let`, not `$state`: this is a
+  // guard, nothing renders it.
+  let brokerGrantsLoadTicket = 0;
+  let brokerHistoryLoadTicket = 0;
+
   async function loadBrokerGrants() {
+    const ticket = ++brokerGrantsLoadTicket;
     brokerGrantLoading = true;
     brokerGrantError = null;
     try {
       const response = await invokeFn<BrokerGrantFile>("list_cli_access_grants");
+      if (ticket !== brokerGrantsLoadTicket) return;
       brokerGrants = response.grants ?? [];
     } catch (err) {
+      if (ticket !== brokerGrantsLoadTicket) return;
       brokerGrantError = describeError(err);
     } finally {
-      brokerGrantLoading = false;
+      if (ticket === brokerGrantsLoadTicket) brokerGrantLoading = false;
     }
   }
 
   async function loadBrokerHistory() {
+    const ticket = ++brokerHistoryLoadTicket;
     brokerHistoryLoading = true;
     brokerHistoryError = null;
     try {
       const response = await invokeFn<BrokerAuditFile>("list_cli_access_history");
+      if (ticket !== brokerHistoryLoadTicket) return;
       // The audit file is append-ordered and capped at 500; the panel shows the
       // newest handful. Reverse a copy — `events` is the invoke result, but
       // reversing in place still reads badly next to a re-render.
@@ -196,10 +212,13 @@ export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
       // block/enable buttons above it, so it shares no error slot with them —
       // but it needs its OWN slot. An unreadable audit file renders as an empty
       // list, and "Nothing yet" on a privacy surface is a claim, not a blank.
-      brokerHistoryError = describeError(err);
+      // Logged before the guard: every failed read is worth a line, only the
+      // RENDERED slot belongs to the newest read.
       console.error("[cli-access] failed to load activity", err);
+      if (ticket !== brokerHistoryLoadTicket) return;
+      brokerHistoryError = describeError(err);
     } finally {
-      brokerHistoryLoading = false;
+      if (ticket === brokerHistoryLoadTicket) brokerHistoryLoading = false;
     }
   }
 

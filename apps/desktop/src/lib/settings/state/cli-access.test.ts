@@ -90,3 +90,151 @@ describe("activity log load", () => {
     expect(store.brokerHistoryError).toBeTruthy();
   });
 });
+
+// ── Overlapping reloads ─────────────────────────────────────────────────────
+
+// Hands every invoke back to the test as a promise it settles by hand, so the
+// test — not the event loop — decides which in-flight read lands first. The
+// panel fires each loader from four places (30 s poll, window-focus refetch, the
+// Refresh button, and `setGrantBlocked`'s reload), so two reads overlapping is
+// the normal case, not a contrived one.
+function deferredInvokes() {
+  const pending = [];
+  const invokeFn = (cmd) => new Promise((resolve, reject) => pending.push({ cmd, resolve, reject }));
+  return { invokeFn, pending };
+}
+
+const activeGrant = {
+  id: "g1",
+  label: "Claude Code",
+  normalizedLabel: "claude-code",
+  createdAtUnixMs: 1,
+  lastUsedAtUnixMs: 2,
+  scope: "all_retained_history",
+  blocked: false,
+  blockedAtUnixMs: null,
+};
+
+describe("overlapping reloads", () => {
+  // Each loader clears its error slot when it STARTS, not when it succeeds. So an
+  // older read that fails after a newer one has already painted the list leaves
+  // the panel contradicting itself: a red "could not read the permission list"
+  // sitting directly above that very list. On a privacy surface that reads as
+  // "these permissions may be stale/wrong", and the only recovery the user has is
+  // to hit Refresh until two reads happen not to overlap.
+  test("a stale failed read does not report an error over a list that already loaded", async () => {
+    const { invokeFn, pending } = deferredInvokes();
+    const store = createCliAccessStore(invokeFn);
+
+    const stale = store.loadBrokerGrants();
+    const fresh = store.loadBrokerGrants();
+
+    pending[1].resolve({ grants: [activeGrant] });
+    await fresh;
+    pending[0].reject("failed to read CLI Access grants");
+    await stale;
+
+    expect(store.brokerGrantError).toBeNull();
+    expect(store.brokerGrants.map((grant) => grant.id)).toEqual(["g1"]);
+  });
+
+  // The reload `setGrantBlocked` fires races the 30 s poll that was already in
+  // flight when the user clicked Block. If the poll's older, pre-block list lands
+  // last it wins the slot, and the tool the user just blocked reappears as active
+  // with a Block button — the click looks like it did nothing, and the user's
+  // second click un-blocks it.
+  test("a stale successful read does not overwrite a newer grant list", async () => {
+    const { invokeFn, pending } = deferredInvokes();
+    const store = createCliAccessStore(invokeFn);
+
+    const stale = store.loadBrokerGrants();
+    const fresh = store.loadBrokerGrants();
+
+    pending[1].resolve({ grants: [{ ...activeGrant, blocked: true, blockedAtUnixMs: 3 }] });
+    await fresh;
+    pending[0].resolve({ grants: [activeGrant] });
+    await stale;
+
+    expect(store.brokerGrants.map((grant) => grant.blocked)).toEqual([true]);
+  });
+
+  // The spinner is the panel's only signal that the list on screen is not the
+  // final answer. If an older response clears it, the newer read finishes into a
+  // panel that already claimed to be settled — the rows visibly change under a
+  // user who was told the read was done.
+  test("a stale response does not stop the spinner while a newer read is still running", async () => {
+    const { invokeFn, pending } = deferredInvokes();
+    const store = createCliAccessStore(invokeFn);
+
+    const stale = store.loadBrokerGrants();
+    const fresh = store.loadBrokerGrants();
+
+    pending[0].resolve({ grants: [] });
+    await stale;
+    expect(store.brokerGrantLoading).toBe(true);
+
+    pending[1].resolve({ grants: [activeGrant] });
+    await fresh;
+    expect(store.brokerGrantLoading).toBe(false);
+  });
+
+  // Same self-contradiction as the grant list, on the evidence half of the panel:
+  // an older failure landing last puts "could not read the activity log" above a
+  // log that just loaded fine. Activity is what a user checks to see what a tool
+  // actually read, so an error over a populated list makes them distrust the
+  // rows rather than the read.
+  test("a stale failed activity read does not report an error over a log that already loaded", async () => {
+    const { invokeFn, pending } = deferredInvokes();
+    const store = createCliAccessStore(invokeFn);
+    const event = {
+      toolIdentity: "Claude Code",
+      commandType: "search",
+      timestampUnixMs: 7,
+      resultCount: 3,
+      scopeClass: "time_scoped",
+      outcome: null,
+    };
+
+    const stale = store.loadBrokerHistory();
+    const fresh = store.loadBrokerHistory();
+
+    pending[1].resolve({ events: [event] });
+    await fresh;
+    pending[0].reject("failed to load CLI Access history: expected value at line 1 column 1");
+    await stale;
+
+    expect(store.brokerHistoryError).toBeNull();
+    expect(store.brokerHistory.map((row) => row.timestampUnixMs)).toEqual([7]);
+  });
+
+  // The mirror of the two grant cases: an older activity read must land nowhere
+  // at all. Its list would show the log as it was BEFORE the command the user is
+  // looking for, and its `finally` would stop the spinner on a read still in
+  // flight — so "Nothing yet." can appear, settled, over an account that just ran
+  // a tool.
+  test("a stale activity response neither paints its rows nor stops the newer read", async () => {
+    const { invokeFn, pending } = deferredInvokes();
+    const store = createCliAccessStore(invokeFn);
+    const row = (timestampUnixMs) => ({
+      toolIdentity: "Claude Code",
+      commandType: "search",
+      timestampUnixMs,
+      resultCount: 1,
+      scopeClass: "time_scoped",
+      outcome: null,
+    });
+
+    const stale = store.loadBrokerHistory();
+    const fresh = store.loadBrokerHistory();
+
+    pending[0].resolve({ events: [row(1)] });
+    await stale;
+    expect(store.brokerHistory).toEqual([]);
+    expect(store.brokerHistoryLoading).toBe(true);
+
+    pending[1].resolve({ events: [row(1), row(2)] });
+    await fresh;
+    expect(store.brokerHistory.map((event) => event.timestampUnixMs)).toEqual([2, 1]);
+    expect(store.brokerHistoryLoading).toBe(false);
+  });
+});
