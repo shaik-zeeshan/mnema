@@ -80,11 +80,26 @@ export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): str
   return rtf.format(Math.round(diffMs / 86400000), "day");
 }
 
+/**
+ * The row's detail-line time. A blocked row states "Blocked" as a badge on the
+ * name line, so this only dates it — and says nothing at all when the block
+ * carries no timestamp (`blockedAtUnixMs` is `Option<u64>`; a naive read of a
+ * null reads "56 years ago").
+ */
 export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now()): string {
   if (grant.blocked) {
+    // Keep the verb even though the name line carries a BLOCKED badge: an active
+    // row reads "Used 3 hours ago", so a bare "5 hours ago" beside it is a
+    // timestamp with no referent — the reader cannot tell last-use from
+    // block-time. `blockedAtUnixMs` is Option<u64> on the wire, so a row blocked
+    // by a build that never stamped it drops the time rather than rendering an
+    // epoch date.
+    // No stamp (Option<u64> on the wire, so a row blocked by a build that never
+    // set it) means there is nothing to date, and the BLOCKED badge on the name
+    // line already carries the state — so add nothing rather than repeating it.
     return grant.blockedAtUnixMs
       ? `Blocked ${formatGrantTime(grant.blockedAtUnixMs, nowMs)}`
-      : "Blocked";
+      : "";
   }
   return `Used ${formatGrantTime(grant.lastUsedAtUnixMs, nowMs)}`;
 }
@@ -94,7 +109,10 @@ export function formatOutcome(outcome: string | null): string {
   if (!outcome || outcome === "success") return "";
   if (outcome === "scope_rejected") return "Out of scope";
   if (outcome === "denied") return "Denied";
-  return outcome;
+  // An outcome this build does not know is still a non-success, and the row
+  // styles it as refused — so degrade to a safe word rather than rendering the
+  // raw snake_case wire value at the user.
+  return "Refused";
 }
 
 /** Audit `command_type` → the subcommand the tool actually ran (`show_text` → `show-text`). */
@@ -121,6 +139,7 @@ export function createCliAccessStore() {
   let brokerGrantError = $state<string | null>(null);
   let brokerHistory = $state<BrokerAuditEvent[]>([]);
   let brokerHistoryLoading = $state(false);
+  let brokerHistoryError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
   let mnemaCliLoading = $state(false);
   let mnemaCliInstalling = $state(false);
@@ -141,6 +160,7 @@ export function createCliAccessStore() {
 
   async function loadBrokerHistory() {
     brokerHistoryLoading = true;
+    brokerHistoryError = null;
     try {
       const response = await invoke<BrokerAuditFile>("list_cli_access_history");
       // The audit file is append-ordered and capped at 500; the panel shows the
@@ -149,7 +169,10 @@ export function createCliAccessStore() {
       brokerHistory = [...(response.events ?? [])].reverse().slice(0, ACTIVITY_LIMIT);
     } catch (err) {
       // Activity is evidence, not a control: a failed read must not blank the
-      // block/enable buttons above it, so it shares no error slot with them.
+      // block/enable buttons above it, so it shares no error slot with them —
+      // but it needs its OWN slot. An unreadable audit file renders as an empty
+      // list, and "Nothing yet" on a privacy surface is a claim, not a blank.
+      brokerHistoryError = describeError(err);
       console.error("[cli-access] failed to load activity", err);
     } finally {
       brokerHistoryLoading = false;
@@ -206,6 +229,7 @@ export function createCliAccessStore() {
     get brokerGrantError() { return brokerGrantError; },
     get brokerHistory() { return brokerHistory; },
     get brokerHistoryLoading() { return brokerHistoryLoading; },
+    get brokerHistoryError() { return brokerHistoryError; },
     get mnemaCliStatus() { return mnemaCliStatus; },
     get mnemaCliLoading() { return mnemaCliLoading; },
     get mnemaCliInstalling() { return mnemaCliInstalling; },

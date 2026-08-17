@@ -34,7 +34,10 @@
   // capture the consent terms so the body can show a brief positive receipt
   // (naming tool + scope) before/while the backend tears the window down — and
   // so a delayed teardown is never misreported as a failure.
-  let granted = $state<{ tool: string; scopeProse: string } | null>(null);
+  // `broad` rides along so the receipt keeps the weight the dialog escalated to
+  // before the click — a full-history grant must not land the same green tick a
+  // last-24-hours one does.
+  let granted = $state<{ tool: string; scopeProse: string; broad: boolean } | null>(null);
   // Ticks so the request-age label stays honest while the dialog sits open.
   let now = $state(Date.now());
 
@@ -105,6 +108,19 @@
   );
   const scopeLocked = $derived(scopeDisabledValues.length > 0);
 
+  // The tool's `preferredScope` no longer drives the selection, so name it when
+  // it is wider than the minimum — the user still gets to see what was asked for
+  // without the dialog having conceded it in advance. It drops away once the
+  // current selection already covers the ask: at that point it is restating the
+  // segment the user just picked, and this body has no vertical room to spare.
+  const askedForProse = $derived(
+    pendingRequest &&
+      scopeRank[pendingRequest.preferredScope] > scopeRank[pendingRequest.minimumScope] &&
+      scopeRank[selectedScope] < scopeRank[pendingRequest.preferredScope]
+      ? scopeProse[pendingRequest.preferredScope]
+      : null,
+  );
+
   // How long this request has been waiting. The hard timeout is CLI-side (~120s),
   // so this is an honesty cue, not a countdown — if the tool stops waiting the
   // approve/deny call surfaces a specific "no longer valid" message instead.
@@ -127,8 +143,21 @@
       (denyButton ?? dialogEl)?.focus();
     });
     const ageTimer = setInterval(() => (now = Date.now()), 15000);
+    // This window is REUSED. `open_or_focus_window` focuses an existing window
+    // with this label instead of building a new one, so a second request can be
+    // shown by the same page instance — and reading the pending request only in
+    // onMount would leave it displaying the PREVIOUS request's tool, command and
+    // scope while the new caller waits. Re-read whenever the window is brought
+    // forward; a granted receipt is left alone so a slow backend teardown cannot
+    // wipe the user's confirmation out from under them.
+    const onWindowFocus = () => {
+      if (granted || approving || cancelling) return;
+      void loadPendingRequest();
+    };
+    window.addEventListener("focus", onWindowFocus);
     return () => {
       clearInterval(ageTimer);
+      window.removeEventListener("focus", onWindowFocus);
       clearActionWatchdog();
     };
   });
@@ -140,7 +169,13 @@
     try {
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
       if (pendingRequest) {
-        selectedScope = pendingRequest.preferredScope;
+        // Pre-select the NARROWEST scope the tool can actually work with — never
+        // its `preferredScope`. `--scope all-retained` would otherwise open this
+        // window with full history already selected and its danger callout
+        // already on screen, which reads as chrome rather than as a warning the
+        // user's own choice raised. What the tool asked for is stated as a hint
+        // instead (see askedForProse), leaving the widen to a deliberate click.
+        selectedScope = pendingRequest.minimumScope;
       }
     } catch (err) {
       loadError = friendlyError(err);
@@ -217,6 +252,7 @@
     const receipt = {
       tool: pendingRequest.client.label,
       scopeProse: scopeProse[selectedScope],
+      broad: isBroadScope,
     };
     startActionWatchdog(() => (approving = false));
     try {
@@ -246,7 +282,24 @@
     return minimum ? scopeRank[scope] < scopeRank[minimum] : false;
   }
 
+  // One-word chip token. The chip is a qualifier on the tool name, not a peer of
+  // it — a full sentence in a nowrap pill eats half the row and squeezes the
+  // load-bearing "who is asking" line into a four-line wrap. The sentence lives
+  // in the tooltip / screen-reader text (identitySourceDetail) instead.
   function identitySourceLabel(source: string) {
+    switch (source) {
+      case "explicit":
+        return "Declared";
+      case "env":
+        return "From env";
+      case "inferred":
+        return "Inferred";
+      default:
+        return "Unnamed";
+    }
+  }
+
+  function identitySourceDetail(source: string) {
     switch (source) {
       case "explicit":
         return "Identity declared by the tool";
@@ -329,25 +382,43 @@
       </span>
       <div class="access-dialog__title">
         <p class="eyebrow">CLI Access</p>
-        <h1 id="access-dialog-title">Review command-line tool access</h1>
+        <!-- The header must agree with the body: once the grant lands, leaving
+             "is requesting" above an "Access granted" receipt reads as a dialog
+             that is still asking. -->
+        <h1 id="access-dialog-title">
+          {granted ? "Access granted" : "Review command-line tool access"}
+        </h1>
         <p id="access-dialog-lede" class="lede">
-          A command-line tool is requesting standing access to your searchable Mnema text.
+          {granted
+            ? "A command-line tool now has standing access to your searchable Mnema text."
+            : "A command-line tool is requesting standing access to your searchable Mnema text."}
         </p>
       </div>
     </header>
 
     <div class="access-dialog__body">
       {#if granted}
-        <div class="receipt" role="status" aria-live="polite">
+        <div class="receipt" class:receipt--broad={granted.broad} role="status" aria-live="polite">
           <span class="receipt__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
+            {#if granted.broad}
+              <!-- A full-history grant does not get the same reassuring tick a
+                   last-24-hours one gets: the escalation the dialog made before
+                   the click has to survive it. -->
+              <svg viewBox="0 0 24 24">
+                <path d="M8.7 3h6.6l4.7 4.7v6.6L15.3 21H8.7L4 16.3V9.7Z" />
+                <path d="M12 8v4" />
+                <path d="M12 16h.01" />
+              </svg>
+            {:else}
+              <svg viewBox="0 0 24 24">
+                <path d="M20 6 9 17l-5-5" />
+              </svg>
+            {/if}
           </span>
-          <p class="receipt__title">Access granted</p>
           <p class="receipt__body">
-            <strong>{granted.tool}</strong> can read <strong>{granted.scopeProse}</strong>
-            until you revoke it in Settings.
+            <strong>{granted.tool}</strong> can read
+            <strong class="receipt__scope">{granted.scopeProse}</strong>
+            until you block it in Settings.
           </p>
           <p class="receipt__hint">
             Manage it in Settings → Data → Access. Unused access lapses after 30 days.
@@ -371,7 +442,12 @@
           </span>
           <p class="load-error__title">Couldn't load the request</p>
           <p class="load-error__body">{loadError}</p>
-          <button class="btn btn--ghost load-error__retry" type="button" onclick={() => loadPendingRequest()}>
+          <button
+            class="btn btn--ghost load-error__retry"
+            type="button"
+            tabindex="0"
+            onclick={() => loadPendingRequest()}
+          >
             Retry
           </button>
         </div>
@@ -397,8 +473,11 @@
             <span
               class="requester__source"
               class:requester__source--warn={identitySourceWarn(pendingRequest.client.source)}
-              >{identitySourceLabel(pendingRequest.client.source)}</span
+              use:tip={identitySourceDetail(pendingRequest.client.source)}
             >
+              <span aria-hidden="true">{identitySourceLabel(pendingRequest.client.source)}</span>
+              <span class="sr-only">{identitySourceDetail(pendingRequest.client.source)}</span>
+            </span>
           </div>
           <p class="trust-note">
             <span class="trust-note__icon" aria-hidden="true">
@@ -433,26 +512,39 @@
               <span>This tool requires access to at least {minScopeProse}.</span>
             </p>
           {/if}
+          {#if askedForProse}
+            <p class="choice-hint">
+              <span>This tool asked for {askedForProse}.</span>
+            </p>
+          {/if}
           {#if isBroadScope}
-            <p class="choice-hint choice-hint--warn">
+            <!-- Danger ramp, not the amber the always-on identity caveat uses: a
+                 permanent read of the whole recorded history is irreversible,
+                 and two identical amber boxes stacked read as one. -->
+            <p class="choice-hint choice-hint--danger">
               <span class="choice-hint__icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
-                  <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-                  <path d="M12 9v4" />
-                  <path d="M12 17h.01" />
+                  <path d="M8.7 3h6.6l4.7 4.7v6.6L15.3 21H8.7L4 16.3V9.7Z" />
+                  <path d="M12 8v4" />
+                  <path d="M12 16h.01" />
                 </svg>
               </span>
-              <span><strong>Reads your entire history.</strong> {scopeMeta.hint}</span>
+              <span>
+                <strong>Reads your entire history.</strong> Everything Mnema has retained — every
+                app, every window, every transcript.
+              </span>
             </p>
           {:else}
             <p class="choice-hint">
               <span>{scopeMeta.hint}</span>
             </p>
           {/if}
-          <p class="choice-hint">
-            <span>
-              Access stays until you revoke it in Settings, and lapses after 30 days unused.
-            </span>
+          <!-- "It never expires" is the whole of what this grant is, so it gets
+               its own container instead of being the third identical muted hint
+               in a stack. Neutral, not warn — it is a fact, not an alarm. -->
+          <p class="terms-note">
+            <strong>This access does not expire.</strong> It stays until you block it in Settings,
+            and lapses on its own after 30 days unused.
           </p>
         </fieldset>
       {/if}
@@ -481,6 +573,7 @@
           class="btn btn--ghost"
           bind:this={grantedCloseButton}
           type="button"
+          tabindex="0"
           onclick={closeGrantedWindow}
         >
           Close
@@ -492,6 +585,7 @@
           class="btn btn--ghost"
           bind:this={denyButton}
           type="button"
+          tabindex="0"
           disabled={approving || cancelling}
           onclick={closeWindow}
         >
@@ -506,6 +600,7 @@
           <button
             class="btn btn--allow"
             type="button"
+            tabindex="0"
             disabled={loading || approving || cancelling}
             onclick={approveAccess}
           >
@@ -776,21 +871,25 @@
     line-height: 1.4;
   }
 
-  /* The broad-scope warning must visibly outrank the benign terms note:
-     warn-tinted container + a bold lead-in, not the same faint hint text. */
-  .choice-hint--warn {
+  /* Broad scope sits one ramp ABOVE the always-on identity caveat (.trust-note,
+     amber): that one fires on every request and is a caution, this one is the
+     irreversible choice the user is about to make. Same ramp = same weight =
+     both become wallpaper. `--app-danger-strong` on `--app-danger-bg` clears
+     4.5:1 in both themes (measured 5.2 dark / 5.4 light); plain `--app-danger`
+     does not on the light ramp. */
+  .choice-hint--danger {
     gap: 8px;
     align-items: center;
     padding: 8px 10px;
-    border: 1px solid var(--app-warn-border);
+    border: 1px solid var(--app-danger-border);
     border-radius: 6px;
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
+    background: var(--app-danger-bg);
+    color: var(--app-danger-strong);
     font-size: var(--text-base);
   }
 
-  .choice-hint--warn strong {
-    color: var(--app-warn);
+  .choice-hint--danger strong {
+    color: var(--app-danger-strong);
     font-weight: 800;
   }
 
@@ -798,7 +897,7 @@
     display: grid;
     place-items: center;
     flex-shrink: 0;
-    color: var(--app-warn);
+    color: currentColor;
   }
 
   .choice-hint__icon svg {
@@ -809,6 +908,25 @@
     stroke-width: 1.8;
     stroke-linecap: round;
     stroke-linejoin: round;
+  }
+
+  /* The one line that states what this PR changed. Neutral container (this is a
+     fact about the grant, not a third alarm) but a container all the same, so
+     "never expires" does not carry the same weight as "last 24 hours". */
+  .terms-note {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  .terms-note strong {
+    color: var(--app-text-strong);
+    font-weight: 700;
   }
 
   .skeleton {
@@ -919,11 +1037,17 @@
     stroke-linejoin: round;
   }
 
-  .receipt__title {
-    margin: 0;
-    color: var(--app-text-strong);
-    font-size: var(--text-md);
-    font-weight: 700;
+  /* A full-history grant keeps the danger ramp the dialog escalated to before
+     the click — the same green tick a last-24-hours grant gets would throw the
+     whole escalation away at the moment it becomes permanent. */
+  .receipt--broad .receipt__icon {
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
+    color: var(--app-danger-strong);
+  }
+
+  .receipt--broad .receipt__scope {
+    color: var(--app-danger-strong);
   }
 
   .receipt__body {
@@ -1091,12 +1215,12 @@
     border-color: var(--app-border-hover);
   }
 
-  /* Allow GRANTS irreversible access, so it does NOT get a go-green solid fill
-     that reads as "the safe path". It's an accent-tinted OUTLINE: clearly the
-     affirmative action, but with no more visual pull than Deny encourages a
-     deliberate choice rather than a reflexive grant. */
+  /* Allow GRANTS irreversible access, so it does NOT get a go-green fill — not
+     even the soft accent-bg one, which still gave the affirmative more pull than
+     Deny's plain ghost. Both buttons rest as outlines; Allow carries the accent
+     on border + text only, so the eye is not led to the grant. */
   .btn--allow {
-    background: var(--app-accent-bg);
+    background: transparent;
     color: var(--app-accent);
     border-color: var(--app-accent-border);
   }

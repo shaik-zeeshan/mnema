@@ -1,9 +1,11 @@
 <script lang="ts">
   import { join, appConfigDir } from "@tauri-apps/api/path";
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
+    type BrokerGrant,
     grantStatus,
     formatGrantScope,
     grantStatusLabel,
@@ -26,6 +28,8 @@
   const isGrantSaving = (id: string) => cliAccess.isGrantSaving(id);
   const brokerGrantError = $derived(cliAccess.brokerGrantError);
   const brokerHistory = $derived(cliAccess.brokerHistory);
+  const brokerHistoryLoading = $derived(cliAccess.brokerHistoryLoading);
+  const brokerHistoryError = $derived(cliAccess.brokerHistoryError);
   const mnemaCliStatus = $derived(cliAccess.mnemaCliStatus);
   const mnemaCliLoading = $derived(cliAccess.mnemaCliLoading);
   const mnemaCliInstalling = $derived(cliAccess.mnemaCliInstalling);
@@ -58,6 +62,19 @@
       window.removeEventListener("focus", onFocus);
     };
   });
+
+  // Blocking is reversible and costs the user nothing, so it stays unconfirmed.
+  // ENABLING is the irreversible-ish direction: it restores a standing, no-expiry
+  // permission at whatever scope the row still remembers (All retained history
+  // survives a block), with no re-consent and no approval window — so that is the
+  // side that asks.
+  async function enableGrant(grant: BrokerGrant) {
+    const ok = await confirm(
+      `${grant.label} will be able to read ${formatGrantScope(grant.scope).toLowerCase()} again, with no expiry, until you block it.`,
+      { title: "Restore CLI access?", kind: "warning", okLabel: "Restore access", cancelLabel: "Keep blocked" },
+    );
+    if (ok) await cliAccess.setGrantBlocked(grant, false);
+  }
 
   // The audit file lives beside the permission file in the app config dir; the
   // JS `appConfigDir()` resolves the same path the Rust side writes to.
@@ -127,22 +144,31 @@
             <p class="error-text">{brokerGrantError}</p>
           {/if}
 
-          <p class="access-subhead">Tools with access</p>
+          <p class="group-label access-subhead">Tools with access</p>
           {#if brokerGrantLoading && brokerGrants.length === 0}
             <p class="group-hint">Loading tools…</p>
           {:else if brokerGrants.length > 0}
-            <ul class="grant-list">
+            <ul class="grant-list" aria-label="Tools with access">
               {#each brokerGrants as grant (grant.id)}
                 {@const status = grantStatus(grant)}
                 {@const saving = isGrantSaving(grant.id)}
+                {@const statusTime = grantStatusLabel(grant, now)}
                 <li class="grant-row" class:grant-row--inactive={status === "blocked"}>
                   <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
                   <div class="grant-row__meta">
-                    <span class="grant-row__name" use:tip={grant.label}>{grant.label}</span>
+                    <span class="grant-row__head">
+                      <span class="grant-row__name" use:tip={grant.label}>{grant.label}</span>
+                      <!-- Blocked is a state the USER put the row in, not a fault:
+                           a red dot on a dimmed row is this app's vocabulary for
+                           broken, so the state reads as a badge on the name line. -->
+                      {#if status === "blocked"}<span class="provider-row__tag grant-row__tag">Blocked</span>{/if}
+                    </span>
                     <span class="grant-row__detail">
                       <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
-                      <span class="grant-row__sep" aria-hidden="true">·</span>
-                      <span use:tip={new Date(grant.blocked && grant.blockedAtUnixMs ? grant.blockedAtUnixMs : grant.lastUsedAtUnixMs).toLocaleString()}>{grantStatusLabel(grant, now)}</span>
+                      {#if statusTime}
+                        <span class="grant-row__sep" aria-hidden="true">·</span>
+                        <span use:tip={new Date(grant.blocked && grant.blockedAtUnixMs ? grant.blockedAtUnixMs : grant.lastUsedAtUnixMs).toLocaleString()}>{statusTime}</span>
+                      {/if}
                     </span>
                   </div>
                   {#if status === "blocked"}
@@ -151,13 +177,16 @@
                       type="button"
                       disabled={saving}
                       aria-busy={saving}
-                      onclick={() => cliAccess.setGrantBlocked(grant, false)}
+                      onclick={() => enableGrant(grant)}
                     >
                       {#if saving}<ButtonSpinner />Enabling…{:else}Enable{/if}
                     </button>
                   {:else}
+                    <!-- Subtly-destructive ghost, not filled danger: blocking is the
+                         safe, reversible direction and must not be the loudest
+                         control in the list. -->
                     <button
-                      class="btn btn--danger btn--sm"
+                      class="btn btn--ghost btn--sm user-context-wipe__btn"
                       type="button"
                       disabled={saving}
                       aria-busy={saving}
@@ -173,14 +202,14 @@
             <p class="group-hint">No tools have access yet. Tools you approve will appear here.</p>
           {/if}
 
-          <div class="access-subhead access-subhead--split">
+          <div class="group-label access-subhead access-subhead--split">
             <span>Recent activity</span>
-            {#if brokerHistory.length > 0}
+            {#if brokerHistory.length > 0 || brokerHistoryError}
               <button class="btn btn--ghost btn--sm" type="button" onclick={revealAuditFile}>Reveal log in Finder</button>
             {/if}
           </div>
           {#if brokerHistory.length > 0}
-            <ul class="activity-list">
+            <ul class="activity-list" aria-label="Recent CLI activity">
               {#each brokerHistory as event, index (`${event.timestampUnixMs}-${index}`)}
                 <li class="activity-row" class:activity-row--refused={!!formatOutcome(event.outcome)}>
                   <span class="activity-row__tool" use:tip={event.toolIdentity}>{event.toolIdentity}</span>
@@ -190,6 +219,12 @@
                 </li>
               {/each}
             </ul>
+          {:else if brokerHistoryLoading}
+            <p class="group-hint">Loading activity…</p>
+          {:else if brokerHistoryError}
+            <!-- An unreadable audit file must never render as "Nothing yet": on a
+                 permission log, an empty list is a claim that nothing ran. -->
+            <p class="error-text">{brokerHistoryError}</p>
           {:else}
             <p class="group-hint">Nothing yet. Commands run by tools with access are recorded here.</p>
           {/if}
@@ -214,14 +249,11 @@
   }
 
   /* The section reads top to bottom: install status → tools with access → what
-     they did. These two labels are what make that order legible. */
+     they did. These two labels are what make that order legible. Type comes from
+     the shared `.group-label` (every other section label in Settings); this class
+     only adds the layout. */
   .access-subhead {
     margin: 4px 0 0;
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
   }
 
   .access-subhead--split {
@@ -249,11 +281,14 @@
     grid-template-columns: subgrid;
     gap: 8px;
     align-items: baseline;
-    padding: 5px 2px;
-    border-bottom: 1px solid var(--app-border-subtle, var(--app-border));
+    padding: 8px 2px;
+    border-bottom: 1px solid var(--app-border);
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.35;
+    /* The result-count column is genuinely mixed ("88 results" / "Denied"), so it
+       stays left-aligned — tabular figures are what stop the digits wobbling. */
+    font-variant-numeric: tabular-nums;
   }
 
   .activity-row:last-child {
@@ -279,8 +314,11 @@
     font-weight: 600;
   }
 
+  /* WHEN a tool read your history is audit evidence, not decoration:
+     --app-text-faint is documented as sub-AA placeholder-only (1.57:1 on dark). */
   .activity-row__time {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
+    font-size: 10px;
     white-space: nowrap;
   }
 </style>
