@@ -591,6 +591,13 @@ pub fn run() {
                 event,
                 webview_window.as_ref(),
             );
+            // A user-dismissed approval window is a non-verdict, not a denial:
+            // answer the waiting CLI `denied`/`closed` (exit 14, retryable) so
+            // it never blocks forever on a window that is gone. This reads
+            // `CloseRequested` and only `CloseRequested` on purpose — the app's
+            // own teardown after a verdict uses `destroy()`, which emits
+            // `Destroyed` instead, so it cannot land here and cancel whatever
+            // request has since taken the pending slot.
             if window.label() == "cli-access-request"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {

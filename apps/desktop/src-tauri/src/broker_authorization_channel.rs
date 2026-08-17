@@ -74,10 +74,14 @@ pub struct AuthorizationChannelScope {
 /// switches on; `reason` names *which* of that branch's cases fired.
 ///
 /// - `approved` — `grant` is present and states the scope actually granted. The
-///   caller MUST check it covers what it asked for: an existing permission is
-///   widened, never narrowed, but a user can approve exactly the minimum.
-/// - `denied` + `userCancelled` — the user denied, or the window was closed.
-/// - `denied` + `closed` — the approval waiter was dropped without a verdict.
+///   caller MUST check it covers what it asked for: the approval SETS the row's
+///   scope to whatever the picker selected, which can be narrower than the
+///   `preferred` scope (never below `minimum` — the window refuses that).
+/// - `denied` + `userCancelled` — the user answered no, via Deny or Esc. A
+///   denial is an answer: the caller must not retry it.
+/// - `denied` + `closed` — no verdict was ever given: the approval window was
+///   closed, it failed to open, or the waiter was dropped. This one IS
+///   retryable, which is why it must never be spelled `userCancelled`.
 /// - `blocked` + `blocked` — a standing user rejection for this client. No
 ///   window opened and none will; only Settings can lift it. Do not retry.
 /// - `unavailable` + `busy` — another approval is already in flight. The app IS
@@ -106,7 +110,7 @@ pub struct AuthorizationChannelGrant {
     /// `allRetained`. There is no expiry: the row lives until it idles out or is
     /// blocked in Settings.
     pub scope: String,
-    /// `true` when this approval created the permission, `false` when it widened
+    /// `true` when this approval created the permission, `false` when it updated
     /// an existing one (which keeps its id, so opaque ids stay valid).
     pub created: bool,
 }
@@ -247,20 +251,73 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
     // a tool's life, so a native fast path bought nothing and cost the identity
     // provenance chip and the anti-reflex affordances (focus on Deny, Enter
     // unbound, Esc denies).
-    let (send, receive) = oneshot::channel();
-    if !store_pending_request(&app, request.clone(), send) {
-        let _ = write_unavailable(stream, request.request_id, "busy").await;
-        return;
-    }
-    let _ = windows::open_cli_access_request_window(&app);
-    match receive.await {
-        Ok(response) => {
+    // Race the verdict against the client hanging up. A pending approval must not
+    // outlive the process that asked for it: the socket task parks on the oneshot
+    // and never polls the stream, so without this it cannot notice the CLI's own
+    // 120 s timeout, a killed client, or a window that was silently reused and
+    // torn down by a previous request's teardown. Any of those would leave the
+    // single-flight guard held and the pending slot occupied for the life of the
+    // app, answering every later request `busy` — a window that is gone can
+    // never resolve the waiter, and nothing else will.
+    let verdict = {
+        let wait = await_user_verdict(&state, &request, || {
+            windows::open_cli_access_request_window(&app)
+        });
+        tokio::pin!(wait);
+        tokio::select! {
+            response = &mut wait => Some(response),
+            () = peer_hung_up(&mut stream) => None,
+        }
+    };
+    match verdict {
+        Some(response) => {
             let _ = write_response(stream, response).await;
         }
-        Err(_) => {
-            let _ = write_denied(stream, request.request_id, "closed").await;
+        // Nobody is left to read an answer. Release the slot so the NEXT client
+        // gets a window instead of `busy`; the guard drops with this task.
+        None => cancel_pending(&state, "closed"),
+    }
+}
+
+/// Resolves when the peer closes its end (or the connection breaks). The CLI
+/// sends exactly one request line and then only reads, so any successful read
+/// here is unexpected trailing input and is ignored rather than treated as a
+/// hangup.
+#[cfg(unix)]
+async fn peer_hung_up(stream: &mut UnixStream) {
+    let mut scratch = [0_u8; 256];
+    loop {
+        match stream.read(&mut scratch).await {
+            Ok(0) | Err(_) => return,
+            Ok(_) => continue,
         }
     }
+}
+
+/// Everything between "this connection owns the single-flight guard" and "there
+/// is a verdict to write back". The consent surface is injected because it is
+/// the ONLY thing that can resolve the waiter: if it never appears, nothing
+/// else does, and the socket task awaits forever holding the guard while the
+/// pending slot stays occupied — which answers every later CLI request `busy`
+/// for the life of the app.
+async fn await_user_verdict(
+    state: &BrokerAuthorizationChannelState,
+    request: &AuthorizationChannelRequest,
+    open_consent_surface: impl FnOnce() -> Result<(), String>,
+) -> AuthorizationChannelResponse {
+    let (send, receive) = oneshot::channel();
+    if !store_pending(state, request.clone(), send) {
+        return unavailable_response(request.request_id.clone(), "busy");
+    }
+    if open_consent_surface().is_err() {
+        // Nothing else ever resolves this waiter, so releasing the slot here is
+        // the only thing standing between one failed window and a channel that
+        // answers `busy` until the app restarts.
+        cancel_pending(state, "closed");
+    }
+    receive
+        .await
+        .unwrap_or_else(|_| denied_response(request.request_id.clone(), "closed"))
 }
 
 #[cfg(unix)]
@@ -294,12 +351,11 @@ async fn read_request_line(stream: &mut UnixStream) -> std::io::Result<Option<St
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
-fn store_pending_request(
-    app: &tauri::AppHandle,
+fn store_pending(
+    state: &BrokerAuthorizationChannelState,
     request: AuthorizationChannelRequest,
     respond: oneshot::Sender<AuthorizationChannelResponse>,
 ) -> bool {
-    let state = app.state::<BrokerAuthorizationChannelState>();
     let Ok(mut pending) = state.pending.lock() else {
         return false;
     };
@@ -308,14 +364,6 @@ fn store_pending_request(
     }
     *pending = Some(PendingAuthorizationRequest { request, respond });
     true
-}
-
-fn take_pending_request(app: &tauri::AppHandle) -> Option<PendingAuthorizationRequest> {
-    app.state::<BrokerAuthorizationChannelState>()
-        .pending
-        .lock()
-        .ok()
-        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]
@@ -359,7 +407,13 @@ pub fn approve_pending_cli_access_request(
             reason: Some("invalidRequest".to_string()),
             grant: None,
         });
+    let blocked = response.decision == "blocked";
     let _ = pending.respond.send(response);
+    if blocked {
+        // The client has its verdict; the window must not print an "allowed"
+        // receipt for it. Left open so the error names why.
+        return Err("This tool is blocked in Settings. Unblock it there first.".to_string());
+    }
     let _ = close_cli_access_request_window(&app);
     Ok(())
 }
@@ -406,21 +460,51 @@ pub fn cancel_pending_cli_access_request(app: tauri::AppHandle) -> Result<(), St
 }
 
 pub fn cancel_pending_request(app: &tauri::AppHandle, reason: &str) {
-    let Some(pending) = take_pending_request(app) else {
+    cancel_pending(&app.state::<BrokerAuthorizationChannelState>(), reason);
+}
+
+fn cancel_pending(state: &BrokerAuthorizationChannelState, reason: &str) {
+    let Some(pending) = state.pending.lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
-    let _ = pending.respond.send(AuthorizationChannelResponse {
+    let _ = pending
+        .respond
+        .send(denied_response(pending.request.request_id, reason));
+}
+
+fn denied_response(request_id: String, reason: &str) -> AuthorizationChannelResponse {
+    AuthorizationChannelResponse {
         schema_version: 1,
-        request_id: pending.request.request_id,
+        request_id,
         decision: "denied".to_string(),
         reason: Some(reason.to_string()),
         grant: None,
-    });
+    }
 }
 
+fn unavailable_response(request_id: String, reason: &str) -> AuthorizationChannelResponse {
+    AuthorizationChannelResponse {
+        schema_version: 1,
+        request_id,
+        decision: "unavailable".to_string(),
+        reason: Some(reason.to_string()),
+        grant: None,
+    }
+}
+
+/// Tear the approval window down after this request has already been answered.
+///
+/// `destroy()`, not `close()`: `close()` emits `CloseRequested`, which is the
+/// event lib.rs reads as "the user dismissed the approval" and answers the
+/// pending request `denied`/`closed` with. The teardown is queued on the main
+/// thread while this thread has ALREADY emptied the pending slot and released
+/// the single-flight guard, so by the time that event is pumped the slot can
+/// hold the NEXT request — which would then be denied without a window ever
+/// being shown for it. `destroy()` emits only `Destroyed`, leaving
+/// `CloseRequested` to mean what lib.rs's hook assumes it means.
 fn close_cli_access_request_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("cli-access-request") {
-        window.close().map_err(|error| error.to_string())?;
+        window.destroy().map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -559,9 +643,12 @@ fn create_grant_response(
 
 /// Upsert this identity's standing permission and describe what it now grants.
 ///
-/// The response reports the scope the ROW carries after the approval, which is
-/// the scope the user picked — not the scope the client asked for. The picker
-/// can set a scope NARROWER than the preferred one, so the caller MUST check the
+/// The upsert SETS the row's scope to the one passed in — it is not a widen, so
+/// the row can come out of an approval narrower than it went in. The response
+/// reports the scope the ROW carries afterwards, which is the scope the user
+/// picked, not the scope the client asked for: the picker can select a scope
+/// NARROWER than the preferred one (never below the request's minimum, which
+/// `validate_cli_access_approval` enforces), so the caller MUST check the
 /// returned grant covers its request instead of treating `approved` as a yes.
 /// The row keeps its id across the upsert, so opaque ids already handed to a
 /// running agent keep resolving.
@@ -574,6 +661,14 @@ fn create_grant_response_in(
     let upsert = BrokeredCaptureAccess::from_config_dir(config_dir)
         .upsert_grant_for_identity(identity, scope)
         .map_err(|error| error.to_string())?;
+    if upsert.grant.blocked {
+        // Blocked in Settings while this window sat open. The block check that
+        // let the connection through ran back when the socket connected, so the
+        // rejection is the NEWER decision — the upsert refused to clear it, and
+        // the client is told so instead of getting an approval receipt for a
+        // permission the file does not carry.
+        return Ok(blocked_response(request.request_id.clone()));
+    }
     Ok(AuthorizationChannelResponse {
         schema_version: 1,
         request_id: request.request_id.clone(),
@@ -588,34 +683,19 @@ fn create_grant_response_in(
     })
 }
 
-#[cfg(unix)]
-async fn write_blocked(stream: UnixStream, request_id: String) -> std::io::Result<()> {
-    write_response(
-        stream,
-        AuthorizationChannelResponse {
-            schema_version: 1,
-            request_id,
-            decision: "blocked".to_string(),
-            reason: Some("blocked".to_string()),
-            grant: None,
-        },
-    )
-    .await
+fn blocked_response(request_id: String) -> AuthorizationChannelResponse {
+    AuthorizationChannelResponse {
+        schema_version: 1,
+        request_id,
+        decision: "blocked".to_string(),
+        reason: Some("blocked".to_string()),
+        grant: None,
+    }
 }
 
 #[cfg(unix)]
-async fn write_denied(stream: UnixStream, request_id: String, reason: &str) -> std::io::Result<()> {
-    write_response(
-        stream,
-        AuthorizationChannelResponse {
-            schema_version: 1,
-            request_id,
-            decision: "denied".to_string(),
-            reason: Some(reason.to_string()),
-            grant: None,
-        },
-    )
-    .await
+async fn write_blocked(stream: UnixStream, request_id: String) -> std::io::Result<()> {
+    write_response(stream, blocked_response(request_id)).await
 }
 
 #[cfg(unix)]
@@ -624,17 +704,7 @@ async fn write_unavailable(
     request_id: String,
     reason: &str,
 ) -> std::io::Result<()> {
-    write_response(
-        stream,
-        AuthorizationChannelResponse {
-            schema_version: 1,
-            request_id,
-            decision: "unavailable".to_string(),
-            reason: Some(reason.to_string()),
-            grant: None,
-        },
-    )
-    .await
+    write_response(stream, unavailable_response(request_id, reason)).await
 }
 
 #[cfg(unix)]
@@ -772,6 +842,104 @@ mod tests {
         assert!(!grant_file_blocks(&unblocked, "Claude Code"));
     }
 
+    /// A standing block is keyed on the row's `normalized_label`; the approval
+    /// window and the Settings list both render the name through the display
+    /// collapse. If the two ever disagree again, a name that READS as the blocked
+    /// tool keys a different identity and the user's rejection is lifted by a
+    /// character they cannot see. The existing case/hyphen test cannot see this:
+    /// both spellings already agreed.
+    #[test]
+    fn a_name_that_reads_as_a_blocked_one_stays_blocked() {
+        let grants = BrokerGrantFile {
+            schema_version: 1,
+            grants: vec![blocked_grant("Claude Code")],
+        };
+
+        for raw in [
+            "Claude\u{200B} Code", // ZERO WIDTH SPACE
+            "Claude Code\u{200D}", // ZERO WIDTH JOINER
+            "\u{202E}Claude Code", // RIGHT-TO-LEFT OVERRIDE
+            "Claude\u{FE00} Code", // VARIATION SELECTOR-1
+            "Claude\u{3164} Code", // HANGUL FILLER
+            "Claude\tCode",        // control, folded to the space it renders as
+            "Claude\nCode",
+        ] {
+            assert_eq!(
+                client_label_display(raw),
+                "Claude Code",
+                "the window names this requester as the blocked tool: {raw:?}"
+            );
+            assert!(
+                grant_file_blocks(&grants, raw),
+                "a name the user cannot tell apart from the blocked one stays \
+                 blocked: {raw:?}"
+            );
+        }
+
+        // The other direction: a row minted under a disguised spelling still
+        // covers the plain name, so blocking what Settings SHOWS you holds.
+        let smuggled = BrokerGrantFile {
+            schema_version: 1,
+            grants: vec![blocked_grant("Claude\tCode")],
+        };
+        assert!(grant_file_blocks(&smuggled, "Claude Code"));
+    }
+
+    /// A pending approval must not outlive the client that asked for it. The
+    /// socket task parks on the oneshot and never polls the stream, so a CLI that
+    /// hit its own 120 s timeout, was killed, or whose window was silently reused
+    /// and torn down by a previous request's teardown would otherwise leave the
+    /// single-flight guard held and the slot occupied for the life of the app —
+    /// answering every later request `busy` with no window on screen and nothing
+    /// able to resolve the waiter.
+    #[test]
+    fn a_client_that_hangs_up_frees_the_channel_instead_of_wedging_it() {
+        tauri::async_runtime::block_on(async {
+            let state = BrokerAuthorizationChannelState::default();
+            let request = test_authorization_request("lastDay");
+            let guard = ActiveRequestGuard::acquire(state.active.clone())
+                .expect("the first connection owns the channel");
+            let (client, mut server) = UnixStream::pair().expect("socket pair should open");
+
+            // The consent surface opens fine and is simply never answered — the
+            // user walked away, or it was a window that no longer shows this
+            // request. Meanwhile the client gives up.
+            let verdict = {
+                let wait = await_user_verdict(&state, &request, || Ok(()));
+                tokio::pin!(wait);
+                drop(client);
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    tokio::select! {
+                        response = &mut wait => Some(response),
+                        () = peer_hung_up(&mut server) => None,
+                    }
+                })
+                .await
+                .expect("a hung-up client must be noticed, not waited on forever")
+            };
+
+            assert!(
+                verdict.is_none(),
+                "there is nobody left to write an answer to"
+            );
+            cancel_pending(&state, "closed");
+            drop(guard);
+
+            assert!(
+                state
+                    .pending
+                    .lock()
+                    .expect("the pending slot is readable")
+                    .is_none(),
+                "the slot must not outlive the client that filled it"
+            );
+            assert!(
+                ActiveRequestGuard::acquire(state.active.clone()).is_some(),
+                "the next client must get a window, not `busy` forever"
+            );
+        });
+    }
+
     #[test]
     fn a_blocked_response_names_the_block_on_both_fields() {
         tauri::async_runtime::block_on(async {
@@ -874,13 +1042,61 @@ mod tests {
         assert_eq!(stored.grants[0].id, narrowed.id, "still the same row");
     }
 
-    /// A name made only of invisible characters is not a name. `is_control()` does
-    /// not cover them, so an all-zero-width label survives the empty check and the
-    /// approval window renders with NO visible requester at all — defeating the
-    /// fallback that exists to guarantee one.
+    /// The standing-block check runs when the SOCKET CONNECTS; the approval it
+    /// waves through arrives whenever the user acts on the window — seconds or
+    /// minutes later. A tool blocked in Settings during that gap must be refused
+    /// by the approval that stale window then sends, and the client must be told
+    /// `blocked` rather than handed an `approved` receipt for a permission the
+    /// file does not carry.
+    #[test]
+    fn an_approval_that_lands_after_a_block_is_refused_not_granted() {
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let request = request_preferring("lastDay");
+        create_grant_response_in(config_dir.path(), &request, BrokerGrantScope::LAST_DAY)
+            .expect("the first approval mints the permission");
+
+        let access = BrokeredCaptureAccess::from_config_dir(config_dir.path());
+        assert!(
+            access.block_client("Test Client").expect("block applies"),
+            "Settings blocks the tool while its window is still open"
+        );
+
+        let response = create_grant_response_in(
+            config_dir.path(),
+            &request,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("the stale window's approval still answers");
+
+        assert_eq!(response.decision, "blocked");
+        assert_eq!(response.reason.as_deref(), Some("blocked"));
+        assert!(response.grant.is_none(), "nothing was granted");
+
+        let stored = access.list_grants().expect("permissions load");
+        assert_eq!(stored.grants.len(), 1);
+        assert!(
+            stored.grants[0].blocked,
+            "the newer decision survives: {stored:?}"
+        );
+        assert_eq!(
+            stored.grants[0].scope,
+            BrokerGrantScope::LAST_DAY,
+            "a refused approval never widens the row it was refused on: {stored:?}"
+        );
+    }
+
+    /// A name that renders as nothing is not a name — whether it is blank or
+    /// merely invisible. Whitespace collapses to empty through
+    /// `split_whitespace()`; the invisible characters need the filter, because
+    /// `is_control()` does not cover them, so an all-zero-width label survives the
+    /// empty check and the approval window renders with NO visible requester at
+    /// all — defeating the fallback that exists to guarantee one.
     #[test]
     fn a_client_name_that_renders_as_nothing_falls_back_to_the_unnamed_wording() {
         for label in [
+            "",
+            "   ",
+            "\t\n",
             "\u{200B}\u{200C}\u{200D}\u{FEFF}\u{2060}",
             "\u{3164}",                 // HANGUL FILLER
             "\u{2800}",                 // BRAILLE PATTERN BLANK
@@ -974,6 +1190,54 @@ mod tests {
         assert!(result.is_err());
         assert!(pending.is_some());
         assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    /// The approval window is now the ONLY thing that can resolve a waiter — the
+    /// native message-box fast path that used to answer inline is gone. So when
+    /// the window fails to open, nothing resolves it: the socket task awaits
+    /// forever while holding the single-flight guard, and the pending slot it
+    /// filled is never emptied, so every later CLI request is answered `busy`
+    /// for the life of the app. A consent surface that never appears has to be
+    /// answered here.
+    #[test]
+    fn a_consent_surface_that_never_opens_still_answers_and_frees_the_channel() {
+        tauri::async_runtime::block_on(async {
+            let state = BrokerAuthorizationChannelState::default();
+            let request = test_authorization_request("lastDay");
+            let guard = ActiveRequestGuard::acquire(state.active.clone())
+                .expect("the first connection owns the channel");
+
+            let verdict = tokio::time::timeout(
+                Duration::from_secs(2),
+                await_user_verdict(&state, &request, || {
+                    Err("failed to build the approval window".to_string())
+                }),
+            )
+            .await
+            .expect("a request whose consent surface never opened must still be answered");
+
+            assert_eq!(verdict.decision, "denied");
+            assert_eq!(verdict.reason.as_deref(), Some("closed"));
+            drop(guard);
+
+            // ...and the channel is usable again rather than wedged on `busy`.
+            assert!(
+                state
+                    .pending
+                    .lock()
+                    .expect("the pending slot is readable")
+                    .is_none(),
+                "the pending slot must not outlive the request that filled it"
+            );
+            let next = ActiveRequestGuard::acquire(state.active.clone())
+                .expect("the next connection can take the guard");
+            let (send, _receive) = oneshot::channel();
+            assert!(
+                store_pending(&state, request, send),
+                "the next connection must not be told `busy` forever"
+            );
+            drop(next);
+        });
     }
 
     #[test]
