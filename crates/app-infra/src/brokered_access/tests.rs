@@ -6737,7 +6737,6 @@ fn a_flood_of_denied_requests_cannot_evict_the_record_of_an_approved_read() {
     );
 }
 
-
 /// The activity log is rewritten in place (`fs::write`, no temp + rename) on
 /// EVERY brokered command, and a command whose line cannot be written fails with
 /// `?`. A write that dies partway — a crash, or `ENOSPC` after the file is
@@ -6925,7 +6924,10 @@ fn grant_idle_expiry_boundaries_are_exclusive_and_survive_a_backwards_clock() {
     assert_eq!(legacy.last_used_at_unix_ms, 0);
     assert!(!grant_is_active(&legacy, now));
 
-    assert!(grant_is_active(&at(now - BROKER_GRANT_IDLE_TTL_MS + 1), now));
+    assert!(grant_is_active(
+        &at(now - BROKER_GRANT_IDLE_TTL_MS + 1),
+        now
+    ));
     assert!(
         !grant_is_active(&at(now - BROKER_GRANT_IDLE_TTL_MS), now),
         "exactly the threshold is expired: the compare is `<`, not `<=`"
@@ -7051,7 +7053,10 @@ fn a_search_that_named_no_window_is_never_reported_as_clamped() {
         .expect("search should run")
         .expect("search should authorize");
 
-        assert!(!response.scope_clamped, "no --from is not a narrowed request");
+        assert!(
+            !response.scope_clamped,
+            "no --from is not a narrowed request"
+        );
         assert_eq!(response.required_scope, None);
     });
 }
@@ -7138,10 +7143,7 @@ fn an_approval_that_lands_after_a_block_does_not_clear_it() {
 
     let stored = stored_grants(&config_dir);
     assert_eq!(stored.len(), 1, "no second row beside the blocked one");
-    assert!(
-        stored[0].blocked,
-        "the block survives on disk: {stored:?}"
-    );
+    assert!(stored[0].blocked, "the block survives on disk: {stored:?}");
     assert_eq!(
         stored[0].scope,
         BrokerGrantScope::LAST_DAY,
