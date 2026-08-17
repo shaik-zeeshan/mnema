@@ -39,7 +39,8 @@ field from the channel response — so `access request --scope all-retained
 --duration 7d` prints "approved" and the caller never learns it was downgraded.
 An entire disclosure paragraph existed only to apologise for this.
 
-**Expiry destroys the agent's working set.** Opaque ids are HMAC-signed against
+**Expiry destroys the agent's working set.** Opaque ids carry a keyed SHA-256
+MAC (not an HMAC — see `opaque_signature`) computed against
 the issuing grant id. When that grant expires, every id already handed to the
 agent fails re-authorization, mid-task, even when a fresh grant covers the same
 window.
@@ -82,8 +83,11 @@ duration to choose.
 **Consent is the user's business, not the agent's.** Agents run data commands
 directly. The TTY gate is deleted — it inspected the caller's file descriptors
 to decide whether a human was at the Mac, which they carry no information
-about; `--no-prompt` is the explicit control, and an unanswered window already
-dies on the channel read timeout. `access request` survives as a human
+about; `--no-prompt` is the explicit control — on every door, `mnema mcp`
+included — and an unanswered window already
+dies on the channel read timeout. The channel request loses its `interactive`
+field with the gate: nothing read it, and whether to ask is decided before a
+request is sent. `access request` survives as a human
 pre-authorization, and the agent-facing skill's `status` → `request` → `status`
 preamble is deleted.
 
@@ -91,8 +95,17 @@ preamble is deleted.
 to the permission's scope and returning success is a correctness bug: for a
 recall product, a confidently incomplete answer is the most damaging failure
 mode there is. The broker marks a clamped range, the CLI derives the scope a
-command actually needs and sends it as the channel `minimum`, and a clamp
-triggers the widen prompt. The CLI also reads the `grant` field it currently
+command actually needs and sends it as the channel `preferred`, and a clamp
+triggers the widen prompt. The channel `minimum` — the floor the window enforces
+and pre-selects — is per door: on a **widen** it is the needed scope, because the
+row already stands narrower than that and an approval SETS the scope, so every
+narrower answer both fails the call and takes away access the tool already had;
+on a **first grant** it stays `lastDay`, so a never-seen tool passing `--from
+1970-01-01` cannot make "All retained" the only grantable answer on its first
+prompt. Narrowing is not silent either: where a door's minimum can legitimately
+sit below what the client already holds (`access request --scope last-day`, an
+undated command's `lastDay` ask), the window states the access the tool already
+has, so Allow can never quietly take some away. The CLI also reads the `grant` field it currently
 drops, verifies it covers the request, and maps each channel reason code
 (`blocked`, `onboardingRequired`, `busy`, `userCancelled`, …) to its own
 message and exit code instead of collapsing all of them into "Mnema app is
@@ -140,6 +153,7 @@ Linux inherits this work, Windows is unchanged and tracked in `SUPPORTS.md`.
 
 **Deleted by this decision:** the native prompt and its downgrade-disclosure
 body, the quick-approval policy and constants, the three-way authorization
-decision branch, the window's duration control, the TTY gate, the grant-set
+decision branch, the window's duration control, the TTY gate and the channel
+request's `interactive` field, the grant-set
 reductions, the unreachable `BrokerGrantCreateRequest` path, and the agent
 preamble in the `mnema-data` skill.
