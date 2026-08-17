@@ -51,6 +51,8 @@ const MAX_SEARCH_LIMIT: u32 = 100;
 /// them keeps the work one request can buy bounded. See `BrokerSearchCursor::decode`.
 const MAX_CURSOR_OFFSET: u32 = 10 * MAX_SEARCH_LIMIT;
 const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
+/// How many brokered-command lines the activity log keeps.
+const MAX_AUDIT_EVENTS: usize = 500;
 /// A CLI Access permission dies this long after its last use. Idle expiry, not a
 /// TTL: a tool in daily use is never re-prompted, and one tried once in March is
 /// not still reading history in December (ADR 0059).
@@ -59,6 +61,19 @@ pub const BROKER_GRANT_IDLE_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// flocked rewrite. One-hour resolution against a 30-day threshold, so the common
 /// read path takes the shared read and returns without writing (ADR 0041).
 const STAMP_INTERVAL_MS: u64 = 60 * 60 * 1000;
+/// How far past a permission's own start a request may reach before the clamp is
+/// REPORTED. The data clamp itself is always exact — `scope_start` is a security
+/// boundary and never moves — this only suppresses the `scope_clamped` marker.
+///
+/// The marker exists to stop an agent reporting "nothing happened" for a window
+/// it was never allowed to see. A sub-minute shortfall at the far edge of a
+/// 24-hour window is not that: `--from` = "24 hours ago" is computed by the
+/// caller and evaluated by the broker milliseconds later, so it is over the line
+/// by construction, and `minimum_scope_for_start` is `age > 24h` — one
+/// millisecond escalates a WHOLE BAND and the CLI opens an approval window
+/// asking for a week on the most natural query the `lastDay` band has. A
+/// spurious approval window on every ordinary query is the real harm.
+const CLAMP_SLACK_MS: u64 = 60_000;
 const DEFAULT_APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 
 /// Stable grant id for the in-app Ask AI agent's All Retained Broker Scope access.
@@ -173,10 +188,15 @@ impl BrokerGrantScope {
     pub const LAST_7_DAYS: Self = Self::RecentDays { days: 7 };
 
     /// The one wire spelling of a scope, shared by the authorization channel, the
-    /// CLI, and the clamp marker so the three cannot drift apart. `RecentDays`
-    /// still carries an arbitrary `u32`, so anything between the two named bands
-    /// reports as the NARROWER of the two it sits between — never wider than what
-    /// the row actually grants.
+    /// CLI, and the clamp marker so the three cannot drift apart.
+    ///
+    /// `RecentDays` carries an arbitrary `u32`, and only three of its values have
+    /// a wire spelling: 2..=7 days round UP to `last7Days` (narrower than the row
+    /// grants, safe), but anything over 7 falls through to `allRetained`, which is
+    /// WIDER than the row grants. Unreachable today — `from_wire_name` is the only
+    /// writer and yields 1, 7, or `AllRetainedHistory` — but `access_status_line`
+    /// and `verify_granted_scope`'s error message both print through here, so a
+    /// future non-banded `RecentDays` would have them overstate the permission.
     pub fn wire_name(&self) -> &'static str {
         match self {
             Self::RecentDays { days } if *days <= 1 => "lastDay",
@@ -1288,17 +1308,49 @@ fn default_grant_identity_source() -> BrokerClientIdentitySource {
     BrokerClientIdentitySource::Defaulted
 }
 
+/// Longest client name kept. A tool NAME, not a payload: `--client`,
+/// `MNEMA_CLI_CLIENT` and `AI_AGENT` all reach here straight off the wire with
+/// no length of their own, and each one is stored TWICE per audit line (raw +
+/// normalized) in a file capped at 500 lines but not at 500 line-lengths.
+///
+/// A refused command now writes an audit line too, so a caller with NO
+/// permission sets that file's size. Measured, uncapped: a 64 KB `--client`
+/// grows `broker-audit.json` to 62.6 MB, at which point one refused command
+/// costs 210 ms instead of 1.8 ms (every command rewrites the whole file) and
+/// the Settings Access panel re-reads all 62.6 MB over IPC every 30 s to render
+/// 20 rows. Capping the name is the one bound that closes both.
+const MAX_CLIENT_LABEL_CHARS: usize = 120;
+
+/// Cut a collapsed label to [`MAX_CLIENT_LABEL_CHARS`] on a char boundary.
+///
+/// Applied inside `display_client_label`, the ONE collapse both the displayed
+/// name and the identity key run through, so `normalize_client_label` inherits
+/// the same cut. Not in `BrokerClientIdentity::new`: the direct callers of
+/// `normalize_client_label` (the standing-block check, `set_client_blocked`, the
+/// audit backfill) would otherwise key on an uncapped name that no stored row
+/// could ever match.
+///
+/// The cap is a collision surface by construction — two names sharing their
+/// first 120 characters become one permission row. 120 is chosen to sit far
+/// above any real tool name while still bounding the audit line.
+fn cap_client_label(collapsed: String) -> String {
+    match collapsed.char_indices().nth(MAX_CLIENT_LABEL_CHARS) {
+        // Re-trim: the cut can land just after a space and leave a trailing one,
+        // which would no longer round-trip through this same collapse.
+        Some((cut, _)) => collapsed[..cut].trim_end().to_string(),
+        None => collapsed,
+    }
+}
+
 pub fn normalize_client_label(value: &str) -> Option<String> {
-    let cleaned = value
+    // Separators first, then the ONE display collapse: the identity key is the
+    // displayed name lowercased, so the two cannot drift into disagreeing about
+    // whether two spellings are the same tool.
+    let separated = value
         .chars()
         .map(|ch| if ch == '-' || ch == '_' { ' ' } else { ch })
-        .filter(|ch| !ch.is_control())
         .collect::<String>();
-    let normalized = cleaned
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
+    let normalized = display_client_label(&separated).to_lowercase();
     if normalized.is_empty() {
         None
     } else {
@@ -1306,14 +1358,47 @@ pub fn normalize_client_label(value: &str) -> Option<String> {
     }
 }
 
+/// Unicode's `Default_Ignorable_Code_Point` set plus the blank-glyph outliers it
+/// leaves out (U+2800 BRAILLE PATTERN BLANK, the U+FFF9..=U+FFFB annotation
+/// controls): the closed list of "this is meant to render as nothing".
+///
+/// `char::is_control` covers only category `Cc`, so without this a client named
+/// `"Claude\u{200B} Code"` keys a DIFFERENT permission row than `"Claude Code"`
+/// while rendering identically in the access list and the approval window. The
+/// standing block is keyed on `normalize_client_label`, so an identity key that
+/// disagrees with what the user reads is a block the user cannot enforce.
+/// Mirrors `is_invisible_or_reordering` in the authorization channel.
+fn is_invisible_client_label_char(ch: char) -> bool {
+    matches!(ch,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{2800}' | '\u{3164}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{115F}'..='\u{1160}'
+        | '\u{17B4}'..='\u{17B5}'
+        | '\u{180B}'..='\u{180F}'
+        | '\u{200B}'..='\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}'
+        | '\u{FE00}'..='\u{FE0F}'
+        | '\u{FFF0}'..='\u{FFFB}'
+        | '\u{1BCA0}'..='\u{1BCA3}'
+        | '\u{1D173}'..='\u{1D17A}'
+        | '\u{E0000}'..='\u{E0FFF}'
+    )
+}
+
+/// The one collapse a client name goes through. Invisibles are dropped, control
+/// characters fold to the space they already render as (matching the approval
+/// window's own copy), and whitespace runs collapse.
 fn display_client_label(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    cap_client_label(
+        value
+            .chars()
+            .filter(|ch| !is_invisible_client_label_char(*ch))
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Display-normalize a stored row. It must NOT rewrite `normalized_label` into
@@ -1442,7 +1527,20 @@ fn record_audit_event(
         .open(lock_path)?;
     lock.lock_exclusive()?;
 
-    let mut audit = load_audit_events(config_dir)?;
+    let path = config_dir.join(BROKER_AUDIT_FILE_NAME);
+    // A log that will not parse is ALREADY lost, and failing on it as well is
+    // what turns one half-finished write into a permanent brick: every brokered
+    // command propagates this error instead of answering, refusals included now
+    // that those are recorded too — so the caller never even gets the
+    // `authorizationRequired` its approval flow keys off. Quarantine the bytes
+    // that are left and start a fresh log.
+    let mut audit = load_audit_events(config_dir).unwrap_or_else(|_| {
+        let _ = fs::rename(&path, path.with_extension("json.corrupt"));
+        BrokerAuditFile {
+            schema_version: default_schema_version(),
+            events: Vec::new(),
+        }
+    });
     audit.events.push(BrokerAuditEvent {
         tool_identity: identity.label,
         normalized_tool_identity: identity.normalized_label,
@@ -1454,12 +1552,32 @@ fn record_audit_event(
         grant_id,
         outcome: Some(outcome.to_string()),
     });
-    if audit.events.len() > 500 {
-        let drop_count = audit.events.len().saturating_sub(500);
-        audit.events.drain(0..drop_count);
+    // A `denied` line is written with NO permission at all: anything that can run
+    // `mnema` appends one just by asking for access it does not have, and a
+    // blocked tool still reaches this sink. Plain FIFO would let a few hundred
+    // refusals erase every record of what an APPROVED tool actually read — the
+    // same eviction that took Ask AI out of this log in this change. So refusals
+    // are dropped first and can never push out access evidence.
+    // ponytail: only `denied` is unauthenticated; a flood of `scope_rejected`
+    // still needs an approved permission, and is itself evidence. Split their
+    // budgets if that ever stops being true.
+    let mut over = audit.events.len().saturating_sub(MAX_AUDIT_EVENTS);
+    if over > 0 {
+        audit.events.retain(|event| {
+            if over > 0 && event.outcome.as_deref() == Some("denied") {
+                over -= 1;
+                return false;
+            }
+            true
+        });
+        audit.events.drain(0..over);
     }
-    let path = config_dir.join(BROKER_AUDIT_FILE_NAME);
-    let result = fs::write(path, serde_json::to_string_pretty(&audit)?);
+    // Temp + rename, exactly as `save_grants_locked` does: a plain `fs::write`
+    // truncates the log before it writes a byte, so a crash or a full disk
+    // partway through is what leaves the unparseable file handled above.
+    let temp_path = config_dir.join(format!("{BROKER_AUDIT_FILE_NAME}.tmp"));
+    let result = fs::write(&temp_path, serde_json::to_string_pretty(&audit)?)
+        .and_then(|()| fs::rename(&temp_path, &path));
     let unlock_result = lock.unlock();
     match (result, unlock_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -1619,13 +1737,13 @@ fn scoped_date_range(
         .max(scope_start_dt);
     // Clamped only when the caller ASKED for something older than the permission
     // reaches. A bare request with no `from` is not a narrowed request — it never
-    // named a window to narrow.
+    // named a window to narrow, and an overshoot within [`CLAMP_SLACK_MS`] is the
+    // caller's clock, not a window they were denied.
     let clamped_to_scope = requested_start
-        .filter(|requested| scope_start.is_some() && *requested < scope_start_dt)
-        .map(|requested| {
-            let requested_ms = (requested.unix_timestamp_nanos() / 1_000_000).max(0) as u64;
-            minimum_scope_for_start(requested_ms, now)
-        });
+        .filter(|_| scope_start.is_some())
+        .map(|requested| (requested.unix_timestamp_nanos() / 1_000_000).max(0) as u64)
+        .filter(|requested_ms| default_start.saturating_sub(*requested_ms) > CLAMP_SLACK_MS)
+        .map(|requested_ms| minimum_scope_for_start(requested_ms, now));
     let end_dt = requested_end.unwrap_or(now_dt).min(now_dt);
     if end_dt < start_dt {
         return Err(AppInfraError::InvalidSearchRequest(
@@ -1864,9 +1982,12 @@ fn random_grant_id() -> String {
 /// against the issuing grant id, so re-minting it on a widen would fail
 /// re-authorization for every id already handed to a running agent, mid-task.
 ///
-/// An explicit approval also clears `blocked`: a blocked client is refused before
-/// any approval window opens (the authorization channel short-circuits it), so
-/// the only way to reach this with a blocked row is a deliberate user act.
+/// An approval NEVER clears `blocked`. The channel short-circuits a blocked
+/// client before the window opens, but that check runs at connect time and the
+/// approval arrives whenever the user acts — so a block applied while the window
+/// was open would otherwise be reverted by the Allow that window then sends. A
+/// blocked row comes back unchanged (`created: false`, `grant.blocked` still
+/// true) and the caller refuses on it; only Settings lifts a block.
 fn upsert_grant_for_identity(
     config_dir: &Path,
     identity: BrokerClientIdentity,
@@ -1880,6 +2001,16 @@ fn upsert_grant_for_identity(
                 .eq_ignore_ascii_case(&identity.normalized_label)
         });
         let upsert = match existing {
+            // A standing block set AFTER the approval window opened. The channel
+            // checks for one when the socket CONNECTS, so the whole life of the
+            // consent window sits between that check and this write: the row can
+            // have been blocked in Settings in the meantime. The block is the
+            // newer decision, so it wins and the row is handed back untouched
+            // for the caller to refuse on.
+            Some(grant) if grant.blocked => BrokerGrantUpsert {
+                grant: grant.clone(),
+                created: false,
+            },
             Some(grant) => {
                 grant.label = identity.label;
                 grant.normalized_label = identity.normalized_label;
@@ -1912,7 +2043,9 @@ fn upsert_grant_for_identity(
                 }
             }
         };
-        save_grants_locked(config_dir, grants)?;
+        if !upsert.grant.blocked {
+            save_grants_locked(config_dir, grants)?;
+        }
         Ok(upsert)
     })
 }

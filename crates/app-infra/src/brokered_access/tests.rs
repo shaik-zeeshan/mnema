@@ -6320,36 +6320,6 @@ fn approving_the_same_client_twice_replaces_the_row_instead_of_appending() {
     );
 }
 
-/// The highest-risk property in the plan. Opaque result ids are HMAC-signed
-/// against the issuing grant id, so widening a permission must mutate the row in
-/// place — a fresh id would fail re-authorization for every id already handed to
-/// a running agent, mid-task.
-#[test]
-fn widening_a_permission_keeps_the_row_id_so_issued_opaque_ids_survive() {
-    let config_dir = temp_config_dir("upgrade-keeps-id");
-
-    let original = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
-        .expect("first approval should store");
-    let widened = upsert_grant_for_identity(
-        &config_dir,
-        BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
-        BrokerGrantScope::AllRetainedHistory,
-    )
-    .expect("widen should store");
-
-    assert!(!widened.created, "a widen is an upgrade, not a new row");
-    assert_eq!(widened.grant.id, original.id);
-    assert_eq!(widened.grant.scope, BrokerGrantScope::AllRetainedHistory);
-    assert_eq!(
-        widened.grant.created_at_unix_ms, original.created_at_unix_ms,
-        "the row is the same permission, not a replacement"
-    );
-
-    let stored = stored_grants(&config_dir);
-    assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].id, original.id);
-}
-
 /// Blocking and idling out are different user intents. Idle expiry is benign
 /// disuse and re-prompts; a block is a standing rejection that must not quietly
 /// evaporate into a fresh prompt after 30 unused days.
@@ -6615,4 +6585,898 @@ fn minimum_scope_for_start_maps_each_band() {
     assert!(BrokerGrantScope::AllRetainedHistory.covers(&BrokerGrantScope::LAST_7_DAYS));
     assert!(!BrokerGrantScope::LAST_DAY.covers(&BrokerGrantScope::LAST_7_DAYS));
     assert!(BrokerGrantScope::LAST_7_DAYS.covers(&BrokerGrantScope::LAST_DAY));
+}
+
+/// A block is keyed on `normalize_client_label`; Settings renders `label`; the
+/// approval window renders its own display-normalized copy. A name that RENDERS
+/// identically to a blocked one must resolve to the same permission row —
+/// otherwise a rejected tool re-prompts under a name the user cannot tell apart,
+/// and one approval leaves a live twin of the blocked row in the access list.
+#[test]
+fn an_invisible_character_cannot_fork_a_blocked_client_into_a_second_row() {
+    let config_dir = temp_config_dir("invisible-identity");
+    create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY).expect("approval stores");
+    assert!(block_client(&config_dir, "Claude Code").expect("block should apply"));
+
+    // Every one of these is "Claude Code" to anyone reading the screen: a
+    // zero-width space, a Hangul filler, a bidi override, and a tab (which the
+    // approval window renders as the space it looks like).
+    for disguise in [
+        "Claude\u{200B} Code",
+        "Claude\u{3164} Code",
+        "Claude\u{202E} Code",
+        "Claude\tCode",
+    ] {
+        assert_eq!(
+            normalize_client_label(disguise).as_deref(),
+            Some("claude code"),
+            "{disguise:?} is not a different tool"
+        );
+    }
+
+    let disguised = "Claude\u{200B} Code";
+    let upsert = upsert_grant_for_identity(
+        &config_dir,
+        BrokerClientIdentity::new(disguised, BrokerClientIdentitySource::Explicit)
+            .expect("identity should build"),
+        BrokerGrantScope::AllRetainedHistory,
+    )
+    .expect("upsert should store");
+    assert!(
+        !upsert.created,
+        "the blocked row IS the row for this name — a widen, not a new permission"
+    );
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1, "no live twin of a blocked row: {stored:?}");
+    assert_eq!(
+        stored[0].label, "Claude Code",
+        "the access list must not render an invisible as part of a tool name"
+    );
+}
+
+/// A denial needs NO permission to write: anything that can run `mnema` appends
+/// one just by asking for access it does not have. Plain FIFO over a 500-slot log
+/// therefore lets an unapproved — or blocked — tool erase every record of what an
+/// approved tool actually read. That eviction is why Ask AI's audit writes were
+/// removed in this same change; the denied path reopened it without a permission.
+#[test]
+fn a_flood_of_denied_requests_cannot_evict_the_record_of_an_approved_read() {
+    let config_dir = temp_config_dir("audit-flood");
+
+    record_audit_event(
+        &config_dir,
+        BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+        "search",
+        42,
+        "all_retained_history",
+        Some("grant-1".to_string()),
+        "success",
+    )
+    .expect("the approved read is recorded");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
+    for _ in 0..600 {
+        let response = runtime
+            .block_on(access.execute(
+                "Snoop",
+                BrokeredCaptureRequest::Search(BrokerSearchRequest {
+                    query: "x".to_string(),
+                    from: None,
+                    to: None,
+                    limit: Some(1),
+                    app: None,
+                    window_title: None,
+                    url: None,
+                    url_regex: None,
+                    cursor: None,
+                    speaker: None,
+                }),
+            ))
+            .expect("denied request still returns");
+        assert!(matches!(response, BrokeredCaptureResponse::Error(_)));
+    }
+
+    let audit = load_audit_events(&config_dir).expect("audit should load");
+    assert!(
+        audit.events.iter().any(|event| {
+            event.outcome.as_deref() == Some("success") && event.result_count == 42
+        }),
+        "an unapproved tool must not be able to evict access evidence: {} events left, \
+         all denials = {}",
+        audit.events.len(),
+        audit
+            .events
+            .iter()
+            .all(|event| event.outcome.as_deref() == Some("denied"))
+    );
+}
+
+
+/// The activity log is rewritten in place (`fs::write`, no temp + rename) on
+/// EVERY brokered command, and a command whose line cannot be written fails with
+/// `?`. A write that dies partway — a crash, or `ENOSPC` after the file is
+/// already truncated — therefore leaves an unparseable log, and from then on
+/// `load_audit_events` errors before the new line is ever pushed.
+///
+/// This change routed refusals through the same sink, so the failure now also
+/// swallows the `authorizationRequired` answer that the CLI's approval flow keys
+/// off: CLI Access is bricked with no in-app way back. A log that is already
+/// lost must not take every later command down with it.
+#[test]
+fn a_truncated_activity_log_does_not_brick_every_later_command() {
+    let config_dir = temp_config_dir("truncated-audit");
+    let audit_path = config_dir.join(BROKER_AUDIT_FILE_NAME);
+    // Exactly what a half-finished `fs::write` of this file leaves behind.
+    fs::write(
+        &audit_path,
+        "{\n  \"schemaVersion\": 1,\n  \"events\": [\n    {\n      \"toolIdentity\": \"Claude Co",
+    )
+    .expect("a partial write should land");
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let access = BrokeredCaptureAccess::from_config_dir(config_dir.clone());
+    let response = runtime
+        .block_on(access.execute(
+            "Claude Code",
+            BrokeredCaptureRequest::Search(BrokerSearchRequest {
+                query: "quarterly plan".to_string(),
+                from: None,
+                to: None,
+                limit: Some(1),
+                app: None,
+                window_title: None,
+                url: None,
+                url_regex: None,
+                cursor: None,
+                speaker: None,
+            }),
+        ))
+        .expect("an unreadable activity log must not fail the command that writes it");
+
+    assert_eq!(
+        response,
+        BrokeredCaptureResponse::Error(BrokerErrorResponse::authorization_required()),
+        "the caller still needs the answer that drives the approval flow"
+    );
+    let audit = load_audit_events(&config_dir).expect("the log should be readable again");
+    assert_eq!(audit.events.len(), 1);
+    assert_eq!(audit.events[0].outcome.as_deref(), Some("denied"));
+    // The bytes that were there are evidence too: kept beside the fresh log
+    // rather than overwritten.
+    assert!(
+        config_dir.join("broker-audit.json.corrupt").exists(),
+        "the unreadable log should be quarantined, not destroyed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// REVIEW ADDITIONS — coverage for ADR 0059 branches the branch left unpinned.
+// ---------------------------------------------------------------------------
+
+/// The property the manual drill's step 5 checks and `AGENTS.md` calls unseeable
+/// by a unit test. It is seeable: an opaque result id is HMAC-signed against the
+/// issuing grant id, and re-authorization resolves the ISSUING ROW by that id, so
+/// the whole loop runs offline against a temp config dir.
+///
+/// Asserting `widened.grant.id == original.id` is a proxy — it pins the field
+/// without proving the field is what re-authorization keys on. This resolves a
+/// real id through the real path on both sides of the widen, and then ages the
+/// row out to prove the resolve is not vacuously true.
+#[test]
+fn an_opaque_id_issued_before_a_widen_still_resolves_after_it() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("opaque-survives-widen");
+        let save_dir = temp_save_dir("opaque-survives-widen");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        write_recording_settings(&config_dir, &save_dir);
+        let captured_at = format_unix_ms(now_unix_ms().saturating_sub(2 * 60 * 60 * 1000));
+        let frame = infra
+            .capture_frame(
+                &NewFrame::new(
+                    "screen-session",
+                    save_dir.join("widen.jpg").display().to_string(),
+                    &captured_at,
+                ),
+                None,
+            )
+            .await
+            .expect("frame should capture")
+            .frame;
+
+        let narrow = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+            .expect("first approval stores");
+        let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+        let opaque_id = encode_signed_opaque_id("frame", frame.id, Some(&narrow.id), &secret);
+        assert!(
+            authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
+                .await
+                .expect("authorization should run")
+                .is_some(),
+            "the id resolves under the permission that issued it"
+        );
+
+        // The user widens mid-task, exactly as the approval window does.
+        let widened = upsert_grant_for_identity(
+            &config_dir,
+            BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("widen should store");
+        assert!(!widened.created, "a widen is an upgrade, not a new row");
+        assert_eq!(widened.grant.scope, BrokerGrantScope::AllRetainedHistory);
+        assert_eq!(
+            widened.grant.created_at_unix_ms, narrow.created_at_unix_ms,
+            "the row is the same permission, not a replacement"
+        );
+
+        assert!(
+            authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
+                .await
+                .expect("authorization should run")
+                .is_some(),
+            "an id already handed to a running agent must survive the widen that \
+             was granted to help it"
+        );
+
+        // Not vacuous: once the row idles out, the same id stops resolving, and
+        // the next approval is a NEW permission with a new id.
+        with_grants_lock(&config_dir, |grants| {
+            grants.grants[0].last_used_at_unix_ms = now_unix_ms()
+                .saturating_sub(BROKER_GRANT_IDLE_TTL_MS)
+                .saturating_sub(60 * 60 * 1000);
+            save_grants_locked(&config_dir, grants)
+        })
+        .expect("ageing should write");
+        assert!(
+            authorize_active_opaque_capture_reference(&config_dir, &opaque_id)
+                .await
+                .expect("authorization should run")
+                .is_none(),
+            "an idle-expired permission authorizes nothing it once issued"
+        );
+        let recreated = upsert_grant_for_identity(
+            &config_dir,
+            BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+            BrokerGrantScope::LAST_DAY,
+        )
+        .expect("re-approval stores");
+        assert!(recreated.created, "a pruned row is re-created, not revived");
+        assert_ne!(recreated.grant.id, narrow.id);
+        assert_eq!(stored_grants(&config_dir).len(), 1);
+    });
+}
+
+/// Every edge of `grant_is_active` is reachable from a file on disk: `0` is the
+/// serde default a row without `lastUsedAtUnixMs` parses to, the exact TTL is the
+/// boundary the prune is written against, and a stamp in the FUTURE is a clock
+/// that stepped backwards — which `saturating_sub` turns into a permanently live
+/// permission rather than a silently revoked one.
+#[test]
+fn grant_idle_expiry_boundaries_are_exclusive_and_survive_a_backwards_clock() {
+    let now = 1_800_000_000_000_u64;
+    let at = |last_used_at_unix_ms: u64| BrokerGrant {
+        id: "grant-1".to_string(),
+        label: "Claude Code".to_string(),
+        normalized_label: "claude code".to_string(),
+        identity_source: BrokerClientIdentitySource::Explicit,
+        created_at_unix_ms: 0,
+        last_used_at_unix_ms,
+        scope: BrokerGrantScope::LAST_DAY,
+        blocked: false,
+        blocked_at_unix_ms: None,
+    };
+
+    // The documented reason `last_used_at_unix_ms` is `#[serde(default)]` and not
+    // a required field: a row written before ADR 0059 must parse (not hard-fail
+    // the whole permission file) and must then read as long dead.
+    let legacy: BrokerGrant = serde_json::from_str(
+        r#"{"id":"g","label":"Claude Code","normalizedLabel":"claude code",
+            "createdAtUnixMs":1,"scope":"all_retained_history"}"#,
+    )
+    .expect("a row without lastUsedAtUnixMs still parses");
+    assert_eq!(legacy.last_used_at_unix_ms, 0);
+    assert!(!grant_is_active(&legacy, now));
+
+    assert!(grant_is_active(&at(now - BROKER_GRANT_IDLE_TTL_MS + 1), now));
+    assert!(
+        !grant_is_active(&at(now - BROKER_GRANT_IDLE_TTL_MS), now),
+        "exactly the threshold is expired: the compare is `<`, not `<=`"
+    );
+    assert!(
+        grant_is_active(&at(now + 10 * BROKER_GRANT_IDLE_TTL_MS), now),
+        "a clock step must never silently revoke a live tool"
+    );
+}
+
+/// `broker_timeline` has TWO exits: the merged frame+audio path, and an early
+/// return for any context filter (`app`/`windowTitle`/`url`/`urlRegex`), which
+/// narrows to frames. They mark the clamp through different code, so a marker
+/// proven on one proves nothing about the other — and `--app` is the filter an
+/// agent reaches for most.
+#[test]
+fn a_context_filtered_timeline_marks_the_clamp_on_its_own_early_return() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("clamp-context-branch");
+        let save_dir = temp_save_dir("clamp-context-branch");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        write_recording_settings(&config_dir, &save_dir);
+        let now = now_unix_ms();
+        let grant = create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+            .expect("grant stores");
+
+        let filtered = |from: String, app: Option<String>, url: Option<String>| {
+            let grant = grant.clone();
+            let config_dir = config_dir.clone();
+            let infra = &infra;
+            async move {
+                broker_timeline(
+                    &config_dir,
+                    infra,
+                    &[grant],
+                    BrokerTimelineRequest {
+                        from,
+                        to: format_unix_ms(now),
+                        limit: Some(50),
+                        app,
+                        window_title: None,
+                        url,
+                        url_regex: None,
+                        speaker: None,
+                    },
+                )
+                .await
+                .expect("timeline should run")
+                .expect("timeline should authorize")
+            }
+        };
+
+        let clamped = filtered(
+            format_unix_ms(now.saturating_sub(14 * 24 * 60 * 60 * 1000)),
+            Some("Linear".to_string()),
+            None,
+        )
+        .await;
+        assert!(
+            clamped.scope_clamped,
+            "an --app timeline that reached past the permission must say so"
+        );
+        assert_eq!(clamped.required_scope.as_deref(), Some("allRetained"));
+
+        // The url filter takes the same early return; the marker is not an
+        // accident of which of the four filters was supplied.
+        let clamped_url = filtered(
+            format_unix_ms(now.saturating_sub(2 * 24 * 60 * 60 * 1000)),
+            None,
+            Some("github.com".to_string()),
+        )
+        .await;
+        assert!(clamped_url.scope_clamped);
+        assert_eq!(clamped_url.required_scope.as_deref(), Some("last7Days"));
+
+        let inside = filtered(
+            format_unix_ms(now.saturating_sub(60 * 60 * 1000)),
+            Some("Linear".to_string()),
+            None,
+        )
+        .await;
+        assert!(!inside.scope_clamped);
+        assert_eq!(inside.required_scope, None);
+    });
+}
+
+/// The false-positive direction, and the one that would be loudest in practice:
+/// a bare `mnema search` names no window, so there is nothing to narrow. If a
+/// scoped permission marked every plain search as clamped, the CLI would open an
+/// approval window on literally every call.
+#[test]
+fn a_search_that_named_no_window_is_never_reported_as_clamped() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("clamp-no-from");
+        let save_dir = temp_save_dir("clamp-no-from");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        write_recording_settings(&config_dir, &save_dir);
+        let grant = create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+            .expect("grant stores");
+
+        let response = broker_search(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerSearchRequest {
+                query: "roadmap".to_string(),
+                from: None,
+                to: None,
+                limit: Some(20),
+                app: None,
+                window_title: None,
+                url: None,
+                url_regex: None,
+                speaker: None,
+                cursor: None,
+            },
+        )
+        .await
+        .expect("search should run")
+        .expect("search should authorize");
+
+        assert!(!response.scope_clamped, "no --from is not a narrowed request");
+        assert_eq!(response.required_scope, None);
+    });
+}
+
+/// The band edges themselves, and the round-trip that matters: the scope the
+/// clamp marker names must actually COVER the request that produced it. An
+/// off-by-one here sends the CLI to the approval window for a scope that comes
+/// back clamped again.
+#[test]
+fn minimum_scope_for_start_edges_cover_the_request_that_produced_them() {
+    let now = 1_800_000_000_000_u64;
+    let day = 24 * 60 * 60 * 1000_u64;
+
+    assert_eq!(
+        minimum_scope_for_start(now - day, now),
+        BrokerGrantScope::LAST_DAY,
+        "exactly one day back still fits inside a lastDay permission"
+    );
+    assert_eq!(
+        minimum_scope_for_start(now - day - 1, now),
+        BrokerGrantScope::LAST_7_DAYS
+    );
+    assert_eq!(
+        minimum_scope_for_start(now - 7 * day, now),
+        BrokerGrantScope::LAST_7_DAYS,
+        "exactly seven days back still fits inside a last7Days permission"
+    );
+    assert_eq!(
+        minimum_scope_for_start(now - 7 * day - 1, now),
+        BrokerGrantScope::AllRetainedHistory
+    );
+    // A `from` in the future saturates rather than wrapping into "all retained".
+    assert_eq!(
+        minimum_scope_for_start(now + day, now),
+        BrokerGrantScope::LAST_DAY
+    );
+
+    // The round trip: granting the named scope must stop the clamp. Anything
+    // else is an approval window the CLI opens twice for one request.
+    for offset in [1, day - 1, day, day + 1, 7 * day, 7 * day + 1, 400 * day] {
+        let start = now - offset;
+        let scope = minimum_scope_for_start(start, now);
+        let scope_start = match scope {
+            BrokerGrantScope::AllRetainedHistory => 0,
+            BrokerGrantScope::RecentDays { days } => now - u64::from(days) * day,
+        };
+        assert!(
+            start >= scope_start,
+            "{scope:?} does not reach back {offset} ms, so the widened retry \
+             would clamp again"
+        );
+    }
+}
+
+/// A standing block is the NEWER decision when the two race, so an approval that
+/// lands after it must NOT clear it.
+///
+/// The channel checks for a block when the socket CONNECTS; the approval arrives
+/// whenever the user acts on the window, so the whole life of the consent window
+/// sits between the two. The user can block the tool in Settings and then click
+/// Allow in the stale window still on screen. Clearing the flag here would
+/// silently revert their newer decision to their older one, and hand the CLI an
+/// `approved` receipt for a permission the file does not carry.
+#[test]
+fn an_approval_that_lands_after_a_block_does_not_clear_it() {
+    let config_dir = temp_config_dir("approve-after-block");
+    let original = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("approval stores");
+    assert!(block_client(&config_dir, "Claude Code").expect("block should apply"));
+
+    let upsert = upsert_grant_for_identity(
+        &config_dir,
+        BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+        BrokerGrantScope::LAST_7_DAYS,
+    )
+    .expect("the stale window's approval still resolves");
+
+    assert!(!upsert.created, "the blocked row IS this client's row");
+    assert_eq!(upsert.grant.id, original.id);
+    assert!(
+        upsert.grant.blocked,
+        "the standing rejection is the newer decision and must win: {upsert:?}"
+    );
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1, "no second row beside the blocked one");
+    assert!(
+        stored[0].blocked,
+        "the block survives on disk: {stored:?}"
+    );
+    assert_eq!(
+        stored[0].scope,
+        BrokerGrantScope::LAST_DAY,
+        "and a refused approval never widens the row it was refused on: {stored:?}"
+    );
+}
+
+/// The composed boundary the pure-function edges do not reach: a `lastDay`
+/// permission must be able to serve `--from` = "24 hours ago". The caller
+/// computes that bound and the broker evaluates it milliseconds later, so
+/// `requested < scope_start` is true BY CONSTRUCTION — and
+/// `minimum_scope_for_start` is `age > 24h`, so one millisecond over escalated a
+/// whole band and the CLI opened an approval window asking for a WEEK on the most
+/// natural query the `lastDay` band has.
+///
+/// [`CLAMP_SLACK_MS`] suppresses the MARKER inside a minute of the permission's
+/// own start; the data clamp stays exact. Past the slack the marker is back, and
+/// the scope it names still covers the request.
+#[test]
+fn a_bound_within_a_minute_of_the_permission_start_is_not_reported_as_clamped() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("clamp-day-boundary");
+        let save_dir = temp_save_dir("clamp-day-boundary");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        write_recording_settings(&config_dir, &save_dir);
+        let grant = create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+            .expect("grant stores");
+        let day = 24 * 60 * 60 * 1000_u64;
+        let search = |ago_ms: u64| {
+            let grant = grant.clone();
+            let config_dir = config_dir.clone();
+            let infra = &infra;
+            async move {
+                broker_search(
+                    &config_dir,
+                    infra,
+                    &[grant],
+                    BrokerSearchRequest {
+                        query: "roadmap".to_string(),
+                        from: Some(format_unix_ms(now_unix_ms().saturating_sub(ago_ms))),
+                        to: None,
+                        limit: Some(20),
+                        app: None,
+                        window_title: None,
+                        url: None,
+                        url_regex: None,
+                        speaker: None,
+                        cursor: None,
+                    },
+                )
+                .await
+                .expect("search should run")
+                .expect("search should authorize")
+            }
+        };
+
+        // Exactly 24 h ago. Whether a millisecond ticks between the two clock
+        // reads no longer decides the verdict — that coin flip WAS the bug.
+        let exact = search(day).await;
+        assert!(!exact.scope_clamped, "a lastDay permission serves 24 hours");
+        assert_eq!(exact.required_scope, None);
+
+        // Thirty seconds over: still the caller's clock, not a denied window.
+        let just_over = search(day + 30 * 1000).await;
+        assert!(!just_over.scope_clamped);
+        assert_eq!(just_over.required_scope, None);
+
+        // Five minutes over is a window the caller asked for and did not get.
+        let past_slack = search(day + 5 * 60 * 1000).await;
+        assert!(
+            past_slack.scope_clamped,
+            "past the slack the agent must be told its window was cut"
+        );
+        // The scope it names covers the request that produced it —
+        // `minimum_scope_for_start_edges_cover_the_request_that_produced_them`
+        // proves that round trip for every band, so the widened retry lands.
+        assert_eq!(past_slack.required_scope.as_deref(), Some("last7Days"));
+    });
+}
+
+/// The producer half of the Settings contract. `list_cli_access_grants` hands
+/// this struct straight to `cli-access.svelte.ts`, which is hand-mirrored — no
+/// codegen — so nothing else notices if a field renames or the scope enum's
+/// tagging changes. The panel's failure is silent: an unrecognized scope renders
+/// "Limited scope" and a renamed `blockedAtUnixMs` makes every blocked row read
+/// as never-blocked. Paired with
+/// `settings/state/cli-access-format.test.ts`.
+#[test]
+fn broker_grant_wire_shape_is_what_the_settings_panel_decodes() {
+    assert_eq!(
+        serde_json::to_string(&BrokerGrantScope::LAST_DAY).expect("scope serializes"),
+        r#"{"recent_days":{"days":1}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&BrokerGrantScope::LAST_7_DAYS).expect("scope serializes"),
+        r#"{"recent_days":{"days":7}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&BrokerGrantScope::AllRetainedHistory).expect("scope serializes"),
+        r#""all_retained_history""#
+    );
+
+    let grant = BrokerGrant {
+        id: "abc".to_string(),
+        label: "Claude Code".to_string(),
+        normalized_label: "claude code".to_string(),
+        identity_source: BrokerClientIdentitySource::Inferred,
+        created_at_unix_ms: 1,
+        last_used_at_unix_ms: 2,
+        scope: BrokerGrantScope::LAST_7_DAYS,
+        blocked: true,
+        blocked_at_unix_ms: Some(3),
+    };
+    let wire = serde_json::to_value(&grant).expect("grant serializes");
+    for key in [
+        "id",
+        "label",
+        "normalizedLabel",
+        "createdAtUnixMs",
+        "lastUsedAtUnixMs",
+        "scope",
+        "blocked",
+        "blockedAtUnixMs",
+    ] {
+        assert!(wire.get(key).is_some(), "Settings reads `{key}`: {wire}");
+    }
+    // Never `skip_serializing_if`: the panel branches on the key being present
+    // and `null`, not absent.
+    let unblocked = serde_json::to_value(BrokerGrant {
+        blocked: false,
+        blocked_at_unix_ms: None,
+        ..grant
+    })
+    .expect("grant serializes");
+    assert!(unblocked["blockedAtUnixMs"].is_null());
+
+    // The activity row's three fields, same story.
+    let event = serde_json::to_value(BrokerAuditEvent {
+        tool_identity: "Claude Code".to_string(),
+        normalized_tool_identity: "claude code".to_string(),
+        identity_source: BrokerClientIdentitySource::Inferred,
+        command_type: "show_text".to_string(),
+        timestamp_unix_ms: 4,
+        result_count: 1,
+        scope_class: "time_scoped".to_string(),
+        grant_id: Some("abc".to_string()),
+        outcome: Some("scope_rejected".to_string()),
+    })
+    .expect("event serializes");
+    assert_eq!(event["toolIdentity"], "Claude Code");
+    assert_eq!(event["commandType"], "show_text");
+    assert_eq!(event["resultCount"], 1);
+    assert_eq!(event["outcome"], "scope_rejected");
+}
+
+/// The clamp marker through the door the CLI actually uses. Every other clamp
+/// test hands `broker_search` a hand-built `&[grant]` slice, which skips
+/// `active_grant_for_identity`, the last-use stamp and the audit write — so
+/// nothing proved the marker survives `execute`, or what a clamped read is
+/// recorded as. It is recorded as a plain `success`: a partial answer is still an
+/// answer, and the caller was told.
+#[test]
+fn a_clamped_read_reaches_the_cli_through_execute_and_is_audited_as_a_success() {
+    let config_dir = temp_config_dir("clamp-through-execute");
+    let save_dir = temp_save_dir("clamp-through-execute");
+    run_async_test(async {
+        AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+    });
+    write_recording_settings(&config_dir, &save_dir);
+    create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY).expect("grant stores");
+
+    let response = execute_request(
+        &config_dir,
+        BrokeredCaptureRequest::Search(BrokerSearchRequest {
+            query: "roadmap".to_string(),
+            from: Some(format_unix_ms(
+                now_unix_ms().saturating_sub(14 * 24 * 60 * 60 * 1000),
+            )),
+            to: None,
+            limit: Some(20),
+            app: None,
+            window_title: None,
+            url: None,
+            url_regex: None,
+            speaker: None,
+            cursor: None,
+        }),
+    );
+
+    match response {
+        BrokeredCaptureResponse::Search(search) => {
+            assert!(
+                search.scope_clamped,
+                "an empty page for a window the caller was never allowed to see \
+                 must not reach the CLI unmarked"
+            );
+            assert_eq!(search.required_scope.as_deref(), Some("allRetained"));
+        }
+        other => panic!("expected a Search response, got {other:?}"),
+    }
+
+    let audit = load_audit_events(&config_dir).expect("audit should load");
+    assert_eq!(audit.events.len(), 1);
+    assert_eq!(audit.events[0].outcome.as_deref(), Some("success"));
+    assert_eq!(audit.events[0].scope_class, "time_scoped");
+}
+
+/// The load path's one hard rule, previously only a doc comment: a stored row's
+/// `normalized_label` is the one-row-per-identity KEY, and load-time
+/// display-normalization must never leave it disagreeing with
+/// `normalize_client_label` of the row's own label. A rewrite that disagrees with
+/// the upsert's lookup silently re-opens the duplicate-row bug ADR 0059 exists to
+/// close — the next approval appends a second row for the same tool.
+#[test]
+fn loading_never_leaves_a_key_normalize_client_label_would_not_produce() {
+    let config_dir = temp_config_dir("load-normalizes-keys");
+    let now = now_unix_ms();
+    // Written as raw JSON on purpose: these are the shapes a hand-edited or
+    // pre-ADR file lands in, not shapes the upsert can produce.
+    fs::write(
+        config_dir.join(BROKER_GRANTS_FILE_NAME),
+        format!(
+            r#"{{"schemaVersion":1,"grants":[
+            {{"id":"a","label":"   \t ","normalizedLabel":"",
+             "identitySource":"explicit","createdAtUnixMs":{now},"lastUsedAtUnixMs":{now},
+             "scope":{{"recent_days":{{"days":1}}}},"blocked":false,"blockedAtUnixMs":null}},
+            {{"id":"b","label":"Claude   Code ","normalizedLabel":"   ",
+             "identitySource":"explicit","createdAtUnixMs":{now},"lastUsedAtUnixMs":{now},
+             "scope":{{"recent_days":{{"days":7}}}},"blocked":false,"blockedAtUnixMs":null}}
+        ]}}"#
+        ),
+    )
+    .expect("grants file writes");
+
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 2, "both rows load: {stored:?}");
+    for grant in &stored {
+        assert_eq!(
+            Some(grant.normalized_label.clone()),
+            normalize_client_label(&grant.label),
+            "the stored key must be exactly what a fresh identity would key on: \
+             {grant:?}"
+        );
+    }
+    // A blank label is the default CLI identity, not an unkeyable row.
+    assert_eq!(stored[0].label, BrokerClientIdentity::default_cli().label);
+    assert_eq!(stored[1].normalized_label, "claude code");
+
+    // The property that matters: re-approving under the displayed name finds the
+    // loaded row instead of appending a second one.
+    let again = create_grant(
+        &config_dir,
+        "claude-code",
+        BrokerGrantScope::AllRetainedHistory,
+    )
+    .expect("re-approval stores");
+    assert_eq!(
+        again.id, "b",
+        "the loaded key is the key the upsert looks up"
+    );
+    assert_eq!(stored_grants(&config_dir).len(), 2);
+}
+
+/// `set_client_blocked` reports whether it CHANGED anything, and Settings drives
+/// a toggle off that. Re-blocking an already-blocked row must be a no-op — not
+/// because the flag would differ, but because rewriting the file would re-stamp
+/// `blocked_at_unix_ms` and (on the unblock side) `last_used_at_unix_ms`, moving
+/// two timestamps the user never touched. Written non-canonically so any rewrite
+/// at all is visible in the bytes.
+#[test]
+fn blocking_a_row_that_is_already_in_that_state_changes_nothing() {
+    let config_dir = temp_config_dir("block-idempotent");
+    let grant = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("approval stores");
+    let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
+
+    assert!(
+        !unblock_client(&config_dir, "Claude Code").expect("unblock runs"),
+        "a fresh permission is already unblocked"
+    );
+    assert!(block_client(&config_dir, "Claude Code").expect("block runs"));
+
+    let compact = fs::read_to_string(&path).expect("file reads");
+    let compact = format!("{compact} ");
+    fs::write(&path, &compact).expect("compact file writes");
+
+    assert!(
+        !block_client(&config_dir, "Claude Code").expect("re-block runs"),
+        "blocking a blocked row changed nothing"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("file reads"),
+        compact,
+        "a no-op block must not rewrite the permission file"
+    );
+
+    // And the same on the way back: one unblock flips it, the second is a no-op.
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock runs"));
+    let compact = fs::read_to_string(&path).expect("file reads");
+    let compact = format!("{compact} ");
+    fs::write(&path, &compact).expect("compact file writes");
+    assert!(
+        !unblock_client(&config_dir, "Claude Code").expect("re-unblock runs"),
+        "unblocking an unblocked row changed nothing"
+    );
+    assert_eq!(fs::read_to_string(&path).expect("file reads"), compact);
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored[0].id, grant.id);
+    assert!(!stored[0].blocked);
+    assert_eq!(stored[0].blocked_at_unix_ms, None);
+}
+
+/// A DELIBERATE omission, pinned so it reads as a decision and not an oversight:
+/// `activities` clamps its window like every other dated tool but carries no
+/// `scopeClamped` marker. It already answers "does this list cover your window?"
+/// with `derivedFrom`/`derivedUntil`, and ADR 0059 scopes the marker to `search`
+/// and `timeline`. If `activities` ever grows a marker, this test is what tells
+/// you the CLI and the wire shape have to grow with it.
+#[test]
+fn activities_clamps_its_window_but_carries_no_clamp_marker() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("activities-no-marker");
+        let save_dir = temp_save_dir("activities-no-marker");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let now = now_unix_ms();
+        let inside = (now.saturating_sub(2 * 60 * 60 * 1000)) as i64;
+        let outside = (now.saturating_sub(10 * 24 * 60 * 60 * 1000)) as i64;
+        for (title, started_at_ms) in [("Inside the day", inside), ("Last week", outside)] {
+            seed_activity_with_frame(
+                &infra,
+                &save_dir,
+                title,
+                "did the thing",
+                started_at_ms,
+                "2026-05-17T10:00:00Z",
+            )
+            .await;
+        }
+        seed_covering_run(&infra, outside - 60_000, now as i64, "completed").await;
+
+        let grant = create_grant(&config_dir, "mnema CLI", BrokerGrantScope::LAST_DAY)
+            .expect("grant stores");
+        let response = broker_activities(
+            &config_dir,
+            &infra,
+            &[grant],
+            BrokerActivitiesRequest {
+                from: format_unix_ms(now.saturating_sub(14 * 24 * 60 * 60 * 1000)),
+                to: format_unix_ms(now),
+            },
+        )
+        .await
+        .expect("activities should run")
+        .expect("activities should authorize");
+
+        // The DATA clamp is the same one `search`/`timeline` get: the out-of-scope
+        // episode never crosses the boundary.
+        assert_eq!(
+            response
+                .activities
+                .iter()
+                .map(|activity| activity.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Inside the day"]
+        );
+        // The coverage answer is `derivedFrom`/`derivedUntil`, and it is there.
+        assert!(response.derived_from.is_some());
+        assert!(response.derived_until.is_some());
+
+        let wire = serde_json::to_value(&response).expect("response serializes");
+        assert!(
+            wire.get("scopeClamped").is_none() && wire.get("requiredScope").is_none(),
+            "activities deliberately carries no clamp marker: {wire}"
+        );
+    });
 }
