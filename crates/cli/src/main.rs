@@ -369,7 +369,6 @@ struct AuthorizationRequest {
     client: AuthorizationClient,
     command: String,
     scope: AuthorizationScope,
-    interactive: bool,
     created_at: String,
 }
 
@@ -508,7 +507,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             if cli.format.is_some() {
                 return Err(usage_error("--format is only supported for data commands"));
             }
-            mcp::serve(identity).await
+            mcp::serve(identity, !cli.no_prompt).await
         }
     }
 }
@@ -543,6 +542,16 @@ async fn execute_data_request(
 ) -> Result<serde_json::Value, CliError> {
     let access =
         BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).map_err(broker_error)?;
+    // A window that is empty whatever the permission says — `--from` after `--to`,
+    // or a window lying wholly in the future — is refused by the broker with the
+    // SAME "outside the grant scope" it uses for a window a wider permission would
+    // reach. The widen door below reads that code as "ask the user for more scope",
+    // so without this an agent asking about tomorrow pops a standing-permission
+    // consent window that cannot help — even for a client already holding
+    // `allRetained` — and then dies at exit 13 on the retry.
+    if let Some(message) = empty_window_message(&request) {
+        return Err(usage_error(message));
+    }
     // A window whose END sits before the permission's scope start is refused on
     // the transport instead of clamped, so it never reaches the clamp door below.
     // `timeline` REQUIRES `--to`, so without this every dated timeline question
@@ -561,7 +570,12 @@ async fn execute_data_request(
                 return Err(error);
             }
             widened = true;
-            authorize_wider_access(command, identity, &request).await?;
+            // Always the widen door: a client with no permission never reaches
+            // this branch at all — the broker answers it with an
+            // authorization-required RESPONSE (handled below), and only a client
+            // that already has a row can have a window refused for sitting past
+            // that row's scope.
+            authorize_wider_access(command, identity, &request, ApprovalDoor::Widen).await?;
             access
                 .execute_for_identity(identity.clone(), request.clone())
                 .await
@@ -582,9 +596,16 @@ async fn execute_data_request(
             // than throwing it away — the caller asked not to be prompted, not to
             // be lied to.
         } else if !widened {
+            // The two ways in are also the two doors: "no permission at all" is a
+            // first grant, a clamp is a widen of one that already exists.
+            let door = if response_requires_authorization(&response) {
+                ApprovalDoor::FirstGrant
+            } else {
+                ApprovalDoor::Widen
+            };
             // At most ONE approval window per command: a second one for the same
             // call is the reflex-clicking this permission model exists to stop.
-            match authorize_wider_access(command, identity, &request).await {
+            match authorize_wider_access(command, identity, &request, door).await {
                 Ok(()) => {
                     response = access
                         .execute_for_identity(identity.clone(), request)
@@ -680,7 +701,10 @@ async fn run_access_command(
             }
             // A human pre-authorizing keeps the choice: `minimum` is the floor the
             // window enforces, so sending the REQUESTED scope there would grey out
-            // every narrower option they might have preferred.
+            // every narrower option they might have preferred. Unlike a widen, no
+            // call is waiting on this scope, so a narrower answer is a valid one —
+            // and when it lands under a permission the client already holds, the
+            // window says so before the click.
             let grant = request_authorization(
                 "access request",
                 identity,
@@ -753,14 +777,55 @@ fn access_status_line(grant: &BrokerGrant) -> String {
     )
 }
 
-/// The narrowest access this call actually needs, from its `--from`. Sent as the
-/// channel `preferred` — never as its `minimum`, which would grey out every
-/// narrower option (see [`authorize_wider_access`]). Shares
-/// [`minimum_scope_for_start`] with the broker's own clamp marker, so the two can
-/// never disagree about what a `--from` costs.
+/// Why this window is empty whatever the permission says, or `None` when only a
+/// narrow permission stands between the caller and its answer.
+///
+/// The broker ends every window at `min(--to, now)` and refuses `start > end` with
+/// the same "outside the grant scope" it raises for a window a wider permission
+/// WOULD reach (`scoped_date_range`). Mirroring that one rule here is what keeps
+/// the widen door from answering the caller's own contradiction with an approval
+/// window. Anything less certain (a missing or unparseable `--from`) stays the
+/// broker's to judge.
+fn empty_window_message(request: &BrokeredCaptureRequest) -> Option<&'static str> {
+    let (from, to) = match request {
+        BrokeredCaptureRequest::Search(request) => (request.from.as_deref(), request.to.as_deref()),
+        BrokeredCaptureRequest::Timeline(request) => {
+            (Some(request.from.as_str()), Some(request.to.as_str()))
+        }
+        _ => (None, None),
+    };
+    let parse =
+        |value: Option<&str>| value.and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok());
+    let from = parse(from)?;
+    match parse(to) {
+        Some(to) if to < from => Some("--from must not be later than --to"),
+        _ if from > OffsetDateTime::now_utc() => {
+            Some("--from is in the future, and nothing is recorded after now")
+        }
+        _ => None,
+    }
+}
+
+/// The narrowest access this call actually needs, from its `--from`. Always the
+/// channel `preferred`; the `minimum` only on a widen, where a narrower answer
+/// cannot satisfy the call and would take standing access away (see
+/// [`authorize_wider_access`] for why the first-grant door keeps the narrow
+/// options live). Shares [`minimum_scope_for_start`] with the broker's own clamp
+/// marker, so the two can never disagree about what a `--from` costs.
+///
+/// `--to` is a fallback bound, not an afterthought: `search` accepts a `--to` with
+/// no `--from`, and the broker then starts the window at the permission's scope
+/// start — so a `--to` older than that start makes the range END before it BEGINS
+/// and is refused on the transport. That reaches the widen door needing a scope
+/// reaching back at least as far as `--to`, and deriving the ask from an absent
+/// `--from` asks for `lastDay`: the one scope that cannot satisfy the call. The
+/// user would be prompted, approve, and still hit exit 13 — on every run.
 fn needed_scope_for(request: &BrokeredCaptureRequest) -> BrokerGrantScope {
     let from = match request {
-        BrokeredCaptureRequest::Search(request) => request.from.as_deref(),
+        // `from` first: it is the older bound whenever both are present.
+        BrokeredCaptureRequest::Search(request) => {
+            request.from.as_deref().or(request.to.as_deref())
+        }
         BrokeredCaptureRequest::Timeline(request) => Some(request.from.as_str()),
         _ => None,
     };
@@ -814,25 +879,54 @@ fn widen_never_answered(error: &CliError) -> bool {
     )
 }
 
+/// Which decision the user is being asked to make. Both doors open the same
+/// window, and the window pre-selects the request's `minimum` — so the floor is
+/// the whole of what the default answer grants, and it cannot be the same on
+/// both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalDoor {
+    /// This client holds no permission at all: the question is whether the tool
+    /// gets access, and how much.
+    FirstGrant,
+    /// The client already holds a permission, and it is too narrow for this call.
+    Widen,
+}
+
 /// Ask for the access this call actually needs, and refuse to retry on an
 /// approval that came back narrower than that.
 ///
-/// `minimum` stays at the narrowest band even when the call needs more: the
-/// approval window disables every option below it, so sending `needed` there
-/// would let a never-seen tool passing `--from 1970-01-01` make "All retained"
-/// the ONLY thing the user can grant on that tool's first prompt. `preferred`
-/// carries what the call actually needs, so the window pre-selects it without
-/// taking the narrow answers away — and a narrower approval is caught by
-/// [`verify_granted_scope`] rather than silently under-serving the caller.
-/// `access request` sends the same pair for the same reason.
+/// The `minimum` is per door, because a widen is not a first grant:
+///
+/// - On a **widen** the floor is `needed`. The row already stands narrower than
+///   that — that is why this door was reached — and an approval SETS the row's
+///   scope, so every answer below `needed` both fails this call AND takes away
+///   access the tool already had. Offering one is offering a dead end that also
+///   destroys standing access; the window pre-selects the floor, so the default
+///   answer is the one that works.
+/// - On a **first grant** the floor stays at the narrowest band. The window
+///   disables every option below `minimum`, so sending `needed` there would let a
+///   never-seen tool passing `--from 1970-01-01` make "All retained" the ONLY
+///   thing the user can grant on that tool's first prompt. `needed` rides in
+///   `preferred` instead — pre-selected, not forced — and a narrower approval is
+///   caught by [`verify_granted_scope`] rather than silently under-serving the
+///   caller. `access request` sends the same pair for the same reason.
+///
+/// A widen whose ask cannot be derived (`show-text`/`open` on an out-of-scope or
+/// deleted result id derives `lastDay`) can still land below a wider row. The
+/// window states the access the client already holds whenever the selection sits
+/// under it, so that approval is informed rather than silent.
 async fn authorize_wider_access(
     command: &str,
     identity: &BrokerClientIdentity,
     request: &BrokeredCaptureRequest,
+    door: ApprovalDoor,
 ) -> Result<(), CliError> {
     let needed = needed_scope_for(request);
-    let grant =
-        request_authorization(command, identity, BrokerGrantScope::LAST_DAY, needed).await?;
+    let minimum = match door {
+        ApprovalDoor::Widen => needed,
+        ApprovalDoor::FirstGrant => BrokerGrantScope::LAST_DAY,
+    };
+    let grant = request_authorization(command, identity, minimum, needed).await?;
     verify_granted_scope(needed, grant.as_ref())
 }
 
@@ -854,7 +948,6 @@ async fn request_authorization(
             minimum: minimum.wire_name().to_string(),
             preferred: preferred.wire_name().to_string(),
         },
-        interactive: true,
         created_at: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string()),
@@ -952,6 +1045,14 @@ fn authorization_result_for_response(
         return Err(app_unavailable_error());
     }
     if response.decision == "approved" {
+        // The empty-id exemption above exists only for verdicts on requests the app
+        // never parsed. An approval is by definition issued for a request it DID
+        // parse, so a real app always echoes the id — an `approved` with no id is
+        // nobody's answer to this call, and accepting it would also feed its
+        // `grant` field into the scope check that suppresses `scope_not_granted`.
+        if response.request_id != request_id {
+            return Err(app_unavailable_error());
+        }
         return Ok(response.grant);
     }
     Err(authorization_response_error(
@@ -1355,6 +1456,29 @@ fn authorization_denied_error() -> CliError {
     }
 }
 
+/// The two messages the broker raises for "this window or result is past the
+/// permission". Matched as a SUFFIX, never with `contains`: the broker's own text
+/// is the tail of the message (`AppInfraError` prefixes its variant, e.g.
+/// `invalid search request: …`), while caller-supplied text is only ever quoted
+/// mid-message.
+///
+/// A `contains` here made the consent trigger forgeable from the command line.
+/// `broker_failure` classifies EVERY broker error, some of which echo caller text
+/// back (`urlRegex is not a valid regular expression: <the pattern>`), and
+/// `execute_data_request` opens the approval window on this code alone — so
+/// `--url-regex "(outside the grant scope"` popped a standing-permission consent
+/// window for a request that has nothing to do with scope, then reported exit 13
+/// for what is really a bad regex.
+///
+// ponytail: suffix match, because the classification has to survive `impl
+// Display`. Upgrade path if the wording ever drifts: give app-infra a dedicated
+// `AppInfraError` variant (or an exported predicate) and match on that instead of
+// on prose.
+const OUTSIDE_GRANT_SCOPE_MESSAGES: &[&str] = &[
+    "requested broker time range is outside the grant scope",
+    "result is unavailable or outside the grant scope",
+];
+
 /// The one place a broker failure becomes a `CliError`, so the out-of-scope
 /// classification cannot be reached by one door and missed by the other. The
 /// window case (`search`/`timeline`) surfaces as an `Err` on the transport and
@@ -1363,7 +1487,10 @@ fn authorization_denied_error() -> CliError {
 /// agent told 20 goes looking for a Mnema fault instead of asking for scope.
 fn broker_failure(message: impl Into<String>) -> CliError {
     let message = message.into();
-    if message.contains("outside the grant scope") {
+    if OUTSIDE_GRANT_SCOPE_MESSAGES
+        .iter()
+        .any(|sentinel| message.ends_with(sentinel))
+    {
         return CliError {
             exit: 13,
             code: "outside_grant_scope",
@@ -1572,6 +1699,33 @@ mod tests {
             },
         )
         .expect_err("a verdict for another request is not this call's answer");
+
+        assert_eq!(error.code, "app_unavailable");
+    }
+
+    /// The empty-id exemption exists only for verdicts on requests the app never
+    /// parsed (`invalidRequest`). An APPROVAL is only ever issued for a request it
+    /// DID parse, so a real app always has the id to echo — an `approved` with an
+    /// empty id is nobody's answer to this call, and accepting it would also feed
+    /// its `grant` metadata into the check that suppresses `scope_not_granted`.
+    #[test]
+    fn an_approval_without_an_echoed_request_id_is_rejected() {
+        let error = authorization_result_for_response(
+            "request-1",
+            AuthorizationResponse {
+                schema_version: 1,
+                request_id: String::new(),
+                decision: "approved".to_string(),
+                reason: None,
+                grant: Some(AuthorizationGrant {
+                    id: "grant-1".to_string(),
+                    client_label: "Claude Code".to_string(),
+                    scope: "allRetained".to_string(),
+                    created: true,
+                }),
+            },
+        )
+        .expect_err("an approval that echoes no request id is not this call's answer");
 
         assert_eq!(error.code, "app_unavailable");
     }
@@ -2164,6 +2318,10 @@ mod tests {
         format_broker_unix_ms(now_unix_ms() - ms)
     }
 
+    fn rfc3339_ms_ahead(ms: u64) -> String {
+        format_broker_unix_ms(now_unix_ms() + ms)
+    }
+
     const HOUR_MS: u64 = 60 * 60 * 1000;
     const DAY_MS: u64 = 24 * HOUR_MS;
 
@@ -2656,6 +2814,185 @@ mod tests {
         })
     }
 
+    /// Like the real window with its pre-selection accepted: grant exactly what
+    /// the request put in `minimum`. The window pre-selects the `minimum` (never
+    /// the `preferred` — that would open `--scope all-retained` with full history
+    /// already selected), so this is the answer a user gives by clicking Allow
+    /// without touching the picker — and the one that shows whether the default
+    /// answer can satisfy the call it was opened for.
+    #[cfg(unix)]
+    fn serve_default_approval(identity: BrokerClientIdentity) -> ApprovalLog {
+        serve_verdicts(move |request| {
+            let scope = BrokerGrantScope::from_wire_name(&request.scope.minimum)
+                .expect("the CLI must ask for a scope the window can grant");
+            let grant = BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+                .expect("broker resolves")
+                .upsert_grant_for_identity(identity.clone(), scope)
+                .expect("the approval widens the permission")
+                .grant;
+            serde_json::json!({
+                "schemaVersion": 1,
+                "requestId": request.request_id,
+                "decision": "approved",
+                "grant": {
+                    "id": grant.id,
+                    "clientLabel": grant.label,
+                    "scope": grant.scope.wire_name(),
+                    "created": false,
+                },
+            })
+        })
+    }
+
+    /// `search` takes a `--to` with no `--from`, and the broker then starts the
+    /// window at the permission's scope start — so a `--to` older than that start
+    /// ends the range before it begins and is refused on the transport. The widen
+    /// door is reached, but an ask derived from the ABSENT `--from` comes out
+    /// `lastDay`: the one scope that cannot satisfy the call. The user would be
+    /// shown a consent window, approve the pre-selection, and still die at exit 13
+    /// — on this run and every run after it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_search_bounded_only_by_to_asks_for_a_scope_that_can_satisfy_it() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Backdated Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_default_approval(identity.clone());
+        let mut request = search_request_from(None);
+        if let BrokeredCaptureRequest::Search(request) = &mut request {
+            request.to = Some(rfc3339_ms_ago(30 * DAY_MS));
+        }
+        let value = execute_data_request("search", &identity, request, true)
+            .await
+            .expect("the widened retry must reach a window bounded only by --to");
+
+        let asked = window.lock().expect("approval log");
+        let asked = asked.first().expect("the approval window was opened");
+        assert_eq!(
+            asked.scope.preferred, "allRetained",
+            "the ask must cover the requested window's END too, not just its \
+             (absent) start: {value}"
+        );
+    }
+
+    /// `broker_failure` classifies EVERY broker error, and some of those messages
+    /// quote caller-supplied text straight back. `execute_data_request` opens the
+    /// approval window on the `outside_grant_scope` code alone, so a substring
+    /// match there is a forgeable consent trigger: a crafted `--url-regex` pops a
+    /// standing-permission window for a request that has nothing to do with scope,
+    /// and reports exit 13 for what is really a bad regex.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_broker_error_quoting_the_scope_phrase_opens_no_approval_window() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Crafty Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_default_approval(identity.clone());
+        let mut request = search_request_from(None);
+        if let BrokeredCaptureRequest::Search(request) = &mut request {
+            // Invalid on purpose: the broker's message echoes the pattern back.
+            request.url_regex = Some("(outside the grant scope".to_string());
+        }
+        let error = execute_data_request("search", &identity, request, true)
+            .await
+            .expect_err("an invalid urlRegex is a request error");
+
+        assert!(
+            error.message.contains("outside the grant scope"),
+            "the message this test forges must actually carry the phrase: {}",
+            error.message
+        );
+        assert!(
+            window.lock().expect("approval log").is_empty(),
+            "no consent window may open for a request that never asked for scope: {}",
+            error.message
+        );
+        assert_eq!(
+            error.code, "broker_operation_failed",
+            "a quoted phrase is not the broker's out-of-scope verdict: {}",
+            error.message
+        );
+    }
+
+    /// A window that has not happened yet is as empty as an inverted one: the
+    /// broker ends every window at `min(--to, now)`, so a `--from` past that end is
+    /// refused with the same "outside the grant scope" a too-narrow permission
+    /// produces. Reading that as "widen the permission" interrupts the user with an
+    /// approval window that cannot help — an agent asking about "tomorrow" is
+    /// enough to fire it — and the approved retry dies at exit 13 anyway.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_empty_by_construction_window_never_opens_an_approval_window() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Future Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::AllRetainedHistory)
+            .expect("the widest permission there is — no widen could ever help");
+
+        let window = serve_one_approval(identity.clone(), BrokerGrantScope::AllRetainedHistory);
+        let error = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ahead(DAY_MS), rfc3339_ms_ahead(2 * DAY_MS)),
+            true,
+        )
+        .await
+        .expect_err("a window that has not happened yet is a usage error");
+
+        assert_eq!(
+            window.lock().expect("approval log").len(),
+            0,
+            "no approval can make tomorrow readable today"
+        );
+        assert_eq!(
+            error.exit, 2,
+            "a window with nothing in it by construction is a usage error"
+        );
+
+        // The caller's own contradiction takes the same door, and never the widen.
+        let inverted = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(DAY_MS), rfc3339_ms_ago(2 * DAY_MS)),
+            true,
+        )
+        .await
+        .expect_err("--from after --to is empty by construction");
+        assert_eq!(inverted.exit, 2);
+        assert_eq!(
+            window.lock().expect("approval log").len(),
+            0,
+            "an inverted window is not a scope problem either"
+        );
+
+        // `search` reaches the same refusal with `--from` alone: the broker ends an
+        // open window at `now`, so a future start is already past its end. A window
+        // that STARTED in the past stays answerable.
+        assert!(
+            empty_window_message(&search_request_from(Some(rfc3339_ms_ahead(HOUR_MS)))).is_some(),
+            "a future --from with no --to is empty by construction too"
+        );
+        assert!(
+            empty_window_message(&search_request_from(Some(rfc3339_ms_ago(2 * DAY_MS)))).is_none(),
+            "a window that started in the past is answerable"
+        );
+    }
+
     /// A window that ENDS before the permission's scope starts is refused
     /// outright instead of clamped, so it never reaches the clamp door that opens
     /// the approval window. `timeline` REQUIRES `--to`, so every dated timeline
@@ -2805,11 +3142,12 @@ mod tests {
     /// The clamp door, end to end: one approval window, the permission widens,
     /// the call is retried once and comes back whole.
     ///
-    /// Also the pin for what that one window is allowed to offer. `minimum` stays
-    /// `lastDay` even though the call needs `allRetained`: the window disables
-    /// every option below `minimum`, so sending the derived scope there would make
-    /// "All retained" the only grantable answer on a tool's first prompt. The
-    /// derived scope rides in `preferred` instead — pre-selected, not forced.
+    /// Also the pin for what that one window is allowed to offer on the WIDEN
+    /// door: `minimum` is the derived scope, because the row already stands
+    /// narrower than it and an approval SETS the row's scope — so every option
+    /// below the ask both fails this call and takes away access the tool already
+    /// had. (The first-prompt door keeps the narrow options live; see
+    /// `a_first_grant_still_offers_every_narrower_answer`.)
     #[cfg(unix)]
     #[tokio::test]
     async fn a_clamp_widens_and_retries_once_then_returns_the_full_page() {
@@ -2844,13 +3182,153 @@ mod tests {
         );
         let asked = &asked[0];
         assert_eq!(
-            asked.scope.minimum, "lastDay",
-            "minimum must stay at the narrowest band or the window greys out every \
-             option the user might have preferred"
+            asked.scope.minimum, "allRetained",
+            "on a widen the floor is what the call needs — a narrower answer can \
+             only fail it, and would narrow the row it was opened to widen"
         );
         assert_eq!(
             asked.scope.preferred, "allRetained",
             "preferred carries what the call actually needs"
+        );
+    }
+
+    /// A widen prompt approved at its DEFAULT must not narrow the permission it
+    /// was opened to widen.
+    ///
+    /// The window pre-selects the request's `minimum`, and an approval SETS the
+    /// row's scope. So a `minimum` pinned below what the call needs made the
+    /// default answer doubly wrong for a client that already held something: the
+    /// row was narrowed (`last7Days` → `lastDay`, access the tool had and did not
+    /// lose to any user decision) and the command STILL died at exit 22, because
+    /// the granted scope did not cover the request either.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_widen_approved_at_its_default_never_narrows_the_permission() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Weekly Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        let broker =
+            BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).expect("broker resolves");
+        broker
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_7_DAYS)
+            .expect("the client starts on a seven-day permission");
+
+        let window = serve_default_approval(identity.clone());
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            true,
+        )
+        .await
+        .expect("the answer a user gives by clicking Allow must satisfy the call");
+
+        assert_eq!(
+            value["scopeClamped"], false,
+            "the default answer has to cover the whole requested window: {value}"
+        );
+        let scope = broker
+            .list_grants()
+            .expect("grants read")
+            .grants
+            .iter()
+            .find(|grant| grant.normalized_label == identity.normalized_label)
+            .expect("the row survives the widen")
+            .scope;
+        assert_eq!(
+            scope,
+            BrokerGrantScope::AllRetainedHistory,
+            "an approval may widen a permission, never narrow one"
+        );
+        let asked = window.lock().expect("approval log");
+        assert_eq!(
+            asked
+                .first()
+                .expect("the approval window was opened")
+                .scope
+                .minimum,
+            "allRetained",
+            "the floor the window enforces is what the call needs"
+        );
+    }
+
+    /// The other door, and the reason the widen floor cannot simply be the ask
+    /// everywhere: a tool with NO permission yet is a different decision. The
+    /// window disables every option below `minimum`, so a never-seen tool passing
+    /// `--from 1970-01-01` would otherwise make "All retained" the only answer the
+    /// user can give on its first prompt. The narrow answers stay live, and an
+    /// approval that lands under the ask fails the call (exit 22) instead of
+    /// silently under-serving it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_first_grant_still_offers_every_narrower_answer() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Unknown Tool", BrokerClientIdentitySource::Inferred)
+                .expect("identity");
+
+        let window = serve_default_approval(identity.clone());
+        let error = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            true,
+        )
+        .await
+        .expect_err("a grant narrower than the call must not be retried into");
+
+        assert_eq!(error.code, "scope_not_granted");
+        assert_eq!(error.exit, 22);
+        let asked = window.lock().expect("approval log");
+        let asked = asked.first().expect("the approval window was opened");
+        assert_eq!(
+            asked.scope.minimum, "lastDay",
+            "a first prompt must leave the user every narrower answer"
+        );
+        assert_eq!(
+            asked.scope.preferred, "allRetained",
+            "preferred still states what the call needs"
+        );
+    }
+
+    /// `--no-prompt` is the ONE control for "do not bother anyone" now that the
+    /// TTY gate is gone, and the MCP door is a door like any other: a server
+    /// started with the flag must open no approval window. Authorization is
+    /// unaffected either way — all five MCP tools route through
+    /// `execute_data_request`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_mcp_door_honours_no_prompt() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Quiet MCP Client", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        let speakers = || {
+            BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
+                name: None,
+                limit: None,
+            })
+        };
+        let window = serve_one_approval(identity.clone(), BrokerGrantScope::LAST_DAY);
+
+        let quiet = crate::mcp::call_tool_for_tests(&identity, false, "speakers", speakers()).await;
+        assert_eq!(quiet.is_error, Some(true));
+        assert!(
+            format!("{quiet:?}").contains("authorization_required"),
+            "the tool error must name the missing permission: {quiet:?}"
+        );
+        assert!(
+            window.lock().expect("approval log").is_empty(),
+            "--no-prompt must not open an approval window on the MCP door"
+        );
+
+        // ...and without it the same call does reach the window.
+        crate::mcp::call_tool_for_tests(&identity, true, "speakers", speakers()).await;
+        assert_eq!(
+            window.lock().expect("approval log").len(),
+            1,
+            "prompting is still the default on the MCP door"
         );
     }
 

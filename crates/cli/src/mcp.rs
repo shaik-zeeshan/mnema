@@ -189,6 +189,12 @@ struct ResultIdParams {
 #[derive(Clone)]
 struct MnemaMcp {
     identity: BrokerClientIdentity,
+    /// `--no-prompt`, carried through to every tool call. The flag is the ONE
+    /// control for "do not bother anyone" now that the TTY gate is gone, so the
+    /// MCP door has to honour it too — a server started with it opens no approval
+    /// window and fails `authorization_required` instead. Authorization is
+    /// unaffected either way: every tool routes through `execute_data_request`.
+    allow_prompt: bool,
 }
 
 #[tool_router]
@@ -260,10 +266,7 @@ impl MnemaMcp {
         command: &str,
         request: BrokeredCaptureRequest,
     ) -> Result<CallToolResult, ErrorData> {
-        // Always allowed to prompt: approval is the Mnema app's own window, and
-        // an MCP client has a user sitting in front of it. The CLI door now agrees
-        // (the TTY gate is gone) — this is no longer the odd one out.
-        match execute_data_request(command, &self.identity, request, true).await {
+        match execute_data_request(command, &self.identity, request, self.allow_prompt).await {
             Ok(value) => {
                 let text = serde_json::to_string(&value)
                     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -283,10 +286,20 @@ impl MnemaMcp {
 impl ServerHandler for MnemaMcp {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
+        // Told the truth about prompting: a server started with `--no-prompt`
+        // never opens the approval window, so promising a pause that will not
+        // happen leaves the model waiting on consent that is never asked for.
         info.instructions = Some(
-            "Brokered read access to the user's Mnema screen and audio capture history. \
-             The first call may pause while the user approves access in the Mnema app."
-                .to_string(),
+            if self.allow_prompt {
+                "Brokered read access to the user's Mnema screen and audio capture history. \
+                 The first call may pause while the user approves access in the Mnema app."
+            } else {
+                "Brokered read access to the user's Mnema screen and audio capture history. \
+                 This server was started with --no-prompt: calls without an existing access \
+                 permission fail instead of asking the user, and the user must grant access in \
+                 the Mnema app (Settings -> Data -> Access) first."
+            }
+            .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = Implementation::new("mnema", env!("CARGO_PKG_VERSION"));
@@ -294,11 +307,36 @@ impl ServerHandler for MnemaMcp {
     }
 }
 
-pub(crate) async fn serve(identity: BrokerClientIdentity) -> Result<(), CliError> {
-    let service = MnemaMcp { identity }
-        .serve(stdio())
-        .await
-        .map_err(broker_error)?;
+/// The one seam a test can reach the MCP door through. `run` owns the
+/// `allow_prompt` decision for all five tools, and nothing observable from
+/// outside this module records which way it went.
+#[cfg(test)]
+pub(crate) async fn call_tool_for_tests(
+    identity: &BrokerClientIdentity,
+    allow_prompt: bool,
+    command: &str,
+    request: BrokeredCaptureRequest,
+) -> CallToolResult {
+    MnemaMcp {
+        identity: identity.clone(),
+        allow_prompt,
+    }
+    .run(command, request)
+    .await
+    .expect("the MCP door maps broker failures to tool errors, never protocol errors")
+}
+
+pub(crate) async fn serve(
+    identity: BrokerClientIdentity,
+    allow_prompt: bool,
+) -> Result<(), CliError> {
+    let service = MnemaMcp {
+        identity,
+        allow_prompt,
+    }
+    .serve(stdio())
+    .await
+    .map_err(broker_error)?;
     service.waiting().await.map_err(broker_error)?;
     Ok(())
 }
