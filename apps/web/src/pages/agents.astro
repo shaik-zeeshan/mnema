@@ -15,7 +15,7 @@ const claudeCodeLines = [
 ];
 
 const usageLines = [
-  "mnema access request --scope last-day --duration 24h",
+  "mnema access request --scope last-day",
   'mnema search --query "launch notes" --format json',
   "mnema show-text <result-id>",
   "mnema open <result-id>",
@@ -46,9 +46,9 @@ const guarantees = [
       "Every client is approved individually, from inside Mnema. Nothing gets in without your explicit grant.",
   },
   {
-    label: "Time-bounded",
+    label: "Scoped to a window",
     detail:
-      "Grants expire. A request scoped to the last day for 24 hours stops working when the window closes — re-approve if you still need it.",
+      "You choose how far back a tool can read — the last day, the last 7 days, or all retained history. Access has no clock on it: it stands until you block it, and lapses on its own 30 days after the tool last used it.",
   },
   {
     label: "Redacted at the source",
@@ -56,9 +56,9 @@ const guarantees = [
       "Results come back already redacted by the same rules the app uses — passwords, keys, and tokens are stripped before an agent ever sees them.",
   },
   {
-    label: "Revocable any time",
+    label: "Blockable any time",
     detail:
-      "Pull a grant from Settings → Access and the tool loses access immediately.",
+      "Block a tool from Settings → Access and it is refused immediately — with no approval window — until you re-enable it there.",
   },
 ];
 ---
@@ -76,7 +76,7 @@ const guarantees = [
         <p class="docs-sub">
           Mnema isn't just a desktop timeline. Approved local tools and AI
           agents — like Claude Code — can search your redacted history through a
-          brokered command-line bridge. Read-only, time-bounded, and approved by
+          brokered command-line bridge. Read-only, scoped, and approved by
           you, per tool, from inside the app.
         </p>
         <p class="docs-meta">// reading time ~3 min · macOS · Apple Silicon</p>
@@ -90,18 +90,18 @@ const guarantees = [
           When an AI agent on your Mac wants to look something up in your
           history, it can't touch your recordings or database directly. Instead
           it asks the <code>mnema</code> command-line tool, which checks that
-          you've approved that tool, that the request is within an active
-          time-bounded grant, and that the results are redacted — then hands back
-          only what's allowed. You stay in control of who gets access and for how
-          long.
+          you've approved that tool, that the request is within the scope you
+          approved for it, and that the results are redacted — then hands back
+          only what's allowed. You stay in control of who gets access and how
+          far back it reaches.
         </p>
         <p class="prose prose-dense">
           Under the hood, every request is mediated by Mnema's broker: the same
           privacy policy, redaction, and retention rules that govern the app
           apply to agent access. Tools never read the database or media files
           directly — every call goes through the <code>mnema</code> CLI, which
-          talks to the running app over a local, per-user channel. Grants are
-          read-only and revocable from Settings at any time.
+          talks to the running app over a local, per-user channel. Access is
+          read-only and can be blocked from Settings at any time.
         </p>
       </section>
 
@@ -154,8 +154,8 @@ const guarantees = [
               the CLI. Mnema places the <code>mnema</code> command in its managed
               CLI directory — usually <code>~/.local/bin</code> on macOS. If that
               directory isn't on your shell's PATH yet, Settings shows you the
-              one-line follow-up to add it. Grants are read-only, time-bounded,
-              and approved per client from inside the app.
+              one-line follow-up to add it. Access is read-only, scoped, and
+              approved per client from inside the app.
             </p>
           </li>
 
@@ -244,10 +244,12 @@ const guarantees = [
 
         <dl class="cmd-walkthrough">
           <div class="cmd-row">
-            <dt><code>access request --scope last-day --duration 24h</code></dt>
+            <dt><code>access request --scope last-day</code></dt>
             <dd>
-              Asks you to approve a read-only, 24-hour grant covering the last
-              day of history. You confirm inside Mnema.
+              Optional. Asks you to approve read-only access covering the last
+              day of history, before an agent needs it — you confirm inside
+              Mnema. Agents don't need to run it: any data command opens the
+              same approval window by itself.
             </dd>
           </div>
           <div class="cmd-row">
@@ -302,8 +304,8 @@ const guarantees = [
         </div>
         <p class="step-aside step-aside-muted">
           The first question that needs your history pauses while Mnema shows
-          its approval dialog — approve once and the grant covers the rest of
-          its window.
+          its approval dialog — approve once and it stays approved until
+          you block the tool.
         </p>
       </section>
 
@@ -323,7 +325,7 @@ const guarantees = [
       <!-- 7.7 Page footer -->
       <footer class="docs-foot">
         <p class="docs-foot-line">
-          // read-only, time-bounded, brokered through the same privacy policy
+          // read-only, scoped, brokered through the same privacy policy
           as the app — all retained history requires explicit approval.
         </p>
         <a href="/" class="docs-back">

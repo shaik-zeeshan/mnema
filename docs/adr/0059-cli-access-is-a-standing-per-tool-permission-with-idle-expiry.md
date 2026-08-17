@@ -116,8 +116,9 @@ boundary, and is documented as such.
 **Nothing dead sits in the access list.** Live rows and blocked rows only.
 History moves to `broker-audit.json`, which was already written and capped at
 500 events and had no UI at all — `list_cli_access_history` shipped registered
-with zero callers. Its `outcome` field starts recording denials, scope
-rejections, and revocations rather than being hardcoded `"success"`.
+with zero callers. Its `outcome` field starts recording denials and
+scope rejections rather than being hardcoded `"success"`. Blocking and
+re-enabling a client are permission-file edits and are not audited.
 
 **Ask AI stops writing to the audit file.** `execute_for_ask_ai` wrote one
 event per tool call and Ask AI runs an agent loop, so a couple of dozen
