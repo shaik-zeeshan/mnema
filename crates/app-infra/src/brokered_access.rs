@@ -1032,13 +1032,28 @@ impl BrokeredCaptureAccess {
         };
 
         if let Some(command_type) = command_type {
-            self.audit_result(
+            let audited = self.audit_result(
                 grant.as_ref(),
                 identity,
                 command_type,
                 response.result_count(),
                 outcome,
-            )?;
+            );
+            // A REFUSAL must survive its own audit line. Denials are recorded now,
+            // and this write is on the path of a caller holding no permission at
+            // all — so an unusable sink (full disk, unwritable config dir) would
+            // replace `authorizationRequired` with a broker error. That is the one
+            // response the CLI's approval flow keys off: an `Io` error is not
+            // `outside_grant_scope`, so the CLI returns before
+            // `response_requires_authorization` ever runs and a first-time tool
+            // gets no approval window at all — on the one call that exists to open
+            // it. There is no permission here to protect by failing closed.
+            //
+            // A call that was actually SERVED still fails on an unrecorded access,
+            // exactly as it did before denials were logged.
+            if grant.is_some() {
+                audited?;
+            }
         }
 
         Ok(response)
