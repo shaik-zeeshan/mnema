@@ -543,10 +543,31 @@ async fn execute_data_request(
 ) -> Result<serde_json::Value, CliError> {
     let access =
         BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).map_err(broker_error)?;
-    let mut response = access
+    // A window whose END sits before the permission's scope start is refused on
+    // the transport instead of clamped, so it never reaches the clamp door below.
+    // `timeline` REQUIRES `--to`, so without this every dated timeline question
+    // past the permission dies at exit 13 while the identical open-ended one gets
+    // the approval window — whether a caller can widen must not turn on whether
+    // it bounded its question.
+    let mut widened = false;
+    let mut response = match access
         .execute_for_identity(identity.clone(), request.clone())
         .await
-        .map_err(broker_error)?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            let error = broker_error(error);
+            if !allow_prompt || error.code != "outside_grant_scope" {
+                return Err(error);
+            }
+            widened = true;
+            authorize_wider_access(command, identity, &request).await?;
+            access
+                .execute_for_identity(identity.clone(), request.clone())
+                .await
+                .map_err(broker_error)?
+        }
+    };
 
     // Two ways this client's access can fall short of the call: none at all, or
     // one too narrow for the `--from` it asked for. Both take the same door —
@@ -560,14 +581,26 @@ async fn execute_data_request(
             // A clamped page is real data. Hand it back with its marker rather
             // than throwing it away — the caller asked not to be prompted, not to
             // be lied to.
-        } else {
-            let needed = needed_scope_for(&request);
-            let grant = request_authorization(command, identity, needed, needed).await?;
-            verify_granted_scope(needed, grant.as_ref())?;
-            response = access
-                .execute_for_identity(identity.clone(), request)
-                .await
-                .map_err(broker_error)?;
+        } else if !widened {
+            // At most ONE approval window per command: a second one for the same
+            // call is the reflex-clicking this permission model exists to stop.
+            match authorize_wider_access(command, identity, &request).await {
+                Ok(()) => {
+                    response = access
+                        .execute_for_identity(identity.clone(), request)
+                        .await
+                        .map_err(broker_error)?;
+                }
+                // Nobody said no — the channel just never answered. The clamped
+                // page in hand is data this client's STANDING permission already
+                // covers, and the widen was an optional extra on top of it;
+                // discarding it turns a partial answer into a total failure. Same
+                // reasoning as the `--no-prompt` branch above, and as ADR 0048. A
+                // real verdict (`denied`/`blocked`) still fails the call.
+                Err(error) if widen_never_answered(&error) && response_scope_clamped(&response) => {
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -656,10 +689,7 @@ async fn run_access_command(
             )
             .await?;
             match grant {
-                Some(grant) => println!(
-                    "CLI Access approved: {} can read {} until you block it in Settings.",
-                    grant.client_label, grant.scope
-                ),
+                Some(grant) => println!("{}", access_request_approved_line(&grant)),
                 None => println!("CLI Access approved."),
             }
             Ok(())
@@ -691,6 +721,21 @@ async fn run_access_command(
     }
 }
 
+/// The receipt for a completed `access request`. The scope reads in the
+/// `--scope` spelling, like every other CLI surface: the wire name (`allRetained`)
+/// is not a value any caller can type back, and a reader handed one runs
+/// `mnema access request --scope allRetained` straight into a usage error.
+fn access_request_approved_line(grant: &AuthorizationGrant) -> String {
+    let scope = BrokerGrantScope::from_wire_name(&grant.scope).map_or_else(
+        || grant.scope.clone(),
+        |scope| scope_flag_name(scope).to_string(),
+    );
+    format!(
+        "CLI Access approved: {} can read {scope} until you block it in Settings.",
+        grant.client_label
+    )
+}
+
 /// One line per standing permission: scope, last use, blocked state. There is no
 /// expiry to report — a permission dies 30 days after its last use, and
 /// idle-expired rows are pruned on load, so nothing dead reaches here.
@@ -709,9 +754,10 @@ fn access_status_line(grant: &BrokerGrant) -> String {
 }
 
 /// The narrowest access this call actually needs, from its `--from`. Sent as the
-/// channel `minimum` so the approval window cannot offer an option that would
-/// leave the caller short. Shares [`minimum_scope_for_start`] with the broker's
-/// own clamp marker, so the two can never disagree about what a `--from` costs.
+/// channel `preferred` — never as its `minimum`, which would grey out every
+/// narrower option (see [`authorize_wider_access`]). Shares
+/// [`minimum_scope_for_start`] with the broker's own clamp marker, so the two can
+/// never disagree about what a `--from` costs.
 fn needed_scope_for(request: &BrokeredCaptureRequest) -> BrokerGrantScope {
     let from = match request {
         BrokeredCaptureRequest::Search(request) => request.from.as_deref(),
@@ -757,6 +803,37 @@ fn verify_granted_scope(
         ),
         retryable: false,
     })
+}
+
+/// The widen never reached a verdict: nobody refused it, the channel just did
+/// not answer.
+fn widen_never_answered(error: &CliError) -> bool {
+    matches!(
+        error.code,
+        "app_unavailable" | "authorization_timeout" | "authorization_busy"
+    )
+}
+
+/// Ask for the access this call actually needs, and refuse to retry on an
+/// approval that came back narrower than that.
+///
+/// `minimum` stays at the narrowest band even when the call needs more: the
+/// approval window disables every option below it, so sending `needed` there
+/// would let a never-seen tool passing `--from 1970-01-01` make "All retained"
+/// the ONLY thing the user can grant on that tool's first prompt. `preferred`
+/// carries what the call actually needs, so the window pre-selects it without
+/// taking the narrow answers away — and a narrower approval is caught by
+/// [`verify_granted_scope`] rather than silently under-serving the caller.
+/// `access request` sends the same pair for the same reason.
+async fn authorize_wider_access(
+    command: &str,
+    identity: &BrokerClientIdentity,
+    request: &BrokeredCaptureRequest,
+) -> Result<(), CliError> {
+    let needed = needed_scope_for(request);
+    let grant =
+        request_authorization(command, identity, BrokerGrantScope::LAST_DAY, needed).await?;
+    verify_granted_scope(needed, grant.as_ref())
 }
 
 async fn request_authorization(
@@ -818,31 +895,60 @@ async fn send_authorization_request(
         .write_all(format!("{raw}\n").as_bytes())
         .await
         .map_err(|_| app_unavailable_error())?;
-    let mut response = String::new();
     let mut reader = BufReader::new(stream);
+    let response = read_verdict_line(&mut reader, || {
+        eprintln!("CLI Access approval required. Opening Mnema...");
+    })
+    .await?;
+    let response: AuthorizationResponse =
+        serde_json::from_str(&response).map_err(|_| app_unavailable_error())?;
+    authorization_result_for_response(&request.request_id, response)
+}
+
+/// Read one verdict line, two-phase.
+///
+/// Every verdict a window cannot change — `blocked` above all, plus `busy`,
+/// `onboardingRequired` and the malformed-request codes — is answered from the
+/// app's permission file without anything being opened, so it lands in
+/// milliseconds. Announcing the window before that verdict arrives promises a
+/// window that will never appear (and for `blocked`, never can). Hold the line
+/// for one beat; only a request the app is still sitting on has a window, and
+/// only then does `announce` run.
+#[cfg(unix)]
+async fn read_verdict_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    announce: impl FnOnce(),
+) -> Result<String, CliError> {
+    let mut response = String::new();
     let read = reader.read_line(&mut response);
     tokio::pin!(read);
-    // Every verdict a window cannot change — `blocked` above all, plus `busy`,
-    // `onboardingRequired` and the malformed-request codes — is answered from the
-    // app's permission file without anything being opened, so it lands in
-    // milliseconds. Announcing the window before that verdict arrives promises a
-    // window that will never appear (and for `blocked`, never can). Hold the line
-    // for one beat; only a request the app is still sitting on has a window.
     match timeout(WINDOW_ANNOUNCE_DELAY, &mut read).await {
         Ok(read) => {
             read.map_err(|_| app_unavailable_error())?;
         }
         Err(_) => {
-            eprintln!("CLI Access approval required. Opening Mnema...");
+            announce();
             timeout(AUTHORIZATION_TIMEOUT, &mut read)
                 .await
                 .map_err(|_| timeout_error())?
                 .map_err(|_| app_unavailable_error())?;
         }
     }
-    let response: AuthorizationResponse =
-        serde_json::from_str(&response).map_err(|_| app_unavailable_error())?;
-    if response.request_id != request.request_id {
+    Ok(response)
+}
+
+/// Turn one channel response into this call's result.
+///
+/// The echo check rejects a verdict meant for a DIFFERENT request, but an EMPTY
+/// `requestId` is not a crossed wire: the app answers `invalidRequest` for a
+/// request it never parsed, so there is no id for it to echo. Treating that as a
+/// mismatch swallowed the app's own verdict into `app_unavailable` — the one code
+/// that relaunches (`open -b`) an app that is running and already answered.
+fn authorization_result_for_response(
+    request_id: &str,
+    response: AuthorizationResponse,
+) -> Result<Option<AuthorizationGrant>, CliError> {
+    if !response.request_id.is_empty() && response.request_id != request_id {
         return Err(app_unavailable_error());
     }
     if response.decision == "approved" {
@@ -1414,6 +1520,91 @@ mod tests {
         assert!(
             Cli::try_parse_from(["mnema", "access", "revoke-client", "Codex", "--yes"]).is_err()
         );
+    }
+
+    /// The app answers `invalidRequest` for a request it never parsed — an
+    /// oversized line, or bytes that are not the request shape — so it has no
+    /// request id to echo and sends an EMPTY one. Rejecting that echo turns the
+    /// app's exit-18 verdict into exit 12 `app_unavailable`, which also relaunches
+    /// (`open -b`) an app that is running and already answered. `invalidRequest`
+    /// and `authorization_invalid_request` (exit 18) are a contract this branch
+    /// added and SKILL.md documents; the code has to be reachable.
+    #[test]
+    fn a_verdict_the_app_could_not_echo_an_id_for_still_reaches_its_own_exit_code() {
+        let error = authorization_result_for_response(
+            "request-1",
+            AuthorizationResponse {
+                schema_version: 1,
+                request_id: String::new(),
+                decision: "unavailable".to_string(),
+                reason: Some("invalidRequest".to_string()),
+                grant: None,
+            },
+        )
+        .expect_err("a malformed-request verdict is an error");
+
+        assert_eq!(error.code, "authorization_invalid_request");
+        assert_eq!(error.exit, 18);
+        assert!(
+            !should_retry_authorization_with_app_launch(&error),
+            "the app answered, so nothing may relaunch it"
+        );
+    }
+
+    /// The echo check still has to reject a response for a DIFFERENT request:
+    /// dropping it entirely would let a crossed or stale verdict authorize this
+    /// call.
+    #[test]
+    fn a_verdict_for_another_request_is_still_rejected() {
+        let error = authorization_result_for_response(
+            "request-1",
+            AuthorizationResponse {
+                schema_version: 1,
+                request_id: "request-2".to_string(),
+                decision: "approved".to_string(),
+                reason: None,
+                grant: Some(AuthorizationGrant {
+                    id: "grant-1".to_string(),
+                    client_label: "Claude Code".to_string(),
+                    scope: "allRetained".to_string(),
+                    created: true,
+                }),
+            },
+        )
+        .expect_err("a verdict for another request is not this call's answer");
+
+        assert_eq!(error.code, "app_unavailable");
+    }
+
+    /// The receipt for `mnema access request` is the one place the CLI hands a
+    /// scope name back to a human or an agent. Every other CLI surface —
+    /// `access status`, and the `scope_not_granted` message — spells a scope the
+    /// way `--scope` takes it, and SKILL.md tells agents those are the only
+    /// spellings. Printing the WIRE name tells the reader to re-run
+    /// `mnema access request --scope allRetained`, which clap rejects (exit 2).
+    #[test]
+    fn the_access_request_receipt_spells_the_scope_the_way_the_flag_does() {
+        for (wire, flag) in [
+            ("lastDay", "last-day"),
+            ("last7Days", "last-7-days"),
+            ("allRetained", "all-retained"),
+        ] {
+            let line = access_request_approved_line(&AuthorizationGrant {
+                id: "grant-1".to_string(),
+                client_label: "Claude Code".to_string(),
+                scope: wire.to_string(),
+                created: true,
+            });
+
+            assert!(
+                line.contains(flag),
+                "the receipt must name the scope the way `--scope` takes it: {line:?}"
+            );
+            assert!(
+                !line.contains(wire),
+                "the wire spelling is not a value any caller can type back: {line:?}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -2350,5 +2541,398 @@ mod tests {
         let other = broker_failure("unexpected search response");
         assert_eq!(other.code, "broker_operation_failed");
         assert_eq!(other.exit, 20);
+    }
+
+    /// A live broker over a throwaway config/index, so the widen flow can be
+    /// exercised end to end: `execute_data_request` -> real permission file ->
+    /// real query -> approval channel.
+    struct BrokerFixture {
+        _config: tempfile::TempDir,
+        _save: tempfile::TempDir,
+        _keys: tempfile::TempDir,
+        _env: std::sync::MutexGuard<'static, ()>,
+    }
+
+    /// The fixture points three process-global env vars at its temp dirs, so only
+    /// one of these tests may run at a time.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    async fn broker_fixture() -> BrokerFixture {
+        let guard = env_lock();
+        let config = tempfile::tempdir().expect("config dir");
+        let save = tempfile::tempdir().expect("save dir");
+        let keys = tempfile::tempdir().expect("key dir");
+        env::set_var("MNEMA_APP_CONFIG_DIR", config.path());
+        env::set_var("MNEMA_SAVE_DIRECTORY", save.path());
+        env::set_var("MNEMA_CAPTURE_INDEX_KEY_DIR", keys.path());
+        // The owner path creates the schema; the brokered reader never migrates.
+        app_infra::AppInfra::initialize(save.path())
+            .await
+            .expect("owner infra initializes");
+        BrokerFixture {
+            _config: config,
+            _save: save,
+            _keys: keys,
+            _env: guard,
+        }
+    }
+
+    fn timeline_request(from: String, to: String) -> BrokeredCaptureRequest {
+        BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
+            from,
+            to,
+            limit: None,
+            app: None,
+            window_title: None,
+            url: None,
+            url_regex: None,
+            speaker: None,
+        })
+    }
+
+    /// Every request the CLI put on the approval channel, oldest first. Recorded
+    /// BEFORE the reply is written, so anything the CLI has a verdict for is
+    /// already in here by the time its call returns — which is what makes "exactly
+    /// one approval window per command" assertable.
+    #[cfg(unix)]
+    type ApprovalLog = std::sync::Arc<std::sync::Mutex<Vec<AuthorizationRequest>>>;
+
+    /// Stands in for the app's approval channel: answers EVERY request that
+    /// arrives with whatever `reply` builds, and records it.
+    #[cfg(unix)]
+    fn serve_verdicts(
+        reply: impl Fn(&AuthorizationRequest) -> serde_json::Value + Send + 'static,
+    ) -> ApprovalLog {
+        let listener = tokio::net::UnixListener::bind(authorization_socket_path())
+            .expect("approval socket should bind");
+        let asked: ApprovalLog = Default::default();
+        let log = asked.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let mut reader = BufReader::new(stream);
+                let mut raw = String::new();
+                reader.read_line(&mut raw).await.expect("request line");
+                let request: AuthorizationRequest =
+                    serde_json::from_str(&raw).expect("the request should parse");
+                let response = reply(&request);
+                log.lock().expect("approval log").push(request);
+                reader
+                    .into_inner()
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .expect("response writes");
+            }
+        });
+        asked
+    }
+
+    /// Like the real window: upsert the permission, then reply `approved` with
+    /// the scope the row now carries.
+    #[cfg(unix)]
+    fn serve_one_approval(
+        identity: BrokerClientIdentity,
+        granted: BrokerGrantScope,
+    ) -> ApprovalLog {
+        serve_verdicts(move |request| {
+            let grant = BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+                .expect("broker resolves")
+                .upsert_grant_for_identity(identity.clone(), granted)
+                .expect("the approval widens the permission")
+                .grant;
+            serde_json::json!({
+                "schemaVersion": 1,
+                "requestId": request.request_id,
+                "decision": "approved",
+                "grant": {
+                    "id": grant.id,
+                    "clientLabel": grant.label,
+                    "scope": grant.scope.wire_name(),
+                    "created": false,
+                },
+            })
+        })
+    }
+
+    /// A window that ENDS before the permission's scope starts is refused
+    /// outright instead of clamped, so it never reaches the clamp door that opens
+    /// the approval window. `timeline` REQUIRES `--to`, so every dated timeline
+    /// question past the permission dies with no way to widen — while the
+    /// identical open-ended window (`--to now`) does get the prompt. Whether a
+    /// caller can widen must not depend on whether it bounded its question.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bounded_out_of_scope_window_still_opens_the_approval_window() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Bounded Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_one_approval(identity.clone(), BrokerGrantScope::AllRetainedHistory);
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(20 * DAY_MS)),
+            true,
+        )
+        .await
+        .expect("a window past the permission must ask to widen, not fail outright");
+
+        assert_eq!(
+            value["scopeClamped"], false,
+            "after the widen the whole requested window is in reach: {value}"
+        );
+        let asked = window.lock().expect("approval log");
+        let asked = asked.first().expect("the approval window was opened");
+        assert_eq!(
+            asked.scope.preferred, "allRetained",
+            "the ask must cover the WHOLE requested window, not just its start"
+        );
+    }
+
+    /// A clamped page is data the client's STANDING permission already covers,
+    /// and the widen is an optional extra on top of it. When that widen never
+    /// reaches a verdict — the app is mid-approval for someone else — discarding
+    /// the page turns a partial answer into a total failure, which is exactly the
+    /// "nothing happened in that window" report the clamp marker exists to stop.
+    /// `--no-prompt` on the identical call already hands the page back.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_widen_that_never_answered_keeps_the_clamped_page() {
+        let _fixture = broker_fixture().await;
+        let identity = BrokerClientIdentity::new("Busy Tool", BrokerClientIdentitySource::Explicit)
+            .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_verdicts(|request| {
+            serde_json::json!({
+                "schemaVersion": 1,
+                "requestId": request.request_id,
+                "decision": "unavailable",
+                "reason": "busy",
+            })
+        });
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            true,
+        )
+        .await
+        .expect("a busy approval channel must not destroy the page already in hand");
+
+        assert_eq!(
+            value["scopeClamped"], true,
+            "the page is still short of what was asked for, and must say so: {value}"
+        );
+        assert_eq!(value["requiredScope"], "allRetained");
+        assert_eq!(
+            window.lock().expect("approval log").len(),
+            1,
+            "the widen was attempted exactly once"
+        );
+    }
+
+    /// The scope a request with no `--from` asks for. Every non-dated command
+    /// (`show-text`, `open`, `speakers`) lands on this arm, so it decides what
+    /// the approval window offers for the commands that carry an opaque id from
+    /// an older page — pinned so the choice is deliberate rather than the
+    /// leftover of the `_ => None` fall-through.
+    #[test]
+    fn an_undated_request_asks_only_for_the_last_day() {
+        for request in [
+            BrokeredCaptureRequest::ShowText {
+                opaque_id: "f1.signature".to_string(),
+            },
+            BrokeredCaptureRequest::OpenInMnema {
+                opaque_id: "f1.signature".to_string(),
+            },
+            BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
+                name: None,
+                limit: None,
+            }),
+        ] {
+            assert_eq!(
+                needed_scope_for(&request),
+                BrokerGrantScope::LAST_DAY,
+                "an undated command asks for the narrowest band: {request:?}"
+            );
+        }
+    }
+
+    /// `--no-prompt` says "do not bother anyone", not "throw the answer away".
+    /// A permission too narrow for the `--from` still returns real data for the
+    /// part it covers, and the clamp marker is what stops an agent reading that
+    /// thin page as "nothing happened". Nothing is bound to the approval socket
+    /// here, so a prompt attempt would surface as an error rather than a page.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clamped_page_with_no_prompt_returns_the_data_and_its_marker() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Quiet Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            false,
+        )
+        .await
+        .expect("a clamped page is data, not a failure");
+
+        assert_eq!(
+            value["scopeClamped"], true,
+            "the page covers less than was asked for and must say so: {value}"
+        );
+        assert_eq!(value["requiredScope"], "allRetained");
+    }
+
+    /// The clamp door, end to end: one approval window, the permission widens,
+    /// the call is retried once and comes back whole.
+    ///
+    /// Also the pin for what that one window is allowed to offer. `minimum` stays
+    /// `lastDay` even though the call needs `allRetained`: the window disables
+    /// every option below `minimum`, so sending the derived scope there would make
+    /// "All retained" the only grantable answer on a tool's first prompt. The
+    /// derived scope rides in `preferred` instead — pre-selected, not forced.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clamp_widens_and_retries_once_then_returns_the_full_page() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Widening Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_one_approval(identity.clone(), BrokerGrantScope::AllRetainedHistory);
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            true,
+        )
+        .await
+        .expect("the widened retry must succeed");
+
+        assert_eq!(
+            value["scopeClamped"], false,
+            "the retry after the widen covers the whole requested window: {value}"
+        );
+        let asked = window.lock().expect("approval log");
+        assert_eq!(
+            asked.len(),
+            1,
+            "at most ONE approval window per command — a second is reflex-clicking"
+        );
+        let asked = &asked[0];
+        assert_eq!(
+            asked.scope.minimum, "lastDay",
+            "minimum must stay at the narrowest band or the window greys out every \
+             option the user might have preferred"
+        );
+        assert_eq!(
+            asked.scope.preferred, "allRetained",
+            "preferred carries what the call actually needs"
+        );
+    }
+
+    /// A verdict the app answers from its permission file alone — `blocked`,
+    /// `busy`, `onboardingRequired` — lands inside the announce beat, and there is
+    /// no window behind it (for `blocked` there never can be). Saying "Opening
+    /// Mnema..." there sends the user looking for a window that will not appear.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_instant_verdict_never_announces_a_window() {
+        let (mut app, cli) = UnixStream::pair().expect("socket pair");
+        app.write_all(b"{\"schemaVersion\":1,\"requestId\":\"r\",\"decision\":\"blocked\"}\n")
+            .await
+            .expect("the app answers instantly");
+        let announced = std::cell::Cell::new(false);
+        let mut reader = BufReader::new(cli);
+        let line = read_verdict_line(&mut reader, || announced.set(true))
+            .await
+            .expect("the verdict reads");
+        assert!(
+            !announced.get(),
+            "a windowless verdict must not promise a window: {line}"
+        );
+        assert!(line.contains("blocked"));
+
+        // The other half of the beat: a request the app is still sitting on DOES
+        // have a window, and the announce is the only warning the caller gets.
+        let (mut app, cli) = UnixStream::pair().expect("socket pair");
+        tokio::spawn(async move {
+            tokio::time::sleep(WINDOW_ANNOUNCE_DELAY * 2).await;
+            let _ = app
+                .write_all(b"{\"schemaVersion\":1,\"requestId\":\"r\",\"decision\":\"approved\"}\n")
+                .await;
+        });
+        let announced = std::cell::Cell::new(false);
+        let mut reader = BufReader::new(cli);
+        read_verdict_line(&mut reader, || announced.set(true))
+            .await
+            .expect("the verdict reads");
+        assert!(
+            announced.get(),
+            "a verdict the app sat on means a window is open, and the caller is told"
+        );
+    }
+
+    /// `access request` is the one command a human runs deliberately, and
+    /// `--no-prompt` is the one control for "do not bother anyone" — so the pair
+    /// is a contradiction that fails before anything is opened. Nothing is bound
+    /// to the approval socket here: an attempt to reach the app would come back
+    /// `app_unavailable` (12), not `authorization_required` (10).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_access_request_is_allowed_without_interactive_stdio() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Deliberate Human", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+
+        let error = run_access_command(
+            AccessCommand::Request {
+                scope: AccessScope::LastDay,
+            },
+            &identity,
+            true,
+        )
+        .await
+        .expect_err("--no-prompt cannot ask for an approval window");
+        assert_eq!(error.code, "authorization_required");
+        assert_eq!(error.exit, 10);
+        assert!(error.retryable);
+
+        // ...and the same command without it does reach the channel.
+        let window = serve_one_approval(identity.clone(), BrokerGrantScope::LAST_DAY);
+        run_access_command(
+            AccessCommand::Request {
+                scope: AccessScope::LastDay,
+            },
+            &identity,
+            false,
+        )
+        .await
+        .expect("a prompting access request is approved");
+        assert_eq!(window.lock().expect("approval log").len(), 1);
     }
 }
