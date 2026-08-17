@@ -7826,3 +7826,82 @@ fn a_second_corruption_does_not_overwrite_the_quarantined_evidence() {
         "and the live log recovered from both corruptions: {audit:?}"
     );
 }
+
+/// The clamp marker prices a window START, and the narrowest scope that STOPS the
+/// marker is not the one that strictly contains the bound — because the marker
+/// itself forgives [`CLAMP_SLACK_MS`]. `--from` = "7 days ago" is computed by the
+/// caller and evaluated here milliseconds later, so it sits over the band edge by
+/// construction. Priced on exact edges, that bound made a `lastDay` permission
+/// report `allRetainedHistory` — and that answer is both the `requiredScope` an
+/// agent reads and the approval window's floor, so the most natural query in each
+/// band asked the user for a standing permission one whole band wider than the
+/// call needs.
+///
+/// The second half is the proof the first is right: granted, the scope the marker
+/// names serves that same bound with no clamp reported at all. A marker naming a
+/// scope that would clamp again is an approval window the CLI opens twice for one
+/// request.
+///
+/// `minimum_scope_for_start` keeps EXACT edges on purpose — it prices a `--to`,
+/// a bound the broker refuses outright instead of clamping, so nothing downstream
+/// forgives an under-priced answer.
+#[test]
+fn the_clamp_marker_names_the_narrowest_scope_that_serves_the_window_not_the_one_containing_it() {
+    let day = 24 * 60 * 60 * 1000_u64;
+    let grant = |scope| BrokerGrant {
+        id: "grant-1".to_string(),
+        label: "Claude Code".to_string(),
+        normalized_label: "claude code".to_string(),
+        identity_source: BrokerClientIdentitySource::Explicit,
+        created_at_unix_ms: 0,
+        last_used_at_unix_ms: 0,
+        scope,
+        blocked: false,
+        blocked_at_unix_ms: None,
+    };
+    // "7 days ago", as a caller computes it a moment before the broker reads its
+    // own clock.
+    let seven_days_ago = || Some(format_unix_ms(now_unix_ms().saturating_sub(7 * day + 250)));
+
+    let marked = scoped_date_range(&grant(BrokerGrantScope::LAST_DAY), seven_days_ago(), None)
+        .expect("the bound parses");
+    assert_eq!(
+        marked.clamped_to_scope,
+        Some(BrokerGrantScope::LAST_7_DAYS),
+        "a `--from` 250 ms past the 7-day edge must be priced at last7Days: this \
+         answer is the approval window's floor, and a band wider asks the user to \
+         hand over history the call never wanted"
+    );
+
+    let served = scoped_date_range(
+        &grant(BrokerGrantScope::LAST_7_DAYS),
+        seven_days_ago(),
+        None,
+    )
+    .expect("the bound parses");
+    assert_eq!(
+        served.clamped_to_scope, None,
+        "and last7Days is the RIGHT answer because that permission serves the same \
+         bound without reporting a clamp at all"
+    );
+
+    // The `--to` pricer stays exact, on the same bound. A window END before the
+    // permission's scope start is refused outright rather than clamped, so there
+    // is no slack downstream to absorb an under-priced answer.
+    let now = 1_800_000_000_000_u64;
+    assert_eq!(
+        minimum_scope_for_start(now - 7 * day - 250, now),
+        BrokerGrantScope::AllRetainedHistory,
+        "the exact pricer must keep exact band edges"
+    );
+    assert_eq!(
+        minimum_scope_for_window_start(now - 7 * day - 250, now),
+        BrokerGrantScope::LAST_7_DAYS,
+        "the two pricers differ by exactly CLAMP_SLACK_MS, and that is the point"
+    );
+    assert_eq!(
+        minimum_scope_for_window_start(now - 7 * day - CLAMP_SLACK_MS - 1, now),
+        BrokerGrantScope::AllRetainedHistory,
+        "past the slack the marker is back to the band that contains the bound"
+    );
+}

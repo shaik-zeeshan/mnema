@@ -1854,7 +1854,11 @@ fn scoped_date_range(
         .filter(|_| scope_start.is_some())
         .map(|requested| (requested.unix_timestamp_nanos() / 1_000_000).max(0) as u64)
         .filter(|requested_ms| default_start.saturating_sub(*requested_ms) > CLAMP_SLACK_MS)
-        .map(|requested_ms| minimum_scope_for_start(requested_ms, now));
+        // The narrowest scope that STOPS this marker, which is not the same as the
+        // one that strictly contains the bound: naming the latter asks the user
+        // for a band more than the request needs on every "N days ago" query.
+        // See [`minimum_scope_for_window_start`].
+        .map(|requested_ms| minimum_scope_for_window_start(requested_ms, now));
     let end_dt = requested_end.unwrap_or(now_dt).min(now_dt);
     if end_dt < start_dt {
         return Err(AppInfraError::InvalidSearchRequest(
@@ -2232,9 +2236,13 @@ fn set_client_blocked(config_dir: &Path, client_label: &str, blocked: bool) -> R
     })
 }
 
-/// The narrowest scope that would cover a request reaching back to
-/// `start_unix_ms`. Shared so the broker's clamp marker and the CLI's
-/// `needed_scope_for` cannot disagree about what a `--from` requires.
+/// The narrowest scope that CONTAINS a request reaching back to `start_unix_ms`,
+/// priced on exact band edges.
+///
+/// This is the right rule for a bound nothing forgives — a `--to`, whose window
+/// the broker refuses outright when it ends before the permission's scope start
+/// rather than clamping it. For a window START, use
+/// [`minimum_scope_for_window_start`].
 pub fn minimum_scope_for_start(start_unix_ms: u64, now_unix_ms: u64) -> BrokerGrantScope {
     let age_ms = now_unix_ms.saturating_sub(start_unix_ms);
     if age_ms > 7 * 24 * 60 * 60 * 1000 {
@@ -2244,6 +2252,26 @@ pub fn minimum_scope_for_start(start_unix_ms: u64, now_unix_ms: u64) -> BrokerGr
     } else {
         BrokerGrantScope::LAST_DAY
     }
+}
+
+/// The narrowest scope that SERVES a window starting at `start_unix_ms` — the
+/// scope that stops the clamp marker, not the one that strictly contains the
+/// bound.
+///
+/// It carries [`CLAMP_SLACK_MS`] because it answers the marker's own question,
+/// and the two halves have to agree: `--from` = "N days ago" is computed by the
+/// caller and evaluated here milliseconds later, so it sits over the band edge BY
+/// CONSTRUCTION. Priced exactly, the bound a `lastDay` permission serves without
+/// reporting a clamp costs `last7Days` — and that answer is both the
+/// `requiredScope` an agent reads and the approval window's floor, so the most
+/// natural query in each band asks the user for a standing permission one band
+/// wider than the call needs. On a first grant the window pre-selects `lastDay`,
+/// the user approves it, and `verify_granted_scope` then fails the command at
+/// exit 22 for a permission that would in fact have served it.
+///
+/// A `--to` bound must NOT come through here — see [`minimum_scope_for_start`].
+pub fn minimum_scope_for_window_start(start_unix_ms: u64, now_unix_ms: u64) -> BrokerGrantScope {
+    minimum_scope_for_start(start_unix_ms.saturating_add(CLAMP_SLACK_MS), now_unix_ms)
 }
 
 fn ask_ai_all_retained_grant(identity: &BrokerClientIdentity) -> BrokerGrant {

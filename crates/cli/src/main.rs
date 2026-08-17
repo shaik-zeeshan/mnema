@@ -3,11 +3,11 @@ use std::time::Duration;
 use std::{env, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
-    format_broker_unix_ms, minimum_scope_for_start, BrokerAuthStatus, BrokerAuthStatusKind,
-    BrokerClientIdentity, BrokerClientIdentitySource, BrokerErrorResponse, BrokerGrant,
-    BrokerGrantScope, BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerCoverage, BrokerSpeakerTurn,
-    BrokerSpeakersRequest, BrokerTimelineRequest, BrokeredCaptureAccess, BrokeredCaptureRequest,
-    BrokeredCaptureResponse,
+    format_broker_unix_ms, minimum_scope_for_start, minimum_scope_for_window_start,
+    BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
+    BrokerErrorResponse, BrokerGrant, BrokerGrantScope, BrokerSearchRequest, BrokerSpeaker,
+    BrokerSpeakerCoverage, BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerTimelineRequest,
+    BrokeredCaptureAccess, BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -821,22 +821,34 @@ fn empty_window_message(request: &BrokeredCaptureRequest) -> Option<&'static str
 /// `--from` asks for `lastDay`: the one scope that cannot satisfy the call. The
 /// user would be prompted, approve, and still hit exit 13 — on every run.
 fn needed_scope_for(request: &BrokeredCaptureRequest) -> BrokerGrantScope {
-    let from = match request {
+    // WHICH bound this is decides how it is priced. A window START is served to
+    // within the broker's own clamp slack, so it goes through
+    // `minimum_scope_for_window_start` — otherwise "N days ago", which is over the
+    // band edge by construction, asks the user for a standing permission one band
+    // wider than the call needs, and the first-grant door then fails at exit 22
+    // for the user who approves the pre-selected floor that would have worked.
+    // A `--to` fallback gets the exact `minimum_scope_for_start`: nothing
+    // tolerates a `to` under the window start, that range is refused outright
+    // rather than clamped, so the ask has to reach PAST it.
+    let (bound, is_window_start) = match request {
         // `from` first: it is the older bound whenever both are present.
-        BrokeredCaptureRequest::Search(request) => {
-            request.from.as_deref().or(request.to.as_deref())
-        }
-        BrokeredCaptureRequest::Timeline(request) => Some(request.from.as_str()),
-        _ => None,
+        BrokeredCaptureRequest::Search(request) => match request.from.as_deref() {
+            Some(from) => (Some(from), true),
+            None => (request.to.as_deref(), false),
+        },
+        BrokeredCaptureRequest::Timeline(request) => (Some(request.from.as_str()), true),
+        _ => (None, true),
     };
     // An unparseable bound is the broker's error to report, not ours to guess at.
-    let Some(start) = from.and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok()) else {
+    let Some(start) = bound.and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok()) else {
         return BrokerGrantScope::LAST_DAY;
     };
-    minimum_scope_for_start(
-        (start.unix_timestamp_nanos() / 1_000_000).max(0) as u64,
-        now_unix_ms(),
-    )
+    let start_unix_ms = (start.unix_timestamp_nanos() / 1_000_000).max(0) as u64;
+    if is_window_start {
+        minimum_scope_for_window_start(start_unix_ms, now_unix_ms())
+    } else {
+        minimum_scope_for_start(start_unix_ms, now_unix_ms())
+    }
 }
 
 /// An approval is not a yes. The window enforces only the request's `minimum`,
@@ -2367,6 +2379,44 @@ mod tests {
         assert_eq!(
             needed_scope_for(&timeline),
             BrokerGrantScope::AllRetainedHistory
+        );
+    }
+
+    /// WHICH bound a date is decides how it is priced, and the two rules are not
+    /// interchangeable. A window START is served to within the broker's clamp
+    /// slack, so "24 hours ago" — a bound the caller computes and the broker
+    /// evaluates milliseconds later, over the band edge by construction — must
+    /// still cost `lastDay`: that is the permission which answers it without
+    /// reporting a clamp, which is the whole point. Priced on the exact edge it
+    /// costs `last7Days`, and that answer is both the `requiredScope` an agent
+    /// reads and the approval window's floor — so the most ordinary query in each
+    /// band interrupts the user for a standing permission one band wider than the
+    /// call needs. A `--to` fallback must NOT get the slack: a `--to` under the
+    /// permission's scope start is refused outright rather than clamped, so the
+    /// ask has to reach PAST it or the approved retry dies at exit 13 forever.
+    #[test]
+    fn a_window_start_is_priced_with_the_clamp_slack_and_a_to_bound_is_not() {
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some(rfc3339_ms_ago(DAY_MS + 250)))),
+            BrokerGrantScope::LAST_DAY,
+            "a lastDay permission serves `--from` \"24 hours ago\" without clamping it, \
+             so that is all the CLI may ask the user for"
+        );
+        assert_eq!(
+            needed_scope_for(&search_request_from(Some(rfc3339_ms_ago(7 * DAY_MS + 250)))),
+            BrokerGrantScope::LAST_7_DAYS,
+            "`--from` \"7 days ago\" is the query a last7Days permission exists for"
+        );
+
+        let mut bounded_only_by_to = search_request_from(None);
+        if let BrokeredCaptureRequest::Search(request) = &mut bounded_only_by_to {
+            request.to = Some(rfc3339_ms_ago(DAY_MS + 250));
+        }
+        assert_eq!(
+            needed_scope_for(&bounded_only_by_to),
+            BrokerGrantScope::LAST_7_DAYS,
+            "a `--to` that old is refused, not clamped, by a lastDay permission — the \
+             slack belongs on the window start alone, never in `minimum_scope_for_start`"
         );
     }
 
