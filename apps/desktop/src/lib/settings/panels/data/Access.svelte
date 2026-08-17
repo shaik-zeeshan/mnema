@@ -8,12 +8,14 @@
     type BrokerGrant,
     grantStatus,
     formatGrantScope,
+    formatGrantScopeProse,
     grantStatusLabel,
     formatGrantTime,
     formatCommand,
     formatActivityDetail,
     formatOutcome,
   } from "$lib/settings/state/cli-access.svelte";
+  import { describeError } from "$lib/settings/state/format";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -70,19 +72,25 @@
   // side that asks.
   async function enableGrant(grant: BrokerGrant) {
     const ok = await confirm(
-      `${grant.label} will be able to read ${formatGrantScope(grant.scope).toLowerCase()} again, with no expiry, until you block it.`,
-      { title: "Restore CLI access?", kind: "warning", okLabel: "Restore access", cancelLabel: "Keep blocked" },
+      `${grant.label} will be able to read ${formatGrantScopeProse(grant.scope)} again, with no expiry, until you block it.`,
+      { title: "Enable CLI access again?", kind: "warning", okLabel: "Enable access", cancelLabel: "Keep blocked" },
     );
     if (ok) await cliAccess.setGrantBlocked(grant, false);
   }
 
   // The audit file lives beside the permission file in the app config dir; the
   // JS `appConfigDir()` resolves the same path the Rust side writes to.
+  let revealError = $state<string | null>(null);
+
   async function revealAuditFile() {
+    revealError = null;
     try {
       await revealItemInDir(await join(await appConfigDir(), "broker-audit.json"));
     } catch (err) {
-      console.error("[Access] reveal audit file failed", err);
+      // Every interaction needs a response, and this one fails for a real reason:
+      // `revealItemInDir` rejects when broker-audit.json does not exist yet — the
+      // state the button is rendered in when the read errored.
+      revealError = describeError(err);
     }
   }
 </script>
@@ -95,23 +103,11 @@
   <SettingRow label="CLI Access" full divider={false}>
     {#snippet control()}
       <!-- The agent-access section is the `?focus=cliAccess` deeplink target: it
-           must be focusable (the shell calls `.focus({ preventScroll: true })`)
-           and carries the attention tint when the broker-authorization prompt is
-           live. The bordered `.settings-stack` sub-block is the intended card-like
+           must be focusable (the shell calls `.focus({ preventScroll: true })`).
+           The bordered `.settings-stack` sub-block is the intended card-like
            surface for the CLI status + access list + activity. -->
-      <div
-        class:settings-group--attention={c.brokerAuthorizationPromptVisible}
-        bind:this={c.agentAccessSection}
-        class="agent-access"
-        tabindex="-1"
-      >
+      <div bind:this={c.agentAccessSection} class="agent-access" tabindex="-1">
         <div class="settings-stack">
-          {#if c.brokerAuthorizationPromptVisible}
-            <div class="agent-access-callout" role="status">
-              <strong>CLI access request</strong>
-              <p>Approve or deny it in the request window, then rerun the command if needed.</p>
-            </div>
-          {/if}
           <div class="privacy-disclosure">
             <p>CLI Access lets local tools read your searchable Mnema text — screen text, audio transcripts, and timeline results — plus the app and window each result came from and a sanitized host and path for web pages.</p>
             <p>It never returns media file paths, raw database rows, or full URLs with their query strings. A tool keeps its access until you block it here, and it lapses on its own after 30 days unused.</p>
@@ -144,11 +140,13 @@
             <p class="error-text">{brokerGrantError}</p>
           {/if}
 
-          <p class="group-label access-subhead">Tools with access</p>
+          <!-- Not "Tools with access": this list deliberately keeps blocked rows, so the
+               heading has to cover a row that has none. -->
+          <p class="group-label access-subhead">Tool permissions</p>
           {#if brokerGrantLoading && brokerGrants.length === 0}
             <p class="group-hint">Loading tools…</p>
           {:else if brokerGrants.length > 0}
-            <ul class="grant-list" aria-label="Tools with access">
+            <ul class="grant-list" aria-label="Tool permissions">
               {#each brokerGrants as grant (grant.id)}
                 {@const status = grantStatus(grant)}
                 {@const saving = isGrantSaving(grant.id)}
@@ -172,8 +170,14 @@
                     </span>
                   </div>
                   {#if status === "blocked"}
+                    <!-- Accent outline, not the muted ghost that Refresh and
+                         Reveal in Finder resolve to: this is the one control in
+                         the panel that hands a tool a standing, no-expiry read of
+                         the user's history, and weight should track consequence.
+                         Deliberately not a filled primary — the confirm dialog in
+                         `enableGrant` is the real gate. -->
                     <button
-                      class="btn btn--ghost btn--sm"
+                      class="btn btn--ghost btn--sm grant-row__enable"
                       type="button"
                       disabled={saving}
                       aria-busy={saving}
@@ -198,7 +202,9 @@
                 </li>
               {/each}
             </ul>
-          {:else}
+          {:else if !brokerGrantError}
+            <!-- Only when the file was actually read: with `brokerGrantError` set
+                 this list is unknown, not empty, and the error above says so. -->
             <p class="group-hint">No tools have access yet. Tools you approve will appear here.</p>
           {/if}
 
@@ -208,6 +214,15 @@
               <button class="btn btn--ghost btn--sm" type="button" onclick={revealAuditFile}>Reveal log in Finder</button>
             {/if}
           </div>
+          {#if brokerHistoryError}
+            <!-- Unconditional, exactly like `brokerGrantError` above: a failed
+                 refresh after a good load leaves rows on screen, and painting
+                 stale rows as current is the same lie as "Nothing yet". -->
+            <p class="error-text">{brokerHistoryError}</p>
+          {/if}
+          {#if revealError}
+            <p class="error-text">{revealError}</p>
+          {/if}
           {#if brokerHistory.length > 0}
             <ul class="activity-list" aria-label="Recent CLI activity">
               {#each brokerHistory as event, index (`${event.timestampUnixMs}-${index}`)}
@@ -222,9 +237,8 @@
           {:else if brokerHistoryLoading}
             <p class="group-hint">Loading activity…</p>
           {:else if brokerHistoryError}
-            <!-- An unreadable audit file must never render as "Nothing yet": on a
-                 permission log, an empty list is a claim that nothing ran. -->
-            <p class="error-text">{brokerHistoryError}</p>
+            <!-- The error is already rendered above; say nothing more here rather
+                 than claiming an empty log. -->
           {:else}
             <p class="group-hint">Nothing yet. Commands run by tools with access are recorded here.</p>
           {/if}
@@ -237,9 +251,7 @@
 <style>
   /* Focus target wrapper for the `?focus=cliAccess` deeplink — `bind:this`
      needs a real element, and `tabindex=-1` makes `.focus()` land here without
-     a visible outline. The attention tint lives on the global
-     `.settings-group--attention .settings-stack` rule, so the wrapper just
-     carries that toggle class. */
+     a visible outline. */
   .agent-access {
     width: 100%;
   }
@@ -252,8 +264,11 @@
      they did. These two labels are what make that order legible. Type comes from
      the shared `.group-label` (every other section label in Settings); this class
      only adds the layout. */
+  /* `.settings-stack` puts 10px between every child, so a label needs clearly
+     more space above it than below it or proximity binds it to the block it is
+     meant to separate from. 14px + the stack gap = 24px above, 10px below. */
   .access-subhead {
-    margin: 4px 0 0;
+    margin: 14px 0 0;
   }
 
   .access-subhead--split {

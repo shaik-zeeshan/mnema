@@ -24,11 +24,6 @@
     background: var(--app-surface-subtle);
   }
 
-  .settings-shell .settings-group--attention .settings-stack {
-    border-color: color-mix(in srgb, var(--app-accent) 45%, var(--app-border));
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 18%, transparent);
-  }
-
   .settings-shell .group-label {
     font-size: 10px;
     font-weight: 700;

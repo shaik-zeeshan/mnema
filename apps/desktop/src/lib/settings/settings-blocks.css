@@ -356,6 +356,12 @@
     background: transparent;
   }
 
+  /* The resting neutral dot IS the blocked state — blocked is the only inactive
+     state a permission can be in (idle-expired rows are pruned backend-side and
+     never reach this list, ADR 0059), and it is a state the USER chose: safe,
+     working, intended. A red dot on a dimmed row is this app's vocabulary for
+     BROKEN, so red stays free to mean something is actually wrong; the "Blocked"
+     badge on the name line carries the meaning (the dot is aria-hidden). */
   .settings-shell .grant-row__status {
     width: 7px;
     height: 7px;
@@ -366,12 +372,6 @@
   .settings-shell .grant-row__status--active {
     background: var(--app-accent);
     box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-
-  /* Blocked is the only inactive state a permission can be in: idle-expired rows
-     are pruned backend-side and never reach this list (ADR 0059). */
-  .settings-shell .grant-row__status--blocked {
-    background: var(--app-danger);
   }
 
   .settings-shell .grant-row__meta {
@@ -434,6 +434,30 @@
 
   .settings-shell .grant-row__sep {
     color: var(--app-text-faint);
+  }
+
+  /* Enable hands a tool a standing, no-expiry read of the user's history, so it
+     must not resolve to the same muted outline as Refresh and Reveal in Finder —
+     `.btn--sm` is declared after `.btn--ghost` at equal specificity and re-sets
+     color/border, which is exactly how it lost its identity. Accent outline in
+     the approval window's `.btn--allow` vocabulary, never a filled go-green
+     primary: the Enable confirmation dialog is the friction, and a loud fill
+     would invite the click it is meant to slow down.
+     The `[data-theme="light"]` twin is a specificity fix, not a light variant
+     (same reason as `.user-context-wipe__btn` below): settings-theme.css is
+     imported LAST, so its `[data-theme="light"] .settings-shell .btn--ghost`
+     (0,3,0) would otherwise wash the tint out in light mode. */
+  .settings-shell .btn.grant-row__enable,
+  [data-theme="light"] .settings-shell .btn.grant-row__enable {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+
+  .settings-shell .btn.grant-row__enable:not(:disabled):hover,
+  [data-theme="light"] .settings-shell .btn.grant-row__enable:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
+    color: var(--app-accent);
+    border-color: var(--app-accent);
   }
 
   /* ── Wipe User Context (destructive end of the User Context block) ── */

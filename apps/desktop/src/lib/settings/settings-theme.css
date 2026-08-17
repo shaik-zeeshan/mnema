@@ -245,24 +245,3 @@
     line-height: 1.5;
   }
 
-  .settings-shell .agent-access-callout {
-    display: grid;
-    gap: 4px;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 35%, var(--app-border));
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface));
-  }
-
-  .settings-shell .agent-access-callout strong {
-    color: var(--app-text);
-    font-size: 12px;
-  }
-
-  .settings-shell .agent-access-callout p {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: 11px;
-    line-height: 1.5;
-  }
-

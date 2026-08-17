@@ -234,16 +234,16 @@
     scrollToSection(section, smooth);
   }
 
-  // The arrival tint's auto-clear. Hoisted (not a bare `setTimeout`) because the
-  // deeplink effect below re-runs on every `?focus=cliAccess` navigation, and the
-  // backend emits that deeplink on EVERY brokered authorization: two prompts
-  // <8s apart would otherwise leave two live timers, the first firing mid-way
-  // through the second and killing the callout while its window is still open.
-  let brokerPromptTimer: ReturnType<typeof setTimeout> | null = null;
-
   // `$page.url`-reactive deeplink effect: resolve `?tab`/`?focus` to a section
-  // (via groups.ts) and route there. A focus deeplink (cliAccess) also pops the
-  // broker-authorization prompt, matching the legacy behavior.
+  // (via groups.ts) and route there. `?focus=cliAccess` additionally moves focus
+  // into the Access section's wrapper, so a deeplink lands the caret inside it.
+  //
+  // This arm used to ALSO light an arrival tint plus a "CLI access request"
+  // callout in that panel. Under ADR 0059 an approval opens the CLI Access
+  // Request window and nothing navigates Settings, so nothing produces `?focus=`
+  // during a request — the cue advertised a live request nobody could have
+  // arrived here to see. Deleted rather than re-timed; the request window is the
+  // surface that carries the state.
   $effect(() => {
     const requestedTab = $page.url.searchParams.get("tab");
     const section = resolveTabDeeplink(requestedTab);
@@ -253,7 +253,6 @@
     const focus = resolveFocusDeeplink($page.url.searchParams.get("focus"));
     if (focus) {
       const focusSection = sectionForFocus(focus);
-      c.brokerAuthorizationPromptVisible = true;
       activeGroup = groupForSection(focusSection);
       activeSection = focusSection;
       suppressSpy();
@@ -261,26 +260,8 @@
         c.agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
         c.agentAccessSection?.focus({ preventScroll: true });
         if (c.agentAccessSection) setSpyTarget(c.agentAccessSection);
-        // The tint and callout are an arrival cue, not a state: nothing else
-        // ever cleared them, so the section stayed lit for the rest of the app
-        // session and on every later visit to Settings.
-        if (brokerPromptTimer !== null) clearTimeout(brokerPromptTimer);
-        brokerPromptTimer = setTimeout(() => {
-          c.brokerAuthorizationPromptVisible = false;
-          brokerPromptTimer = null;
-        }, 8000);
       });
     }
-    // The arm above is deferred through `tick()`, so it can land after this
-    // effect's teardown on a fast re-navigate — clearing here still wins for the
-    // common case (re-run, unmount) and never leaves a timer firing into a
-    // torn-down shell.
-    return () => {
-      if (brokerPromptTimer !== null) {
-        clearTimeout(brokerPromptTimer);
-        brokerPromptTimer = null;
-      }
-    };
   });
 
   // Reset scroll to top when the active group changes (matches legacy tabbed

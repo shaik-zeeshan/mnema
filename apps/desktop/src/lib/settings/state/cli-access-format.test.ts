@@ -4,7 +4,10 @@ import { describe, expect, test } from "bun:test";
 
 // A runes module, but every `$state(...)` sits inside `createCliAccessStore()`,
 // which these tests never call — the helpers below are plain functions.
-globalThis.$state ??= (v) => v;
+// Plain assignment, not `??=`: reading `globalThis.$state` throws
+// `rune_outside_svelte` once svelte's client runtime has been loaded by an
+// earlier file in the same bun process, so the read half is the trap.
+globalThis.$state = (v) => v;
 
 const {
   formatGrantScope,

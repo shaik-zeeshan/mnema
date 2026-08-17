@@ -71,6 +71,20 @@ export function formatGrantScope(scope: BrokerGrant["scope"]): string {
   return "Limited scope";
 }
 
+// The same scope as a noun phrase for prose sentences. `formatGrantScope`
+// returns control labels, and lowercasing one into a sentence yields "will be
+// able to read last day again" — the mistake the approval window avoids with its
+// own `scopeProse` map. Used by the Enable confirmation, which is the only
+// friction left between a blocked tool and a restored no-expiry permission.
+export function formatGrantScopeProse(scope: BrokerGrant["scope"]): string {
+  if (scope === "all_retained_history") return "your entire retained history";
+  if (scope && typeof scope === "object" && "recent_days" in scope) {
+    const days = (scope as { recent_days?: { days?: number } }).recent_days?.days ?? 0;
+    return days <= 1 ? "your last 24 hours" : `your last ${days} days`;
+  }
+  return "the history its permission still allows";
+}
+
 export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): string {
   const diffMs = unixMs - nowMs;
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -128,7 +142,17 @@ export function formatActivityDetail(event: BrokerAuditEvent): string {
 
 // ── Reactive store ──────────────────────────────────────────────────────────
 
-export function createCliAccessStore() {
+/** The one backend call shape this store makes — the seam its tests substitute. */
+export type CliAccessInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
+// `invokeFn` is a constructor seam, defaulted to the real `invoke` so every app
+// caller is unaffected. Tests must not reach the backend through the module
+// import: bun's `mock.module("@tauri-apps/api/core", …)` is PROCESS-wide, so a
+// spec file registering its own invoke stub silently replaces this module's
+// import in a full `bun test` run — the store then reads `undefined` for every
+// response and the suite fails on files it never touched. Same reasoning (and the
+// same fix) as `insights/receipt-frames.ts`'s `InvokeFn`.
+export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
   let brokerGrants = $state<BrokerGrant[]>([]);
   let brokerGrantLoading = $state(false);
   // Ids of grants whose block/enable is currently in flight, so the panel can
@@ -149,7 +173,7 @@ export function createCliAccessStore() {
     brokerGrantLoading = true;
     brokerGrantError = null;
     try {
-      const response = await invoke<BrokerGrantFile>("list_cli_access_grants");
+      const response = await invokeFn<BrokerGrantFile>("list_cli_access_grants");
       brokerGrants = response.grants ?? [];
     } catch (err) {
       brokerGrantError = describeError(err);
@@ -162,7 +186,7 @@ export function createCliAccessStore() {
     brokerHistoryLoading = true;
     brokerHistoryError = null;
     try {
-      const response = await invoke<BrokerAuditFile>("list_cli_access_history");
+      const response = await invokeFn<BrokerAuditFile>("list_cli_access_history");
       // The audit file is append-ordered and capped at 500; the panel shows the
       // newest handful. Reverse a copy — `events` is the invoke result, but
       // reversing in place still reads badly next to a re-render.
@@ -183,7 +207,7 @@ export function createCliAccessStore() {
     mnemaCliLoading = true;
     mnemaCliError = null;
     try {
-      mnemaCliStatus = await invoke<MnemaCliStatus>("get_cli_access_status");
+      mnemaCliStatus = await invokeFn<MnemaCliStatus>("get_cli_access_status");
     } catch (err) {
       mnemaCliError = errorText(err);
     } finally {
@@ -196,7 +220,7 @@ export function createCliAccessStore() {
     mnemaCliError = null;
     try {
       // `install_cli` relinks an existing install, so reinstall is the same call.
-      mnemaCliStatus = await invoke<MnemaCliStatus>("install_cli");
+      mnemaCliStatus = await invokeFn<MnemaCliStatus>("install_cli");
     } catch (err) {
       mnemaCliError = errorText(err);
     } finally {
@@ -208,7 +232,7 @@ export function createCliAccessStore() {
     brokerGrantSavingIds = new Set(brokerGrantSavingIds).add(grant.id);
     brokerGrantError = null;
     try {
-      await invoke<boolean>(blocked ? "block_cli_access_client" : "unblock_cli_access_client", {
+      await invokeFn<boolean>(blocked ? "block_cli_access_client" : "unblock_cli_access_client", {
         clientName: grant.normalizedLabel,
       });
       await loadBrokerGrants();
