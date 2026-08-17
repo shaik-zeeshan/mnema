@@ -210,44 +210,76 @@ fn a_stale_stamp_costs_one_write_and_touches_only_the_row_that_was_used() {
 ///
 /// The event count is capped at 500, but `tool_identity` is the client label —
 /// `--client` / `MNEMA_CLI_CLIENT` / `AI_AGENT`, none of them length-capped at the
-/// wire — and it is stored twice per event (raw + normalized). On this branch a
-/// caller with NO permission writes one of these per refused command, so the whole
-/// file would be sized by an unauthenticated argument.
+/// wire — and it is stored twice per event (raw + normalized). A caller with NO
+/// permission writes one of these per refused command, so without a cap on the
+/// name the whole file is sized by an unauthenticated argument.
+///
+/// The cap has to be in BYTES, which is why this runs the same flood three times
+/// over a 1-byte, a 3-byte and a 4-byte filler. The file is measured in bytes and
+/// a char is up to four of them, so a 120-CHAR cap bounds nothing — and ASCII is
+/// the one shape that makes a char cap look like a byte cap, which is exactly how
+/// the char cap survived its own regression test.
 #[test]
-fn audit_file_size_is_set_by_an_uncapped_client_label() {
-    let dir = temp_dir("bigLabel");
-    let access = BrokeredCaptureAccess::from_config_dir(&dir);
-    let rt = runtime();
+fn an_unauthenticated_client_label_cannot_size_the_audit_file() {
+    // One byte, three bytes, four bytes per char. None carries a variation
+    // selector or any other invisible the label collapse would drop.
+    for (name, filler) in [("ascii", "A"), ("cjk", "\u{5b57}"), ("emoji", "\u{1f642}")] {
+        let dir = temp_dir(&format!("bigLabel-{name}"));
+        let access = BrokeredCaptureAccess::from_config_dir(&dir);
+        let rt = runtime();
 
-    let who = identity(&"A".repeat(64 * 1024));
-    for _ in 0..520 {
+        let who = identity(&filler.repeat(64 * 1024 / filler.len()));
+        for _ in 0..520 {
+            rt.block_on(access.execute_for_identity(who.clone(), search_request()))
+                .unwrap();
+        }
+        let bytes = std::fs::metadata(dir.join("broker-audit.json"))
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+
+        // One more refused command against the now-filled file.
+        let start = Instant::now();
         rt.block_on(access.execute_for_identity(who.clone(), search_request()))
             .unwrap();
+        let one_more = start.elapsed();
+
+        // The mechanism, stated directly: the stored name is bounded in BYTES, so
+        // it costs the same whatever alphabet it is written in.
+        let stored = stored_tool_identity(&dir);
+        assert!(
+            stored.len() <= 120,
+            "a {name} client label was stored as {} bytes: the cap counts chars, so \
+             one argument still sizes broker-audit.json",
+            stored.len()
+        );
+
+        // REGRESSION BOUND. 500 lines x (raw + normalized name) is the whole file,
+        // so a capped name caps the file. 512 KB leaves ~500 B of room per line for
+        // a 120-byte name plus the fixed fields, and still catches any future
+        // uncapped string being added to the event. Measured against a char cap:
+        // 621 KB of emoji, against 261 KB for the same count of ASCII.
+        assert!(
+            bytes < 512 * 1024,
+            "one unauthenticated `--client` argument of {name} sized \
+             broker-audit.json to {bytes} B; every later brokered command rewrites \
+             that file and the Settings panel re-reads it over IPC every 30 s"
+        );
+        // And the per-command cost stays in the same order as a normal-name refusal
+        // (1.8 ms release / 13 ms debug measured), not two orders above it.
+        assert!(
+            one_more < Duration::from_millis(60),
+            "one refused command with a {name} label cost {one_more:?}"
+        );
     }
-    let bytes = std::fs::metadata(dir.join("broker-audit.json"))
-        .map(|meta| meta.len())
-        .unwrap_or(0);
+}
 
-    // One more refused command against the now-filled file.
-    let start = Instant::now();
-    rt.block_on(access.execute_for_identity(who.clone(), search_request()))
-        .unwrap();
-    let one_more = start.elapsed();
-
-    // REGRESSION BOUND. 500 lines x (raw + normalized name) is the whole file, so
-    // a capped name caps the file. 512 KB leaves ~500 B of room per line for a
-    // 120-char name plus the fixed fields, and still catches any future uncapped
-    // string being added to the event.
-    assert!(
-        bytes < 512 * 1024,
-        "one unauthenticated `--client` argument sized broker-audit.json to {bytes} B; \
-         every later brokered command rewrites that file and the Settings panel \
-         re-reads it over IPC every 30 s"
-    );
-    // And the per-command cost stays in the same order as a normal-name refusal
-    // (1.8 ms release / 13 ms debug measured), not two orders above it.
-    assert!(
-        one_more < Duration::from_millis(60),
-        "one refused command cost {one_more:?}"
-    );
+/// The raw client name as the audit log stored it, which is the capped display
+/// label — not the argument the caller passed.
+fn stored_tool_identity(dir: &Path) -> String {
+    let raw = std::fs::read_to_string(dir.join("broker-audit.json")).expect("audit log exists");
+    let file: serde_json::Value = serde_json::from_str(&raw).expect("audit log parses");
+    file["events"][0]["toolIdentity"]
+        .as_str()
+        .expect("an event carries its tool identity")
+        .to_string()
 }

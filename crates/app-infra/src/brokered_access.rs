@@ -1334,9 +1334,15 @@ fn default_grant_identity_source() -> BrokerClientIdentitySource {
 /// costs 210 ms instead of 1.8 ms (every command rewrites the whole file) and
 /// the Settings Access panel re-reads all 62.6 MB over IPC every 30 s to render
 /// 20 rows. Capping the name is the one bound that closes both.
-const MAX_CLIENT_LABEL_CHARS: usize = 120;
+///
+/// BYTES, not chars: the file is measured in bytes and a char is up to four of
+/// them, so a 120-CHAR cap bounds nothing. Measured, 120 emoji push the same file
+/// to 621 KB and one refused command to 915 µs, against 261 KB / 540 µs for 120
+/// ASCII characters — and ASCII is the one shape that makes a char cap look like
+/// a byte cap, which is why the regression test spells all three.
+const MAX_CLIENT_LABEL_BYTES: usize = 120;
 
-/// Cut a collapsed label to [`MAX_CLIENT_LABEL_CHARS`] on a char boundary.
+/// Cut a collapsed label to [`MAX_CLIENT_LABEL_BYTES`] on a char boundary.
 ///
 /// Applied inside `display_client_label`, the ONE collapse both the displayed
 /// name and the identity key run through, so `normalize_client_label` inherits
@@ -1346,15 +1352,20 @@ const MAX_CLIENT_LABEL_CHARS: usize = 120;
 /// could ever match.
 ///
 /// The cap is a collision surface by construction — two names sharing their
-/// first 120 characters become one permission row. 120 is chosen to sit far
-/// above any real tool name while still bounding the audit line.
+/// first 120 bytes become one permission row. 120 is chosen to sit far above any
+/// real tool name while still bounding the audit line.
 fn cap_client_label(collapsed: String) -> String {
-    match collapsed.char_indices().nth(MAX_CLIENT_LABEL_CHARS) {
-        // Re-trim: the cut can land just after a space and leave a trailing one,
-        // which would no longer round-trip through this same collapse.
-        Some((cut, _)) => collapsed[..cut].trim_end().to_string(),
-        None => collapsed,
+    if collapsed.len() <= MAX_CLIENT_LABEL_BYTES {
+        return collapsed;
     }
+    // Back off to the nearest char boundary — at most three bytes, so still O(1).
+    let mut cut = MAX_CLIENT_LABEL_BYTES;
+    while cut > 0 && !collapsed.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    // Re-trim: the cut can land just after a space and leave a trailing one,
+    // which would no longer round-trip through this same collapse.
+    collapsed[..cut].trim_end().to_string()
 }
 
 pub fn normalize_client_label(value: &str) -> Option<String> {
