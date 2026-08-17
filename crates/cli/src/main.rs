@@ -911,7 +911,16 @@ fn verify_granted_scope(
 fn widen_never_answered(error: &CliError) -> bool {
     matches!(
         error.code,
-        "app_unavailable" | "authorization_timeout" | "authorization_busy"
+        // `authorization_window_closed` belongs here: the app raises `denied` +
+        // `closed` when the approval window could NOT be opened (or its waiter was
+        // dropped), never when a user answered — which is exactly why it must not
+        // be spelled `userCancelled`, and why exit 14 is marked retryable. Without
+        // it, a window that failed to open destroys a valid clamped page that the
+        // same call under `--no-prompt` or `busy` would have returned.
+        "app_unavailable"
+            | "authorization_timeout"
+            | "authorization_busy"
+            | "authorization_window_closed"
     )
 }
 
@@ -3204,6 +3213,59 @@ mod tests {
         )
         .await
         .expect("a busy approval channel must not destroy the page already in hand");
+
+        assert_eq!(
+            value["scopeClamped"], true,
+            "the page is still short of what was asked for, and must say so: {value}"
+        );
+        assert_eq!(value["requiredScope"], "allRetained");
+        assert_eq!(
+            window.lock().expect("approval log").len(),
+            1,
+            "the widen was attempted exactly once"
+        );
+    }
+
+    /// `denied` + `closed` is the channel's NON-verdict: the app raises it when
+    /// the approval window could not be opened at all, or when its waiter was
+    /// dropped — never when a user answered, which is exactly why the protocol
+    /// forbids spelling it `userCancelled` and why the CLI marks exit 14
+    /// retryable. Reading it as an answer throws away a page the tool's STANDING
+    /// permission already covers, so a window that failed to open turns a partial
+    /// answer into the "nothing happened in that window" report the clamp marker
+    /// exists to prevent — while `busy` and `--no-prompt` on the identical call
+    /// both hand the page back.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_widen_whose_window_never_opened_keeps_the_clamped_page() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Unopened Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("broker resolves")
+            .upsert_grant_for_identity(identity.clone(), BrokerGrantScope::LAST_DAY)
+            .expect("the client starts on a one-day permission");
+
+        let window = serve_verdicts(|request| {
+            serde_json::json!({
+                "schemaVersion": 1,
+                "requestId": request.request_id,
+                "decision": "denied",
+                "reason": "closed",
+            })
+        });
+        let value = execute_data_request(
+            "timeline",
+            &identity,
+            timeline_request(rfc3339_ms_ago(30 * DAY_MS), rfc3339_ms_ago(0)),
+            true,
+        )
+        .await
+        .expect(
+            "a window that never opened is not a refusal, and must not destroy the page \
+             already in hand",
+        );
 
         assert_eq!(
             value["scopeClamped"], true,
