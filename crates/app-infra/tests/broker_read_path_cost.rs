@@ -1,22 +1,30 @@
-//! Measurement probe for the brokered read path (perf review, ADR 0059 branch).
+//! What a brokered read is allowed to cost (ADR 0041, ADR 0059).
 //!
-//! Public-API only, no database: a request from an identity with NO permission
-//! is refused before `initialize_infra`, so this times exactly the per-command
-//! bookkeeping the branch added — the grants read(s) and the audit rewrite.
+//! A brokered read must stay a READ: no exclusive lock, no config-file rewrite per
+//! call, and no unbounded file growable by an unauthenticated argument. These are
+//! the three claims no unit test in `brokered_access/tests.rs` can make, because
+//! they are about what the read path does NOT do — take a lock another process
+//! holds, and write.
+//!
+//! Public API only, no database: a request from an identity with no permission is
+//! refused before `initialize_infra`, so this exercises exactly the per-command
+//! bookkeeping — the grants read, the stamp, and the audit append.
 
 use app_infra::brokered_access::{
     BrokerClientIdentity, BrokerClientIdentitySource, BrokerGrantScope, BrokerSearchRequest,
     BrokeredCaptureAccess, BrokeredCaptureRequest,
 };
+use fs2::FileExt;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "mnema-broker-perf-{name}-{}-{}",
+        "mnema-broker-read-path-{name}-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -51,194 +59,185 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-fn audit_bytes(dir: &Path) -> u64 {
-    std::fs::metadata(dir.join("broker-audit.json"))
-        .map(|m| m.len())
-        .unwrap_or(0)
-}
-
-/// Drive the refusal path until the audit log is at its 500-event cap, then time
-/// one more refusal. That single call is the whole per-command cost the branch
-/// pays with no permission at all: 1 grants read + a full 500-event audit
-/// read-parse-serialize-write under an exclusive flock.
-#[test]
-fn cost_of_one_refused_command_at_the_audit_cap() {
-    let dir = temp_dir("denial");
-    let access = BrokeredCaptureAccess::from_config_dir(&dir);
-    let rt = runtime();
-    let who = identity("Claude Code");
-
-    // Warm to the cap.
-    for _ in 0..520 {
-        rt.block_on(access.execute_for_identity(who.clone(), search_request()))
-            .unwrap();
-    }
-    let events = access.list_history().unwrap().events.len();
-    let bytes = audit_bytes(&dir);
-
-    let iterations = 200;
-    let start = Instant::now();
-    for _ in 0..iterations {
-        rt.block_on(access.execute_for_identity(who.clone(), search_request()))
-            .unwrap();
-    }
-    let per_call = start.elapsed() / iterations;
-
-    // Split out the read half, so the append's read-parse vs serialize-write
-    // shares are separable.
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(access.list_history().unwrap());
-    }
-    let read_only = start.elapsed() / iterations;
-
-    println!(
-        "REFUSED COMMAND @cap: events={events} audit_file={bytes}B \n  per_call={per_call:?}\n  of which audit read+parse={read_only:?}\n  disk written per call={bytes}B -> {:.1} MB per 60 calls",
-        (bytes as f64 * 60.0) / (1024.0 * 1024.0)
-    );
-}
-
-/// Same command, same identity, but WITH a standing permission — minus the
-/// database, which a granted request would also open. Isolates the branch's
-/// added grants read on the success path.
-#[test]
-fn cost_of_the_doubled_grants_read() {
-    let dir = temp_dir("double");
-    let access = BrokeredCaptureAccess::from_config_dir(&dir);
-    for n in 0..12 {
-        access
-            .upsert_grant_for_identity(identity(&format!("tool {n}")), BrokerGrantScope::LAST_DAY)
-            .unwrap();
-    }
-    let iterations = 2000;
-    // main: one load_grants. HEAD: load_grants + touch_last_used's own load_grants.
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(access.list_grants().unwrap());
-    }
-    let one = start.elapsed() / iterations;
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(access.list_grants().unwrap());
-        app_infra::brokered_access::touch_last_used(&dir, "tool 0").unwrap();
-    }
-    let two = start.elapsed() / iterations;
-    println!("GRANTS: main(1 read)={one:?} head(2 reads)={two:?} delta={:?}", two - one);
-}
-
-/// `load_grants` is what `active_grant_for_identity` runs, and what
-/// `touch_last_used` runs AGAIN a few lines later. Time one, so the doubled
-/// parse has a number.
-#[test]
-fn cost_of_one_grants_read() {
-    let dir = temp_dir("grants");
-    let access = BrokeredCaptureAccess::from_config_dir(&dir);
-    for n in 0..12 {
-        access
-            .upsert_grant_for_identity(identity(&format!("tool {n}")), BrokerGrantScope::LAST_DAY)
-            .unwrap();
-    }
-    let bytes = std::fs::metadata(dir.join("broker-grants.json"))
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap()
-        .len();
-
-    let iterations = 2000;
-    let start = Instant::now();
-    for _ in 0..iterations {
-        std::hint::black_box(access.list_grants().unwrap());
-    }
-    let per_call = start.elapsed() / iterations;
-    println!(
-        "GRANTS READ: rows=12 grants_file={bytes}B per_read={:?}",
-        per_call
-    );
+        .as_millis() as u64
 }
 
-/// The hourly stamp: pre-check read, then flock + read + write (+ a prune write).
+/// The permission file's last-write time. `mtime` rather than a content compare,
+/// because a rewrite that stores the same values is still the flocked write this
+/// path exists to avoid, and content equality cannot see it.
+fn grants_written_at(dir: &Path) -> SystemTime {
+    std::fs::metadata(dir.join("broker-grants.json"))
+        .expect("permission file should exist")
+        .modified()
+        .expect("mtime should be available")
+}
+
+fn back_date_last_used(dir: &Path, unix_ms: u64) {
+    let path = dir.join("broker-grants.json");
+    let raw = std::fs::read_to_string(&path).expect("permission file should exist");
+    let mut file: serde_json::Value = serde_json::from_str(&raw).expect("permission file parses");
+    for grant in file["grants"].as_array_mut().expect("grants array") {
+        grant["lastUsedAtUnixMs"] = serde_json::json!(unix_ms);
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap())
+        .expect("back-dating writes");
+}
+
+fn last_used(dir: &Path, normalized_label: &str) -> u64 {
+    BrokeredCaptureAccess::from_config_dir(dir)
+        .list_grants()
+        .expect("permissions load")
+        .grants
+        .into_iter()
+        .find(|grant| grant.normalized_label == normalized_label)
+        .unwrap_or_else(|| panic!("{normalized_label} should still have a row"))
+        .last_used_at_unix_ms
+}
+
+/// The read path must not queue behind the writers. `active_grant_for_identity`
+/// and the common `touch_last_used` both take the SHARED read only, so a held
+/// approval/prune lock cannot stall a `mnema search` — and if either one ever
+/// starts opening `broker-grants.lock`, every brokered command in flight blocks
+/// on whatever the app is doing to the file (ADR 0041).
+///
+/// A regression here HANGS the read path rather than failing it, so the read runs
+/// on a worker thread against a timeout.
 #[test]
-fn cost_of_the_hourly_stamp() {
+fn a_read_never_queues_behind_the_permission_lock() {
+    let dir = temp_dir("read-lock");
+    let access = BrokeredCaptureAccess::from_config_dir(&dir);
+    access
+        .upsert_grant_for_identity(identity("Claude Code"), BrokerGrantScope::LAST_DAY)
+        .expect("approval stores");
+
+    // Exactly what an approval or a prune holds while it rewrites the file. flock
+    // is per open file description, so a second handle in this same process is as
+    // blocked as another process would be.
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(dir.join("broker-grants.lock"))
+        .expect("lock file opens");
+    lock.lock_exclusive().expect("lock should be free");
+
+    let (done, wait) = std::sync::mpsc::channel();
+    let worker_dir = dir.clone();
+    std::thread::spawn(move || {
+        let access = BrokeredCaptureAccess::from_config_dir(&worker_dir);
+        let read = access.list_grants().map(|file| file.grants.len());
+        let stamp = app_infra::brokered_access::touch_last_used(&worker_dir, "claude code");
+        let _ = done.send((read, stamp));
+    });
+
+    let outcome = wait.recv_timeout(Duration::from_secs(10));
+    lock.unlock().expect("lock releases");
+
+    let (read, stamp) = outcome.expect(
+        "a brokered read blocked on the permission lock: the read path must take the \
+         shared read only, or every `mnema` command waits on whatever the app is \
+         writing (ADR 0041)",
+    );
+    assert_eq!(read.expect("permissions load"), 1);
+    stamp.expect("a fresh stamp is a read and must not need the lock");
+}
+
+/// Coarse stamping, in the two halves that matter: nothing is written inside the
+/// interval no matter how many calls arrive, and a stale row costs ONE write for
+/// the whole burst — not one per call, which is the flocked-rewrite-per-read that
+/// ADR 0041 forbids.
+///
+/// And the stamp is per ROW. If a use stamped every row, no permission would ever
+/// idle-expire: one tool running daily would hold the whole list open forever,
+/// which is the standing-permission version of never expiring at all.
+#[test]
+fn a_stale_stamp_costs_one_write_and_touches_only_the_row_that_was_used() {
     let dir = temp_dir("stamp");
     let access = BrokeredCaptureAccess::from_config_dir(&dir);
-    for n in 0..12 {
+    for label in ["Claude Code", "Codex"] {
         access
-            .upsert_grant_for_identity(identity(&format!("tool {n}")), BrokerGrantScope::LAST_DAY)
-            .unwrap();
+            .upsert_grant_for_identity(identity(label), BrokerGrantScope::LAST_DAY)
+            .expect("approval stores");
     }
 
-    // Fresh stamp: pre-check only, returns without the lock.
-    let iterations = 2000;
-    let start = Instant::now();
-    for _ in 0..iterations {
-        app_infra::brokered_access::touch_last_used(&dir, "tool 0").unwrap();
+    // Inside the interval: no write at all, however many calls arrive.
+    let fresh_at = grants_written_at(&dir);
+    for _ in 0..50 {
+        app_infra::brokered_access::touch_last_used(&dir, "claude code").expect("stamp runs");
     }
-    let fresh = start.elapsed() / iterations;
+    assert_eq!(
+        grants_written_at(&dir),
+        fresh_at,
+        "a stamp inside the interval rewrote the permission file: a brokered read \
+         must not pay a flocked write per call (ADR 0041)"
+    );
 
-    // Force staleness by rewriting the file with an old last_used.
-    let raw = std::fs::read_to_string(dir.join("broker-grants.json")).unwrap();
-    let mut file: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    for grant in file["grants"].as_array_mut().unwrap() {
-        grant["lastUsedAtUnixMs"] = serde_json::json!(1_000_000_000_000u64);
+    let stale_at = now_unix_ms().saturating_sub(3 * 60 * 60 * 1000);
+    back_date_last_used(&dir, stale_at);
+    let before = grants_written_at(&dir);
+
+    app_infra::brokered_access::touch_last_used(&dir, "claude code").expect("stale stamp runs");
+    let after_first = grants_written_at(&dir);
+    assert_ne!(before, after_first, "a stale row must be stamped");
+    assert!(
+        last_used(&dir, "claude code") > stale_at,
+        "the row that was used is stamped"
+    );
+    assert_eq!(
+        last_used(&dir, "codex"),
+        stale_at,
+        "one tool's use must not reset another row's idle clock, or nothing ever \
+         idle-expires"
+    );
+
+    // ...and the burst behind it is free again: the stamp is now fresh.
+    for _ in 0..50 {
+        app_infra::brokered_access::touch_last_used(&dir, "claude code").expect("stamp runs");
     }
-    std::fs::write(
-        dir.join("broker-grants.json"),
-        serde_json::to_string_pretty(&file).unwrap(),
-    )
-    .unwrap();
-
-    let start = Instant::now();
-    app_infra::brokered_access::touch_last_used(&dir, "tool 0").unwrap();
-    let stale = start.elapsed();
-
-    println!("STAMP: fresh(pre-check only)={fresh:?} stale(flock+write)={stale:?}");
+    assert_eq!(
+        grants_written_at(&dir),
+        after_first,
+        "one write for the whole stale burst, not one per call"
+    );
 }
 
 /// NEGATIVE SPACE: what bounds ONE audit event?
 ///
 /// The event count is capped at 500, but `tool_identity` is the client label —
-/// `--client` / `MNEMA_CLI_CLIENT` / `AI_AGENT`, none of them length-capped —
-/// and it is stored twice per event (raw + normalized). On this branch a caller
-/// with NO permission writes one of these per refused command, so the whole file
-/// is sized by an unauthenticated argument.
+/// `--client` / `MNEMA_CLI_CLIENT` / `AI_AGENT`, none of them length-capped at the
+/// wire — and it is stored twice per event (raw + normalized). On this branch a
+/// caller with NO permission writes one of these per refused command, so the whole
+/// file would be sized by an unauthenticated argument.
 #[test]
 fn audit_file_size_is_set_by_an_uncapped_client_label() {
     let dir = temp_dir("bigLabel");
     let access = BrokeredCaptureAccess::from_config_dir(&dir);
     let rt = runtime();
 
-    let label_bytes = 64 * 1024;
-    let who = identity(&"A".repeat(label_bytes));
-
-    let start = Instant::now();
+    let who = identity(&"A".repeat(64 * 1024));
     for _ in 0..520 {
         rt.block_on(access.execute_for_identity(who.clone(), search_request()))
             .unwrap();
     }
-    let fill = start.elapsed();
-    let bytes = audit_bytes(&dir);
+    let bytes = std::fs::metadata(dir.join("broker-audit.json"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
 
-    // One more refused command against the now-bloated file.
+    // One more refused command against the now-filled file.
     let start = Instant::now();
     rt.block_on(access.execute_for_identity(who.clone(), search_request()))
         .unwrap();
     let one_more = start.elapsed();
 
-    // And what the Settings panel pays to render 20 rows out of it.
-    let start = Instant::now();
-    let events = access.list_history().unwrap().events.len();
-    let panel_read = start.elapsed();
-
-    println!(
-        "OVERSIZED LABEL: --client of {label_bytes}B -> audit_file={bytes}B ({:.1} MB)\n  \
-         520 refused commands took {fill:?}\n  \
-         one more refused command: {one_more:?}\n  \
-         one Settings poll (list_cli_access_history) reads/parses {events} events in {panel_read:?}",
-        bytes as f64 / (1024.0 * 1024.0)
-    );
-
-    // REGRESSION BOUND. 500 lines x (raw + normalized name) is the whole file,
-    // so a capped name caps the file. 512 KB leaves ~500 B of room per line for
-    // a 120-char name plus the fixed fields, and still catches any future
-    // uncapped string being added to the event.
+    // REGRESSION BOUND. 500 lines x (raw + normalized name) is the whole file, so
+    // a capped name caps the file. 512 KB leaves ~500 B of room per line for a
+    // 120-char name plus the fixed fields, and still catches any future uncapped
+    // string being added to the event.
     assert!(
         bytes < 512 * 1024,
         "one unauthenticated `--client` argument sized broker-audit.json to {bytes} B; \
@@ -248,7 +247,7 @@ fn audit_file_size_is_set_by_an_uncapped_client_label() {
     // And the per-command cost stays in the same order as a normal-name refusal
     // (1.8 ms release / 13 ms debug measured), not two orders above it.
     assert!(
-        one_more < std::time::Duration::from_millis(60),
+        one_more < Duration::from_millis(60),
         "one refused command cost {one_more:?}"
     );
 }
