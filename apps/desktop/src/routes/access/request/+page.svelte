@@ -15,6 +15,10 @@
     command: string;
     minimumScope: Scope;
     preferredScope: Scope;
+    /// What this tool's standing permission already carries, absent when it holds
+    /// none. An approval SETS the row's scope, so a selection below this one takes
+    /// access away — see narrowsExistingAccess.
+    currentScope: Scope | null;
     createdAt: string;
   };
 
@@ -121,6 +125,21 @@
       : null,
   );
 
+  // Allow must never quietly take access away. Approving SETS the permission's
+  // scope — it is not a widen — and this window pre-selects the request's minimum,
+  // which on some doors sits BELOW what the tool already holds: `mnema access
+  // request --scope last-day` against a full-history permission, or a request whose
+  // needed scope cannot be derived from its arguments. The CLI's widen door asks
+  // for at least what its call needs, so it cannot land here; this covers the rest
+  // by naming the loss before the click, rather than making the permission file
+  // monotonic (which would silently ignore a deliberate narrowing instead).
+  const narrowsExistingAccess = $derived(
+    pendingRequest?.currentScope &&
+      scopeRank[pendingRequest.currentScope] > scopeRank[selectedScope]
+      ? scopeProse[pendingRequest.currentScope]
+      : null,
+  );
+
   // How long this request has been waiting. The hard timeout is CLI-side (~120s),
   // so this is an honesty cue, not a countdown — if the tool stops waiting the
   // approve/deny call surfaces a specific "no longer valid" message instead.
@@ -167,8 +186,13 @@
     loadError = null;
     loading = true;
     try {
+      const previousRequestId = pendingRequest?.requestId;
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
-      if (pendingRequest) {
+      // Only (re)set the selection for a request this page has not shown before.
+      // This runs on every window focus, and a user who widened the scope and then
+      // clicked another app would otherwise come back to find their choice
+      // silently reverted to the minimum — mid-decision, with no indication.
+      if (pendingRequest && pendingRequest.requestId !== previousRequestId) {
         // Pre-select the NARROWEST scope the tool can actually work with — never
         // its `preferredScope`. `--scope all-retained` would otherwise open this
         // window with full history already selected and its danger callout
@@ -192,6 +216,26 @@
         }),
       );
     }
+  }
+
+  // A refused approve means the slot no longer holds what this window rendered.
+  // Swap to the successor if one is waiting; leave the inline "no longer valid"
+  // error standing when nothing is, rather than replacing it with the
+  // contradictory "nothing pending" empty body.
+  async function showSuccessorIfAnyIsWaiting() {
+    let successor: PendingCliAccessRequest | null = null;
+    try {
+      successor = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
+    } catch {
+      // The read failing changes nothing: the inline error already tells the
+      // user this request is done and the window can be closed.
+      return;
+    }
+    if (!successor || successor.requestId === pendingRequest?.requestId) return;
+    pendingRequest = successor;
+    selectedScope = successor.minimumScope;
+    error = null;
+    void tick().then(() => denyButton?.focus());
   }
 
   // On success the backend tears this window down; if that never arrives the
@@ -257,7 +301,10 @@
     startActionWatchdog(() => (approving = false));
     try {
       await invoke("approve_pending_cli_access_request", {
-        approval: { scope: selectedScope },
+        // requestId binds this click to the request this page RENDERED: the
+        // pending slot can be refilled by a different tool between render and
+        // click, and the backend refuses an approval for anything else.
+        approval: { requestId: pendingRequest.requestId, scope: selectedScope },
       });
       // The backend resolves Ok only on a real grant. Show the positive receipt
       // and stand the watchdog down so a slow teardown can't report failure.
@@ -274,6 +321,15 @@
       clearActionWatchdog();
       error = mapActionError(err);
       approving = false;
+      // A refused click means this window was not showing what is pending: the
+      // requester stopped waiting, OR a DIFFERENT tool's request has taken the
+      // slot since we rendered. Only the second case has anything left to
+      // consent to, so re-read and swap to it — nothing was granted, and the
+      // "no longer valid" copy would be wrong for a successor that is still
+      // waiting. A vanished request keeps that copy.
+      if (/no pending CLI Access request/i.test(friendlyError(err))) {
+        await showSuccessorIfAnyIsWaiting();
+      }
     }
   }
 
@@ -515,6 +571,27 @@
           {#if askedForProse}
             <p class="choice-hint">
               <span>This tool asked for {askedForProse}.</span>
+            </p>
+          {/if}
+          {#if narrowsExistingAccess}
+            <!-- Weighted like the full-history callout, because it is the same
+                 kind of fact: what this click does that the user did not ask for.
+                 Allowing REPLACES the permission's scope, so a selection under
+                 what the tool already holds is a revocation wearing an Allow
+                 button. -->
+            <p class="choice-hint choice-hint--danger">
+              <span class="choice-hint__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
+                  <path d="M12 9v4" />
+                  <path d="M12 17h.01" />
+                </svg>
+              </span>
+              <span>
+                <strong>This reduces access it already has.</strong>
+                {pendingRequest.client.label} can currently read {narrowsExistingAccess}; allowing
+                at this setting cuts it back to {scopeProse[selectedScope]}.
+              </span>
             </p>
           {/if}
           {#if isBroadScope}
