@@ -28,6 +28,11 @@ use crate::windows;
 /// Cap on the client-supplied name shown in the approval window, so it can't push
 /// the rest of the consent copy off the sheet.
 const CLIENT_LABEL_MAX_CHARS: usize = 64;
+/// What the window says when the permission could not be written. The retry it
+/// offers is only real because [`restore_pending`] leaves the request in the
+/// slot, so the copy and that restore are one decision.
+const GRANT_WRITE_FAILED: &str =
+    "Couldn't save this permission — nothing was granted. Try again, or deny the request.";
 #[cfg(unix)]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
@@ -42,6 +47,10 @@ pub struct BrokerAuthorizationChannelState {
 struct PendingAuthorizationRequest {
     request: AuthorizationChannelRequest,
     respond: oneshot::Sender<AuthorizationChannelResponse>,
+    /// Has the approval window actually been handed this request? Set by
+    /// [`take_request_for_display`], read by [`cancel_pending`] — it is what makes
+    /// a Deny click an ANSWER rather than a guess. See both for why.
+    rendered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,18 +404,40 @@ fn store_pending(
     if pending.is_some() {
         return false;
     }
-    *pending = Some(PendingAuthorizationRequest { request, respond });
+    *pending = Some(PendingAuthorizationRequest {
+        request,
+        respond,
+        rendered: false,
+    });
     true
+}
+
+/// Hand the pending request to the approval window, and record that the window
+/// has now been shown it.
+///
+/// Every caller of `get_pending_cli_access_request` renders what it gets, so this
+/// flag is exactly "the sheet the user is looking at is about this request" — and
+/// that is what makes a Deny click an ANSWER. The slot is single-flight but not
+/// stable over time: an approval that fails leaves the window up with its inline
+/// error and the slot EMPTY, the socket task then drops the single-flight guard,
+/// and the next client refills the slot while the window — already frontmost, so
+/// `set_focus` fires no `focus` event — keeps showing the previous request.
+/// Without the flag, that user's Deny would answer the unseen successor
+/// `userCancelled`: exit 10, `retryable: false`, "the user refused you" for a
+/// decision nobody made.
+fn take_request_for_display(
+    state: &BrokerAuthorizationChannelState,
+) -> Option<AuthorizationChannelRequest> {
+    let mut slot = state.pending.lock().ok()?;
+    let pending = slot.as_mut()?;
+    pending.rendered = true;
+    Some(pending.request.clone())
 }
 
 #[tauri::command]
 pub fn get_pending_cli_access_request(app: tauri::AppHandle) -> Option<PendingCliAccessRequestDto> {
-    app.state::<BrokerAuthorizationChannelState>()
-        .pending
-        .lock()
-        .ok()
-        .and_then(|pending| pending.as_ref().map(|pending| pending.request.clone()))
-        .map(|request| PendingCliAccessRequestDto {
+    take_request_for_display(&app.state::<BrokerAuthorizationChannelState>()).map(|request| {
+        PendingCliAccessRequestDto {
             request_id: request.request_id,
             client: AuthorizationChannelClient {
                 // The window is now the ONLY consent surface, and it renders this
@@ -421,7 +452,8 @@ pub fn get_pending_cli_access_request(app: tauri::AppHandle) -> Option<PendingCl
             preferred_scope: request.scope.preferred,
             current_scope: current_scope_for_client(&app, &request.client.label),
             created_at: request.created_at,
-        })
+        }
+    })
 }
 
 /// The scope this client's standing permission already carries.
@@ -459,19 +491,11 @@ pub fn approve_pending_cli_access_request(
     app: tauri::AppHandle,
     approval: ApproveCliAccessRequest,
 ) -> Result<(), String> {
-    let pending = take_pending_request_for_approval(&app, &approval)?;
-    let mut request = pending.request;
-    request.scope.preferred = approval.scope;
-    let request_id = request.request_id.clone();
-    let response = BrokerGrantScope::from_wire_name(&request.scope.preferred)
-        .ok_or_else(|| "unknown scope".to_string())
-        .and_then(|scope| create_grant_response(&app, &request, scope))
-        // Stays `invalidRequest` on the wire: the CLI maps an unknown reason to
-        // `app_unavailable`, the one code that `open -b` relaunches an app that
-        // is running and just answered.
-        .unwrap_or_else(|_| unavailable_response(request_id, "invalidRequest"));
-    let outcome = approval_command_outcome(&response);
-    let _ = pending.respond.send(response);
+    let outcome = approve_pending_request_in(
+        &app.state::<BrokerAuthorizationChannelState>(),
+        &approval,
+        |request, scope| create_grant_response(&app, request, scope),
+    );
     if outcome.is_ok() {
         let _ = close_cli_access_request_window(&app);
     }
@@ -482,6 +506,61 @@ pub fn approve_pending_cli_access_request(
     outcome
 }
 
+/// Everything the approve command does to the pending slot, with the permission
+/// write injected — it is the only part that touches disk, and every failure mode
+/// this has to answer for (a full disk, a read-only config dir, an unparseable
+/// `broker-grants.json`) lives in it.
+fn approve_pending_request_in(
+    state: &BrokerAuthorizationChannelState,
+    approval: &ApproveCliAccessRequest,
+    write_grant: impl FnOnce(
+        &AuthorizationChannelRequest,
+        BrokerGrantScope,
+    ) -> Result<AuthorizationChannelResponse, String>,
+) -> Result<(), String> {
+    let mut pending = take_pending_request_for_approval(state, approval)?;
+    pending.request.scope.preferred = approval.scope.clone();
+    let written = BrokerGrantScope::from_wire_name(&pending.request.scope.preferred)
+        .ok_or_else(|| "unknown scope".to_string())
+        .and_then(|scope| write_grant(&pending.request, scope));
+    let response = match written {
+        Ok(response) => response,
+        // The permission could not be WRITTEN — a full disk, a read-only config
+        // dir, an unparseable `broker-grants.json`. Nothing was granted and the
+        // client has not been answered, so this is no verdict on its request: put
+        // the request back instead of consuming it. Answering here spent the CLI's
+        // one question on `unavailable`/`invalidRequest`, which it reports as
+        // "Mnema rejected the access request as malformed" (exit 18,
+        // non-retryable) over a failed disk write — and left the window offering a
+        // "Try again" that could only come back "no pending CLI Access request",
+        // on a slot the next tool was free to take while the window still rendered
+        // this one. The client keeps waiting on its own timeout, and every door
+        // that ends this window still answers it.
+        Err(_) => return Err(restore_pending(state, pending)),
+    };
+    let outcome = approval_command_outcome(&response);
+    let _ = pending.respond.send(response);
+    outcome
+}
+
+/// Put a request nobody answered back in the slot, and name the failure for the
+/// window.
+///
+/// A request that took the slot while the write was in flight keeps it: dropping
+/// this one then resolves its own waiter `denied`/`closed` — retryable — rather
+/// than evicting a live request no window has shown yet.
+fn restore_pending(
+    state: &BrokerAuthorizationChannelState,
+    pending: PendingAuthorizationRequest,
+) -> String {
+    if let Ok(mut slot) = state.pending.lock() {
+        if slot.is_none() {
+            *slot = Some(pending);
+        }
+    }
+    GRANT_WRITE_FAILED.to_string()
+}
+
 /// Ok exactly when the client was handed an approval, i.e. when the permission
 /// file really carries the grant. Every other outcome is an error the window
 /// must surface instead of a receipt.
@@ -489,18 +568,14 @@ fn approval_command_outcome(response: &AuthorizationChannelResponse) -> Result<(
     match response.decision.as_str() {
         "approved" => Ok(()),
         "blocked" => Err("This tool is blocked in Settings. Unblock it there first.".to_string()),
-        _ => Err(
-            "Couldn't save this permission — nothing was granted. Try again, or deny the request."
-                .to_string(),
-        ),
+        _ => Err(GRANT_WRITE_FAILED.to_string()),
     }
 }
 
 fn take_pending_request_for_approval(
-    app: &tauri::AppHandle,
+    state: &BrokerAuthorizationChannelState,
     approval: &ApproveCliAccessRequest,
 ) -> Result<PendingAuthorizationRequest, String> {
-    let state = app.state::<BrokerAuthorizationChannelState>();
     let Ok(mut pending) = state.pending.lock() else {
         return Err("no pending CLI Access request".to_string());
     };
@@ -552,6 +627,13 @@ fn cancel_pending(state: &BrokerAuthorizationChannelState, reason: &str) {
     let Some(pending) = state.pending.lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
+    // A dismissal can only DENY what the window actually showed. The slot can hold
+    // a request this sheet was never re-read for (see [`take_request_for_display`]),
+    // and answering that one `userCancelled` spends the user's click on a tool they
+    // never saw — exit 10, `retryable: false`, never retried. It still has to be
+    // answered or it waits on a window that is going away: `closed` is the honest
+    // verdict-free answer, and the one the CLI retries.
+    let reason = if pending.rendered { reason } else { "closed" };
     let _ = pending
         .respond
         .send(denied_response(pending.request.request_id, reason));
@@ -1340,6 +1422,8 @@ mod tests {
     fn invalid_approval_scope_preserves_pending_request_and_waiter() {
         let (respond, mut receive) = oneshot::channel();
         let mut pending = Some(PendingAuthorizationRequest {
+            // The window showed this one; that is what makes a Deny an answer.
+            rendered: true,
             request: test_authorization_request("allRetained"),
             respond,
         });
@@ -1370,6 +1454,8 @@ mod tests {
         swapped_in.request_id = "request-2".to_string();
         swapped_in.client.label = "A Different Tool".to_string();
         let mut pending = Some(PendingAuthorizationRequest {
+            // The window showed this one; that is what makes a Deny an answer.
+            rendered: true,
             request: swapped_in,
             respond,
         });
@@ -1399,6 +1485,128 @@ mod tests {
             },
         );
         assert!(approved.is_ok());
+    }
+
+    /// A permission that could not be WRITTEN is no verdict on the client's
+    /// request. Consuming the slot on a failed disk write spent the CLI's one
+    /// question on `unavailable`/`invalidRequest` — which it reports as "Mnema
+    /// rejected the access request as malformed", exit 18, `retryable: false` —
+    /// over a full disk or a read-only config dir, while the window told the user
+    /// to "Try again" on a slot that was already empty. The retry has to land on
+    /// the client still waiting, not on whatever took the slot meanwhile.
+    #[test]
+    fn a_grant_that_could_not_be_written_is_not_spent_on_the_waiting_client() {
+        let state = BrokerAuthorizationChannelState::default();
+        let (respond, mut receive) = oneshot::channel();
+        assert!(store_pending(
+            &state,
+            test_authorization_request("lastDay"),
+            respond
+        ));
+        let approval = ApproveCliAccessRequest {
+            request_id: "request-1".to_string(),
+            scope: "lastDay".to_string(),
+        };
+
+        let failed = approve_pending_request_in(&state, &approval, |_, _| {
+            Err("No space left on device".to_string())
+        });
+
+        assert_eq!(
+            failed.unwrap_err(),
+            GRANT_WRITE_FAILED,
+            "the window names the failed write instead of showing a granted receipt"
+        );
+        assert!(
+            matches!(receive.try_recv(), Err(TryRecvError::Empty)),
+            "a disk that would not take the permission is not an answer to the tool"
+        );
+        assert!(
+            state
+                .pending
+                .lock()
+                .expect("the pending slot is readable")
+                .is_some(),
+            "the 'Try again' the window offers has to have something left to retry"
+        );
+
+        // The retry writes the permission for real, and answers the SAME client.
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        approve_pending_request_in(&state, &approval, |request, scope| {
+            create_grant_response_in(config_dir.path(), request, scope)
+        })
+        .expect("the second attempt grants");
+
+        let response = receive
+            .try_recv()
+            .expect("the client that waited through the failure is the one answered");
+        assert_eq!(response.request_id, "request-1");
+        assert_eq!(response.decision, "approved");
+        assert_eq!(
+            response.grant.expect("an approval carries its grant").scope,
+            "lastDay"
+        );
+    }
+
+    /// Deny and Esc may only answer the request the window actually DISPLAYED.
+    /// The slot is single-flight but not stable over time — an approval that fails
+    /// leaves the window up on its inline error, the socket task drops the guard,
+    /// and the next client refills the slot while the window (already frontmost,
+    /// so `set_focus` fires no `focus` event) keeps rendering the previous
+    /// request. Answering that unseen successor `userCancelled` spends a permanent
+    /// refusal — exit 10, `retryable: false` — on a tool nobody was asked about.
+    /// It still has to be answered or it waits on a window that is going away, and
+    /// `closed` is the verdict-free reason the CLI retries.
+    #[test]
+    fn dismissing_the_window_never_refuses_a_request_it_did_not_show() {
+        let state = BrokerAuthorizationChannelState::default();
+        let (respond, mut receive) = oneshot::channel();
+        assert!(store_pending(
+            &state,
+            test_authorization_request("lastDay"),
+            respond
+        ));
+
+        cancel_pending(&state, "userCancelled");
+
+        let response = receive
+            .try_recv()
+            .expect("a request the window is going away on must still be answered");
+        assert_eq!(response.decision, "denied");
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("closed"),
+            "nobody refused this tool: it was never on screen to refuse"
+        );
+    }
+
+    /// The other direction, and the reason being shown has to be RECORDED rather
+    /// than assumed: a refusal the user really gave is final, and the CLI must not
+    /// come back with the same ask. `take_request_for_display` is what
+    /// `get_pending_cli_access_request` calls, so having been read through it is
+    /// exactly "the sheet the user is looking at is about this request".
+    #[test]
+    fn denying_the_request_on_screen_is_still_a_final_refusal() {
+        let state = BrokerAuthorizationChannelState::default();
+        let (respond, mut receive) = oneshot::channel();
+        assert!(store_pending(
+            &state,
+            test_authorization_request("lastDay"),
+            respond
+        ));
+
+        let displayed = take_request_for_display(&state).expect("the window reads the slot");
+        assert_eq!(displayed.request_id, "request-1");
+
+        cancel_pending(&state, "userCancelled");
+
+        let response = receive.try_recv().expect("Deny answers the waiting client");
+        assert_eq!(response.decision, "denied");
+        assert_eq!(
+            response.reason.as_deref(),
+            Some("userCancelled"),
+            "a refusal the user actually gave must not come back as retryable"
+        );
     }
 
     /// The window renders its granted receipt when — and only when — the approve
