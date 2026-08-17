@@ -289,8 +289,12 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
     // single-flight guard held and the pending slot occupied for the life of the
     // app, answering every later request `busy` — a window that is gone can
     // never resolve the waiter, and nothing else will.
+    // Bound outside the future so the borrow outlives it. `None` here is the safe
+    // default — it makes the floor `lastDay` — so this lookup can only ever widen
+    // what the window offers, never narrow the consent guarantee.
+    let current_scope = current_scope_for_client(&app, &request.client.label);
     let verdict = {
-        let wait = await_user_verdict(&state, &request, || {
+        let wait = await_user_verdict(&state, &request, current_scope.as_deref(), || {
             windows::open_cli_access_request_window(&app)
         });
         tokio::pin!(wait);
@@ -345,8 +349,19 @@ async fn peer_hung_up(stream: &mut UnixStream) {
 async fn await_user_verdict(
     state: &BrokerAuthorizationChannelState,
     request: &AuthorizationChannelRequest,
+    current_scope: Option<&str>,
     open_consent_surface: impl FnOnce() -> Result<(), String>,
 ) -> AuthorizationChannelResponse {
+    // The floor the window ENFORCES and PRE-SELECTS is wire input, and the window
+    // disables every option below it — so the clamp belongs on the ONE path that
+    // reaches the window, not at a call site upstream that can be deleted without
+    // a test noticing. `current_scope` defaults SAFE: a caller that passes `None`
+    // gets the narrowest floor, so losing the lookup costs a widen its
+    // pre-selection, never the consent guarantee.
+    let mut request = request.clone();
+    request.scope.minimum = enforced_minimum_scope(&request.scope.minimum, current_scope);
+    let request = &request;
+
     let (send, receive) = oneshot::channel();
     if !store_pending(state, request.clone(), send) {
         return unavailable_response(request.request_id.clone(), "busy");
@@ -475,6 +490,34 @@ fn current_scope_for_client(app: &tauri::AppHandle, label: &str) -> Option<Strin
         .list_grants()
         .ok()?;
     current_scope_in(&grants, label)
+}
+
+/// The floor the approval window enforces and pre-selects for this request.
+///
+/// The wire `minimum` is the requester's own claim, and the window DISABLES every
+/// option below it — so a client declaring `allRetained` makes the entire
+/// retained history the only answer the consent sheet can give, under this app's
+/// own copy asserting the tool requires it. ADR 0059 pins that per door: on a
+/// WIDEN the floor is the scope the call needs (the row already stands narrower,
+/// and an approval SETS the scope, so a narrower answer both fails the call and
+/// takes away access the tool already had), but on a FIRST GRANT it stays at the
+/// narrowest band so a never-seen tool cannot make "All retained" the only thing
+/// the user can grant on its first prompt.
+///
+/// `authorize_wider_access` applies that rule in the CLI — and the CLI is not in
+/// this path. Anything that can open the socket writes this field itself, so the
+/// rule is re-derived here, where it is actually enforced. `preferred` is left
+/// alone: the window still names what the tool asked for, offered rather than
+/// forced.
+fn enforced_minimum_scope(requested_minimum: &str, current_scope: Option<&str>) -> String {
+    match current_scope {
+        // A widen: this client already holds a row, so the floor it states is the
+        // scope its call needs and every narrower answer is a dead end that also
+        // narrows the row.
+        Some(_) => requested_minimum.to_string(),
+        // A first grant: the narrowest band, always.
+        None => BrokerGrantScope::LAST_DAY.wire_name().to_string(),
+    }
 }
 
 fn current_scope_in(grants: &BrokerGrantFile, label: &str) -> Option<String> {
@@ -1029,6 +1072,121 @@ mod tests {
         assert_eq!(current_scope_in(&grants, "Some Other Tool"), None);
     }
 
+    /// `AuthorizationChannelScope.minimum` is wire input from whatever local
+    /// process opened the socket, and the approval window DISABLES every option
+    /// below it. So a first-contact tool that declares `allRetained` makes the
+    /// whole retained history the only answer the sheet can give — under Mnema's
+    /// own copy asserting the tool requires it. ADR 0059 promises that cannot
+    /// happen, and the CLI's copy of the rule is not in this path: anything that
+    /// can open the socket writes this field itself.
+    #[test]
+    fn a_client_mnema_has_never_granted_cannot_state_its_own_floor() {
+        for claimed in ["allRetained", "last7Days", "lastDay"] {
+            assert_eq!(
+                enforced_minimum_scope(claimed, None),
+                "lastDay",
+                "a first prompt offers the narrowest band whatever the tool claims: {claimed}"
+            );
+        }
+
+        // ...and the floor it lands on is one the window can actually answer: the
+        // narrowest selection now validates, where the claimed `allRetained` would
+        // have refused every option below itself.
+        let mut request = test_authorization_request("allRetained");
+        request.scope.minimum = enforced_minimum_scope(&request.scope.minimum, None);
+        assert!(
+            validate_cli_access_approval(
+                &request,
+                &ApproveCliAccessRequest {
+                    request_id: "request-1".to_string(),
+                    scope: "lastDay".to_string(),
+                },
+            )
+            .is_ok(),
+            "one day must be grantable to a tool this machine has never seen"
+        );
+    }
+
+    /// The two tests around this one pin the RULE; this one pins that the rule is
+    /// actually on the path to the window.
+    ///
+    /// Both of them exercise `enforced_minimum_scope` directly, so deleting the
+    /// one line that calls it leaves them green while a first-contact client goes
+    /// straight back to choosing its own floor — the whole defect. The clamp
+    /// therefore lives inside `await_user_verdict`, the single function every
+    /// request reaches the consent surface through, and this reads the request the
+    /// window is actually handed: the consent surface is opened only AFTER
+    /// `store_pending`, so the injected opener sees exactly what the page would.
+    #[tokio::test]
+    async fn the_floor_is_clamped_before_the_window_is_ever_shown_the_request() {
+        let displayed = |current_scope: Option<&'static str>| async move {
+            let state = BrokerAuthorizationChannelState::default();
+            let seen = Arc::new(Mutex::new(None));
+            let probe = seen.clone();
+            // A client claiming it needs everything, on a machine that has never
+            // approved it.
+            let request = test_authorization_request("allRetained");
+
+            let verdict = await_user_verdict(&state, &request, current_scope, || {
+                *probe.lock().expect("probe") =
+                    take_request_for_display(&state).map(|shown| shown.scope.minimum);
+                // Refuse the surface so the waiter resolves instead of parking.
+                Err("no window in a unit test".to_string())
+            })
+            .await;
+
+            assert_eq!(verdict.decision, "denied");
+            let seen = seen.lock().expect("probe").clone();
+            seen.expect("the window is handed the request before it opens")
+        };
+
+        assert_eq!(
+            displayed(None).await,
+            "lastDay",
+            "a tool with no standing permission does not get to set the floor the \
+             window greys every narrower option out below"
+        );
+        assert_eq!(
+            displayed(Some("lastDay")).await,
+            "allRetained",
+            "but a widen keeps the floor its call needs — the row already stands \
+             narrower, so a narrower answer both fails the call and takes access away"
+        );
+    }
+
+    /// The other door. Once a client HOLDS a row, the floor it states is the scope
+    /// its call needs and it has to survive: the row already stands narrower, and
+    /// an approval SETS the scope — so clamping a widen back to the narrowest band
+    /// would offer the user an Allow that both fails the call and takes away access
+    /// the tool already had.
+    #[test]
+    fn a_widen_keeps_the_floor_the_pending_call_actually_needs() {
+        assert_eq!(
+            enforced_minimum_scope("allRetained", Some("lastDay")),
+            "allRetained",
+            "the row stands at one day; anything narrower cannot serve this call"
+        );
+        assert_eq!(
+            enforced_minimum_scope("last7Days", Some("lastDay")),
+            "last7Days"
+        );
+
+        // The narrower selection is exactly the one that must NOT validate here.
+        let mut request = test_authorization_request("allRetained");
+        request.scope.minimum = enforced_minimum_scope(&request.scope.minimum, Some("lastDay"));
+        assert!(
+            validate_cli_access_approval(
+                &request,
+                &ApproveCliAccessRequest {
+                    request_id: "request-1".to_string(),
+                    scope: "lastDay".to_string(),
+                },
+            )
+            .is_err(),
+            "re-granting the scope the row already carries is not a widen"
+        );
+    }
+
     #[test]
     fn socket_path_uses_configured_identifier() {
         let path = socket_path_for_identifier("com.example.mnema-test");
@@ -1151,7 +1309,7 @@ mod tests {
             // user walked away, or it was a window that no longer shows this
             // request. Meanwhile the client gives up.
             let verdict = {
-                let wait = await_user_verdict(&state, &request, || Ok(()));
+                let wait = await_user_verdict(&state, &request, None, || Ok(()));
                 tokio::pin!(wait);
                 drop(client);
                 tokio::time::timeout(Duration::from_secs(2), async {
@@ -1707,7 +1865,7 @@ mod tests {
 
             let verdict = tokio::time::timeout(
                 Duration::from_secs(2),
-                await_user_verdict(&state, &request, || {
+                await_user_verdict(&state, &request, None, || {
                     Err("failed to build the approval window".to_string())
                 }),
             )
