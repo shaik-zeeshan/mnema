@@ -4,10 +4,11 @@ use std::{env, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     format_broker_unix_ms, minimum_scope_for_start, minimum_scope_for_window_start,
-    BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
-    BrokerErrorResponse, BrokerGrant, BrokerGrantScope, BrokerSearchRequest, BrokerSpeaker,
-    BrokerSpeakerCoverage, BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerTimelineRequest,
-    BrokeredCaptureAccess, BrokeredCaptureRequest, BrokeredCaptureResponse,
+    normalize_client_label, BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity,
+    BrokerClientIdentitySource, BrokerErrorResponse, BrokerGrant, BrokerGrantScope,
+    BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerCoverage, BrokerSpeakerTurn,
+    BrokerSpeakersRequest, BrokerTimelineRequest, BrokeredCaptureAccess, BrokeredCaptureRequest,
+    BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
@@ -729,17 +730,9 @@ async fn run_access_command(
         AccessCommand::Revoke { client } => {
             // Blocked, not deleted: a rejection the tool can re-prompt its way
             // out of on the next run is not a rejection (ADR 0059).
-            let blocked = access.block_client(&client).map_err(broker_error)?;
-            println!(
-                "{}",
-                if blocked {
-                    format!(
-                        "Blocked {client}. Re-enable it in Mnema under Settings -> Data -> Access."
-                    )
-                } else {
-                    format!("{client} has no access to block.")
-                }
-            );
+            let changed = access.block_client(&client).map_err(broker_error)?;
+            let grants = access.list_grants().map_err(broker_error)?;
+            println!("{}", access_block_line(&client, changed, &grants.grants));
             Ok(())
         }
     }
@@ -760,15 +753,46 @@ fn access_request_approved_line(grant: &AuthorizationGrant) -> String {
     )
 }
 
+/// What `access revoke` reports.
+///
+/// `block_client` answers whether a row CHANGED, not whether one exists, so an
+/// already-blocked tool returns the same `false` a never-seen one does — and the
+/// two need opposite messages: one block stands, the other never existed.
+/// Reporting "has no access to block" for a tool the user just blocked in
+/// Settings, or blocked here a moment ago, reads as a block that failed to land.
+fn access_block_line(client: &str, changed: bool, grants: &[BrokerGrant]) -> String {
+    if changed {
+        return format!("Blocked {client}. Re-enable it in Mnema under Settings -> Data -> Access.");
+    }
+    // Nothing changed and a row exists ⇒ every matching row was already blocked:
+    // `set_client_blocked` skips only the rows that already carry the state.
+    let stands = normalize_client_label(client).is_some_and(|normalized| {
+        grants
+            .iter()
+            .any(|grant| grant.normalized_label.eq_ignore_ascii_case(&normalized))
+    });
+    if stands {
+        format!(
+            "{client} is already blocked. Re-enable it in Mnema under Settings -> Data -> Access."
+        )
+    } else {
+        format!("{client} has no access to block.")
+    }
+}
+
 /// One line per standing permission: scope, last use, blocked state. There is no
 /// expiry to report — a permission dies 30 days after its last use, and
 /// idle-expired rows are pruned on load, so nothing dead reaches here.
 fn access_status_line(grant: &BrokerGrant) -> String {
-    let state = if grant.blocked {
-        "blocked".to_string()
-    } else {
-        format!("active, {}", scope_flag_name(grant.scope))
-    };
+    // The scope rides on BOTH states: a block is lifted from Settings without
+    // re-picking one, so it is exactly what the tool regains on that click — and
+    // `crates/cli/CONTEXT.md` states twice that the scope prints on every
+    // permission line.
+    let state = format!(
+        "{}, {}",
+        if grant.blocked { "blocked" } else { "active" },
+        scope_flag_name(grant.scope)
+    );
     format!(
         "- {}: {} (last used {})",
         grant.label,
@@ -2616,6 +2640,70 @@ mod tests {
 
         grant.blocked = true;
         assert!(access_status_line(&grant).contains("blocked"));
+    }
+
+    /// A `BrokerGrant` fixture to read a printed line off. The row is what
+    /// `list_grants` hands back, so the state under test is exactly the state
+    /// Settings and the CLI share.
+    fn standing_permission(scope: BrokerGrantScope, blocked: bool) -> BrokerGrant {
+        BrokerGrant {
+            id: "abcdef".to_string(),
+            label: "Claude Code".to_string(),
+            normalized_label: "claude code".to_string(),
+            identity_source: BrokerClientIdentitySource::Explicit,
+            created_at_unix_ms: 1_700_000_000_000,
+            last_used_at_unix_ms: 1_700_000_000_000,
+            scope,
+            blocked,
+            blocked_at_unix_ms: blocked.then_some(1_700_000_000_000),
+        }
+    }
+
+    /// A block is lifted from Settings with one click and no scope picker, so the
+    /// scope on a blocked row is precisely what the tool regains the moment the
+    /// user unblocks it. Printing only "blocked" hides the consequence of that
+    /// click — and `crates/cli/CONTEXT.md` promises, twice, that the scope prints
+    /// per standing permission.
+    #[test]
+    fn a_blocked_permission_still_prints_the_scope_it_would_regain() {
+        let line = access_status_line(&standing_permission(BrokerGrantScope::LAST_7_DAYS, true));
+        assert!(line.contains("blocked"), "{line}");
+        assert!(
+            line.contains("last-7-days"),
+            "unblocking hands this scope straight back, so the line has to name it: {line}"
+        );
+    }
+
+    /// `block_client` answers whether a row CHANGED, not whether one exists, so
+    /// the tool whose block is already standing and the tool Mnema has never
+    /// heard of come back with the same `false`. They need opposite messages:
+    /// telling a user who just blocked a tool — here, or in Settings — that it
+    /// "has no access to block" reads as a block that failed to land, and the
+    /// obvious next move, running it again, says the same thing forever.
+    #[test]
+    fn revoking_a_client_whose_block_already_stands_says_so() {
+        let blocked = [standing_permission(BrokerGrantScope::LAST_DAY, true)];
+
+        let landed = access_block_line("Claude Code", true, &blocked);
+        assert!(landed.starts_with("Blocked Claude Code"), "{landed}");
+
+        // Spelled the way an agent env var would: the row is matched on the
+        // normalized identity, not on the string the user happened to type.
+        let stands = access_block_line("claude-code", false, &blocked);
+        assert!(
+            stands.contains("already blocked"),
+            "a block that is already in place is not a no-op to report as nothing: {stands}"
+        );
+        assert!(
+            !stands.contains("no access to block"),
+            "the block stands — saying it never existed invites the user to doubt it: {stands}"
+        );
+
+        let unknown = access_block_line("Some Other Tool", false, &blocked);
+        assert!(
+            unknown.contains("has no access to block"),
+            "a tool Mnema has never seen has nothing to block: {unknown}"
+        );
     }
 
     #[test]
