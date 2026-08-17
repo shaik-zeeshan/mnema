@@ -229,7 +229,7 @@ impl BrokerGrantScope {
 /// [`BROKER_GRANT_IDLE_TTL_MS`] after its last use, or is `blocked` — a standing
 /// user rejection that is denied without prompting and never idle-expires.
 ///
-/// The `id` is what opaque result ids are HMAC-signed against, so widening a
+/// The `id` is what opaque result ids are MAC-signed against, so widening a
 /// permission MUST keep it (see [`upsert_grant_for_identity`]); minting a new one
 /// would kill every id already handed to a running agent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1350,7 +1350,12 @@ pub fn normalize_client_label(value: &str) -> Option<String> {
         .chars()
         .map(|ch| if ch == '-' || ch == '_' { ' ' } else { ch })
         .collect::<String>();
-    let normalized = display_client_label(&separated).to_lowercase();
+    // Re-cap AFTER lowercasing. `to_lowercase` can GROW a string ('İ' becomes
+    // "i\u{307}"), so a name whose collapsed form sits exactly at the cap would
+    // store a key one char over it — and Settings blocks by the STORED key, which
+    // comes back through this same function. A key this function cannot reproduce
+    // from its own output is a block the user cannot enforce.
+    let normalized = cap_client_label(display_client_label(&separated).to_lowercase());
     if normalized.is_empty() {
         None
     } else {
@@ -1438,6 +1443,18 @@ fn read_grants_file(config_dir: &Path) -> Result<BrokerGrantFile> {
         });
     }
     let raw = fs::read_to_string(path)?;
+    // A zero-length file is the artifact of a crash between `save_grants_locked`'s
+    // rename and the data blocks reaching disk. It holds no permission and no
+    // block, so there is nothing to protect by failing closed on it — and failing
+    // would wedge every brokered command AND the approval upsert that is the only
+    // way out, until someone deletes the file by hand. Non-empty garbage still
+    // fails closed: that may be a mangled block list.
+    if raw.trim().is_empty() {
+        return Ok(BrokerGrantFile {
+            schema_version: 1,
+            grants: Vec::new(),
+        });
+    }
     Ok(normalize_loaded_grant_file(serde_json::from_str(&raw)?))
 }
 
@@ -1451,11 +1468,40 @@ fn load_grants(config_dir: &Path) -> Result<BrokerGrantFile> {
     Ok(grants)
 }
 
+/// Write a file no other account on the machine can read.
+///
+/// The permission file is an access-control store, the audit file names every tool
+/// that read the user's history, and the opaque-id secret is a key. On macOS they
+/// live inside a `0700` app-support directory, so this is the second fence rather
+/// than the only one — but the directory's mode is not this module's to guarantee,
+/// and the mode has to ride the write it protects: these are all temp+rename
+/// writes and a `rename` keeps the TEMP file's mode, so a chmod after the rename
+/// would publish every byte for the window in between.
+///
+/// The mode is set twice on purpose. `mode()` applies only when `open` creates the
+/// file, and a temp file left behind by a crashed write already exists.
+fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)
+}
+
 fn save_grants_locked(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
     let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
     let temp_path = config_dir.join(format!("{BROKER_GRANTS_FILE_NAME}.tmp"));
     let raw = serde_json::to_string_pretty(grants)?;
-    fs::write(&temp_path, raw)?;
+    write_owner_only(&temp_path, raw.as_bytes())?;
     fs::rename(temp_path, path)?;
     Ok(())
 }
@@ -1556,19 +1602,29 @@ fn record_audit_event(
     // `mnema` appends one just by asking for access it does not have, and a
     // blocked tool still reaches this sink. Plain FIFO would let a few hundred
     // refusals erase every record of what an APPROVED tool actually read — the
-    // same eviction that took Ask AI out of this log in this change. So refusals
-    // are dropped first and can never push out access evidence.
+    // same eviction that took Ask AI out of this log in this change. So OLD
+    // refusals are dropped first, and only when none are left does plain FIFO run.
+    //
+    // The event just pushed is exempt from that scan. Without the exemption, a log
+    // whose 500 lines are all successes — the steady state of any approved tool —
+    // evicts every NEW refusal on arrival and can never again answer "did anything
+    // try and get turned away", which is the question this log exists for. A
+    // denial flood still costs at most ONE non-denied line in total: every later
+    // denial recycles the previous denial's slot.
     // ponytail: only `denied` is unauthenticated; a flood of `scope_rejected`
     // still needs an approved permission, and is itself evidence. Split their
     // budgets if that ever stops being true.
     let mut over = audit.events.len().saturating_sub(MAX_AUDIT_EVENTS);
     if over > 0 {
+        let newest = audit.events.len() - 1;
+        let mut index = 0;
         audit.events.retain(|event| {
-            if over > 0 && event.outcome.as_deref() == Some("denied") {
+            let drop = over > 0 && index < newest && event.outcome.as_deref() == Some("denied");
+            index += 1;
+            if drop {
                 over -= 1;
-                return false;
             }
-            true
+            !drop
         });
         audit.events.drain(0..over);
     }
@@ -1576,7 +1632,7 @@ fn record_audit_event(
     // truncates the log before it writes a byte, so a crash or a full disk
     // partway through is what leaves the unparseable file handled above.
     let temp_path = config_dir.join(format!("{BROKER_AUDIT_FILE_NAME}.tmp"));
-    let result = fs::write(&temp_path, serde_json::to_string_pretty(&audit)?)
+    let result = write_owner_only(&temp_path, serde_json::to_string_pretty(&audit)?.as_bytes())
         .and_then(|()| fs::rename(&temp_path, &path));
     let unlock_result = lock.unlock();
     match (result, unlock_result) {
@@ -1978,7 +2034,7 @@ fn random_grant_id() -> String {
 /// The one way a CLI Access permission is written.
 ///
 /// UPSERT, never append: at most one row per normalized identity. An existing row
-/// is mutated IN PLACE and **keeps its id** — opaque result ids are HMAC-signed
+/// is mutated IN PLACE and **keeps its id** — opaque result ids are MAC-signed
 /// against the issuing grant id, so re-minting it on a widen would fail
 /// re-authorization for every id already handed to a running agent, mid-task.
 ///
@@ -3201,6 +3257,35 @@ pub fn signed_opaque_capture_reference(
     Ok(decode_signed_opaque_id(value, &secret))
 }
 
+/// The opaque id's tag: a secret-prefix MAC, `SHA-256(secret ‖ ':' ‖ payload)`
+/// truncated to 128 bits — deliberately NOT HMAC, and here is why that is sound.
+///
+/// A secret-prefix MAC's one real weakness is length extension: SHA-256's digest
+/// IS its final internal state, so anyone holding a tag can continue hashing and
+/// produce a valid tag for `payload ‖ padding ‖ suffix` without the secret. Three
+/// independent things stop that here, and each is enough on its own:
+///
+/// 1. **Truncation.** Only 16 of the 32 digest bytes are published, so a forger
+///    never learns the state to continue from and would have to guess the other
+///    128 bits. This is why the truncation is load-bearing, not cosmetic.
+/// 2. **Extension can only APPEND, and the parts that matter are at the front.**
+///    A payload is `<kind><hex id>[:g<grant id>]` (see [`encode_signed_opaque_id`]):
+///    the kind and the row id are the head, so no appended suffix can retarget the
+///    id at a different frame or audio segment.
+/// 3. **The grant id runs to the end of the payload, and the FIRST `:g` wins**
+///    ([`decode_opaque_payload`]). Appending `:g<other grant>` therefore does not
+///    replace the grant id — it lands *inside* it, yielding one long id that
+///    matches no row, and [`broker_authorize_opaque_reference`] refuses on it. So
+///    an extension cannot borrow a wider permission's scope either.
+///
+/// The comparison in [`opaque_signature_matches`] is constant-time over equal
+/// lengths, so the tag cannot be walked out byte by byte either.
+///
+/// ponytail: hand-rolled secret-prefix MAC, sound only for this fixed-shape,
+/// head-anchored payload. Anything with attacker-chosen or trailing-significant
+/// fields — or a full-width tag — needs real HMAC-SHA256 first (`hmac` is not a
+/// dependency; the crate already has `sha2`, so a 30-line HMAC or the crate, either
+/// way). Do not copy this construction to a new payload without re-checking 2 and 3.
 fn opaque_signature(payload: &str, secret: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(secret);
@@ -3254,8 +3339,7 @@ fn load_or_create_opaque_secret(config_dir: &Path) -> Result<Vec<u8>> {
 
     let mut secret = vec![0_u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
-    let mut file = File::create(path)?;
-    file.write_all(&secret)?;
+    write_owner_only(&path, &secret)?;
     let unlock_result = lock.unlock();
     unlock_result?;
     Ok(secret)

@@ -864,6 +864,50 @@ fn signed_opaque_capture_reference_requires_broker_signature() {
     );
 }
 
+/// The two parse properties that make the secret-prefix MAC in
+/// [`opaque_signature`] sound without HMAC. Both are one refactor away from being
+/// lost silently — `rsplit_once(":g")` instead of `split_once`, or a wider tag —
+/// and neither shows up in any round-trip test, because a round trip only ever
+/// sees ids this broker itself signed.
+#[test]
+fn an_appended_opaque_payload_can_never_name_another_grant() {
+    let secret = b"test broker opaque secret with enough bytes";
+    let signed = encode_signed_opaque_id("frame", 17, Some("grant-a"), secret);
+    let (payload, signature) = signed.split_once('.').expect("signed ids carry a tag");
+
+    // Half of SHA-256's 256-bit state is published, so there is no state to
+    // continue hashing from: a length-extension forgery would have to guess it.
+    // Literal, not the constant: widening BOTH would keep a self-comparison green.
+    assert_eq!(
+        signature.len(),
+        32,
+        "the tag must stay truncated to 128 bits: a full-width secret-prefix tag IS \
+         the state a length extension continues from"
+    );
+    assert_eq!(
+        OPAQUE_SIGNATURE_HEX_LEN,
+        signature.len(),
+        "the decoder's length gate must match the tag it verifies"
+    );
+
+    // What a length extension produces: the same tag, a longer payload. Rejected
+    // because the tag no longer matches — the recomputation covers the suffix.
+    let extended = format!("{payload}\u{80}:ggrant-b.{signature}");
+    assert_eq!(decode_signed_opaque_id(&extended, secret), None);
+
+    // And even granting the forger a valid tag, an appended grant id is not the
+    // one the parse reports: the FIRST `:g` wins, so the suffix lands inside the
+    // grant id and resolves to no row at all.
+    let (kind, id, grant_id) =
+        decode_opaque_payload(&format!("{payload}x:ggrant-b")).expect("shape still parses");
+    assert_eq!(
+        (kind.as_str(), id),
+        ("frame", 17),
+        "the head is unreachable"
+    );
+    assert_eq!(grant_id.as_deref(), Some("grant-ax:ggrant-b"));
+}
+
 #[test]
 fn broker_search_page_mixes_kinds_by_rank_before_applying_limit() {
     let secret = b"test broker opaque secret with enough bytes";
@@ -6756,7 +6800,7 @@ fn a_truncated_activity_log_does_not_brick_every_later_command() {
 // ---------------------------------------------------------------------------
 
 /// The property the manual drill's step 5 checks and `AGENTS.md` calls unseeable
-/// by a unit test. It is seeable: an opaque result id is HMAC-signed against the
+/// by a unit test. It is seeable: an opaque result id is MAC-signed against the
 /// issuing grant id, and re-authorization resolves the ISSUING ROW by that id, so
 /// the whole loop runs offline against a temp config dir.
 ///
@@ -7479,4 +7523,216 @@ fn activities_clamps_its_window_but_carries_no_clamp_marker() {
             "activities deliberately carries no clamp marker: {wire}"
         );
     });
+}
+
+/// Settings blocks a tool by the `normalizedLabel` it read out of `list_grants`
+/// (`setGrantBlocked` in `cli-access.svelte.ts`), and `set_client_blocked`
+/// re-normalizes that input before matching — so `normalize_client_label` must be
+/// IDEMPOTENT: normalizing a stored key has to return that key unchanged.
+///
+/// The trap is ordering. The 120-char cap ran before `.to_lowercase()`, and
+/// lowercasing can GROW a string ('İ' becomes "i\u{307}"), so a 120-char name
+/// ending in 'İ' stored a 121-char key that a second normalize pass cut back to
+/// 120. The block then matched nothing, returned `false` — which the frontend
+/// ignores — and the tool kept its standing permission.
+#[test]
+fn a_block_keyed_on_the_listed_normalized_label_always_lands() {
+    let config_dir = temp_config_dir("block-by-listed-key");
+    let label = format!("{}İ", "x".repeat(119));
+    let grant =
+        create_grant(&config_dir, &label, BrokerGrantScope::LAST_DAY).expect("approval stores");
+    assert_eq!(
+        normalize_client_label(&grant.normalized_label),
+        Some(grant.normalized_label.clone()),
+        "normalize_client_label must be idempotent on its own output"
+    );
+    assert!(
+        block_client(&config_dir, &grant.normalized_label).expect("block runs"),
+        "blocking by the row's own listed key must find the row"
+    );
+    assert!(
+        stored_grants(&config_dir)[0].blocked,
+        "the row Settings pointed at is the row that got blocked"
+    );
+}
+
+/// A crash between `save_grants_locked`'s rename and the data blocks reaching
+/// disk leaves a ZERO-LENGTH permission file, and this file is now rewritten far
+/// more often than before (every hourly stamp, every prune). An empty file holds
+/// no permission and no block, so it must read as "no rows" rather than wedge
+/// every brokered command AND the approval upsert that is the only way out.
+#[test]
+fn an_empty_permission_file_reads_as_no_rows_instead_of_wedging_the_broker() {
+    let config_dir = temp_config_dir("empty-grants-file");
+    fs::write(config_dir.join(BROKER_GRANTS_FILE_NAME), "").expect("empty file writes");
+    assert!(load_grants(&config_dir)
+        .expect("an empty permission file is an absent one")
+        .grants
+        .is_empty());
+    let grant = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY)
+        .expect("an approval must be able to overwrite an empty file");
+    assert_eq!(stored_grants(&config_dir), vec![grant]);
+}
+
+/// The dual of `a_flood_of_denied_requests_cannot_evict_the_record_of_an_approved_read`:
+/// denied-first eviction must not swallow the refusal being recorded RIGHT NOW.
+/// A log whose 500 lines are all successes — what any approved tool produces over
+/// a few weeks — dropped every new `denied` line on arrival, permanently, so the
+/// log could never again answer "did anything try and get turned away".
+#[test]
+fn a_success_full_log_still_records_the_next_denial() {
+    let config_dir = temp_config_dir("denial-after-successes");
+    let who =
+        || BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap();
+    for _ in 0..MAX_AUDIT_EVENTS {
+        record_audit_event(
+            &config_dir,
+            who(),
+            "search",
+            1,
+            "time_scoped",
+            Some("grant-1".to_string()),
+            "success",
+        )
+        .expect("success records");
+    }
+    record_audit_event(&config_dir, who(), "search", 0, "none", None, "denied")
+        .expect("denial call returns");
+    let audit = load_audit_events(&config_dir).expect("audit loads");
+    assert_eq!(audit.events.len(), MAX_AUDIT_EVENTS, "the cap still holds");
+    assert_eq!(
+        audit.events.last().and_then(|e| e.outcome.as_deref()),
+        Some("denied"),
+        "a refusal against a success-full log must leave a trace"
+    );
+
+    // And the flood property is intact: a second denial recycles the FIRST one's
+    // slot rather than eating another success line.
+    record_audit_event(&config_dir, who(), "search", 0, "none", None, "denied")
+        .expect("second denial records");
+    let audit = load_audit_events(&config_dir).expect("audit loads");
+    assert_eq!(audit.events.len(), MAX_AUDIT_EVENTS);
+    assert_eq!(
+        audit
+            .events
+            .iter()
+            .filter(|e| e.outcome.as_deref() == Some("denied"))
+            .count(),
+        1,
+        "later denials recycle the denial slot instead of eating more successes"
+    );
+    assert_eq!(
+        audit
+            .events
+            .iter()
+            .filter(|e| e.outcome.as_deref() == Some("success"))
+            .count(),
+        MAX_AUDIT_EVENTS - 1
+    );
+}
+
+/// ADR 0059 §No migration: "The new shape is written and any old file is
+/// ignored." Pin the whole claim against a byte-for-byte pre-ADR file — the
+/// append-only shape, with two rows for one identity, a LIVE calendar expiry and
+/// a revoked row. It must parse (not brick every broker call), read as no
+/// permission (not resurrect access from `expiresAtUnixMs`), and a fresh approval
+/// must land as exactly one new-shape row.
+#[test]
+fn a_pre_adr_0059_permission_file_is_ignored_and_reapproval_recovers() {
+    let config_dir = temp_config_dir("pre-adr-file");
+    let now = now_unix_ms();
+    let old = format!(
+        r#"{{
+  "schemaVersion": 1,
+  "grants": [
+    {{
+      "id": "18ce0a-0",
+      "label": "Claude Code",
+      "normalizedLabel": "claude code",
+      "identitySource": "explicit",
+      "createdAtUnixMs": {created},
+      "expiresAtUnixMs": {future},
+      "scope": {{"recent_days":{{"days":1}}}},
+      "revoked": false,
+      "revokedAtUnixMs": null
+    }},
+    {{
+      "id": "18ce0b-1",
+      "label": "Claude Code",
+      "normalizedLabel": "claude code",
+      "identitySource": "explicit",
+      "createdAtUnixMs": {created},
+      "expiresAtUnixMs": {future},
+      "scope": "all_retained_history",
+      "revoked": true,
+      "revokedAtUnixMs": {created}
+    }}
+  ]
+}}"#,
+        created = now - 1_000,
+        future = now + 24 * 60 * 60 * 1000
+    );
+    fs::write(config_dir.join(BROKER_GRANTS_FILE_NAME), old).expect("old file writes");
+
+    let grants = load_grants(&config_dir).expect("a pre-ADR file must parse, not brick");
+    assert!(
+        grants.grants.is_empty(),
+        "pre-ADR rows must read as long dead, even mid-calendar-window: {:?}",
+        grants.grants
+    );
+
+    let created =
+        create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY).expect("re-approval");
+    let rows = stored_grants(&config_dir);
+    assert_eq!(
+        rows.len(),
+        1,
+        "one standing row, old rows gone from disk too"
+    );
+    assert_eq!(rows[0].id, created.id);
+}
+
+/// Three files, one mode. The permission file decides what a tool may read, the
+/// audit file names every tool that read anything, and the opaque secret is a key.
+///
+/// The grants and audit files only ever ARRIVE by `rename`, which keeps the temp
+/// file's mode — so asserting the mode of the visible file is also the only way to
+/// pin the temp file's, and the pre-created `0666` temp below is the crashed-write
+/// leftover that `mode()`-on-create alone would not fix.
+#[cfg(unix)]
+#[test]
+fn the_broker_files_are_written_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let config_dir = temp_config_dir("owner-only-modes");
+    let leftover = config_dir.join(format!("{BROKER_GRANTS_FILE_NAME}.tmp"));
+    fs::write(&leftover, "{}").expect("leftover temp writes");
+    fs::set_permissions(&leftover, fs::Permissions::from_mode(0o666))
+        .expect("leftover temp is world-writable");
+
+    create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY).expect("approval stores");
+    record_audit_event(
+        &config_dir,
+        BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap(),
+        "search",
+        1,
+        "time_scoped",
+        Some("grant-1".to_string()),
+        "success",
+    )
+    .expect("audit records");
+    load_or_create_opaque_secret(&config_dir).expect("secret mints");
+
+    for name in [
+        BROKER_GRANTS_FILE_NAME,
+        BROKER_AUDIT_FILE_NAME,
+        BROKER_OPAQUE_SECRET_FILE_NAME,
+    ] {
+        let mode = fs::metadata(config_dir.join(name))
+            .expect("file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "{name} is readable beyond its owner: {mode:o}");
+    }
 }
