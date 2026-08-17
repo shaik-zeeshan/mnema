@@ -7736,3 +7736,93 @@ fn the_broker_files_are_written_owner_only() {
         assert_eq!(mode, 0o600, "{name} is readable beyond its owner: {mode:o}");
     }
 }
+
+/// The crash artifact `write_owner_only`'s fsync exists to make impossible — and
+/// the half of it a test can actually reach.
+///
+/// `rename` is ordered against the directory entry, not against the data blocks,
+/// so a crash between the two published an entry carrying the new SIZE over
+/// blocks that were never written: a permission file of exactly the right length,
+/// full of NULs. That is not `trim`-empty, so the zero-length crash-artifact
+/// branch never sees it — it reaches `serde_json` and hard-fails, wedging every
+/// door including the approval upsert that is the only way back.
+///
+/// Failing closed there is DELIBERATE and has to stay. A right-length unreadable
+/// file may be a mangled BLOCK list, and reading it as "no rows" would turn a
+/// standing rejection into an open door — so the fix belongs upstream, where the
+/// fsync makes the artifact unreachable, not here in a widened tolerance. This
+/// pins the fail-closed half and the healthy round-trip through the same writer.
+///
+/// The fsync ITSELF is not pinnable from inside the process: nothing here can cut
+/// power between the write and the rename.
+#[test]
+fn a_right_length_permission_file_full_of_nuls_fails_closed_instead_of_reading_as_empty() {
+    let config_dir = temp_config_dir("nul-filled-grants");
+    let path = config_dir.join(BROKER_GRANTS_FILE_NAME);
+
+    // The healthy round trip first: what this writer publishes is whole and reads
+    // back as the permission that was approved.
+    let grant =
+        create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_DAY).expect("approval");
+    let written = fs::read(&path).expect("the permission file should exist");
+    assert!(
+        !written.contains(&0),
+        "a published permission file must carry no unwritten blocks"
+    );
+    assert_eq!(stored_grants(&config_dir), vec![grant]);
+
+    // The artifact: same length, none of the data.
+    fs::write(&path, vec![0_u8; written.len()]).expect("nul-filled file writes");
+    assert!(
+        load_grants(&config_dir).is_err(),
+        "a right-length unreadable permission file must fail CLOSED — it may be a \
+         mangled block list, and reading it as `no rows` silently reopens access \
+         the user shut off"
+    );
+}
+
+/// The quarantine holds the only surviving copy of who read the user's history,
+/// and `rename` overwrites. A log that lost its tail to a half-finished write
+/// still carries every earlier line; the log that replaces it is one line old and
+/// carries nothing. So a SECOND corruption erasing the first quarantine is
+/// exactly the loss this quarantine exists to prevent, happening to the
+/// quarantine itself.
+#[test]
+fn a_second_corruption_does_not_overwrite_the_quarantined_evidence() {
+    let config_dir = temp_config_dir("audit-quarantine-twice");
+    let audit_path = config_dir.join(BROKER_AUDIT_FILE_NAME);
+    let quarantine_path = config_dir.join("broker-audit.json.corrupt");
+    let who =
+        || BrokerClientIdentity::new("Claude Code", BrokerClientIdentitySource::Explicit).unwrap();
+
+    // The real evidence: a long log that lost its tail mid-write, still naming
+    // the tool that read the user's history.
+    let evidence = "{\n  \"schemaVersion\": 1,\n  \"events\": [\n    {\n      \
+                    \"toolIdentity\": \"Snoop\",\n      \"commandType\": \"search\",\n      \
+                    \"resultCount\": 412";
+    fs::write(&audit_path, evidence).expect("a partial write should land");
+    record_audit_event(&config_dir, who(), "search", 0, "none", None, "denied")
+        .expect("a corrupt log must not fail the command that writes it");
+    assert_eq!(
+        fs::read_to_string(&quarantine_path).expect("the first corruption is quarantined"),
+        evidence
+    );
+
+    // Now a second corruption, on the fresh log that carries one line.
+    fs::write(&audit_path, "{").expect("a second partial write should land");
+    record_audit_event(&config_dir, who(), "search", 0, "none", None, "denied")
+        .expect("a second corrupt log must not fail the command either");
+
+    assert_eq!(
+        fs::read_to_string(&quarantine_path).expect("the quarantine should still exist"),
+        evidence,
+        "the second corruption overwrote the only record of which tool read the \
+         user's history: a quarantine a later crash can erase is not a quarantine"
+    );
+    let audit = load_audit_events(&config_dir).expect("the log should be readable again");
+    assert_eq!(
+        audit.events.len(),
+        1,
+        "and the live log recovered from both corruptions: {audit:?}"
+    );
+}

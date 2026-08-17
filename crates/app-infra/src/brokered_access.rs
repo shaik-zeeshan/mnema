@@ -1509,7 +1509,25 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    file.write_all(bytes)
+    file.write_all(bytes)?;
+    // Durable BEFORE the rename that publishes it. `rename` is ordered against
+    // the directory entry, not against the data blocks, so without this a crash
+    // in between leaves an entry carrying the new SIZE over blocks that were
+    // never written — a file of the right length full of NULs. That artifact is
+    // not `trim`-empty, so `read_grants_file`'s crash-artifact branch does not
+    // catch it and `serde_json` hard-fails: every door errors at once, including
+    // the approval upsert that is the only way back, and CLI Access stays bricked
+    // until someone deletes the file by hand.
+    //
+    // Syncing here rather than widening that branch keeps the permission file
+    // fail-CLOSED on garbage: the tolerant branch's rationale ("holds no
+    // permission and no block") is false for a file that did hold a block, so
+    // making the artifact impossible is the fix, not learning to read it.
+    //
+    // The directory entry is deliberately NOT synced: losing the rename leaves
+    // the OLD file, which is safe. Costs one fsync per write — the audit log's is
+    // the only per-command one, at well under the process spawn it rides on.
+    file.sync_all()
 }
 
 fn save_grants_locked(config_dir: &Path, grants: &BrokerGrantFile) -> Result<()> {
@@ -1596,7 +1614,18 @@ fn record_audit_event(
     // `authorizationRequired` its approval flow keys off. Quarantine the bytes
     // that are left and start a fresh log.
     let mut audit = load_audit_events(config_dir).unwrap_or_else(|_| {
-        let _ = fs::rename(&path, path.with_extension("json.corrupt"));
+        // Never over an existing quarantine. `rename` overwrites, and the file
+        // already sitting there is the one holding real evidence: a log that lost
+        // its tail to a half-finished write still carries every earlier line of
+        // which tool read the user's history, and it is the only copy there is. A
+        // second corruption erasing it is the loss this quarantine exists to
+        // prevent, happening to the quarantine itself.
+        // ponytail: one slot, first corruption wins. Uniquify the name if a
+        // second one ever needs keeping — but not by littering the config dir.
+        let quarantine = path.with_extension("json.corrupt");
+        if !quarantine.exists() {
+            let _ = fs::rename(&path, &quarantine);
+        }
         BrokerAuditFile {
             schema_version: default_schema_version(),
             events: Vec::new(),
