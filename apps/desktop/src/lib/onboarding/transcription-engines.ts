@@ -5,8 +5,8 @@
 // else: download bytes straight from the manifest the backend already ships,
 // plus memory from the measured table below. The three engines have never been
 // benchmarked against each other in this build, so speed and accuracy are not
-// ranked here — `Providers.svelte` draws those two axes as empty hatched tracks
-// rather than inventing a winner.
+// ranked here and `Providers.svelte` does not draw them at all — an unmeasured
+// axis is left off the screen, not drawn as an empty track.
 //
 // Pure: no Svelte, no `invoke`. `Providers.svelte` renders what this returns.
 

@@ -8,9 +8,9 @@
    · One engine is RECOMMENDED and says why; the other two carry their price as
      a real delta (download from the manifest, memory from the measured table in
      `transcription-engines.ts`). "Use recommended" always walks it back.
-   · Speed and accuracy are drawn as EMPTY hatched tracks. Nobody has
-     benchmarked these three against each other in this build, so an ordering
-     here would be the most load-bearing lie on the screen. Do not fill them.
+   · Only measured axes are shown: download and memory. Speed/accuracy are not
+     benchmarked in this build, so they are not drawn at all — don't add an
+     empty track back, add the benchmark.
    · Deepgram is named in a disclosure instead of shown as a disabled radio.
      ADR 0047 is unchanged: cloud transcription is Settings-only behind a
      consent gate, and it is still filtered out of the list this component gets.
@@ -132,22 +132,10 @@
     {/if}
   </div>
 
-  <div class="axes">
-    <span class="ax">
-      <span class="ml"><span>speed</span><span>not ranked</span></span>
-      <i class="trk none"></i>
-    </span>
-    <span class="ax">
-      <span class="ml"><span>accuracy</span><span>not ranked</span></span>
-      <i class="trk none"></i>
-    </span>
-    <p class="axn">
-      <b>Not ranked.</b> These engines have never been benchmarked against each other in this
-      build, so the two tracks stay empty instead of inventing a winner. The one ordering the
-      manifest does state is memory: Parakeet uses the most. Memory figures are measured on a
-      running app, not published in any manifest — they always read “about”.
-    </p>
-  </div>
+  <p class="axn">
+    Memory figures are measured on a running app, not published in any manifest — they always
+    read “about”. The one ordering the manifest states is memory: Parakeet uses the most.
+  </p>
 
   <details class="cloud">
     <summary>Where's the cloud option?</summary>
@@ -268,9 +256,6 @@
   .card[aria-checked="true"] .ml {
     color: var(--app-text-muted);
   }
-  .axes .ml {
-    color: var(--app-text-faint);
-  }
   .trk {
     display: block;
     height: 4px;
@@ -327,27 +312,13 @@
     color: var(--app-warn);
   }
 
-  .axes {
-    margin-top: 12px;
+  .axn {
+    margin: 10px 0 0;
     padding-top: 10px;
     border-top: 1px dashed var(--app-border);
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px 12px;
-  }
-  .ax {
-    display: block;
-  }
-  .axn {
-    grid-column: 1 / -1;
-    margin: 4px 0 0;
     font-size: var(--text-xs);
     line-height: 1.65;
     color: var(--app-text-subtle);
-  }
-  .axn b {
-    color: var(--app-text-muted);
-    font-weight: 600;
   }
 
   .cloud {
