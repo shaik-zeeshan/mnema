@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{async_runtime::JoinHandle, Emitter, Manager};
 #[cfg(test)]
 use time::{format_description, PrimitiveDateTime};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::sync::watch;
 
 pub type AppInfraState = Arc<::app_infra::AppInfra>;
@@ -1186,48 +1186,6 @@ impl From<::app_infra::SegmentWorkspaceCleanupDebugInfo> for SegmentWorkspaceCle
                 .collect(),
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn audio_file_duration_ms(file_path: &str) -> Option<u64> {
-    use cidre::{av, ns};
-
-    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-    let result = {
-        let url = ns::Url::with_fs_path_str(file_path, false);
-        let asset = av::UrlAsset::with_url(&url, None)?;
-        let duration_seconds = asset.duration().as_secs();
-        if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
-            return None;
-        }
-
-        Some((duration_seconds * 1_000.0).round() as u64)
-    };
-
-    result
-}
-
-#[cfg(target_os = "macos")]
-fn rfc3339_plus_duration_ms(started_at: &str, duration_ms: u64) -> Option<String> {
-    let start = OffsetDateTime::parse(started_at, &Rfc3339).ok()?;
-    let end = start.checked_add(time::Duration::milliseconds(duration_ms.try_into().ok()?))?;
-    end.format(&Rfc3339).ok()
-}
-
-#[cfg(target_os = "macos")]
-fn audio_segment_dto_with_media_duration(segment: ::app_infra::AudioSegment) -> AudioSegmentDto {
-    let mut dto = AudioSegmentDto::from(segment);
-    if let Some(duration_ms) = audio_file_duration_ms(&dto.file_path) {
-        if let Some(ended_at) = rfc3339_plus_duration_ms(&dto.started_at, duration_ms) {
-            dto.ended_at = ended_at;
-        }
-    }
-    dto
-}
-
-#[cfg(not(target_os = "macos"))]
-fn audio_segment_dto_with_media_duration(segment: ::app_infra::AudioSegment) -> AudioSegmentDto {
-    AudioSegmentDto::from(segment)
 }
 
 impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
@@ -3115,7 +3073,9 @@ async fn process_pending_jobs_once(
 
 #[cfg(test)]
 fn parse_job_timestamp(value: &str) -> Option<OffsetDateTime> {
-    if let Ok(parsed) = OffsetDateTime::parse(value, &Rfc3339) {
+    if let Ok(parsed) =
+        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+    {
         return Some(parsed);
     }
 
@@ -4815,12 +4775,14 @@ pub async fn list_audio_segments(
             None,
         )
         .await
-        .map(|segments| {
-            segments
-                .into_iter()
-                .map(audio_segment_dto_with_media_duration)
-                .collect()
-        })
+        // The persisted `ended_at` is already media-accurate: the row is only
+        // written once the file is complete, from the real AVAsset duration
+        // (`audio_segment_window_for_file`). Re-probing every row on every list
+        // call opened an `AVURLAsset` per segment on a ~1 Hz IPC path and leaked
+        // the file `NSURL` + its path `CFString` each time (~200 B a piece,
+        // 414 MB over a day) — AVFoundation never released them, autorelease
+        // pool or not.
+        .map(|segments| segments.into_iter().map(AudioSegmentDto::from).collect())
         .map_err(|error| format!("failed to list audio segments: {error}"))
 }
 
