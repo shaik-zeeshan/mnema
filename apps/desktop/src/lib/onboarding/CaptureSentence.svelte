@@ -111,18 +111,26 @@
   const viewRetention = $derived(peek?.keep ?? retention);
 
   const shownPath = $derived(saveDirectory.trim() || probedPath);
-  const verdict = $derived(
+  const verdictFor = (intervalSeconds: number, keep: RetentionPolicy) =>
     sentenceVerdict({
-      intervalSeconds: viewInterval,
+      intervalSeconds,
       videoPixels,
-      retention: viewRetention,
+      retention: keep,
       path: shownPath,
       probe,
       probeState,
       requiredBytes,
       semanticSearchOn,
-    }),
-  );
+    });
+  const verdict = $derived(verdictFor(viewInterval, viewRetention));
+  /**
+   * The repair row reads the COMMITTED values, never the peek. Driving it off
+   * the preview made it appear and disappear under the cursor — the scene is
+   * `justify-content: center`, so losing a 54px row moved the ghost you were
+   * hovering out from under the pointer, which cancelled the peek, which
+   * brought the row back: a flicker loop that made the ghosts unclickable.
+   */
+  const committed = $derived(peek === null ? verdict : verdictFor(intervalS, retention));
 
   // ── The dials ─────────────────────────────────────────────────────────────
   interface DialSpec {
@@ -240,7 +248,7 @@
   // The escape offered under each failure. `nosemantic` is dropped when the
   // caller has nothing to turn off, so a dead button is never rendered.
   const repairs = $derived(
-    verdict.repairs.filter(
+    committed.repairs.filter(
       (r) => r.act !== "nosemantic" || (semanticSearchOn && onDisableSemanticSearch),
     ),
   );
@@ -359,7 +367,7 @@
   {/if}
 </div>
 
-{#if !peek && repairs.length > 0}
+{#if repairs.length > 0}
   <div class="repair">
     {#each repairs as r (r.act)}
       <button class="ob-btn sm" class:primary={r.primary} onclick={() => act(r.act)}>
