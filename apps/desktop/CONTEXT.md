@@ -204,7 +204,7 @@ _Avoid_: dashboard suggestion dropdown, always-on listbox, body-operator menu, s
 - **Ask AI** inherits the **Brokered Capture Access** precondition that Mnema onboarding is complete.
 - An **Answer Source** is model-nominated evidence, distinct from a **Quick Search** result and from every capture the agent merely consulted: only the captures the model chose to vouch for through `reference_captures` become **Answer Sources**.
 - The agent declares **Answer Sources** by passing back the opaque ids it already received from `search`/`show-text`; `reference_captures` returns no capture data to the model, so it is an app-mediated presentation signal like `open`, not a new **Brokered Capture Access** data tool, and it does not widen the redaction/retention boundary. See [ADR 0024](../../docs/adr/0024-ask-ai-uses-pi-tool-shim-over-installed-runtime.md).
-- The host validates each nominated opaque id (HMAC), drops any that fail, and decodes the rest to their **Captured Frame** / **Audio Transcription Span** identity; **Answer Source** cards are then hydrated from local full-fidelity data (thumbnail by frame id, app/window/time), the same non-redacted path **Quick Search** uses, because the cards render in the user's own app and no raw frame data crosses the model boundary.
+- The host validates each nominated opaque id (keyed SHA-256 MAC, not an HMAC), drops any that fail, and decodes the rest to their **Captured Frame** / **Audio Transcription Span** identity; **Answer Source** cards are then hydrated from local full-fidelity data (thumbnail by frame id, app/window/time), the same non-redacted path **Quick Search** uses, because the cards render in the user's own app and no raw frame data crosses the model boundary.
 - **Answer Source** relevance is the model's nomination order, not a score: the strip renders most-relevant-first left-to-right, and no numeric relevance is shown.
 - **Answer Sources** split into a horizontal Screen row (**Captured Frame** thumbnail cards) and a separate horizontal Audio row (**Audio Transcription Span** cards), never interleaved in one row, mirroring the **Quick Search** Screen/Audio sections.
 - **Answer Source** cards use a dedicated horizontal card component showing thumbnail, metadata (app/window), and time, distinct from the vertical `SearchResultCard` used by **Quick Search**; they are not the search card reflowed.
@@ -216,22 +216,20 @@ _Avoid_: dashboard suggestion dropdown, always-on listbox, body-operator menu, s
 - **Sensitive Capture Protection V1** is UX and recovery around **App Privacy Exclusion**, not detection of sensitive screen content.
 - **CLI Access Grant** creation requires completed Mnema onboarding.
 - Mnema onboarding takes precedence over **CLI Access Request** handling; an incomplete app should finish onboarding before presenting CLI authorization.
-- Opening More Options keeps the same **Broker Authorization Channel** request alive but does not reset the CLI wait indefinitely.
-- The default native **Broker Authorization Channel** prompt should offer Allow, Cancel, and More Options when platform dialog support permits; More Options keeps the request alive and opens the **CLI Access Request** window.
-- The default native **Broker Authorization Channel** prompt should use user-facing copy equivalent to `Allow CLI Access?` and explain that the named client wants access to searchable Mnema text from the last day for 24 hours.
-- The default native **Broker Authorization Channel** prompt actions should be Allow, More Options, and Cancel when platform dialog support permits.
-- If the native prompt cannot support a clear More Options action, Mnema should open the **CLI Access Request** window directly rather than shipping a dead-end two-button prompt.
+- There is no native message-box prompt: every **Broker Authorization Channel** request opens the **CLI Access Request** window. The quick-approval path and its fixed downgrade policy are deleted ([ADR 0059](../../docs/adr/0059-cli-access-is-a-standing-per-tool-permission-with-idle-expiry.md)) — it always minted last-day access whatever was asked for, and a fast path buys nothing for an approval that fires a few times in a tool's life.
+- What only a real window can carry is why it is the single surface: the identity **provenance chip** (explicit / env / inferred / defaulted, warn-tinted when weak) and the anti-reflex affordances — focus lands on Deny, Enter is not bound to approve, Esc denies.
+- A **blocked** client is refused before any window opens, answered `blocked` on the channel; the block is lifted only from **Access Settings**.
 - A **CLI Access Request** is separate from **Access Settings** and exists to resolve one pending authorization request rather than manage standing access.
 - The **CLI Access Request** window is a compact Rust-owned Svelte/Tauri desktop surface rather than an ad hoc frontend-created window.
 - The **CLI Access Request** dedicated window uses label `cli-access-request` and route `/access/request`.
 - Closing the **CLI Access Request** window cancels the pending authorization request and creates no grant.
-- A **CLI Access Request** may let the user choose among V1 scope and duration options, but should prevent choices that cannot satisfy the pending broker command.
+- A **CLI Access Request** lets the user choose among the three scope options only — there is no duration to choose, since a permission has no calendar expiry — and prevents choices that cannot satisfy the pending broker command's `minimum`.
 - **CLI Access Request** approval uses deliberate visible controls and choice-specific button text rather than type-to-confirm in V1.
-- A **CLI Access Request** window should show client identity, identity provenance, the local identity-not-verified warning, command type, scope choices, duration choices, and Cancel plus choice-specific Allow controls.
+- A **CLI Access Request** window shows client identity, identity provenance, the local identity-not-verified warning, command type, scope choices, and Deny plus choice-specific Allow controls, with the terms note stating the standing terms ("This access does not expire. It stays until you block it in Settings, and lapses on its own after 30 days unused.") rather than an expiry — "block", not "revoke": Settings offers Block and Enable, and there is no per-grant revoke.
 - **Access Settings** does not rename **Broker Client Identity** values in V1 because identity is part of grant matching.
-- **Access Settings** supports revoking individual **Brokered Capture Access** grants and revoking all grants for a **Broker Client Identity**; revocation affects future commands immediately but does not cancel already-running V1 commands.
-- **Access Settings** groups **CLI Access Grant** values and recent non-content access history by **Broker Client Identity**.
-- **Access Settings** treats expired and revoked **CLI Access Grant** values as history rather than active access.
+- **Access Settings** blocks and re-enables a **Broker Client Identity**'s standing access; blocking affects future commands immediately but does not cancel already-running commands. There is no per-grant revoke, because there is exactly one row per identity.
+- **Access Settings** shows one row per **Broker Client Identity** by construction — the storage invariant is one permission row per normalized identity, so grouping is structural rather than a rendering step.
+- **Access Settings** renders only live and blocked permissions; idle-expired rows are pruned on load, so there is no expired-as-history state in the list. History is the separate non-content activity list read from `broker-audit.json` (most recent ~20, plus Reveal in Finder).
 - **Access Settings** is a top-level settings surface distinct from Privacy and Developer settings.
 - **About Settings** is a top-level settings surface with settings tab id `about`.
 - **Keyboard Shortcuts Settings** is a top-level settings surface with settings tab id `shortcuts`, sidebar label `Shortcuts`, page title `Keyboard Shortcuts`, and description equivalent to `View and customize Mnema keyboard shortcuts`.
@@ -264,10 +262,10 @@ _Avoid_: dashboard suggestion dropdown, always-on listbox, body-operator menu, s
 - Domain-specific recording settings mutations should initially merge into the canonical `recording-settings.json` store rather than splitting that file by domain.
 - Domain-specific recording settings mutations should validate the proposed domain change against the current canonical settings so cross-domain invariants are preserved.
 - A domain mutation that violates another **Settings Ownership Domain** should fail clearly unless there is one obvious normalization that preserves user intent.
-- **Access Settings** layout should include CLI install/status, active CLI access grouped by client, recent non-content access history, and inactive or revoked history.
+- **Access Settings** layout reads top to bottom: CLI install/status, the standing permissions (one per client, live or blocked), then the recent non-content activity list.
 - **Access Settings** should not expose a manual create-grant button in V1 because grant creation is request-bound through **Broker Authorization Channel** approval.
 - New frontend/Tauri APIs for **Access Settings** should use access-language names even when app-infra keeps broker-language internals.
-- New frontend/Tauri APIs for **Access Settings** should use names such as `get_cli_access_status`, `install_cli`, `reinstall_cli`, `list_cli_access_grants`, `revoke_cli_access_grant`, `revoke_cli_access_for_client`, and `list_cli_access_history`.
+- Frontend/Tauri APIs for **Access Settings** use access-language names: `get_cli_access_status`, `install_cli`, `list_cli_access_grants`, `block_cli_access_client`, `unblock_cli_access_client`, and `list_cli_access_history`. The duplicate `reinstall_cli` and the grant-id/per-client revoke commands are deleted — reinstall calls `install_cli`, and revoke is blocking.
 - The old Privacy **Agent Access** section should be removed when **Access Settings** ships so CLI grant management is not duplicated or mislabeled.
 - User-facing CLI access copy should avoid implementation terms such as broker and should describe access as searchable Mnema text, including screen text and audio transcripts, plus timeline results, with original media and raw database rows not shared by V1 commands.
 - **Recommended App Exclusions** become **App Privacy Exclusion** rules only after user confirmation.

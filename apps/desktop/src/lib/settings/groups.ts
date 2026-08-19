@@ -378,8 +378,8 @@ export function resolveTabDeeplink(
 export type SettingsFocusTarget = "cliAccess";
 
 // Resolve a `?focus=` value to a focus target (1:1 port of the legacy
-// `normalizeSettingsFocus`). `cliAccess` lives in the Data group's Access
-// section and additionally pops the broker-authorization prompt.
+// `normalizeSettingsFocus`). `cliAccess` scrolls to the Data group's Access
+// section; approval itself lives in its own window, not here.
 export function resolveFocusDeeplink(
   value: string | null | undefined,
 ): SettingsFocusTarget | null {

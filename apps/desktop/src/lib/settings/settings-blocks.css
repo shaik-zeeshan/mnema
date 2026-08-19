@@ -356,6 +356,12 @@
     background: transparent;
   }
 
+  /* The resting neutral dot IS the blocked state — blocked is the only inactive
+     state a permission can be in (idle-expired rows are pruned backend-side and
+     never reach this list, ADR 0059), and it is a state the USER chose: safe,
+     working, intended. A red dot on a dimmed row is this app's vocabulary for
+     BROKEN, so red stays free to mean something is actually wrong; the "Blocked"
+     badge on the name line carries the meaning (the dot is aria-hidden). */
   .settings-shell .grant-row__status {
     width: 7px;
     height: 7px;
@@ -368,21 +374,30 @@
     box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  .settings-shell .grant-row__status--expired {
-    background: var(--app-warn);
-  }
-
-  .settings-shell .grant-row__status--revoked {
-    background: var(--app-danger);
-  }
-
   .settings-shell .grant-row__meta {
     min-width: 0;
     display: grid;
     gap: 3px;
   }
 
+  /* The name line also carries the state badge (a blocked row is blocked BY THE
+     USER, not errored — a bare red dot on a dimmed row reads as broken). */
+  .settings-shell .grant-row__head {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Line-height matched to the 12px/1.3 name beside it so blocking a tool does
+     not grow its row by the badge's extra few pixels. */
+  .settings-shell .grant-row__tag {
+    flex: none;
+    line-height: 1.2;
+  }
+
   .settings-shell .grant-row__name {
+    min-width: 0;
     overflow: hidden;
     color: var(--app-text);
     font-size: 12px;
@@ -421,6 +436,30 @@
     color: var(--app-text-faint);
   }
 
+  /* Enable hands a tool a standing, no-expiry read of the user's history, so it
+     must not resolve to the same muted outline as Refresh and Reveal in Finder —
+     `.btn--sm` is declared after `.btn--ghost` at equal specificity and re-sets
+     color/border, which is exactly how it lost its identity. Accent outline in
+     the approval window's `.btn--allow` vocabulary, never a filled go-green
+     primary: the Enable confirmation dialog is the friction, and a loud fill
+     would invite the click it is meant to slow down.
+     The `[data-theme="light"]` twin is a specificity fix, not a light variant
+     (same reason as `.user-context-wipe__btn` below): settings-theme.css is
+     imported LAST, so its `[data-theme="light"] .settings-shell .btn--ghost`
+     (0,3,0) would otherwise wash the tint out in light mode. */
+  .settings-shell .btn.grant-row__enable,
+  [data-theme="light"] .settings-shell .btn.grant-row__enable {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+
+  .settings-shell .btn.grant-row__enable:not(:disabled):hover,
+  [data-theme="light"] .settings-shell .btn.grant-row__enable:not(:disabled):hover {
+    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+
   /* ── Wipe User Context (destructive end of the User Context block) ── */
   .settings-shell .user-context-wipe {
     display: flex;
@@ -434,13 +473,20 @@
   /* A subtly destructive ghost button: ghost shape, danger-tinted text so it
      reads as a recovery/destructive control without the full filled-danger
      weight of a Delete button. */
-  .settings-shell .user-context-wipe__btn {
+  /* The `[data-theme="light"]` half is a specificity fix, not a light variant:
+     settings-theme.css is imported LAST and its `[data-theme="light"]
+     .settings-shell .btn--ghost` (0,3,0) out-specifies the plain rule, so on a
+     ghost-shaped danger button the tint silently vanished in light mode. */
+  .settings-shell .btn.user-context-wipe__btn,
+  [data-theme="light"] .settings-shell .btn.user-context-wipe__btn {
     color: var(--app-danger);
     border-color: var(--app-danger-border);
   }
 
-  .settings-shell .user-context-wipe__btn:not(:disabled):hover {
+  .settings-shell .btn.user-context-wipe__btn:not(:disabled):hover,
+  [data-theme="light"] .settings-shell .btn.user-context-wipe__btn:not(:disabled):hover {
     background: var(--app-danger-bg-soft);
     border-color: var(--app-danger);
+    color: var(--app-danger);
   }
 

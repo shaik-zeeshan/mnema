@@ -200,8 +200,7 @@ export class SettingsController {
   // into a false "key in keychain" probe.
   aiProviderRemoving = $state(false);
 
-  // Access prompt + section ref (focus deeplink target).
-  brokerAuthorizationPromptVisible = $state(false);
+  // Access section ref (focus deeplink target).
   agentAccessSection = $state<HTMLElement | null>(null);
 
   // ─── Shared model-pool loader ──────────────────────────────────────────────

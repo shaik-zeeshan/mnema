@@ -204,7 +204,12 @@ export function trapTabKey(event: KeyboardEvent, container: HTMLElement | null):
       last.focus();
       return true;
     }
-  } else if (active === last) {
+  } else if (active === last || !container?.contains(active)) {
+    // `active === last` alone is not enough: under WebKit's default macOS
+    // keyboard mode plain <button>s are outside the tab ring, so focus never
+    // lands on `last` and the trap stays inert while Tab walks focus out of the
+    // dialog into the window chrome. Re-entering whenever focus has left the
+    // container is what actually contains an aria-modal dialog on WebKit.
     event.preventDefault();
     first.focus();
     return true;

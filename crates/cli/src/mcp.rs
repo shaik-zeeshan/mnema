@@ -189,12 +189,18 @@ struct ResultIdParams {
 #[derive(Clone)]
 struct MnemaMcp {
     identity: BrokerClientIdentity,
+    /// `--no-prompt`, carried through to every tool call. The flag is the ONE
+    /// control for "do not bother anyone" now that the TTY gate is gone, so the
+    /// MCP door has to honour it too — a server started with it opens no approval
+    /// window and fails `authorization_required` instead. Authorization is
+    /// unaffected either way: every tool routes through `execute_data_request`.
+    allow_prompt: bool,
 }
 
 #[tool_router]
 impl MnemaMcp {
     #[tool(
-        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app. Pass `speaker` (a handle from the speakers tool) to get only what one person said, their words included as `turns` — absent on a matched result when the voice was heard but no words could be attributed to it (overlapped speech), never a claim they were silent. An `id` names the recording, not the match, so one `id` can appear twice in a page with different `spanStartMs`; dedupe on (`id`, `spanStartMs`), never on `id` alone. `spanStartMs`/`spanEndMs` and `turns` timestamps are media-relative while `startedAt`/`endedAt` are wall-clock, so they can disagree by a few hundred ms — not an error. A speaker-filtered response also carries `speakerCoverage`: `recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this person, and labeling that voice in Mnema brings the recording into reach) and `recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you could attribute, and never report an empty or short filtered result as proof the person said nothing."
+        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app. Pass `speaker` (a handle from the speakers tool) to get only what one person said, their words included as `turns` — absent on a matched result when the voice was heard but no words could be attributed to it (overlapped speech), never a claim they were silent. An `id` names the recording, not the match, so one `id` can appear twice in a page with different `spanStartMs`; dedupe on (`id`, `spanStartMs`), never on `id` alone. `spanStartMs`/`spanEndMs` and `turns` timestamps are media-relative while `startedAt`/`endedAt` are wall-clock, so they can disagree by a few hundred ms — not an error. A speaker-filtered response also carries `speakerCoverage`: `recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this person, and labeling that voice in Mnema brings the recording into reach) and `recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you could attribute, and never report an empty or short filtered result as proof the person said nothing. `scopeClamped: true` means the user's access permission does not reach as far back as `from` asked and these results cover a SHORTER window than requested — `requiredScope` names the access that would cover it; say so rather than reporting the window as empty."
     )]
     async fn search(
         &self,
@@ -206,7 +212,7 @@ impl MnemaMcp {
     /// The MCP door serves `speakerCoverage` too, and a chat client never reads
     /// `SKILL.md` — these descriptions are its whole contract. See `search`.
     #[tool(
-        description = "List the user's capture activity intervals between two RFC3339 timestamps. Pass `speaker` (a handle from the speakers tool) for when one person was talking; matching intervals carry that speaker's words as `turns`, absent when the voice was heard but no words could be attributed to it — never a claim they were silent. That response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above zero makes the answer PARTIAL rather than proof the person was silent."
+        description = "List the user's capture activity intervals between two RFC3339 timestamps. Pass `speaker` (a handle from the speakers tool) for when one person was talking; matching intervals carry that speaker's words as `turns`, absent when the voice was heard but no words could be attributed to it — never a claim they were silent. That response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above zero makes the answer PARTIAL rather than proof the person was silent. `scopeClamped: true` means the user's access permission does not reach as far back as `from` asked and these intervals cover a SHORTER window than requested — `requiredScope` names the access that would cover it; say so rather than reporting the window as empty."
     )]
     async fn timeline(
         &self,
@@ -260,9 +266,7 @@ impl MnemaMcp {
         command: &str,
         request: BrokeredCaptureRequest,
     ) -> Result<CallToolResult, ErrorData> {
-        // No TTY under an MCP client, but the approval prompt is the Mnema
-        // app's own consent dialog — the user is present, so let it fire.
-        match execute_data_request(command, &self.identity, request, true).await {
+        match execute_data_request(command, &self.identity, request, self.allow_prompt).await {
             Ok(value) => {
                 let text = serde_json::to_string(&value)
                     .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
@@ -282,10 +286,29 @@ impl MnemaMcp {
 impl ServerHandler for MnemaMcp {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
+        // Told the truth about prompting: a server started with `--no-prompt`
+        // never opens the approval window, so promising a pause that will not
+        // happen leaves the model waiting on consent that is never asked for.
         info.instructions = Some(
-            "Brokered read access to the user's Mnema screen and audio capture history. \
-             The first call may pause while the user approves access in the Mnema app."
-                .to_string(),
+            if self.allow_prompt {
+                "Brokered read access to the user's Mnema screen and audio capture history. \
+                 The first call may pause while the user approves access in the Mnema app."
+            } else {
+                // Settings -> Data -> Access can only block and unblock tools Mnema
+                // already has a row for; it cannot grant a first permission, and a
+                // client it has never seen has no row there at all. Naming it as
+                // the fix leaves the model waiting on a grant that cannot arrive,
+                // and pushes the operator to drop the one flag that guarantees no
+                // consent window.
+                "Brokered read access to the user's Mnema screen and audio capture history. \
+                 This server was started with --no-prompt: calls without an existing access \
+                 permission fail instead of asking the user. Settings -> Data -> Access only \
+                 blocks and unblocks tools Mnema has already seen, so a first permission is \
+                 granted by running `mnema access request` in a terminal as this tool (same \
+                 --client name or agent environment). Report that and stop; retrying without \
+                 it cannot succeed."
+            }
+            .to_string(),
         );
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.server_info = Implementation::new("mnema", env!("CARGO_PKG_VERSION"));
@@ -293,11 +316,36 @@ impl ServerHandler for MnemaMcp {
     }
 }
 
-pub(crate) async fn serve(identity: BrokerClientIdentity) -> Result<(), CliError> {
-    let service = MnemaMcp { identity }
-        .serve(stdio())
-        .await
-        .map_err(broker_error)?;
+/// The one seam a test can reach the MCP door through. `run` owns the
+/// `allow_prompt` decision for all five tools, and nothing observable from
+/// outside this module records which way it went.
+#[cfg(test)]
+pub(crate) async fn call_tool_for_tests(
+    identity: &BrokerClientIdentity,
+    allow_prompt: bool,
+    command: &str,
+    request: BrokeredCaptureRequest,
+) -> CallToolResult {
+    MnemaMcp {
+        identity: identity.clone(),
+        allow_prompt,
+    }
+    .run(command, request)
+    .await
+    .expect("the MCP door maps broker failures to tool errors, never protocol errors")
+}
+
+pub(crate) async fn serve(
+    identity: BrokerClientIdentity,
+    allow_prompt: bool,
+) -> Result<(), CliError> {
+    let service = MnemaMcp {
+        identity,
+        allow_prompt,
+    }
+    .serve(stdio())
+    .await
+    .map_err(broker_error)?;
     service.waiting().await.map_err(broker_error)?;
     Ok(())
 }
@@ -408,6 +456,57 @@ mod tests {
         }
     }
 
+    /// Settings -> Data -> Access can only block and unblock clients Mnema
+    /// already holds a row for — a client it has never seen has no row there at
+    /// all — so it cannot grant a FIRST permission. Naming it as the fix under
+    /// `--no-prompt` (which is precisely the mode with no row and no window)
+    /// leaves the model waiting on a grant that can never arrive, and pushes the
+    /// operator to drop the one flag that guarantees no consent window.
+    /// `mnema access request` is the only door that creates the row.
+    #[test]
+    fn the_no_prompt_server_names_the_command_that_can_actually_grant_access() {
+        let identity = BrokerClientIdentity::new(
+            "Claude Desktop",
+            app_infra::brokered_access::BrokerClientIdentitySource::Explicit,
+        )
+        .expect("identity");
+
+        let no_prompt = MnemaMcp {
+            identity: identity.clone(),
+            allow_prompt: false,
+        }
+        .get_info()
+        .instructions
+        .expect("the server states its terms");
+        assert!(
+            no_prompt.contains("mnema access request"),
+            "the only door that can create a first permission has to be the one named: \
+             {no_prompt}"
+        );
+        assert!(
+            !no_prompt.contains("must grant access in the Mnema app"),
+            "Settings cannot grant anything, so it must not be left standing as the \
+             instruction: {no_prompt}"
+        );
+
+        let prompting = MnemaMcp {
+            identity,
+            allow_prompt: true,
+        }
+        .get_info()
+        .instructions
+        .expect("the server states its terms");
+        assert!(
+            prompting.contains("pause while the user approves access in the Mnema app"),
+            "a prompting server still gets its permission from the approval window: {prompting}"
+        );
+        assert!(
+            !prompting.contains("mnema access request"),
+            "sending a model to a terminal it does not have, for a window that will open \
+             on its own, is the same dead end in reverse: {prompting}"
+        );
+    }
+
     #[test]
     fn mcp_router_exposes_exactly_the_five_data_tools() {
         let mut names: Vec<String> = MnemaMcp::tool_router()
@@ -446,6 +545,27 @@ mod tests {
             assert!(
                 description.to_lowercase().contains("partial"),
                 "`{name}` must say a non-zero coverage count makes the answer partial: {description}"
+            );
+        }
+    }
+
+    /// Both tools can now return a page the user's permission cut short. A chat
+    /// client reads only these descriptions, so a `scopeClamped` field it was
+    /// never told about is exactly the silent under-report ADR 0059 exists to end.
+    #[test]
+    fn mcp_range_filterable_tools_name_the_clamp_marker() {
+        let tools = MnemaMcp::tool_router().list_all();
+        for name in ["search", "timeline"] {
+            let description = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("`{name}` must be offered"))
+                .description
+                .clone()
+                .unwrap_or_default();
+            assert!(
+                description.contains("scopeClamped") && description.contains("requiredScope"),
+                "`{name}` can return a clamped page but never names the marker: {description}"
             );
         }
     }

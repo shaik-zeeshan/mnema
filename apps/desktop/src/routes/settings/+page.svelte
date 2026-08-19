@@ -235,8 +235,15 @@
   }
 
   // `$page.url`-reactive deeplink effect: resolve `?tab`/`?focus` to a section
-  // (via groups.ts) and route there. A focus deeplink (cliAccess) also pops the
-  // broker-authorization prompt, matching the legacy behavior.
+  // (via groups.ts) and route there. `?focus=cliAccess` additionally moves focus
+  // into the Access section's wrapper, so a deeplink lands the caret inside it.
+  //
+  // This arm used to ALSO light an arrival tint plus a "CLI access request"
+  // callout in that panel. Under ADR 0059 an approval opens the CLI Access
+  // Request window and nothing navigates Settings, so nothing produces `?focus=`
+  // during a request — the cue advertised a live request nobody could have
+  // arrived here to see. Deleted rather than re-timed; the request window is the
+  // surface that carries the state.
   $effect(() => {
     const requestedTab = $page.url.searchParams.get("tab");
     const section = resolveTabDeeplink(requestedTab);
@@ -246,7 +253,6 @@
     const focus = resolveFocusDeeplink($page.url.searchParams.get("focus"));
     if (focus) {
       const focusSection = sectionForFocus(focus);
-      c.brokerAuthorizationPromptVisible = true;
       activeGroup = groupForSection(focusSection);
       activeSection = focusSection;
       suppressSpy();

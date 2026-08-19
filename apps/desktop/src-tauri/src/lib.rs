@@ -62,7 +62,6 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
 const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
-const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
 /// Event the main window listens for to switch the Insights surface to the Chat
 /// tab and select a given conversation. Emitted by `open_conversation_in_chat`
 /// when Quick Recall promotes a thread into the full Chat workspace (issue #111,
@@ -408,57 +407,6 @@ fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
     });
 }
 
-fn broker_authorization_request_path(app_handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    app_handle
-        .path()
-        .app_config_dir()
-        .ok()
-        .map(|dir| dir.join(BROKER_AUTHORIZATION_REQUEST_FILE_NAME))
-}
-
-fn drain_pending_broker_authorization_request_from_app(app_handle: &tauri::AppHandle) -> bool {
-    let Some(path) = broker_authorization_request_path(app_handle) else {
-        return false;
-    };
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-    let _ = std::fs::remove_file(&path);
-    serde_json::from_str::<serde_json::Value>(&raw).is_ok()
-}
-
-fn notify_pending_broker_authorization_request(app_handle: &tauri::AppHandle) -> bool {
-    let marker_drained = drain_pending_broker_authorization_request_from_app(app_handle);
-    let has_pending_request =
-        broker_authorization_channel::has_pending_cli_access_request(app_handle);
-    if !should_open_pending_broker_authorization_request(marker_drained, has_pending_request) {
-        return false;
-    }
-    let _ = windows::open_cli_access_request_window(app_handle);
-    true
-}
-
-fn should_open_pending_broker_authorization_request(
-    marker_drained: bool,
-    has_pending_request: bool,
-) -> bool {
-    marker_drained && has_pending_request
-}
-
-fn should_notify_pending_broker_authorization_request(
-    onboarding_complete: bool,
-    already_handled: bool,
-) -> bool {
-    onboarding_complete && !already_handled
-}
-
-fn notify_pending_broker_authorization_request_if_onboarded(app_handle: &tauri::AppHandle) -> bool {
-    should_notify_pending_broker_authorization_request(
-        windows::is_onboarding_complete(app_handle),
-        false,
-    ) && notify_pending_broker_authorization_request(app_handle)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitRequestAction {
     StartGracefulExit,
@@ -601,9 +549,6 @@ pub fn run() {
         // manager. Lazy — nothing connects here at launch; it dials on first use.
         .manage(ask_ai::mcp::McpManager::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if notify_pending_broker_authorization_request_if_onboarded(app) {
-                return;
-            }
             let _ = windows::open_main_window(app);
         }))
         .plugin(
@@ -646,6 +591,13 @@ pub fn run() {
                 event,
                 webview_window.as_ref(),
             );
+            // A user-dismissed approval window is a non-verdict, not a denial:
+            // answer the waiting CLI `denied`/`closed` (exit 14, retryable) so
+            // it never blocks forever on a window that is gone. This reads
+            // `CloseRequested` and only `CloseRequested` on purpose — the app's
+            // own teardown after a verdict uses `destroy()`, which emits
+            // `Destroyed` instead, so it cannot land here and cancel whatever
+            // request has since taken the pending slot.
             if window.label() == "cli-access-request"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
@@ -681,12 +633,11 @@ pub fn run() {
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
             cli_access::list_cli_access_grants,
-            cli_access::revoke_cli_access_grant,
-            cli_access::revoke_cli_access_for_client,
+            cli_access::block_cli_access_client,
+            cli_access::unblock_cli_access_client,
             cli_access::list_cli_access_history,
             cli_access::get_cli_access_status,
             cli_access::install_cli,
-            cli_access::reinstall_cli,
             ask_ai::ask_ai_availability,
             ask_ai::ask_ai_start,
             ask_ai::ask_ai_followup,
@@ -938,14 +889,9 @@ pub fn run() {
             native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
-            let handled_startup_authorization_request =
-                should_notify_pending_broker_authorization_request(onboarding_complete, false)
-                    && notify_pending_broker_authorization_request(app.handle());
-            if !handled_startup_authorization_request {
-                let onboarding_state = app.state::<windows::OnboardingStateStore>();
-                windows::open_startup_window(app.handle(), onboarding_state.inner())
-                    .map_err(std::io::Error::other)?;
-            }
+            let onboarding_state = app.state::<windows::OnboardingStateStore>();
+            windows::open_startup_window(app.handle(), onboarding_state.inner())
+                .map_err(std::io::Error::other)?;
             // The window is open and the database is ready; run the remaining
             // startup work (index maintenance, filesystem repair, background
             // workers) off the window-open critical path so it no longer delays
@@ -982,12 +928,6 @@ pub fn run() {
                 ));
                 run_deferred_startup(app.handle(), onboarding_complete);
             }
-            if should_notify_pending_broker_authorization_request(
-                onboarding_complete,
-                handled_startup_authorization_request,
-            ) {
-                notify_pending_broker_authorization_request(app.handle());
-            }
             status_bar::refresh(app.handle());
             Ok(())
         })
@@ -1015,9 +955,6 @@ pub fn run() {
                 has_visible_windows: false,
                 ..
             } => {
-                if notify_pending_broker_authorization_request(app_handle) {
-                    return;
-                }
                 let _ = windows::open_main_window(app_handle);
             }
             _ => {}
@@ -1034,8 +971,7 @@ mod tests {
         broker_opaque_id_from_url, broker_payload_from_url, claim_checkout_id_from_url,
         exit_request_action_for_exit_request, is_app_log_target, is_license_renewed_url,
         is_oauth_callback_url, license_key_from_url, should_forward_window_event,
-        should_notify_pending_broker_authorization_request,
-        should_open_pending_broker_authorization_request, ExitRequestAction,
+        ExitRequestAction,
     };
 
     /// The deep-link dispatch discriminator: an OAuth callback and a capture-broker
@@ -1190,38 +1126,6 @@ mod tests {
         assert!(!should_forward_window_event(
             &tauri::WindowEvent::Focused(true),
             false,
-        ));
-    }
-
-    #[test]
-    fn pending_broker_authorization_waits_for_onboarding() {
-        assert!(!should_notify_pending_broker_authorization_request(
-            false, false
-        ));
-    }
-
-    #[test]
-    fn pending_broker_authorization_is_not_handled_twice() {
-        assert!(!should_notify_pending_broker_authorization_request(
-            true, true
-        ));
-    }
-
-    #[test]
-    fn pending_broker_authorization_notifies_after_onboarding_once() {
-        assert!(should_notify_pending_broker_authorization_request(
-            true, false
-        ));
-    }
-
-    #[test]
-    fn pending_broker_authorization_marker_opens_only_for_real_pending_request() {
-        assert!(should_open_pending_broker_authorization_request(true, true));
-        assert!(!should_open_pending_broker_authorization_request(
-            true, false
-        ));
-        assert!(!should_open_pending_broker_authorization_request(
-            false, true
         ));
     }
 
