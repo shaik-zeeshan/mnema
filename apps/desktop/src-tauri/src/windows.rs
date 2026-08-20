@@ -468,10 +468,7 @@ fn open_or_focus_window(
 
     let built = builder.build().map_err(|err| err.to_string())?;
 
-    #[cfg(target_os = "macos")]
-    if let Some(radius) = config.macos_corner_radius {
-        apply_macos_rounded_content_view(&built, radius);
-    }
+    finish_macos_window(&built, &config);
 
     show_and_focus_window(&built);
 
@@ -616,6 +613,81 @@ fn enqueue_cold_open_settings(
         queue.push_back(payload.clone());
     }
 }
+
+/// Whether a window Mnema creates should be hidden from screen capture.
+///
+/// Exclusion is the default and developer options is the only way off it: UI
+/// work needs screenshots, and a `.none` window is invisible to ⌘⇧4, CleanShot
+/// and screen sharing alike, not just to Mnema's own recorder.
+///
+/// ponytail: reuses `developer_options_enabled` instead of carrying a setting of
+/// its own — enabling developer options therefore also makes Mnema
+/// screenshottable AND self-recordable. Split it out if that ever surprises
+/// someone.
+fn should_exclude_from_screen_capture(developer_options_enabled: bool) -> bool {
+    !developer_options_enabled
+}
+
+/// Hide one of Mnema's own windows from every screen capture, including Mnema's.
+///
+/// Without this the app records itself. Quick Recall — a window showing results
+/// *of the capture index* — is captured back into that index, and an Ask AI
+/// answer sitting on screen is OCR'd, indexed, and later retrieved by the model's
+/// own `search` tool as if it were something the user had observed rather than
+/// something the model said.
+///
+/// `NSWindow.sharingType = .none` rather than injecting our own bundle id into
+/// the ScreenCaptureKit privacy filter: that would force the app-excluding
+/// filter constructor permanently for every user, which ADR 0006 measured at
+/// ~867 mW against ~649 mW unfiltered — a third more capture power, forever, to
+/// exclude a handful of windows. This costs nothing at capture time.
+///
+/// Per `NSWindow`, not per app: every creation path has to call this, which is
+/// why both builders funnel through [`finish_macos_window`].
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+fn apply_macos_capture_exclusion(window: &WebviewWindow) {
+    use cocoa::base::id;
+    use objc::{msg_send, sel, sel_impl};
+
+    let developer_options_enabled = window
+        .app_handle()
+        .try_state::<native_capture::RecordingSettingsState>()
+        .map(|state| {
+            native_capture::read_recording_settings(state.inner()).developer_options_enabled
+        })
+        .unwrap_or(false);
+
+    if !should_exclude_from_screen_capture(developer_options_enabled) {
+        return;
+    }
+
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+
+    // NSWindowSharingNone
+    const NS_WINDOW_SHARING_NONE: u64 = 0;
+
+    unsafe {
+        let ns_window = ns_window as id;
+        let _: () = msg_send![ns_window, setSharingType: NS_WINDOW_SHARING_NONE];
+    }
+}
+
+/// The single seam every window creation path ends on. Anything that builds a
+/// `WebviewWindow` without coming through here is skipping capture exclusion —
+/// which is exactly how `quick-recall` came to be recorded.
+#[cfg(target_os = "macos")]
+fn finish_macos_window(window: &WebviewWindow, config: &AppWindowConfig) {
+    apply_macos_capture_exclusion(window);
+    if let Some(radius) = config.macos_corner_radius {
+        apply_macos_rounded_content_view(window, radius);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn finish_macos_window(_window: &WebviewWindow, _config: &AppWindowConfig) {}
 
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
@@ -900,7 +972,13 @@ fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, St
         .decorations(config.decorations)
         .transparent(config.transparent)
         .shadow(config.shadow)
-        .resizable(false)
+        // Resizable on purpose. This window is a results browser with thumbnails
+        // and a filter picker, not a single-line launcher, and its declared
+        // `min_inner_size` (960×600) was inert while `.resizable(false)` stood —
+        // a floor nobody could reach, which read as a supported size that had
+        // never been drawn or tested. Dismiss HIDES the panel rather than
+        // destroying it (see `dismiss_quick_recall_window`), so a resize survives
+        // every summon for the life of the app without any persisted state.
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
@@ -909,12 +987,13 @@ fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, St
 
     #[cfg(target_os = "macos")]
     {
+        // Reclass first: `finish_macos_window` sets `sharingType` on the window
+        // this ends up being, and `object_setClass` swaps the class underneath it.
         configure_quick_recall_panel(&built);
         configure_quick_recall_webview(&built);
-        if let Some(radius) = config.macos_corner_radius {
-            apply_macos_rounded_content_view(&built, radius);
-        }
     }
+
+    finish_macos_window(&built, &config);
 
     Ok(built)
 }
@@ -1508,6 +1587,25 @@ mod tests {
         match window {
             Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update => {}
         }
+    }
+
+    #[test]
+    fn screen_capture_exclusion_is_the_default_and_only_developer_options_lifts_it() {
+        // Mnema records itself unless every window it opens is marked
+        // `sharingType = .none`: Quick Recall's results land back in the index
+        // they came from, and an Ask AI answer on screen is OCR'd and later
+        // retrieved by the model's own `search` tool as observed history. The
+        // exclusion is therefore the default, and the ONLY thing that lifts it
+        // is developer options — because a `.none` window is also invisible to
+        // the user's own screenshots, which makes UI work impossible.
+        assert!(
+            super::should_exclude_from_screen_capture(false),
+            "a normal build must exclude Mnema's own windows from screen capture"
+        );
+        assert!(
+            !super::should_exclude_from_screen_capture(true),
+            "developer options must lift the exclusion so the UI can be screenshotted"
+        );
     }
 
     #[test]
