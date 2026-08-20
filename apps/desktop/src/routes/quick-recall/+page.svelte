@@ -1852,6 +1852,54 @@
   </span>
 {/snippet}
 
+{#snippet answerSources(turn: AskTurn)}
+  <div class="quick-recall__sources">
+    <span class="quick-recall__sources-heading">Sources</span>
+    {#if turnFrameSources(turn).length > 0}
+      <div class="quick-recall__section" role="presentation">
+        <span class="quick-recall__section-label">Screen</span>
+        <div class="quick-recall__source-row" role="presentation">
+          {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+            <AnswerSourceCard
+              kind="frame"
+              appName={s.appName}
+              windowTitle={s.windowTitle}
+              startedAt={s.startedAt}
+              endedAt={s.endedAt}
+              thumbnailUrl={s.frameId != null
+                ? (search.thumbnailCache.get(s.frameId) ?? null)
+                : null}
+              url={s.url}
+              onselect={() => void selectSource(s)}
+              onopenurl={() => openSourceUrl(s)}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    {#if turnAudioSources(turn).length > 0}
+      <div class="quick-recall__section" role="presentation">
+        <span class="quick-recall__section-label">Audio</span>
+        <div class="quick-recall__source-row" role="presentation">
+          {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+            <AnswerSourceCard
+              kind="audio"
+              appName={s.appName}
+              windowTitle={s.windowTitle}
+              startedAt={s.startedAt}
+              endedAt={s.endedAt}
+              sourceKind={s.sourceKind}
+              url={s.url}
+              onselect={() => void selectSource(s)}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="quick-recall" onkeydown={handleRootKeydown}>
@@ -2180,6 +2228,12 @@
                       Retry
                     </button>
                   </div>
+                  <!-- An errored turn still has provenance: the broker nominated
+                       these captures and the backend persisted them before the
+                       failure. -->
+                  {#if turn.sources.length > 0}
+                    {@render answerSources(turn)}
+                  {/if}
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
                        answer body. Rendered only when reasoning text arrived.
@@ -2377,54 +2431,9 @@
                         {/each}
                       </div>
 
-                      <!-- Per-turn answer sources: the captures this turn drew on,
-                           surfaced only once the turn is done. -->
+                      <!-- Per-turn answer sources: the captures this turn drew on. -->
                       {#if turn.phase === "done" && turn.sources.length > 0}
-                        <div class="quick-recall__sources">
-                          <span class="quick-recall__sources-heading">Sources</span>
-                          {#if turnFrameSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Screen</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="frame"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    thumbnailUrl={s.frameId != null
-                                      ? (search.thumbnailCache.get(s.frameId) ?? null)
-                                      : null}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                    onopenurl={() => openSourceUrl(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-
-                          {#if turnAudioSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Audio</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="audio"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    sourceKind={s.sourceKind}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
+                        {@render answerSources(turn)}
                       {/if}
 
                       <!-- Empty-answer fallback: a settled turn that produced no
