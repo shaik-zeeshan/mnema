@@ -50,10 +50,18 @@
       </p>
       <div class="oauth__waiting"><span class="oauth__pulse" aria-hidden="true"></span>Waiting…</div>
       <!-- ponytail: no cancel command — the backend pending entry lapses on its
-           own (~5 min TTL, ADR 0051). Cancel just dismisses the modal; the row
+           own (~5 min TTL, ADR 0051). This button dismisses the modal; the row
            keeps "authorizing…" until the callback resolves or the next status
-           refresh reverts it. -->
-      <button class="btn btn--ghost btn--sm" type="button" onclick={onCancel}>Cancel</button>
+           refresh reverts it. Labelled "Close" rather than "Cancel" because it
+           cancels nothing: approving in the browser after pressing it still
+           connects, and a button that claims otherwise is a lie the user only
+           discovers by being connected anyway. Contrast the ChatGPT login, where
+           Cancel really does call `ai_runtime_chatgpt_cancel_login` and matters
+           (an abandoned poll keeps hitting auth.openai.com). -->
+      <button class="btn btn--ghost btn--sm" type="button" onclick={onCancel}>Close</button>
+      <p class="oauth__sub oauth__sub--fine">
+        Approving in the browser still works — this just closes the panel.
+      </p>
     </div>
   {:else if stage === "authorized"}
     <div class="oauth__stage">
@@ -109,6 +117,11 @@
     font-size: 10.5px;
     line-height: 1.5;
     color: var(--app-text-subtle);
+  }
+  /* Sits BELOW a button rather than under a heading, so it does not take the
+     base rule's negative top margin. */
+  .oauth__sub--fine {
+    margin-top: 6px;
   }
 
   /* browser-handoff waiting stage */
