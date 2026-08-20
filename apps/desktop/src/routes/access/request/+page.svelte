@@ -4,6 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
+  import { openSettings } from "$lib/surface-windows";
   import Segmented from "$lib/components/Segmented.svelte";
 
   type PendingCliAccessRequest = {
@@ -274,6 +275,21 @@
     }
   }
 
+  // The receipt names Settings â Data â Access as the place this permission is
+  // managed; this is that sentence made clickable. `openSettings` focuses Main
+  // and emits the deeplink (this window is not Main), and the window closes
+  // behind it â leaving it open would strand a dead receipt in front of the
+  // surface it just sent the user to. A failed deeplink still closes: the
+  // permission is written either way, and Settings is reachable on its own.
+  async function manageAccess() {
+    try {
+      await openSettings("access", "cliAccess");
+    } catch {
+      // Nothing to recover here â the grant already landed.
+    }
+    await closeGrantedWindow();
+  }
+
   async function closeWindow() {
     error = null;
     cancelling = true;
@@ -476,9 +492,7 @@
             <strong class="receipt__scope">{granted.scopeProse}</strong>
             until you block it in Settings.
           </p>
-          <p class="receipt__hint">
-            Manage it in Settings → Data → Access. Unused access lapses after 30 days.
-          </p>
+          <p class="receipt__hint">Unused access lapses after 30 days.</p>
         </div>
       {:else if loading}
         <span class="sr-only" role="status" aria-live="polite">Loading access request…</span>
@@ -646,6 +660,9 @@
            lingering case (delayed/failed teardown) so the granted state is never
            left with zero in-app affordance backing the "Close" copy. -->
       <footer class="access-dialog__actions">
+        <button class="btn btn--ghost" type="button" tabindex="0" onclick={manageAccess}>
+          Manage access
+        </button>
         <button
           class="btn btn--ghost"
           bind:this={grantedCloseButton}
