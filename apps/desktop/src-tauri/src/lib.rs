@@ -571,6 +571,16 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        // Launch at login. `LaunchAgent` rather than the AppleScript launcher:
+        // it writes a plist LaunchServices owns, so removing Mnema from Login
+        // Items in System Settings actually takes effect and `is_enabled()`
+        // reports the truth. No launch argument — a login start is an ordinary
+        // start, and "Auto-start recording on launch" already decides whether
+        // capture begins.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
