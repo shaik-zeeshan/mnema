@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { localUtcOffsetMinutes } from "$lib/askAiClock";
   import { tip } from "$lib/components/tooltip";
   // Overview — the default Insights sub-surface (issues #104/#105/#108).
   //
@@ -519,7 +520,8 @@
     const avgMs = days > 0 ? totalMs / days : 0;
     // Spark granularity follows the selected period: a Day window buckets the
     // heatmap by HOUR (its native granularity — `get_usage_charts` floors each
-    // bucket to the hour), Week/Month by calendar DAY. Coarser-than-day stays
+    // bucket to the caller's LOCAL hour, which is why the offset is passed),
+    // Week/Month by calendar DAY. Coarser-than-day stays
     // day; finer-than-hour isn't needed since the source is already hourly.
     const sparkByHour = rangeMode === "day";
     const sparkLabel = sparkByHour ? "per hour" : "per day";
@@ -722,6 +724,7 @@
       const next = await invoke<UsageCharts>("get_usage_charts", {
         startMs,
         endMs,
+        utcOffsetMinutes: localUtcOffsetMinutes(),
       });
       if (token !== freeRequestToken) return; // range moved on — stale
       usage = next;
@@ -752,6 +755,7 @@
       const next = await invoke<UsageCharts>("get_usage_charts", {
         startMs: pw.startMs,
         endMs: compareEnd,
+        utcOffsetMinutes: localUtcOffsetMinutes(),
       });
       if (token !== prevRequestToken) return; // range moved on — stale
       prevUsage = next;

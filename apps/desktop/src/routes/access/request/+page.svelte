@@ -4,6 +4,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
+  import { openSettings } from "$lib/surface-windows";
   import Segmented from "$lib/components/Segmented.svelte";
 
   type PendingCliAccessRequest = {
@@ -133,6 +134,17 @@
   // for at least what its call needs, so it cannot land here; this covers the rest
   // by naming the loss before the click, rather than making the permission file
   // monotonic (which would silently ignore a deliberate narrowing instead).
+  // The tool's standing scope, when it has one. `currentScope` is null on a first
+  // grant, which is exactly when this row must NOT appear: a first prompt has to
+  // read cold in about four seconds, and a fourth line there costs that budget to
+  // state something a never-seen tool cannot have. On a RE-grant it is the whole
+  // point — `narrowsExistingAccess` already catches the destructive direction, so
+  // without this a tool asking to WIDEN prompts identically to one you have never
+  // seen, and those deserve different amounts of attention.
+  const existingScopeProse = $derived(
+    pendingRequest?.currentScope ? scopeProse[pendingRequest.currentScope] : null,
+  );
+
   const narrowsExistingAccess = $derived(
     pendingRequest?.currentScope &&
       scopeRank[pendingRequest.currentScope] > scopeRank[selectedScope]
@@ -272,6 +284,21 @@
       // If the window is already being torn down by the backend, the close is a
       // harmless no-op — nothing more to do here.
     }
+  }
+
+  // The receipt names Settings â Data â Access as the place this permission is
+  // managed; this is that sentence made clickable. `openSettings` focuses Main
+  // and emits the deeplink (this window is not Main), and the window closes
+  // behind it â leaving it open would strand a dead receipt in front of the
+  // surface it just sent the user to. A failed deeplink still closes: the
+  // permission is written either way, and Settings is reachable on its own.
+  async function manageAccess() {
+    try {
+      await openSettings("access", "cliAccess");
+    } catch {
+      // Nothing to recover here â the grant already landed.
+    }
+    await closeGrantedWindow();
   }
 
   async function closeWindow() {
@@ -476,9 +503,7 @@
             <strong class="receipt__scope">{granted.scopeProse}</strong>
             until you block it in Settings.
           </p>
-          <p class="receipt__hint">
-            Manage it in Settings → Data → Access. Unused access lapses after 30 days.
-          </p>
+          <p class="receipt__hint">Unused access lapses after 30 days.</p>
         </div>
       {:else if loading}
         <span class="sr-only" role="status" aria-live="polite">Loading access request…</span>
@@ -563,6 +588,13 @@
             ariaLabel="What it can read"
             onValueChange={(v) => (selectedScope = v as Scope)}
           />
+          {#if existingScopeProse}
+            <p class="choice-hint">
+              <span>
+                Already has {existingScopeProse}. Allowing replaces it, it does not add to it.
+              </span>
+            </p>
+          {/if}
           {#if scopeLocked && minScopeProse}
             <p class="choice-hint">
               <span>This tool requires access to at least {minScopeProse}.</span>
@@ -646,6 +678,9 @@
            lingering case (delayed/failed teardown) so the granted state is never
            left with zero in-app affordance backing the "Close" copy. -->
       <footer class="access-dialog__actions">
+        <button class="btn btn--ghost" type="button" tabindex="0" onclick={manageAccess}>
+          Manage access
+        </button>
         <button
           class="btn btn--ghost"
           bind:this={grantedCloseButton}

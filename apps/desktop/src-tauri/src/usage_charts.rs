@@ -15,14 +15,20 @@ use crate::app_infra::AppInfraState;
 /// the full retained history; the response echoes the resolved range in
 /// `rangeStartMs` / `rangeEndMs`.
 #[tauri::command]
+/// `utcOffsetMinutes` is minutes to ADD to UTC to reach the caller's local time
+/// (IST = 330, PST = -480). The frontend is the sound source for it — the Rust
+/// `time` crate here is built without `local-offset` — and it only affects hour
+/// bucketing. Omitted means UTC buckets, which is wrong by the sub-hour part of
+/// any offset, so every real caller passes it.
 pub async fn get_usage_charts(
     infra: tauri::State<'_, AppInfraState>,
     start_ms: Option<i64>,
     end_ms: Option<i64>,
+    utc_offset_minutes: Option<i64>,
 ) -> Result<UsageChartsResponse, String> {
     infra
         .usage_charts()
-        .usage_charts(start_ms, end_ms)
+        .usage_charts(start_ms, end_ms, utc_offset_minutes.unwrap_or(0))
         .await
         .map_err(|e| e.to_string())
 }

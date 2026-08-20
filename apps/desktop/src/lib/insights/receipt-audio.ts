@@ -294,7 +294,7 @@ export interface HydratedSegment {
 
 /** Non-"You" speaker color cycle (category channels), assigned in first-
  *  appearance order and wrapping past four distinct other speakers. */
-const SPEAKER_COLOR_PALETTE = [
+export const SPEAKER_COLOR_PALETTE = [
   "--cat-meetings",
   "--cat-research",
   "--cat-entertainment",

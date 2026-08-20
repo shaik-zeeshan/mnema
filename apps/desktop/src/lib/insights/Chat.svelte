@@ -1269,6 +1269,53 @@
   </div>
 {/snippet}
 
+{#snippet answerSources(turn: ChatTurn)}
+  <div class="sources">
+    <span class="sources-heading">Sources</span>
+    {#if turnFrameSources(turn).length > 0}
+      <div class="source-section" role="presentation">
+        <span class="source-label">Screen</span>
+        <div class="source-row" role="presentation">
+          {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+            <AnswerSourceCard
+              kind="frame"
+              appName={s.appName}
+              windowTitle={s.windowTitle}
+              startedAt={s.startedAt}
+              endedAt={s.endedAt}
+              thumbnailUrl={s.frameId != null
+                ? (thumbnailCache.get(s.frameId) ?? null)
+                : null}
+              url={s.url}
+              onselect={() => void selectSource(s)}
+              onopenurl={() => openSourceUrl(s)}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
+    {#if turnAudioSources(turn).length > 0}
+      <div class="source-section" role="presentation">
+        <span class="source-label">Audio</span>
+        <div class="source-row" role="presentation">
+          {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+            <AnswerSourceCard
+              kind="audio"
+              appName={s.appName}
+              windowTitle={s.windowTitle}
+              startedAt={s.startedAt}
+              endedAt={s.endedAt}
+              sourceKind={s.sourceKind}
+              url={s.url}
+              onselect={() => void selectSource(s)}
+            />
+          {/each}
+        </div>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
 <!-- The active conversation: transcript + composer. The history list / search /
      new-chat / rename / delete all live in the persistent shell rail
      (<InsightsRail>); this surface is JUST the conversation pane. -->
@@ -1378,6 +1425,14 @@
                         <span class="turn-retry-ico" aria-hidden="true">↻</span>
                         Retry
                       </button>
+                    {/if}
+                    <!-- An errored turn still has provenance. The broker
+                         nominated these captures and the backend persisted them
+                         before the failure, so hiding them threw away the answer
+                         to "what did it actually look at?" at the one moment the
+                         user most wants it. -->
+                    {#if turn.sources.length > 0}
+                      {@render answerSources(turn)}
                     {/if}
                   </div>
                 {:else}
@@ -1534,50 +1589,7 @@
 
                       <!-- Answer Sources: the captures this turn drew on. -->
                       {#if turn.phase === "done" && turn.sources.length > 0}
-                        <div class="sources">
-                          <span class="sources-heading">Sources</span>
-                          {#if turnFrameSources(turn).length > 0}
-                            <div class="source-section" role="presentation">
-                              <span class="source-label">Screen</span>
-                              <div class="source-row" role="presentation">
-                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="frame"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    thumbnailUrl={s.frameId != null
-                                      ? (thumbnailCache.get(s.frameId) ?? null)
-                                      : null}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                    onopenurl={() => openSourceUrl(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-                          {#if turnAudioSources(turn).length > 0}
-                            <div class="source-section" role="presentation">
-                              <span class="source-label">Audio</span>
-                              <div class="source-row" role="presentation">
-                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="audio"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    sourceKind={s.sourceKind}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
+                        {@render answerSources(turn)}
                       {/if}
                     {/if}
 

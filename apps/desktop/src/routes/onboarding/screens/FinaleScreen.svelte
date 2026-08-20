@@ -25,6 +25,9 @@
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import type { FrameDto, FramePreviewDto, GetFramePreviewRequest } from "$lib/types";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
+  import { parseShortcutBinding } from "$lib/keyboard-binding-utils";
+  import { DEFAULT_KEYBOARD_BINDINGS } from "$lib/keyboard-bindings.svelte";
 
   let {
     flow,
@@ -202,6 +205,24 @@
   const openSettings = () => invoke("open_capture_privacy_settings", { kind: "screen" });
   const relaunch = () => invoke("request_app_relaunch");
   const openMnema = () => goto("/");
+
+  // Exactly two shortcuts, named once, on the only screen every user reaches.
+  // 18 · Keyboard's finding: everything else in the shortcut design (tooltips,
+  // the palette, the map) only reaches someone who already hovers or already
+  // expects palettes. This is the one lever that reaches a user who never
+  // presses a modifier — and a list of twelve here is a list of zero, so it is
+  // two and stays two.
+  const platform = detectKeyboardPlatform();
+  const firstChords = [
+    {
+      label: "Start / stop recording",
+      binding: DEFAULT_KEYBOARD_BINDINGS.globalShortcuts.bindings.toggleRecording,
+    },
+    { label: "Quick Recall", binding: DEFAULT_KEYBOARD_BINDINGS.globalShortcuts.bindings.quickRecall },
+  ].map(({ label, binding }) => {
+    const parsed = parseShortcutBinding(binding);
+    return { label, keys: parsed ? formatShortcut(parsed, platform) : [] };
+  });
 </script>
 
 <div class="split">
@@ -239,6 +260,18 @@
       </p>
     {/if}
 
+    <div class="chords">
+      {#each firstChords as chord (chord.label)}
+        {#if chord.keys.length}
+          <div class="chord">
+            <span class="caps">
+              {#each chord.keys as key (key)}<kbd>{key}</kbd>{/each}
+            </span>
+            <span class="ob-fine">{chord.label}</span>
+          </div>
+        {/if}
+      {/each}
+    </div>
   </div>
 
   <div class="col evidence">
@@ -525,5 +558,39 @@
       opacity: 0.25;
       transform: none;
     }
+  }
+
+  /* The two first-run shortcuts. Keycaps sit in a FIXED-width column so every
+     label starts at the same x — 18 · Keyboard's one correction to Screen
+     Studio's shortcuts panel, which auto-widths its caps and staggers every
+     description as a result. */
+  .chords {
+    margin-top: 30px;
+    display: grid;
+    gap: 8px;
+  }
+  .chord {
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+  }
+  .caps {
+    display: flex;
+    gap: 4px;
+  }
+  .caps kbd {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--app-border);
+    border-radius: 5px;
+    background: var(--app-surface-subtle);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--app-text);
   }
 </style>

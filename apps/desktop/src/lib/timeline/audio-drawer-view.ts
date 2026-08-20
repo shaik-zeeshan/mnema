@@ -10,7 +10,7 @@
 // re-keyed on clusterId, so the drawer and the Activity Receipt share ONE
 // palette and one first-appearance cycle.
 
-import { assignSpeakerColors } from "$lib/insights/receipt-audio";
+import { assignSpeakerColors, SPEAKER_COLOR_PALETTE } from "$lib/insights/receipt-audio";
 import type {
   PersonProfileDto,
   SpeakerAnalysisProvenance,
@@ -281,7 +281,15 @@ export function assignSpeakerMarks(orderedClusterIds: number[]): Map<number, Spe
     if (out.has(clusterId)) continue;
     out.set(clusterId, {
       colorVar: colors.get(String(clusterId)) ?? "",
-      shape: SPEAKER_SHAPES[next % SPEAKER_SHAPES.length],
+      // Shape must NOT wrap in step with colour. Both palettes are four long, so
+      // a plain `next % 4` gives speaker 5 the same circle AND the same colour as
+      // speaker 1 — two signals that were meant to be independent collapsing into
+      // one. Offsetting the shape by one full colour cycle keeps the pair unique
+      // for 16 speakers instead of 4.
+      shape:
+        SPEAKER_SHAPES[
+          (next + Math.floor(next / SPEAKER_COLOR_PALETTE.length)) % SPEAKER_SHAPES.length
+        ],
     });
     next += 1;
   }

@@ -8,6 +8,7 @@
   // helpers. The river itself renders in <JournalRiver/> (kept split so both
   // files stay under the 800-line ceiling). Visual spec:
   // docs/mockups/dayflow/01-day-journal.html.
+  import { localUtcOffsetMinutes } from "$lib/askAiClock";
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -179,7 +180,7 @@
       const { startMs, endMs } = range;
       const next = await invoke<{ timePerApp: { activeMs: number }[] }>(
         "get_usage_charts",
-        { startMs, endMs },
+        { startMs, endMs, utcOffsetMinutes: localUtcOffsetMinutes() },
       );
       if (token !== usageToken) return;
       usage = next;

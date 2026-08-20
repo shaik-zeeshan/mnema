@@ -263,6 +263,10 @@ fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
         TurnUpdate::Error { message } => {
             view.error_message = Some(message.clone());
             view.phase = "error".to_string();
+            // Same as the Done arm. Without this a failed turn keeps whatever
+            // tool line was in flight when it died, so the rail sits on a live
+            // "Searching…" under a dead answer forever.
+            view.live_activity = None;
         }
         TurnUpdate::Done => {
             view.phase = "done".to_string();
@@ -3920,6 +3924,38 @@ model believes the narrower contract: {}",
             error_message: None,
             context_tokens: None,
         }
+    }
+
+    #[test]
+    fn an_errored_turn_clears_its_live_activity_line() {
+        // A failed turn used to keep whatever tool line was in flight when it
+        // died: the Done arm cleared `live_activity` and the Error arm did not,
+        // so the rail sat on a live "Searching…" under a dead answer forever.
+        let mut view = fresh_view(0);
+        apply_update_to_view(
+            &mut view,
+            &TurnUpdate::LiveActivity {
+                entry: Some(ToolActivityEntry {
+                    kind: "search".to_string(),
+                    label: "searched \u{201c}capture rate\u{201d}".to_string(),
+                    app: None,
+                    app_icon_path: None,
+                }),
+            },
+        );
+        assert!(view.live_activity.is_some(), "precondition: a line is live");
+
+        apply_update_to_view(
+            &mut view,
+            &TurnUpdate::Error {
+                message: "the engine couldn't answer".to_string(),
+            },
+        );
+        assert_eq!(view.phase, "error");
+        assert!(
+            view.live_activity.is_none(),
+            "an errored turn must not keep a live tool line"
+        );
     }
 
     #[test]
