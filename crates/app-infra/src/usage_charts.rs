@@ -99,10 +99,14 @@ impl UsageChartsStore {
     /// open-ended side (the store fills the missing bound from the actual
     /// min/max captured frame so `(None, None)` covers the full retained
     /// history). The returned `range_*_ms` echo the resolved bounds.
+    /// `utc_offset_minutes` is minutes to ADD to UTC to reach the caller's local
+    /// time (IST = 330, PST = -480) and only affects hour bucketing; pass `0` for
+    /// UTC buckets.
     pub async fn usage_charts(
         &self,
         start_ms: Option<i64>,
         end_ms: Option<i64>,
+        utc_offset_minutes: i64,
     ) -> Result<UsageChartsResponse> {
         // Resolve the open-ended side(s) from the actual data extent so the
         // echoed range is meaningful and the heatmap/range labels are tight.
@@ -133,7 +137,7 @@ impl UsageChartsStore {
             .await?;
 
         let (time_per_app, time_per_site, app_transitions, activity_heatmap) =
-            aggregate(&frames);
+            aggregate(&frames, utc_offset_minutes);
 
         Ok(UsageChartsResponse {
             range_start_ms,
@@ -216,6 +220,7 @@ impl UsageChartsStore {
 #[allow(clippy::type_complexity)]
 fn aggregate(
     frames: &[FrameRow],
+    utc_offset_minutes: i64,
 ) -> (
     Vec<AppUsage>,
     Vec<SiteUsage>,
@@ -232,8 +237,10 @@ fn aggregate(
     let mut prev: Option<&FrameRow> = None;
 
     for frame in frames {
-        // Heatmap: count this frame in its UTC-hour bucket.
-        let bucket = floor_to_hour(frame.captured_at_ms);
+        // Heatmap: count this frame in its LOCAL-hour bucket (see
+        // `floor_to_local_hour`), keyed by the unix-millis instant that hour
+        // starts at.
+        let bucket = floor_to_local_hour(frame.captured_at_ms, utc_offset_minutes);
         *heatmap.entry(bucket).or_insert(0) += 1;
 
         // Frame counts are per-frame regardless of gaps.
@@ -428,9 +435,23 @@ fn domain_from_url(raw: &str) -> Option<String> {
     }
 }
 
-/// Floors a unix-millis timestamp to its UTC hour start.
-fn floor_to_hour(ms: i64) -> i64 {
-    ms - ms.rem_euclid(HOUR_MS)
+/// Floors a unix-millis timestamp to the start of the hour it falls in *for the
+/// caller's local offset*, returned as a unix-millis instant.
+///
+/// Bucketing in UTC and letting the frontend re-derive hour-of-day is wrong by
+/// the sub-hour part of the offset: at UTC+05:30 every hour column, the hour
+/// profile and the peak-hours caption land thirty minutes out. A 744-cell chart
+/// that is confidently half an hour wrong is worse than no chart, because it
+/// looks precise.
+///
+/// The Rust `time` crate here is built without `local-offset` (and reading it
+/// under Tauri's threading would be unsound), so the offset comes from the
+/// frontend — the same seam `askAiClock.ts` and `user_context.local_offset_minutes`
+/// already use. `0` degrades to the old UTC behaviour rather than failing.
+fn floor_to_local_hour(ms: i64, utc_offset_minutes: i64) -> i64 {
+    let offset_ms = utc_offset_minutes * 60_000;
+    let local = ms + offset_ms;
+    (local - local.rem_euclid(HOUR_MS)) - offset_ms
 }
 
 /// Converts unix milliseconds to an RFC3339 string for comparison against the
@@ -503,10 +524,37 @@ mod tests {
     }
 
     #[test]
-    fn floor_to_hour_aligns_to_utc_hour() {
+    fn floor_to_local_hour_aligns_to_the_callers_hour_not_utc() {
+        // Offset 0 is the old UTC behaviour, unchanged.
         // 1970-01-01T01:30:00Z = 5_400_000 ms -> floors to 01:00 = 3_600_000.
-        assert_eq!(floor_to_hour(5_400_000), 3_600_000);
-        assert_eq!(floor_to_hour(0), 0);
+        assert_eq!(floor_to_local_hour(5_400_000, 0), 3_600_000);
+        assert_eq!(floor_to_local_hour(0, 0), 0);
+
+        // The case the UTC version got wrong: a half-hour offset. At UTC+05:30
+        // the instant 01:30Z is 07:00 local, so it starts its own bucket — the
+        // UTC flooring would have pulled it back into the 01:00Z bucket and put
+        // every hour column half an hour out.
+        assert_eq!(floor_to_local_hour(5_400_000, 330), 5_400_000);
+        // 01:59Z is 07:29 local, so it belongs to the SAME 07:00 bucket.
+        assert_eq!(floor_to_local_hour(7_140_000, 330), 5_400_000);
+
+        // Whole-hour negative offsets keep working (PST = -480).
+        assert_eq!(floor_to_local_hour(5_400_000, -480), 3_600_000);
+
+        // Every bucket start is still a real local-hour boundary: shifting into
+        // local time must land exactly on the hour.
+        for offset in [-480i64, -330, 0, 330, 345, 570] {
+            for ms in [0i64, 1, 5_400_000, 7_140_000, 1_755_000_000_000] {
+                let bucket = floor_to_local_hour(ms, offset);
+                assert!(bucket <= ms, "a bucket never starts after its frame");
+                assert!(ms - bucket < HOUR_MS, "a frame is within its own hour");
+                assert_eq!(
+                    (bucket + offset * 60_000).rem_euclid(HOUR_MS),
+                    0,
+                    "bucket {bucket} is not on a local-hour boundary at offset {offset}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -521,7 +569,7 @@ mod tests {
             frame("s1", 311_000, "Editor", None),
         ];
 
-        let (apps, sites, transitions, heatmap) = aggregate(&frames);
+        let (apps, sites, transitions, heatmap) = aggregate(&frames, 0);
 
         let editor = apps.iter().find(|a| a.app == "Editor").expect("editor");
         // 10s + 30s capped gap + final tail 30s = 70s. (The 1s Browser->Editor
@@ -566,7 +614,7 @@ mod tests {
             // the s2 frame.
             frame("s2", 1_000, "Editor", None),
         ];
-        let (apps, _sites, transitions, _heatmap) = aggregate(&frames);
+        let (apps, _sites, transitions, _heatmap) = aggregate(&frames, 0);
         let editor = apps.iter().find(|a| a.app == "Editor").expect("editor");
         // s1 tail (30s) + s2 tail (30s) = 60s. No cross-session gap or transition.
         assert_eq!(editor.active_ms, 60_000);
@@ -634,7 +682,7 @@ mod tests {
             let store = UsageChartsStore::new(CaptureDb::single(pool));
 
             // Full-history (None, None) covers all three frames.
-            let resp = store.usage_charts(None, None).await.expect("charts");
+            let resp = store.usage_charts(None, None, 0).await.expect("charts");
             assert!(resp.range_start_ms <= resp.range_end_ms);
             // Editor + Safari both present.
             assert!(resp.time_per_app.iter().any(|a| a.app == "Editor"));
@@ -656,7 +704,7 @@ mod tests {
             let start = rfc3339_to_ms("2026-01-01T00:00:00Z").unwrap();
             let end = rfc3339_to_ms("2026-01-01T00:59:59Z").unwrap();
             let narrowed = store
-                .usage_charts(Some(start), Some(end))
+                .usage_charts(Some(start), Some(end), 0)
                 .await
                 .expect("narrowed");
             assert_eq!(narrowed.activity_heatmap.len(), 1);
@@ -671,7 +719,7 @@ mod tests {
             let half_open_start = rfc3339_to_ms("2026-01-01T00:00:00Z").unwrap();
             let half_open_end = rfc3339_to_ms("2026-01-01T00:00:05Z").unwrap();
             let half_open = store
-                .usage_charts(Some(half_open_start), Some(half_open_end))
+                .usage_charts(Some(half_open_start), Some(half_open_end), 0)
                 .await
                 .expect("half-open");
             // Only the 00:00:00 frame is in [00:00:00, 00:00:05): Editor, 1 frame.

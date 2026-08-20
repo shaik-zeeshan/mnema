@@ -11,12 +11,21 @@ export interface AskAiClock {
   timeZone: string;
 }
 
+/**
+ * Minutes to ADD to UTC to reach local time (PST = -480, IST = 330).
+ *
+ * `getTimezoneOffset()` returns minutes BEHIND UTC (PST → +480), so it is
+ * negated to get the conventional sign. Shared with the usage-charts hour
+ * bucketing, which is wrong by the sub-hour part of the offset without it.
+ */
+export function localUtcOffsetMinutes(): number {
+  return -new Date().getTimezoneOffset();
+}
+
 /** Snapshot the browser's current local offset + IANA zone. */
 export function askAiClock(): AskAiClock {
-  // `getTimezoneOffset()` returns minutes BEHIND UTC (PST → +480), so negate it
-  // to get the conventional "add to UTC" offset (PST → -480).
   return {
-    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+    utcOffsetMinutes: localUtcOffsetMinutes(),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
