@@ -336,6 +336,12 @@ describe("the healthy readings", () => {
     expect(text(v.verdict)).toContain("Holding 30 days takes about 12.2 GB");
     expect(text(v.verdict)).toContain("It fills up after about");
     expect(v.repairs.map((r) => r.act)).toEqual(["slower", "tighten"]);
+    // The figure beside it is `usable` — free space MINUS the model downloads
+    // MINUS the reserve floor — so it must not be introduced as free space. The
+    // string used to read "is free on your startup disk" while printing a number
+    // over a gigabyte smaller than the disk's actual free space.
+    expect(text(v.verdict)).toContain("is left for recordings on");
+    expect(text(v.verdict)).not.toContain("is free on");
   });
 
   test("the verdict never blocks where the gate does not, and always where it does", () => {

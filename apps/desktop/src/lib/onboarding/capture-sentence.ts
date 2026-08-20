@@ -388,7 +388,12 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
         fig(formatBytes(held)),
         t(", and "),
         fig(formatBytes(usable)),
-        t(` is free on ${volume}. `),
+        // `usable`, NOT `free` — it is free space minus the model downloads
+        // minus RESERVE_FLOOR_BYTES. Calling that "free" overstates the disk by
+        // the reserve plus the whole download set (~1.1 GB with every model on),
+        // and the number is doing the work of a warning, so it has to be the one
+        // the warning is actually about.
+        t(` is left for recordings on ${volume}. `),
         verd(`It fills up after about ${humanDuration(usable / daily)}.`),
       ],
       repairs: [
