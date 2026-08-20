@@ -28,3 +28,6 @@ pi-session-*.html
 ds-bundle/
 
 .firecrawl
+
+# Redesign design suite — local only, never published (16 MB of mockups + third-party refs)
+docs/redesign/
