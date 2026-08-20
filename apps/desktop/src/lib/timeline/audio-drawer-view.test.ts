@@ -125,10 +125,20 @@ describe("assignSpeakerMarks", () => {
     expect(marks.get(3)!.shape).toBe("circle");
   });
 
-  it("cycles past four clusters instead of blanking", () => {
+  it("reuses a colour past four clusters but never the same colour AND shape", () => {
     const marks = assignSpeakerMarks([1, 2, 3, 4, 5]);
-    expect(marks.get(5)!.shape).toBe(marks.get(1)!.shape);
+    // Four colours, so the fifth speaker has to share one — that is the ceiling.
     expect(marks.get(5)!.colorVar).toBe(marks.get(1)!.colorVar);
+    // ...but sharing the SHAPE too would make them indistinguishable, which is
+    // the defect this offset exists to prevent.
+    expect(marks.get(5)!.shape).not.toBe(marks.get(1)!.shape);
+  });
+
+  it("keeps colour-and-shape pairs unique for sixteen clusters", () => {
+    const ids = Array.from({ length: 16 }, (_, i) => i + 1);
+    const marks = assignSpeakerMarks(ids);
+    const pairs = ids.map((id) => `${marks.get(id)!.colorVar}/${marks.get(id)!.shape}`);
+    expect(new Set(pairs).size).toBe(16);
   });
 });
 
