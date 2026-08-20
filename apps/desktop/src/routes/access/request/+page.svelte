@@ -134,6 +134,17 @@
   // for at least what its call needs, so it cannot land here; this covers the rest
   // by naming the loss before the click, rather than making the permission file
   // monotonic (which would silently ignore a deliberate narrowing instead).
+  // The tool's standing scope, when it has one. `currentScope` is null on a first
+  // grant, which is exactly when this row must NOT appear: a first prompt has to
+  // read cold in about four seconds, and a fourth line there costs that budget to
+  // state something a never-seen tool cannot have. On a RE-grant it is the whole
+  // point — `narrowsExistingAccess` already catches the destructive direction, so
+  // without this a tool asking to WIDEN prompts identically to one you have never
+  // seen, and those deserve different amounts of attention.
+  const existingScopeProse = $derived(
+    pendingRequest?.currentScope ? scopeProse[pendingRequest.currentScope] : null,
+  );
+
   const narrowsExistingAccess = $derived(
     pendingRequest?.currentScope &&
       scopeRank[pendingRequest.currentScope] > scopeRank[selectedScope]
@@ -577,6 +588,13 @@
             ariaLabel="What it can read"
             onValueChange={(v) => (selectedScope = v as Scope)}
           />
+          {#if existingScopeProse}
+            <p class="choice-hint">
+              <span>
+                Already has {existingScopeProse}. Allowing replaces it, it does not add to it.
+              </span>
+            </p>
+          {/if}
           {#if scopeLocked && minScopeProse}
             <p class="choice-hint">
               <span>This tool requires access to at least {minScopeProse}.</span>
