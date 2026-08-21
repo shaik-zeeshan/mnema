@@ -1,0 +1,17 @@
+{
+  "productName": "mnema-bench",
+  "identifier": "day.mnema.bench",
+  "build": {
+    "beforeBuildCommand": "../../scripts/prepare-mnema-cli-sidecar.sh release && bun run build"
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mnema-bench"]
+      }
+    }
+  }
+}
