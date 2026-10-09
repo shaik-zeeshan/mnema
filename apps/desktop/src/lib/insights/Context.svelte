@@ -35,6 +35,7 @@
   } from "$lib/types/recording";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import { humanizeError } from "$lib/format-error";
+  import UpdatedStamp from "$lib/insights/UpdatedStamp.svelte";
 
   interface Props {
     // Subjects' "View dismissed": land with the Dismissed archive expanded and
@@ -147,12 +148,16 @@
       : `added ${relativeTime(s.createdAtMs)}`;
   }
 
+  // "updated 1m ago" in the header, stamped on each successful load.
+  let updatedAt = $state<number | null>(null);
+
   async function loadStatements(): Promise<void> {
     loading = true;
     try {
       const list = await invoke<AuthoredContext[]>("list_user_context_authored");
       statements = list;
       loadError = null;
+      updatedAt = Date.now();
     } catch (error) {
       // Keep whatever was loaded; a first-load failure leaves `statements` null
       // so the error card renders instead of a false "no context yet" (CX-01).
@@ -330,7 +335,7 @@
       What you tell Mnema about yourself. It steers your dossier and
       <span class="accent-word">never fades</span> like an inferred conclusion.
       The Sensitive Category Guardrail keeps off-limits categories from being
-      surfaced.
+      surfaced. <UpdatedStamp at={updatedAt} inline />
     </p>
   </header>
 

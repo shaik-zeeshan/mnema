@@ -56,6 +56,7 @@
   import { rankSubjects } from "$lib/insights/subjectSearch";
   import { humanizeError } from "$lib/format-error";
   import { DelayedDismiss } from "$lib/insights/dismissUndo.svelte";
+  import UpdatedStamp from "$lib/insights/UpdatedStamp.svelte";
 
   // Number of placeholder rows shown while the conclusions load.
   const SKELETON_COUNT = 6;
@@ -101,6 +102,8 @@
 
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state<string | null>(null);
+  // "updated 1m ago" in the header, stamped on each successful read.
+  let updatedAt = $state<number | null>(null);
   let loading = $state(true);
   // User Context status — lets the empty state name its cause (reading history,
   // too little evidence, everything dismissed). Engine trouble is the shell's
@@ -583,6 +586,7 @@
         includeFaded: true,
       });
       loadError = null;
+      updatedAt = Date.now();
       return list;
     } catch (error) {
       // Only surface the full error screen when there's nothing to preserve
@@ -1002,7 +1006,7 @@
     <h1>Subjects</h1>
     <p class="conv-sub">
       What Mnema has come to believe about you — and how firmly. Strongest beliefs
-      first; fading ones are kept for history.
+      first; fading ones are kept for history. <UpdatedStamp at={updatedAt} inline />
     </p>
     <!-- Honest counts line (no rolled-up score). Hidden while loading and when
          there are zero subjects — the empty state covers that. The line simply

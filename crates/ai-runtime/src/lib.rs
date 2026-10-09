@@ -267,7 +267,7 @@ impl EngineConfig {
 /// generic 5xx/transport buckets so a "402 insufficient quota" doesn't read as a
 /// plain outage. Anything unrecognised falls back to a neutral retry sentence so
 /// the surface never shows a raw JSON body.
-fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
+pub fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
     match ProviderFailure::classify(raw) {
         ProviderFailure::RateLimited => {
             "The AI provider is rate-limiting requests right now. Wait a moment and try again."

@@ -71,6 +71,14 @@
   import { humanizeError } from "$lib/format-error";
   import ReadCard from "$lib/insights/ReadCard.svelte";
   import { DelayedDismiss } from "$lib/insights/dismissUndo.svelte";
+  import OverviewStates, {
+    clockLabel,
+    type OverviewState,
+  } from "$lib/insights/OverviewStates.svelte";
+  import UpdatedStamp from "$lib/insights/UpdatedStamp.svelte";
+  import { retentionVerdict } from "$lib/insights/retention";
+  import { captureControls } from "$lib/capture-controls.svelte";
+  import { captureSession } from "$lib/session.svelte";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -219,6 +227,14 @@
   let digestError = $state<string | null>(null);
 
   let loadingFree = $state(true);
+  // Quiet refresh (OV-22): skeletons only until the CURRENT range has loaded
+  // once; background refreshes swap numbers in place. Reset on range change.
+  let freeLoadedOnce = $state(false);
+  // Which capture families have anything in the range (OV-15/16): app time is
+  // screen-only, so "no frames" needs a cause. `null` until known.
+  let presence = $state<{ screen: boolean; audio: boolean } | null>(null);
+  // The "updated 1m ago" stamp on Exhibits, set in each loader's success.
+  let updatedAt = $state<number | null>(null);
   let loadingEngine = $state(false);
   let freeError = $state<string | null>(null);
   // Engine-data (activities + conclusions) load failure for the active range.
@@ -721,16 +737,26 @@
     loadingFree = true;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<UsageCharts>("get_usage_charts", {
-        startMs,
-        endMs,
-      });
+      const [next, nextPresence] = await Promise.all([
+        invoke<UsageCharts>("get_usage_charts", { startMs, endMs }),
+        // Presence only refines copy; a failure keeps the plain wording.
+        invoke<{ screen: boolean; audio: boolean }>("capture_presence", {
+          startMs,
+          endMs,
+        }).catch(() => null),
+      ]);
       if (token !== freeRequestToken) return; // range moved on — stale
       usage = next;
+      presence = nextPresence;
       freeError = null;
+      freeLoadedOnce = true;
+      updatedAt = Date.now();
     } catch (error) {
-      if (token === freeRequestToken)
+      if (token === freeRequestToken) {
         freeError = humanizeError(error);
+        // Never show another range's numbers under this range's label (OV-13).
+        if (!freeLoadedOnce) usage = null;
+      }
     } finally {
       if (token === freeRequestToken) loadingFree = false;
     }
@@ -795,6 +821,7 @@
       activities = nextActivities;
       conclusions = nextConclusions;
       engineError = null;
+      updatedAt = Date.now();
       // Clear stale optimistic overrides now that we have fresh truth.
       pinnedOverride = new Map();
       dismissedIds = new Set();
@@ -920,6 +947,8 @@
         return;
       }
       engineLoadedOnce = false;
+      freeLoadedOnce = false;
+      presence = null;
       // A new range is new content: stale expansion state would leave rows
       // open over different (possibly empty) content.
       expandedDeltaRows = new Set();
@@ -1097,7 +1126,6 @@
 
   const engineEmpty = $derived(
     engineOn &&
-      !loadingEngine &&
       engineLoadedOnce &&
       activities.length === 0 &&
       conclusions.length === 0,
@@ -1111,17 +1139,116 @@
   // nothing stale shown mid-load, so we follow the in-flight `loadingFree` flag
   // directly. `loadingFree` starts `true` and is re-set at the top of every
   // `loadFree()` call, so it covers re-loads too.
-  const freeLoading = $derived(loadingFree);
+  const freeLoading = $derived(loadingFree && !freeLoadedOnce);
   // Engine tiles (Categories/Focus) show a skeleton while we don't yet know the
   // engine state OR while the engine data is still loading for this range. When
   // the engine is known-off they fall through to the "enable the engine" note.
-  const engineTilesLoading = $derived(
-    !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
-  );
+  const engineTilesLoading = $derived(!statusLoaded || (engineOn && !engineLoadedOnce));
   // The story/dossier feed is loading until status resolves and (when on) the
   // engine data has loaded once for the current range.
-  const feedLoading = $derived(
-    !statusLoaded || (engineOn && (loadingEngine || !engineLoadedOnce)),
+  const feedLoading = $derived(engineTilesLoading);
+
+  // Tracked time stays live while recording (the worker beat alone can be
+  // minutes apart). Quiet: `freeLoadedOnce` keeps the numbers up meanwhile.
+  $effect(() => {
+    if (!captureControls.isRunning || !atLatest) return;
+    const timer = setInterval(() => {
+      if (!renderIdle()) untrack(() => void loadFree());
+    }, 60_000);
+    return () => clearInterval(timer);
+  });
+
+  // ── Truthful states (Direction A frames 2a–2b, 4a–4c, 5a–5c) ──────────
+  const DAY_MS = 86_400_000;
+  const settings = $derived(captureControls.recordingSettings);
+  const nothingCaptured = $derived(
+    presence != null && !presence.screen && !presence.audio,
+  );
+  // The usage fetch failed with nothing loaded for this range (OV-13).
+  const usageFailed = $derived(freeError != null && usage == null && !freeLoading);
+  // Footage retention over this range (OV-14), and why there's no app time.
+  const retention = $derived(
+    presence
+      ? retentionVerdict(range.startMs, range.endMs, settings?.retentionPolicy)
+      : null,
+  );
+  const noAppTime = $derived.by<{ cap: string; note: string } | null>(() => {
+    if (!presence || presence.screen) return null;
+    if (retention?.kind === "removed")
+      return {
+        cap: "tracked · removed by retention",
+        note: `Removed by your ${retention.days}-day retention, so there's no app time. The summaries and the read are kept.`,
+      };
+    if (presence.audio)
+      return {
+        cap: "app time · audio only",
+        note: "This range has audio only — app time comes from screen recording.",
+      };
+    return null;
+  });
+  // Older than the window the worker summarizes on its own (OV-20).
+  const backfillDays = $derived(
+    settings?.userContext?.backfillGoDeeper ? null : (settings?.userContext?.backfillWindowDays ?? null),
+  );
+  const olderThanBackfill = $derived(
+    engineOn &&
+      backfillDays != null &&
+      range.endMs <= Date.now() - backfillDays * DAY_MS &&
+      engineLoadedOnce &&
+      rangeActivities.length === 0,
+  );
+  // 2a: current range, nothing captured, and not recording (or user-paused).
+  const userPaused = $derived(captureControls.isRunning && captureControls.isUserPaused);
+  const idleState = $derived<OverviewState | null>(
+    atLatest && nothingCaptured && (!captureControls.isRunning || userPaused)
+      ? { kind: "idle", paused: userPaused }
+      : null,
+  );
+  // 2b: recording, but the worker hasn't written an activity for this range.
+  const waitingFirst = $derived(
+    engineOn &&
+      atLatest &&
+      captureControls.isRunning &&
+      !userPaused &&
+      engineLoadedOnce &&
+      !engineError &&
+      rangeActivities.length === 0,
+  );
+  // "Recording since": earliest source start, clamped to the start of today.
+  const recordingSince = $derived.by<number | null>(() => {
+    const sessions = captureSession.value?.sourceSessions;
+    const starts = [sessions?.screen, sessions?.microphone, sessions?.systemAudio]
+      .map((s) => s?.startedAtUnixMs)
+      .filter((ms): ms is number => typeof ms === "number" && ms > 0);
+    if (starts.length === 0) return null;
+    return Math.max(Math.min(...starts), startOfDay(Date.now()));
+  });
+  // 4b: summarizing keeps failing.
+  const failingState = $derived<OverviewState | null>(
+    engineOn && ctxStatus?.summarizingFailure
+      ? {
+          kind: "failing",
+          failure: ctxStatus.summarizingFailure,
+          coveredUntilMs: ctxStatus.coveredUntilMs ?? null,
+        }
+      : null,
+  );
+  // 4a: "summarized through" watermark, only while it cuts into this range.
+  const watermark = $derived.by<string | null>(() => {
+    const covered = ctxStatus?.coveredUntilMs;
+    if (!engineOn || covered == null) return null;
+    if (covered < range.startMs || covered >= Math.min(range.endMs, Date.now())) return null;
+    return `summarized through ${clockLabel(covered)}`;
+  });
+  // Category/Focus tile copy when the range has no summarized activity (OV-23).
+  const engineTileEmpty = $derived(
+    olderThanBackfill
+      ? `Not summarized — this ${rangeMode} is older than ${backfillDays} days.`
+      : waitingFirst
+        ? "Fills in after the first summary."
+        : atLatest
+          ? null
+          : "Nothing summarized for this range.",
   );
 
   // Each exhibit card is a clickable trigger for its detail modal ONLY when its
@@ -1180,6 +1307,58 @@
     </div>
   </div>
 
+  <!-- Tracked + daily avg (both tiers). A failed load or a range without
+       screen frames shows its cause where the number would be (OV-13..15). -->
+  {#snippet trackedStats()}
+    {#if usageFailed}
+      <div class="lede-stat">
+        <span class="tile-note tile-note--error">
+          Couldn't load.
+          <button type="button" class="tile-retry" onclick={() => void loadFree()}>Retry</button>
+        </span>
+        <span class="lede-stat-cap">tracked</span>
+      </div>
+    {:else if noAppTime}
+      <div class="lede-stat">
+        <span class="lede-stat-n lede-stat-n--none">—</span>
+        <span class="lede-stat-cap">{noAppTime.cap}</span>
+      </div>
+    {:else}
+      <div class="lede-stat">
+        <span class="lede-stat-figure">
+          <span class="lede-stat-n">{summary.totalLabel}</span>
+          {#if trackedDelta}
+            <span
+              class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
+              use:tip={`${Math.abs(trackedDelta.pct)}% ${
+                trackedDelta.dir === "down" ? "less" : "more"
+              } than the same span of last ${rangeMode}`}
+            >
+              <span class="lede-stat-delta-arrow" aria-hidden="true"
+                >{trackedDelta.dir === "up"
+                  ? "↑"
+                  : trackedDelta.dir === "down"
+                    ? "↓"
+                    : "→"}</span
+              >{Math.abs(trackedDelta.pct)}%</span
+            >
+          {/if}
+        </span>
+        <span class="lede-stat-cap"
+          >{retention?.kind === "partly" ? "tracked · partly removed by retention" : "tracked"}</span
+        >
+      </div>
+      <div class="lede-stat">
+        <span class="lede-stat-n">{summary.avgLabel}</span>
+        <span class="lede-stat-cap">daily avg</span>
+      </div>
+    {/if}
+  {/snippet}
+
+  {#if idleState}
+    <!-- 2a: one honest card instead of a blank read and four zero tiles. -->
+    <OverviewStates state={idleState} />
+  {:else}
   <!-- ── THE READ — full-width AI narrative hero ──
        The engine's read of the range, promoted to the top of the page and the
        single home for the range's headline numbers. On the engine path it
@@ -1214,6 +1393,20 @@
         </button>
         {/if}
       </p>
+      {#if !digest && waitingFirst}
+        <p class="lede-quiet"><span class="pulse" aria-hidden="true"></span>Waiting for the first summary…</p>
+        <p class="lede-sub">
+          {recordingSince ? `Recording since ${clockLabel(recordingSince)}. ` : ""}The first
+          summary usually lands within about 10 minutes, and the read is written once there are
+          two activities.
+        </p>
+      {:else if !digest && olderThanBackfill}
+        <p class="lede-quiet">No read for this {rangeMode}.</p>
+        <p class="lede-sub">
+          Older than the {backfillDays} days Mnema summarizes on its own.{#if retention?.kind !== "removed"}
+            The footage is still on the Timeline.{/if}
+        </p>
+      {:else}
       <ReadCard
         {digest}
         loading={digestLoading || digestRegenerating}
@@ -1221,6 +1414,7 @@
         whose={rangeMode === "day" && atLatest ? "Today's" : `This ${rangeMode}'s`}
         whenLabel={digest ? relativeTime(digest.generatedAtMs) : ""}
       />
+      {/if}
       <!-- Stats footer — the single source of truth for the range's headline
            numbers. Tracked is always present; deep focus %, top category, the
            daily average, and the per-day sparkbar render only when they have a
@@ -1237,32 +1431,7 @@
             </div>
           </div>
         {:else}
-          <div class="lede-stat">
-            <span class="lede-stat-figure">
-              <span class="lede-stat-n">{summary.totalLabel}</span>
-              {#if trackedDelta}
-                <span
-                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
-                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
-                    trackedDelta.dir === "down" ? "less" : "more"
-                  } than the same span of last ${rangeMode}`}
-                >
-                  <span class="lede-stat-delta-arrow" aria-hidden="true"
-                    >{trackedDelta.dir === "up"
-                      ? "↑"
-                      : trackedDelta.dir === "down"
-                        ? "↓"
-                        : "→"}</span
-                  >{Math.abs(trackedDelta.pct)}%</span
-                >
-              {/if}
-            </span>
-            <span class="lede-stat-cap">tracked</span>
-          </div>
-          <div class="lede-stat">
-            <span class="lede-stat-n">{summary.avgLabel}</span>
-            <span class="lede-stat-cap">daily avg</span>
-          </div>
+          {@render trackedStats()}
         {/if}
         {#if !engineTilesLoading && summary.deepPct !== null}
           <div class="lede-stat">
@@ -1297,8 +1466,17 @@
             <span class="lede-stat-cap">{summary.sparkLabel}</span>
           </div>
         {/if}
+        {#if watermark}
+          <div class="lede-stat lede-stat--aside">
+            <span class="lede-stat-cap">{watermark}</span>
+          </div>
+        {/if}
       </div>
     </article>
+    {#if failingState}
+      <!-- 4b: the cause, not "still learning…" forever. -->
+      <OverviewStates state={failingState} />
+    {/if}
   {:else}
     <!-- ── Free-tier hero ──
          No AI narrative on free, so the hero slot becomes a deterministic
@@ -1321,9 +1499,15 @@
       {:else}
         <div class="lede-body">
           <p class="lede-text">
+            {#if usageFailed}
+              Couldn't load app time for this {rangeMode}.
+            {:else if noAppTime}
+              {noAppTime.note}
+            {:else}
             {summary.totalLabel} tracked{#if topApps.length > 0} across {topApps.length}
               {topApps.length === 1 ? "app" : "apps"}{/if}.{#if topApps[0]}
               Most of it in {topApps[0].label}.{/if}
+            {/if}
           </p>
         </div>
       {/if}
@@ -1339,32 +1523,7 @@
             </div>
           </div>
         {:else}
-          <div class="lede-stat">
-            <span class="lede-stat-figure">
-              <span class="lede-stat-n">{summary.totalLabel}</span>
-              {#if trackedDelta}
-                <span
-                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
-                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
-                    trackedDelta.dir === "down" ? "less" : "more"
-                  } than the same span of last ${rangeMode}`}
-                >
-                  <span class="lede-stat-delta-arrow" aria-hidden="true"
-                    >{trackedDelta.dir === "up"
-                      ? "↑"
-                      : trackedDelta.dir === "down"
-                        ? "↓"
-                        : "→"}</span
-                  >{Math.abs(trackedDelta.pct)}%</span
-                >
-              {/if}
-            </span>
-            <span class="lede-stat-cap">tracked</span>
-          </div>
-          <div class="lede-stat">
-            <span class="lede-stat-n">{summary.avgLabel}</span>
-            <span class="lede-stat-cap">daily avg</span>
-          </div>
+          {@render trackedStats()}
           {#if summary.spark.length > 0}
             <div class="lede-stat lede-stat--spark">
               <div class="sparkbar" aria-hidden="true">
@@ -1407,6 +1566,7 @@
       <span class="tick" aria-hidden="true"></span>
       Exhibits
       <span class="rule"></span>
+      <UpdatedStamp at={updatedAt} />
     </p>
     <div class="exhibits-grid">
       <!-- Time — the whole card is a conditional button (role/tabindex are
@@ -1443,8 +1603,26 @@
                 </div>
               {/each}
             </div>
+          {:else if usageFailed}
+            <p class="tile-note tile-note--error">
+              Couldn't load app time.
+              <button
+                type="button"
+                class="tile-retry"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  void loadFree();
+                }}>Retry</button
+              >
+            </p>
+          {:else if noAppTime}
+            <p class="tile-note">{noAppTime.note}</p>
           {:else if topApps.length === 0}
-            <p class="tile-note">No tracked app time in this range.</p>
+            <p class="tile-note">
+              {presence && !presence.screen
+                ? "No screen capture in this range."
+                : "No tracked app time in this range."}
+            </p>
           {:else}
             <MiniBars items={topApps} />
             <span class="exhibit-hint">view all apps →</span>
@@ -1503,7 +1681,7 @@
               </button>
             </p>
           {:else if categorySegments.length === 0}
-            <p class="tile-note">No categorized activity yet.</p>
+            <p class="tile-note">{engineTileEmpty ?? "No categorized activity yet."}</p>
           {:else}
             <StackedBar segments={categorySegments} showLegend={true} fill={true} />
             <span class="exhibit-hint">view breakdown →</span>
@@ -1566,7 +1744,7 @@
               </button>
             </p>
           {:else if focusRows.length === 0}
-            <p class="tile-note">No focus signal yet.</p>
+            <p class="tile-note">{engineTileEmpty ?? "No focus signal yet."}</p>
           {:else}
             <Heatmap
               rows={focusRows}
@@ -1580,20 +1758,9 @@
     </div>
   </section>
 
-  {#if freeError}
-    <div class="state state--error">
-      <p class="state-title">Couldn't load your usage charts.</p>
-      <p class="state-detail">{freeError}</p>
-      <button
-        type="button"
-        class="re-read state-retry"
-        onclick={() => void loadFree()}
-        disabled={loadingFree}
-      >
-        <span class="re-read-ico" aria-hidden="true">↻</span>
-        Try again
-      </button>
-    </div>
+  {#if ctxStatus?.backfilling && engineOn}
+    <!-- 4a: older history is still filling in; no count, no ETA. -->
+    <OverviewStates state={{ kind: "catching-up" }} />
   {/if}
 
   {#if feedLoading}
@@ -1642,20 +1809,26 @@
         </div>
       </div>
     {:else if engineEmpty}
-      <div class="feed-column">
-        <div class="state state--empty">
-          <p class="state-title">Mnema is still learning…</p>
-          <p class="state-detail">
-            The engine is on, but it hasn't formed any Activities or Conclusions
-            for this range yet.
-            {#if ctxStatus?.backfilling}
-              It's currently backfilling your history — check back shortly.
-            {:else}
-              As you work, categorized activity and your dossier will appear here.
-            {/if}
-          </p>
+      <!-- Nothing summarized for this range. The read card and the states
+           above already say why (waiting on the first summary, failing, older
+           than the backfill window, catching up); only the plain case needs a
+           card here — and never the false "as you work…" promise (OV-19/20). -->
+      {#if !waitingFirst && !failingState && !olderThanBackfill && !ctxStatus?.backfilling}
+        <div class="feed-column">
+          <div class="state state--empty">
+            <p class="state-title">Nothing summarized for this range.</p>
+            <p class="state-detail">
+              {#if atLatest && captureControls.isRunning}
+                Summaries usually land within about 10 minutes of recorded work.
+              {:else if nothingCaptured}
+                Nothing was captured in this range.
+              {:else}
+                No activities were formed from what was captured here.
+              {/if}
+            </p>
+          </div>
         </div>
-      </div>
+      {/if}
     {:else}
       <div class="feed-column">
         <!-- One row of the "What changed"/"Pinned" lists; shared by both
@@ -1902,6 +2075,7 @@
         {/if}
       </div>
     {/if}
+  {/if}
   {/if}
 
   <!-- ── Ask entry bar — last child of the overview, both tiers ── -->
@@ -2548,6 +2722,54 @@
     width: 9px;
     height: 9px;
     border-radius: 50%;
+  }
+  /* A missing figure with its cause in the caption (audio only, retention). */
+  .lede-stat-n--none {
+    color: var(--app-text-subtle);
+  }
+  /* The "summarized through" watermark rides at the footer's far end. */
+  .lede-stat--aside {
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+  /* 2b / 4c: a quiet line in the read's place (same voice as ReadCard). */
+  .lede-quiet {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 0;
+    font-size: var(--text-md);
+    line-height: 1.7;
+    color: var(--app-text);
+  }
+  .lede-sub {
+    margin: 4px 0 0;
+    max-width: 620px;
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--app-text-muted);
+  }
+  .pulse {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    animation: ov-pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes ov-pulse {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pulse {
+      animation: none;
+    }
   }
   .lede-stat-cap {
     font-size: var(--text-xs);

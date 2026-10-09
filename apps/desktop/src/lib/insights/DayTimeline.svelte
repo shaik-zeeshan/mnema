@@ -31,6 +31,7 @@
   import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
+  import UpdatedStamp from "$lib/insights/UpdatedStamp.svelte";
 
   // ── Day range (always mode "day"; local midnight bounds) ────────────────
   let anchorMs = $state<number>(Date.now());
@@ -143,6 +144,8 @@
     statusLoaded = true;
   }
 
+  // "updated 1m ago" in the header, stamped on each successful range read.
+  let updatedAt = $state<number | null>(null);
   let rangeToken = 0;
   async function loadRange(): Promise<void> {
     const token = ++rangeToken;
@@ -161,6 +164,7 @@
       if (token !== rangeToken) return; // range moved on — stale
       activities = nextActivities;
       frames = nextFrames;
+      updatedAt = Date.now();
     } catch {
       // Best-effort: a failed read leaves the previous river; the pending slot /
       // empty panel still communicates state. (Activities/frames are read-only.)
@@ -326,7 +330,9 @@
   <div class="ov-header">
     <div class="titles">
       <h1>Journal</h1>
-      <p class="subtitle">Your day, written down while you worked.</p>
+      <p class="subtitle">
+        Your day, written down while you worked. <UpdatedStamp at={updatedAt} inline />
+      </p>
     </div>
     <div class="ov-controls">
       <JournalDateStepper

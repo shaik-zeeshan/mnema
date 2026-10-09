@@ -11,7 +11,8 @@ use std::sync::Arc;
 use capture_types::{
     Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
     FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
-    UserContextDistillationSummary, UserContextStatus, UserContextTokenUsage,
+    UserContextDistillationSummary, UserContextStatus, UserContextSummarizingFailure,
+    UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -94,6 +95,13 @@ pub async fn get_user_context_status(
         }
     });
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
+    // Best-effort: a read error degrades to "no known failure".
+    let summarizing_failure = store
+        .latest_window_failure()
+        .await
+        .ok()
+        .flatten()
+        .map(|failure| summarizing_failure_view(failure, &ai_runtime));
     // Summarized-up-to watermark: the end edge of the most-recently-COVERED
     // window (failed runs advanced the scheduler cursor but summarized nothing,
     // so they must not raise this), letting the frontend render the still-pending
@@ -182,7 +190,45 @@ pub async fn get_user_context_status(
         skipped_windows_24h,
         local_offset_minutes,
         last_day_digest,
+        summarizing_failure,
     })
+}
+
+/// Turn the store's failure streak into the readable status field: the
+/// provider's display name plus one classified sentence (never a raw body).
+fn summarizing_failure_view(
+    failure: app_infra::user_context::WindowFailure,
+    ai_runtime: &capture_types::AiRuntimeSettings,
+) -> UserContextSummarizingFailure {
+    use capture_types::AiProviderKind as Kind;
+    let config = failure
+        .provider
+        .as_deref()
+        .and_then(|id| ai_runtime.providers.iter().find(|p| p.id == id));
+    let kind = config
+        .map(|p| p.kind)
+        .or_else(|| failure.provider.as_deref().and_then(Kind::from_id));
+    let provider = match config.map(|p| p.label.trim()).filter(|l| !l.is_empty()) {
+        Some(label) => Some(label.to_string()),
+        None => kind.map(|kind| {
+            match kind {
+                Kind::Anthropic => "Anthropic",
+                Kind::Openai => "OpenAI",
+                Kind::OpenaiCompatible => "Your OpenAI-compatible provider",
+                Kind::Chatgpt => "ChatGPT",
+                Kind::Ollama => "Ollama",
+                Kind::Llamafile => "Llamafile",
+            }
+            .to_string()
+        }),
+    };
+    let cloud = matches!(kind, Some(Kind::Chatgpt)).then_some(ai_engine::CloudProvider::Chatgpt);
+    UserContextSummarizingFailure {
+        at_ms: failure.at_ms,
+        failures: failure.failures_since_success,
+        provider,
+        reason: ai_engine::classify_provider_failure(failure.error.as_deref().unwrap_or(""), cloud),
+    }
 }
 
 /// The most-recently-derived Activities (newest first) for the preview list.
@@ -906,5 +952,31 @@ mod tests {
             2,
             "non-ASCII case variants are distinct vetoes under NOCASE"
         );
+    }
+
+    #[test]
+    fn summarizing_failure_names_the_provider_and_classifies_the_reason() {
+        let mut settings = capture_types::AiRuntimeSettings::default();
+        settings.providers.push(capture_types::AiProviderConfig {
+            id: "anthropic".to_string(),
+            kind: capture_types::AiProviderKind::Anthropic,
+            label: String::new(),
+            base_url: String::new(),
+        });
+        let view = summarizing_failure_view(
+            app_infra::user_context::WindowFailure {
+                at_ms: 5,
+                provider: Some("anthropic".to_string()),
+                error: Some(
+                    "HTTP 429 Too Many Requests: {\"type\":\"rate_limit_error\"}".to_string(),
+                ),
+                failures_since_success: 6,
+            },
+            &settings,
+        );
+        assert_eq!(view.provider.as_deref(), Some("Anthropic"));
+        assert_eq!(view.failures, 6);
+        assert!(view.reason.contains("rate-limiting"), "{}", view.reason);
+        assert!(!view.reason.contains('{'));
     }
 }

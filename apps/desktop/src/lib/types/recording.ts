@@ -384,6 +384,18 @@ export interface UserContextStatus {
 	localOffsetMinutes?: number | null;
 	/** The most recently generated day-kind Digest; null until one exists. */
 	lastDayDigest?: UserContextDigest | null;
+	/** Set while Activity summarizing keeps failing; null when healthy. */
+	summarizingFailure?: UserContextSummarizingFailure | null;
+}
+
+/** Mirrors `capture_types::UserContextSummarizingFailure`. */
+export interface UserContextSummarizingFailure {
+	atMs: number;
+	/** Failed window runs since the last success. */
+	failures: number;
+	provider: string | null;
+	/** One readable sentence. */
+	reason: string;
 }
 
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */

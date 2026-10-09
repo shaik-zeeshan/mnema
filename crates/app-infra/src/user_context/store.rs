@@ -182,6 +182,18 @@ pub struct NewDerivationRun {
     pub gate_drops: DistillationGateDrops,
 }
 
+/// The newest run of failed Activity summarizing (`activity`/`backfill`
+/// windows) with no `completed` window run after it. Returned by
+/// [`UserContextStore::latest_window_failure`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowFailure {
+    pub at_ms: i64,
+    pub provider: Option<String>,
+    pub error: Option<String>,
+    /// Failed window runs since the last `completed` one.
+    pub failures_since_success: i64,
+}
+
 /// A `failed` derivation window eligible for a retry (issue #113): a
 /// `[window_start_ms, window_end_ms]` span whose every windowed run failed —
 /// no later `completed`/`skipped` run ever covered the same span — so the
@@ -893,6 +905,32 @@ impl UserContextStore {
                 row.get::<i64, _>("window_start_ms"),
                 row.get::<i64, _>("window_end_ms"),
             )
+        }))
+    }
+
+    /// The newest failed `activity`/`backfill` run, but only while no
+    /// `completed` window run came after it (a success clears the streak).
+    /// Ordered by `id` (insert order), not the window's time.
+    pub async fn latest_window_failure(&self) -> Result<Option<WindowFailure>> {
+        let row = sqlx::query(
+            "WITH last_ok AS (\
+                SELECT COALESCE(MAX(id), 0) AS id FROM user_context_derivation_runs \
+                WHERE kind IN ('activity','backfill') AND status = 'completed'\
+             ), fails AS (\
+                SELECT * FROM user_context_derivation_runs \
+                WHERE kind IN ('activity','backfill') AND status = 'failed' \
+                  AND id > (SELECT id FROM last_ok)\
+             ) \
+             SELECT created_at_ms, provider, error, (SELECT COUNT(*) FROM fails) AS failures \
+             FROM fails ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_optional(self.db.read())
+        .await?;
+        Ok(row.map(|row| WindowFailure {
+            at_ms: row.get("created_at_ms"),
+            provider: row.get("provider"),
+            error: row.get("error"),
+            failures_since_success: row.get("failures"),
         }))
     }
 
@@ -6104,6 +6142,69 @@ mod tests {
                 Some((5_000, 6_000)),
                 "max window_end_ms run"
             );
+        });
+    }
+
+    #[test]
+    fn latest_window_failure_counts_failures_since_last_success() {
+        block_on(async {
+            let store = test_store().await;
+            let run = |kind: &str, status: &str, error: Option<&str>| NewDerivationRun {
+                kind: kind.to_string(),
+                window_start_ms: Some(0),
+                window_end_ms: Some(1),
+                status: status.to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: Some("anthropic".to_string()),
+                model: None,
+                error: error.map(str::to_string),
+                gate_drops: DistillationGateDrops::default(),
+            };
+            assert_eq!(store.latest_window_failure().await.expect("empty"), None);
+
+            store
+                .insert_derivation_run(run("activity", "failed", Some("old")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("activity", "completed", None))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.latest_window_failure().await.expect("cleared"),
+                None,
+                "a success clears the streak"
+            );
+
+            store
+                .insert_derivation_run(run("activity", "failed", Some("a")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("backfill", "failed", Some("429 b")))
+                .await
+                .unwrap();
+            // Conclusion failures and skips are not window summarizing.
+            store
+                .insert_derivation_run(run("conclusion", "failed", Some("c")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("activity", "skipped", None))
+                .await
+                .unwrap();
+
+            let failure = store
+                .latest_window_failure()
+                .await
+                .expect("read")
+                .expect("some");
+            assert_eq!(failure.failures_since_success, 2);
+            assert_eq!(failure.error.as_deref(), Some("429 b"));
+            assert_eq!(failure.provider.as_deref(), Some("anthropic"));
         });
     }
 

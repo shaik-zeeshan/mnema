@@ -805,6 +805,7 @@ pub fn run() {
             conversation::commands::set_conversation_title,
             conversation::commands::delete_conversation,
             usage_charts::get_usage_charts,
+            usage_charts::capture_presence,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::set_privacy_filter_system_audio,
