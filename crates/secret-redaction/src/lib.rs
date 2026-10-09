@@ -448,6 +448,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
             }
         }
 
+        redact_stacked_label_values(&mut plan, &ocr.observations);
+
         for (index, observation) in ocr.observations.iter().enumerate() {
             if plan.ocr_observation_text.contains_key(&index) {
                 continue;
@@ -747,6 +749,56 @@ fn build_ocr_visual_lines(observations: &[OcrRedactionObservation]) -> Vec<OcrVi
         .collect()
 }
 
+/// Stacked forms put a label on the line above its value ("Security code" /
+/// "234"), so neither visual line holds the pair. Scan each label-bearing
+/// observation joined to the observations stacked against it and redact the
+/// value as a unit.
+// ponytail: not counted against `max_surfaces`, so a code editor full of "key"
+// and "token" words cannot fail the gate closed; the work is bounded by
+// prefilter hits times their stacked neighbours.
+fn redact_stacked_label_values(
+    plan: &mut UnifiedRedactionPlan,
+    observations: &[OcrRedactionObservation],
+) {
+    for (label_index, label) in observations.iter().enumerate() {
+        if !EVIDENCE_PREFILTER.is_match(&label.text) || !redact_text(&label.text).spans.is_empty() {
+            continue;
+        }
+        for (value_index, value) in observations.iter().enumerate() {
+            if value_index == label_index
+                || plan.ocr_observation_text.contains_key(&value_index)
+                || !is_stacked_pair(label, value)
+            {
+                continue;
+            }
+            let result = redact_text(&format!("{}\n{}", label.text, value.text));
+            if result.spans.is_empty() {
+                continue;
+            }
+            let marker = dominant_marker(&result);
+            plan.ocr_observation_text
+                .insert(value_index, marker.to_string());
+            plan.redactions.push(PlannedRedaction {
+                category: result.spans[0].category,
+                surface_kind: RedactionSurfaceKind::OcrObservation,
+                redaction_scope: RedactionScope::RedactionUnit,
+                redacted_start: 0,
+                redacted_end: marker.len(),
+            });
+        }
+    }
+}
+
+/// Horizontally overlapping and one or two lines apart, above or below (the
+/// check is origin-agnostic). Same-line tolerance matches `build_ocr_visual_lines`.
+fn is_stacked_pair(a: &OcrRedactionObservation, b: &OcrRedactionObservation) -> bool {
+    let (a, b) = (&a.bounding_box, &b.bounding_box);
+    let overlaps_x = a.x < b.x + b.width && b.x < a.x + a.width;
+    let line = a.height.max(b.height).max(0.02);
+    let center_gap = ((a.y + a.height / 2.0) - (b.y + b.height / 2.0)).abs();
+    overlaps_x && center_gap > line && center_gap <= 2.5 * line
+}
+
 fn dominant_marker(result: &RedactionResult) -> &'static str {
     result
         .spans
@@ -859,6 +911,44 @@ mod tests {
             &result.redacted_text[span.start..span.end],
             SecretCategory::ApiKey.marker()
         );
+    }
+
+    #[test]
+    fn planner_redacts_value_stacked_under_its_label() {
+        // Box geometry from a real Polar/Stripe checkout frame.
+        let observation = |text: &str, x: f64, y: f64, width: f64| OcrRedactionObservation {
+            text: text.to_string(),
+            confidence: 0.9,
+            bounding_box: RedactionBoundingBox {
+                x,
+                y,
+                width,
+                height: 0.014,
+            },
+        };
+        let plan = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![
+                    observation("Expiration (MM/YY)", 0.527, 0.578, 0.078),
+                    observation("01/45", 0.534, 0.544, 0.032),
+                    observation("Security code", 0.652, 0.578, 0.058),
+                    observation("234", 0.659, 0.544, 0.022),
+                    observation("Pay now", 0.632, 0.275, 0.038),
+                ],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        })
+        .expect("planner should redact stacked label/value");
+
+        assert_eq!(
+            plan.ocr_observation_text.get(&3).map(String::as_str),
+            Some("[REDACTED_SECRET: PAYMENT_CARD]")
+        );
+        assert_eq!(plan.ocr_observation_text.len(), 1, "{plan:?}");
     }
 
     #[test]
