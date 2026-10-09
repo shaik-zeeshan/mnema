@@ -271,6 +271,9 @@ export interface AuthoredContext {
 	topic: string | null;
 	createdAtMs: number;
 	updatedAtMs: number;
+	/** From `list_user_context_authored` only: false when the statement falls past
+	 * the ~2,000-character prompt cap and the engine doesn't read it. */
+	inPrompt?: boolean;
 }
 
 /**

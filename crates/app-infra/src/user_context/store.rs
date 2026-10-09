@@ -1825,11 +1825,12 @@ impl UserContextStore {
 
     /// Number of distinct dismissed beliefs, keyed case-insensitively on
     /// `(subject, statement)` — the same identity the Dismissed archive dedups
-    /// on (a belief dismissed twice counts once).
+    /// on (a belief dismissed twice counts once). Only `source='user'` rows: a
+    /// supersede veto is the system replacing a belief, not the user dismissing it.
     pub async fn count_dismissed(&self) -> Result<i64> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count FROM ( \
-                 SELECT 1 FROM user_context_dismissals \
+                 SELECT 1 FROM user_context_dismissals WHERE source = 'user' \
                  GROUP BY subject COLLATE NOCASE, statement COLLATE NOCASE)",
         )
         .fetch_one(self.db.read())
@@ -2180,6 +2181,20 @@ impl UserContextStore {
         let rows = sqlx::query(
             "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
              FROM user_context_dismissals \
+             ORDER BY dismissed_at_ms DESC, id DESC",
+        )
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows.into_iter().map(map_dismissal).collect())
+    }
+
+    /// The user's own dismissals (`source='user'`), newest first — the Dismissed
+    /// archive. Supersede vetoes are the system replacing a belief and stay out.
+    pub async fn list_user_dismissals(&self) -> Result<Vec<DismissalState>> {
+        let rows = sqlx::query(
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
+             FROM user_context_dismissals \
+             WHERE source = 'user' \
              ORDER BY dismissed_at_ms DESC, id DESC",
         )
         .fetch_all(self.db.read())
@@ -6824,7 +6839,20 @@ mod tests {
                 .await
                 .expect("dismissal row");
             }
+            // A system supersede veto is not a user dismissal: it stays out of
+            // both the count and the Dismissed archive.
+            sqlx::query(
+                "INSERT INTO user_context_dismissals \
+                    (subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source) \
+                 VALUES ('Go', 'Writes Go', 'fp', 1, 2000, 'supersede')",
+            )
+            .execute(store.pool())
+            .await
+            .expect("supersede row");
             assert_eq!(store.count_dismissed().await.expect("dismissed"), 2);
+            let user_list = store.list_user_dismissals().await.expect("user dismissals");
+            assert_eq!(user_list.len(), 3);
+            assert!(user_list.iter().all(|d| d.source == "user"));
 
             // Two skipped runs + one completed → 2 since epoch, 0 since the future.
             for status in ["skipped", "skipped", "completed"] {

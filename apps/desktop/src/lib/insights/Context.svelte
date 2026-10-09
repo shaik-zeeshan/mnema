@@ -36,6 +36,14 @@
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import { humanizeError } from "$lib/format-error";
 
+  interface Props {
+    // Subjects' "View dismissed": land with the Dismissed archive expanded and
+    // scrolled into view.
+    openDismissed?: boolean;
+  }
+  let { openDismissed = false }: Props = $props();
+  let dismissedEl = $state<HTMLElement | null>(null);
+
   // Placeholder statement rows shown while authored context loads.
   const SKELETON_COUNT = 3;
 
@@ -100,7 +108,12 @@
       .slice(0, 3);
   });
 
-  const countLabel = $derived(statements?.length ?? 0);
+  // Statements past the ~2,000-character prompt cap (CX-06). The backend flags
+  // each row with the distillation's own counting rule; an optimistic local add
+  // has no flag yet and counts as read until the re-list lands.
+  const notReadCount = $derived(
+    (statements ?? []).filter((s) => s.inPrompt === false).length,
+  );
 
   function tierLabel(tier: DerivationBudgetTier | null): string {
     if (!tier) return "engine";
@@ -141,8 +154,9 @@
       statements = list;
       loadError = null;
     } catch (error) {
+      // Keep whatever was loaded; a first-load failure leaves `statements` null
+      // so the error card renders instead of a false "no context yet" (CX-01).
       loadError = humanizeError(error);
-      statements = statements ?? [];
     } finally {
       loading = false;
     }
@@ -174,6 +188,13 @@
       dismissed = dismissed ?? [];
     }
   }
+
+  // Arriving from Subjects' "View dismissed": expand and scroll once loaded.
+  $effect(() => {
+    if (!openDismissed || !dismissedEl) return;
+    showDismissed = true;
+    dismissedEl.scrollIntoView({ block: "start", behavior: "smooth" });
+  });
 
   async function restoreDismissed(d: DismissedView): Promise<void> {
     const key = dismissedKey(d);
@@ -366,8 +387,8 @@
 
         <div class="composer-foot">
           <span class="helper">
-            <span class="hint-glyph" aria-hidden="true">›</span>Authored statements
-            never fade from your dossier.
+            <span class="hint-glyph" aria-hidden="true">›</span>Applies the next time
+            Mnema updates your beliefs.
           </span>
           <button
             type="button"
@@ -387,14 +408,26 @@
       <!-- LIST HEADER -->
       <div class="list-head">
         <span class="section-title">Standing context</span>
-        <span class="pill count-pill">{countLabel}</span>
+        {#if statements}
+          <span class="pill count-pill">{statements.length}</span>
+        {/if}
       </div>
+      {#if statements && statements.length > 0}
+        <p class="dismissed-note">
+          Never fades. Only your newest ~2,000 characters are used{notReadCount > 0
+            ? ` — the ${notReadCount === 1 ? "oldest statement doesn't" : `${notReadCount} oldest statements don't`} fit`
+            : ""}.
+        </p>
+      {/if}
 
       <!-- LIST / STATES -->
       {#if loadError && !statements}
         <div class="state state--error">
           <p class="state-title">Couldn't load your context.</p>
-          <p class="state-detail">{loadError}</p>
+          <p class="state-detail">
+            Your statements are safe, so there's no need to add them again. This
+            was a problem reading them.
+          </p>
           <button
             type="button"
             class="state-retry"
@@ -422,7 +455,7 @@
             </div>
           {/each}
         </div>
-      {:else if (statements?.length ?? 0) === 0}
+      {:else if statements && statements.length === 0}
         <div class="state state--empty">
           <p class="state-title">No standing context yet.</p>
           <p class="state-detail">
@@ -434,6 +467,7 @@
       {:else}
         <div class="stmt-list">
           {#each statements ?? [] as s (s.id)}
+            {@const notRead = s.inPrompt === false}
             {#if editingId === s.id}
               <!-- inline edit -->
               <div class="stmt stmt--editing">
@@ -468,15 +502,19 @@
                 </div>
               </div>
             {:else}
-              <div class="stmt">
+              <div class="stmt" class:stmt--not-read={notRead}>
                 <div class="stmt-text">{s.text}</div>
                 <div class="stmt-meta">
                   {#if s.topic}
                     <span class="topic-chip">{s.topic}</span>
                   {/if}
-                  <span class="authored-pill">
-                    <span class="quill">✎</span>Authored
-                  </span>
+                  {#if notRead}
+                    <span class="not-read-pill">not read: over the limit</span>
+                  {:else}
+                    <span class="authored-pill">
+                      <span class="quill">✎</span>Authored
+                    </span>
+                  {/if}
                   <span class="meta-time">{metaTime(s)}</span>
                   <span class="meta-actions">
                     <button
@@ -503,7 +541,7 @@
 
       <!-- DISMISSED ARCHIVE — the negative space of the inferred dossier. -->
       {#if dismissedCount > 0 || dismissedError}
-        <div class="list-head dismissed-head">
+        <div class="list-head dismissed-head" bind:this={dismissedEl}>
           <span class="section-title">Dismissed</span>
           <span class="pill count-pill">{dismissedCount}</span>
           <span class="spacer"></span>
@@ -519,8 +557,8 @@
 
         {#if showDismissed}
           <p class="dismissed-note">
-            Beliefs you removed from your dossier. Restoring lets one form again —
-            only if your activity still supports it.
+            Beliefs you removed from your dossier. Restoring only lifts the block —
+            one forms again only if recent activity supports it.
           </p>
           {#if dismissedError}
             <p class="composer-error">{dismissedError}</p>
@@ -593,7 +631,7 @@
 
       <!-- STEERING LINKS -->
       <div class="side-card">
-        <div class="side-title"><span>Steering your dossier</span></div>
+        <div class="side-title"><span>Your strongest beliefs</span></div>
 
         {#if steerLinks.length > 0}
           <div class="steer-list">
@@ -606,10 +644,9 @@
                 </div>
                 <div class="steer-body">
                   <div class="steer-from">
-                    <span class="quill">✎</span>{c.subject}
+                    {c.subject}
                   </div>
                   <div class="steer-to">
-                    <span class="supports">supports</span>
                     <span class="infer-chip" use:tip={"Inferred conclusion"}>
                       ◆ {c.statement}
                     </span>
@@ -623,8 +660,7 @@
           </div>
         {:else}
           <p class="steer-empty">
-            As Mnema forms inferred conclusions, you'll see how your authored
-            context steers them here.
+            Your strongest inferred beliefs show here once Mnema forms them.
           </p>
         {/if}
       </div>
@@ -646,6 +682,16 @@
 </section>
 
 <style>
+  .stmt--not-read {
+    border-style: dashed;
+  }
+  .stmt--not-read .stmt-text {
+    color: var(--app-text-muted);
+  }
+  .not-read-pill {
+    font-size: 11px;
+    color: var(--app-warn);
+  }
   .ctx {
     display: flex;
     flex-direction: column;
@@ -1283,10 +1329,6 @@
     color: var(--app-text-strong);
     font-weight: 600;
   }
-  .steer-from .quill {
-    color: var(--app-accent-strong);
-    margin-right: 3px;
-  }
   .steer-to {
     display: flex;
     align-items: center;
@@ -1296,9 +1338,6 @@
     font-size: var(--text-sm);
     line-height: 1.45;
     color: var(--app-text-muted);
-  }
-  .steer-to .supports {
-    color: var(--app-text-subtle);
   }
   .infer-chip {
     display: inline-flex;

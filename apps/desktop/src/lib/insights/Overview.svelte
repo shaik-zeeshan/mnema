@@ -70,6 +70,7 @@
   import Select from "$lib/components/Select.svelte";
   import { humanizeError } from "$lib/format-error";
   import ReadCard from "$lib/insights/ReadCard.svelte";
+  import { DelayedDismiss } from "$lib/insights/dismissUndo.svelte";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -1013,46 +1014,16 @@
     }
   }
 
-  // Dismiss now has an UNDO window: rather than vanishing (and persisting) at
-  // once, the row collapses into a "Dismissed · Undo" placeholder and the backend
-  // dismiss is DEFERRED. If the user clicks Undo before the window elapses the
-  // pending commit is cancelled and the row returns — no backend call was made,
-  // so no un-dismiss command is needed. After the window the commit fires and the
-  // row leaves the feed for good.
-  const DISMISS_UNDO_MS = 5000;
-  let pendingDismiss = $state<Map<number, ReturnType<typeof setTimeout>>>(
-    new Map(),
-  );
-
-  function dismissConclusion(c: Conclusion): void {
-    if (pendingDismiss.has(c.id)) return;
-    const timer = setTimeout(() => void commitDismiss(c), DISMISS_UNDO_MS);
-    const next = new Map(pendingDismiss);
-    next.set(c.id, timer);
-    pendingDismiss = next;
-  }
-
-  // Belt-and-braces: clear any pending dismiss-undo timers on unmount so a
-  // queued `commitDismiss` can't fire (and invoke) after the component is gone
-  // — same class as the autosave-timer leak fixed elsewhere this branch. Only
-  // the teardown reads `pendingDismiss`, so this effect never re-runs.
-  $effect(() => () => {
-    for (const timer of pendingDismiss.values()) clearTimeout(timer);
-  });
-
-  function undoDismiss(c: Conclusion): void {
-    const timer = pendingDismiss.get(c.id);
-    if (timer !== undefined) clearTimeout(timer);
-    const next = new Map(pendingDismiss);
-    next.delete(c.id);
-    pendingDismiss = next;
-  }
+  // Dismiss has an UNDO window (shared helper, `dismissUndo.svelte.ts`): the
+  // row collapses into a "Dismissed · Undo" line and the backend dismiss fires
+  // after DISMISS_UNDO_MS unless the user clicks Undo.
+  const dismisser = new DelayedDismiss<Conclusion>((c) => void commitDismiss(c));
+  const dismissConclusion = (c: Conclusion): void => dismisser.start(c);
+  const undoDismiss = (c: Conclusion): void => dismisser.undo(c);
+  $effect(() => () => dismisser.dispose());
 
   async function commitDismiss(c: Conclusion): Promise<void> {
-    // Clear the pending state, hide the row (optimistic), then persist.
-    const next = new Map(pendingDismiss);
-    next.delete(c.id);
-    pendingDismiss = next;
+    // Hide the row (optimistic), then persist.
     const set = new Set(dismissedIds);
     set.add(c.id);
     dismissedIds = set;
@@ -1692,7 +1663,7 @@
         {#snippet deltaRow(d: ConclusionDelta)}
           {@const c = d.c}
           {@const open = expandedDeltaRows.has(c.id)}
-          {#if pendingDismiss.has(c.id)}
+          {#if dismisser.has(c.id)}
             <!-- Undo window: the dismiss hasn't committed yet — collapse to a
                  quiet "Dismissed · Undo" line so the action is reversible and
                  isn't a silent vanish. -->

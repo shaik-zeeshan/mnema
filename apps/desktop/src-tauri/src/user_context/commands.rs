@@ -563,7 +563,7 @@ pub async fn user_context_list_dismissed(
 ) -> Result<Vec<DismissedView>, String> {
     let dismissals = infra
         .user_context()
-        .list_dismissals()
+        .list_user_dismissals()
         .await
         .map_err(|e| e.to_string())?;
     Ok(dedupe_dismissed(dismissals))
@@ -653,18 +653,35 @@ pub async fn user_context_correct_activity_focus(
     Ok(())
 }
 
+/// One authored statement plus whether the engine actually reads it: `in_prompt`
+/// is false for statements past the authored-context char cap (CX-06).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthoredContextRow {
+    #[serde(flatten)]
+    pub item: AuthoredContext,
+    pub in_prompt: bool,
+}
+
 /// List every **user-authored Context** statement (#107), newest first. These are
 /// standing statements the user wrote about themselves; they are user-asserted, so
-/// they carry no confidence and never decay.
+/// they carry no confidence and never decay — but only the newest that fit the
+/// prompt cap are read, flagged per row via `inPrompt`.
 #[tauri::command]
 pub async fn list_user_context_authored(
     infra: tauri::State<'_, AppInfraState>,
-) -> Result<Vec<AuthoredContext>, String> {
-    infra
+) -> Result<Vec<AuthoredContextRow>, String> {
+    let authored = infra
         .user_context()
         .list_authored_context()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let lines = super::derivation::authored_prompt_lines(&authored);
+    Ok(authored
+        .into_iter()
+        .zip(lines)
+        .map(|(item, line)| AuthoredContextRow { item, in_prompt: line.is_some() })
+        .collect())
 }
 
 /// Add a **user-authored Context** statement (#107). Stored verbatim with an

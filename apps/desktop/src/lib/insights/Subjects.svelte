@@ -29,14 +29,12 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
-  import { openSettings } from "$lib/surface-windows";
   import type {
     Conclusion,
     SubjectView,
     ConclusionEvidenceRef,
     Activity,
     ActivityEvidenceRef,
-    AiRuntimeStatus,
     UserContextStatus,
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
@@ -57,15 +55,18 @@
   } from "$lib/insights/subjectsTiers";
   import { rankSubjects } from "$lib/insights/subjectSearch";
   import { humanizeError } from "$lib/format-error";
+  import { DelayedDismiss } from "$lib/insights/dismissUndo.svelte";
 
   // Number of placeholder rows shown while the conclusions load.
   const SKELETON_COUNT = 6;
 
   interface Props {
     onOpenSubject: (subject: string) => void;
+    // "View dismissed": the shell switches to Context with Dismissed open.
+    onViewDismissed?: () => void;
   }
 
-  let { onOpenSubject }: Props = $props();
+  let { onOpenSubject, onViewDismissed }: Props = $props();
 
   // Sparkline lines encode MAGNITUDE, not identity: the top conclusion draws in
   // accent and the remaining lines are a single neutral grey, so a subject with
@@ -101,10 +102,16 @@
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
-  // Engine on/off — lets the empty state tell "engine is off, turn it on" apart
-  // from "engine is on but hasn't formed any views yet" (two very different
-  // next steps). null until the first status call resolves.
-  let engineOn = $state<boolean | null>(null);
+  // User Context status — lets the empty state name its cause (reading history,
+  // too little evidence, everything dismissed). Engine trouble is the shell's
+  // engine line, not this surface's. null until the first status call resolves.
+  let ctx = $state<UserContextStatus | null>(null);
+  // Drafts the last distillation held back, for the "too little evidence" line.
+  const heldBack = $derived.by(() => {
+    const d = ctx?.lastDistillation;
+    if (!d) return 0;
+    return d.guardrailSuppressed + d.belowFormationBar + d.resurfaceBlocked + d.ungrounded;
+  });
 
   // Grouping axis for the tier layout. "conviction" = how firmly held (default);
   // "movement" = which way it's heading. Drives `buildTiers`.
@@ -168,7 +175,7 @@
   // `actionKind` records WHICH action is running so only that button shows its
   // busy affordance (the sibling stays disabled but unlabelled).
   let actionId = $state<number | null>(null);
-  let actionKind = $state<"pin" | "dismiss" | null>(null);
+  let actionKind = $state<"pin" | null>(null);
 
   // ---- Slice 4: realtime staging buffer + refresh pill --------------------
   // Engine `user_context_changed` events never reflow the page while the user
@@ -189,6 +196,9 @@
   // Subjects whose evidence resolution has already been kicked off, so the lazy
   // loader never double-fetches the same subject across re-expands.
   let resolvedSubjects = $state<Set<string>>(new Set());
+  // Subjects whose evidence scan is still running (SB-05: "finding…", not a
+  // false "no evidence").
+  let resolvingSubjects = $state<Set<string>>(new Set());
 
   function groupSubjects(list: Conclusion[]): Map<string, Conclusion[]> {
     const groups = new Map<string, Conclusion[]>();
@@ -345,7 +355,8 @@
     actionKind = "pin";
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
-      applyConclusions(await fetchConclusions());
+      const list = await fetchConclusions();
+      if (list) applyConclusions(list);
     } catch (error) {
       // Write failure must NOT blow away the loaded list — surface it in a
       // dialog (mirrors Context.svelte) and leave the rows intact.
@@ -360,66 +371,74 @@
     }
   }
 
-  async function dismiss(c: Conclusion): Promise<void> {
-    if (actionId !== null) return;
-    actionId = c.id;
-    actionKind = "dismiss";
+  // Dismiss uses Overview's delayed commit (shared helper): the conclusion
+  // collapses to "Dismissed · Undo · View dismissed" for DISMISS_UNDO_MS, then
+  // commits. Leaving the surface mid-window commits rather than drops it.
+  const dismisser = new DelayedDismiss<Conclusion>((c) => void commitDismiss(c));
+
+  async function commitDismiss(c: Conclusion): Promise<void> {
+    // Hide it now (optimistic); the backend's change event re-lists.
+    conclusions = (untrack(() => conclusions) ?? []).filter((x) => x.id !== c.id);
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
-      applyConclusions(await fetchConclusions());
     } catch (error) {
-      // Write failure must NOT blow away the loaded list — surface it in a
-      // dialog (mirrors Context.svelte) and leave the rows intact.
+      const list = await fetchConclusions();
+      if (list) applyConclusions(list);
       const detail = humanizeError(error);
       await message(detail, {
-        title: "Couldn't dismiss conclusion",
+        title: "Couldn't dismiss belief",
         kind: "error",
       });
-    } finally {
-      actionId = null;
-      actionKind = null;
     }
+  }
+
+  function viewDismissed(): void {
+    dismisser.flush();
+    onViewDismissed?.();
   }
 
   // ---- Lazy, bounded evidence resolution (quick look, not the deep dive) ----
   // One evidence chip per resolved Activity cited by the subject's conclusions.
   interface EvidenceChip {
     activityId: number;
-    sourceType: "screen" | "audio";
+    // null = older than the bounded scan: title + time come from the ref itself.
+    sourceType: "screen" | "audio" | null;
     atMs: number | null;
+    title: string | null;
   }
 
   // Aggregate the distinct evidence Activities cited across a subject's
   // conclusions and project the resolved ones into source-typed chips. Capped to
   // a handful so the expanded row stays a glance, not the full inspector.
   function evidenceChipsFor(r: SubjectRow): EvidenceChip[] {
-    const seen = new Set<number>();
-    const order: number[] = [];
+    const refs = new Map<number, ConclusionEvidenceRef>();
     for (const c of r.conclusions) {
       for (const e of c.evidence as ConclusionEvidenceRef[]) {
-        if (!seen.has(e.activityId)) {
-          seen.add(e.activityId);
-          order.push(e.activityId);
-        }
+        if (!refs.has(e.activityId)) refs.set(e.activityId, e);
       }
     }
     const chips: EvidenceChip[] = [];
-    for (const id of order) {
+    for (const [id, ref] of refs) {
       const activity = activitiesById.get(id);
-      if (!activity) continue;
-      const firstRef = activity.evidence?.[0];
-      const sourceType: "screen" | "audio" =
-        firstRef?.subjectType === "audio_segment" ? "audio" : "screen";
-      chips.push({ activityId: id, sourceType, atMs: activity.startedAtMs ?? null });
+      if (activity) {
+        const firstRef = activity.evidence?.[0];
+        const sourceType: "screen" | "audio" =
+          firstRef?.subjectType === "audio_segment" ? "audio" : "screen";
+        chips.push({ activityId: id, sourceType, atMs: activity.startedAtMs ?? null, title: null });
+      } else if (!resolvingSubjects.has(r.subject) && (ref.activityTitle || ref.activityStartedAtMs)) {
+        // Older than the scan window (SB-06): show it in place from the ref.
+        chips.push({
+          activityId: id,
+          sourceType: null,
+          atMs: ref.activityStartedAtMs ?? null,
+          title: ref.activityTitle ?? null,
+        });
+      }
       if (chips.length >= 5) break;
     }
     return chips;
   }
 
-  // True while the expanded subject cites evidence but none has resolved yet.
-  function hasEvidenceRefs(r: SubjectRow): boolean {
-    return r.conclusions.some((c) => c.evidence.length > 0);
-  }
 
   // Resolve the Activities a subject's conclusions cite via a bounded paged scan
   // (port of SubjectDetail.loadActivities). Runs at most once per subject; merges
@@ -437,7 +456,17 @@
     for (const c of row.conclusions)
       for (const e of c.evidence) wanted.add(e.activityId);
     if (wanted.size === 0) return;
+    resolvingSubjects = new Set(resolvingSubjects).add(subject);
+    try {
+      await scanActivities(wanted);
+    } finally {
+      const done = new Set(resolvingSubjects);
+      done.delete(subject);
+      resolvingSubjects = done;
+    }
+  }
 
+  async function scanActivities(wanted: Set<number>): Promise<void> {
     const resolved = new Map<number, Activity>();
     const PAGE = 200;
     const MAX_PAGES = 6; // bounded scan; evidence is recent for live subjects
@@ -476,8 +505,7 @@
   // frame ref peeks in place; an audio ref (or no ref) keeps the old raw-Timeline
   // hand-off / plain Timeline navigation.
   async function viewInTimeline(r: SubjectRow): Promise<void> {
-    const chips = evidenceChipsFor(r);
-    const first = chips[0];
+    const first = evidenceChipsFor(r).find((c) => c.sourceType !== null);
     const activity = first ? activitiesById.get(first.activityId) : undefined;
     const ref = activity?.evidence?.[0];
     if (ref && ref.subjectType === "frame") {
@@ -546,9 +574,10 @@
     return summaries.map((s) => s.subject);
   }
 
-  // The single network read. Returns the fresh list; sets loadError on failure
-  // (and returns the current list so callers don't blow away what's displayed).
-  async function fetchConclusions(): Promise<Conclusion[]> {
+  // The single network read. Returns the fresh list, or null on failure so
+  // callers keep what's displayed. A failure before anything loaded sets
+  // loadError and leaves `conclusions` null, so the error card renders (SB-01).
+  async function fetchConclusions(): Promise<Conclusion[] | null> {
     try {
       const list = await invoke<Conclusion[]>("list_user_context_conclusions", {
         includeFaded: true,
@@ -560,10 +589,10 @@
       // (initial load — `conclusions` still null). A background realtime refetch
       // failure keeps the intact rendered rows instead of flashing the error
       // state over good content; we still return the current list below.
-      if (!conclusions?.length) {
+      if (untrack(() => conclusions) === null) {
         loadError = humanizeError(error);
       }
-      return conclusions ?? [];
+      return null;
     }
   }
 
@@ -579,23 +608,19 @@
   async function loadConclusions(): Promise<void> {
     loading = true;
     try {
-      applyConclusions(await fetchConclusions());
+      const list = await fetchConclusions();
+      if (list) applyConclusions(list);
     } finally {
       loading = false;
     }
   }
 
-  // Probe whether the Reasoning Engine is on so the empty state can disambiguate
-  // engine-off from no-data. Best-effort: a failed probe leaves `engineOn` null,
-  // and the empty state falls back to neutral both-cases copy.
-  async function loadEngineStatus(): Promise<void> {
-    const [ai, ctx] = await Promise.all([
-      invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
-      invoke<UserContextStatus>("get_user_context_status").catch(() => null),
-    ]);
-    engineOn =
-      Boolean(ai?.enabled && ai?.available) ||
-      Boolean(ctx?.engineAvailable);
+  // Best-effort: a failed probe keeps the last status (or null → neutral copy).
+  async function loadStatus(): Promise<void> {
+    const next = await invoke<UserContextStatus>("get_user_context_status").catch(
+      () => null,
+    );
+    if (next) ctx = next;
   }
 
   // Apply the staged reload now (the refresh-pill click, or auto-apply on idle).
@@ -650,6 +675,7 @@
   // the ONLY staged path — user actions and first paint stay immediate.
   async function onContextChanged(): Promise<void> {
     const next = await fetchConclusions();
+    if (!next) return;
     const displayedOrder = displayedSubjectOrder(
       untrack(() => conclusions) ?? [],
     );
@@ -691,7 +717,7 @@
 
   $effect(() => {
     void untrack(() => loadConclusions());
-    void untrack(() => loadEngineStatus());
+    void untrack(() => loadStatus());
 
     // Debounce the engine-change reload (store the wrapped fn so cleanup can
     // cancel a pending trailing call on unmount).
@@ -701,7 +727,7 @@
     let disposed = false;
     void listen("user_context_changed", () => {
       debounced();
-      void loadEngineStatus();
+      void loadStatus();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -742,6 +768,7 @@
 
     return () => {
       disposed = true;
+      dismisser.flush();
       unlisten?.();
       debounced.cancel();
       applySearch.cancel();
@@ -838,6 +865,35 @@
             <div class="conv-concl">
               {#each r.conclusions as c (c.id)}
                 {@const faded = c.status === "faded"}
+                {#if dismisser.has(c.id)}
+                <div class="conv-concl-row conv-concl-row--dismissed" role="status">
+                  <span class="conv-concl-stmt">Dismissed “{c.statement}”.</span>
+                  <span class="conv-concl-actions">
+                    <button
+                      type="button"
+                      class="btn"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        dismisser.undo(c);
+                      }}
+                    >
+                      Undo
+                    </button>
+                    {#if onViewDismissed}
+                      <button
+                        type="button"
+                        class="btn btn--ghost"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          viewDismissed();
+                        }}
+                      >
+                        View dismissed
+                      </button>
+                    {/if}
+                  </span>
+                </div>
+                {:else}
                 <div class="conv-concl-row" class:is-faded={faded}>
                   <span class="conv-concl-stmt" use:tip={c.statement}>
                     {#if c.pinned}<span class="conv-concl-pin" aria-hidden="true"
@@ -877,23 +933,17 @@
                     <button
                       type="button"
                       class="btn"
-                      class:btn--busy={actionId === c.id &&
-                        actionKind === "dismiss"}
                       disabled={actionId !== null}
                       onclick={(e) => {
                         e.stopPropagation();
-                        void dismiss(c);
+                        dismisser.start(c);
                       }}
                     >
-                      {#if actionId === c.id && actionKind === "dismiss"}
-                        <span class="btn-spinner" aria-hidden="true"></span>
-                        Dismissing…
-                      {:else}
-                        Dismiss
-                      {/if}
+                      Dismiss
                     </button>
                   </span>
                 </div>
+                {/if}
               {/each}
             </div>
           </div>
@@ -904,29 +954,39 @@
             {#if chips.length > 0}
               <div class="conv-chiprow">
                 {#each chips as chip (chip.activityId)}
-                  <span
-                    class="chip {chip.sourceType === 'audio'
-                      ? 'src-mic'
-                      : 'src-screen'}"
-                  >
-                    {chip.sourceType === "audio" ? "audio" : "screen"}
-                    <span class="chip-time">{relativeTime(chip.atMs ?? 0)}</span>
-                  </span>
+                  {#if chip.sourceType === null}
+                    <span class="chip">
+                      {chip.title ?? "Older activity"}
+                      {#if chip.atMs}<span class="chip-time">{relativeTime(chip.atMs)}</span>{/if}
+                    </span>
+                  {:else}
+                    <span
+                      class="chip {chip.sourceType === 'audio'
+                        ? 'src-mic'
+                        : 'src-screen'}"
+                    >
+                      {chip.sourceType === "audio" ? "audio" : "screen"}
+                      <span class="chip-time">{relativeTime(chip.atMs ?? 0)}</span>
+                    </span>
+                  {/if}
                 {/each}
-                <button
-                  type="button"
-                  class="btn btn--ghost conv-timeline-btn"
-                  onclick={(e) => {
-                    e.stopPropagation();
-                    void viewInTimeline(r);
-                  }}
-                >
-                  View frame ›
-                </button>
+                {#if chips.some((c) => c.sourceType !== null)}
+                  <button
+                    type="button"
+                    class="btn btn--ghost conv-timeline-btn"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      void viewInTimeline(r);
+                    }}
+                  >
+                    View frame ›
+                  </button>
+                {/if}
               </div>
-            {:else if hasEvidenceRefs(r) && !resolvedSubjects.has(r.subject)}
-              <p class="ev-empty">Resolving evidence…</p>
-            {:else}
+            {/if}
+            {#if resolvingSubjects.has(r.subject)}
+              <p class="ev-empty">Finding the activities behind this…</p>
+            {:else if chips.length === 0}
               <p class="ev-empty">No grounding evidence linked.</p>
             {/if}
           </div>
@@ -941,7 +1001,7 @@
   <div class="conv-head">
     <h1>Subjects</h1>
     <p class="conv-sub">
-      What Mnema has come to believe about you — and how firmly. Strongest views
+      What Mnema has come to believe about you — and how firmly. Strongest beliefs
       first; fading ones are kept for history.
     </p>
     <!-- Honest counts line (no rolled-up score). Hidden while loading and when
@@ -956,7 +1016,7 @@
         </p>
       {:else}
         <p class="conv-summary">
-          <span class="num">{summary.active}</span> active views ·
+          <span class="num">{summary.active}</span> active beliefs ·
           <span class="num">{summary.fading}</span> fading<span class="sep"
             >—</span
           ><span class="num">{summary.warming}</span> warming
@@ -980,13 +1040,15 @@
         onclick={applyStaged}
       >
         ↻ {pendingCount > 0
-          ? `${pendingCount} ${pendingCount === 1 ? "view" : "views"} updated`
-          : "views updated"} · refresh
+          ? `${pendingCount} ${pendingCount === 1 ? "belief" : "beliefs"} updated`
+          : "beliefs updated"} · refresh
       </button>
     </div>
   {/if}
 
-  <!-- Controls: search box + grouping-axis toggle -->
+  <!-- Controls: search box + grouping-axis toggle. Hidden until there's
+       something to search or group (SB-09). -->
+  {#if conclusions && displayRows.length > 0}
   <div class="conv-controls">
     <div class="search">
       <svg
@@ -1025,16 +1087,17 @@
        self-evident terms. The line tracks the active axis. -->
   <p class="axis-hint">
     {#if axis === "conviction"}
-      Conviction — how firmly the engine holds each view (its confidence).
+      Conviction — how firmly the engine holds each belief (its confidence).
     {:else}
-      Movement — which way each view is trending: warming, steady, or cooling.
+      Movement — which way each belief is trending: warming, steady, or cooling.
     {/if}
   </p>
+  {/if}
 
   {#if loadError && !conclusions}
     <div class="state state--error">
-      <p class="state-title">Couldn't load Subjects.</p>
-      <p class="state-detail">{loadError}</p>
+      <p class="state-title">Couldn't load your beliefs.</p>
+      <p class="state-detail">Nothing was changed.</p>
       <button
         type="button"
         class="state-retry"
@@ -1070,27 +1133,39 @@
     </div>
   {:else if displayRows.length === 0}
     <div class="state">
-      {#if engineOn === false}
-        <!-- Engine is off — the actionable case: a direct path to turn it on. -->
-        <p class="state-title">The Reasoning Engine is off.</p>
+      {#if ctx?.backfilling}
+        <p class="state-title">Building your understanding…</p>
         <p class="state-detail">
-          Subjects appear as the engine forms views about you — each with its own
-          confidence trajectory. Turn it on to begin.
+          Mnema is reading your history, newest first. A belief shows up here once
+          two activities support it.
         </p>
-        <button
-          type="button"
-          class="state-cta"
-          onclick={() => void openSettings("intelligence")}
-        >
-          Open engine settings
-        </button>
-      {:else}
-        <!-- Engine is on (or status unknown) — nothing concluded yet. -->
-        <p class="state-title">No subjects yet.</p>
+      {:else if (ctx?.dismissedCount ?? 0) > 0}
+        <p class="state-title">No beliefs to show right now.</p>
         <p class="state-detail">
-          As the Reasoning Engine forms views about you, each one appears here
-          with its own confidence trajectory. Keep working and check back — they
-          build up as evidence accumulates.
+          You've dismissed {ctx?.dismissedCount}. Restoring one in Context ›
+          Dismissed only lifts the block — it forms again only if recent activity
+          supports it.
+        </p>
+        {#if onViewDismissed}
+          <button type="button" class="state-cta" onclick={viewDismissed}>
+            View dismissed
+          </button>
+        {/if}
+      {:else if (ctx?.activityCount ?? 0) > 0}
+        <p class="state-title">No beliefs yet.</p>
+        <p class="state-detail">
+          Mnema has summarized {ctx?.activityCount}
+          {ctx?.activityCount === 1 ? "activity" : "activities"} so far. A belief
+          needs at least two activities that back it up.{#if heldBack > 0}
+            The last pass held back {heldBack}
+            {heldBack === 1 ? "draft; it" : "drafts; they"} can form as more activity
+            comes in.{/if}
+        </p>
+      {:else}
+        <p class="state-title">No beliefs yet.</p>
+        <p class="state-detail">
+          Beliefs form from your summarized activity. One shows up here once two
+          activities support it.
         </p>
       {/if}
     </div>
@@ -1119,8 +1194,8 @@
       {/each}
     </div>
     <p class="conv-foot">
-      Confidence is recency-weighted — views warm with fresh evidence and cool on
-      their own. Faded views are kept for history, never deleted.
+      Confidence is recency-weighted — beliefs warm with fresh evidence and cool
+      on their own. Faded beliefs are kept for history, never deleted.
     </p>
   {:else}
     <!-- Tiered layout — one section per non-empty tier. -->
@@ -1161,8 +1236,8 @@
     {/each}
 
     <p class="conv-foot">
-      Confidence is recency-weighted — views warm with fresh evidence and cool on
-      their own. Faded views are kept for history, never deleted.
+      Confidence is recency-weighted — beliefs warm with fresh evidence and cool
+      on their own. Faded beliefs are kept for history, never deleted.
     </p>
   {/if}
 </section>
@@ -1177,6 +1252,9 @@
 />
 
 <style>
+  .conv-concl-row--dismissed .conv-concl-stmt {
+    color: var(--app-text-muted);
+  }
   .subjects {
     display: flex;
     flex-direction: column;

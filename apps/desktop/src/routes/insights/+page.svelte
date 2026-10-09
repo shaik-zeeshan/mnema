@@ -63,6 +63,7 @@
 
   function openTab(tab: InsightsTab): void {
     view = tab;
+    contextOpenDismissed = false;
     if (tab !== "subjects") selectedSubject = null;
     // Leaving Chat unmounts it, so its mirror effect can no longer clear the
     // store's open-thread id — clear it here so the rail stops highlighting the
@@ -105,30 +106,33 @@
     engine.kind === "on" && askAvailability?.reason === "ask_ai_disabled",
   );
 
-  // Continuous-derivation lock: the runtime is set up (page not gated) but the
-  // User Context opt-in is off. Overview / Journal / Subjects / Context are all
-  // rendered FROM derivation output, so they'd sit empty forever — the rail
-  // locks them (tooltip + click-through to the derivation setting) and the shell
-  // lands on Chat, the one sub-surface that works without derivation. Keyed on
-  // the specific `user_context_disabled` reason so transient engine trouble
-  // (unreachable local model) does NOT lock the tabs — the per-surface error
-  // states own that case.
+  // Continuous derivation (the User Context opt-in) is off while the runtime is
+  // set up. Nothing is locked (MT-01): every tab stays readable and Context stays
+  // editable — Subjects/Context just carry a paused line with "Turn back on".
   const derivationOff = $derived(
     statusLoaded && ctxStatus?.reason === "user_context_disabled",
   );
+  let resuming = $state(false);
 
-  // While derivation is off the four locked tabs are unreachable via the rail,
-  // but `view` can still point at one (default "overview", or derivation was
-  // turned off while on a locked tab) — steer to Chat.
-  $effect(() => {
-    if (derivationOff && view !== "chat") {
-      view = "chat";
-      selectedSubject = null;
+  // Subjects' "View dismissed": switch to Context with the archive open. Reset
+  // whenever the view changes again so a later visit lands normally.
+  let contextOpenDismissed = $state(false);
+  function viewDismissed(): void {
+    openTab("context");
+    contextOpenDismissed = true;
+  }
+
+  async function turnDerivationBackOn(): Promise<void> {
+    resuming = true;
+    try {
+      await invoke("update_user_context_settings", { request: { enabled: true } });
+      await loadEngineStatus();
+    } catch {
+      // Fall back to the setting itself so the user can see what failed.
+      void openSettings("userContext");
+    } finally {
+      resuming = false;
     }
-  });
-
-  function openDerivationSettings(): void {
-    void openSettings("userContext");
   }
 
   function shortModel(model: string): string {
@@ -371,8 +375,6 @@
   <InsightsRail
     {view}
     onOpenTab={openTab}
-    {derivationOff}
-    onOpenDerivationSettings={openDerivationSettings}
     {engine}
     {chatOff}
     {modelLabel}
@@ -431,6 +433,20 @@
         {/if}
       </p>
     {/if}
+    {#if derivationOff && engine.kind === "on" && (view === "subjects" || view === "context")}
+      <p class="engine-line" role="status">
+        <span class="wdot" aria-hidden="true"></span>
+        Paused, not updating — continuous derivation is off. Everything here is still yours to read.
+        <button
+          type="button"
+          class="btn btn--accent"
+          disabled={resuming}
+          onclick={() => void turnDerivationBackOn()}
+        >
+          {resuming ? "Turning on…" : "Turn back on"}
+        </button>
+      </p>
+    {/if}
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
     {:else if view === "journal"}
@@ -445,10 +461,10 @@
         </div>
         <SubjectDetail subject={selectedSubject} onBack={backToSubjects} />
       {:else}
-        <Subjects onOpenSubject={openSubject} />
+        <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} />
       {/if}
     {:else if view === "context"}
-      <Context />
+      <Context openDismissed={contextOpenDismissed} />
     {:else}
       <Chat />
     {/if}
