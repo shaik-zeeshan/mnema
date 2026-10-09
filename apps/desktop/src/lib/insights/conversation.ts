@@ -144,6 +144,17 @@ export interface TurnSnapshot {
   view: TurnView;
 }
 
+/** Mirrors the optional `kind` on Rust `TurnUpdate::Error`: which one action
+ *  can help with a failed turn. */
+export type TurnErrorKind =
+  | "reconnect"
+  | "unreachable"
+  | "settings"
+  | "quota"
+  | "auth"
+  | "context_too_long"
+  | "retryable";
+
 /** One incremental mutation to a `TurnView`, discriminated on `op`. The backend
  *  streams these as a turn progresses; the frontend applies them to its local
  *  view. (`liveActivity` with `entry: null` CLEARS the live line.) */
@@ -156,7 +167,7 @@ export type TurnUpdate =
   | { op: "liveActivity"; entry: ToolActivityEntry | null }
   | { op: "sources"; sources: unknown }
   | { op: "contextTokens"; tokens: number }
-  | { op: "error"; message: string }
+  | { op: "error"; message: string; kind?: TurnErrorKind }
   | { op: "done" };
 
 /** The `ask_ai_update` event payload (emitted by Slice 4): a versioned, indexed

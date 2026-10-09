@@ -70,6 +70,8 @@ export class ConversationStore {
   conversations = $state<ConversationSummary[]>([]);
   /** True once a full history fetch has completed at least once. */
   historyLoaded = $state(false);
+  /** True when the latest history fetch failed — "couldn't load", NOT empty. */
+  historyError = $state(false);
   /** The debounced search query over the history list. */
   searchQuery = $state("");
   /** The conversation id currently being inline-renamed, or null. */
@@ -143,9 +145,11 @@ export class ConversationStore {
             });
       if (generation !== this.#historyGeneration) return;
       this.conversations = rows;
+      this.historyError = false;
     } catch {
       if (generation !== this.#historyGeneration) return;
       this.conversations = [];
+      this.historyError = true;
     } finally {
       if (generation === this.#historyGeneration) this.historyLoaded = true;
     }

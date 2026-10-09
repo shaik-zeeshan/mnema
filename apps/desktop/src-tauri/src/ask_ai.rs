@@ -260,7 +260,7 @@ fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
         TurnUpdate::LiveActivity { entry } => view.live_activity = entry.clone(),
         TurnUpdate::Sources { sources } => view.sources = sources.clone(),
         TurnUpdate::ContextTokens { tokens } => view.context_tokens = Some(*tokens),
-        TurnUpdate::Error { message } => {
+        TurnUpdate::Error { message, .. } => {
             view.error_message = Some(message.clone());
             view.phase = "error".to_string();
         }
@@ -1701,6 +1701,20 @@ async fn generate_conversation_title(
     }
 }
 
+/// The `TurnUpdate::Error` kind for an engine-resolve reason code: a rejected
+/// ChatGPT login, an engine that didn't answer, or (everything else — missing
+/// key/model/base URL, denied vault) a config problem fixed in Settings.
+fn resolve_failure_kind(reason: &str) -> &'static str {
+    if reason.starts_with("needs_reconnect:") {
+        "reconnect"
+    } else if reason.starts_with("provider_unreachable:") || reason == "local_endpoint_unreachable"
+    {
+        "unreachable"
+    } else {
+        "settings"
+    }
+}
+
 /// Saves a turn whose engine resolve failed as a terminal `error` row, so the
 /// backend's turn count matches the frontend's (CH-04).
 async fn persist_resolve_failure(
@@ -1776,7 +1790,7 @@ async fn run_ask_ai_turn(
                     "conversationId": conversation_id,
                     "version": 1u64,
                     "turnIndex": 0i64,
-                    "update": TurnUpdate::Error { message: error },
+                    "update": TurnUpdate::Error { message: error, kind: None },
                 }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
@@ -1862,7 +1876,10 @@ async fn run_ask_ai_turn(
                     "conversationId": conversation_id,
                     "version": 1u64,
                     "turnIndex": turn_index,
-                    "update": TurnUpdate::Error { message: reason },
+                    "update": TurnUpdate::Error {
+                        kind: Some(resolve_failure_kind(&reason).to_string()),
+                        message: reason,
+                    },
                 }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
@@ -2438,7 +2455,13 @@ async fn run_ask_ai_turn(
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
-            emit_terminal(TurnUpdate::Error { message }, &mut last_version);
+            emit_terminal(
+                TurnUpdate::Error {
+                    message,
+                    kind: Some("retryable".to_string()),
+                },
+                &mut last_version,
+            );
         }
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
@@ -2509,6 +2532,7 @@ async fn run_ask_ai_turn(
             emit_terminal(
                 TurnUpdate::Error {
                     message: message.clone(),
+                    kind: Some(error.failure_kind().to_string()),
                 },
                 &mut last_version,
             );

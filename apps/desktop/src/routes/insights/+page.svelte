@@ -10,10 +10,13 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openSettings } from "$lib/surface-windows";
   import type {
+    AiRuntimeSettings,
     AiRuntimeStatus,
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
+  import type { AskAiAvailability } from "$lib/insights/conversation";
+  import { engineState } from "$lib/insights/engine-state";
   import Overview from "$lib/insights/Overview.svelte";
   import DayTimeline from "$lib/insights/DayTimeline.svelte";
   import Subjects from "$lib/insights/Subjects.svelte";
@@ -78,34 +81,28 @@
   }
 
   // ── Engine status ────────────────────────────────────────────────────
-  // The status state stays in this shell; it is passed down to the rail's
-  // footer (<RailFooter> via <InsightsRail>), which renders "engine · <model>"
-  // when the Reasoning Engine is on/available, or "engine off · Enable"
-  // otherwise. The Enable link opens the Reasoning Engine settings (Access tab).
+  // The status state stays in this shell and is read through the shared
+  // `engineState` rule (Direction A, SH-01/OV-01/SB-03/MT-02), which no longer
+  // keys on `configured`:
+  //   1. no provider ever added   → the full-page pitch;
+  //   2. AI turned off            → a slim "AI is off" line, content visible;
+  //   3. can't reach engine/vault → "Can't reach…" + Retry;
+  //   4. anything else broken     → the named fix.
+  // A broken-but-set-up engine never hides existing Insights behind the pitch.
   let aiStatus = $state<AiRuntimeStatus | null>(null);
+  let aiSettings = $state<AiRuntimeSettings | null>(null);
   let ctxStatus = $state<UserContextStatus | null>(null);
+  let askAvailability = $state<AskAiAvailability | null>(null);
   let modelLabel = $state<string>("");
-  // Distinguishes "still loading the status calls" from "loaded → engine off".
-  // Without this the pill flashes "Engine off · Enable" before the status calls
-  // resolve, so we show a small skeleton placeholder until the first load lands.
+  // Distinguishes "still loading the status calls" from a real state, so
+  // nothing flashes "engine off" (or the pitch) before the first load lands.
   let statusLoaded = $state(false);
 
-  const engineOn = $derived(
-    Boolean(aiStatus?.enabled && aiStatus?.available) ||
-      Boolean(ctxStatus?.engineAvailable),
-  );
-
-  // Whole-page gate: every Insights sub-surface is built from Reasoning Engine
-  // output (digest, journal activities, subjects, context, chat), so with the
-  // engine never set up the page is uniformly empty — show a pitch instead.
-  // Keyed on the user's SETUP state (enabled && configured), NOT on `available`:
-  // a configured engine that is momentarily unreachable (local model not
-  // running, network blip) keeps the page and its per-surface error states —
-  // transient liveness must not lock the user out of existing content.
-  // Only asserted after `statusLoaded` so the page never flashes the gate while
-  // the status calls are still in flight.
-  const engineGated = $derived(
-    statusLoaded && !(aiStatus?.enabled && aiStatus?.configured),
+  const engine = $derived(engineState(statusLoaded, aiStatus, aiSettings));
+  const engineGated = $derived(engine.kind === "pitch");
+  // Engine fine, but the Ask AI opt-in is off — the rail footer says so.
+  const chatOff = $derived(
+    engine.kind === "on" && askAvailability?.reason === "ask_ai_disabled",
   );
 
   // Continuous-derivation lock: the runtime is set up (page not gated) but the
@@ -145,18 +142,21 @@
 
   async function loadEngineStatus(): Promise<void> {
     try {
-      const [ai, ctx, settings] = await Promise.all([
+      const [ai, ctx, settings, ask] = await Promise.all([
         invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
         invoke<UserContextStatus>("get_user_context_status").catch(() => null),
         invoke<RecordingSettings>("get_recording_settings").catch(() => null),
+        invoke<AskAiAvailability>("ask_ai_availability").catch(() => null),
       ]);
       aiStatus = ai;
       ctxStatus = ctx;
+      askAvailability = ask;
+      aiSettings = settings?.aiRuntime ?? null;
       if (settings?.aiRuntime) {
         modelLabel = shortModel(settings.aiRuntime.defaultModel?.model ?? "");
       }
     } catch {
-      // Best-effort: leave the pill in its "engine off" default on error.
+      // Best-effort: a failed status read reads as "couldn't check" + Retry.
     } finally {
       statusLoaded = true;
     }
@@ -354,7 +354,8 @@
       <ul class="gate-list">
         <li><strong>The read</strong> — a daily digest of what you actually did.</li>
         <li><strong>Journal</strong> — your day reconstructed as a timeline of activities.</li>
-        <li><strong>Subjects</strong> — the views it forms about you, with confidence trajectories.</li>
+        <li><strong>Subjects</strong> — the beliefs it forms about you, with confidence trajectories.</li>
+        <li><strong>Context</strong> — what you tell it about yourself, to steer those beliefs.</li>
         <li><strong>Chat</strong> — ask questions over your own history.</li>
       </ul>
       <button type="button" class="gate-cta" onclick={enableEngine}>
@@ -372,10 +373,11 @@
     onOpenTab={openTab}
     {derivationOff}
     onOpenDerivationSettings={openDerivationSettings}
-    {engineOn}
+    {engine}
+    {chatOff}
     {modelLabel}
-    {statusLoaded}
     onEnable={enableEngine}
+    onRetry={() => void loadEngineStatus()}
     collapsed={railCollapsed}
     onToggleCollapse={toggleRailCollapsed}
     width={railWidth}
@@ -407,6 +409,27 @@
       >
         <span aria-hidden="true">»</span>
       </button>
+    {/if}
+    {#if view !== "chat" && (engine.kind === "off" || engine.kind === "unreachable" || engine.kind === "fix")}
+      <!-- Engine set up but not working: one line over the intact content.
+           Chat carries the same state in its composer slot instead. -->
+      <p class="engine-line" role="status">
+        <span class="wdot" class:wdot--off={engine.kind === "off"} aria-hidden="true"></span>
+        {#if engine.kind === "off"}
+          AI is off, so nothing new is written. Everything here is still yours to read.
+          <button type="button" class="btn btn--accent" onclick={enableEngine}>Turn on</button>
+        {:else if engine.kind === "unreachable"}
+          {engine.text}
+          <button type="button" class="re-read" onclick={() => void loadEngineStatus()}>
+            <span class="re-read-ico" aria-hidden="true">↻</span> Retry
+          </button>
+        {:else}
+          {engine.text}
+          <button type="button" class="btn btn--accent" onclick={enableEngine}>
+            {engine.reconnectProviderId ? "Sign in again" : "Open settings"}
+          </button>
+        {/if}
+      </p>
     {/if}
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
@@ -550,6 +573,78 @@
     margin: 0;
     font-size: var(--text-sm);
     color: var(--app-text-faint);
+  }
+
+  /* Engine-status line (Direction A `.quiet-line`): amber dot + one sentence +
+     one action, above the sub-surface. */
+  .engine-line {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    max-width: 860px;
+    margin: 0 auto 14px;
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    color: var(--app-text-muted);
+  }
+  .engine-line .re-read,
+  .engine-line .btn {
+    margin-left: auto;
+    flex: none;
+  }
+  .engine-line .btn {
+    font: inherit;
+    font-size: 11.5px;
+    padding: 5px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+  }
+  .engine-line .btn:hover {
+    border-color: var(--app-accent);
+  }
+  .engine-line .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .wdot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-warn);
+  }
+  .wdot--off {
+    background: var(--app-status-dot);
+  }
+  .re-read {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .re-read:hover {
+    color: var(--app-text-strong);
+  }
+  .re-read:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .re-read-ico {
+    font-size: var(--text-base);
+    line-height: 1;
+    letter-spacing: 0;
   }
 
   .insights-main {

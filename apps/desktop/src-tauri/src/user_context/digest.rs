@@ -1544,6 +1544,7 @@ mod tests {
                 access_token: "expired-access-token".to_string(),
                 refresh_token: None,
                 expires_at: Some(0),
+                rejected: false,
             },
         )
         .expect("seed the expired token set");

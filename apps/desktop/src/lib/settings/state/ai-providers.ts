@@ -83,6 +83,55 @@ export function aiListingFailureCopy(reason: string): string {
   return reason;
 }
 
+/**
+ * Human-facing label for an `AiRuntimeStatus.reason` code (the shared
+ * engine-configured prerequisite codes, plus `user_context_disabled`), shared
+ * by Settings and Insights. `labelForProvider` names a provider instance id.
+ */
+export function aiRuntimeReasonLabelFor(
+  reason: string | null | undefined,
+  labelForProvider: (id: string) => string,
+): string {
+  if (!reason) return "Unavailable";
+  // Case-insensitive: the same codes reach this labeller both RAW (the status
+  // snapshot's `reason` field) and via `humanizeError` (a command REJECTION —
+  // the test-connection banner), and `humanizeError` upper-cases the first
+  // letter of what it tidies, so a `startsWith` test would never match there.
+  // The id after the prefix is sliced off the ORIGINAL, which keeps its case.
+  const code = reason.toLowerCase();
+  const idAfter = (prefix: string) => labelForProvider(reason.slice(prefix.length));
+  if (code.startsWith("no_provider_key:")) {
+    return `No API key saved for ${idAfter("no_provider_key:")}.`;
+  }
+  if (code.startsWith("provider_not_connected:")) {
+    return `The default model's provider (${idAfter("provider_not_connected:")}) is not connected.`;
+  }
+  if (code.startsWith("needs_reconnect:")) {
+    return `${idAfter("needs_reconnect:")} needs to be reconnected — sign in with ChatGPT again.`;
+  }
+  if (code.startsWith("provider_unreachable:")) {
+    // The sign-in is intact; the auth endpoint just didn't answer. Saying
+    // "reconnect" here would push the user toward Disconnect, which destroys
+    // a credential that is fine.
+    return `Couldn't reach ${idAfter("provider_unreachable:")} — check your connection and try again.`;
+  }
+  if (code.startsWith("base_url_host_mismatch:")) {
+    return `The base URL for ${idAfter("base_url_host_mismatch:")} doesn't point at that provider. Fix it in Settings.`;
+  }
+  switch (code) {
+    case "user_context_disabled": return "Continuous derivation is turned off.";
+    case "ai_runtime_disabled": return "AI features are turned off.";
+    case "no_providers": return "No AI providers connected yet.";
+    case "no_default_model": return "Choose a global default model.";
+    case "no_base_url": return "Add the base URL for the OpenAI-compatible provider.";
+    case "invalid_base_url": return "The provider's base URL isn't a valid URL. Fix it in Settings.";
+    case "invalid_base_url_scheme": return "The provider's base URL must start with http:// or https://.";
+    case "vault_denied": return "Mnema couldn't read your saved keys from the keychain.";
+    case "local_endpoint_unreachable": return "The local endpoint could not be reached.";
+    default: return reason;
+  }
+}
+
 /** Host portion of a base URL, or the trimmed string if it isn't a URL. */
 export function baseUrlHost(baseUrl: string): string {
   const trimmed = baseUrl.trim();

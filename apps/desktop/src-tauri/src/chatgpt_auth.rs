@@ -97,6 +97,12 @@ pub struct ChatgptTokenSet {
     /// goes through a refresh attempt.
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// OpenAI answered a refresh of this set with `invalid_grant`: the login
+    /// is dead. Persisted so the static status reports `needs_reconnect`
+    /// without waiting for the next send to fail. A successful login writes a
+    /// fresh set, which clears it; a transport failure never sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rejected: bool,
 }
 
 impl ChatgptTokenSet {
@@ -306,6 +312,8 @@ async fn fresh_access_token_with(
                 tauri_plugin_log::log::warn!("chatgpt-auth: loading token set failed: {error}");
             })?
             .ok_or_else(needs_reconnect)
+        // Already rejected: replaying the spent refresh token can only fail.
+        .and_then(|set| if set.rejected { Err(needs_reconnect()) } else { Ok(set) })
     };
 
     let set = load().await?;
@@ -346,23 +354,39 @@ async fn fresh_access_token_with(
     }
 
     let refresh_token = set.refresh_token.clone().ok_or_else(needs_reconnect)?;
-    let tokens = refresh(refresh_token.clone()).await.map_err(|error| {
-        tauri_plugin_log::log::warn!(
-            "chatgpt-auth: token refresh failed for {provider_id}: {}",
-            error.message
-        );
-        // Being offline is not being signed out. Telling a user with a healthy
-        // login to re-run the device flow is the worst possible advice: the
-        // obvious next step is Disconnect, which destroys the credential that
-        // was fine all along. Same reasoning as ADR 0048 for cloud
-        // transcription — connectivity failures are transient liveness, not a
-        // terminal auth verdict.
-        if error.transient {
-            format!("provider_unreachable:{provider_id}")
-        } else {
-            needs_reconnect()
+    let tokens = match refresh(refresh_token.clone()).await {
+        Ok(tokens) => tokens,
+        Err(error) => {
+            tauri_plugin_log::log::warn!(
+                "chatgpt-auth: token refresh failed for {provider_id}: {}",
+                error.message
+            );
+            // Being offline is not being signed out. Telling a user with a
+            // healthy login to re-run the device flow is the worst possible
+            // advice: the obvious next step is Disconnect, which destroys the
+            // credential that was fine all along. Same reasoning as ADR 0048
+            // for cloud transcription — connectivity failures are transient
+            // liveness, not a terminal auth verdict.
+            if error.transient {
+                return Err(format!("provider_unreachable:{provider_id}"));
+            }
+            // A real `invalid_grant`: persist the mark so every status read
+            // says "sign in again" from now on. Compare-and-swapped on the
+            // consumed refresh token, so a newer login is never marked.
+            let id = provider_id.to_string();
+            let marked = ChatgptTokenSet { rejected: true, ..set };
+            let _ = tokio::task::spawn_blocking(move || {
+                persist_refreshed_token_set(&id, &refresh_token, &marked)
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r)
+            .inspect_err(|error| {
+                tauri_plugin_log::log::warn!("chatgpt-auth: marking the login rejected failed: {error}");
+            });
+            return Err(needs_reconnect());
         }
-    })?;
+    };
 
     // The refresh grant may omit (or blank out) a rotated refresh token; keep
     // the old one in both cases.
@@ -433,6 +457,7 @@ fn token_set_from_grant(
         Some(now + expires_in)
     });
     ChatgptTokenSet {
+        rejected: false,
         expires_at,
         access_token: tokens.access_token,
         refresh_token: tokens

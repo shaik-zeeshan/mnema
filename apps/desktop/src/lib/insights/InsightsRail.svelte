@@ -20,6 +20,7 @@
   // default (drag-resizable), token-driven.
   import RailHistory from "$lib/insights/RailHistory.svelte";
   import RailFooter from "$lib/insights/RailFooter.svelte";
+  import type { EngineState } from "$lib/insights/engine-state";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { IconComponent } from "$lib/settings/section-icons";
   import IconOverview from "~icons/lucide/layout-dashboard";
@@ -40,10 +41,11 @@
     // the derivation setting instead of switching tabs. Chat stays live.
     derivationOff: boolean;
     onOpenDerivationSettings: () => void;
-    engineOn: boolean;
+    engine: EngineState;
+    chatOff: boolean;
     modelLabel: string;
-    statusLoaded: boolean;
     onEnable: () => void;
+    onRetry: () => void;
     // Slice 6 — rail collapse. When `collapsed` the rail renders nothing (the
     // shell shows a floating expand button instead). The in-rail chevron calls
     // `onToggleCollapse` to hide it; the shell owns the persisted state.
@@ -60,10 +62,11 @@
     onOpenTab,
     derivationOff,
     onOpenDerivationSettings,
-    engineOn,
+    engine,
+    chatOff,
     modelLabel,
-    statusLoaded,
     onEnable,
+    onRetry,
     collapsed,
     onToggleCollapse,
     width,
@@ -159,7 +162,7 @@
   </div>
 
   <!-- pinned engine/model status footer. -->
-  <RailFooter {engineOn} {modelLabel} {statusLoaded} {onEnable} />
+  <RailFooter {engine} {chatOff} {modelLabel} {onEnable} {onRetry} />
 </aside>
 {/if}
 

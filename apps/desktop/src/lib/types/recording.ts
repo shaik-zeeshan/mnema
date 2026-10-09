@@ -211,6 +211,8 @@ export interface UpdateUserContextSettingsRequest {
 /** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
 export interface AiRuntimeStatus {
 	enabled: boolean;
+	/** At least one provider was ever added (else Insights shows the setup pitch). */
+	hasProviders: boolean;
 	configured: boolean;
 	available: boolean;
 	defaultModel?: AiEngineRef | null;
