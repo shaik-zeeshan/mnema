@@ -435,9 +435,11 @@ fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
 /// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
 /// lede the Insights Overview shows for one local-calendar range. Lazy +
 /// fingerprint-cached: an unchanged range returns the stored narrative with no
-/// engine call. `Ok(None)` — never an error — when User Context is off, the
-/// engine is off/unready, or the range holds fewer than two Activities, so the
-/// frontend silently omits the lede. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
+/// engine call. `Ok(None)` when User Context is off, the engine is not
+/// configured, or the range holds fewer than two Activities. `Err` for a failed
+/// generation or `digest::DIGEST_SENSITIVE_HOLD` — replayed from a 15-minute
+/// in-memory cooldown on an unchanged input set, so a failure doesn't re-bill
+/// the engine on every visit. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
 /// end_ms)` is the half-open local-calendar window the frontend computed
 /// (invoked as `{ rangeKind, startMs, endMs }`).
 #[tauri::command]
@@ -465,12 +467,8 @@ pub async fn get_user_context_digest(
 /// range, ignoring the fingerprint cache and the freshness floor. Backs the
 /// Overview's re-digest button.
 ///
-/// Unlike [`get_user_context_digest`], which collapses any failure into a silent
-/// `Ok(None)` lede omission, this is an explicit user action — an `Err` here is
-/// surfaced to the user (e.g. "The AI provider rejected your API key") so a
-/// digest that never appears stops being a mystery. `Ok(None)` still means the
-/// range genuinely has no read to write (User Context off, engine unready, or
-/// fewer than two Activities).
+/// Same outcomes as [`get_user_context_digest`], but it bypasses the failure
+/// cooldown: a re-read always calls the engine.
 #[tauri::command]
 pub async fn regenerate_user_context_digest(
     state: tauri::State<'_, RecordingSettingsState>,

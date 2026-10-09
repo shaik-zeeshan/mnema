@@ -69,6 +69,7 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import Select from "$lib/components/Select.svelte";
   import { humanizeError } from "$lib/format-error";
+  import ReadCard from "$lib/insights/ReadCard.svelte";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -204,7 +205,7 @@
   let activities = $state<Activity[]>([]);
   let conclusions = $state<Conclusion[]>([]);
   // Narrative lede for the active range. `null` is the normal absent case
-  // (engine off, sparse range) — the lede silently omits, never errors.
+  // (engine off, sparse range); ReadCard says which.
   let digest = $state<UserContextDigest | null>(null);
   let digestLoading = $state(false);
   // The manual re-read (re-digest button): a forced regeneration that bypasses
@@ -810,8 +811,8 @@
   }
 
   // Narrative lede fetch. Backend returns null (not an error) when the engine
-  // is off or the range is too sparse; real errors collapse into null too —
-  // the lede is omitted, never an error surface. An unchanged range is a cheap
+  // is off or the range is too sparse; a failure (or the sensitive hold) is an
+  // error that ReadCard renders over the read we already had. An unchanged range is a cheap
   // cache hit; a fresh range can take seconds (one model call).
   let digestRequestToken = 0;
   async function loadDigest(): Promise<void> {
@@ -831,8 +832,9 @@
       );
       if (token !== digestRequestToken) return; // range moved on — stale
       digest = next;
-    } catch {
-      if (token === digestRequestToken) digest = null;
+    } catch (error) {
+      // Keep the read we had; say why it didn't refresh (OV-06/07).
+      if (token === digestRequestToken) digestError = String(error);
     } finally {
       if (token === digestRequestToken) digestLoading = false;
     }
@@ -856,12 +858,8 @@
       );
       if (token !== digestRequestToken) return; // range moved on — stale
       digest = next;
-      if (!next) {
-        // Not an error: the range simply has too little activity to read.
-        digestError = "Not enough activity in this range to write a read.";
-      }
     } catch (error) {
-      if (token === digestRequestToken) digestError = humanizeError(error);
+      if (token === digestRequestToken) digestError = String(error);
     } finally {
       if (token === digestRequestToken) digestRegenerating = false;
     }
@@ -1229,8 +1227,9 @@
         <span class="rule"></span>
         {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
         <!-- Re-read: force a fresh narrative for this range, bypassing the
-             backend cache. Available whenever the engine is on, so a range
-             whose read failed (empty lede) can still be retried. -->
+             backend cache. Hidden only for "not enough activity" (nothing a
+             model call could fix); a failed or held-back read can retry. -->
+        {#if digest || digestLoading || digestRegenerating || digestError}
         <button
           type="button"
           class="re-read"
@@ -1242,28 +1241,15 @@
           <span class="re-read-ico" aria-hidden="true">↻</span>
           {digestRegenerating ? "reading…" : "re-read"}
         </button>
+        {/if}
       </p>
-      {#if digest}
-        <!-- Keyed on generation time: fresh prose replays the reveal,
-             a same-range cache hit does not. -->
-        {#key digest.generatedAtMs}
-          <div class="lede-body">
-            {#if digest.headline}
-              <h2 class="lede-headline">{digest.headline}</h2>
-            {/if}
-            <p class="lede-text">{digest.narrative}</p>
-          </div>
-        {/key}
-      {:else if digestLoading || digestRegenerating}
-        <div class="sk-row">
-          <Skeleton variant="text" width="92%" height="12px" />
-        </div>
-        <div class="sk-row">
-          <Skeleton variant="text" width="64%" height="12px" />
-        </div>
-      {:else if digestError}
-        <p class="lede-error">{digestError}</p>
-      {/if}
+      <ReadCard
+        {digest}
+        loading={digestLoading || digestRegenerating}
+        error={digestError}
+        whose={rangeMode === "day" && atLatest ? "Today's" : `This ${rangeMode}'s`}
+        whenLabel={digest ? relativeTime(digest.generatedAtMs) : ""}
+      />
       <!-- Stats footer — the single source of truth for the range's headline
            numbers. Tracked is always present; deep focus %, top category, the
            daily average, and the per-day sparkbar render only when they have a
@@ -2505,12 +2491,6 @@
   }
   /* Re-read failure reason — sits where the prose would, in the same scale,
      tinted toward the app's danger register without shouting. */
-  .lede-error {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-danger, var(--app-text-subtle));
-  }
 
   /* Narrative lede — 2-4 sentences of prose, read not clicked. The feed's
      hero: a 2px accent edge + a wash that fades into the surface keep it
@@ -2544,14 +2524,6 @@
     .lede-body {
       animation: none;
     }
-  }
-  .lede-headline {
-    margin: 0 0 10px;
-    font-size: 24px;
-    line-height: 1.22;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    color: var(--app-text-strong);
   }
   .lede-text {
     margin: 0;

@@ -27,7 +27,7 @@
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, bandRiver } from "$lib/insights/journal-view";
   import { captureControls } from "$lib/capture-controls.svelte";
-  import Skeleton from "$lib/insights/Skeleton.svelte";
+  import ReadCard from "$lib/insights/ReadCard.svelte";
   import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
@@ -208,8 +208,9 @@
       );
       if (token !== digestToken) return;
       digest = next;
-    } catch {
-      if (token === digestToken) digest = null;
+    } catch (error) {
+      // Keep the read we had; ReadCard says why it didn't refresh.
+      if (token === digestToken) digestError = String(error);
     } finally {
       if (token === digestToken) digestLoading = false;
     }
@@ -237,11 +238,8 @@
       );
       if (token !== digestToken) return;
       digest = next;
-      if (!next) digestError = "Not enough activity in this day to write a read.";
     } catch (error) {
-      if (token === digestToken)
-        digestError =
-          error instanceof Error ? error.message : "Couldn't write a read.";
+      if (token === digestToken) digestError = String(error);
     } finally {
       if (regen === regenSeq) digestRegenerating = false;
     }
@@ -351,7 +349,7 @@
       The read · {dayLabel}
       <span class="rule"></span>
       {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
-      {#if engineOn}
+      {#if engineOn && (digest || digestLoading || digestRegenerating || digestError)}
         <button
           type="button"
           class="re-read"
@@ -364,20 +362,14 @@
         </button>
       {/if}
     </p>
-    {#if digest}
-      {#key digest.generatedAtMs}
-        <div class="lede-body">
-          {#if digest.headline}
-            <h2 class="lede-headline">{digest.headline}</h2>
-          {/if}
-          <p class="lede-text">{digest.narrative}</p>
-        </div>
-      {/key}
-    {:else if digestLoading || digestRegenerating}
-      <div class="sk-row"><Skeleton variant="text" width="92%" height="12px" /></div>
-      <div class="sk-row"><Skeleton variant="text" width="64%" height="12px" /></div>
-    {:else if digestError}
-      <p class="lede-error">{digestError}</p>
+    {#if engineOn}
+      <ReadCard
+        {digest}
+        loading={digestLoading || digestRegenerating}
+        error={digestError}
+        whose={atLatest ? "Today's" : "This day's"}
+        whenLabel={digest ? relativeTime(digest.generatedAtMs) : ""}
+      />
     {/if}
     <!-- Four stats — tracked / deep focus % / top category / activities. The
          usage-derived tracked stat gates on `usageLoaded`, the engine-derived
@@ -583,54 +575,6 @@
     .re-read.is-busy .re-read-ico {
       animation: none;
     }
-  }
-  .lede-body {
-    animation: lede-reveal 0.25s ease;
-  }
-  @keyframes lede-reveal {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .lede-body {
-      animation: none;
-    }
-  }
-  .lede-headline {
-    margin: 0 0 10px;
-    font-size: 24px;
-    line-height: 1.22;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    color: var(--app-text-strong);
-  }
-  .lede-text {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-text);
-  }
-  .lede-error {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-danger, var(--app-text-subtle));
-  }
-  .sk-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px 0;
-  }
-  .sk-row + .sk-row {
-    border-top: 1px dashed var(--app-border);
   }
   .lede-stats {
     display: flex;
