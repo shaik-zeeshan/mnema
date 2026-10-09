@@ -10979,6 +10979,75 @@ mod tests {
     }
 
     #[test]
+    fn processing_results_redact_payment_cards_before_search_projection() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-payment-card-redactions");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+
+            let persisted = infra
+                .debug_insert_frame_and_enqueue_ocr_job(
+                    &test_frame("session-payment-card", "frame-payment-card.png"),
+                    None,
+                )
+                .await
+                .expect("frame and job should persist");
+
+            infra
+                .claim_queued_processing_job(persisted.job.id)
+                .await
+                .expect("job should transition to running")
+                .expect("job should claim successfully");
+
+            infra
+                .complete_processing_job(
+                    persisted.job.id,
+                    &ProcessingResultDraft::new()
+                        .with_result_text("Checkout total $84.20 card 4111 1111 1111 1111 cvv 123"),
+                )
+                .await
+                .expect("job completion should persist redacted result");
+
+            let stored_result = infra
+                .get_processing_result_for_job(persisted.job.id)
+                .await
+                .expect("job result should be readable")
+                .expect("job result should exist");
+            let stored_text = stored_result
+                .result_text
+                .as_deref()
+                .expect("redacted result text should be stored");
+            assert!(stored_text.contains("[REDACTED_SECRET: PAYMENT_CARD]"));
+            assert!(!stored_text.contains("4111"));
+            assert!(!stored_text.contains("cvv 123"));
+
+            let card_results = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "4111 1111 1111 1111".to_string(),
+                    frame_limit: Some(5),
+                    frame_offset: None,
+                    audio_limit: Some(0),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: None,
+                })
+                .await
+                .expect("card search should run");
+            assert!(card_results.frames.is_empty());
+
+            assert_eq!(
+                infra
+                    .frame_secret_redaction_count(persisted.frame.id)
+                    .await
+                    .expect("redaction count should be readable"),
+                2
+            );
+        });
+    }
+
+    #[test]
     fn processing_job_lifecycle_clears_stale_results_on_retry() {
         run_async_test(async {
             let dir = TestDir::new("processing-lifecycle");

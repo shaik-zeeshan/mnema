@@ -47,3 +47,19 @@ auth_code|authentication code 765432
 seed_like_secret|seed phrase: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
 seed_like_secret|recovery phrase: legal winner thank year wave sausage worth useful legal winner thank yellow
 seed_like_secret|mnemonic: letter advice cage absurd amount doctor acoustic avoid letter advice cage above
+
+# Payment cards (PAN + labeled CVV)
+payment_card|Card 4111 1111 1111 1111 exp 09/29
+payment_card|pay with 5555555555554444 thanks
+payment_card|4111-1111-1111-1111
+payment_card|Visa ending 4242: 4242 4242 4242 4242
+payment_card|AMEX 3782 822463 10005
+payment_card|Discover 6011 1111 1111 1117
+payment_card|Mastercard 2223 0031 2200 3222
+payment_card|card number 4111111111111111 cvv 123
+payment_card|4111 1111 1111 1111 09/29 123
+payment_card|order 42 4111 1111 1111 1111
+payment_card|CVV: 123
+payment_card|CVC 4521
+payment_card|Security code: 987
+payment_card|Transcript: my card is 4111 1111 1111 1111 expiring September

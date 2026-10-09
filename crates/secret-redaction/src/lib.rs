@@ -4,7 +4,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const DETECTOR_VERSION: &str = "secret-redaction-v2";
+mod payment_card;
+
+pub const DETECTOR_VERSION: &str = "secret-redaction-v3";
 const DEFAULT_CANDIDATE_WINDOW_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -17,6 +19,7 @@ pub enum SecretCategory {
     AuthCode,
     ConnectionString,
     SeedLikeSecret,
+    PaymentCard,
 }
 
 impl SecretCategory {
@@ -29,6 +32,7 @@ impl SecretCategory {
             Self::AuthCode => "[REDACTED_SECRET: AUTH_CODE]",
             Self::ConnectionString => "[REDACTED_SECRET: CONNECTION_STRING]",
             Self::SeedLikeSecret => "[REDACTED_SECRET: SEED_SECRET]",
+            Self::PaymentCard => "[REDACTED_SECRET: PAYMENT_CARD]",
         }
     }
 
@@ -41,6 +45,7 @@ impl SecretCategory {
             Self::AuthCode => "auth_code",
             Self::ConnectionString => "connection_string",
             Self::SeedLikeSecret => "seed_like_secret",
+            Self::PaymentCard => "payment_card",
         }
     }
 }
@@ -335,6 +340,16 @@ static DETECTORS: Lazy<Vec<Detector>> = Lazy::new(|| {
             category: SecretCategory::SeedLikeSecret,
             requires_evidence: true,
         },
+        Detector {
+            regex: Regex::new(r"\b(?:\d[ \-]?){12,18}\d\b").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: false,
+        },
+        Detector {
+            regex: Regex::new(r"(?i)\b(?:cvv2?|cvc2?|cid|security code|card code|card verification(?: code| value)?)\b\s*[:=]?\s*\d{3,4}\b").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: true,
+        },
     ]
 });
 
@@ -360,6 +375,11 @@ static EVIDENCE_PREFILTER: Lazy<AhoCorasick> = Lazy::new(|| {
             "seed",
             "mnemonic",
             "recovery",
+            "cvv",
+            "cvc",
+            "security code",
+            "card code",
+            "card verification",
         ])
         .expect("redaction evidence prefilter should compile")
 });
@@ -530,6 +550,23 @@ fn redact_text(input: &str) -> RedactionResult {
             }));
         }
     }
+    // PaymentCard PAN matches start with a digit (CVV matches start with their
+    // label) and are narrowed to the validated card-number sub-run, or dropped.
+    let mut matches: Vec<Match> = matches
+        .into_iter()
+        .filter_map(|m| {
+            if m.category != SecretCategory::PaymentCard
+                || !input.as_bytes()[m.start].is_ascii_digit()
+            {
+                return Some(m);
+            }
+            payment_card::refine_pan_match(&input[m.start..m.end]).map(|(start, end)| Match {
+                start: m.start + start,
+                end: m.start + end,
+                category: m.category,
+            })
+        })
+        .collect();
     matches
         .retain(|m| !is_non_secret_diagnostic_match(input, m) && !is_placeholder_match(input, m));
     matches.sort_by_key(|m| (m.start, usize::MAX - m.end));

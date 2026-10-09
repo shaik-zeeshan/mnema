@@ -23,3 +23,17 @@ mnemonic devices help memory but this sentence has no seed phrase
 31secret-redaction-v2 2026-05-2315:39:43
 31secret-redaction-v22026-05-2315:39:43
 "31secret-redaction-v2 2026-05-2315:42:30"
+unix ms 1716478783123 timestamp
+order 1234567890123 shipped
+tracking 1Z999AA10123456784 delivered
+tracking 9400111899223345678901 USPS
+phone +1 415 555 0134 x 12345
+invoice INV-2026-05-23-000123
+iban DE89 3704 0044 0532 0130 00
+isbn 978-0-306-40615-7
+sequential 1234567890123456
+all zero 0000000000000000
+date range 2026-05-17 2026-05-18 2026-05-19 2026-05-20
+case id 4111111111111112
+sha-ish 4111111111111111abcdef
+cvv described in docs without a value
