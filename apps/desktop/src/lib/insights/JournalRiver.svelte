@@ -8,9 +8,15 @@
   // compact one-line rows instead of full cards to keep the river dense. It owns
   // no data loading — pure presentation.
   import { untrack } from "svelte";
-  import type { Activity, ActivityFocus } from "$lib/types/recording";
-  import type { JournalPending } from "$lib/insights/journal-day";
-  import type { RiverBand } from "$lib/insights/journal-view";
+  import type {
+    Activity,
+    ActivityFocus,
+    UserContextSummarizingFailure,
+  } from "$lib/types/recording";
+  import type { CardMedia, JournalPending } from "$lib/insights/journal-day";
+  import type { JournalEmpty, RiverBand } from "$lib/insights/journal-view";
+  import { openSettings } from "$lib/surface-windows";
+  import { captureControls, resumeCapture, startCapture } from "$lib/capture-controls.svelte";
   import { isShortActivity, pendingReasonCopy, riverRowKey } from "$lib/insights/journal-view";
   import {
     CATEGORY_COLOR,
@@ -27,8 +33,10 @@
     pending: JournalPending;
     showSkeleton: boolean;
     hasCards: boolean;
-    showNothingCaptured: boolean;
-    showBeingWritten: boolean;
+    /** The zero-row panel; null when the spine has something to draw. */
+    empty: JournalEmpty | null;
+    /** Summarizing keeps failing (slice 4's status field). */
+    failure: UserContextSummarizingFailure | null;
     dayLabel: string;
     isToday: boolean;
     onOpenActivity: (activity: Activity) => void;
@@ -39,8 +47,8 @@
     pending,
     showSkeleton,
     hasCards,
-    showNothingCaptured,
-    showBeingWritten,
+    empty,
+    failure,
     dayLabel,
     isToday,
     onOpenActivity,
@@ -92,8 +100,10 @@
     mixed: "--focus-mid",
     distracted: "--focus-distracted",
   };
-  function frameLabel(n: number): string {
-    return `▸ ${n} ${n === 1 ? "frame" : "frames"} · receipt`;
+  function receiptLabel(media: CardMedia, n: number): string {
+    if (media === "frames") return `▸ ${n} ${n === 1 ? "frame" : "frames"} · receipt`;
+    if (media === "audio") return "▸ audio · receipt";
+    return media === "expired" ? "footage expired" : "no screen capture";
   }
 </script>
 
@@ -110,7 +120,7 @@
       </div>
     {/each}
   </section>
-{:else if hasCards}
+{:else if !empty}
   <section class="river" aria-label="Activity journal">
     <ScrollTimeBubble />
     {#each bands as band (band.label + band.rows[0].atMs)}
@@ -121,7 +131,17 @@
             <div class="when"></div>
             <div class="spine"></div>
             <div class="txt">
-              {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · away — no capture
+              {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · no screen capture{row.gap.audio
+                ? " · audio only"
+                : ""}
+            </div>
+          </div>
+        {:else if row.kind === "failed"}
+          <div class="gap-note gap-note--failed" data-at-ms={row.atMs}>
+            <div class="when"></div>
+            <div class="spine"><span class="node node--hollow"></span></div>
+            <div class="txt">
+              {clock(row.span.startMs)} – {clock(row.span.endMs)} · captured, but summarizing it failed
             </div>
           </div>
         {:else if isShortActivity(row.slot.activity)}
@@ -171,7 +191,7 @@
               <p>{a.summary}</p>
               <div class="card-foot">
                 <span class="receipt">
-                  {row.slot.expired ? "footage expired" : frameLabel(row.slot.frameCount)}
+                  {receiptLabel(row.slot.media, row.slot.frameCount)}
                 </span>
               </div>
             </button>
@@ -187,15 +207,46 @@
           <span class="dur">now</span>
         </div>
         <div class="spine"><span class="node node--pending"></span></div>
-        <div class="card card--pending">
-          {#if pending.reason.kind === "summarizing"}
-            <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+        <div class="card card--pending" class:card--failing={failure && pending.reason.kind === "summarizing"}>
+          {#if pending.reason.kind === "summarizing" && failure}
+            <!-- 7d: the cadence is blown; stop pulsing and name the cause. -->
+            <div class="pt pt--paused">
+              Summaries are failing — {failure.provider ?? "the AI provider"} turned away the last
+              {failure.failures === 1 ? "try" : `${failure.failures} tries`}.
+            </div>
             <div class="sub">
-              The journal trails live capture by up to 30 minutes — the footage
-              itself is already on the Timeline.
+              {failure.reason} Recording isn't affected{pending.sinceMs !== null
+                ? `; everything since ${clock(pending.sinceMs)} is on the Timeline`
+                : ""}.
+            </div>
+            <button type="button" class="btn" onclick={() => void openSettings("intelligence")}
+              >Open engine settings</button
+            >
+          {:else if pending.reason.kind === "summarizing"}
+            <div class="pt">
+              <span class="spin"></span>{pending.audioOnly
+                ? "Summarizing from audio…"
+                : hasCards
+                  ? "Summarizing this window…"
+                  : "Summarizing your first stretch…"}
+            </div>
+            <div class="sub">
+              {#if pending.audioOnly}
+                Screen capture is off, so this stretch is built from what the mic and system audio
+                picked up. {hasCards ? "New cards usually land" : "The first card usually lands"} within
+                about 10 minutes, once the audio is transcribed and summarized.
+              {:else}
+                {!hasCards && pending.sinceMs !== null ? `Recording since ${clock(pending.sinceMs)}. ` : ""}{hasCards
+                  ? "New cards usually land"
+                  : "The first card usually lands"} within about 10 minutes — the footage itself is already
+                on the Timeline.
+              {/if}
             </div>
           {:else}
             <div class="pt pt--paused">{pendingReasonCopy(pending.reason.reason)}</div>
+            <button type="button" class="btn" onclick={() => void openSettings("intelligence")}
+              >Open engine settings</button
+            >
           {/if}
         </div>
       </div>
@@ -208,23 +259,46 @@
     {/if}
     <div class="live-edge" bind:this={sentinelEl} aria-hidden="true"></div>
   </section>
-{:else if showNothingCaptured}
+{:else}
   <div class="empty">
     <div class="glyph" aria-hidden="true">◇</div>
-    <h4>Nothing captured on {dayLabel}</h4>
-    <p>
-      There's no capture on this day, so there's no journal to show. Days with any
-      recording at all show whatever was captured.
-    </p>
-  </div>
-{:else if showBeingWritten}
-  <div class="empty">
-    <div class="glyph" aria-hidden="true">◇</div>
-    <h4>Your day is being written</h4>
-    <p>
-      Capture is landing. The first journal card appears once the first half-hour
-      window has been summarized.
-    </p>
+    {#if empty.kind === "idle"}
+      {#if empty.paused}
+        <h4>Recording is paused</h4>
+        <p>Resume and today's journal fills in as you work. The first card usually lands within about 10 minutes.</p>
+        <button type="button" class="btn" disabled={captureControls.loadingPause} onclick={() => void resumeCapture()}
+          >Resume recording</button
+        >
+      {:else}
+        <h4>Mnema isn't recording</h4>
+        <p>Start recording and today's journal fills in as you work. The first card usually lands within about 10 minutes.</p>
+        <button type="button" class="btn" disabled={captureControls.loadingStart} onclick={() => void startCapture()}
+          >Start recording</button
+        >
+      {/if}
+    {:else if empty.kind === "retention"}
+      <h4>Nothing left from {dayLabel}</h4>
+      <p>Removed by your {empty.days}-day retention.</p>
+    {:else if empty.kind === "older"}
+      <h4>This day wasn't summarized</h4>
+      <p>
+        Older than the {empty.days} days Mnema summarizes on its own.{empty.footageKept
+          ? " The footage is still on the Timeline."
+          : ""}
+      </p>
+    {:else if empty.kind === "queued"}
+      <h4>Not summarized yet</h4>
+      <p>
+        Mnema is catching up on older history, newest first — past days fill in as it goes. The
+        footage is already on the Timeline.
+      </p>
+    {:else if empty.kind === "unsummarized"}
+      <h4>No cards for {dayLabel}</h4>
+      <p>Nothing in this day's capture was summarized into a card. The footage is on the Timeline.</p>
+    {:else}
+      <h4>Nothing captured on {dayLabel}</h4>
+      <p>There's no screen or audio capture on this day, so there's no journal to show.</p>
+    {/if}
   </div>
 {/if}
 
@@ -330,6 +404,39 @@
     border-left: 1px dashed var(--app-border);
     background: transparent;
     width: 0;
+  }
+  .gap-note--failed .txt {
+    color: var(--app-text-subtle);
+  }
+  .spine .node--hollow {
+    background: var(--app-bg);
+    border: 1.5px solid var(--app-text-faint);
+    top: 7px;
+  }
+  .card--failing {
+    border-color: var(--app-warn);
+  }
+  .card--pending .btn,
+  .empty .btn {
+    margin-top: 10px;
+    font: inherit;
+    font-size: var(--text-sm);
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+  }
+  .card--pending .btn:hover,
+  .empty .btn:hover {
+    border-color: var(--app-accent);
+    color: var(--app-accent);
+  }
+  .empty .btn:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .gap-note .txt {
     font-size: var(--text-sm);

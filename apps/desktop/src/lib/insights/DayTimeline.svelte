@@ -17,7 +17,11 @@
     UserContextDigest,
     UserContextStatus,
   } from "$lib/types/recording";
-  import type { FrameSummaryDto } from "$lib/types/app-infra";
+  import type { AudioSegmentDto, FrameSummaryDto } from "$lib/types/app-infra";
+  import type { Span } from "$lib/insights/journal-day";
+  import type { JournalEmpty } from "$lib/insights/journal-view";
+  import { retentionVerdict } from "$lib/insights/retention";
+  import { captureSession } from "$lib/session.svelte";
   import {
     humanizeHours,
     startOfDay,
@@ -62,6 +66,8 @@
   // ── Loaded data ─────────────────────────────────────────────────────────
   let activities = $state<Activity[]>([]);
   let frames = $state<FrameSummaryDto[]>([]);
+  let audio = $state<Span[]>([]);
+  let failedWindows = $state<Span[]>([]);
   let riverLoadedOnce = $state(false);
   let riverLoading = $state(false);
 
@@ -86,10 +92,15 @@
     ),
   );
 
+  const settings = $derived(captureControls.recordingSettings);
   const model = $derived(
     buildJournalDay({
       activities,
       frames,
+      audio,
+      failedWindows,
+      retentionPolicy: settings?.retentionPolicy ?? null,
+      nowMs: Date.now(),
       coveredUntilMs: ctxStatus?.coveredUntilMs ?? null,
       recording: captureControls.isRunning,
       engineAvailable: Boolean(ctxStatus?.engineAvailable),
@@ -99,8 +110,67 @@
     }),
   );
 
-  const bands = $derived(bandRiver(buildRiver(model.slots, model.gaps)));
+  const bands = $derived(bandRiver(buildRiver(model.slots, model.gaps, model.failed)));
   const hasCards = $derived(model.slots.length > 0);
+
+  // ── Truthful day states (Direction A frames 6a–6c, 7a–7d) ───────────────
+  const DAY_MS = 86_400_000;
+  const userPaused = $derived(captureControls.isRunning && captureControls.isUserPaused);
+  const recordingLive = $derived(atLatest && captureControls.isRunning && !userPaused);
+  // "Recording since": earliest source start, clamped to the start of today.
+  const recordingSince = $derived.by<number | null>(() => {
+    const sessions = captureSession.value?.sourceSessions;
+    const starts = [sessions?.screen, sessions?.microphone, sessions?.systemAudio]
+      .map((s) => s?.startedAtUnixMs)
+      .filter((ms): ms is number => typeof ms === "number" && ms > 0);
+    return starts.length ? Math.max(Math.min(...starts), range.startMs) : null;
+  });
+  // Recording today with nothing summarized yet: the first-stretch slot shows
+  // even before the first frame lands (JR-04/05).
+  const pending = $derived(
+    model.pending.active || !recordingLive || hasCards
+      ? model.pending
+      : {
+          active: true,
+          sinceMs: recordingSince,
+          audioOnly: false,
+          reason: ctxStatus?.engineAvailable
+            ? { kind: "summarizing" as const }
+            : { kind: "engine_unavailable" as const, reason: ctxStatus?.reason ?? "" },
+        },
+  );
+  const backfillDays = $derived(
+    settings?.userContext?.backfillGoDeeper ? null : (settings?.userContext?.backfillWindowDays ?? null),
+  );
+  const olderThanBackfill = $derived(
+    backfillDays != null && range.endMs <= Date.now() - backfillDays * DAY_MS,
+  );
+  const retention = $derived(retentionVerdict(range.startMs, range.endMs, settings?.retentionPolicy));
+  const empty = $derived.by<JournalEmpty | null>(() => {
+    if (bands.length > 0 || pending.active) return null;
+    if (!model.hasAnyCapture) {
+      if (atLatest && (!captureControls.isRunning || userPaused))
+        return { kind: "idle", paused: userPaused };
+      if (retention?.kind === "removed") return { kind: "retention", days: retention.days };
+      return { kind: "nothing" };
+    }
+    if (olderThanBackfill && backfillDays != null)
+      return { kind: "older", days: backfillDays, footageKept: retention?.kind !== "removed" };
+    if (ctxStatus?.backfilling) return { kind: "queued" };
+    return { kind: "unsummarized" };
+  });
+  // The read's body when there's no read and the day says why (6a, 7a, 7b).
+  const ledeNote = $derived(
+    digest || !riverLoadedOnce
+      ? null
+      : empty?.kind === "idle"
+        ? "No read yet — nothing has been recorded today."
+        : empty?.kind === "older"
+          ? "No read — this day was never summarized."
+          : empty?.kind === "queued"
+            ? "No read yet — this day hasn't been summarized."
+            : null,
+  );
 
   const ledeStats = $derived(
     computeLedeStats({
@@ -126,12 +196,7 @@
 
   // ── Empty-state gating (loading vs. genuinely empty) ────────────────────
   const showSkeleton = $derived(!riverLoadedOnce);
-  const showNothingCaptured = $derived(
-    riverLoadedOnce && !hasCards && !model.hasAnyCapture,
-  );
-  const showBeingWritten = $derived(
-    riverLoadedOnce && !hasCards && model.hasAnyCapture,
-  );
+
 
   // ── Loaders (gen-token guarded, mirrors Overview) ───────────────────────
   async function loadStatus(): Promise<void> {
@@ -152,18 +217,27 @@
     riverLoading = true;
     try {
       const { startMs, endMs } = range;
-      const [nextActivities, nextFrames] = await Promise.all([
+      const request = {
+        capturedAtStart: new Date(startMs).toISOString(),
+        capturedAtEnd: new Date(endMs).toISOString(),
+      };
+      const [nextActivities, nextFrames, nextAudio, nextFailed] = await Promise.all([
         invoke<Activity[]>("list_user_context_activities", { startMs, endMs }),
-        invoke<FrameSummaryDto[]>("list_frame_summaries_in_range", {
-          request: {
-            capturedAtStart: new Date(startMs).toISOString(),
-            capturedAtEnd: new Date(endMs).toISOString(),
-          },
-        }),
+        invoke<FrameSummaryDto[]>("list_frame_summaries_in_range", { request }),
+        invoke<AudioSegmentDto[]>("list_audio_segments", { request }),
+        // Best-effort: a hole marker is a nicety, never a reason to fail the day.
+        invoke<[number, number][]>("list_failed_derivation_windows", { startMs, endMs }).catch(
+          () => [] as [number, number][],
+        ),
       ]);
       if (token !== rangeToken) return; // range moved on — stale
       activities = nextActivities;
       frames = nextFrames;
+      audio = nextAudio.map((a) => ({
+        startMs: Date.parse(a.startedAt),
+        endMs: Date.parse(a.endedAt),
+      }));
+      failedWindows = nextFailed.map(([startMs, endMs]) => ({ startMs, endMs }));
       updatedAt = Date.now();
     } catch {
       // Best-effort: a failed read leaves the previous river; the pending slot /
@@ -301,6 +375,24 @@
     };
   });
 
+  // Recording start/stop, and a 60 s beat while recording today: new capture
+  // doesn't emit `user_context_changed`, so the river would otherwise sit on
+  // "Mnema isn't recording" (JR-05). Skips the mount run.
+  let recPrimed = false;
+  $effect(() => {
+    captureControls.isRunning;
+    captureControls.isUserPaused;
+    untrack(() => {
+      if (recPrimed) void loadStatus().then(loadRange);
+      recPrimed = true;
+    });
+  });
+  $effect(() => {
+    if (!recordingLive) return;
+    const id = setInterval(() => void loadStatus().then(loadRange), 60_000);
+    return () => clearInterval(id);
+  });
+
   // ── Mount: first load + live refresh on new cards ───────────────────────
   $effect(() => {
     void untrack(() => reloadAll());
@@ -368,7 +460,9 @@
         </button>
       {/if}
     </p>
-    {#if engineOn}
+    {#if ledeNote}
+      <p class="lede-quiet">{ledeNote}</p>
+    {:else if engineOn}
       <ReadCard
         {digest}
         loading={digestLoading || digestRegenerating}
@@ -381,8 +475,14 @@
          usage-derived tracked stat gates on `usageLoaded`, the engine-derived
          deep %/top category on the range load so a day switch never shows the
          previous day's numbers. -->
+    {#if !riverLoadedOnce || model.hasAnyCapture}
     <div class="lede-stats" aria-label="Day highlights">
-      {#if usageLoaded}
+      {#if riverLoadedOnce && model.audioOnly}
+        <div class="lede-stat">
+          <span class="lede-stat-n">—</span>
+          <span class="lede-stat-cap">app time · screen off</span>
+        </div>
+      {:else if usageLoaded}
         <div class="lede-stat">
           <span class="lede-stat-n">{trackedLabel}</span>
           <span class="lede-stat-cap">tracked</span>
@@ -414,16 +514,17 @@
         </div>
       {/if}
     </div>
+    {/if}
   </article>
 
   <!-- ── The river (skeleton / cards+pending / empty panels) ── -->
   <JournalRiver
     {bands}
-    pending={model.pending}
+    {pending}
     {showSkeleton}
     {hasCards}
-    {showNothingCaptured}
-    {showBeingWritten}
+    {empty}
+    failure={engineOn ? (ctxStatus?.summarizingFailure ?? null) : null}
     {dayLabel}
     isToday={atLatest}
     onOpenActivity={(a) => (selectedActivity = a)}
@@ -581,6 +682,12 @@
     .re-read.is-busy .re-read-ico {
       animation: none;
     }
+  }
+  .lede-quiet {
+    margin: 0;
+    font-size: var(--text-md);
+    line-height: 1.7;
+    color: var(--app-text);
   }
   .lede-stats {
     display: flex;

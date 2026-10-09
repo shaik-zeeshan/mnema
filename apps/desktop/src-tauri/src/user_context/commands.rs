@@ -268,6 +268,25 @@ pub async fn list_user_context_activities(
         .map_err(|e| e.to_string())
 }
 
+/// Windows in `[start_ms, end_ms)` whose summarizing failed past the retry cap
+/// (the Journal marks these holes at their real bounds). `[start, end]` pairs.
+#[tauri::command]
+pub async fn list_failed_derivation_windows(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<(i64, i64)>, String> {
+    infra
+        .user_context()
+        .failed_windows_in_range(
+            start_ms,
+            end_ms,
+            super::worker::WINDOW_RETRY_POLICY.max_attempts,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// The derived **Conclusion** dossier (highest-confidence first) for the preview
 /// list. `visible` Conclusions always appear; `faded` (below the display floor)
 /// are included only when `include_faded` is true; `dismissed` never appear.

@@ -781,6 +781,7 @@ pub fn run() {
             ai_runtime::verify_ai_provider,
             user_context::commands::get_user_context_status,
             user_context::commands::list_user_context_activities,
+            user_context::commands::list_failed_derivation_windows,
             user_context::commands::list_user_context_conclusions,
             user_context::commands::get_user_context_subject,
             user_context::commands::get_user_context_digest,

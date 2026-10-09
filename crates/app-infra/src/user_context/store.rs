@@ -1053,6 +1053,39 @@ impl UserContextStore {
             .collect())
     }
 
+    /// Windows overlapping `[start_ms, end_ms)` that failed at least
+    /// `min_failures` times with no `completed`/`skipped` run ever covering
+    /// them — the holes the retry pass has given up on. Oldest first.
+    pub async fn failed_windows_in_range(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        min_failures: i64,
+    ) -> Result<Vec<(i64, i64)>> {
+        let rows = sqlx::query(
+            "SELECT f.window_start_ms AS s, f.window_end_ms AS e \
+             FROM user_context_derivation_runs f \
+             WHERE f.kind IN ('activity', 'backfill') \
+               AND f.status = 'failed' \
+               AND f.window_start_ms < ?2 AND f.window_end_ms > ?1 \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM user_context_derivation_runs s \
+                   WHERE s.window_start_ms = f.window_start_ms \
+                     AND s.window_end_ms = f.window_end_ms \
+                     AND s.status IN ('completed', 'skipped')\
+               ) \
+             GROUP BY f.window_start_ms, f.window_end_ms \
+             HAVING COUNT(*) >= ?3 \
+             ORDER BY f.window_start_ms",
+        )
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(min_failures)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.get("s"), r.get("e"))).collect())
+    }
+
     /// The earliest captured-at across all raw captures, in unix millis — the
     /// true history floor that **go-deeper** backfill walks toward. Takes the
     /// MIN of `frames.captured_at` and `audio_segments.started_at` (both legacy
@@ -5262,6 +5295,38 @@ mod tests {
                 .expect("below higher cap");
             assert_eq!(eligible.len(), 1);
             assert_eq!(eligible[0].failure_count, 3);
+        });
+    }
+
+    #[test]
+    fn failed_windows_in_range_respects_range_and_attempt_cap() {
+        block_on(async {
+            let store = test_store().await;
+            for _ in 0..3 {
+                seed_run(&store, "activity", "failed", Some((1_000, 2_000))).await;
+                seed_run(&store, "backfill", "failed", Some((9_000, 10_000))).await;
+            }
+            // Below the cap: still being retried, not a hole yet.
+            seed_run(&store, "activity", "failed", Some((3_000, 4_000))).await;
+            // Capped, but a later skip covered it.
+            for _ in 0..3 {
+                seed_run(&store, "activity", "failed", Some((5_000, 6_000))).await;
+            }
+            seed_run(&store, "activity", "skipped", Some((5_000, 6_000))).await;
+
+            let got = store.failed_windows_in_range(0, 8_000, 3).await.unwrap();
+            assert_eq!(got, vec![(1_000, 2_000)]);
+            // Overlap counts: a window straddling the range start is included.
+            let got = store
+                .failed_windows_in_range(1_500, 9_500, 3)
+                .await
+                .unwrap();
+            assert_eq!(got, vec![(1_000, 2_000), (9_000, 10_000)]);
+            assert!(store
+                .failed_windows_in_range(2_000, 9_000, 3)
+                .await
+                .unwrap()
+                .is_empty());
         });
     }
 

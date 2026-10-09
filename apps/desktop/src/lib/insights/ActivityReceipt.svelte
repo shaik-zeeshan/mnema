@@ -56,6 +56,8 @@
   import ReceiptTranscript from "$lib/insights/ReceiptTranscript.svelte";
   import ReceiptViewer from "$lib/insights/ReceiptViewer.svelte";
   import type { Activity } from "$lib/types/recording";
+  import { retentionVerdict } from "$lib/insights/retention";
+  import { captureControls } from "$lib/capture-controls.svelte";
   import type {
     FrameDto,
     FramePreviewDto,
@@ -84,6 +86,8 @@
   // ── Span-wide turns + selection (ADR 0049 redesign) ──────────────────
   let turns = $state<TurnView[]>([]); // every spoken turn over the span, ordered
   let turnsPending = $state(true); // span hydration in flight; false once onTurns lands (even empty)
+  let loadFailed = $state(false); // a frame or audio listing rejected (never "expired")
+  let transcribing = $state<{ done: number; total: number } | null>(null);
   let selectedKey = $state<string | null>(null); // the one selection the lane + reader share
   let profiles = $state<PersonProfileDto[]>([]); // for live name resolution
   let clipPlaying = $state(false); // the <audio> element's play/pause state
@@ -120,6 +124,8 @@
   // Cited-audio hydration: shared profiles + the span's ordered TurnView[].
   const audioLoader = new ReceiptAudioLoader({
     onProfiles: (p) => (profiles = p),
+    onTranscribing: (p) => (transcribing = p.done < p.total ? p : null),
+    onError: () => (loadFailed = true),
     onTurns: (t) => {
       turns = t;
       turnsPending = false;
@@ -182,7 +188,11 @@
   // Which viewer to render: frames win; else audio if any spoken evidence
   // survives; else the honest expired panel.
   const viewState = $derived(
-    receiptViewState(strip.length, audioEvidence.length, turnsPending, turns.length),
+    receiptViewState(strip.length, audioEvidence.length, turnsPending, turns.length, transcribing ? 1 : 0, loadFailed),
+  );
+  // "Expired" is only true when retention removed this span (JR-22).
+  const retention = $derived(
+    retentionVerdict(activity.startedAtMs, activity.endedAtMs, captureControls.recordingSettings?.retentionPolicy),
   );
   const isAudioOnly = $derived(viewState === "audio-only");
 
@@ -242,6 +252,7 @@
     pause();
     const gen = ++loadGen;
     loading = true;
+    loadFailed = false;
     strip = [];
     currentMeta = null;
     thumbUrls = {};
@@ -264,8 +275,11 @@
       index = initialPosterIndex(sorted.map((f) => f.id), headlineFrameId);
       cacheBump++;
     } catch {
-      // 0 frames (retention) and a load failure both render the expired panel.
-      if (gen === loadGen) strip = [];
+      // A load failure is an error with Try again, never "expired" (JR-21).
+      if (gen === loadGen) {
+        strip = [];
+        loadFailed = true;
+      }
     } finally {
       if (gen === loadGen) loading = false;
     }
@@ -451,6 +465,7 @@
     stopClip();
     turns = [];
     turnsPending = true;
+    transcribing = null;
     selectedKey = null;
     void audioLoader.loadSpan(activity.startedAtMs, activity.endedAtMs, audioEvidence);
   }
@@ -531,10 +546,13 @@
   // ── Effects ──────────────────────────────────────────────────────────
   // Reload the strip AND re-hydrate the spoken turns when the activity changes
   // (also runs on mount).
-  $effect(() => {
-    activity.id;
+  function reload(): void {
     void loadStrip();
     loadAudio();
+  }
+  $effect(() => {
+    activity.id;
+    reload();
   });
 
   // Re-pump the preview lookahead whenever the strip loads or the playhead moves.
@@ -632,14 +650,20 @@
       {currentMs}
       {hasOcr}
       {currentPreview}
+      {retention}
+      {transcribing}
+      activityStartMs={activity.startedAtMs}
+      onRetry={reload}
       onTogglePlay={togglePlay}
     />
 
     {#if loading}
       <div class="m-foot"><span>Loading footage…</span></div>
+    {:else if viewState === "error"}
+      <div class="m-foot"><span>Footage didn't load · summary shown above</span></div>
     {:else if viewState === "expired"}
       <div class="m-foot">
-        <span>0 frames still on disk</span><span class="sep">·</span>
+        <span>{retention ? "0 frames still on disk" : "No screen capture"}</span><span class="sep">·</span>
         <span>summary retained</span>
       </div>
     {:else}
@@ -730,8 +754,8 @@
 
       <div class="m-foot">
         {#if isAudioOnly}
-          <span>{audioFooterLeft(frameEvidence.length)}</span><span class="sep">·</span>
-          <span>{turnSpeakerRoster(turns)}</span>
+          <span>{audioFooterLeft(retention != null)}</span><span class="sep">·</span>
+          <span>{transcribing ? "transcript on its way" : turnSpeakerRoster(turns)}</span>
         {:else}
           <span>
             {strip.length}
