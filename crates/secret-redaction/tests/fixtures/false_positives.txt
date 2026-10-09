@@ -37,3 +37,6 @@ date range 2026-05-17 2026-05-18 2026-05-19 2026-05-20
 case id 4111111111111112
 sha-ish 4111111111111111abcdef
 cvv described in docs without a value
+Visa ending in 4927 VISA
+card number field is required
+card number 1234

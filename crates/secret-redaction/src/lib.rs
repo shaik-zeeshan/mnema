@@ -350,6 +350,13 @@ static DETECTORS: Lazy<Vec<Detector>> = Lazy::new(|| {
             category: SecretCategory::PaymentCard,
             requires_evidence: true,
         },
+        // Labeled card number, partial or not: narrow checkout fields show
+        // only the first 12 digits, which no PAN validation can accept.
+        Detector {
+            regex: Regex::new(r"(?i)\bcard\s*(?:number|no\.?|#)\s*[:#]?\s*(?:\d[ \-]?){7,18}\d").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: true,
+        },
     ]
 });
 
@@ -380,6 +387,9 @@ static EVIDENCE_PREFILTER: Lazy<AhoCorasick> = Lazy::new(|| {
             "security code",
             "card code",
             "card verification",
+            "card number",
+            "card no",
+            "card #",
         ])
         .expect("redaction evidence prefilter should compile")
 });

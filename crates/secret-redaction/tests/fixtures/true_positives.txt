@@ -63,3 +63,5 @@ payment_card|CVV: 123
 payment_card|CVC 4521
 payment_card|Security code: 987
 payment_card|Transcript: my card is 4111 1111 1111 1111 expiring September
+payment_card|Card number 4242 4242 4242 €
+payment_card|card no. 4111-1111-11
