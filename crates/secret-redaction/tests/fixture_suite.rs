@@ -99,7 +99,7 @@ fn payment_card_refiner_leaves_adjacent_digits_for_other_rules() {
         "4111 1111 1111 1111 123 cvv 123",
         RedactionContext::SearchableText,
     );
-    assert_eq!(result.redacted_text, format!("{marker} 123 {marker}"));
+    assert_eq!(result.redacted_text, format!("{marker} 123 cvv {marker}"));
 
     let result = redact_searchable_text(
         "order 42 4111 1111 1111 1111",

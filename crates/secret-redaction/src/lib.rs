@@ -444,11 +444,28 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
                         redacted_end: span.end,
                     });
                 }
-                for index in line.observation_indices {
-                    let marker = dominant_marker(&result);
+                // Redact only the observations a match touches: the line is
+                // their space-join, so offsets map back exactly. Untouched
+                // neighbours (a price, a help note) stay readable.
+                let matches = find_matches(&line.text);
+                let mut observation_start = 0;
+                for (index, observation_len) in line
+                    .observation_indices
+                    .into_iter()
+                    .zip(line.observation_lens)
+                {
+                    let observation_end = observation_start + observation_len;
+                    let hit = matches
+                        .iter()
+                        .find(|m| m.start < observation_end && observation_start < m.end);
+                    observation_start = observation_end + 1;
+                    let Some(hit) = hit else {
+                        continue;
+                    };
+                    let marker = hit.category.marker();
                     plan.ocr_observation_text.insert(index, marker.to_string());
                     plan.redactions.push(PlannedRedaction {
-                        category: result.spans[0].category,
+                        category: hit.category,
                         surface_kind: RedactionSurfaceKind::OcrObservation,
                         redaction_scope: RedactionScope::RedactionUnit,
                         redacted_start: 0,
@@ -538,6 +555,32 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
 }
 
 fn redact_text(input: &str) -> RedactionResult {
+    let mut redacted_text = String::with_capacity(input.len());
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for m in find_matches(input) {
+        redacted_text.push_str(&input[cursor..m.start]);
+        let start = redacted_text.len();
+        redacted_text.push_str(m.category.marker());
+        let end = redacted_text.len();
+        spans.push(RedactionSpan {
+            start,
+            end,
+            category: m.category,
+        });
+        cursor = m.end;
+    }
+    redacted_text.push_str(&input[cursor..]);
+
+    RedactionResult {
+        redacted_text,
+        spans,
+        detector_version: DETECTOR_VERSION.to_string(),
+    }
+}
+
+/// Non-overlapping secret matches, in `input` byte offsets.
+fn find_matches(input: &str) -> Vec<Match> {
     let evidence_windows = evidence_windows(input);
     let mut matches = Vec::new();
     for detector in DETECTORS.iter() {
@@ -562,15 +605,22 @@ fn redact_text(input: &str) -> RedactionResult {
             }));
         }
     }
-    // PaymentCard PAN matches start with a digit (CVV matches start with their
-    // label) and are narrowed to the validated card-number sub-run, or dropped.
+    // PaymentCard PAN matches start with a digit and are narrowed to the
+    // validated card-number sub-run, or dropped. Labeled matches (CVV, labeled
+    // card number) start with their label and are trimmed to the digits, so
+    // "Security code" / "Card number" stay readable.
     let mut matches: Vec<Match> = matches
         .into_iter()
         .filter_map(|m| {
-            if m.category != SecretCategory::PaymentCard
-                || !input.as_bytes()[m.start].is_ascii_digit()
-            {
+            if m.category != SecretCategory::PaymentCard {
                 return Some(m);
+            }
+            if !input.as_bytes()[m.start].is_ascii_digit() {
+                let digits = input[m.start..m.end].find(|c: char| c.is_ascii_digit())?;
+                return Some(Match {
+                    start: m.start + digits,
+                    ..m
+                });
             }
             payment_card::refine_pan_match(&input[m.start..m.end]).map(|(start, end)| Match {
                 start: m.start + start,
@@ -603,29 +653,7 @@ fn redact_text(input: &str) -> RedactionResult {
         }
         selected.push(candidate);
     }
-
-    let mut redacted_text = String::with_capacity(input.len());
-    let mut spans = Vec::new();
-    let mut cursor = 0;
-    for m in selected {
-        redacted_text.push_str(&input[cursor..m.start]);
-        let start = redacted_text.len();
-        redacted_text.push_str(m.category.marker());
-        let end = redacted_text.len();
-        spans.push(RedactionSpan {
-            start,
-            end,
-            category: m.category,
-        });
-        cursor = m.end;
-    }
-    redacted_text.push_str(&input[cursor..]);
-
-    RedactionResult {
-        redacted_text,
-        spans,
-        detector_version: DETECTOR_VERSION.to_string(),
-    }
+    selected
 }
 
 fn is_non_secret_diagnostic_match(input: &str, m: &Match) -> bool {
@@ -713,6 +741,7 @@ fn bounded_surface_text(text: &str, max_chars: usize) -> String {
 struct OcrVisualLine {
     text: String,
     observation_indices: Vec<usize>,
+    observation_lens: Vec<usize>,
 }
 
 fn build_ocr_visual_lines(observations: &[OcrRedactionObservation]) -> Vec<OcrVisualLine> {
@@ -753,6 +782,10 @@ fn build_ocr_visual_lines(observations: &[OcrRedactionObservation]) -> Vec<OcrVi
                     .map(|(_, observation)| observation.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
+                observation_lens: line
+                    .iter()
+                    .map(|(_, observation)| observation.text.len())
+                    .collect(),
                 observation_indices: line.into_iter().map(|(index, _)| index).collect(),
             }
         })
@@ -962,6 +995,41 @@ mod tests {
     }
 
     #[test]
+    fn planner_leaves_untouched_boxes_on_a_redacted_line_readable() {
+        // Amazon checkout row: only the truncated card field is hidden.
+        let observation = |text: &str, x: f64| OcrRedactionObservation {
+            text: text.to_string(),
+            confidence: 0.9,
+            bounding_box: RedactionBoundingBox {
+                x,
+                y: 0.49,
+                width: 0.1,
+                height: 0.017,
+            },
+        };
+        let plan = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![
+                    observation("CREDIT & DEBIT CARDS", 0.09),
+                    observation("Card number", 0.29),
+                    observation("4242 4242 4242 €", 0.36),
+                    observation("Please ensure that you enable your card for online", 0.54),
+                ],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        })
+        .expect("planner should redact the card row");
+
+        let mut redacted: Vec<_> = plan.ocr_observation_text.keys().copied().collect();
+        redacted.sort();
+        assert_eq!(redacted, vec![2]);
+    }
+
+    #[test]
     fn planner_redacts_split_ocr_visual_line_as_units() {
         let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
         let plan = plan_redactions(RedactionRequest {
@@ -997,10 +1065,8 @@ mod tests {
         })
         .expect("planner should redact split OCR line");
 
-        assert_eq!(
-            plan.ocr_observation_text.get(&0).map(String::as_str),
-            Some("[REDACTED_SECRET: API_KEY]")
-        );
+        // The label box is outside the match, so it stays readable.
+        assert_eq!(plan.ocr_observation_text.get(&0), None);
         assert_eq!(
             plan.ocr_observation_text.get(&1).map(String::as_str),
             Some("[REDACTED_SECRET: API_KEY]")
