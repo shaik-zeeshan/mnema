@@ -1701,6 +1701,35 @@ async fn generate_conversation_title(
     }
 }
 
+/// Saves a turn whose engine resolve failed as a terminal `error` row, so the
+/// backend's turn count matches the frontend's (CH-04).
+async fn persist_resolve_failure(
+    infra: &AppInfraState,
+    conversation_id: &str,
+    title: &str,
+    origin: &str,
+    turn_index: i64,
+    question: &str,
+    reason: &str,
+) -> bool {
+    persist_turn(
+        infra,
+        conversation_id,
+        title,
+        origin,
+        turn_index,
+        question,
+        "",
+        None,
+        Some(&[]),
+        &[],
+        &[],
+        "error",
+        Some(reason),
+    )
+    .await
+}
+
 /// The single stateless-per-turn Ask AI driver used by BOTH start and follow-up.
 ///
 /// Loads the conversation's completed history + engine pin from the store,
@@ -1813,6 +1842,20 @@ async fn run_ask_ai_turn(
             // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
             // `ask_ai_update` error (no live view exists for `emit_live_update` to
             // mutate). Here `turn_index` is known (history was loaded above).
+            // Persist it as an `error` turn row first (CH-04): the frontend
+            // already counts this turn, so an unsaved one desyncs every later
+            // `turn_index` (and a failed first message would lose origin/title).
+            persist_resolve_failure(
+                &infra,
+                &conversation_id,
+                &title,
+                &origin,
+                turn_index,
+                &question,
+                &reason,
+            )
+            .await;
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
             let _ = app_handle.emit(
                 ASK_AI_UPDATE_EVENT,
                 serde_json::json!({
@@ -2624,6 +2667,47 @@ pub async fn ask_ai_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_engine_resolve_is_saved_as_an_error_turn() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let infra: AppInfraState = Arc::new(
+                    ::app_infra::AppInfra::initialize(dir.path())
+                        .await
+                        .expect("infra"),
+                );
+                let saved = persist_resolve_failure(
+                    &infra,
+                    "c1",
+                    "Title",
+                    "chat",
+                    0,
+                    "q?",
+                    "no_default_model",
+                )
+                .await;
+                assert!(saved);
+                let conv = infra
+                    .conversation()
+                    .get_conversation("c1")
+                    .await
+                    .expect("read")
+                    .expect("conversation exists");
+                assert_eq!(conv.title, "Title");
+                assert_eq!(conv.origin, "chat");
+                assert_eq!(conv.turns.len(), 1);
+                assert_eq!(conv.turns[0].phase, "error");
+                assert_eq!(
+                    conv.turns[0].error_message.as_deref(),
+                    Some("no_default_model")
+                );
+            });
+    }
     use app_infra::brokered_access::{
         BrokerAuthStatusKind, BrokerErrorResponse, BrokerSearchResponse, BrokerSearchResultContext,
         BrokerShowTextResponse,

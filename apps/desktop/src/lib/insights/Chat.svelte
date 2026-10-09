@@ -134,6 +134,9 @@
     // depend on its fields. The backend's `Sources` update carries the same JSON.
     sources: AskAiSource[];
     errorMessage: string | null;
+    // True for an error caught by send() before the backend saved a turn row
+    // (CH-04): it exists only here, so it must not count toward turnIndex.
+    localOnly?: boolean;
     // Tokens occupying the model's context window after this turn's latest
     // completion request; null when the provider reported no usage (and on
     // hydrated past turns — usage isn't persisted).
@@ -597,6 +600,9 @@
       activeConversationId = crypto.randomUUID();
     }
     const conversationId = activeConversationId;
+    // A trailing local-only error has no backend row; drop it so turnIndex
+    // matches the backend's turn count (CH-04).
+    if (turns.at(-1)?.localOnly) turns = turns.slice(0, -1);
     const isFirstTurn = turns.length === 0;
     if (isFirstTurn && activeTitle.length === 0) {
       activeTitle = titleFromQuestion(question);
@@ -670,6 +676,7 @@
       if (t) {
         t.phase = "error";
         t.errorMessage = humanizeError(error);
+        t.localOnly = true;
       }
       // A failed send cleared the composer above — put the question back so the
       // user can edit + resend without retyping (only if they haven't started
@@ -687,19 +694,16 @@
     }
   }
 
-  // Retry a failed turn: re-issue the SAME question. The error turn is terminal
-  // (and therefore trailing for its index), so we drop it and let send() re-run
-  // the start/follow-up path — turns.length lands back on the right turnIndex, so
-  // a failed first turn re-starts and a failed follow-up re-follows-up.
+  // Retry a failed turn: re-issue the SAME question. A local-only error has no
+  // backend row, so send() drops it and reuses its index; a saved error row
+  // stays in the thread and the retry appends a new turn after it (CH-04).
   async function retryTurn(turn: ChatTurn): Promise<void> {
     if (streaming || !askAvailable) return;
     // Only the trailing turn can be retried: send() re-derives turnIndex from
     // turns.length, so dropping a non-trailing turn would orphan the stream and
     // collide turnIndexes. Mid-thread errors keep their message but no Retry.
     if (turn.turnIndex !== turns.length - 1) return;
-    const question = turn.question;
-    turns = turns.filter((t) => t.turnIndex !== turn.turnIndex);
-    composerInput = question;
+    composerInput = turn.question;
     await send();
   }
 
