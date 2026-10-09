@@ -7,3 +7,7 @@ connection_string|postgres://user:pass1234@localhost/app
 password|DB||PASSWORD||hunter222
 auth_code|verification||code||123456
 seed_like_secret|seed phrase:||abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about
+payment_card|Card||number||4111||1111||1111||1111
+payment_card|4111||1111||1111||1111||09/29||123
+payment_card|CVV||123
+payment_card|Card number||4242 4242 4242 €||Please ensure that you enable your card for online

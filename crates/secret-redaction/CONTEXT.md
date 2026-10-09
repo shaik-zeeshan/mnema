@@ -18,6 +18,10 @@ _Avoid_: Secret Redaction Pipeline V2, transcript redaction
 The synchronous persistence boundary that admits only redacted OCR or transcript derived text into durable derived-text storage.
 _Avoid_: async scrubber, post-processing cleanup
 
+**Payment Card Secret**:
+A card number (PAN) that passes issuer-prefix, length, and Luhn validation, or a labeled 3–4 digit CVV/CVC. Treated as a credential, not as PII.
+_Avoid_: card PII, financial data
+
 **Redaction Safety Failure**:
 A terminal processing-job outcome where Mnema cannot prove that derived text is safe to persist after redaction.
 _Avoid_: no secret found, OCR miss, empty result
@@ -81,7 +85,7 @@ _Avoid_: detector evidence, matched text, raw context log
 - **Secret Redaction Pipeline** V2 should broaden high-confidence secret coverage to provider-prefixed API keys, generic labeled API keys, access tokens, secret keys, passwords, bearer/auth headers, private keys, JWTs, database/queue/cache connection strings, cloud access keys, webhook URLs with embedded secrets, OAuth/client secrets, auth or verification codes, and seed/recovery phrases.
 - **OCR-Aware Secret Redaction** is a capability inside V2, not the umbrella name for V2.
 - **Secret Redaction Pipeline** V1 does not attempt broad PII, name, email, address, phone, sensitive-business-text, screenshot-region, or image redaction.
-- **Secret Redaction Pipeline** V2 should continue to exclude broad PII, emails, phone numbers, addresses, names, business-sensitive prose, URL/domain privacy heuristics, private-window detection, browser password-page detection, and password-field detection.
+- **Secret Redaction Pipeline** V2 should continue to exclude broad PII, emails, phone numbers, addresses, names, business-sensitive prose, URL/domain privacy heuristics, private-window detection, browser password-page detection, and password-field detection. Payment card numbers and labeled CVVs are the one PII-adjacent exception: a PAN is a credential and is in scope as of detector v3.
 - **Secret Redaction Pipeline** V1 uses deterministic high-confidence secret detection rather than broad probabilistic PII model classification.
 - **Secret Redaction Pipeline** V2 may use mature secret scanners as references for detector families and fixtures, but shipped detectors should remain Mnema-owned, deterministic, OCR-aware, bounded, and covered by Mnema false-positive and false-negative fixtures.
 - **Secret Redaction Pipeline** V2 may use entropy checks only after label, prefix, syntax, or bounded context evidence has produced a suspicious candidate; entropy alone should not broadly redact OCR text except for very strong provider-specific formats.

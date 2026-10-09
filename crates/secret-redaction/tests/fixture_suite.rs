@@ -92,6 +92,22 @@ fn fixture_ocr_visual_lines_are_redacted_as_units() {
     }
 }
 
+#[test]
+fn payment_card_refiner_leaves_adjacent_digits_for_other_rules() {
+    let marker = SecretCategory::PaymentCard.marker();
+    let result = redact_searchable_text(
+        "4111 1111 1111 1111 123 cvv 123",
+        RedactionContext::SearchableText,
+    );
+    assert_eq!(result.redacted_text, format!("{marker} 123 cvv {marker}"));
+
+    let result = redact_searchable_text(
+        "order 42 4111 1111 1111 1111",
+        RedactionContext::SearchableText,
+    );
+    assert_eq!(result.redacted_text, format!("order 42 {marker}"));
+}
+
 fn parse_category(category: &str) -> SecretCategory {
     match category {
         "api_key" => SecretCategory::ApiKey,
@@ -101,6 +117,7 @@ fn parse_category(category: &str) -> SecretCategory {
         "auth_code" => SecretCategory::AuthCode,
         "connection_string" => SecretCategory::ConnectionString,
         "seed_like_secret" => SecretCategory::SeedLikeSecret,
+        "payment_card" => SecretCategory::PaymentCard,
         other => panic!("unknown fixture category: {other}"),
     }
 }

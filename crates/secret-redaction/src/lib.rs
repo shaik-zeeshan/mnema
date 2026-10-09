@@ -4,7 +4,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const DETECTOR_VERSION: &str = "secret-redaction-v2";
+mod payment_card;
+
+pub const DETECTOR_VERSION: &str = "secret-redaction-v3";
 const DEFAULT_CANDIDATE_WINDOW_CHARS: usize = 512;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -17,6 +19,7 @@ pub enum SecretCategory {
     AuthCode,
     ConnectionString,
     SeedLikeSecret,
+    PaymentCard,
 }
 
 impl SecretCategory {
@@ -29,6 +32,7 @@ impl SecretCategory {
             Self::AuthCode => "[REDACTED_SECRET: AUTH_CODE]",
             Self::ConnectionString => "[REDACTED_SECRET: CONNECTION_STRING]",
             Self::SeedLikeSecret => "[REDACTED_SECRET: SEED_SECRET]",
+            Self::PaymentCard => "[REDACTED_SECRET: PAYMENT_CARD]",
         }
     }
 
@@ -41,6 +45,7 @@ impl SecretCategory {
             Self::AuthCode => "auth_code",
             Self::ConnectionString => "connection_string",
             Self::SeedLikeSecret => "seed_like_secret",
+            Self::PaymentCard => "payment_card",
         }
     }
 }
@@ -335,6 +340,23 @@ static DETECTORS: Lazy<Vec<Detector>> = Lazy::new(|| {
             category: SecretCategory::SeedLikeSecret,
             requires_evidence: true,
         },
+        Detector {
+            regex: Regex::new(r"\b(?:\d[ \-]?){12,18}\d\b").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: false,
+        },
+        Detector {
+            regex: Regex::new(r"(?i)\b(?:cvv2?|cvc2?|cid|security code|card code|card verification(?: code| value)?)\b\s*[:=]?\s*\d{3,4}\b").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: true,
+        },
+        // Labeled card number, partial or not: narrow checkout fields show
+        // only the first 12 digits, which no PAN validation can accept.
+        Detector {
+            regex: Regex::new(r"(?i)\bcard\s*(?:number|no\.?|#)\s*[:#]?\s*(?:\d[ \-]?){7,18}\d").unwrap(),
+            category: SecretCategory::PaymentCard,
+            requires_evidence: true,
+        },
     ]
 });
 
@@ -360,6 +382,14 @@ static EVIDENCE_PREFILTER: Lazy<AhoCorasick> = Lazy::new(|| {
             "seed",
             "mnemonic",
             "recovery",
+            "cvv",
+            "cvc",
+            "security code",
+            "card code",
+            "card verification",
+            "card number",
+            "card no",
+            "card #",
         ])
         .expect("redaction evidence prefilter should compile")
 });
@@ -414,11 +444,28 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
                         redacted_end: span.end,
                     });
                 }
-                for index in line.observation_indices {
-                    let marker = dominant_marker(&result);
+                // Redact only the observations a match touches: the line is
+                // their space-join, so offsets map back exactly. Untouched
+                // neighbours (a price, a help note) stay readable.
+                let matches = find_matches(&line.text);
+                let mut observation_start = 0;
+                for (index, observation_len) in line
+                    .observation_indices
+                    .into_iter()
+                    .zip(line.observation_lens)
+                {
+                    let observation_end = observation_start + observation_len;
+                    let hit = matches
+                        .iter()
+                        .find(|m| m.start < observation_end && observation_start < m.end);
+                    observation_start = observation_end + 1;
+                    let Some(hit) = hit else {
+                        continue;
+                    };
+                    let marker = hit.category.marker();
                     plan.ocr_observation_text.insert(index, marker.to_string());
                     plan.redactions.push(PlannedRedaction {
-                        category: result.spans[0].category,
+                        category: hit.category,
                         surface_kind: RedactionSurfaceKind::OcrObservation,
                         redaction_scope: RedactionScope::RedactionUnit,
                         redacted_start: 0,
@@ -427,6 +474,8 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
                 }
             }
         }
+
+        redact_stacked_label_values(&mut plan, &ocr.observations);
 
         for (index, observation) in ocr.observations.iter().enumerate() {
             if plan.ocr_observation_text.contains_key(&index) {
@@ -506,6 +555,32 @@ pub fn plan_redactions(request: RedactionRequest) -> Result<UnifiedRedactionPlan
 }
 
 fn redact_text(input: &str) -> RedactionResult {
+    let mut redacted_text = String::with_capacity(input.len());
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    for m in find_matches(input) {
+        redacted_text.push_str(&input[cursor..m.start]);
+        let start = redacted_text.len();
+        redacted_text.push_str(m.category.marker());
+        let end = redacted_text.len();
+        spans.push(RedactionSpan {
+            start,
+            end,
+            category: m.category,
+        });
+        cursor = m.end;
+    }
+    redacted_text.push_str(&input[cursor..]);
+
+    RedactionResult {
+        redacted_text,
+        spans,
+        detector_version: DETECTOR_VERSION.to_string(),
+    }
+}
+
+/// Non-overlapping secret matches, in `input` byte offsets.
+fn find_matches(input: &str) -> Vec<Match> {
     let evidence_windows = evidence_windows(input);
     let mut matches = Vec::new();
     for detector in DETECTORS.iter() {
@@ -530,6 +605,30 @@ fn redact_text(input: &str) -> RedactionResult {
             }));
         }
     }
+    // PaymentCard PAN matches start with a digit and are narrowed to the
+    // validated card-number sub-run, or dropped. Labeled matches (CVV, labeled
+    // card number) start with their label and are trimmed to the digits, so
+    // "Security code" / "Card number" stay readable.
+    let mut matches: Vec<Match> = matches
+        .into_iter()
+        .filter_map(|m| {
+            if m.category != SecretCategory::PaymentCard {
+                return Some(m);
+            }
+            if !input.as_bytes()[m.start].is_ascii_digit() {
+                let digits = input[m.start..m.end].find(|c: char| c.is_ascii_digit())?;
+                return Some(Match {
+                    start: m.start + digits,
+                    ..m
+                });
+            }
+            payment_card::refine_pan_match(&input[m.start..m.end]).map(|(start, end)| Match {
+                start: m.start + start,
+                end: m.start + end,
+                category: m.category,
+            })
+        })
+        .collect();
     matches
         .retain(|m| !is_non_secret_diagnostic_match(input, m) && !is_placeholder_match(input, m));
     matches.sort_by_key(|m| (m.start, usize::MAX - m.end));
@@ -554,29 +653,7 @@ fn redact_text(input: &str) -> RedactionResult {
         }
         selected.push(candidate);
     }
-
-    let mut redacted_text = String::with_capacity(input.len());
-    let mut spans = Vec::new();
-    let mut cursor = 0;
-    for m in selected {
-        redacted_text.push_str(&input[cursor..m.start]);
-        let start = redacted_text.len();
-        redacted_text.push_str(m.category.marker());
-        let end = redacted_text.len();
-        spans.push(RedactionSpan {
-            start,
-            end,
-            category: m.category,
-        });
-        cursor = m.end;
-    }
-    redacted_text.push_str(&input[cursor..]);
-
-    RedactionResult {
-        redacted_text,
-        spans,
-        detector_version: DETECTOR_VERSION.to_string(),
-    }
+    selected
 }
 
 fn is_non_secret_diagnostic_match(input: &str, m: &Match) -> bool {
@@ -664,6 +741,7 @@ fn bounded_surface_text(text: &str, max_chars: usize) -> String {
 struct OcrVisualLine {
     text: String,
     observation_indices: Vec<usize>,
+    observation_lens: Vec<usize>,
 }
 
 fn build_ocr_visual_lines(observations: &[OcrRedactionObservation]) -> Vec<OcrVisualLine> {
@@ -704,10 +782,64 @@ fn build_ocr_visual_lines(observations: &[OcrRedactionObservation]) -> Vec<OcrVi
                     .map(|(_, observation)| observation.text.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
+                observation_lens: line
+                    .iter()
+                    .map(|(_, observation)| observation.text.len())
+                    .collect(),
                 observation_indices: line.into_iter().map(|(index, _)| index).collect(),
             }
         })
         .collect()
+}
+
+/// Stacked forms put a label on the line above its value ("Security code" /
+/// "234"), so neither visual line holds the pair. Scan each label-bearing
+/// observation joined to the observations stacked against it and redact the
+/// value as a unit.
+// ponytail: not counted against `max_surfaces`, so a code editor full of "key"
+// and "token" words cannot fail the gate closed; the work is bounded by
+// prefilter hits times their stacked neighbours.
+fn redact_stacked_label_values(
+    plan: &mut UnifiedRedactionPlan,
+    observations: &[OcrRedactionObservation],
+) {
+    for (label_index, label) in observations.iter().enumerate() {
+        if !EVIDENCE_PREFILTER.is_match(&label.text) || !redact_text(&label.text).spans.is_empty() {
+            continue;
+        }
+        for (value_index, value) in observations.iter().enumerate() {
+            if value_index == label_index
+                || plan.ocr_observation_text.contains_key(&value_index)
+                || !is_stacked_pair(label, value)
+            {
+                continue;
+            }
+            let result = redact_text(&format!("{}\n{}", label.text, value.text));
+            if result.spans.is_empty() {
+                continue;
+            }
+            let marker = dominant_marker(&result);
+            plan.ocr_observation_text
+                .insert(value_index, marker.to_string());
+            plan.redactions.push(PlannedRedaction {
+                category: result.spans[0].category,
+                surface_kind: RedactionSurfaceKind::OcrObservation,
+                redaction_scope: RedactionScope::RedactionUnit,
+                redacted_start: 0,
+                redacted_end: marker.len(),
+            });
+        }
+    }
+}
+
+/// Horizontally overlapping and one or two lines apart, above or below (the
+/// check is origin-agnostic). Same-line tolerance matches `build_ocr_visual_lines`.
+fn is_stacked_pair(a: &OcrRedactionObservation, b: &OcrRedactionObservation) -> bool {
+    let (a, b) = (&a.bounding_box, &b.bounding_box);
+    let overlaps_x = a.x < b.x + b.width && b.x < a.x + a.width;
+    let line = a.height.max(b.height).max(0.02);
+    let center_gap = ((a.y + a.height / 2.0) - (b.y + b.height / 2.0)).abs();
+    overlaps_x && center_gap > line && center_gap <= 2.5 * line
 }
 
 fn dominant_marker(result: &RedactionResult) -> &'static str {
@@ -825,6 +957,79 @@ mod tests {
     }
 
     #[test]
+    fn planner_redacts_value_stacked_under_its_label() {
+        // Box geometry from a real Polar/Stripe checkout frame.
+        let observation = |text: &str, x: f64, y: f64, width: f64| OcrRedactionObservation {
+            text: text.to_string(),
+            confidence: 0.9,
+            bounding_box: RedactionBoundingBox {
+                x,
+                y,
+                width,
+                height: 0.014,
+            },
+        };
+        let plan = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![
+                    observation("Expiration (MM/YY)", 0.527, 0.578, 0.078),
+                    observation("01/45", 0.534, 0.544, 0.032),
+                    observation("Security code", 0.652, 0.578, 0.058),
+                    observation("234", 0.659, 0.544, 0.022),
+                    observation("Pay now", 0.632, 0.275, 0.038),
+                ],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        })
+        .expect("planner should redact stacked label/value");
+
+        assert_eq!(
+            plan.ocr_observation_text.get(&3).map(String::as_str),
+            Some("[REDACTED_SECRET: PAYMENT_CARD]")
+        );
+        assert_eq!(plan.ocr_observation_text.len(), 1, "{plan:?}");
+    }
+
+    #[test]
+    fn planner_leaves_untouched_boxes_on_a_redacted_line_readable() {
+        // Amazon checkout row: only the truncated card field is hidden.
+        let observation = |text: &str, x: f64| OcrRedactionObservation {
+            text: text.to_string(),
+            confidence: 0.9,
+            bounding_box: RedactionBoundingBox {
+                x,
+                y: 0.49,
+                width: 0.1,
+                height: 0.017,
+            },
+        };
+        let plan = plan_redactions(RedactionRequest {
+            context: RedactionContext::Ocr,
+            result_text: None,
+            ocr: Some(OcrRedactionInput {
+                observations: vec![
+                    observation("CREDIT & DEBIT CARDS", 0.09),
+                    observation("Card number", 0.29),
+                    observation("4242 4242 4242 €", 0.36),
+                    observation("Please ensure that you enable your card for online", 0.54),
+                ],
+            }),
+            transcript: None,
+            additional_surfaces: Vec::new(),
+            budget: RedactionBudget::default(),
+        })
+        .expect("planner should redact the card row");
+
+        let mut redacted: Vec<_> = plan.ocr_observation_text.keys().copied().collect();
+        redacted.sort();
+        assert_eq!(redacted, vec![2]);
+    }
+
+    #[test]
     fn planner_redacts_split_ocr_visual_line_as_units() {
         let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
         let plan = plan_redactions(RedactionRequest {
@@ -860,10 +1065,8 @@ mod tests {
         })
         .expect("planner should redact split OCR line");
 
-        assert_eq!(
-            plan.ocr_observation_text.get(&0).map(String::as_str),
-            Some("[REDACTED_SECRET: API_KEY]")
-        );
+        // The label box is outside the match, so it stays readable.
+        assert_eq!(plan.ocr_observation_text.get(&0), None);
         assert_eq!(
             plan.ocr_observation_text.get(&1).map(String::as_str),
             Some("[REDACTED_SECRET: API_KEY]")
