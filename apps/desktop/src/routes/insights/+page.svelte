@@ -300,42 +300,25 @@
     // when Chat isn't mounted (idempotent — Chat also calls it on its mount).
     void conversationStore.ensureStarted();
 
-    let unlisten: UnlistenFn | undefined;
-    let unlistenSettings: UnlistenFn | undefined;
-    let unlistenHandoff: UnlistenFn | undefined;
+    const unlistens: UnlistenFn[] = [];
     let disposed = false;
-    void listen("user_context_changed", () => {
-      void loadEngineStatus();
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-
-    // Settings saves (default model / engine on-off) emit this, not
-    // `user_context_changed`; refresh the engine pill so it doesn't stay stale.
-    void listen("recording_settings_changed", () => {
-      void loadEngineStatus();
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlistenSettings = fn;
-    });
+    const keep = (fn: UnlistenFn) => (disposed ? fn() : unlistens.push(fn));
+    // Re-read the engine status on: a context change; a Settings save (default
+    // model / engine on-off emit only `recording_settings_changed`); and a
+    // ChatGPT sign-in (Chat's inline "Sign in again" emits only
+    // `chatgpt_login_update`) — else the rail footer stays "signed out".
+    for (const name of ["user_context_changed", "recording_settings_changed", "chatgpt_login_update"]) {
+      void listen(name, () => void loadEngineStatus()).then(keep);
+    }
 
     // Warm-window handoff: a live event switches to Chat + selects the thread.
-    void listen<{ conversationId: string }>(
-      "insights_open_conversation",
-      (event) => {
-        handoffConversation(event.payload.conversationId);
-      },
-    ).then((fn) => {
-      if (disposed) fn();
-      else unlistenHandoff = fn;
-    });
+    void listen<{ conversationId: string }>("insights_open_conversation", (event) => {
+      handoffConversation(event.payload.conversationId);
+    }).then(keep);
 
     return () => {
       disposed = true;
-      unlisten?.();
-      unlistenSettings?.();
-      unlistenHandoff?.();
+      for (const fn of unlistens) fn();
     };
   });
 </script>

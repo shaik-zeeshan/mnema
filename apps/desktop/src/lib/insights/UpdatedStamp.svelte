@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { renderIdle } from "$lib/render-idle.svelte";
+
   // "updated 1m ago" — the only sign of a quiet background refresh (OV-22).
   // `at` is stamped in each loader's success branch; null hides the stamp.
   // `inline` prefixes a "·" separator for use inside a sentence-y subtitle.
@@ -6,7 +8,10 @@
 
   let now = $state(Date.now());
   $effect(() => {
-    const timer = setInterval(() => (now = Date.now()), 30_000);
+    // Skips its tick while nothing can render ($lib/render-idle.svelte).
+    const timer = setInterval(() => {
+      if (!renderIdle()) now = Date.now();
+    }, 30_000);
     return () => clearInterval(timer);
   });
 

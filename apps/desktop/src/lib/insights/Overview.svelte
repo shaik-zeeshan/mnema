@@ -1049,7 +1049,7 @@
   const dismisser = new DelayedDismiss<Conclusion>((c) => void commitDismiss(c));
   const dismissConclusion = (c: Conclusion): void => dismisser.start(c);
   const undoDismiss = (c: Conclusion): void => dismisser.undo(c);
-  $effect(() => () => dismisser.dispose());
+  $effect(() => () => dismisser.flush());
 
   async function commitDismiss(c: Conclusion): Promise<void> {
     // Hide the row (optimistic), then persist.
@@ -1153,7 +1153,7 @@
   $effect(() => {
     if (!captureControls.isRunning || !atLatest) return;
     const timer = setInterval(() => {
-      if (!renderIdle()) untrack(() => void loadFree());
+      if (!renderIdle()) untrack(() => void Promise.all([loadFree(), loadPrev()]));
     }, 60_000);
     return () => clearInterval(timer);
   });

@@ -65,7 +65,7 @@
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import ChatErrorTurn from "$lib/insights/ChatErrorTurn.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
-  import { reasonCopy } from "$lib/insights/engine-state";
+  import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
     Activity,
@@ -709,7 +709,10 @@
       const t = turns[turnIndex];
       if (t) {
         t.phase = "error";
-        t.errorMessage = humanizeError(error);
+        // A raw resolve code stays as-is: humanizeError capitalises it, and
+        // turnErrorCopy only maps a lowercase code to its action.
+        t.errorMessage =
+          typeof error === "string" && isReasonCode(error) ? error : humanizeError(error);
         t.localOnly = true;
       }
       // A failed send cleared the composer above — put the question back so the

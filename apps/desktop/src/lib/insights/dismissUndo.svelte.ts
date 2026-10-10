@@ -44,11 +44,6 @@ export class DelayedDismiss<T extends { id: number }> {
     }
   }
 
-  // Cancel every pending dismiss without committing (unmount, nothing persisted).
-  dispose(): void {
-    for (const { timer } of this.#pending.values()) clearTimeout(timer);
-  }
-
   #fire(item: T): void {
     this.#drop(item.id);
     this.#commit(item);

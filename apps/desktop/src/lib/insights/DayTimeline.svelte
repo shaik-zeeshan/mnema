@@ -31,6 +31,7 @@
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, bandRiver } from "$lib/insights/journal-view";
   import { captureControls } from "$lib/capture-controls.svelte";
+  import { renderIdle } from "$lib/render-idle.svelte";
   import ReadCard from "$lib/insights/ReadCard.svelte";
   import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
@@ -389,7 +390,9 @@
   });
   $effect(() => {
     if (!recordingLive) return;
-    const id = setInterval(() => void loadStatus().then(loadRange), 60_000);
+    const id = setInterval(() => {
+      if (!renderIdle()) void loadStatus().then(loadRange);
+    }, 60_000);
     return () => clearInterval(id);
   });
 

@@ -104,6 +104,9 @@ export function engineState(
   return reasonCopy(status.reason, settings);
 }
 
+/** A raw resolve code: `snake_case` (optionally `:<id>`), no spaces. */
+export const isReasonCode = (message: string): boolean => /^[a-z_]+(:\S+)?$/.test(message);
+
 /** The one action a failed Chat turn offers. */
 export type TurnErrorAction = "reconnect" | "retry" | "settings" | "new_chat";
 
@@ -115,8 +118,7 @@ export function turnErrorCopy(
   settings: AiRuntimeSettings | null,
 ): { text: string; action: TurnErrorAction; reconnectProviderId: string | null } {
   const raw = (message ?? "").trim();
-  // Raw resolve codes: `snake_case` (optionally `:<id>`), no spaces.
-  if (/^[a-z_]+(:\S+)?$/.test(raw)) {
+  if (isReasonCode(raw)) {
     const copy = reasonCopy(raw, settings);
     if (copy.kind === "unreachable") return { text: copy.text, action: "retry", reconnectProviderId: null };
     if (copy.reconnectProviderId !== null) {
