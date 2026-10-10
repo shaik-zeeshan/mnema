@@ -811,6 +811,7 @@ pub fn run() {
             conversation::commands::search_conversations,
             conversation::commands::set_conversation_engine,
             conversation::commands::set_conversation_title,
+            conversation::commands::set_conversation_pinned,
             conversation::commands::delete_conversation,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,

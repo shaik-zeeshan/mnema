@@ -169,6 +169,30 @@ pub async fn set_conversation_title(
     Ok(())
 }
 
+/// Pin (or unpin) a chat to the top of the history list. Touches no
+/// timestamp (pinning is not activity) and never creates a row. Not the
+/// per-chat engine pin — that is [`set_conversation_engine`]. Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_pinned(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let found = infra
+        .conversation()
+        .set_pinned(&conversation_id, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err(format!("conversation {conversation_id} not found"));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// Delete a conversation (its turns cascade). Emits
 /// [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]

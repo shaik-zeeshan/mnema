@@ -18,6 +18,8 @@ export interface ConversationSummary {
   turnCount: number;
   /** The first turn's question, truncated. */
   preview: string;
+  /** Pinned to the top of the history list (not the per-chat engine pin). */
+  pinned: boolean;
 }
 
 /** One persisted question/answer turn, in `turnIndex` order. */

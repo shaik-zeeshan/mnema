@@ -72,6 +72,9 @@ pub struct ConversationSummary {
     pub updated_at_ms: i64,
     pub turn_count: i64,
     pub preview: String,
+    /// The user pinned this chat to the top of the history list. Unrelated to
+    /// the per-chat engine pin ([`Conversation::provider`]/[`Conversation::model`]).
+    pub pinned: bool,
 }
 
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
@@ -465,5 +468,26 @@ mod tests {
         let value = serde_json::to_value(&bare).unwrap();
         assert_eq!(value, json!({ "op": "error", "message": "boom" }));
         assert_eq!(serde_json::from_value::<TurnUpdate>(value).unwrap(), bare);
+    }
+
+    #[test]
+    fn conversation_summary_round_trips_pinned() {
+        let summary = ConversationSummary {
+            conversation_id: "conv-1".to_string(),
+            title: "t".to_string(),
+            origin: "chat".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            turn_count: 3,
+            preview: "q".to_string(),
+            pinned: true,
+        };
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["pinned"], json!(true));
+        assert_eq!(value["turnCount"], json!(3));
+        assert_eq!(
+            serde_json::from_value::<ConversationSummary>(value).unwrap(),
+            summary
+        );
     }
 }
