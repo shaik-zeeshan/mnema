@@ -761,7 +761,8 @@ async fn record_digest_run(
 /// malformed request, a store error, an engine that did not resolve live, an
 /// engine call that failed / returned an empty narrative) and the
 /// [`DIGEST_SENSITIVE_HOLD`] code. Engine failures and the hold are replayed to
-/// the lazy path for [`FAILURE_COOLDOWN_MS`] on an unchanged input set.
+/// the lazy path for [`FAILURE_COOLDOWN_MS`] on an unchanged input set — except
+/// sign-in, rejected-key and settings failures, which the user fixes in Settings.
 ///
 /// `user_context_enabled` is User Context's own continuous-derivation opt-in:
 /// the digest is part of the User Context feature, so it honours the same opt-in
@@ -941,7 +942,10 @@ pub async fn get_or_generate_digest(
             // Both paths surface it (and record it) exactly like the extraction
             // failure below: an `Ok(None)` renders as "not enough activity",
             // blaming the user's data for an engine failure. The cooldown keeps
-            // the lazy path from re-trying on every Insights visit.
+            // the lazy path from re-trying on every Insights visit — except a
+            // sign-in failure: re-resolving it needs no network (a rejected login
+            // stops at step 1, a set with no refresh token fails locally), and a
+            // cooldown would replay "sign in again" after the user signed back in.
             record_digest_run(
                 store,
                 ai_runtime,
@@ -951,11 +955,12 @@ pub async fn get_or_generate_digest(
                 Some(reason.clone()),
             )
             .await;
-            return fail(if reason.starts_with("needs_reconnect:") {
-                "The AI provider needs you to sign in again in Settings.".to_string()
-            } else {
-                "The AI engine is not reachable right now. Try again in a moment.".to_string()
-            });
+            if reason.starts_with("needs_reconnect:") {
+                return Err("The AI provider needs you to sign in again in Settings.".to_string());
+            }
+            return fail(
+                "The AI engine is not reachable right now. Try again in a moment.".to_string(),
+            );
         }
     };
 
@@ -984,7 +989,14 @@ pub async fn get_or_generate_digest(
                 Some(error.to_string()),
             )
             .await;
-            return fail(error.user_facing_message_for(engine.cloud_provider()));
+            let message = error.user_facing_message_for(engine.cloud_provider());
+            // A rejected key / bad setting is fixed in Settings and a retry isn't
+            // billed, so it skips the cooldown — else the lazy read keeps
+            // replaying the old failure after the fix.
+            if matches!(error.failure_kind(), "auth" | "settings") {
+                return Err(message);
+            }
+            return fail(message);
         }
     };
     let output_tokens = estimate_tokens(&batch.narrative) + estimate_tokens(&batch.headline);
@@ -1598,10 +1610,10 @@ mod tests {
     }
 
     /// OV-06: the lazy path must not read an engine failure as "not enough
-    /// activity" either — and its second visit replays the cooldown instead of
-    /// trying (and recording) again.
+    /// activity" either. A sign-in failure is NOT cooled down: the second visit
+    /// re-resolves (no network), so signing back in takes effect at once.
     #[tokio::test]
-    async fn a_lazy_read_surfaces_a_live_engine_failure_and_then_replays_the_cooldown() {
+    async fn a_lazy_read_surfaces_a_sign_in_failure_without_a_cooldown() {
         live_resolve_failure_surfaces(false).await;
     }
 
@@ -1715,7 +1727,7 @@ mod tests {
                 false,
             )
             .await;
-            assert_eq!(again, outcome, "the lazy retry replays the stored failure");
+            assert_eq!(again, outcome, "the lazy retry reports the same failure");
             let failed_runs = store
                 .list_derivation_runs(10)
                 .await
@@ -1723,7 +1735,7 @@ mod tests {
                 .into_iter()
                 .filter(|run| run.kind == "digest" && run.status == "failed")
                 .count();
-            assert_eq!(failed_runs, 1, "the cooldown hit must not call or record again");
+            assert_eq!(failed_runs, 2, "a sign-in failure re-resolves instead of replaying");
         }
 
         let _ = std::fs::remove_dir_all(&dir);
