@@ -21,10 +21,11 @@
   import IconLoader from "~icons/lucide/loader-circle";
   import IconSparkle from "~icons/lucide/sparkle";
   import IconCopy from "~icons/lucide/copy";
+  import IconRegen from "~icons/lucide/rotate-cw";
 
   interface Props {
     turn: ChatTurn;
-    /** The last turn of the thread (only it gets Retry). */
+    /** The last turn of the thread (only it gets Retry / Regenerate). */
     trailing: boolean;
     /** The model answering this chat (not recorded per turn) + where it runs. */
     model: string | null;
@@ -32,7 +33,9 @@
     /** The model's context window when known (for the token bar). */
     contextWindow: number | null;
     settings: AiRuntimeSettings | null;
+    /** Can't re-run now (streaming / Ask AI off): Retry disables, Regenerate hides. */
     retryDisabled: boolean;
+    /** Retry a failed turn, or Regenerate a finished one — the same in-place path. */
     onRetry: () => void;
   }
   let { turn, trailing, model, where, contextWindow, settings, retryDisabled, onRetry }: Props = $props();
@@ -162,6 +165,11 @@
             {#if copied}<IconCheck width="15" height="15" aria-hidden="true" />{:else}<IconCopy width="15" height="15" aria-hidden="true" />{/if}
           </button>
           {#if copied}<span class="mx-inline" data-tone="ok">Copied</span>{/if}
+        {/if}
+        {#if trailing && !retryDisabled}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Regenerate" use:tip={"Regenerate"} onclick={onRetry}>
+            <IconRegen width="15" height="15" aria-hidden="true" />
+          </button>
         {/if}
         {#if model}<span class="mx-label"><span class="mono">{model}</span>{where ? ` · ${where}` : ""}</span>{/if}
         {#if turn.contextTokens !== null}

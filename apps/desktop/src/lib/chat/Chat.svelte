@@ -12,6 +12,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { tip } from "$lib/components/tooltip";
   import { openSettings } from "$lib/surface-windows";
   import { askAiClock } from "$lib/askAiClock";
@@ -38,6 +39,7 @@
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
   import IconPin from "~icons/lucide/pin";
   import IconPinOff from "~icons/lucide/pin-off";
+  import { regeneratePlan } from "./regenerate";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -286,8 +288,9 @@
   });
 
   // ── Sending ──────────────────────────────────────────────────────────────
-  async function send(): Promise<void> {
-    const question = composerInput.trim();
+  // `resend` re-runs a question (Regenerate/Retry) without touching a draft.
+  async function send(resend: string | null = null): Promise<void> {
+    const question = (resend ?? composerInput).trim();
     if (question.length === 0 || streaming || !askAvailable) return;
     if (activeConversationId === null) activeConversationId = crypto.randomUUID();
     const conversationId = activeConversationId;
@@ -298,7 +301,7 @@
     const isFirstTurn = turns.length === 0;
     if (isFirstTurn && activeTitle.length === 0) activeTitle = titleFromQuestion(question);
     const title = activeTitle || titleFromQuestion(question);
-    composerInput = "";
+    if (resend === null) composerInput = "";
     // Settle any prior turn still flagged working (a displaced turn that never
     // got its terminal update would keep a live line under a finished answer).
     for (const t of turns) {
@@ -349,12 +352,29 @@
     if (composerInput.trim().length === 0) composerInput = question;
   }
 
-  // Retry the trailing failed turn: send() derives turnIndex from turns.length,
-  // so only the last turn can be retried (CH-04).
-  async function retryTurn(turn: ChatTurn): Promise<void> {
-    if (streaming || !askAvailable || turn.turnIndex !== turns.length - 1) return;
-    composerInput = turn.question;
-    await send();
+  // Regenerate / Retry the trailing settled turn in place (CH4): delete its row,
+  // drop it, and re-send the question — send()'s fresh turn (version 0) takes the
+  // freed index. A failed delete keeps the old answer.
+  async function regenerateTurn(turn: ChatTurn): Promise<void> {
+    const conversationId = activeConversationId;
+    const plan = regeneratePlan(turn, turns.length, streaming || !askAvailable);
+    if (plan === null || conversationId === null) return;
+    if (plan.deleteFirst) {
+      streaming = true; // blocks send() while the delete runs
+      try {
+        await invoke("delete_last_turn", { conversationId, turnIndex: turn.turnIndex });
+      } catch (error) {
+        void message(`Couldn’t regenerate this answer: ${humanizeError(error)}`, { kind: "error" });
+        return;
+      } finally {
+        streaming = false;
+      }
+    }
+    if (activeConversationId !== conversationId) return;
+    turns = turns.slice(0, -1);
+    // A failed turn put its question back in the composer; it's being re-sent.
+    if (composerInput.trim() === turn.question.trim()) composerInput = "";
+    await send(turn.question);
   }
 
   // The backend always emits a terminal `done` on cancel, which settles the UI.
@@ -557,7 +577,7 @@
               {contextWindow}
               settings={aiRuntime}
               retryDisabled={streaming || !askAvailable}
-              onRetry={() => void retryTurn(turn)}
+              onRetry={() => void regenerateTurn(turn)}
             />
           {/each}
         {/if}
