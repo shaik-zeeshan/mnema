@@ -7,10 +7,8 @@ import {
   isSparse,
   convictionTierId,
   movementTierId,
-  tierFor,
   deriveTrend,
   buildTiers,
-  summaryCounts,
   subjectsDiff,
   decideRefresh,
   debounce,
@@ -86,14 +84,6 @@ describe("movementTierId", () => {
     expect(movementTierId(subject({ faded: true, trend: "down" }))).toBe(
       "fading",
     );
-  });
-});
-
-describe("tierFor", () => {
-  it("dispatches to the axis-specific helper", () => {
-    const s = subject({ topConfidence: 0.7, trend: "down" });
-    expect(tierFor(s, "conviction")).toBe("strong");
-    expect(tierFor(s, "movement")).toBe("cooling");
   });
 });
 
@@ -191,7 +181,7 @@ describe("buildTiers", () => {
     // Only the fading tier is marked faded.
     expect(tiers.map((t) => t.faded)).toEqual([false, false, false, true]);
     expect(tiers[3].title).toBe("Fading · kept for history");
-    expect(tiers[3].note).toBe("below display floor");
+    expect(tiers[3].note).toBe("every conclusion below the 15% floor");
   });
 
   it("returns movement tiers in top->bottom order, sorted by lastMovedAtMs desc", () => {
@@ -241,40 +231,6 @@ describe("buildTiers", () => {
     const snapshot = rows.map((r) => r.id);
     buildTiers(rows, "conviction");
     expect(rows.map((r) => r.id)).toEqual(snapshot);
-  });
-});
-
-describe("summaryCounts", () => {
-  it("partitions a mixed set: active vs fading, with trend within active", () => {
-    expect(
-      summaryCounts([
-        { faded: false, trend: "up" },
-        { faded: false, trend: "up" },
-        { faded: false, trend: "steady" },
-        { faded: false, trend: "down" },
-        { faded: true, trend: "up" }, // faded never counts toward warming
-        { faded: true, trend: "down" },
-      ]),
-    ).toEqual({ active: 4, fading: 2, warming: 2, steady: 1, cooling: 1 });
-  });
-
-  it("counts an all-faded set with zero active movement", () => {
-    expect(
-      summaryCounts([
-        { faded: true, trend: "up" },
-        { faded: true, trend: "steady" },
-      ]),
-    ).toEqual({ active: 0, fading: 2, warming: 0, steady: 0, cooling: 0 });
-  });
-
-  it("returns all zeros for an empty set", () => {
-    expect(summaryCounts([])).toEqual({
-      active: 0,
-      fading: 0,
-      warming: 0,
-      steady: 0,
-      cooling: 0,
-    });
   });
 });
 
