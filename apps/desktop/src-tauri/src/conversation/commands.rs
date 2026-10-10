@@ -193,6 +193,31 @@ pub async fn set_conversation_pinned(
     Ok(())
 }
 
+/// Delete a conversation's trailing turn so Regenerate / Retry can re-send
+/// the same question into the same `turn_index`. Errors (deleting nothing)
+/// when `turn_index` is not the last turn. Emits [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn delete_last_turn(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+    turn_index: i64,
+) -> Result<(), String> {
+    let deleted = infra
+        .conversation()
+        .delete_last_turn(&conversation_id, turn_index)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !deleted {
+        return Err(format!(
+            "turn {turn_index} is not the last turn of conversation {conversation_id}"
+        ));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// Delete a conversation (its turns cascade). Emits
 /// [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]

@@ -354,6 +354,29 @@ impl ConversationStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Delete the conversation's TRAILING turn so Regenerate / Retry can re-send
+    /// the same question into the freed `turn_index` (Ask AI numbers a new turn
+    /// by row count, and `save_turn` never overwrites a finished row). Refused —
+    /// `Ok(false)`, nothing deleted — unless `turn_index` is the conversation's
+    /// highest index, so turns stay contiguous. One atomic statement; touches no
+    /// conversation timestamp (the re-sent turn's save bumps them). Does not check
+    /// `phase`: a crash-orphaned `streaming` row must stay retryable.
+    pub async fn delete_last_turn(&self, conversation_id: &str, turn_index: i64) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM conversation_turns \
+             WHERE turn_index = ?2 \
+               AND conversation_row_id = \
+                   (SELECT id FROM conversations WHERE conversation_id = ?1) \
+               AND turn_index = (SELECT MAX(t.turn_index) FROM conversation_turns t \
+                                 WHERE t.conversation_row_id = conversation_turns.conversation_row_id)",
+        )
+        .bind(conversation_id)
+        .bind(turn_index)
+        .execute(self.db.write())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
             "SELECT turn_index, question, answer, reasoning, blocks, tool_activities, sources, phase, \

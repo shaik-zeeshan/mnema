@@ -813,6 +813,7 @@ pub fn run() {
             conversation::commands::set_conversation_title,
             conversation::commands::set_conversation_pinned,
             conversation::commands::delete_conversation,
+            conversation::commands::delete_last_turn,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,
             privacy_redaction_sources::add_privacy_excluded_app,

@@ -77,3 +77,40 @@ fn set_pinned_touches_no_timestamp_and_never_creates_a_row() {
             .is_none());
     });
 }
+
+#[test]
+fn delete_last_turn_refuses_non_trailing_and_frees_the_index() {
+    block_on(async {
+        let store = test_store().await;
+        done_turn(&store, "c", 0, "first", 1_000).await;
+        done_turn(&store, "c", 1, "second", 2_000).await;
+        let before = stamps(&store, "c").await;
+
+        assert!(!store.delete_last_turn("c", 0).await.expect("non-trailing"));
+        assert!(!store.delete_last_turn("c", 2).await.expect("past the end"));
+        assert!(!store.delete_last_turn("ghost", 1).await.expect("missing"));
+        assert_eq!(
+            store
+                .get_conversation("c")
+                .await
+                .unwrap()
+                .unwrap()
+                .turns
+                .len(),
+            2
+        );
+
+        assert!(store.delete_last_turn("c", 1).await.expect("trailing"));
+        assert_eq!(stamps(&store, "c").await, before, "delete touches no stamp");
+
+        // Ask AI numbers the next turn by row count: the re-send reuses index 1,
+        // and a finished-row guard no longer blocks it.
+        let turns = store.get_conversation("c").await.unwrap().unwrap().turns;
+        assert_eq!(turns.len(), 1);
+        done_turn(&store, "c", turns.len() as i64, "second again", 3_000).await;
+        let turns = store.get_conversation("c").await.unwrap().unwrap().turns;
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[1].turn_index, 1);
+        assert_eq!(turns[1].question, "second again");
+    });
+}
