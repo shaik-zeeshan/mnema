@@ -211,6 +211,8 @@ export interface UpdateUserContextSettingsRequest {
 /** Reasoning Engine availability snapshot, mirroring the Rust `AiRuntimeStatus`. */
 export interface AiRuntimeStatus {
 	enabled: boolean;
+	/** At least one provider was ever added (else Insights shows the setup pitch). */
+	hasProviders: boolean;
 	configured: boolean;
 	available: boolean;
 	defaultModel?: AiEngineRef | null;
@@ -269,6 +271,9 @@ export interface AuthoredContext {
 	topic: string | null;
 	createdAtMs: number;
 	updatedAtMs: number;
+	/** From `list_user_context_authored` only: false when the statement falls past
+	 * the ~2,000-character prompt cap and the engine doesn't read it. */
+	inPrompt?: boolean;
 }
 
 /**
@@ -379,6 +384,18 @@ export interface UserContextStatus {
 	localOffsetMinutes?: number | null;
 	/** The most recently generated day-kind Digest; null until one exists. */
 	lastDayDigest?: UserContextDigest | null;
+	/** Set while Activity summarizing keeps failing; null when healthy. */
+	summarizingFailure?: UserContextSummarizingFailure | null;
+}
+
+/** Mirrors `capture_types::UserContextSummarizingFailure`. */
+export interface UserContextSummarizingFailure {
+	atMs: number;
+	/** Failed window runs since the last success. */
+	failures: number;
+	provider: string | null;
+	/** One readable sentence. */
+	reason: string;
 }
 
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */

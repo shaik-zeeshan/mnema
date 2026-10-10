@@ -6,6 +6,20 @@
 
 import type { Activity } from "$lib/types/recording";
 import type { FrameSummaryDto } from "$lib/types/app-infra";
+import type { RetentionPolicy } from "$lib/types/recording";
+import { retentionVerdict } from "./retention";
+
+/** A time span in epoch ms, `[startMs, endMs)`. */
+export interface Span {
+	startMs: number;
+	endMs: number;
+}
+
+/**
+ * What still backs a card: frames, audio only, frames removed by retention
+ * ("expired"), or nothing — the screen simply wasn't captured ("none").
+ */
+export type CardMedia = "frames" | "audio" | "expired" | "none";
 
 /**
  * Minimum empty span between two consecutive captured frames, inside the
@@ -22,14 +36,15 @@ export interface JournalCardSlot {
 	activity: Activity;
 	/** Count of day frames whose `capturedAt` ∈ [startedAtMs, endedAtMs). */
 	frameCount: number;
-	/** `frameCount === 0` → footage aged out under Retention while the summary survives. */
-	expired: boolean;
+	media: CardMedia;
 }
 
-/** An away-gap: a covered span with no frames, clamped to the day bounds. */
+/** A covered span with no screen frames, clamped to the day bounds. */
 export interface JournalGap {
 	startMs: number;
 	endMs: number;
+	/** Audio was recording through some of it. */
+	audio: boolean;
 }
 
 /** Why the live-edge slot is pending. The `reason` string is a raw status code — Slice 3 maps codes → human copy. */
@@ -40,26 +55,38 @@ export type PendingReason =
 /** The trailing "summarizing…" region at the live edge. */
 export interface JournalPending {
 	active: boolean;
-	/** Start of the pending region (the watermark, clamped ≥ day start, or the first frame). `null` when inactive. */
+	/** Start of the pending region (the watermark, clamped ≥ day start, or the first capture). `null` when inactive. */
 	sinceMs: number | null;
 	reason: PendingReason | null;
+	/** Only audio is waiting (no screen frames past the watermark). */
+	audioOnly: boolean;
 }
 
 export interface JournalDayModel {
 	/** One per activity started within the day, chronological (oldest first). */
 	slots: JournalCardSlot[];
-	/** Away-gaps within the covered region (no frames, ≥ AWAY_GAP_MIN_MS). */
+	/** Screen gaps within the covered region (no frames, ≥ AWAY_GAP_MIN_MS). */
 	gaps: JournalGap[];
+	/** Windows whose summarizing failed past the retry cap, clamped to the day. */
+	failed: Span[];
 	pending: JournalPending;
 	/** Frames captured within the day. */
 	totalFrameCount: number;
-	/** `totalFrameCount > 0` — drives the "nothing captured" empty state. */
+	/** Any frame or audio in the day — drives the "nothing captured" empty state. */
 	hasAnyCapture: boolean;
+	/** Audio in the day but no screen frames. */
+	audioOnly: boolean;
 }
 
 export interface JournalDayInput {
 	activities: Activity[];
 	frames: FrameSummaryDto[];
+	/** Audio segment spans (mic + system audio). */
+	audio: Span[];
+	/** `list_failed_derivation_windows` for the day. */
+	failedWindows: Span[];
+	retentionPolicy: RetentionPolicy | null;
+	nowMs: number;
 	/** Worker "summarized up to" watermark; frames newer than this aren't summarized. `null` = nothing derived yet. */
 	coveredUntilMs: number | null;
 	/** Is capture currently running. Carried for Slice 3; the pending rule is derived purely from frames vs. watermark (see below). */
@@ -91,6 +118,16 @@ function lowerBound(sorted: number[], target: number): number {
 export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	const { activities, frames, coveredUntilMs, engineAvailable, engineReason, dayStartMs, dayEndMs } =
 		input;
+	const clamp = (sp: Span): Span => ({
+		startMs: Math.max(dayStartMs, sp.startMs),
+		endMs: Math.min(dayEndMs, sp.endMs),
+	});
+	const dayAudio = input.audio
+		.filter((a) => a.startMs < dayEndMs && a.endMs > dayStartMs)
+		.map(clamp)
+		.sort((a, b) => a.startMs - b.startMs);
+	const audioIn = (startMs: number, endMs: number) =>
+		dayAudio.some((a) => a.startMs < endMs && a.endMs > startMs);
 
 	// Day frame timestamps, defensively filtered to [dayStart, dayEnd) and sorted.
 	const dayFrameTs = frames
@@ -99,7 +136,7 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 		.sort((a, b) => a - b);
 
 	const totalFrameCount = dayFrameTs.length;
-	const hasAnyCapture = totalFrameCount > 0;
+	const hasAnyCapture = totalFrameCount > 0 || dayAudio.length > 0;
 
 	// --- Slots: one per activity that STARTED this day, chronological. ---
 	// Ownership is by start day, not overlap: a midnight-crossing activity is
@@ -116,7 +153,16 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 			const lo = lowerBound(dayFrameTs, activity.startedAtMs);
 			const hi = lowerBound(dayFrameTs, activity.endedAtMs);
 			const frameCount = hi - lo;
-			return { activity, frameCount, expired: frameCount === 0 };
+			const { startedAtMs: s, endedAtMs: e } = activity;
+			const media: CardMedia =
+				frameCount > 0
+					? "frames"
+					: audioIn(s, e)
+						? "audio"
+						: retentionVerdict(s, e, input.retentionPolicy, input.nowMs)
+							? "expired"
+							: "none";
+			return { activity, frameCount, media };
 		});
 
 	// --- Pending region (the live edge). ---
@@ -127,22 +173,27 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	// already summarized shows no pending slot.
 	const hasFramesPastWatermark =
 		coveredUntilMs !== null && dayFrameTs.some((ts) => ts > coveredUntilMs);
-	const pendingActive = hasFramesPastWatermark || (coveredUntilMs === null && hasAnyCapture);
+	const hasAudioPastWatermark =
+		coveredUntilMs !== null && dayAudio.some((a) => a.endMs > coveredUntilMs);
+	const pendingActive =
+		hasFramesPastWatermark || hasAudioPastWatermark || (coveredUntilMs === null && hasAnyCapture);
 
 	let pending: JournalPending;
 	if (!pendingActive) {
-		pending = { active: false, sinceMs: null, reason: null };
+		pending = { active: false, sinceMs: null, reason: null, audioOnly: false };
 	} else {
 		const sinceMs =
 			coveredUntilMs === null
-				? dayFrameTs[0] // whole covered region is pending → first captured frame
+				? // whole day is pending → its first capture
+					Math.min(dayFrameTs[0] ?? Infinity, dayAudio[0]?.startMs ?? Infinity)
 				: Math.max(dayStartMs, coveredUntilMs);
 		// engine_unavailable takes precedence over the summarizing copy: with the
 		// engine down, the river shows the reason instead of a spinner.
 		const reason: PendingReason = engineAvailable
 			? { kind: "summarizing" }
 			: { kind: "engine_unavailable", reason: engineReason ?? "" };
-		pending = { active: true, sinceMs, reason };
+		const audioOnly = coveredUntilMs === null ? totalFrameCount === 0 : !hasFramesPastWatermark;
+		pending = { active: true, sinceMs, reason, audioOnly };
 	}
 
 	// --- Away-gaps: inter-frame gaps within the summarized region only. ---
@@ -157,12 +208,21 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 		const startMs = coveredFrameTs[i - 1];
 		const endMs = coveredFrameTs[i];
 		if (endMs - startMs >= AWAY_GAP_MIN_MS) {
-			gaps.push({
-				startMs: Math.max(dayStartMs, startMs),
-				endMs: Math.min(dayEndMs, endMs),
-			});
+			gaps.push({ ...clamp({ startMs, endMs }), audio: audioIn(startMs, endMs) });
 		}
 	}
 
-	return { slots, gaps, pending, totalFrameCount, hasAnyCapture };
+	const failed = input.failedWindows
+		.filter((w) => w.startMs < dayEndMs && w.endMs > dayStartMs)
+		.map(clamp);
+
+	return {
+		slots,
+		gaps,
+		failed,
+		pending,
+		totalFrameCount,
+		hasAnyCapture,
+		audioOnly: totalFrameCount === 0 && dayAudio.length > 0,
+	};
 }

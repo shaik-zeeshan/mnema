@@ -72,6 +72,13 @@ describe("receiptViewState", () => {
   it("expired when neither frames nor audio remain", () => {
     expect(receiptViewState(0, 0, false, 0)).toBe("expired");
   });
+  it("audio-only for uncited turns or audio still transcribing", () => {
+    expect(receiptViewState(0, 0, false, 3)).toBe("audio-only");
+    expect(receiptViewState(0, 0, false, 0, 2)).toBe("audio-only");
+  });
+  it("error, not expired, when a listing failed", () => {
+    expect(receiptViewState(0, 0, false, 0, 0, true)).toBe("error");
+  });
 });
 
 describe("sourceKindReadable", () => {
@@ -134,8 +141,8 @@ describe("turnSpeakerRoster", () => {
 
 describe("audioFooterLeft", () => {
   it("is honest about expired vs never-captured frames", () => {
-    expect(audioFooterLeft(0)).toBe("0 screen frames — captured as audio");
-    expect(audioFooterLeft(3)).toBe("0 screen frames — screen frames have expired");
+    expect(audioFooterLeft(false)).toBe("0 screen frames — captured as audio");
+    expect(audioFooterLeft(true)).toBe("0 screen frames — screen frames have expired");
   });
 });
 

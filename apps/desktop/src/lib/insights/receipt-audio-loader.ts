@@ -27,6 +27,10 @@ export interface ReceiptAudioEvents {
   onProfiles(profiles: PersonProfileDto[]): void;
   /** Span-wide diarized turn view models (the receipt's one audio surface). */
   onTurns?(turns: TurnView[]): void;
+  /** Segments in the span still waiting on transcription (queued/running). */
+  onTranscribing?(progress: { done: number; total: number }): void;
+  /** Listing the span's audio failed — a real error, not "no audio". */
+  onError?(): void;
 }
 
 /** `invoke`-shaped IPC entry point, injectable so tests can stub Tauri. */
@@ -113,13 +117,20 @@ export class ReceiptAudioLoader {
     );
     if (gen !== this.#gen) return;
     this.#events.onProfiles(profiles);
-    const segments = await this.#invoke<AudioSegmentDto[]>("list_audio_segments", {
-      request: range,
-    }).catch(() => [] as AudioSegmentDto[]);
+    let segments: AudioSegmentDto[];
+    try {
+      segments = await this.#invoke<AudioSegmentDto[]>("list_audio_segments", { request: range });
+    } catch {
+      if (gen !== this.#gen) return;
+      this.#events.onError?.();
+      this.#events.onTurns?.([]);
+      return;
+    }
     // Shed the per-segment turn fan-out for a superseded generation: without this
     // a stale run still opens up to TURN_HYDRATION_CONCURRENCY list_speaker_turns
     // IPC against the shared 4-connection reader pool before discarding them.
     if (gen !== this.#gen) return;
+    let transcribing = 0;
     const hydrated = await mapBounded(segments, TURN_HYDRATION_CONCURRENCY, async (segment) => {
       let turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
         request: { audioSegmentId: segment.id },
@@ -130,38 +141,49 @@ export class ReceiptAudioLoader {
       // receipt hydrates to zero rows and its player is dead. Borrow the
       // segment's transcription (what Timeline renders) as unattributed turns.
       if (!turns.some((t) => (t.transcriptText ?? "").trim().length > 0)) {
-        const fallback = await this.#transcriptionFallbackTurns(segment);
+        const { turns: fallback, pending } = await this.#transcriptionFallbackTurns(segment);
         if (fallback.length > 0) turns = fallback;
+        if (pending) transcribing++;
       }
       return { segment, turns };
     });
     const turns = buildTurnViews(hydrated, citedRefs, profiles);
     if (gen !== this.#gen) return;
+    this.#events.onTranscribing?.({ done: segments.length - transcribing, total: segments.length });
     this.#events.onTurns?.(turns);
   }
 
   /** The segment's completed audio_transcription result as synthetic turns
-   *  (the diarization-found-nothing fallback). [] on any failure or absence. */
-  async #transcriptionFallbackTurns(segment: AudioSegmentDto): Promise<SpeakerTurnDto[]> {
+   *  (the diarization-found-nothing fallback). [] on any failure or absence;
+   *  `pending` when the newest transcription job is still queued/running. */
+  async #transcriptionFallbackTurns(
+    segment: AudioSegmentDto,
+  ): Promise<{ turns: SpeakerTurnDto[]; pending: boolean }> {
     try {
-      const jobs = await this.#invoke<ProcessingJobDto[]>("list_processing_jobs", {
-        request: { subjectType: "audio_segment", subjectId: segment.id },
-      });
-      const job = jobs
-        .filter((j) => j.processor === "audio_transcription" && j.status === "completed")
-        .sort((a, b) => b.id - a.id)[0];
-      if (!job) return [];
+      const jobs = (
+        await this.#invoke<ProcessingJobDto[]>("list_processing_jobs", {
+          request: { subjectType: "audio_segment", subjectId: segment.id },
+        })
+      )
+        .filter((j) => j.processor === "audio_transcription")
+        .sort((a, b) => b.id - a.id);
+      const pending = jobs[0]?.status === "queued" || jobs[0]?.status === "running";
+      const job = jobs.find((j) => j.status === "completed");
+      if (!job) return { turns: [], pending };
       const result = await this.#invoke<ProcessingResultDto | null>("get_processing_result", {
         request: { jobId: job.id },
       });
-      if (!result) return [];
-      return syntheticTurnsFromTranscription(
-        segment,
-        parseTranscriptionRuns(result.structuredPayloadJson),
-        result.resultText,
-      );
+      if (!result) return { turns: [], pending };
+      return {
+        turns: syntheticTurnsFromTranscription(
+          segment,
+          parseTranscriptionRuns(result.structuredPayloadJson),
+          result.resultText,
+        ),
+        pending,
+      };
     } catch {
-      return [];
+      return { turns: [], pending: false };
     }
   }
 

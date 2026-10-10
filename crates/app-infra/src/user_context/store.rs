@@ -182,6 +182,18 @@ pub struct NewDerivationRun {
     pub gate_drops: DistillationGateDrops,
 }
 
+/// The newest run of failed Activity summarizing (`activity`/`backfill`
+/// windows) with no `completed` window run after it. Returned by
+/// [`UserContextStore::latest_window_failure`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowFailure {
+    pub at_ms: i64,
+    pub provider: Option<String>,
+    pub error: Option<String>,
+    /// Failed window runs since the last `completed` one.
+    pub failures_since_success: i64,
+}
+
 /// A `failed` derivation window eligible for a retry (issue #113): a
 /// `[window_start_ms, window_end_ms]` span whose every windowed run failed —
 /// no later `completed`/`skipped` run ever covered the same span — so the
@@ -896,6 +908,32 @@ impl UserContextStore {
         }))
     }
 
+    /// The newest failed `activity`/`backfill` run, but only while no
+    /// `completed` window run came after it (a success clears the streak).
+    /// Ordered by `id` (insert order), not the window's time.
+    pub async fn latest_window_failure(&self) -> Result<Option<WindowFailure>> {
+        let row = sqlx::query(
+            "WITH last_ok AS (\
+                SELECT COALESCE(MAX(id), 0) AS id FROM user_context_derivation_runs \
+                WHERE kind IN ('activity','backfill') AND status = 'completed'\
+             ), fails AS (\
+                SELECT * FROM user_context_derivation_runs \
+                WHERE kind IN ('activity','backfill') AND status = 'failed' \
+                  AND id > (SELECT id FROM last_ok)\
+             ) \
+             SELECT created_at_ms, provider, error, (SELECT COUNT(*) FROM fails) AS failures \
+             FROM fails ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_optional(self.db.read())
+        .await?;
+        Ok(row.map(|row| WindowFailure {
+            at_ms: row.get("created_at_ms"),
+            provider: row.get("provider"),
+            error: row.get("error"),
+            failures_since_success: row.get("failures"),
+        }))
+    }
+
     /// The **summarized-up-to** watermark: the newest `window_end_ms` among
     /// derivation runs that ACTUALLY covered their window. Distinct from
     /// [`Self::latest_derivation_run_window`] (the scheduler cursor), which
@@ -1013,6 +1051,39 @@ impl UserContextStore {
                 last_failed_at_ms: row.get("last_failed_at_ms"),
             })
             .collect())
+    }
+
+    /// Windows overlapping `[start_ms, end_ms)` that failed at least
+    /// `min_failures` times with no `completed`/`skipped` run ever covering
+    /// them — the holes the retry pass has given up on. Oldest first.
+    pub async fn failed_windows_in_range(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        min_failures: i64,
+    ) -> Result<Vec<(i64, i64)>> {
+        let rows = sqlx::query(
+            "SELECT f.window_start_ms AS s, f.window_end_ms AS e \
+             FROM user_context_derivation_runs f \
+             WHERE f.kind IN ('activity', 'backfill') \
+               AND f.status = 'failed' \
+               AND f.window_start_ms < ?2 AND f.window_end_ms > ?1 \
+               AND NOT EXISTS (\
+                   SELECT 1 FROM user_context_derivation_runs s \
+                   WHERE s.window_start_ms = f.window_start_ms \
+                     AND s.window_end_ms = f.window_end_ms \
+                     AND s.status IN ('completed', 'skipped')\
+               ) \
+             GROUP BY f.window_start_ms, f.window_end_ms \
+             HAVING COUNT(*) >= ?3 \
+             ORDER BY f.window_start_ms",
+        )
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(min_failures)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows.into_iter().map(|r| (r.get("s"), r.get("e"))).collect())
     }
 
     /// The earliest captured-at across all raw captures, in unix millis — the
@@ -1825,11 +1896,12 @@ impl UserContextStore {
 
     /// Number of distinct dismissed beliefs, keyed case-insensitively on
     /// `(subject, statement)` — the same identity the Dismissed archive dedups
-    /// on (a belief dismissed twice counts once).
+    /// on (a belief dismissed twice counts once). Only `source='user'` rows: a
+    /// supersede veto is the system replacing a belief, not the user dismissing it.
     pub async fn count_dismissed(&self) -> Result<i64> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count FROM ( \
-                 SELECT 1 FROM user_context_dismissals \
+                 SELECT 1 FROM user_context_dismissals WHERE source = 'user' \
                  GROUP BY subject COLLATE NOCASE, statement COLLATE NOCASE)",
         )
         .fetch_one(self.db.read())
@@ -2180,6 +2252,20 @@ impl UserContextStore {
         let rows = sqlx::query(
             "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
              FROM user_context_dismissals \
+             ORDER BY dismissed_at_ms DESC, id DESC",
+        )
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows.into_iter().map(map_dismissal).collect())
+    }
+
+    /// The user's own dismissals (`source='user'`), newest first — the Dismissed
+    /// archive. Supersede vetoes are the system replacing a belief and stay out.
+    pub async fn list_user_dismissals(&self) -> Result<Vec<DismissalState>> {
+        let rows = sqlx::query(
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
+             FROM user_context_dismissals \
+             WHERE source = 'user' \
              ORDER BY dismissed_at_ms DESC, id DESC",
         )
         .fetch_all(self.db.read())
@@ -5212,6 +5298,38 @@ mod tests {
         });
     }
 
+    #[test]
+    fn failed_windows_in_range_respects_range_and_attempt_cap() {
+        block_on(async {
+            let store = test_store().await;
+            for _ in 0..3 {
+                seed_run(&store, "activity", "failed", Some((1_000, 2_000))).await;
+                seed_run(&store, "backfill", "failed", Some((9_000, 10_000))).await;
+            }
+            // Below the cap: still being retried, not a hole yet.
+            seed_run(&store, "activity", "failed", Some((3_000, 4_000))).await;
+            // Capped, but a later skip covered it.
+            for _ in 0..3 {
+                seed_run(&store, "activity", "failed", Some((5_000, 6_000))).await;
+            }
+            seed_run(&store, "activity", "skipped", Some((5_000, 6_000))).await;
+
+            let got = store.failed_windows_in_range(0, 8_000, 3).await.unwrap();
+            assert_eq!(got, vec![(1_000, 2_000)]);
+            // Overlap counts: a window straddling the range start is included.
+            let got = store
+                .failed_windows_in_range(1_500, 9_500, 3)
+                .await
+                .unwrap();
+            assert_eq!(got, vec![(1_000, 2_000), (9_000, 10_000)]);
+            assert!(store
+                .failed_windows_in_range(2_000, 9_000, 3)
+                .await
+                .unwrap()
+                .is_empty());
+        });
+    }
+
     /// #113 wall-clock backoff: a window whose newest failure is younger than
     /// the backoff anchor is skipped this pass.
     #[test]
@@ -6092,6 +6210,69 @@ mod tests {
         });
     }
 
+    #[test]
+    fn latest_window_failure_counts_failures_since_last_success() {
+        block_on(async {
+            let store = test_store().await;
+            let run = |kind: &str, status: &str, error: Option<&str>| NewDerivationRun {
+                kind: kind.to_string(),
+                window_start_ms: Some(0),
+                window_end_ms: Some(1),
+                status: status.to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: Some("anthropic".to_string()),
+                model: None,
+                error: error.map(str::to_string),
+                gate_drops: DistillationGateDrops::default(),
+            };
+            assert_eq!(store.latest_window_failure().await.expect("empty"), None);
+
+            store
+                .insert_derivation_run(run("activity", "failed", Some("old")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("activity", "completed", None))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.latest_window_failure().await.expect("cleared"),
+                None,
+                "a success clears the streak"
+            );
+
+            store
+                .insert_derivation_run(run("activity", "failed", Some("a")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("backfill", "failed", Some("429 b")))
+                .await
+                .unwrap();
+            // Conclusion failures and skips are not window summarizing.
+            store
+                .insert_derivation_run(run("conclusion", "failed", Some("c")))
+                .await
+                .unwrap();
+            store
+                .insert_derivation_run(run("activity", "skipped", None))
+                .await
+                .unwrap();
+
+            let failure = store
+                .latest_window_failure()
+                .await
+                .expect("read")
+                .expect("some");
+            assert_eq!(failure.failures_since_success, 2);
+            assert_eq!(failure.error.as_deref(), Some("429 b"));
+            assert_eq!(failure.provider.as_deref(), Some("anthropic"));
+        });
+    }
+
     /// [`UserContextStore::covered_until_ms`] is the user-facing "summarized-up-to"
     /// watermark. A `failed` run advances the scheduler cursor but summarized
     /// nothing, so it must NOT count as coverage — else the Journal renders a
@@ -6824,7 +7005,20 @@ mod tests {
                 .await
                 .expect("dismissal row");
             }
+            // A system supersede veto is not a user dismissal: it stays out of
+            // both the count and the Dismissed archive.
+            sqlx::query(
+                "INSERT INTO user_context_dismissals \
+                    (subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source) \
+                 VALUES ('Go', 'Writes Go', 'fp', 1, 2000, 'supersede')",
+            )
+            .execute(store.pool())
+            .await
+            .expect("supersede row");
             assert_eq!(store.count_dismissed().await.expect("dismissed"), 2);
+            let user_list = store.list_user_dismissals().await.expect("user dismissals");
+            assert_eq!(user_list.len(), 3);
+            assert!(user_list.iter().all(|d| d.source == "user"));
 
             // Two skipped runs + one completed → 2 since epoch, 0 since the future.
             for status in ["skipped", "skipped", "completed"] {

@@ -113,6 +113,8 @@ export function humanizeMs(ms: number): string {
 }
 export function humanizeHours(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "0h";
+  // Under an hour reads in minutes: 2 minutes is "2m", never "0h" (OV-17).
+  if (ms < 3600000) return `${Math.min(59, Math.max(1, Math.round(ms / 60000)))}m`;
   const h = ms / 3600000;
   if (h < 10) return `${(Math.round(h * 10) / 10).toString()}h`;
   return `${Math.round(h)}h`;

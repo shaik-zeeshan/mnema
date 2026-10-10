@@ -737,7 +737,7 @@ async fn run_backfill_pass(
 /// flat 10-minute backoff between attempts. Mirrors the processing-queue caps in
 /// `processing/store.rs`; a single-element `backoff_seconds` slice saturates to the same
 /// value for every failure count, giving flat (non-stepped) spacing.
-const WINDOW_RETRY_POLICY: RetryPolicy = RetryPolicy {
+pub(crate) const WINDOW_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_attempts: 3,
     backoff_seconds: &[600],
 };

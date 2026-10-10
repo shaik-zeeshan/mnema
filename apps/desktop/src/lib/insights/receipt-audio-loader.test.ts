@@ -219,6 +219,29 @@ describe("ReceiptAudioLoader.loadSpan — transcription fallback for turnless se
     };
   }
 
+  it("reports a segment whose transcription is still queued as transcribing", async () => {
+    let progress: unknown = null;
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: () => {}, onTranscribing: (p) => (progress = p) },
+      invokeFor({ jobs: [{ id: 9, processor: "audio_transcription", status: "queued" }] }),
+    );
+    await loader.loadSpan(Date.parse(segment.startedAt), Date.parse(segment.endedAt), []);
+    expect(progress).toEqual({ done: 0, total: 1 });
+  });
+
+  it("reports a failed segment listing as an error, not as no audio", async () => {
+    let errored = false;
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: () => {}, onError: () => (errored = true) },
+      async (cmd: string) => {
+        if (cmd === "list_audio_segments") throw new Error("db locked");
+        return [];
+      },
+    );
+    await loader.loadSpan(0, 1000, []);
+    expect(errored).toBe(true);
+  });
+
   it("synthesizes playable turns from the transcription when diarization has none", async () => {
     let seen: unknown = "never";
     const loader = new ReceiptAudioLoader(

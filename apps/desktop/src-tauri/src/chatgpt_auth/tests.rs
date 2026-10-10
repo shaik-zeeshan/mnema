@@ -24,16 +24,19 @@ fn token_set_expiry_honours_skew_and_missing_claim() {
         access_token: "t".into(),
         refresh_token: None,
         expires_at: Some(now + 3600),
+        rejected: false,
     };
     let expiring = ChatgptTokenSet {
         access_token: "t".into(),
         refresh_token: None,
         expires_at: Some(now + TOKEN_EXPIRY_SKEW_SECONDS - 5),
+        rejected: false,
     };
     let unknown = ChatgptTokenSet {
         access_token: "t".into(),
         refresh_token: None,
         expires_at: None,
+        rejected: false,
     };
     assert!(!fresh.expires_within_skew());
     assert!(expiring.expires_within_skew());
@@ -67,6 +70,7 @@ fn token_set(access: &str, refresh: &str, expires_at: i64) -> ChatgptTokenSet {
         access_token: access.to_string(),
         refresh_token: Some(refresh.to_string()),
         expires_at: Some(expires_at),
+        rejected: false,
     }
 }
 
@@ -783,7 +787,22 @@ async fn a_refresh_failure_surfaces_as_reconnect_only_when_the_grant_was_rejecte
     );
     // The dead set stays put: nothing here should clear the slot behind the
     // user's back.
-    assert!(load_token_set(rejected).expect("load").is_some());
+    let marked = load_token_set(rejected).expect("load").expect("set");
+    assert!(marked.rejected, "invalid_grant persists the rejected mark");
+    // The mark short-circuits: no second round trip replays a spent token.
+    assert_eq!(
+        fresh_access_token_with(rejected, rotating_refresh_grant).await,
+        Err(format!("needs_reconnect:{rejected}"))
+    );
+    // A successful login writes a fresh set, which clears the mark.
+    let generation = bump_login_generation(rejected);
+    device_login::persist_token_set_if_current(
+        rejected,
+        generation,
+        &token_set(&jwt_with_exp(now + 3600), "r2", now + 3600),
+    )
+    .expect("login");
+    assert!(!load_token_set(rejected).expect("load").expect("set").rejected);
     let _ = app_infra::delete_ai_provider_key(rejected);
 
     let offline = "chatgpt-grant-unreachable";
@@ -793,6 +812,10 @@ async fn a_refresh_failure_surfaces_as_reconnect_only_when_the_grant_was_rejecte
         fresh_access_token_with(offline, unreachable_grant).await,
         Err(format!("provider_unreachable:{offline}")),
         "an unreachable endpoint must not be reported as a signed-out account"
+    );
+    assert!(
+        !load_token_set(offline).expect("load").expect("set").rejected,
+        "a transport error never marks the login rejected"
     );
     let _ = app_infra::delete_ai_provider_key(offline);
 }
@@ -1331,6 +1354,7 @@ fn a_token_set_tolerates_absent_optional_fields() {
         access_token: "access".into(),
         refresh_token: Some("refresh".into()),
         expires_at: Some(42),
+        rejected: false,
     };
     let back: ChatgptTokenSet =
         serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();

@@ -1093,18 +1093,16 @@ fn now_ms() -> i64 {
 /// prompt growth from a user who authors many statements.
 const AUTHORED_CONTEXT_CHAR_CAP: usize = 2_000;
 
-/// Render the USER-AUTHORED CONTEXT prompt block (#107): the user's standing,
-/// self-asserted statements, fed to the engine as authoritative context that should
-/// steer which Conclusions form and what Subjects matter — clearly labeled as
-/// user-asserted, distinct from the derived Activity evidence above. Statements
-/// arrive newest-first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
-/// (older ones are dropped). Empty (no trailing block) when the user has authored
-/// none, so a default dossier's prompt is unchanged.
-fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
-    // Collect non-empty statement lines newest-first up to the char budget.
-    let mut lines: Vec<String> = Vec::new();
+/// The ONE counting rule for the authored-context budget: per statement (in the
+/// store's newest-first order), its prompt line if it is read, else `None`. Blank
+/// statements are skipped; the newest non-blank one is always included; the scan
+/// stops at the first statement that would overflow the cap, so everything older
+/// is out too. The Context surface's `inPrompt` flag reads this same rule.
+pub(crate) fn authored_prompt_lines(authored: &[AuthoredContext]) -> Vec<Option<String>> {
+    let mut out = vec![None; authored.len()];
     let mut used = 0usize;
-    for item in authored {
+    let mut any = false;
+    for (slot, item) in out.iter_mut().zip(authored) {
         let text = item.text.trim();
         if text.is_empty() {
             continue;
@@ -1113,12 +1111,25 @@ fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
             Some(topic) => format!("- (topic: {topic}) {text}\n"),
             None => format!("- {text}\n"),
         };
-        if used + line.chars().count() > AUTHORED_CONTEXT_CHAR_CAP && !lines.is_empty() {
+        if used + line.chars().count() > AUTHORED_CONTEXT_CHAR_CAP && any {
             break;
         }
         used += line.chars().count();
-        lines.push(line);
+        any = true;
+        *slot = Some(line);
     }
+    out
+}
+
+/// Render the USER-AUTHORED CONTEXT prompt block (#107): the user's standing,
+/// self-asserted statements, fed to the engine as authoritative context that should
+/// steer which Conclusions form and what Subjects matter — clearly labeled as
+/// user-asserted, distinct from the derived Activity evidence above. Statements
+/// arrive newest-first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
+/// (older ones are dropped). Empty (no trailing block) when the user has authored
+/// none, so a default dossier's prompt is unchanged.
+fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
+    let lines: Vec<String> = authored_prompt_lines(authored).into_iter().flatten().collect();
     if lines.is_empty() {
         return String::new();
     }
@@ -1556,6 +1567,31 @@ mod tests {
             block.chars().count() < AUTHORED_CONTEXT_CHAR_CAP + 600,
             "block stays bounded by the char cap (+header/one-line slack)"
         );
+    }
+
+    #[test]
+    fn authored_in_prompt_follows_the_distillation_counting_rule() {
+        let in_prompt = |items: &[AuthoredContext]| -> Vec<bool> {
+            authored_prompt_lines(items).iter().map(Option::is_some).collect()
+        };
+        // Newest is always included, even alone over the cap.
+        let huge = "x".repeat(AUTHORED_CONTEXT_CHAR_CAP + 50);
+        assert_eq!(in_prompt(&[authored(1, &huge, None), authored(0, "short", None)]), [true, false]);
+        // Stop at the first overflow: a short older statement that WOULD fit after
+        // the overflowing one is still out.
+        let big = "y".repeat(1_200);
+        let items = [
+            authored(3, &big, None),
+            authored(2, &big, None),
+            authored(1, "tiny", None),
+        ];
+        assert_eq!(in_prompt(&items), [true, false, false]);
+        // The block contains exactly the in-prompt lines.
+        let block = build_authored_context_block(&items);
+        assert_eq!(block.matches(&big).count(), 1);
+        assert!(!block.contains("tiny"));
+        // Blank statements are never read.
+        assert_eq!(in_prompt(&[authored(2, "  ", None), authored(1, "a", None)]), [false, true]);
     }
 
     #[test]

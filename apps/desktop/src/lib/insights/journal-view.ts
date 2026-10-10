@@ -2,12 +2,14 @@
 // so the river-merge / banding / reason-copy logic stays out of the .svelte
 // component (keeps it under the 800-line ceiling) and has a runnable check.
 
-import type { JournalCardSlot, JournalGap } from "./journal-day";
+import type { JournalCardSlot, JournalGap, Span } from "./journal-day";
 
 /** One row of the river, chronological — either an activity card or an away-gap. */
 export type RiverRow =
   | { kind: "card"; slot: JournalCardSlot; atMs: number }
-  | { kind: "gap"; gap: JournalGap; atMs: number };
+  | { kind: "gap"; gap: JournalGap; atMs: number }
+  /** A window whose summarizing failed past the retry cap (real bounds). */
+  | { kind: "failed"; span: Span; atMs: number };
 
 export type BandLabel = "Morning" | "Afternoon" | "Evening";
 
@@ -21,12 +23,14 @@ export interface RiverBand {
 export function buildRiver(
   slots: JournalCardSlot[],
   gaps: JournalGap[],
+  failed: Span[] = [],
 ): RiverRow[] {
   const rows: RiverRow[] = [
     ...slots.map(
       (slot): RiverRow => ({ kind: "card", slot, atMs: slot.activity.startedAtMs }),
     ),
     ...gaps.map((gap): RiverRow => ({ kind: "gap", gap, atMs: gap.startMs })),
+    ...failed.map((span): RiverRow => ({ kind: "failed", span, atMs: span.startMs })),
   ];
   rows.sort((a, b) => a.atMs - b.atMs);
   return rows;
@@ -40,7 +44,7 @@ export function buildRiver(
  * mid-flush and leaving the river stuck on the loading skeleton.
  */
 export function riverRowKey(row: RiverRow): string {
-  return row.kind === "card" ? `card${row.slot.activity.id}` : `gap${row.atMs}`;
+  return row.kind === "card" ? `card${row.slot.activity.id}` : `${row.kind}${row.atMs}`;
 }
 
 /**
@@ -114,3 +118,17 @@ export function pendingReasonCopy(reason: string): string {
       return "Summaries are paused — the Reasoning Engine isn't available right now.";
   }
 }
+
+/** Which panel the river shows when there's nothing to draw on the spine. */
+export type JournalEmpty =
+  /** Today, nothing captured, not recording (or user-paused). */
+  | { kind: "idle"; paused: boolean }
+  | { kind: "nothing" }
+  /** Nothing left: retention removed this day's capture. */
+  | { kind: "retention"; days: number }
+  /** Captured, but older than the window the worker summarizes on its own. */
+  | { kind: "older"; days: number; footageKept: boolean }
+  /** Captured, history backfill hasn't reached it yet. */
+  | { kind: "queued" }
+  /** Captured and covered, but no card came out of it. */
+  | { kind: "unsummarized" };
