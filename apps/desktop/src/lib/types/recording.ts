@@ -266,6 +266,17 @@ export interface Activity {
 	evidence: ActivityEvidenceRef[];
 }
 
+/** One Journal card's derived extras from `list_user_context_activity_meta`
+ * (`{ startMs, endMs }`); activities with no apps and no speakers are absent.
+ * Mirrors the Rust `ActivityMeta`. */
+export interface ActivityMeta {
+	activityId: number;
+	/** Up to three app names, most evidence frames first. */
+	apps: string[];
+	/** Distinct speakers in the activity's audio (a named person counts once). */
+	speakers: number;
+}
+
 /** The only topics `user_context_add_authored` / `_update_authored` accept (or null). */
 export type AuthoredTopic = "Work" | "Preferences" | "People" | "Goals";
 

@@ -11,6 +11,7 @@
 //! math, and the `guardrail` submodule (#96) holds the pure Sensitive Category
 //! Guardrail (the soft instruction text + the hard `is_sensitive` post-filter).
 
+mod activity_meta;
 pub mod capture_source;
 pub mod confidence;
 pub mod guardrail;

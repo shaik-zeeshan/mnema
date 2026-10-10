@@ -313,7 +313,7 @@ pub struct StoredDigest {
 /// derivation runs + Conclusions in this slice).
 #[derive(Clone)]
 pub struct UserContextStore {
-    db: CaptureDb,
+    pub(super) db: CaptureDb,
 }
 
 impl UserContextStore {

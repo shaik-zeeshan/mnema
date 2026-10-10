@@ -287,6 +287,17 @@ pub struct UserContextDigestResult {
     pub reason: Option<DigestAbsentReason>,
 }
 
+/// Derived, never-persisted extras for one [`Activity`] card: its top apps
+/// (by evidence frames) and how many distinct speakers its audio carries.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityMeta {
+    pub activity_id: i64,
+    /// Up to three app names, most evidence frames first.
+    pub apps: Vec<String>,
+    pub speakers: i64,
+}
+
 /// A standing, user-authored Context statement (issue #107): something the user
 /// asserted about themselves ("I'm a designer", "I care about X"), stored
 /// verbatim. It is user-asserted rather than derived, so it carries no

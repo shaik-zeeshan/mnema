@@ -9,9 +9,9 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
-    FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
-    UserContextDigestResult, UserContextDistillationSummary, UserContextStatus,
+    Activity, ActivityCategory, ActivityMeta, AuthoredContext, Conclusion, DismissalState,
+    DismissedView, FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest,
+    UserContextDigest, UserContextDigestResult, UserContextDistillationSummary, UserContextStatus,
     UserContextSummarizingFailure, UserContextTokenUsage,
 };
 use serde::Serialize;
@@ -264,6 +264,22 @@ pub async fn list_user_context_activities(
     infra
         .user_context()
         .list_recent_activities(limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Apps (top 3 by evidence frames) and distinct speaker count for every Activity
+/// overlapping `[start_ms, end_ms)` — the Journal cards' chips. Derived on read;
+/// Activities with neither are absent (invoked as `{ startMs, endMs }`).
+#[tauri::command]
+pub async fn list_user_context_activity_meta(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<ActivityMeta>, String> {
+    infra
+        .user_context()
+        .list_activity_meta_in_range(start_ms, end_ms)
         .await
         .map_err(|e| e.to_string())
 }
