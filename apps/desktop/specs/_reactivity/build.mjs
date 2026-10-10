@@ -64,7 +64,10 @@ compile(
 compile(
   resolve(appRoot, "src/lib/settings/state/ai-runtime.svelte.ts"),
   resolve(here, "gen/ai-runtime.js"),
-  [['"$lib/format-error"', `"${resolve(appRoot, "src/lib/format-error")}"`]],
+  [
+    ['"$lib/format-error"', `"${resolve(appRoot, "src/lib/format-error")}"`],
+    ['"./ai-providers"', `"${resolve(appRoot, "src/lib/settings/state/ai-providers")}"`],
+  ],
 );
 compile(
   resolve(appRoot, "src/routes/onboarding/onboarding-ai.svelte.ts"),

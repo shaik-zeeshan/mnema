@@ -1,40 +1,48 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   // RailFooter — the pinned engine-status line at the bottom of the Insights
-  // rail (Insights-rail refactor, Slices 2/3). Mirrors the mockup's `.rail-foot`
-  // / `.rail-engine` minimal idiom: a single faint, lowercase line carrying the
-  // Reasoning Engine state. Two variants:
-  //   ON  — accent dot + "engine · <model>" (muted).
-  //   OFF — grey dot + "engine off ·" + a quiet dotted "Enable" link.
-  // While the status calls are still in flight (`!statusLoaded`) a tiny skeleton
-  // placeholder stands in so the line doesn't flash "engine off" before the
-  // first load lands. The owning shell (`+page.svelte`) keeps the status state
-  // and passes it down; this component only renders + reports the Enable click.
+  // rail. A single faint, lowercase line carrying the Reasoning Engine state,
+  // read from the shared `EngineState` (Direction A, SB-03/MT-02):
+  //   on        — accent dot + "engine · <model>" (or "· chat off · Turn on"
+  //               when only the Ask AI switch is off).
+  //   pitch/off — grey dot + "engine off · Enable".
+  //   unreachable — amber dot + "can't reach <x> · Retry".
+  //   fix       — amber dot + the provider + "Sign in again" / "Fix".
+  // While the status calls are in flight a skeleton stands in so the line
+  // never flashes a wrong state. The shell owns the state; this only renders.
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import type { EngineState } from "$lib/insights/engine-state";
 
   interface Props {
-    engineOn: boolean;
+    engine: EngineState;
+    chatOff: boolean;
     modelLabel: string;
-    statusLoaded: boolean;
     onEnable: () => void;
+    onRetry: () => void;
   }
 
-  let { engineOn, modelLabel, statusLoaded, onEnable }: Props = $props();
+  let { engine, chatOff, modelLabel, onEnable, onRetry }: Props = $props();
 </script>
 
 <div class="rail-foot">
-  {#if !statusLoaded}
+  {#if engine.kind === "loading"}
     <span class="rail-foot-skeleton" aria-label="Loading engine status">
       <Skeleton width="92px" height="9px" radius="5px" muted />
     </span>
-  {:else if engineOn}
+  {:else if engine.kind === "on"}
     <span class="rail-engine" use:tip={"Reasoning Engine is on"}>
       <span class="dot" aria-hidden="true"></span>
       engine
       <span class="sep">·</span>
-      <span class="model">{modelLabel || "on"}</span>
+      {#if chatOff}
+        chat off
+        <span class="sep">·</span>
+        <button type="button" class="rail-enable" onclick={onEnable}>Turn on</button>
+      {:else}
+        <span class="model">{modelLabel || "on"}</span>
+      {/if}
     </span>
-  {:else}
+  {:else if engine.kind === "pitch" || engine.kind === "off"}
     <span class="rail-engine rail-engine--off" use:tip={"Reasoning Engine is off"}>
       <span class="dot" aria-hidden="true"></span>
       engine off
@@ -42,6 +50,19 @@
       <button type="button" class="rail-enable" onclick={onEnable}>
         Enable
       </button>
+    </span>
+  {:else}
+    <span class="rail-engine rail-engine--warn" use:tip={engine.text}>
+      <span class="dot" aria-hidden="true"></span>
+      {engine.short}
+      <span class="sep">·</span>
+      {#if engine.kind === "unreachable"}
+        <button type="button" class="rail-enable" onclick={onRetry}>Retry</button>
+      {:else}
+        <button type="button" class="rail-enable" onclick={onEnable}>
+          {engine.reconnectProviderId ? "Sign in again" : "Fix"}
+        </button>
+      {/if}
     </span>
   {/if}
 </div>
@@ -88,6 +109,9 @@
   /* OFF variant: grey dot + a tiny dotted "Enable" link. */
   .rail-engine--off .dot {
     background: var(--app-status-dot);
+  }
+  .rail-engine--warn .dot {
+    background: var(--app-warn);
   }
   .rail-enable {
     color: var(--app-accent-strong);

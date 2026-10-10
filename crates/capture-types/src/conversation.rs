@@ -225,8 +225,15 @@ pub enum TurnUpdate {
     Sources { sources: serde_json::Value },
     /// Update the turn's context-window occupancy (provider-reported tokens).
     ContextTokens { tokens: u64 },
-    /// Fail the turn with a message.
-    Error { message: String },
+    /// Fail the turn with a message. `kind` (optional, absent on old/unknown
+    /// failures) buckets the cause so the UI can offer the one action that
+    /// helps: `reconnect | unreachable | settings | quota | auth |
+    /// context_too_long | retryable`.
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
     /// Mark the turn complete.
     Done,
 }
@@ -432,5 +439,31 @@ mod tests {
 
         let round_tripped: TurnSnapshot = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, snapshot);
+    }
+
+    #[test]
+    fn turn_update_error_kind_round_trips_and_is_optional() {
+        let with_kind = TurnUpdate::Error {
+            message: "Sign in again".to_string(),
+            kind: Some("reconnect".to_string()),
+        };
+        let value = serde_json::to_value(&with_kind).unwrap();
+        assert_eq!(
+            value,
+            json!({ "op": "error", "message": "Sign in again", "kind": "reconnect" })
+        );
+        assert_eq!(
+            serde_json::from_value::<TurnUpdate>(value).unwrap(),
+            with_kind
+        );
+
+        // No kind: the key is omitted, and an old payload without it parses.
+        let bare = TurnUpdate::Error {
+            message: "boom".to_string(),
+            kind: None,
+        };
+        let value = serde_json::to_value(&bare).unwrap();
+        assert_eq!(value, json!({ "op": "error", "message": "boom" }));
+        assert_eq!(serde_json::from_value::<TurnUpdate>(value).unwrap(), bare);
     }
 }

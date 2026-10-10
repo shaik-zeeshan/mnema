@@ -116,6 +116,76 @@ async fn range_has_correction_after(
         .any(|c| c.corrected_at_ms > generated_at_ms && in_range.contains(&c.activity_id))
 }
 
+/// The `Err` a digest held back by the hard sensitive post-filter returns: a
+/// stable code the frontend recognises ("held back by the sensitive filter"),
+/// distinct from `Ok(None)` (not enough activity) and from a real failure.
+pub const DIGEST_SENSITIVE_HOLD: &str = "digest_sensitive_hold";
+
+/// How long a failed (or sensitive-held) generation is replayed to the lazy
+/// path instead of re-billing the engine on every Overview visit.
+const FAILURE_COOLDOWN_MS: i64 = 15 * 60 * 1000;
+
+/// `(range_kind, range_start_ms)` → `(input fingerprint, failed_at_ms, message)`.
+// ponytail: in-memory only — a restart forgets cooldowns, which just costs one
+// extra engine call. Nothing persisted, no migration.
+type CooldownMap = HashMap<(String, i64), (String, i64, String)>;
+static FAILURE_COOLDOWN: std::sync::LazyLock<std::sync::Mutex<CooldownMap>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The stored failure to replay for this range, if the lazy path should skip
+/// the engine. A re-read (`force`) bypasses it; a changed fingerprint or an
+/// expired window clears it.
+fn cooldown_replay(
+    range_kind: &str,
+    range_start_ms: i64,
+    fingerprint: &str,
+    force: bool,
+    at_ms: i64,
+) -> Option<String> {
+    if force {
+        return None;
+    }
+    let mut map = FAILURE_COOLDOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let key = (range_kind.to_string(), range_start_ms);
+    match map.get(&key) {
+        Some((fp, failed_at, message))
+            if fp == fingerprint && at_ms.saturating_sub(*failed_at) < FAILURE_COOLDOWN_MS =>
+        {
+            Some(message.clone())
+        }
+        Some(_) => {
+            map.remove(&key);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Record a failed outcome for the cooldown and hand the message back as `Err`.
+fn cooldown_fail<T>(
+    range_kind: &str,
+    range_start_ms: i64,
+    fingerprint: &str,
+    at_ms: i64,
+    message: String,
+) -> Result<T, String> {
+    FAILURE_COOLDOWN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            (range_kind.to_string(), range_start_ms),
+            (fingerprint.to_string(), at_ms, message.clone()),
+        );
+    Err(message)
+}
+
+fn cooldown_clear(range_kind: &str, range_start_ms: i64) {
+    FAILURE_COOLDOWN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(range_kind.to_string(), range_start_ms));
+}
+
 /// Per-activity summary cap inside the Digest prompt, so one verbose Activity
 /// cannot dominate the budget. Mirrors `derivation.rs`'s per-item-cap approach
 /// (`ACTIVITY_SUMMARY_CHAR_CAP` there is module-private, so the value is
@@ -686,10 +756,13 @@ async fn record_digest_run(
 /// generating (and caching) it when the range's Activity set changed.
 ///
 /// `Ok(None)` is the silent-omission path (never an error): the User Context
-/// opt-in off, the engine off / unresolved, or fewer than
-/// [`MIN_DIGEST_ACTIVITIES`] Activities in range. `Err` is reserved for real
-/// failures: a malformed request, a store error, or an engine call that failed /
-/// returned an empty narrative.
+/// opt-in off, the engine not configured, or fewer than
+/// [`MIN_DIGEST_ACTIVITIES`] Activities in range. `Err` covers real failures (a
+/// malformed request, a store error, an engine that did not resolve live, an
+/// engine call that failed / returned an empty narrative) and the
+/// [`DIGEST_SENSITIVE_HOLD`] code. Engine failures and the hold are replayed to
+/// the lazy path for [`FAILURE_COOLDOWN_MS`] on an unchanged input set — except
+/// sign-in, rejected-key and settings failures, which the user fixes in Settings.
 ///
 /// `user_context_enabled` is User Context's own continuous-derivation opt-in:
 /// the digest is part of the User Context feature, so it honours the same opt-in
@@ -802,6 +875,18 @@ pub async fn get_or_generate_digest(
         }
     }
 
+    // 4b. Failure cooldown: a generation that failed (or was held back by the
+    //     sensitive filter) on this same input set within the window is replayed
+    //     to the lazy path without calling the model. Re-read bypasses it.
+    if let Some(message) =
+        cooldown_replay(range_kind, range_start_ms, &fingerprint, force, now_ms())
+    {
+        return Err(message);
+    }
+    let fail = |message: String| {
+        cooldown_fail(range_kind, range_start_ms, &fingerprint, now_ms(), message)
+    };
+
     // 5. Generate: guardrail-framed preamble + compact chronological prompt,
     //    structured extraction into the flat DigestNarrative shape. For week /
     //    month ranges, the oldest activities can roll up to one line per day,
@@ -854,32 +939,28 @@ pub async fn get_or_generate_digest(
             crate::native_capture::debug_log::log_info(format!(
                 "digest: skipped {range_kind} (engine config did not resolve: {reason})"
             ));
-            // A forced re-read is an explicit user action, and its `Ok(None)`
-            // renders as ONE sentence: "Not enough activity in this range to
-            // write a read." Now that this resolve is live — a ChatGPT token
-            // refresh that fails when offline or when the grant was rejected —
-            // that arm would blame the user's data for an engine failure, on a
-            // range full of Activities, with nothing in the run ledger either.
-            // Surface it (and record it) exactly like the extraction failure
-            // below. The lazy path stays silent: an ambient lede must not throw
-            // an error every time Insights opens without a network.
-            if force {
-                record_digest_run(
-                    store,
-                    ai_runtime,
-                    "failed",
-                    input_tokens,
-                    0,
-                    Some(reason.clone()),
-                )
-                .await;
-                return Err(if reason.starts_with("needs_reconnect:") {
-                    "The AI provider needs you to sign in again in Settings.".to_string()
-                } else {
-                    "The AI engine is not reachable right now. Try again in a moment.".to_string()
-                });
+            // Both paths surface it (and record it) exactly like the extraction
+            // failure below: an `Ok(None)` renders as "not enough activity",
+            // blaming the user's data for an engine failure. The cooldown keeps
+            // the lazy path from re-trying on every Insights visit — except a
+            // sign-in failure: re-resolving it needs no network (a rejected login
+            // stops at step 1, a set with no refresh token fails locally), and a
+            // cooldown would replay "sign in again" after the user signed back in.
+            record_digest_run(
+                store,
+                ai_runtime,
+                "failed",
+                input_tokens,
+                0,
+                Some(reason.clone()),
+            )
+            .await;
+            if reason.starts_with("needs_reconnect:") {
+                return Err("The AI provider needs you to sign in again in Settings.".to_string());
             }
-            return Ok(None);
+            return fail(
+                "The AI engine is not reachable right now. Try again in a moment.".to_string(),
+            );
         }
     };
 
@@ -908,7 +989,14 @@ pub async fn get_or_generate_digest(
                 Some(error.to_string()),
             )
             .await;
-            return Err(error.user_facing_message_for(engine.cloud_provider()));
+            let message = error.user_facing_message_for(engine.cloud_provider());
+            // A rejected key / bad setting is fixed in Settings and a retry isn't
+            // billed, so it skips the cooldown — else the lazy read keeps
+            // replaying the old failure after the fix.
+            if matches!(error.failure_kind(), "auth" | "settings") {
+                return Err(message);
+            }
+            return fail(message);
         }
     };
     let output_tokens = estimate_tokens(&batch.narrative) + estimate_tokens(&batch.headline);
@@ -923,9 +1011,7 @@ pub async fn get_or_generate_digest(
             Some("engine returned an empty narrative".to_string()),
         )
         .await;
-        return Err(
-            "The AI engine returned an empty read. Try again in a moment.".to_string(),
-        );
+        return fail("The AI engine returned an empty read. Try again in a moment.".to_string());
     };
     // An unusable headline is NOT a failure — the narrative-only digest stands.
     let headline = normalize_headline(&batch.headline);
@@ -948,7 +1034,7 @@ pub async fn get_or_generate_digest(
             Some("digest narrative tripped the sensitive-category guardrail".to_string()),
         )
         .await;
-        return Ok(None);
+        return fail(DIGEST_SENSITIVE_HOLD.to_string());
     }
 
     // 6. Persist, 7. record the run (see `record_digest_run` for why the run
@@ -967,6 +1053,7 @@ pub async fn get_or_generate_digest(
         .await
         .map_err(|error| error.to_string())?;
     record_digest_run(store, ai_runtime, "completed", input_tokens, output_tokens, None).await;
+    cooldown_clear(range_kind, range_start_ms);
 
     crate::native_capture::debug_log::log_info(format!(
         "digest: generated {range_kind} [{range_start_ms}..{range_end_ms}) \
@@ -1519,6 +1606,18 @@ mod tests {
     /// the failure is invisible on every surface.
     #[tokio::test]
     async fn a_forced_reread_surfaces_a_live_engine_failure_instead_of_reading_as_no_activity() {
+        live_resolve_failure_surfaces(true).await;
+    }
+
+    /// OV-06: the lazy path must not read an engine failure as "not enough
+    /// activity" either. A sign-in failure is NOT cooled down: the second visit
+    /// re-resolves (no network), so signing back in takes effect at once.
+    #[tokio::test]
+    async fn a_lazy_read_surfaces_a_sign_in_failure_without_a_cooldown() {
+        live_resolve_failure_surfaces(false).await;
+    }
+
+    async fn live_resolve_failure_surfaces(force: bool) {
         use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
 
         let unique = std::time::SystemTime::now()
@@ -1544,6 +1643,7 @@ mod tests {
                 access_token: "expired-access-token".to_string(),
                 refresh_token: None,
                 expires_at: Some(0),
+                rejected: false,
             },
         )
         .expect("seed the expired token set");
@@ -1563,7 +1663,9 @@ mod tests {
         };
 
         // A range with plenty to read: two ordinary, non-sensitive Activities.
-        let range_start_ms = 1_780_876_800_000_i64; // a UTC midnight
+        // A UTC midnight; the two callers use different days so the shared
+        // in-memory cooldown can't couple them.
+        let range_start_ms = 1_780_876_800_000_i64 + if force { 0 } else { 7 * DAY_MS };
         let range_end_ms = range_start_ms + DAY_MS;
         for (offset, title) in [(0_i64, "Billing migration"), (2 * 3_600_000, "Code review")] {
             store
@@ -1588,11 +1690,11 @@ mod tests {
             "day",
             range_start_ms,
             range_end_ms,
-            true,
+            force,
         )
         .await;
 
-        match outcome {
+        match &outcome {
             Err(message) => assert!(
                 !message.trim().is_empty(),
                 "the failure must carry a reason the user can act on"
@@ -1614,7 +1716,69 @@ mod tests {
             "a failed forced re-read must leave a failed digest run: {runs:?}"
         );
 
+        if !force {
+            let again = get_or_generate_digest(
+                &settings,
+                true,
+                store,
+                "day",
+                range_start_ms,
+                range_end_ms,
+                false,
+            )
+            .await;
+            assert_eq!(again, outcome, "the lazy retry reports the same failure");
+            let failed_runs = store
+                .list_derivation_runs(10)
+                .await
+                .expect("read the run ledger")
+                .into_iter()
+                .filter(|run| run.kind == "digest" && run.status == "failed")
+                .count();
+            assert_eq!(failed_runs, 2, "a sign-in failure re-resolves instead of replaying");
+        }
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn failure_cooldown_hits_within_the_window_and_misses_after() {
+        let start = 9_000_001;
+        let _: Result<(), _> = cooldown_fail("day", start, "fp", 1_000, "boom".to_string());
+        assert_eq!(
+            cooldown_replay("day", start, "fp", false, 1_000 + FAILURE_COOLDOWN_MS - 1),
+            Some("boom".to_string())
+        );
+        assert_eq!(cooldown_replay("day", start, "fp", false, 1_000 + FAILURE_COOLDOWN_MS), None);
+        // An expired entry is gone for good.
+        assert_eq!(cooldown_replay("day", start, "fp", false, 1_001), None);
+    }
+
+    #[test]
+    fn failure_cooldown_is_bypassed_by_reread_and_cleared_by_a_new_fingerprint() {
+        let start = 9_000_002;
+        let _: Result<(), _> = cooldown_fail("week", start, "fp", 1_000, "boom".to_string());
+        assert_eq!(cooldown_replay("week", start, "fp", true, 1_001), None, "re-read bypasses");
+        assert!(cooldown_replay("week", start, "fp", false, 1_001).is_some(), "bypass keeps it");
+        assert_eq!(cooldown_replay("week", start, "fp2", false, 1_001), None);
+        assert_eq!(
+            cooldown_replay("week", start, "fp", false, 1_001),
+            None,
+            "a new fingerprint clears the entry"
+        );
+    }
+
+    #[test]
+    fn the_sensitive_hold_is_a_distinct_outcome_the_cooldown_replays() {
+        let start = 9_000_003;
+        let held: Result<Option<UserContextDigest>, String> =
+            cooldown_fail("month", start, "fp", 1_000, DIGEST_SENSITIVE_HOLD.to_string());
+        assert_eq!(held, Err(DIGEST_SENSITIVE_HOLD.to_string()));
+        assert_eq!(
+            cooldown_replay("month", start, "fp", false, 1_001).as_deref(),
+            Some(DIGEST_SENSITIVE_HOLD)
+        );
+        cooldown_clear("month", start);
+        assert_eq!(cooldown_replay("month", start, "fp", false, 1_001), None);
+    }
 }

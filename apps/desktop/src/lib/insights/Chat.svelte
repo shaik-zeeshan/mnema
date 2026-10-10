@@ -56,13 +56,16 @@
     type TurnView,
     type TurnSnapshot,
     type TurnUpdate,
+    type TurnErrorKind,
     type AskAiUpdateEvent,
     contextWindowForModel,
     defaultEngineModel,
     defaultEnginePinProvider,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
+  import ChatErrorTurn from "$lib/insights/ChatErrorTurn.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
+  import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
     Activity,
@@ -101,6 +104,33 @@
     void openSettings("intelligence");
   }
 
+  // What the composer slot says when Ask AI can't run: the real reason in plain
+  // words plus one action (CH-01/CH-07) — never a raw code, never "engine off"
+  // when only the Ask AI switch is.
+  const composerOff = $derived.by(() => {
+    const reason = askAvailability?.reason ?? "";
+    if (reason === "ask_ai_disabled") {
+      return {
+        text: "Chat is turned off. The engine itself is on — only the Ask AI switch is off.",
+        action: "Turn on Ask AI",
+        warn: false,
+        retry: false,
+      };
+    }
+    if (reason === "ai_runtime_disabled" || reason === "no_providers") {
+      return {
+        text: "The reasoning engine is off. Chat answers over your history once it's enabled.",
+        action: "Open settings",
+        warn: false,
+        retry: false,
+      };
+    }
+    const copy = reasonCopy(reason, aiRuntimeSnapshot);
+    return copy.kind === "unreachable"
+      ? { text: copy.text, action: "↻ Check again", warn: true, retry: true }
+      : { text: copy.text, action: "Open settings", warn: true, retry: false };
+  });
+
   // ── History list (left rail) ─────────────────────────────────────────────
   // The history list, debounced search, date grouping, rename, and delete now
   // ALL live in the shared `conversationStore` singleton (the rail markup below
@@ -134,6 +164,12 @@
     // depend on its fields. The backend's `Sources` update carries the same JSON.
     sources: AskAiSource[];
     errorMessage: string | null;
+    // `TurnUpdate::Error.kind` when the live stream supplied one (not persisted:
+    // a reloaded turn maps from its message alone).
+    errorKind: TurnErrorKind | null;
+    // True for an error caught by send() before the backend saved a turn row
+    // (CH-04): it exists only here, so it must not count toward turnIndex.
+    localOnly?: boolean;
     // Tokens occupying the model's context window after this turn's latest
     // completion request; null when the provider reported no usage (and on
     // hydrated past turns — usage isn't persisted).
@@ -344,6 +380,7 @@
       liveActivity: null,
       sources: [],
       errorMessage: null,
+      errorKind: null,
       contextTokens: null,
       version: 0,
       reasoningExpanded: false,
@@ -597,6 +634,9 @@
       activeConversationId = crypto.randomUUID();
     }
     const conversationId = activeConversationId;
+    // A trailing local-only error has no backend row; drop it so turnIndex
+    // matches the backend's turn count (CH-04).
+    if (turns.at(-1)?.localOnly) turns = turns.slice(0, -1);
     const isFirstTurn = turns.length === 0;
     if (isFirstTurn && activeTitle.length === 0) {
       activeTitle = titleFromQuestion(question);
@@ -669,7 +709,11 @@
       const t = turns[turnIndex];
       if (t) {
         t.phase = "error";
-        t.errorMessage = humanizeError(error);
+        // A raw resolve code stays as-is: humanizeError capitalises it, and
+        // turnErrorCopy only maps a lowercase code to its action.
+        t.errorMessage =
+          typeof error === "string" && isReasonCode(error) ? error : humanizeError(error);
+        t.localOnly = true;
       }
       // A failed send cleared the composer above — put the question back so the
       // user can edit + resend without retyping (only if they haven't started
@@ -687,19 +731,16 @@
     }
   }
 
-  // Retry a failed turn: re-issue the SAME question. The error turn is terminal
-  // (and therefore trailing for its index), so we drop it and let send() re-run
-  // the start/follow-up path — turns.length lands back on the right turnIndex, so
-  // a failed first turn re-starts and a failed follow-up re-follows-up.
+  // Retry a failed turn: re-issue the SAME question. A local-only error has no
+  // backend row, so send() drops it and reuses its index; a saved error row
+  // stays in the thread and the retry appends a new turn after it (CH-04).
   async function retryTurn(turn: ChatTurn): Promise<void> {
     if (streaming || !askAvailable) return;
     // Only the trailing turn can be retried: send() re-derives turnIndex from
     // turns.length, so dropping a non-trailing turn would orphan the stream and
     // collide turnIndexes. Mid-thread errors keep their message but no Retry.
     if (turn.turnIndex !== turns.length - 1) return;
-    const question = turn.question;
-    turns = turns.filter((t) => t.turnIndex !== turn.turnIndex);
-    composerInput = question;
+    composerInput = turn.question;
     await send();
   }
 
@@ -1044,6 +1085,7 @@
         break;
       case "error":
         turn.errorMessage = update.message;
+        turn.errorKind = update.kind ?? null;
         turn.phase = "error";
         break;
       case "done":
@@ -1182,6 +1224,7 @@
     let destroyed = false;
     let unlistenUpdate: (() => void) | undefined;
     let unlistenCtx: (() => void) | undefined;
+    let unlistenLogin: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
 
     // The SOLE Ask AI stream listener: versioned render-model updates for the
@@ -1201,6 +1244,13 @@
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenCtx = fn;
+    });
+
+    // An inline "Sign in again" (ChatErrorTurn) landed: re-probe so the
+    // composer comes back without a reload.
+    listen("chatgpt_login_update", () => void loadAskAvailability()).then((fn) => {
+      if (destroyed) fn();
+      else unlistenLogin = fn;
     });
 
     // Settings saved in the Settings window broadcast
@@ -1224,6 +1274,7 @@
       destroyed = true;
       unlistenUpdate?.();
       unlistenCtx?.();
+      unlistenLogin?.();
       unlistenSettings?.();
     };
   });
@@ -1285,11 +1336,11 @@
       <button type="button" class="btn btn--accent" onclick={() => startNewChat()}>
         ＋ New chat
       </button>
-    {:else}
+    {:else if askAvailability !== null}
       <!-- Engine-off + no conversation: surface the same enable affordance the
            composer's engine-off card shows, so the empty pane isn't a dead end. -->
       <button type="button" class="btn btn--accent" onclick={enableEngine}>
-        Enable engine
+        Open settings
       </button>
     {/if}
   </div>
@@ -1326,12 +1377,21 @@
       {:else if turns.length === 0}
         <div class="thread-empty">
           <p class="thread-empty-title">{displayTitle || "New chat"}</p>
-          <p class="thread-empty-detail">
-            Type a question below and press Enter. The engine searches your
-            captures through its brokered tools to answer.
-          </p>
+          {#if askAvailability?.reason === "ask_ai_disabled"}
+            <p class="thread-empty-detail">
+              Chat is turned off, so there's nothing to ask yet. Turning it on
+              lets the engine answer questions over your captures.
+            </p>
+          {:else}
+            <p class="thread-empty-detail">
+              Type a question below and press Enter. The engine searches your
+              captures through its brokered tools to answer.
+            </p>
+          {/if}
           <!-- Quiet example questions: tapping one prefills the composer to
-               review/edit (it does NOT auto-send). -->
+               review/edit (it does NOT auto-send). Hidden with no composer —
+               a chip that fills nothing is a dead end. -->
+          {#if askAvailable}
           <div class="example-row" role="presentation">
             {#each EXAMPLE_QUESTIONS as example (example)}
               <button
@@ -1343,6 +1403,7 @@
               </button>
             {/each}
           </div>
+          {/if}
         </div>
       {:else}
         {#each turns as turn, ti (ti)}
@@ -1358,28 +1419,14 @@
             <div class="msg msg-assistant">
               <div class="answer-col">
                 {#if turn.phase === "error"}
-                  <div class="turn-error" role="alert">
-                    <p class="state state--error">
-                      {turn.errorMessage ?? "The engine couldn't answer."}
-                    </p>
-                    <!-- Re-issue the same question. The composer is also restored
-                         with the question, so this and a manual edit-and-resend
-                         both work. Retry is gated to the TRAILING turn: send()
-                         re-derives turnIndex from turns.length, so retrying a
-                         mid-thread error would collide turnIndexes and orphan
-                         the stream. -->
-                    {#if ti === turns.length - 1}
-                      <button
-                        type="button"
-                        class="turn-retry"
-                        disabled={streaming || !askAvailable}
-                        onclick={() => void retryTurn(turn)}
-                      >
-                        <span class="turn-retry-ico" aria-hidden="true">↻</span>
-                        Retry
-                      </button>
-                    {/if}
-                  </div>
+                  <ChatErrorTurn
+                    message={turn.errorMessage}
+                    kind={turn.errorKind}
+                    settings={aiRuntimeSnapshot}
+                    trailing={ti === turns.length - 1}
+                    retryDisabled={streaming || !askAvailable}
+                    onRetry={() => void retryTurn(turn)}
+                  />
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
                        answer body. Rendered only when reasoning text arrived.
@@ -1713,16 +1760,22 @@
         </div>
       </div>
     </div>
+  {:else if askAvailability === null}
+    <!-- Availability still loading: a skeleton, not a false "off". -->
+    <div class="composer-wrap" aria-label="Checking the engine">
+      <Skeleton width="100%" height="64px" radius="10px" muted />
+    </div>
   {:else}
     <div class="composer-wrap">
       <div class="engine-off">
-        <span class="engine-off-dot" aria-hidden="true"></span>
-        <span class="engine-off-text">
-          The reasoning engine is off. Chat answers over your history once
-          it's enabled.
-        </span>
-        <button type="button" class="engine-off-enable" onclick={enableEngine}>
-          Enable engine
+        <span class="engine-off-dot" class:engine-off-dot--warn={composerOff.warn} aria-hidden="true"></span>
+        <span class="engine-off-text">{composerOff.text}</span>
+        <button
+          type="button"
+          class="engine-off-enable"
+          onclick={() => (composerOff.retry ? void loadAskAvailability() : enableEngine())}
+        >
+          {composerOff.action}
         </button>
       </div>
     </div>
@@ -1952,51 +2005,6 @@
     font-size: 12px;
     color: var(--app-text-muted);
   }
-  .state--error {
-    color: var(--app-danger);
-  }
-  /* Failed-turn block: the error line + a Retry that re-issues the question. */
-  .turn-error {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-  .turn-retry {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font: inherit;
-    font-size: 11px;
-    padding: 4px 11px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 7px;
-    background: var(--app-danger-bg);
-    color: var(--app-danger-text);
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease,
-      opacity 0.12s ease;
-  }
-  .turn-retry:hover:not(:disabled) {
-    border-color: var(--app-danger);
-  }
-  .turn-retry:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring-danger);
-  }
-  .turn-retry:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .turn-retry:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .turn-retry-ico {
-    font-size: 12px;
-    line-height: 1;
-  }
 
   /* Quiet hover Copy on a completed answer. Hidden until the turn is hovered or
      the button itself is focused (keyboard reach), then a quiet pill. */
@@ -2039,9 +2047,6 @@
     color: var(--app-accent-strong);
   }
   @media (prefers-reduced-motion: reduce) {
-    .turn-retry:not(:disabled):active {
-      transform: none;
-    }
     /* Keep the pill centered (translateX) but drop the press-down nudge. */
     .jump-latest:active {
       transform: translateX(-50%);
@@ -2448,6 +2453,9 @@
     border-radius: 50%;
     background: var(--app-status-dot);
     flex: 0 0 auto;
+  }
+  .engine-off-dot--warn {
+    background: var(--app-warn);
   }
   .engine-off-text {
     flex: 1 1 auto;

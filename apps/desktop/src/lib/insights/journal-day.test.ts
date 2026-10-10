@@ -32,6 +32,10 @@ const activity = (startMs: number, endMs: number, over = {}) => ({
 const baseInput = (over = {}) => ({
   activities: [],
   frames: [],
+  audio: [],
+  failedWindows: [],
+  retentionPolicy: "never",
+  nowMs: DAY_END,
   coveredUntilMs: null,
   recording: false,
   engineAvailable: true,
@@ -147,14 +151,75 @@ describe("per-card frame counts", () => {
   });
 });
 
-describe("expired cards", () => {
-  it("marks a 0-frame activity as expired (footage aged out)", () => {
-    const frames = [frame(at(45))]; // lands only in the second activity
+describe("card media and the retention rule", () => {
+  const DAY = 86_400_000;
+  it("expired only when the span ends before the retention cutoff", () => {
+    const activities = [activity(at(0), at(20))];
+    const old = buildJournalDay(
+      baseInput({ activities, coveredUntilMs: at(60), retentionPolicy: "days_7", nowMs: DAY_END + 8 * DAY }),
+    );
+    expect(old.slots[0].media).toBe("expired");
+    // Inside the retention window: the screen just wasn't captured.
+    const recent = buildJournalDay(
+      baseInput({ activities, coveredUntilMs: at(60), retentionPolicy: "days_7", nowMs: DAY_END + DAY }),
+    );
+    expect(recent.slots[0].media).toBe("none");
+    // `never` never claims retention.
+    const never = buildJournalDay(
+      baseInput({ activities, coveredUntilMs: at(60), nowMs: DAY_END + 100 * DAY }),
+    );
+    expect(never.slots[0].media).toBe("none");
+  });
+
+  it("a transcript-only card is audio, not expired", () => {
+    const frames = [frame(at(45))];
     const activities = [activity(at(0), at(20)), activity(at(40), at(50))];
-    const model = buildJournalDay(baseInput({ frames, activities, coveredUntilMs: at(60) }));
-    expect(model.slots[0].expired).toBe(true);
+    const model = buildJournalDay(
+      baseInput({
+        frames,
+        activities,
+        audio: [{ startMs: at(0), endMs: at(5) }],
+        coveredUntilMs: at(60),
+        retentionPolicy: "days_7",
+        nowMs: DAY_END + 30 * DAY,
+      }),
+    );
+    expect(model.slots[0].media).toBe("audio");
     expect(model.slots[0].frameCount).toBe(0);
-    expect(model.slots[1].expired).toBe(false);
+    expect(model.slots[1].media).toBe("frames");
+  });
+});
+
+describe("audio-only day", () => {
+  it("counts as captured, with an audio-only pending slot from the first segment", () => {
+    const audio = [
+      { startMs: at(30), endMs: at(35) },
+      { startMs: at(35), endMs: at(40) },
+    ];
+    const model = buildJournalDay(baseInput({ audio }));
+    expect(model.hasAnyCapture).toBe(true);
+    expect(model.audioOnly).toBe(true);
+    expect(model.pending.active).toBe(true);
+    expect(model.pending.audioOnly).toBe(true);
+    expect(model.pending.sinceMs).toBe(at(30));
+  });
+
+  it("audio past the watermark keeps the pending slot open", () => {
+    const frames = framesEvery(at(0), at(10), MIN);
+    const audio = [{ startMs: at(20), endMs: at(25) }];
+    const model = buildJournalDay(baseInput({ frames, audio, coveredUntilMs: at(15) }));
+    expect(model.pending.active).toBe(true);
+    expect(model.pending.audioOnly).toBe(true);
+  });
+
+  it("marks screen gaps that audio covered, and clamps failed windows to the day", () => {
+    const frames = [...framesEvery(at(0), at(10), MIN), ...framesEvery(at(30), at(40), MIN)];
+    const audio = [{ startMs: at(12), endMs: at(17) }];
+    const failedWindows = [{ startMs: DAY_START - 10 * MIN, endMs: at(20) }];
+    const model = buildJournalDay(baseInput({ frames, audio, failedWindows, coveredUntilMs: at(60) }));
+    expect(model.gaps).toHaveLength(1);
+    expect(model.gaps[0].audio).toBe(true);
+    expect(model.failed).toEqual([{ startMs: DAY_START, endMs: at(20) }]);
   });
 });
 

@@ -287,6 +287,15 @@
             {/if}
           </div>
           <div class="tl-gutter" bind:this={anchors[i]}></div>
+          {#if ev.kind === "evidence" && sourceType === null}
+            <!-- Older evidence the bounded scan didn't resolve: title and time
+                 from the ref, no guessed source badge, no Timeline link (SD-04). -->
+            <div class="ev-card ev-card--older">
+              <div class="ev-info">
+                <div class="ev-title">{ev.title}</div>
+              </div>
+            </div>
+          {:else}
           <div
             class="ev-card"
             class:ev-card--contradict={isContra}
@@ -339,6 +348,7 @@
               </div>
             </div>
           </div>
+          {/if}
         {:else if ev.kind === "marker"}
           <div class="tl-time faint">
             <span class="rel">{relativeTime(ev.atMs)}</span>
@@ -402,6 +412,9 @@
 />
 
 <style>
+  .ev-card--older {
+    cursor: default;
+  }
   /* ============================== STORY FRAMING ============================== */
   .story-head {
     margin: 0 0 4px;
