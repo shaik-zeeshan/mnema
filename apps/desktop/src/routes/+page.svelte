@@ -32,6 +32,7 @@
   } from "$lib/audio-drawer-dismiss";
   import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
   import RecallLandingChip from "$lib/timeline/RecallLandingChip.svelte";
+  import { transcriptModelLabel, type TranscriptModelLabel } from "$lib/timeline/transcript-model-label";
   import {
     parseSpeakerAnalysisProvenance,
     type DrawerShortcut,
@@ -1017,7 +1018,7 @@
   // Provenance + the in-flight job behind the frame-6 state panels.
   let selectedAudioSpeakerProvenance = $state<SpeakerAnalysisProvenance | null>(null);
   let selectedAudioPendingJob = $state<{ processor: string; queuedAt: string } | null>(null);
-  let selectedAudioTranscriptModelLabel = $state<string | null>(null);
+  let selectedAudioTranscriptModelLabel = $state<TranscriptModelLabel | null>(null);
   let selectedAudioTranscriptError = $state<string | null>(null);
   let selectedAudioTranscriptRerunLoading = $state(false);
   let selectedAudioTranscriptRerunError = $state<string | null>(null);
@@ -1480,23 +1481,10 @@
     }
   }
 
-  function formatAudioTranscriptionProviderLabel(provider: string): string {
-    switch (provider) {
-      case "local_whisper":
-        return "Local Whisper";
-      case "apple_speech_on_device":
-        return "Apple Speech (on-device)";
-      case "parakeet":
-        return "Parakeet";
-      default:
-        return provider;
-    }
-  }
-
   function resolveAudioTranscriptionModelLabel(
     jobPayloadJson: string | null | undefined,
     resultPayloadJson: string | null | undefined,
-  ): string | null {
+  ): TranscriptModelLabel | null {
     const jobPayload = parseAudioTranscriptionJobPayload(jobPayloadJson);
     const resultPayload = parseTranscriptionStructuredPayload(resultPayloadJson);
     const provider =
@@ -1506,14 +1494,13 @@
           ? jobPayload.provider
           : null;
     if (!provider) return null;
-    const providerLabel = formatAudioTranscriptionProviderLabel(provider);
     const modelId =
       typeof resultPayload?.modelId === "string"
         ? resultPayload.modelId
         : typeof jobPayload?.modelId === "string"
           ? jobPayload.modelId
           : null;
-    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
+    return transcriptModelLabel(provider, modelId);
   }
 
   function normalizeTranscriptionTimedRuns(

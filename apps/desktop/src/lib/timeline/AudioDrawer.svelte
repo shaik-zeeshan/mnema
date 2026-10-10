@@ -19,6 +19,7 @@
   import { getFocusableElements, trapTabKey } from "$lib/keyboard";
   import { tip } from "$lib/components/tooltip";
   import DrawerHeader from "./DrawerHeader.svelte";
+  import type { TranscriptModelLabel } from "./transcript-model-label";
   import DrawerStatePanels from "./DrawerStatePanels.svelte";
   import DrawerTransport from "./DrawerTransport.svelte";
   import SpeakerRepairPanel from "./SpeakerRepairPanel.svelte";
@@ -76,7 +77,7 @@
     transcriptSegments: TranscriptionSegment[];
     /** `TranscriptionStructuredPayload.words[]` — the karaoke source. */
     transcriptWords: TranscriptionWord[];
-    transcriptModelLabel: string | null;
+    transcriptModelLabel: TranscriptModelLabel | null;
     transcriptError: string | null;
     transcriptRerunLoading: boolean;
     transcriptRerunError: string | null;
@@ -692,10 +693,10 @@
     flex-direction: column;
   }
 
-  /* The slide-over is absolute over the stage, so reserve its width (330px + a
-     12px gutter) while it is open or it covers the right edge of every line. */
+  /* The slide-over is absolute over the stage, so reserve its 352px while it is
+     open or it covers the right edge of every line. */
   .stage--repair {
-    padding-right: 342px;
+    padding-right: 352px;
   }
 
   .stage__note,

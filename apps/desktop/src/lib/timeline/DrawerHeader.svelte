@@ -8,6 +8,7 @@
   import IconX from "~icons/lucide/x";
   import { tip } from "$lib/components/tooltip";
   import SpeakerMarkGlyph from "./SpeakerMark.svelte";
+  import type { TranscriptModelLabel } from "./transcript-model-label";
   import {
     formatCompactDuration,
     type AudioSegmentRecord,
@@ -26,7 +27,7 @@
     timeRangeLabel: string;
     timeRangeTip: string;
     durationLabel: string;
-    modelLabel: string | null;
+    modelLabel: TranscriptModelLabel | null;
     status: StatusPill;
     actionLabel: string;
     actionDisabled: boolean;
@@ -83,7 +84,7 @@
   <span class="num">{durationLabel}</span>
   {#if modelLabel}
     <span class="rhead__sep" aria-hidden="true">·</span>
-    <span use:tip={modelLabel}>{modelLabel}</span>
+    <span use:tip={modelLabel.tip}>{modelLabel.label}</span>
   {/if}
   <span class="rhead__file" use:tip={segment.filePath}>{segment.fileName}</span>
   <span class="rhead__grow"></span>
