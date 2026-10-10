@@ -103,7 +103,7 @@
   // so a cited source always hops to the main Timeline window and dismisses the
   // launcher — the in-place FrameDetailModal is for the main-window surfaces
   // (Chat, Subjects), not here.
-  async function selectSource(source: AskAiSource): Promise<void> {
+  async function selectSource(source: AskAiSource, query: string): Promise<void> {
     // Carry the Audio Search Result Anchor for audio sources (frame sources
     // leave these null), mirroring openAudioResult so the dashboard lands on the
     // cited transcript match rather than the segment start.
@@ -114,6 +114,7 @@
         audioSegmentId: source.audioSegmentId,
         spanStartMs: source.spanStartMs ?? null,
         alignedFrameId: source.alignedFrameId ?? null,
+        query,
       });
     } catch (err) {
       await search.surfaceResultHandoffFailure(err);
@@ -2399,7 +2400,7 @@
                                       ? (search.thumbnailCache.get(s.frameId) ?? null)
                                       : null}
                                     url={s.url}
-                                    onselect={() => void selectSource(s)}
+                                    onselect={() => void selectSource(s, turn.question)}
                                     onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
@@ -2420,7 +2421,7 @@
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
                                     url={s.url}
-                                    onselect={() => void selectSource(s)}
+                                    onselect={() => void selectSource(s, turn.question)}
                                   />
                                 {/each}
                               </div>

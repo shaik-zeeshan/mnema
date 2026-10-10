@@ -329,6 +329,7 @@ export class SearchStore {
         kind: "frame",
         frameId: result.representativeFrame.id,
         audioSegmentId: null,
+        query: this.resultsQuery,
       });
     } catch (err) {
       await this.surfaceResultHandoffFailure(err);
@@ -348,6 +349,7 @@ export class SearchStore {
         audioSegmentId: result.audioSegment.id,
         spanStartMs: result.spanStartMs,
         alignedFrameId: result.alignedFrame?.id ?? null,
+        query: this.resultsQuery,
       });
     } catch (err) {
       await this.surfaceResultHandoffFailure(err);

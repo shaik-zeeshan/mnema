@@ -28,6 +28,7 @@
     type AudioDrawerDismissContext,
   } from "$lib/audio-drawer-dismiss";
   import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
+  import RecallLandingChip from "$lib/timeline/RecallLandingChip.svelte";
   import {
     parseSpeakerAnalysisProvenance,
     type DrawerShortcut,
@@ -469,6 +470,8 @@
     // instead of the segment start. Null for the broker-URL path.
     spanStartMs?: number | null;
     alignedFrameId?: number | null;
+    // The Quick Recall query behind this hit → the landing chip. Absent elsewhere.
+    query?: string | null;
   };
   type AppIconResolution = {
     bundleId: string;
@@ -3726,6 +3729,12 @@
   // Returns whether any payload was queued (regardless of whether its jump
   // succeeded) so the cold-mount init can skip the latest-frames load that would
   // otherwise clobber the handed-off frame (see `initializeTimeline`).
+  // From-Recall landing chip + its one rail mark at the landed frame (§8 #2).
+  let recallLanding = $state<{ query: string; frameId: number } | null>(null);
+  const recallLandingIndex = $derived(
+    recallLanding ? timelineFrames.findIndex((f) => f.id === recallLanding?.frameId) : -1,
+  );
+
   async function drainPendingBrokerOpenCaptureResults(): Promise<boolean> {
     let payloads: BrokerOpenCaptureResultPayload[];
     try {
@@ -3739,6 +3748,13 @@
     for (const payload of payloads) {
       try {
         await openBrokerCaptureResult(payload);
+        // Every handoff replaces the landing; only a Recall hit carries a query.
+        // A failed open leaves the old frame active, so require the target.
+        const target = payload.kind === "frame" ? payload.frameId : payload.alignedFrameId;
+        recallLanding =
+          payload.query && timelineActive && (target == null || target === timelineActive.id)
+            ? { query: payload.query, frameId: timelineActive.id }
+            : null;
       } catch {
         // get_frame / get_audio_segment threw (capture gone or DB error) — the
         // broker handoff must never fail silently, so surface a visible note.
@@ -6125,6 +6141,9 @@
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
+      {#if recallLanding}
+        <RecallLandingChip query={recallLanding.query} ondismiss={() => (recallLanding = null)} />
+      {/if}
       {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
         {#if ocrProviderLabel}
           <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
@@ -6644,6 +6663,9 @@
               <span class="timeline-rail__tick"></span>
             </div>
           {/each}
+          {#if recallLandingIndex >= 0}
+            <span class="tl-matchmark" style="right: {recallLandingIndex * TIMELINE_SLOT_WIDTH}px"></span>
+          {/if}
         </div>
       </div>
       <!-- Audio segment lane. Lives as a sibling of the slider rail (not
