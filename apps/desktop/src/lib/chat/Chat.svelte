@@ -36,6 +36,8 @@
   import ChatEmpty from "./ChatEmpty.svelte";
   import { chatWhen, providerWhere } from "./chat-format";
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
+  import IconPin from "~icons/lucide/pin";
+  import IconPinOff from "~icons/lucide/pin-off";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -497,6 +499,9 @@
       <h1>{displayTitle}</h1>
       {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${chatWhen(headStarted)}` : ""}</span>{/if}
       <div class="ch-head__acts">
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed={activeSummary?.pinned ?? false} aria-label={activeSummary?.pinned ? "Unpin chat" : "Pin chat"} use:tip={activeSummary?.pinned ? "Unpin" : "Pin"} disabled={!activeSummary} onclick={() => activeSummary && void store.togglePin(activeSummary.conversationId)}>
+          {#if activeSummary?.pinned}<IconPinOff width="15" height="15" aria-hidden="true" />{:else}<IconPin width="15" height="15" aria-hidden="true" />{/if}
+        </button>
         <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Rename chat" use:tip={"Rename"} disabled={!activeSummary} onclick={() => activeSummary && store.startRename(activeSummary)}>
           <IconEdit width="15" height="15" aria-hidden="true" />
         </button>

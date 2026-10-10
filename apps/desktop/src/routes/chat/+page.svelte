@@ -12,6 +12,7 @@
   import Chat from "$lib/chat/Chat.svelte";
   import ChatList from "$lib/chat/ChatList.svelte";
   import IconOk from "~icons/lucide/check";
+  import IconFail from "~icons/lucide/circle-alert";
 
   let defaultModel = $state<string | null>(null);
 
@@ -56,6 +57,15 @@
   $effect(() => () => {
     if (toastTimer !== null) clearTimeout(toastTimer);
   });
+
+  // A failed pin/unpin (the store already reverted the row): a danger toast
+  // with Retry for 5 s.
+  const pinFailure = $derived(conversationStore.pinFailure);
+  $effect(() => {
+    if (!pinFailure) return;
+    const timer = setTimeout(() => (conversationStore.pinFailure = null), 5000);
+    return () => clearTimeout(timer);
+  });
 </script>
 
 <svelte:window onkeydowncapture={onKeydown} />
@@ -63,9 +73,19 @@
 <main class="ch-body">
   <ChatList {defaultModel} ondeleted={showDeleted} />
   <Chat bind:defaultModel ondeleted={showDeleted} />
-  {#if toast}
+  {#if toast || pinFailure}
     <div class="mx-toasts">
-      <div class="mx-toast" data-tone="ok" role="status"><IconOk width="15" height="15" aria-hidden="true" /><span>Chat deleted</span></div>
+      {#if toast}
+        <div class="mx-toast" data-tone="ok" role="status"><IconOk width="15" height="15" aria-hidden="true" /><span>Chat deleted</span></div>
+      {/if}
+      {#if pinFailure}
+        {@const failed = pinFailure}
+        <div class="mx-toast" data-tone="danger" role="alert">
+          <IconFail width="15" height="15" aria-hidden="true" /><span>Couldn’t {failed.pinned ? "pin" : "unpin"} the chat</span>
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void conversationStore.togglePin(failed.conversationId)}>Retry</button>
+          <i class="mx-toast__timer" style="--ttl:5000ms"></i>
+        </div>
+      {/if}
     </div>
   {/if}
 </main>

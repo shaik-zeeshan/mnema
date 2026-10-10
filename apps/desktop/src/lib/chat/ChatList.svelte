@@ -3,6 +3,7 @@
   // date-grouped history, inline rename and delete. All list state lives in the
   // shared `conversationStore` (search_conversations / rename / delete); a row
   // click goes through its selection bus, which Chat watches.
+  import { tick } from "svelte";
   import { tip } from "$lib/components/tooltip";
   import { openSettings } from "$lib/surface-windows";
   import { conversationStore as store } from "$lib/insights/conversationStore.svelte";
@@ -10,6 +11,8 @@
   import { chatWhen } from "./chat-format";
   import IconPlus from "~icons/lucide/plus";
   import IconSearch from "~icons/lucide/search";
+  import IconPin from "~icons/lucide/pin";
+  import IconPinOff from "~icons/lucide/pin-off";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -52,6 +55,21 @@
     if (await store.deleteConversation(c)) ondeleted();
   }
 
+  let listEl = $state<HTMLElement | null>(null);
+
+  // A pinned row moves to another group (a fresh element), so a keyboard pin
+  // would drop focus to <body>: follow the row and re-focus its pin button.
+  async function pin(event: MouseEvent, c: ConversationSummary): Promise<void> {
+    event.stopPropagation();
+    const refocus = document.activeElement === event.currentTarget;
+    const done = store.togglePin(c.conversationId);
+    if (refocus) {
+      await tick();
+      listEl?.querySelector<HTMLElement>(`[data-pin="${CSS.escape(c.conversationId)}"]`)?.focus();
+    }
+    await done;
+  }
+
   function clearSearch(): void {
     store.searchQuery = "";
     void store.refreshHistory();
@@ -84,7 +102,7 @@
     </label>
   </div>
 
-  <nav class="ch-list" aria-label="Conversation history" aria-busy={!store.historyLoaded}>
+  <nav class="ch-list" bind:this={listEl} aria-label="Conversation history" aria-busy={!store.historyLoaded}>
     {#if !store.historyLoaded}
       <span class="mx-sr">Loading chats</span>
       {#each Array(7) as _, i (i)}
@@ -118,7 +136,7 @@
       </div>
     {:else}
       {#each store.historyGroups as group (group.label)}
-        <h6>{group.label}</h6>
+        <h6>{#if group.label === "Pinned"}<IconPin width="10" height="10" aria-hidden="true" />{/if}{group.label}</h6>
         {#each group.items as c (c.conversationId)}
           {@const title = c.title || c.preview || "Untitled chat"}
           <div
@@ -143,6 +161,16 @@
             {:else}
               <span class="ch-item__title" use:tip={title}>{title}</span>
               <span class="ch-item__acts">
+                <button
+                  type="button"
+                  class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
+                  data-pin={c.conversationId}
+                  aria-pressed={c.pinned}
+                  aria-label={c.pinned ? "Unpin" : "Pin"}
+                  use:tip={c.pinned ? "Unpin" : "Pin"}
+                  onclick={(e) => void pin(e, c)}
+                  >{#if c.pinned}<IconPinOff width="14" height="14" aria-hidden="true" />{:else}<IconPin width="14" height="14" aria-hidden="true" />{/if}</button
+                >
                 <button
                   type="button"
                   class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
@@ -193,7 +221,8 @@
   .ch-side__tools .mx-btn { justify-content: flex-start; }
   .ch-side__tools .mx-btn kbd { margin-left: auto; }
   .ch-list { overflow: auto; padding: var(--s-1) var(--s-2) var(--s-4); }
-  .ch-list h6 { margin: var(--s-4) 10px 4px; font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+  .ch-list h6 { display: flex; align-items: center; gap: 6px; margin: var(--s-4) 10px 4px; font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+  .ch-list h6 :global(svg) { color: var(--app-text-faint); }
   .ch-list :global(.mx-empty--compact) { padding: var(--s-4) 8px; }
   .ch-list :global(.mx-empty--compact .mx-empty__acts) { grid-column: 2; grid-row: auto; margin-top: 6px; }
   .ch-list .mx-skel-lines { padding: 10px; }

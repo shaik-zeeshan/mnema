@@ -15,33 +15,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type { ConversationSummary } from "$lib/insights/conversation";
+import { groupHistory, type HistoryGroup } from "$lib/chat/chat-format";
 
 const SEARCH_DEBOUNCE_MS = 220;
-
-// ── Date grouping (left rail) ──────────────────────────────────────────────
-// The flat history list renders under quiet section headers computed from each
-// conversation's last-activity timestamp (`updatedAtMs`, the same field the
-// list is sorted by): Today / Yesterday / This week (the rest of the last 7
-// calendar days) / earlier months ("May 2026"). Buckets are keyed by label in
-// first-seen order, so the existing sort order is preserved within each group
-// (and search results never produce a duplicated header).
-export interface HistoryGroup {
-  label: string;
-  items: ConversationSummary[];
-}
-
-const DAY_MS = 86_400_000;
-
-function historyGroupLabel(ms: number, todayStartMs: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "Earlier";
-  if (ms >= todayStartMs) return "Today";
-  if (ms >= todayStartMs - DAY_MS) return "Yesterday";
-  if (ms >= todayStartMs - 6 * DAY_MS) return "This week";
-  return new Date(ms).toLocaleDateString(undefined, {
-    month: "long",
-    year: "numeric",
-  });
-}
 
 /** Compact last-activity label ("now" / "5m" / "2h" / "3d" / "2w" / "4mo" / "1y")
  *  for a history row's right-aligned `.when` stamp. Deliberately single-token (no
@@ -100,25 +76,12 @@ export class ConversationStore {
     send: false,
   });
 
-  /** Date-grouped view of `conversations` for the rail's section headers. */
-  historyGroups = $derived.by((): HistoryGroup[] => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayStartMs = todayStart.getTime();
-    const groups: HistoryGroup[] = [];
-    const byLabel = new Map<string, HistoryGroup>();
-    for (const c of this.conversations) {
-      const label = historyGroupLabel(c.updatedAtMs, todayStartMs);
-      let group = byLabel.get(label);
-      if (group === undefined) {
-        group = { label, items: [] };
-        byLabel.set(label, group);
-        groups.push(group);
-      }
-      group.items.push(c);
-    }
-    return groups;
-  });
+  /** `conversations` grouped for the list: Pinned first, then by date. */
+  historyGroups = $derived.by((): HistoryGroup[] => groupHistory(this.conversations));
+
+  /** The last pin/unpin that failed (already reverted) — the page shows a
+   *  danger toast with Retry; null once dismissed. */
+  pinFailure = $state<{ conversationId: string; pinned: boolean } | null>(null);
 
   // Generation token so a stale (out-of-order) history/search response is dropped.
   #historyGeneration = 0;
@@ -207,6 +170,28 @@ export class ConversationStore {
       // The rename didn't land (e.g. the row vanished) — no
       // conversation_changed will fire, so re-fetch to undo the optimism.
       void this.refreshHistory();
+    }
+  }
+
+  /** Pin or unpin a chat. Optimistic: the row moves now and the backend's
+   *  `conversation_changed` refresh confirms it; a failed persist fires no
+   *  event, so the row is flipped back here and `pinFailure` is set. Pinning
+   *  never touches a timestamp (the backend owns that rule). */
+  async togglePin(conversationId: string): Promise<void> {
+    const row = this.conversations.find((c) => c.conversationId === conversationId);
+    if (!row) return;
+    const pinned = !row.pinned;
+    const patch = (value: boolean) =>
+      (this.conversations = this.conversations.map((c) =>
+        c.conversationId === conversationId ? { ...c, pinned: value } : c,
+      ));
+    patch(pinned);
+    this.pinFailure = null;
+    try {
+      await invoke("set_conversation_pinned", { conversationId, pinned });
+    } catch {
+      patch(!pinned);
+      this.pinFailure = { conversationId, pinned };
     }
   }
 

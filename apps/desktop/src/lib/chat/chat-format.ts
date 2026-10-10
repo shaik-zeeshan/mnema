@@ -1,6 +1,7 @@
 // Small display helpers for the Chat surface (list stamps, model picker chips,
 // the per-answer readouts). Pure, so they're tested beside this file.
 import type { AiProviderConfig } from "$lib/types/recording";
+import type { ConversationSummary } from "$lib/insights/conversation";
 
 const DAY_MS = 86_400_000;
 
@@ -65,4 +66,43 @@ export function stepsLine(steps: number, elapsedMs: number | null): string | nul
   if (steps <= 0) return null;
   const head = `${steps} step${steps === 1 ? "" : "s"}`;
   return elapsedMs !== null && elapsedMs > 0 ? `${head} · ${(elapsedMs / 1000).toFixed(1)}s` : head;
+}
+
+// ── Chat-list grouping ───────────────────────────────────────────────────────
+// Pinned chats first (only there, never also under their date), then quiet date
+// headers from each chat's last activity (`updatedAtMs`, the list's sort key):
+// Today / Yesterday / This week (the rest of the last 7 calendar days) / earlier
+// months ("May 2026"). Buckets keep first-seen order, so the backend's sort
+// order holds within each group and search never duplicates a header.
+export interface HistoryGroup {
+  label: string;
+  items: ConversationSummary[];
+}
+
+function historyGroupLabel(ms: number, todayStartMs: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "Earlier";
+  if (ms >= todayStartMs) return "Today";
+  if (ms >= todayStartMs - DAY_MS) return "Yesterday";
+  if (ms >= todayStartMs - 6 * DAY_MS) return "This week";
+  return new Date(ms).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+export function groupHistory(conversations: ConversationSummary[], now: number = Date.now()): HistoryGroup[] {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const todayStartMs = today.getTime();
+  const groups: HistoryGroup[] = [];
+  const byLabel = new Map<string, HistoryGroup>();
+  for (const c of conversations) {
+    const label = c.pinned ? "Pinned" : historyGroupLabel(c.updatedAtMs, todayStartMs);
+    let group = byLabel.get(label);
+    if (group === undefined) {
+      group = { label, items: [] };
+      byLabel.set(label, group);
+      if (label === "Pinned") groups.unshift(group);
+      else groups.push(group);
+    }
+    group.items.push(c);
+  }
+  return groups;
 }

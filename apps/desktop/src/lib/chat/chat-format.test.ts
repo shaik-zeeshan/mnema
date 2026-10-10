@@ -1,7 +1,7 @@
 // @ts-nocheck — run under `bun test`; bun:test types aren't in the svelte-check
 // tsconfig, so skip static checking here (same as journal-day.test.ts).
 import { describe, expect, test } from "bun:test";
-import { chatWhen, formatTokenCount, greeting, providerVia, providerWhere, stepsLine } from "./chat-format";
+import { chatWhen, formatTokenCount, greeting, groupHistory, providerVia, providerWhere, stepsLine } from "./chat-format";
 import type { AiProviderConfig } from "$lib/types/recording";
 
 const p = (kind: AiProviderConfig["kind"], baseUrl = ""): AiProviderConfig =>
@@ -42,4 +42,25 @@ test("greeting and steps line", () => {
   expect(stepsLine(1, null)).toBe("1 step");
   expect(stepsLine(4, 3400)).toBe("4 steps · 3.4s");
   expect([812, 6200, 14_200, 200_000].map(formatTokenCount)).toEqual(["812", "6.2k", "14k", "200k"]);
+});
+
+test("groupHistory: Pinned first and only there, then date groups in list order", () => {
+  const now = new Date(2026, 9, 9, 15, 0).getTime();
+  const row = (id, updatedAtMs, pinned = false) => ({ conversationId: id, updatedAtMs, pinned });
+  const groups = groupHistory(
+    [
+      row("old-pinned", new Date(2026, 8, 30, 9).getTime(), true),
+      row("today", new Date(2026, 9, 9, 14).getTime()),
+      row("today-pinned", new Date(2026, 9, 9, 13).getTime(), true),
+      row("yesterday", new Date(2026, 9, 8, 9).getTime()),
+    ],
+    now,
+  );
+  expect(groups.map((g) => [g.label, g.items.map((c) => c.conversationId)])).toEqual([
+    ["Pinned", ["old-pinned", "today-pinned"]],
+    ["Today", ["today"]],
+    ["Yesterday", ["yesterday"]],
+  ]);
+  // A pinned row that isn't first in the input still leads.
+  expect(groupHistory([row("a", now), row("b", now, true)], now)[0].label).toBe("Pinned");
 });
