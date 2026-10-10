@@ -228,7 +228,7 @@ The radio is visually hidden but real (← → keys, form state). Selected = acc
 - Day popover: month calendar with density dots, today underlined, future disabled, "Today". Range popover (Chat scope only — Insights has no custom range; use period): presets (This week, Last week, Last 7/30 days, This/Last month) + range calendar — **drag across days** or click start then end. Step unit follows the selection (week / month / custom span length).
 - **Period** (Insights Overview — the app's `RangeMode`: one whole day | week | month, no custom span): capsule = label (`Oct 9` / `Oct 5 – 11` / `October 2026`) + relative line (`today`, `last week`, `3 months ago`) + ruler (one tick per period) + an attached **D · W · M** unit switch (one click; lands on "now" if the current period was showing). Steps exactly one period, never past the current one. Popover leads with Day | Week | Month: Day = calendar, click a day; Week = calendar whose rows are the hit target (hover lights the row, ISO week number, per-day density dots); Month = the year as 12 months with year stepping and per-month density. Footer reset `Today` / `This week` / `This month` (disabled when already current). No presets, no drag-select. `value` is any day inside the period; `el.mxDate.setUnit(u)`.
 - Attributes: `data-min` (capture start, default today−120d), `data-max` (default today), `data-today`, `data-unit` (range: week|month · period: day|week|month), `data-align="end"` (popover right-aligned), `data-date-open` (render open — gallery only).
-- Events/API: `mx-change` `{start, end, unit}` (ISO, bubbles) on every step/commit; `el.mxDate.get() / .step(±1) / .latest()`; set `el.mxHeat = (Date) => 0..3` before DOMContentLoaded to supply real density. Timeline's jumper reuses the capsule skin only (see above).
+- Events/API: `mx-change` `{start, end, unit}` (ISO, bubbles) on every step/commit; `el.mxDate.get() / .step(±1) / .latest()`; set `el.mxHeat = (Date) => 0..3` before DOMContentLoaded to supply real density. Timeline's jumper reuses the capsule skin only (see above) and keeps its own two-pane popover (calendar + hour list).
 
 ## Type roles (Hanken Grotesk = interface · Spline Sans Mono = record)
 | role | class | spec |
@@ -256,7 +256,7 @@ Tokens: `--font-sans`, `--font-mono` (kit rules use these; `--mx-sans`/`--mx-mon
 | `.in-askme` (Ask about this week pill) | `mx-btn mx-btn--ghost` + `svg.mx-btn__accent` + `<kbd>`, in the header row |
 | `.in-engine` (engine claude-sonnet-4.5) | delete; unhealthy-only `mx-engine` in the status bar |
 | `.in-step` (‹ Oct 5 – 11 ›) + `#j-prev/#j-next` + Day/Week/Month segmented | Overview: `<div data-date-input="period" data-unit="week" data-align="end">` / journal: `data-date-input="day"`; listen to `mx-change` |
-| `.tl-jump` + `.tl-jpop` + `.tl-cal*` | `data-date-input="day"` capsule (+ page-local time field) |
+| `.tl-jump` + `.tl-jpop` + `.tl-cal*` | trigger: the compact 28px `.mx-date__btn` (calendar · day · mono time, no ruler, no drag/wheel). Popover: **kept** as the Timeline's own two-pane jumper (`mx-pop`, `.mx-cal` day = preview · hour list = commit), not the `data-date-input` day popover |
 | `.st-radio` radiogroups | `mx-choice` (≤4 options) or `mx-choice--list` |
 | `.ch-opt` selected tick lists in popovers | keep as menus (they are menus, not choices) |
 | `.tl-glass-btn`, `.tl-latest`, other page button skins | `mx-btn` variants (ghost/secondary, sm) — no page-level button styling |

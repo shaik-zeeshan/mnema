@@ -11,11 +11,10 @@
   //     WITHOUT moving the timeline. The timeline moves only on an explicit
   //     commit (hour row / "Latest of day" / global "Latest"), and every commit
   //     closes the popover.
-  //   - Two-signifier split: committed "you are here" = accent LEFT BAR (echoes
-  //     the playhead) on the real day cell + hour row; previewed day = accent
-  //     FILL. A cell/row can carry both; the bar persists while previewing a
-  //     different day.
-  //   - Commit motion: flash the bar onto the chosen hour, close ~110ms later,
+  //   - Two-signifier split: committed "you are here" = soft accent tint on the
+  //     real day cell + selected fill on the hour row; previewed day = accent
+  //     FILL. The tint persists while previewing a different day.
+  //   - Commit motion: flash the fill onto the chosen hour, close ~110ms later,
   //     and let the dashboard animate the playhead. `prefers-reduced-motion`
   //     collapses the flash/delay + playhead animation to instant.
   //
@@ -34,11 +33,14 @@
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import IconCalendar from "~icons/lucide/calendar";
+  import IconLatest from "~icons/lucide/arrow-right-to-line";
+  import IconAlert from "~icons/lucide/circle-alert";
   import type { FrameDto, FrameRangeRequest } from "$lib/types/app-infra";
   import { createJumperCache } from "./jumper-cache.svelte";
   import {
     type HourBucket,
     buildHourBuckets,
+    dayHeat,
     dayRange,
     hourRange,
   } from "./jumper-time";
@@ -103,19 +105,27 @@
   }
 
   // ── Trigger readout + committed marker ──────────────────────────────────────
-  function formatTriggerLabel(ts: string): string {
-    const d = parseCapturedAt(ts);
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString();
-  }
-  const triggerLabel = $derived(
-    activeFrame ? formatTriggerLabel(activeFrame.capturedAt) : "no active frame",
-  );
-
   const committedMoment = $derived.by<Date | null>(() => {
     if (!activeFrame) return null;
     const d = parseCapturedAt(activeFrame.capturedAt);
     return isNaN(d.getTime()) ? null : d;
+  });
+  // Compact trigger: sans day · mono time; the relative day lives in the tooltip.
+  const triggerDay = $derived(
+    committedMoment?.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) ??
+      (timelineBusy ? "Loading…" : "No frames"),
+  );
+  const triggerTime = $derived(
+    committedMoment?.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }) ?? "",
+  );
+  const triggerTip = $derived.by(() => {
+    if (!committedMoment) return "Jump to date and time  J";
+    const m = committedMoment;
+    const ago = Math.round(
+      (new Date().setHours(0, 0, 0, 0) - new Date(m.getFullYear(), m.getMonth(), m.getDate()).getTime()) / 86_400_000,
+    );
+    const rel = ago <= 0 ? "Today" : ago === 1 ? "Yesterday" : `${ago} days ago`;
+    return `${rel} · jump to date and time  J`;
   });
 
   function sameLocalDay(
@@ -157,6 +167,15 @@
       monthLoaded ? cache.daySummaries(d) : undefined,
     );
   });
+  // Calendar density: each day's frame count against the viewed month's busiest day.
+  const monthMax = $derived.by(() => {
+    const { year, month } = pickerPlaceholder;
+    let max = 0;
+    for (let day = 1; day <= 31; day++) max = Math.max(max, cache.daySummaries({ year, month, day })?.length ?? 0);
+    return max;
+  });
+  const heatOf = (d: DateValue) => dayHeat(cache.daySummaries(d)?.length ?? 0, monthMax);
+
   const maxBucketCount = $derived(
     Math.max(1, ...timeBuckets.map((b) => b.count)),
   );
@@ -455,34 +474,37 @@
 
 <svelte:window onpointerdown={onWindowPointerDown} />
 
-<div class="timeline__jump">
+<div class="mx-date timeline__jump">
   <button
-    class="btn btn--ghost btn--sm timeline__jump-trigger"
-    class:timeline__jump-trigger--open={open}
+    type="button"
+    class="mx-date__btn timeline__jump-trigger"
     onclick={toggle}
     bind:this={pickerTriggerEl}
+    disabled={!activeFrame}
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-controls="timeline-jump-picker"
-    use:tip={"Jump to date and time (J)"}
+    use:tip={triggerTip}
   >
-    <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="timeline__jump-label">{triggerLabel}</span>
-    <span class="timeline__jump-kbd" aria-hidden="true">J</span>
+    <IconCalendar class="mx-date__icon" width="14" height="14" />
+    <b>{triggerDay}</b>
+    {#if triggerTime}<span class="timeline__jump-time">{triggerTime}</span>{/if}
   </button>
 
   {#if showLatest}
     <button
-      class="btn btn--ghost btn--sm timeline__jump-latest"
+      type="button"
+      class="mx-btn mx-btn--sm"
       onclick={() => void onJumpToLatest()}
       disabled={timelineBusy || jumping}
-      use:tip={"Jump to latest frame (L)"}
-    >latest</button>
+      use:tip={"Jump to latest frame"}
+    ><IconLatest class="mx-btn__accent" width="13" height="13" />latest<kbd>L</kbd></button>
   {/if}
 
   {#if open}
     <div
-      class="timeline__picker"
+      class="mx-pop timeline__picker"
+      data-open
       id="timeline-jump-picker"
       style={pickerStyle}
       role="dialog"
@@ -493,16 +515,13 @@
       onkeydown={onPickerKeydown}
     >
       <div class="timeline__picker-head">
-        <span class="timeline__picker-title">Jump to date &amp; time</span>
+        <span class="mx-h3">Jump to date &amp; time</span>
         <button
-          class="btn btn--accent btn--sm timeline__picker-global-latest"
+          type="button"
+          class="mx-btn mx-btn--sm"
           onclick={() => void commitGlobalLatest()}
           disabled={timelineBusy || jumping}
-          use:tip={"Jump to latest frame"}
-        >
-          <span class="timeline__picker-glyph" aria-hidden="true">⟿</span>
-          latest
-        </button>
+        ><IconLatest class="mx-btn__accent" width="13" height="13" />latest<kbd>L</kbd></button>
       </div>
 
       <div class="timeline__picker-panes">
@@ -511,6 +530,7 @@
           bind:placeholder={pickerPlaceholder}
           isDateDisabled={cache.isDateDisabled}
           {isCommittedDate}
+          {heatOf}
         />
         <JumperTimeList
           hasSelection={!!pickerSelectedDate}
@@ -525,16 +545,11 @@
         />
       </div>
 
-      <div
-        class="timeline__picker-foot"
-        class:timeline__picker-foot--error={!!displayError}
-      >
+      <div class="timeline__picker-foot mx-body-sm">
         {#if displayError}
-          <span class="timeline__picker-foot-msg">{displayError}</span>
+          <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{displayError}</span>
         {:else}
-          <span class="timeline__picker-foot-span">
-            {#if earliestKnownLabel}{earliestKnownLabel} → now · {/if}hour granularity
-          </span>
+          Pick a day to preview its hours, then an hour to jump{earliestKnownLabel ? ` · ${earliestKnownLabel} → now` : ""}
         {/if}
       </div>
     </div>
@@ -542,197 +557,74 @@
 </div>
 
 <style>
-  /* Shared button system (local copy — `.btn` is defined per-surface in this
-     app, not in a global sheet; see Subjects.svelte / settings panels). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
-  }
-  /* Accent ghost — reserved for the global "Latest" / snap-to-now action. */
-  .btn--accent {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-  .btn--accent:not(:disabled):hover {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  /* ── Trigger group ──────────────────────────────────────────────────────── */
   .timeline__jump {
-    display: flex;
     align-items: center;
-    gap: 6px;
-    position: relative;
+    gap: var(--s-2);
   }
+  .timeline__jump .mx-btn {
+    --_h: 28px;
+  }
+  /* Compact jumper trigger: one 28px control, no ruler, no drag (it only opens the popover). */
   .timeline__jump-trigger {
-    gap: 6px;
-    font-variant-numeric: tabular-nums;
-    max-width: 240px;
-    /* Typography inherits from `.btn` (uppercase, 700, 0.08em) so the readout
-       matches the LATEST/OCR/REFRESH buttons sharing the timeline bar row. */
-    font-size: var(--text-xs);
+    height: 28px;
+    gap: 7px;
+    padding: 0 10px 0 9px;
+    cursor: pointer;
   }
-  .timeline__jump-trigger--open {
-    border-color: var(--app-accent-border);
-    box-shadow: var(--app-ring);
+  .timeline__jump-trigger:disabled {
+    cursor: default;
   }
-  .timeline__jump-latest {
-    flex: 0 0 auto;
-    /* Match the bar-2 control size (10px) used by the OCR/refresh buttons,
-       which the `.timeline__bar .btn--sm` override shrinks app-side. */
-    font-size: var(--text-xs);
+  .timeline__jump-trigger b {
+    font: 500 var(--text-md)/1 var(--font-sans);
+    letter-spacing: -0.01em;
   }
-  .timeline__jump-icon {
+  .timeline__jump-time {
     display: inline-flex;
     align-items: center;
-    color: var(--app-accent);
-  }
-  .timeline__jump-icon :global(svg) {
-    width: 13px;
-    height: 13px;
-  }
-  .timeline__jump-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .timeline__jump-kbd {
-    flex: 0 0 auto;
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    padding: 1px 5px;
-    margin-left: 2px;
-    text-transform: none;
-    letter-spacing: 0;
+    height: 14px;
+    padding-left: 8px;
+    border-left: 1px solid var(--mx-hairline);
+    font: 500 var(--text-base)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    color: var(--app-text-muted);
   }
 
-  /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* Kit popover skin; position stays fixed + measured (updatePickerPosition). */
   .timeline__picker {
     position: fixed;
-    z-index: 20;
+    right: auto;
     display: flex;
     flex-direction: column;
-    width: min(520px, calc(100vw - 24px));
-    box-sizing: border-box;
+    width: max-content;
+    max-width: calc(100vw - 24px);
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
     color: var(--app-text);
   }
   .timeline__picker-head {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
-  }
-  .timeline__picker-title {
-    flex: 1;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-  .timeline__picker-global-latest {
-    flex: 0 0 auto;
-    gap: 6px;
-  }
-  .timeline__picker-glyph {
-    font-size: var(--text-md);
-    line-height: 1;
+    justify-content: space-between;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-3) var(--s-2) var(--s-4);
   }
   .timeline__picker-panes {
     display: grid;
-    grid-template-columns: 1fr 200px;
-    /* Bound the panes to the popover's fixed height (height set inline by
-       updatePickerPosition) so the time list scrolls instead of the popover
-       resizing with content. minmax(0,1fr) + min-height:0 break the default min-content
-       floor; the WebKit flex/grid overflow trap (memory: webkit-height-100). */
+    grid-template-columns: auto 212px;
+    /* Bound the panes to the popover's measured height so the hour list
+       scrolls instead of the popover growing (WebKit min-content trap). */
     grid-template-rows: minmax(0, 1fr);
     flex: 1 1 auto;
     min-height: 0;
-    overflow: hidden;
+    border-block: 1px solid var(--mx-hairline);
   }
-
-  /* ── Footer state strip ─────────────────────────────────────────────────── */
   .timeline__picker-foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-    font-size: var(--text-xs);
-    min-height: 32px;
-  }
-  .timeline__picker-foot-span {
-    color: var(--app-text-subtle);
-    letter-spacing: 0.03em;
-    font-variant-numeric: tabular-nums;
-  }
-  .timeline__picker-foot-msg {
-    color: var(--app-danger-text);
-    word-break: break-word;
-  }
-  .timeline__picker-foot--error {
-    color: var(--app-danger-text);
+    padding: var(--s-2) var(--s-4) var(--s-3);
   }
 
   @media (max-width: 640px) {
-    .timeline__picker {
-      width: min(320px, calc(100vw - 24px));
-    }
     .timeline__picker-panes {
       grid-template-columns: minmax(0, 1fr);
-      /* Single column: calendar + time list stack and the whole pane scrolls
-         within the fixed popover height instead of clipping. */
       grid-template-rows: auto auto;
       overflow-y: auto;
     }
