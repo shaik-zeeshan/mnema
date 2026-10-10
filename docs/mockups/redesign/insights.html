@@ -1,0 +1,1637 @@
+<!doctype html>
+<!--
+  Insights nav: no sidebar. A sticky in-page tab bar (underline tabs + the active view's own controls)
+  gives the full 1440px back to the content and puts range/day/filter controls on the same row as the section switch.
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Insights</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* ===== Insights page (prefix .in-) ===================================== */
+    .in-body { overflow: hidden; }
+    .in-main { height: 100%; overflow: auto; position: relative; }
+    .in-view { display: none; padding: var(--s-6) var(--s-7) var(--s-8); max-width: 1280px; margin: 0 auto; }
+    .in-view[data-active] { display: block; }
+
+    /* --- Section bar (replaces the sidebar) --------------------------------- */
+    .in-bar { position: sticky; top: 0; z-index: 20; border-bottom: 1px solid var(--mx-hairline); }
+    /* blur lives on a pseudo layer: a backdrop-filter on .in-bar itself would become the backdrop root and
+       stop the date popovers (children) from blurring the page beneath them */
+    .in-bar::before { content: ""; position: absolute; inset: 0; z-index: -1; background: color-mix(in srgb, var(--app-bg) 84%, transparent);
+      -webkit-backdrop-filter: blur(14px) saturate(1.2); backdrop-filter: blur(14px) saturate(1.2); }
+    /* One row, one center line: tabs fill the 56px row (ink sits on the hairline); every control is --h-md (32px). */
+    .in-bar__in { max-width: 1280px; margin: 0 auto; padding: 0 var(--s-7); height: 56px; display: flex; align-items: center; gap: var(--s-3); }
+    .in-tabs { position: relative; display: flex; align-self: stretch; gap: var(--s-5); }
+    .in-tabs button { display: flex; align-items: center; gap: 7px; padding: 0; border: 0; background: none; cursor: pointer;
+      font: 500 var(--text-lg)/1 var(--font-sans); letter-spacing: -0.012em; color: var(--app-text-subtle); transition: color var(--t-fast) var(--ease-quart); }
+    .in-tabs button:hover { color: var(--app-text); }
+    .in-tabs button[aria-current="true"] { color: var(--app-text-strong); }
+    .in-tabs button .num { font-size: var(--text-xs); font-weight: 500; color: var(--app-text-faint); }
+    .in-tabs button[aria-current="true"] .num { color: var(--app-text-subtle); }
+    .in-tabs__ink { position: absolute; left: 0; bottom: -1px; height: 2px; border-radius: 2px; background: var(--app-text-strong); width: 0;
+      transition: transform var(--t-slow) var(--ease-expo), width var(--t-slow) var(--ease-expo); }
+    .in-bar__ctl { display: none; align-items: center; gap: var(--s-3); }
+    .in-bar__ctl[data-on] { display: flex; }
+    .in-bar__ctl .mx-search { width: 220px; }
+
+    /* --- Shared page bits --------------------------------------------------- */
+    .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
+    .in-sec .mx-spacer { flex: 1; }
+    /* trailing ghost actions in a section head: text edge lines up with the column edge */
+    .in-sec > .mx-btn--ghost:last-child { margin: -6px -9px -6px 0; align-self: center; }
+    .in-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
+    .in-tip { position: fixed; z-index: 90; pointer-events: none; padding: 7px 9px; border-radius: var(--r-sm);
+      background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border); box-shadow: var(--app-shadow-popover);
+      -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+      font: 400 var(--text-sm)/1.5 var(--font-sans); color: var(--app-text-muted); white-space: nowrap; font-variant-numeric: tabular-nums;
+      opacity: 0; translate: 0 3px; transition: opacity var(--t-fast) var(--ease-quart), translate var(--t-med) var(--ease-expo); }
+    .in-tip[data-on] { opacity: 1; translate: 0 0; }
+    .in-tip b { display: flex; align-items: center; gap: 6px; color: var(--app-text-strong); font-weight: 600; }
+    [data-v] { cursor: default; }
+    @keyframes in-grow-y { from { transform: scaleY(0); } }
+    @keyframes in-grow-x { from { transform: scaleX(0); } }
+    @keyframes in-fade { from { opacity: 0; } }
+
+    /* Lede: shared hero for every view (kicker · big sans headline · prose | stats) */
+    .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end;
+      padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
+    .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
+    .in-read .mx-display em { font-style: normal; font-weight: 500; color: var(--app-text-subtle); }
+    .in-read__foot { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-5); }
+    .in-lede-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
+    .in-lede-stats .in-tval { font: 600 22px/1 var(--font-sans); letter-spacing: -0.02em; display: flex; align-items: center; gap: 9px; }
+    .in-lede-stats .in-tval .in-sw { width: 10px; height: 10px; }
+    .in-ex { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); margin-bottom: var(--s-7); }
+    .in-side { display: grid; gap: var(--s-6); align-content: start; }
+    .in-feed { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+    .in-group { margin: var(--s-4) 0 var(--s-1); font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); display: flex; align-items: center; gap: var(--s-2); }
+    .in-group::after { content: ""; flex: 1; height: 1px; background: var(--mx-hairline); }
+    .in-cat__bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--app-fg) 6%, transparent); overflow: hidden; }
+    .in-cat__bar i { display: block; height: 100%; width: var(--w); background: var(--c); border-radius: 3px; transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(200ms + var(--d) * 40ms); }
+    .in-apps { grid-template-columns: 82px 1fr auto; }
+    .in-apps dd:not(.mx-spec__note) { display: flex; align-items: center; }
+    .in-apps .in-cat__bar { flex: 1; height: 4px; }
+    .in-apps .in-cat__bar i { background: var(--chart-grey-3); }
+    .in-spark path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* --- Overview ----------------------------------------------------------- */
+    .in-week { padding: var(--s-5); }
+    .in-week__plot { display: grid; grid-template-columns: 34px repeat(var(--n, 7), 1fr); gap: 0 var(--_g, var(--s-3)); height: 210px; position: relative; margin-top: var(--s-4); }
+    .in-week__axis { position: relative; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-week__axis span { position: absolute; right: 0; transform: translateY(50%); }
+    .in-week__grid { position: absolute; left: 46px; right: 0; top: 0; bottom: 0; pointer-events: none; }
+    .in-week__grid i { position: absolute; left: 0; right: 0; height: 1px; background: var(--mx-hairline); }
+    .in-col { position: relative; display: flex; flex-direction: column-reverse; gap: 2px; justify-content: flex-start; height: 100%; }
+    .in-col > i { display: block; background: var(--c); transform-origin: bottom; animation: in-grow-y var(--t-slow) var(--ease-expo) both; animation-delay: calc(120ms + var(--d) * 40ms);
+      transition: opacity var(--t-fast) var(--ease-quart); }
+    .in-col > i:last-child { border-radius: 4px 4px 0 0; }
+    .in-col > i:first-child { border-radius: 0; }
+    .in-week__plot:hover .in-col > i { opacity: .45; }
+    .in-week__plot .in-col > i:hover { opacity: 1; }
+    .in-col--empty { border: 1px dashed var(--app-border); border-radius: var(--r-xs); height: 24px; }
+    .in-col--today::after { content: "live"; position: absolute; top: -18px; left: 50%; translate: -50% 0; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-accent); }
+    .in-week__days { display: grid; grid-template-columns: 34px repeat(var(--n, 7), 1fr); gap: var(--_g, var(--s-3)); margin-top: var(--s-2); font: 500 var(--text-xs)/1.3 var(--font-mono); color: var(--app-text-subtle); }
+    .in-week__days span { text-align: center; } .in-week__days b { display: block; color: var(--app-text); font-weight: 500; }
+    .in-cats { display: grid; margin-top: var(--s-5); border-top: 1px solid var(--mx-hairline); }
+    .in-cat { display: grid; grid-template-columns: 10px 112px 1fr 64px 40px 14px; align-items: center; gap: var(--s-3); padding: 8px 6px; margin: 0 -6px;
+      border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; color: var(--app-text);
+      font: 500 var(--text-base)/1 var(--font-sans); transition: background-color var(--t-fast) var(--ease-quart); }
+    .in-cat:hover { background: var(--app-surface-hover); }
+    .in-cat .num { font-size: var(--text-sm); color: var(--app-text-strong); text-align: right; }
+    .in-cat .num + .num { color: var(--app-text-subtle); }
+    .in-cat svg { color: var(--app-text-faint); transition: transform var(--t-med) var(--ease-expo), color var(--t-fast); }
+    .in-cat:hover svg { transform: translateX(2px); color: var(--app-text-strong); }
+    .in-dist { display: flex; gap: 2px; height: 8px; margin: var(--s-3) 0 6px; }
+    .in-dist i { background: var(--c); border-radius: 2px; transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: 240ms; }
+    .in-dist-l { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-dist-l span { display: inline-flex; align-items: center; gap: 6px; } .in-dist-l b { color: var(--app-text-strong); font-weight: 500; font: 500 var(--text-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+    .in-heat { display: grid; grid-template-columns: 30px repeat(var(--n, 12), 1fr); gap: 3px; margin-top: var(--s-4); }
+    .in-heat span { font: 500 var(--text-xs)/16px var(--font-mono); color: var(--app-text-subtle); }
+    .in-heat .h { text-align: left; color: var(--app-text-faint); }
+    .in-heat i { height: 20px; border-radius: 3px; background: var(--c, color-mix(in srgb, var(--app-fg) 4%, transparent));
+      animation: in-fade var(--t-slow) var(--ease-quart) both; animation-delay: calc(200ms + var(--d) * 12ms); transition: transform var(--t-fast) var(--ease-expo); }
+    .in-heat i[data-v]:hover { transform: scale(1.18); box-shadow: 0 0 0 2px var(--app-bg); position: relative; z-index: 1; }
+    .in-concl { display: grid; grid-template-columns: minmax(0, 1fr) 96px 72px; gap: var(--s-4); align-items: center; padding: 12px 0; border-bottom: 1px solid var(--mx-hairline); cursor: pointer; }
+    .in-concl:last-child { border-bottom: 0; }
+    .in-concl p { margin: 0 0 6px; color: var(--app-text-strong); font-size: var(--text-md); line-height: 1.4; transition: color var(--t-fast); }
+    .in-concl:hover p { color: var(--app-accent); }
+    .in-concl .num { font-size: var(--text-md); color: var(--app-text-strong); text-align: right; }
+    .in-concl .num small { display: block; font-size: var(--text-xs); color: var(--app-text-subtle); margin-top: 3px; }
+    .in-concl .num small.up { color: var(--focus-deep); } .in-concl .num small.down { color: var(--focus-distracted); }
+    .in-concl--faded p { color: var(--app-text-muted); }
+    .in-concl__meta { display: flex; gap: var(--s-2); align-items: center; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-new { color: var(--app-accent); }
+    .in-attn { padding: var(--s-4); }
+    .in-attn__row { padding: 12px 0; border-top: 1px solid var(--mx-hairline); display: grid; gap: 8px; transition: opacity var(--t-med) var(--ease-quart); }
+    .in-attn__row:first-of-type { border-top: 0; }
+    .in-attn__row b { font-weight: 500; color: var(--app-text-strong); }
+    .in-attn__row .mx-label { font-size: var(--text-xs); }
+    .in-attn__pick { display: flex; flex-wrap: wrap; gap: 4px; }
+    .in-attn__row[data-done] { opacity: .5; }
+    .in-attn__row[data-done] .in-attn__pick button:not([aria-pressed="true"]) { display: none; }
+
+    /* --- Modal -------------------------------------------------------------- */
+    .in-modal { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: var(--s-6);
+      background: color-mix(in srgb, var(--app-bg) 62%, transparent); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+      opacity: 0; pointer-events: none; transition: opacity var(--t-med) var(--ease-quart); }
+    .in-modal[data-open] { opacity: 1; pointer-events: auto; }
+    .in-modal__panel { width: min(640px, 100%); max-height: min(720px, 100%); overflow: auto; background: var(--app-surface-raised);
+      border: 1px solid var(--app-border-strong); border-radius: var(--r-xl); box-shadow: var(--app-shadow-popover);
+      transform: translateY(10px) scale(.985); transition: transform var(--t-slow) var(--ease-expo); }
+    .in-modal[data-open] .in-modal__panel { transform: none; }
+    .in-modal__head { display: grid; grid-template-columns: 1fr auto; gap: var(--s-2) var(--s-4); padding: var(--s-5) var(--s-5) var(--s-4); border-bottom: 1px solid var(--mx-hairline); }
+    .in-modal__head .mx-h2 { display: flex; align-items: center; gap: 10px; }
+    .in-modal__head .in-sw { width: 12px; height: 12px; border-radius: 3px; }
+    .in-mini { display: flex; align-items: flex-end; gap: 6px; height: 48px; grid-column: 1 / -1; margin-top: var(--s-2); }
+    .in-mini div { flex: 1; display: grid; gap: 4px; justify-items: center; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); height: 100%; align-content: end; }
+    .in-mini i { width: 100%; max-width: 36px; border-radius: 3px 3px 0 0; background: var(--c); transform-origin: bottom; animation: in-grow-y var(--t-slow) var(--ease-expo) both; }
+    .in-threads { padding: var(--s-2) var(--s-3) var(--s-4); }
+    .in-thread > button { display: grid; grid-template-columns: 1fr auto auto 14px; gap: var(--s-4); align-items: center; width: 100%; padding: 11px var(--s-2);
+      border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; color: var(--app-text-strong); font: 500 var(--text-md)/1.3 var(--font-sans); }
+    .in-thread > button:hover { background: var(--app-surface-hover); }
+    .in-thread > button .num { font-size: var(--text-sm); color: var(--app-text-subtle); }
+    .in-thread > button svg { color: var(--app-text-subtle); transition: transform var(--t-med) var(--ease-expo); }
+    .in-thread[data-open] > button svg { transform: rotate(90deg); }
+    .in-thread ul { display: none; list-style: none; margin: 0 0 var(--s-2) var(--s-2); padding: 0 0 0 var(--s-4); border-left: 1px solid var(--app-border); }
+    .in-thread[data-open] ul { display: block; }
+    .in-thread li { display: grid; grid-template-columns: 92px 1fr auto; gap: var(--s-3); padding: 6px var(--s-2); font-size: var(--text-base); color: var(--app-text); animation: mx-rise var(--t-slow) var(--ease-expo) both; }
+    .in-thread li time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.9; }
+
+    /* --- Journal ------------------------------------------------------------ */
+    .in-jwrap { animation: in-fade var(--t-med) var(--ease-quart); }
+    /* Day spine: the primary viz — activity lane + focus lane on a 08–20 hour grid */
+    .in-spine { padding: var(--s-5); margin-bottom: var(--s-7); }
+    .in-sp { position: relative; margin-top: var(--s-5); padding-bottom: 22px; }
+    .in-sp__grid { position: absolute; inset: -6px 0 0; } .in-sp__grid span { bottom: 18px !important; } .in-sp__grid b { bottom: -18px !important; } .in-sp__grid { pointer-events: none; }
+    .in-sp__grid span { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--mx-hairline); }
+    .in-sp__grid b { position: absolute; bottom: 0; left: 0; translate: -50% 0; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    /* lanes: overlapping / same-start activities stack into sub-lanes (--lanes), each --lh tall */
+    .in-sp__lane { position: relative; --lh: 64px; height: calc(var(--lanes, 1) * var(--lh) + (var(--lanes, 1) - 1) * 4px); }
+    .in-sp__lane[data-multi] { --lh: 40px; }
+    .in-sp__a { position: absolute; top: calc(var(--l, 0) * (var(--lh) + 4px)); height: var(--lh); display: grid; align-content: start; gap: 4px; padding: 9px 9px 0; overflow: hidden; text-align: left; cursor: pointer;
+      border: 0; border-top: 2px solid var(--c); border-radius: 3px 3px var(--r-xs) var(--r-xs); background: color-mix(in srgb, var(--c) 16%, var(--app-surface));
+      font: inherit; color: var(--app-text-strong); transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(80ms + var(--d) * 35ms);
+      transition: background-color var(--t-fast) var(--ease-quart), opacity var(--t-fast) var(--ease-quart); }
+    .in-sp__a b { font: 600 var(--text-sm)/1.25 var(--font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* capture run (no engine wrote this day): grey, no category colour, no focus lane — decision 6 */
+    .in-sp__run { position: absolute; top: 0; height: var(--lh); display: grid; align-content: start; gap: 4px; padding: 9px 9px 0; overflow: hidden; text-align: left;
+      border-top: 2px solid var(--chart-grey-3); border-radius: 3px 3px var(--r-xs) var(--r-xs); background: color-mix(in srgb, var(--app-fg) 5%, var(--app-surface));
+      color: var(--app-text); transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(80ms + var(--d) * 35ms); }
+    .in-sp__run b { font: 500 var(--text-sm)/1.25 var(--font-sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .in-sp__run small { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; }
+    .in-sp__a small { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; }
+    .in-sp:has([data-hot]) .in-sp__a:not([data-hot]) { opacity: .4; }
+    .in-sp__a[data-hot] { background: color-mix(in srgb, var(--c) 28%, var(--app-surface)); }
+    .in-sp__gap { position: absolute; top: 10px; bottom: 10px; display: grid; place-items: center; border: 1px dashed var(--app-border); border-radius: var(--r-sm);
+      font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-faint); overflow: hidden; white-space: nowrap; }
+    .in-sp__pend { position: absolute; top: 0; bottom: 0; display: grid; place-items: center; border-radius: var(--r-xs); border: 1px dashed var(--app-accent-border);
+      background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--app-accent) 12%, transparent) 0 1.5px, transparent 1.5px 6px);
+      font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-accent); white-space: nowrap; overflow: hidden; }
+    .in-sp__focus { position: relative; height: 6px; margin-top: 6px; border-radius: 3px; background: color-mix(in srgb, var(--app-fg) 4%, transparent); }
+    .in-sp__focus i { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--c); animation: in-fade var(--t-slow) var(--ease-quart) both; animation-delay: 300ms; }
+    .in-sp__now { position: absolute; top: -10px; bottom: 16px; width: 2px; margin-left: -1px; background: var(--app-accent); border-radius: 1px; box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .in-sp__now::before { content: "now"; position: absolute; top: -14px; left: 50%; translate: -50% 0; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-accent); }
+    .in-sp__legend { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-sp__legend span { display: inline-flex; align-items: center; gap: 6px; }
+    /* River of activity rows */
+    .in-act { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: var(--s-4); padding: var(--s-4) var(--s-3); margin: 0 calc(var(--s-3) * -1);
+      border-top: 1px solid var(--mx-hairline); border-radius: var(--r-sm); transition: background-color var(--t-fast) var(--ease-quart); }
+    .in-act:hover, .in-act[data-hot] { background: color-mix(in srgb, var(--app-fg) 2.5%, transparent); }
+    .in-act__t { display: grid; gap: 5px; align-content: start; padding-top: 2px; }
+    .in-act__t time { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
+    .in-act__t span { font-size: var(--text-xs); color: var(--app-text-subtle); }
+    .in-act h4 { display: flex; align-items: center; gap: 9px; margin: 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
+    .in-act h4 .in-sw { width: 9px; height: 9px; }
+    .in-act p { margin: 6px 0 10px; color: var(--app-text-muted); font-size: var(--text-md); line-height: 1.5; max-width: 66ch; }
+    .in-act__meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .in-act__meta .mx-btn { margin-left: auto; }
+    .in-focus { --c: var(--focus-mid); color: var(--app-text); border-color: color-mix(in srgb, var(--c) 35%, var(--app-border)); background: color-mix(in srgb, var(--c) 10%, var(--app-surface)); }
+    .in-focus::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+    .in-gap { display: flex; align-items: center; gap: var(--s-3); padding: 10px 0 10px 92px; border-top: 1px solid var(--mx-hairline);
+      font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-gap::after { content: ""; flex: 1; border-top: 1px dashed var(--app-border); }
+    .in-pending { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: var(--s-4); padding: var(--s-4) 0; }
+    .in-pending > div { display: grid; gap: 8px; }
+    .in-pending time { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-accent); padding-top: 2px; }
+    .in-receipt { margin-top: var(--s-3); padding: var(--s-4); display: none; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: var(--s-5); }
+    .in-act[data-open] .in-receipt { display: grid; animation: mx-rise var(--t-slow) var(--ease-expo) both; }
+    .in-screen { aspect-ratio: 16 / 9; border-radius: var(--r-md); border: 1px solid var(--app-border); background: var(--app-bg); overflow: hidden; display: grid; grid-template-rows: 18px 1fr; }
+    .in-screen__bar { background: var(--app-surface-raised); border-bottom: 1px solid var(--app-border); display: flex; align-items: center; gap: 4px; padding: 0 7px; font: 500 9px/1 var(--font-mono); color: var(--app-text-subtle); }
+    .in-screen__bar i { width: 6px; height: 6px; border-radius: 50%; background: var(--app-border-strong); }
+    .in-screen__body { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; }
+    .in-screen__body .tile { --c: var(--cat-meetings); position: relative; display: grid; place-items: center; align-content: center; border-radius: 6px; background: color-mix(in srgb, var(--c) 12%, var(--app-surface)); border: 1px solid color-mix(in srgb, var(--c) 28%, var(--app-border)); font: 600 var(--text-lg)/1 var(--font-sans); color: var(--c); }
+    .in-screen__body .tile[data-on] { box-shadow: inset 0 0 0 2px var(--c); }
+    .in-screen__body .tile small { position: absolute; left: 6px; bottom: 5px; font: 500 9px/1 var(--font-mono); color: var(--app-text-muted); }
+    .in-scrub { position: relative; height: 22px; margin-top: var(--s-2); cursor: pointer; }
+    .in-scrub::before { content: ""; position: absolute; left: 0; right: 0; top: 10px; height: 2px; border-radius: 1px; background: var(--app-border-strong); }
+    .in-scrub i { position: absolute; top: 6px; width: 2px; height: 10px; border-radius: 1px; background: var(--app-text-subtle); }
+    .in-scrub i.cited { background: var(--cat-meetings); }
+    .in-scrub .head { position: absolute; top: 2px; width: 2px; height: 18px; background: var(--app-accent); border-radius: 1px; left: 0; box-shadow: 0 0 0 3px var(--app-accent-glow); transition: left var(--t-fast) linear; }
+    .in-playrow { display: flex; align-items: center; gap: var(--s-2); margin-top: 4px; }
+    .in-playrow .num { font-size: var(--text-xs); color: var(--app-text-subtle); margin-left: auto; }
+    .in-turns { display: grid; gap: 2px; align-content: start; }
+    .in-turn { display: grid; grid-template-columns: 40px 1fr; gap: var(--s-2); padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; transition: background-color var(--t-fast); }
+    .in-turn:hover { background: var(--app-surface-hover); }
+    .in-turn[data-on] { background: var(--app-surface-active); }
+    .in-turn time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.7; }
+    .in-turn span { font-size: var(--text-base); color: var(--app-text); }
+    .in-turn b { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--c); display: block; margin-bottom: 3px; }
+    /* Side: this-week day picker + day mix */
+    .in-wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: var(--s-3); }
+    .in-wk button { display: grid; gap: 6px; justify-items: center; padding: 8px 0 7px; border: 1px solid transparent; border-radius: var(--r-md); background: none; cursor: pointer;
+      font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); transition: background-color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart); }
+    .in-wk button:hover:not(:disabled) { background: var(--app-surface-hover); }
+    .in-wk button[aria-pressed="true"] { border-color: var(--app-border-strong); background: var(--app-surface); color: var(--app-text-strong); }
+    .in-wk button:disabled { cursor: default; color: var(--app-text-faint); }
+    .in-wk__bar { width: 14px; height: 48px; display: flex; flex-direction: column-reverse; gap: 1px; }
+    .in-wk__bar i { display: block; background: var(--c); transform-origin: bottom; animation: in-grow-y var(--t-slow) var(--ease-expo) both; }
+    .in-wk__bar i:last-child { border-radius: 2px 2px 0 0; }
+    .in-wk__bar:empty { height: 20px; margin-top: 28px; border: 1px dashed var(--app-border); border-radius: 2px; }
+    .in-wk b { font-weight: 500; color: inherit; }
+    .in-mixrows { display: grid; }
+    .in-mixrow { display: grid; grid-template-columns: 10px 104px 1fr 56px 36px; align-items: center; gap: var(--s-3); padding: 7px 0; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text); }
+    .in-mixrow .num { font-size: var(--text-sm); color: var(--app-text-strong); text-align: right; }
+    .in-mixrow .num + .num { color: var(--app-text-subtle); }
+
+    /* --- Subjects ----------------------------------------------------------- */
+    /* Conviction map: one row per subject; dot = lead confidence now, tail = 14-day move, ticks = its other conclusions */
+    .in-map { padding: var(--s-5); margin-bottom: var(--s-7); }
+    .in-map__plot { position: relative; margin-top: var(--s-4); }
+    .in-map__bands { position: absolute; left: 168px; right: 104px; top: 0; bottom: 0; pointer-events: none; }
+    .in-map__bands span { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--mx-hairline); }
+    .in-map__bands span b { position: absolute; top: 0; left: 8px; font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-faint); white-space: nowrap; }
+    .in-map__bands .firm { background: color-mix(in srgb, var(--app-fg) 2.5%, transparent); }
+    .in-map__bands .fade { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--app-fg) 3%, transparent) 0 1px, transparent 1px 7px); }
+    .in-map__axis, .in-map__row { display: grid; grid-template-columns: 168px minmax(0, 1fr) 104px; align-items: center; }
+    .in-map__axis { height: 44px; }
+    .in-map__axis div { position: relative; height: 100%; }
+    .in-map__axis div span { position: absolute; bottom: 4px; translate: -50% 0; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-map__row { height: 38px; cursor: pointer; border-radius: var(--r-sm); position: relative; transition: background-color var(--t-fast) var(--ease-quart);
+      animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(180ms + var(--d) * 35ms); }
+    .in-map__row:hover { background: color-mix(in srgb, var(--app-fg) 4%, transparent); }
+    .in-map__name { padding-left: var(--s-3); font: 600 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .in-map__name small { margin-left: 6px; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-map__track { position: relative; height: 100%; }
+    .in-map__track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--mx-hairline); }
+    .in-map__tick { position: absolute; top: calc(50% - 5px); width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--chart-grey-3); }
+    .in-map__tail { position: absolute; top: calc(50% - 1.5px); height: 3px; border-radius: 2px; background: var(--c); opacity: .75; transform-origin: var(--o, left); animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(320ms + var(--d) * 35ms); }
+    .in-map__then { position: absolute; top: calc(50% - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--app-surface); border: 1.5px solid var(--chart-grey-4); }
+    .in-map__now { position: absolute; top: calc(50% - 6px); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--app-text-strong); box-shadow: 0 0 0 3px var(--app-surface); }
+    .in-map__now--new { background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-surface), 0 0 0 5px var(--app-accent-glow); }
+    .in-map__row--faded .in-map__now { background: var(--chart-grey-4); }
+    .in-map__row--faded .in-map__name { color: var(--app-text-muted); }
+    .in-map__val { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; padding-right: var(--s-3); font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
+    .in-map__val small { width: 34px; text-align: right; font-size: var(--text-xs); color: var(--app-text-subtle); }
+    .in-map__val small.up { color: var(--focus-deep); } .in-map__val small.down { color: var(--focus-distracted); } .in-map__val small.new { color: var(--app-accent); }
+    .in-map__legend { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-map__legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .in-map__legend .d { width: 9px; height: 9px; border-radius: 50%; background: var(--app-text-strong); }
+    .in-map__legend .o { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--chart-grey-4); }
+    .in-map__legend .t { width: 2px; height: 10px; border-radius: 1px; background: var(--chart-grey-3); }
+    .in-tier { margin-bottom: var(--s-5); }
+    .in-subj { display: grid; grid-template-columns: 170px minmax(0, 1fr) 100px 44px 14px; gap: var(--s-4); align-items: center; padding: 12px var(--s-3); margin: 0 calc(var(--s-3) * -1);
+      border-bottom: 1px solid var(--mx-hairline); border-radius: var(--r-sm); cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+    .in-subj:last-child { border-bottom: 0; }
+    .in-subj:hover { background: var(--app-surface-hover); }
+    .in-subj__name { font: 600 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .in-subj__name small { display: block; margin-top: 5px; white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .in-subj p { margin: 0; color: var(--app-text-muted); font-size: var(--text-base); line-height: 1.45; }
+    .in-subj .num { text-align: right; color: var(--app-text-strong); }
+    .in-subj svg.arrow { color: var(--app-text-faint); transition: transform var(--t-med) var(--ease-expo); }
+    .in-subj:hover svg.arrow { transform: translateX(3px); color: var(--app-text-strong); }
+    .in-tier--faded .in-subj { opacity: .62; }
+    .in-move { grid-template-columns: 1fr auto; }
+    .in-move dd { text-align: right; font: 500 var(--text-sm)/1.4 var(--font-mono); }
+    .in-move dt { font-family: var(--font-sans); font-size: var(--text-base); color: var(--app-text); }
+    .in-up { color: var(--focus-deep); } .in-down { color: var(--focus-distracted); }
+    /* Subject detail */
+    .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-3) -9px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
+    .in-cc { position: relative; height: 230px; margin: var(--s-5) 0 0 34px; }
+    .in-cc svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    .in-cc path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .in-cc__y { position: absolute; left: -34px; top: 0; bottom: 0; width: 26px; }
+    .in-cc__y span { position: absolute; right: 0; translate: 0 50%; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-cc__ev { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--app-surface); border: 2px solid var(--app-text-strong);
+      animation: in-fade var(--t-slow) var(--ease-quart) both; animation-delay: calc(300ms + var(--d) * 50ms); transition: transform var(--t-fast) var(--ease-expo); }
+    .in-cc__ev:hover { transform: scale(1.35); }
+    .in-cc__ev--origin { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .in-cc__fade { position: absolute; right: 0; translate: 0 -120%; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-cc__x { display: flex; justify-content: space-between; margin: var(--s-2) 0 0 34px; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+    .in-cls { display: grid; gap: 2px; }
+    .in-cl { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: var(--s-3); align-items: start; padding: 11px var(--s-3); border: 0; border-radius: var(--r-sm);
+      background: none; cursor: pointer; text-align: left; color: var(--app-text-muted); font: 400 var(--text-base)/1.45 var(--font-sans); position: relative;
+      transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+    .in-cl:hover { background: var(--mx-wash); color: var(--app-text); }
+    .in-cl[aria-pressed="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    .in-cl .num { font-size: var(--text-md); color: var(--app-text-strong); line-height: 1.3; }
+    .in-cl small { text-align: right; font: 500 var(--text-xs)/1.9 var(--font-mono); }
+    .in-cd__statement { font: 600 24px/1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-3) 0 var(--s-4); max-width: 34ch; text-wrap: balance; }
+    .in-tl { list-style: none; margin: var(--s-5) 0 0; padding: 0; position: relative; }
+    .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }
+    .in-tl li { position: relative; display: grid; grid-template-columns: 22px 72px 1fr; padding: 9px 0; animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 40ms); }
+    .in-tl li::before { content: ""; width: 11px; height: 11px; border-radius: 50%; margin-top: 3px; background: var(--app-bg); border: 1.5px solid var(--app-border-strong); }
+    .in-tl li.conf::before { border-color: var(--app-text-strong); background: var(--app-text-strong); width: 7px; height: 7px; margin: 5px 0 0 2px; }
+    .in-tl li.origin::before { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .in-tl time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.9; }
+    .in-tl li > div { color: var(--app-text); font-size: var(--text-base); }
+    .in-tl li > div small { display: block; margin-top: 3px; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+    .in-tl li.conf > div { font: 500 var(--text-sm)/1.6 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong); }
+
+    /* --- Context ------------------------------------------------------------ */
+    .in-compose { padding: var(--s-4) var(--s-4) var(--s-3); display: grid; gap: var(--s-3); margin-bottom: var(--s-6); }
+    .in-compose textarea { resize: none; min-height: 76px; border: 0; outline: 0; background: none; color: var(--app-text-strong); font: 400 var(--text-xl)/1.4 var(--font-sans); letter-spacing: -0.01em; }
+    .in-compose textarea::placeholder { color: var(--app-text-faint); }
+    .in-compose__row { display: flex; align-items: center; gap: 6px; padding-top: var(--s-3); border-top: 1px solid var(--mx-hairline); }
+    .in-compose__row .mx-seg .in-sw { width: 7px; height: 7px; }
+    .in-stmt { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: var(--s-4); padding: 14px var(--s-3); margin: 0 calc(var(--s-3) * -1); border-top: 1px solid var(--mx-hairline); align-items: start;
+      border-radius: var(--r-sm); transition: background-color var(--t-fast) var(--ease-quart); }
+    .in-stmt:hover { background: color-mix(in srgb, var(--app-fg) 2.5%, transparent); }
+    .in-stmt__topic { display: inline-flex; align-items: center; gap: 7px; font: 500 var(--text-base)/1.7 var(--font-sans); color: var(--app-text-subtle); }
+    .in-stmt p { margin: 0; color: var(--app-text-strong); font-size: var(--text-lg); line-height: 1.45; letter-spacing: -0.005em; }
+    .in-stmt p small { display: block; margin-top: 6px; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); letter-spacing: 0; }
+    .in-stmt__acts { display: flex; gap: 2px; opacity: 0; transition: opacity var(--t-fast); }
+    .in-stmt:hover .in-stmt__acts, .in-stmt:focus-within .in-stmt__acts { opacity: 1; }
+    .in-stmt--fresh { animation: mx-rise var(--t-slow) var(--ease-expo) both; }
+    .in-stmt--fresh p small { color: var(--app-accent); }
+    .in-stmt--unsent { opacity: .38; }
+    .in-compose__ta { position: relative; display: grid; }
+    .in-compose__ta textarea { padding-right: 72px; }
+    .in-compose__count { position: absolute; right: 2px; bottom: 2px; font-size: var(--text-xs); color: var(--app-text-subtle); pointer-events: none; }
+    .in-compose__priv { display: flex; align-items: center; gap: 6px; margin-top: calc(var(--s-3) * -1 + 4px); font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .in-compose__priv svg { flex: none; color: var(--app-text-subtle); }
+    .in-mix { padding: var(--s-5); }
+    .in-mix__total { display: flex; height: 10px; gap: 2px; margin: var(--s-4) 0 var(--s-2); }
+    .in-mix__total i { border-radius: 2px; background: var(--c); transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: 200ms; }
+    .in-mix__l { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); margin-bottom: var(--s-4); }
+    .in-mix__l span { display: inline-flex; align-items: center; gap: 6px; } .in-mix__l b { color: var(--app-text-strong); font: 500 var(--text-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+    .in-sw--hatch { background: repeating-linear-gradient(135deg, var(--c) 0 1.5px, color-mix(in srgb, var(--c) 25%, transparent) 1.5px 4px); }
+    .in-mix__row { display: grid; grid-template-columns: 96px minmax(0, 1fr) 56px; gap: var(--s-3); align-items: center; padding: 8px 0; border-top: 1px solid var(--mx-hairline);
+      font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text); }
+    .in-mix__row > span:first-child { display: inline-flex; align-items: center; gap: 8px; }
+    .in-mix__bar { display: flex; gap: 2px; height: 14px; }
+    .in-mix__bar i { border-radius: 2px; transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(240ms + var(--d) * 40ms); }
+    .in-mix__bar .a { background: var(--c); }
+    .in-mix__bar .f { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--c) 70%, transparent) 0 1.5px, color-mix(in srgb, var(--c) 18%, transparent) 1.5px 5px); }
+    .in-mix__row .num { font-size: var(--text-sm); color: var(--app-text-subtle); text-align: right; }
+    .in-mix__row .num b { color: var(--app-text-strong); font-weight: 500; }
+    .in-steer { display: grid; }
+    .in-steer div { display: grid; grid-template-columns: 1fr auto; gap: 5px var(--s-3); padding: 10px 0; border-top: 1px solid var(--mx-hairline); font-size: var(--text-base); color: var(--app-text-strong); cursor: pointer; }
+    .in-steer div:hover { color: var(--app-accent); }
+    .in-steer small { grid-column: 1 / -1; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+    .in-steer .num { color: var(--app-text-strong); font-size: var(--text-sm); }
+    .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
+    .in-guard__chips { display: flex; flex-wrap: wrap; gap: 4px; margin: var(--s-3) 0; }
+    .in-guard__chips .mx-chip { text-decoration: line-through; text-decoration-color: var(--app-text-faint); color: var(--app-text-subtle); }
+    .in-dismiss { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: 10px 0; border-top: 1px solid var(--mx-hairline); transition: opacity var(--t-med) var(--ease-quart); }
+    .in-dismiss p { margin: 0; font-size: var(--text-base); color: var(--app-text-muted); text-decoration: line-through; text-decoration-color: var(--app-text-faint); }
+    .in-dismiss small { display: block; margin-top: 4px; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .in-dismiss[data-done] { opacity: .5; } .in-dismiss[data-done] p { text-decoration: none; color: var(--app-text-strong); }
+
+    /* --- States (page glue only; every state itself is a kit component) ------- */
+    .in-notices { display: grid; gap: var(--s-2); margin: 0 0 var(--s-5); }
+    .in-notices:empty { display: none; }
+    .in-skel-read { display: grid; gap: 12px; padding-top: var(--s-4); }
+    .in-skel-read .mx-skel--title { height: 34px; width: 78%; }
+    .in-skel-read .mx-skel--title + .mx-skel--title { width: 52%; }
+    .in-skel-stats { display: grid; grid-template-columns: repeat(2, 132px); gap: var(--s-5) var(--s-6); }
+    .in-skel-stats div { display: grid; gap: 8px; } .in-skel-stats .mx-skel:first-child { height: 8px; width: 60%; } .in-skel-stats .mx-skel:last-child { height: 24px; width: 90%; }
+    .in-refresh { position: sticky; top: 64px; z-index: 5; display: flex; justify-content: center; margin: -8px 0 var(--s-4); }
+    .in-week .mx-empty, .in-side .mx-empty--compact { max-width: none; padding-inline: 0; }
+    .in-receipt .mx-empty { padding: var(--s-4) 0; }
+    .in-audio { display: grid; gap: var(--s-2); align-content: center; justify-items: start; aspect-ratio: 16 / 9; padding: var(--s-4); border-radius: var(--r-md); border: 1px solid var(--app-border); background: var(--app-bg); }
+    .in-audio b { font: 600 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); display: flex; align-items: center; gap: 7px; }
+    .in-audio b i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+    .in-rfoot { grid-column: 1 / -1; display: flex; gap: var(--s-2); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); padding-top: var(--s-2); border-top: 1px solid var(--mx-hairline); }
+    .in-mock { position: fixed; left: 24px; bottom: 6px; z-index: 95; display: flex; align-items: center; gap: var(--s-2); }
+    .in-mock .mx-input { height: 26px; font-size: var(--text-sm); padding: 0 var(--s-2); }
+
+    @container mx-window (max-width: 1180px) {
+      .in-ex, .in-feed { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<!--
+  Mockup states: ?state=<name> (combine with #overview | #journal | #subjects | #context), or the "Mockup state" picker bottom-left.
+  Any view:  loading · engine-off · not-set-up · needs-reconnect · offline · derivation-off · new-user
+  Overview:  digest-writing · rereading · digest-failed · too-few · empty-range · load-error · nothing-changed   (+ ?unit=day|month)
+  Journal:   digest-writing · too-few · being-written · nothing-captured · load-error · receipt-loading · receipt-audio · receipt-expired · receipt-no-speech
+  Subjects:  none-yet · sparse · no-match · updated · load-error · detail · detail-loading · detail-empty · detail-error   (+ ?subject=Rust)
+  Context:   empty · load-error · adding · add-error
+  Test hooks: ?ovpop=day|week|month opens the period popover · ?scroll=N scrolls the view.
+-->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17 19 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19a4.5 4.5 0 1 0-1.4-8.8A6 6 0 0 0 4.3 12.6 3.5 3.5 0 0 0 6.5 19z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+  </defs>
+</svg>
+<!-- Insights-only icons -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="in-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="in-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></symbol>
+    <symbol id="in-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="in-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.86l10.6-6.5a1 1 0 0 0 0-1.72L8.5 4.64A1 1 0 0 0 7 5.5z"/></symbol>
+    <symbol id="in-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></symbol>
+    <symbol id="in-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+    <symbol id="in-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+  </defs>
+</svg>
+
+<div class="mx-desk">
+  <div class="mx-window">
+    <header class="mx-titlebar" data-tauri-drag-region>
+      <div class="mx-titlebar__lead">
+        <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Main surface">
+          <a href="timeline.html" aria-label="Timeline" data-tip="Timeline  ⌘1"><svg width="15" height="15"><use href="#i-timeline"/></svg></a>
+          <a href="insights.html" aria-label="Insights" data-tip="Insights  ⌘2"><svg width="15" height="15"><use href="#i-insights"/></svg></a>
+        </nav>
+      </div>
+      <label class="mx-cmd" for="mx-q" data-mode="recall">
+        <button type="button" class="mx-cmd__mode" tabindex="-1" aria-label="Switch between recall and ask (Tab)">
+          <svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg>
+          <svg class="mx-cmd__ask" width="13" height="13"><use href="#i-sparkle"/></svg><b>Ask</b>
+        </button>
+        <input id="mx-q" placeholder="Recall anything…" aria-label="Recall anything — Tab to ask instead" autocomplete="off" spellcheck="false" />
+        <span class="mx-cmd__keys" aria-hidden="true">
+          <kbd class="mx-cmd__k-idle">⌘K</kbd>
+          <span class="mx-cmd__k-recall"><kbd>⇥</kbd>to ask</span>
+          <span class="mx-cmd__k-ask"><kbd>↵</kbd>ask in chat</span>
+        </span>
+      </label>
+      <div class="mx-titlebar__trail">
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="chat.html" aria-label="Chats" data-tip="Chats"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+        <div class="mx-pop-anchor">
+          <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-pop="notif" aria-label="Notifications" data-tip="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge" data-tone="warn" id="notif-badge"></span></button>
+          <div class="mx-pop mx-notifs" id="notif" role="dialog" aria-label="Notifications">
+            <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span><span class="num" id="notif-n">2</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-clear-all>Clear all</button></div>
+            <ul class="mx-notifs__list" id="notif-list">
+              <li class="mx-notif" data-tone="warn"><b class="mx-notif__title">Capture paused — low disk space</b><time class="mx-notif__time">08:41</time>
+                <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+                <p class="mx-notif__text">Free up space and recording resumes automatically.</p></li>
+              <li class="mx-notif" data-tone="info"><b class="mx-notif__title">Mnema update available</b><time class="mx-notif__time">yday</time>
+                <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+                <p class="mx-notif__text">0.1.24 is ready to download.</p>
+                <div class="mx-notif__acts"><a class="mx-btn mx-btn--sm" href="update.html">See what’s new</a></div></li>
+            </ul>
+            <div class="mx-empty mx-empty--compact mx-notifs__empty"><span class="mx-empty__glyph"><svg width="15" height="15"><use href="#i-bell"/></svg></span>
+              <b class="mx-empty__title">You’re all caught up</b><p class="mx-empty__text">Capture, model and update warnings land here.</p></div>
+          </div>
+        </div>
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="settings.html" aria-label="Settings" data-tip="Settings  ⌘,"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+      </div>
+    </header>
+
+    <main class="mx-body mx-texture in-body">
+      <div class="in-main" id="main">
+        <!-- ===== Section bar: tabs · active view's controls ===== -->
+        <div class="in-bar">
+          <div class="in-bar__in">
+            <nav class="in-tabs" aria-label="Insights sections">
+              <button data-go="overview" aria-current="true">Overview</button>
+              <button data-go="journal">Journal <span class="num" id="tab-j">5d</span></button>
+              <button data-go="subjects">Subjects <span class="num" id="tab-s">8</span></button>
+              <button data-go="context">Context <span class="num" id="tab-ctx">5</span></button>
+              <span class="in-tabs__ink" aria-hidden="true"></span>
+            </nav>
+            <span class="mx-spacer"></span>
+            <!-- Overview: the period capsule owns Day / Week / Month (its D·W·M switch + popover) — one whole period at a time, no custom range. -->
+            <div class="in-bar__ctl" data-for="overview" data-on>
+              <!-- Ask lives in the header row beside the scope it asks about. Chat needs the engine: disabled when AI is off / not set up. -->
+              <a class="mx-btn mx-btn--ghost" id="ov-ask" href="chat.html?q=What%20did%20this%20week%20add%20up%20to%3F" data-tip="Opens Chat with this week in scope"><svg class="mx-btn__accent" width="14" height="14"><use href="#i-sparkle"/></svg><span>Ask about this week</span><kbd>⌘J</kbd></a>
+              <div id="ov-range" data-date-input="period" data-unit="week" data-value="2026-10-09" data-min="2026-06-01" data-today="2026-10-09" data-align="end"></div>
+            </div>
+            <div class="in-bar__ctl" data-for="journal">
+              <div id="j-day" data-date-input="day" data-value="2026-10-09" data-min="2026-08-20" data-today="2026-10-09" data-align="end"></div>
+              <button class="mx-btn" id="j-today" disabled>Today</button>
+            </div>
+            <div class="in-bar__ctl" data-for="subjects">
+              <label class="mx-search"><svg width="14" height="14"><use href="#i-search"/></svg><input placeholder="Filter subjects" id="s-filter" aria-label="Filter subjects" /></label>
+              <div class="mx-seg mx-seg--md" role="group" aria-label="Group by" id="s-axis"><button value="conviction" aria-pressed="true">Conviction</button><button value="movement" aria-pressed="false">Movement</button></div>
+            </div>
+          </div>
+        </div>
+
+        <section class="in-view" data-view="overview" data-active aria-label="Overview"><div class="in-notices" id="n-overview"></div><div id="ov-body"></div></section>
+        <section class="in-view" data-view="journal" aria-label="Journal"><div class="in-notices" id="n-journal"></div><div id="j-body"></div></section>
+        <section class="in-view" data-view="subjects" aria-label="Subjects"><div class="in-notices" id="n-subjects"></div><div id="s-index"></div><div id="s-detail" hidden></div></section>
+        <section class="in-view" data-view="context" aria-label="Context"><div class="in-notices" id="n-context"></div><div id="c-body"></div></section>
+      </div>
+    </main>
+
+    <footer class="mx-statusbar">
+      <span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" style="--_h:22px" aria-label="Pause" data-tip="Pause capture" data-tip-pos="top"><svg width="11" height="11"><use href="#i-pause"/></svg></button>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" style="--_h:22px" aria-label="Stop" data-tip="Stop capture  ⌥⌘R" data-tip-pos="top"><svg width="11" height="11"><use href="#i-stop"/></svg></button>
+      <span class="mx-sep"></span>
+      <span class="mx-lane mx-lane--screen mx-lane--on">screen</span>
+      <span class="mx-lane mx-lane--mic mx-lane--on">mic</span>
+      <span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span>
+      <span class="mx-spacer"></span>
+      <span id="sb-engine"></span>
+      <span>today <span class="num">6h 12m</span></span><span class="mx-sep"></span>
+      <span class="num">1.2 GB</span><span class="mx-sep"></span>
+      <span>local only</span>
+    </footer>
+  </div>
+</div>
+
+<!-- Mockup chrome (not product UI): pick a state; reloads with ?state= and keeps the view hash. -->
+<div class="in-mock"><label class="mx-label" for="mock-state">Mockup state</label><select class="mx-input" id="mock-state"></select></div>
+
+<!-- Category detail modal -->
+<div class="in-modal" id="cat-modal" role="dialog" aria-modal="true" aria-labelledby="cm-title">
+  <div class="in-modal__panel" id="cm-panel"></div>
+</div>
+<div class="in-tip" id="tip" role="tooltip"></div>
+
+<script>
+/* ===== Helpers ========================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const html = (el, s) => ((typeof el === "string" ? $(el) : el).innerHTML = s);
+const chatHref = (q) => `chat.html?q=${encodeURIComponent(q)}`;
+const icon = (id, n = 15) => `<svg width="${n}" height="${n}"><use href="#${id}"/></svg>`;
+const hm = (h) => { const m = Math.round(h * 60); return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
+const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+const clk = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const fmtMin = (d) => (d >= 60 ? `${Math.floor(d / 60)}h ${String(Math.round(d % 60)).padStart(2, "0")}m` : `${Math.round(d)}m`);
+const span = (a, b) => fmtMin(toMin(b) - toMin(a));
+const big = (s) => s.replace(/(\d+)h (\d+)m/, "$1<small>h</small> $2<small>m</small>").replace(/^(\d+)m$/, "$1<small>m</small>");
+const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const dateOf = (iso) => new Date(iso + "T12:00");
+const addDays = (iso, k) => { const d = dateOf(iso); d.setDate(d.getDate() + k); return isoOf(d); };
+const dayLabel = (iso) => dateOf(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+const isoWeek = (d) => { const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 864e5 + 1) / 7); };
+
+/* State kit fragments (SHELL › States) */
+const empty = (o) => `<div class="mx-empty${o.mod ? ` mx-empty--${o.mod}` : ""}"${o.tone ? ` data-tone="${o.tone}"` : ""}>
+  <span class="mx-empty__glyph">${icon(o.icon || "i-inbox", o.mod === "compact" ? 14 : 18)}</span>
+  <${o.mod === "compact" ? "b" : "h4"} class="mx-empty__title">${o.title}</${o.mod === "compact" ? "b" : "h4"}>${o.text ? `<p class="mx-empty__text">${o.text}</p>` : ""}
+  ${o.acts ? `<div class="mx-empty__acts">${o.acts}</div>` : ""}</div>`;
+const notice = (tone, ic, title, text, acts = "") => `<div class="mx-notice"${tone ? ` data-tone="${tone}"` : ""}><span class="mx-notice__icon">${icon(ic)}</span>
+  <b class="mx-notice__title">${title}</b>${text ? `<p class="mx-notice__text">${text}</p>` : ""}${acts ? `<div class="mx-notice__acts">${acts}</div>` : ""}</div>`;
+const inline = (tone, ic, text, act = "") => `<span class="mx-inline"${tone ? ` data-tone="${tone}"` : ""}>${ic === "spin" ? `<span class="mx-spin mx-spin--sm"></span>` : icon(ic, 13)}${text}${act}</span>`;
+const retryBtn = (label = "Try again") => `<button class="mx-btn mx-btn--sm" data-retry>${icon("i-retry", 13)}${label}</button>`;
+const busy = (label, inner) => `<div aria-busy="true"><span class="mx-sr">${label}</span>${inner}</div>`;
+const skelRows = (n) => Array.from({ length: n }, () => `<div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>`).join("");
+const skelLines = (n) => `<div class="mx-skel-lines">${Array.from({ length: n }, () => `<div class="mx-skel"></div>`).join("")}</div>`;
+const skelRead = () => `<div class="in-skel-read"><div class="mx-skel" style="width:140px;height:9px"></div><div class="mx-skel mx-skel--title"></div><div class="mx-skel mx-skel--title"></div>${skelLines(2)}</div>`;
+const skelStats = () => `<div class="in-skel-stats">${Array.from({ length: 4 }, () => `<div><div class="mx-skel"></div><div class="mx-skel"></div></div>`).join("")}</div>`;
+const stat = (label, value, delta = "", up = false) => `<div class="mx-stat"><span class="mx-stat__label">${label}</span><span class="mx-stat__value">${value}</span>${delta ? `<span class="mx-stat__delta${up ? " mx-stat__delta--up" : ""}">${delta}</span>` : ""}</div>`;
+
+/* ===== Mockup state ===================================================== */
+const Q = new URLSearchParams(location.search);
+const RAW = Q.get("state") || "default";
+const MIDDAY = RAW === "engine-off-midday";          // AI switched off mid-day: today's earlier cards were written before
+const STATE = MIDDAY ? "engine-off" : RAW;
+const S = (...n) => n.includes(STATE);
+const STATES = {
+  any: [["default", "Healthy"], ["loading", "Loading (skeletons)"], ["engine-off", "AI features off since yesterday (today: capture-run day)"], ["engine-off-midday", "AI features off since mid-day (earlier cards stay)"], ["not-set-up", "AI not set up"],
+    ["needs-reconnect", "Engine needs reconnect"], ["offline", "Engine offline / unreachable"], ["derivation-off", "Continuous derivation off"], ["new-user", "First day · backfilling"]],
+  overview: [["digest-writing", "Read: writing"], ["rereading", "Read: re-reading"], ["digest-failed", "Read: re-read failed"], ["too-few", "Read: too few activities"],
+    ["empty-range", "Nothing captured in range"], ["load-error", "Charts / engine data failed"], ["nothing-changed", "Nothing changed · all tagged"]],
+  journal: [["digest-writing", "Digest: writing"], ["too-few", "Digest: too few activities"], ["being-written", "Today: being written"], ["nothing-captured", "Past day: nothing captured"],
+    ["load-error", "Day failed to load"], ["receipt-loading", "Receipt: loading"], ["receipt-audio", "Receipt: audio only"], ["receipt-expired", "Receipt: footage expired"], ["receipt-no-speech", "Receipt: no readable speech"]],
+  subjects: [["none-yet", "No subjects yet"], ["sparse", "Fewer than 5 (flat list)"], ["no-match", "Filter: no match"], ["updated", "Updates staged (refresh)"], ["load-error", "Failed to load"],
+    ["detail", "Detail (Rust)"], ["detail-loading", "Detail: loading"], ["detail-empty", "Detail: nothing concluded"], ["detail-error", "Detail: failed"]],
+  context: [["empty", "No statements yet"], ["load-error", "Failed to load"], ["adding", "Adding a statement"], ["add-error", "Add failed"], ["over-cap", "More statements than fit — older ones not sent"]],
+};
+const ENGINE_DOWN = S("engine-off", "not-set-up");      // no AI output at all → capture-only Overview, Ask disabled
+const NO_DERIVE = ENGINE_DOWN || S("derivation-off");   // nothing new is derived (no read, no live-edge write-up)
+const PAUSED = NO_DERIVE || S("needs-reconnect", "offline");
+// reason codes → copy. Off-by-choice is never a warning; unreachable never says "sign in again" (ADR 0048/0058).
+const ENGINE = {
+  "engine-off": ["off", "i-off", "AI features are off", `<a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-providers">Turn on in Settings →</a>`, {
+    overview: "You're seeing capture-only numbers. The read, categories and focus come back when AI features are on.",
+    journal: "Nothing new is written up while they're off. Days already written stay as they are.",
+    subjects: "Subjects stop updating while AI features are off. Nothing here is lost.",
+    context: "What you write is saved, and steers the dossier again once AI features are back on." }],
+  "derivation-off": ["off", "i-off", "Continuous derivation is off", `<a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-usercontext">Turn on in Settings →</a>`, {
+    overview: "No new activities, read or focus while it's off — the numbers below are capture-only.",
+    journal: "New capture isn't written up while it's off. Days already written stay as they are.",
+    subjects: "No new evidence reaches your subjects while it's off. Confidence keeps fading on its own.",
+    context: "What you write is saved, and steers the dossier once derivation is back on." }],
+  "not-set-up": ["", "i-sparkle", "AI isn't set up yet", `<a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Set up AI</a>`, {
+    overview: "Connect a provider — local (Ollama, Llamafile) or your own API key — to get the read, categories and focus.",
+    journal: "The journal is written by your AI provider. Until one is connected, the Timeline has everything captured.",
+    subjects: "Subjects are views your AI provider forms from your activity.",
+    context: "You can write context now — it's saved and used once AI is set up." }],
+  "needs-reconnect": ["danger", "i-alert", "ChatGPT needs you to sign in again", `<a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Reconnect</a>`, {
+    _: "OpenAI rejected the saved sign-in, so new write-ups are paused. Everything already here stays." }],
+  "offline": ["warn", "i-cloud-off", "Can't reach ChatGPT right now", "", {
+    _: "New write-ups resume on their own once it's reachable. What's below was written before 14:52." }],
+};
+const PILL = { "not-set-up": `<a class="mx-engine" href="settings.html#s-providers">engine <b>not set up</b></a>`,
+  "needs-reconnect": `<a class="mx-engine mx-engine--error" href="settings.html#s-providers">engine <b>needs reconnect</b></a>`,
+  "offline": `<a class="mx-engine mx-engine--error" href="settings.html#s-providers">engine <b>offline</b></a>` };
+// The live-edge pending slot's paused copy (journal-view.ts pendingReasonCopy).
+const PAUSED_COPY = { "engine-off": "Summaries are paused — AI features are turned off.", "not-set-up": "Summaries are paused — no AI provider is connected yet.",
+  "derivation-off": "Summaries are paused — continuous derivation is turned off.", "needs-reconnect": "Summaries are paused — sign in with ChatGPT again in Settings.",
+  "offline": "Summaries are paused — can't reach ChatGPT right now. They'll resume on their own." };
+function paintNotices() {
+  const e = ENGINE[STATE];
+  // not set up: Journal and Subjects show a centred empty with the same CTA, so they skip the duplicate notice
+  for (const v of ["overview", "journal", "subjects", "context"]) html(`#n-${v}`, e && !(STATE === "not-set-up" && v !== "overview" && v !== "context") ? notice(e[0], e[1], e[2], e[4][v] || e[4]._, e[3]) : "");
+  html("#sb-engine", PILL[STATE] ? PILL[STATE] + `<span class="mx-sep"></span>` : "");
+  if (S("needs-reconnect")) { // [BACKEND] no AppNotification is emitted for engine health today
+    $("#notif-list").insertAdjacentHTML("afterbegin", `<li class="mx-notif" data-tone="danger"><b class="mx-notif__title">ChatGPT sign-in expired</b><time class="mx-notif__time">14:52</time>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss">${icon("i-x", 13)}</button>
+      <p class="mx-notif__text">Journal and digests are paused until you reconnect.</p><div class="mx-notif__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Reconnect</a></div></li>`);
+    $("#notif-badge").dataset.tone = "danger"; $("#notif-n").textContent = "3";
+  }
+}
+
+/* ===== Tooltip ========================================================== */
+const tip = $("#tip");
+document.addEventListener("mouseover", (e) => {
+  const t = e.target.closest("[data-v]");
+  if (!t) return tip.removeAttribute("data-on");
+  const [head, ...rest] = t.dataset.v.split("|");
+  const sw = t.dataset.c ? `<span class="in-sw" style="--c:${t.dataset.c}"></span>` : "";
+  tip.innerHTML = `<b>${sw}${head}</b>${rest.join("<br>")}`;
+  tip.setAttribute("data-on", "");
+});
+document.addEventListener("mousemove", (e) => {
+  if (!tip.hasAttribute("data-on")) return;
+  const w = tip.offsetWidth, x = Math.min(e.clientX + 14, innerWidth - w - 8);
+  tip.style.left = x + "px"; tip.style.top = e.clientY + 16 + "px";
+});
+
+/* ===== Data (fake, believable) — ONE source: the journal days ============
+   Overview, Journal, the category modal and the apps lists all derive from DAYS, so the same label means
+   the same computation everywhere (lede-stats.ts): Deep focus = share of ACTIVITIES with focus = deep;
+   Tracked = Σ app active time (usage charts) — a different source from Σ activity spans, so they differ. */
+const CAT = { creating: "Creating", meetings: "Meetings", research: "Research", communication: "Communication",
+  learning: "Learning", entertainment: "Entertainment", organizing: "Organizing", personal: "Personal" };
+const ORDER = Object.keys(CAT);
+const cv = (k) => `var(--cat-${k})`;
+const FOC = { deep: ["deep", "Deep"], mid: ["mid", "Mixed"], distracted: ["distracted", "Scattered"] };
+const FW = { deep: 1, mid: .5, distracted: 0 };
+const TODAY = "2026-10-09", NOW = toMin("15:20"), COVERED = toMin("15:08"); // COVERED = worker watermark (status.coveredUntilMs)
+// act: [start, end, cat, title, summary, apps, focus, receipt?]  ·  gap: ["gap", start, end] — gaps carry no label, only a span
+const DAYS = [
+  { iso: "2026-10-05", head: "Pipeline day: you reproduced the tail-segment loss before lunch, then chased it all afternoon.",
+    sub: "Two long sessions bracket one planning call. Almost no messaging until after five.", acts: [
+    ["08:58", "09:12", "communication", "Inbox + Slack", "Skimmed overnight messages; nothing blocking.", ["Slack"], "distracted"],
+    ["09:14", "11:02", "creating", "Capture pipeline: tail-segment loss", "Reproduced the lost tail segment on display sleep and filed it as #241.", ["Zed", "Terminal"], "deep"],
+    ["11:10", "12:00", "meetings", "Weekly planning with Ana", "Agreed the redesign ships before licensing copy; Ana takes the website.", ["Zoom"], "mid"],
+    ["gap", "12:00", "12:50"],
+    ["12:50", "14:20", "research", "ScreenCaptureKit stream lifecycle", "Read how a delegate-terminated stream reports stop, and what that means for the writer.", ["Arc", "Zed"], "deep"],
+    ["14:25", "16:30", "creating", "Suspend path: first draft", "Drafted committing the finalized tail on every suspension kind.", ["Zed", "Terminal"], "deep"],
+    ["16:40", "17:20", "learning", "Rust async cancellation", "Two long posts on cancel-safety in select loops.", ["Arc"], "mid"]] },
+  { iso: "2026-10-06", head: "Your best focus day of the week: the suspend-path fix merged by four.",
+    sub: "Two and a half uninterrupted hours before lunch, then the release page and the merge.", acts: [
+    ["09:02", "09:28", "communication", "Slack catch-up", "Answered Ana on the R2 bucket layout.", ["Slack"], "distracted"],
+    ["09:30", "12:05", "creating", "Suspend path commits finalized tail", "Finished the suspend path and wired the tail commit for all suspension kinds.", ["Zed", "Terminal"], "deep"],
+    ["gap", "12:05", "13:00"],
+    ["13:00", "14:25", "research", "speakrs chunking", "Compared chunk sizes for long recordings; 180s chunks look like the sweet spot.", ["Arc", "Terminal"], "deep"],
+    ["14:30", "15:00", "organizing", "Release checklist for 0.1.23", "Built the release checklist and moved two issues out of the milestone.", ["Linear"], "mid"],
+    ["15:02", "16:10", "creating", "Website release page", "R2 latest.json chip on the download page.", ["Zed", "Arc"], "deep"],
+    ["16:15", "17:05", "creating", "Merged the suspend-path fix", "Final review pass, then merged — the turning point of the week.", ["Zed", "Terminal"], "deep"]] },
+  { iso: "2026-10-07", head: "Research-heavy: diarization benchmarks in the morning, mockups after lunch.",
+    sub: "Sortformer's 4-speaker cap showed up in the numbers; the afternoon went to Insights layouts.", acts: [
+    ["08:52", "10:31", "research", "Diarization benchmark: speakrs vs Sortformer", "Ran the 232-clip DER suite twice; Sortformer's 4-speaker cap blew up the 5+ speaker clips. Notes in bench.md.", ["Terminal", "Zed"], "deep"],
+    ["10:40", "11:54", "creating", "Bench harness: day collector", "Wrote the day collector and a first HTML report for the resource bench.", ["Zed", "Terminal"], "deep"],
+    ["11:58", "12:40", "meetings", "Call with Ana — retention GC", "Retention's speaker GC is slowing startup; agreed to hoist it out of the hot path.", ["Zoom"], "mid"],
+    ["gap", "12:40", "13:35"],
+    ["13:35", "14:05", "communication", "Slack + email catch-up", "Replied to three support threads and the Polar webhook question.", ["Slack", "Mail"], "distracted"],
+    ["14:10", "15:55", "creating", "Insights mockups", "Overview and Journal layouts; tried a ranked category list as the legend.", ["Zed", "Arc"], "deep"],
+    ["16:02", "17:10", "learning", "CoreML conversion docs", "Read coremltools docs on stateful models and the WeSpeaker export path.", ["Arc"], "mid"]] },
+  { iso: "2026-10-08", head: "Meetings took the day — four calls, and pipeline work fell to 36 minutes.",
+    sub: "The only deep blocks were the first and last 40 minutes. Everything between was calls.", acts: [
+    ["09:00", "09:36", "creating", "Capture pipeline: writer flush", "Short pass on writer flush ordering before the first call.", ["Zed"], "deep"],
+    ["09:40", "10:50", "meetings", "Design review — redesign round 10", "Walked the 14-page screens gallery; settings simplified to Obsidian-style rows.", ["Zoom", "Figma"], "mid"],
+    ["11:00", "12:10", "meetings", "Licensing sync with Ana", "CRL cache cadence and the update-window copy for the purchase page.", ["Zoom"], "mid"],
+    ["gap", "12:10", "13:20"],
+    ["13:20", "14:40", "meetings", "User interview: Priya (designer)", "Wants Figma time read as work; asked about exporting the Journal weekly.", ["Zoom"], "mid"],
+    ["14:45", "15:30", "communication", "Follow-ups from interviews", "Wrote up interview notes; filed two issues.", ["Linear", "Slack"], "distracted"],
+    ["15:35", "16:15", "meetings", "Standup", "Async standup moved to a call; mostly planning.", ["Zoom"], "distracted"],
+    ["16:20", "17:05", "creating", "Light-theme tokens pass", "Adjusted category ramps so all eight read on paper.", ["Zed"], "deep"]] },
+  { iso: "2026-10-09", head: "Back on the pipeline: writer finalize tests since 09:20, one short call with Ana.",
+    sub: "Two and a half hours of deep work before the call, research after lunch.", acts: [
+    ["08:41", "09:15", "communication", "Inbox + Slack", "Cleared overnight messages; triaged the disk-space notification.", ["Slack", "Mail"], "distracted"],
+    ["09:20", "11:48", "creating", "Writer finalize tests", "Tail segment now commits on every suspension kind; added three regression tests around the delegate-terminated path.", ["Zed", "Terminal"], "deep"],
+    ["11:50", "12:22", "meetings", "Call with Ana — retention GC rollout", "Agreed to ship the hoisted GC behind the 0049 index; Ana will write the release note.", ["Zoom"], "mid", "receipt"],
+    ["11:50", "12:04", "communication", "Slack thread on the GC rollout", "Answered two questions about the 0049 index while the call was still running.", ["Slack"], "distracted"],
+    ["gap", "12:22", "13:10"],
+    ["13:10", "14:02", "research", "Core Audio tap sample rates", "Read through HFP renegotiation notes; confirmed the writer follows the aggregate device's nominal rate.", ["Arc", "Zed"], "deep"],
+    ["14:05", "14:50", "creating", "Insights redesign: Journal spine", "Day spine and the activity river in the new kit.", ["Zed"], "deep"],
+    ["14:52", "15:08", "personal", "Ask AI + break", "Asked Mnema where the week went; short walk.", ["Mnema"], "mid"]] },
+];
+// Alternate day bodies the states swap in.
+const ALT = {
+  "too-few": { iso: "2026-10-04", head: "", sub: "", acts: [["10:12", "10:41", "personal", "Flight check-in and seat change", "Checked in for Tuesday's flight and moved to an aisle seat.", ["Arc"], "mid"]] },
+  "new-user": { iso: TODAY, head: "First morning on Mnema: inbox, then a long stretch on the writer tests.", sub: "Two activities written up so far.", acts: [
+    ["08:41", "09:15", "communication", "Inbox + Slack", "Cleared overnight messages; triaged the disk-space notification.", ["Slack", "Mail"], "distracted"],
+    ["09:20", "11:48", "creating", "Writer finalize tests", "Tail segment now commits on every suspension kind; added three regression tests.", ["Zed", "Terminal"], "deep"]] },
+  "being-written": { iso: TODAY, head: "", sub: "", acts: [] },
+};
+const notGap = (a) => a[0] !== "gap";
+const mins = (a) => toMin(a[1]) - toMin(a[0]);
+// One captured day for any ISO date. ponytail: outside Oct 5–9 a weekday reuses that weekday's shape — mock data.
+function dayFor(iso) {
+  if (iso > TODAY) return { iso, future: true, acts: [] };
+  if (S("empty-range") && iso !== TODAY) return { iso, acts: [] };
+  if (S("new-user")) return iso === TODAY ? ALT["new-user"] : { iso, acts: [] };
+  if (S("too-few")) return { iso, acts: iso === TODAY ? ALT["too-few"].acts : [] }; // one activity in the whole range
+  const exact = DAYS.find((x) => x.iso === iso);
+  const dow = dateOf(iso).getDay();
+  // Decision 6: no engine → no Activities. A captured day with nothing written up takes the capture-run shape
+  // (settled 2026-08-20: cut only at gaps; nothing claims "this was one thing"). AI off before today ⇒ today is such a day.
+  if ((S("engine-off") || S("derivation-off")) && iso === TODAY && !MIDDAY) return { iso, acts: [], runs: runsOf((exact || DAYS[4]).acts) };
+  if (exact) return exact;
+  if (dow === 0 || dow === 6 || iso < "2026-06-01") return { iso, acts: [] };
+  return { ...DAYS[dow - 1], iso, head: "" };
+}
+// Capture runs from a day's activity rows: consecutive activities merge; an away-gap row splits. [start, end, apps].
+function runsOf(acts) {
+  const runs = []; let cur = null;
+  acts.forEach((a) => {
+    if (!notGap(a)) { cur = null; return; }
+    if (!cur) { cur = [a[0], a[1], [...a[5]]]; runs.push(cur); }
+    else { if (toMin(a[1]) > toMin(cur[1])) cur[1] = a[1]; a[5].forEach((x) => cur[2].includes(x) || cur[2].push(x)); }
+  });
+  return runs;
+}
+const runsMin = (runs) => runs.reduce((t, [s, e]) => t + toMin(e) - toMin(s), 0);
+function stats(days) {
+  const acts = days.flatMap((x) => x.acts.filter(notGap));
+  const byCat = {}, byApp = {}, foc = { deep: 0, mid: 0, distracted: 0 };
+  let act = 0;
+  acts.forEach((a) => { act += mins(a); byCat[a[2]] = (byCat[a[2]] || 0) + mins(a); foc[a[6]]++;
+    a[5].forEach((x) => (byApp[x] = (byApp[x] || 0) + mins(a) / a[5].length)); });
+  const app = Math.round(act * 0.93); // usage charts: Σ app active time — its own source, never Σ activity spans
+  const captured = days.filter((x) => x.acts.length).length;
+  return { acts, act, app, captured, foc, n: acts.length, deep: acts.length ? Math.round((foc.deep / acts.length) * 100) : null,
+    cats: Object.entries(byCat).sort((a, b) => b[1] - a[1]), apps: Object.entries(byApp).sort((a, b) => b[1] - a[1]) };
+}
+
+/* ===== Overview ========================================================= */
+const OV = { unit: "week", start: "2026-10-05", end: "2026-10-11", current: true };
+function periodDays() {
+  const out = []; for (let d = OV.start; d <= OV.end; d = addDays(d, 1)) out.push(dayFor(d)); return out;
+}
+// Columns for "Where the <unit> went": day = one column per captured hour; week = per day; month = per day of the month.
+function columns(days, st) {
+  if (OV.unit === "day") {
+    const acts = st.acts; if (!acts.length) return [];
+    const live = days[0].iso === TODAY;
+    const h0 = Math.floor(Math.min(...acts.map((a) => toMin(a[0]))) / 60), h1 = Math.ceil(Math.max(...acts.map((a) => toMin(a[1])), live ? NOW : 0) / 60);
+    return Array.from({ length: h1 - h0 }, (_, i) => {
+      const s = (h0 + i) * 60, e = s + 60, h = {};
+      acts.forEach((a) => { const o = Math.min(e, toMin(a[1])) - Math.max(s, toMin(a[0])); if (o > 0) h[a[2]] = (h[a[2]] || 0) + o / 60; });
+      return { k: String(h0 + i).padStart(2, "0"), tip: `${clk(s)}–${clk(e)}`, h, live: live && NOW >= s && NOW < e };
+    });
+  }
+  return days.map((x) => {
+    const h = {}; x.acts.filter(notGap).forEach((a) => (h[a[2]] = (h[a[2]] || 0) + mins(a) / 60));
+    const dow = dateOf(x.iso).getDay();
+    return { k: OV.unit === "week" ? dateOf(x.iso).toLocaleDateString("en-US", { weekday: "short" }) : String(dateOf(x.iso).getDate()),
+      tip: dayLabel(x.iso), h: Object.keys(h).length ? h : null, live: x.iso === TODAY, future: x.future, weekend: dow === 0 || dow === 6 };
+  });
+}
+// Focus heat: rows = days (week) · one row (day) · ISO weeks (month); 12 hourly cells 08–20; colour = mean focus weight by overlap.
+function heatRows(days) {
+  const cells = (ds) => Array.from({ length: 12 }, (_, i) => {
+    const s = (8 + i) * 60, e = s + 60; let w = 0, m = 0;
+    ds.forEach((x) => x.acts.filter(notGap).forEach((a) => { const o = Math.min(e, toMin(a[1])) - Math.max(s, toMin(a[0])); if (o > 0) { w += FW[a[6]] * o; m += o; } }));
+    return m ? { f: w / m >= .7 ? "deep" : w / m >= .35 ? "mid" : "distracted", m: m / Math.max(1, ds.filter((x) => x.acts.length).length), s } : null;
+  });
+  const cap = days.filter((x) => x.acts.length);
+  if (OV.unit === "month") {
+    const wk = {}; cap.forEach((x) => (wk[isoWeek(dateOf(x.iso))] ||= []).push(x));
+    return Object.entries(wk).map(([w, ds]) => ({ label: `W${w}`, cells: cells(ds), tip: `week ${w}` }));
+  }
+  return cap.map((x) => ({ label: dateOf(x.iso).toLocaleDateString("en-US", { weekday: "short" }), cells: cells([x]), tip: dayLabel(x.iso) }));
+}
+const READ = {
+  week: ["A build week. The capture pipeline ate your mornings <em>— until Thursday's calls took the whole day back.</em>",
+    "Most deep work landed between 9 and 12. Meetings took most of Thursday, and Friday is recovering: you're back in the writer tests since 09:20."],
+  month: ["October so far: pipeline work in the mornings <em>— and Thursdays keep going to calls.</em>",
+    "Deep work clusters before lunch on most days. The 8th was the month's most meeting-heavy day; the 6th its most focused."],
+};
+const CH = [
+  ["Formed", [["You do your deepest work before lunch, and protect it.", "Work rhythm", [20, 32, 41, 50, 58, 66, 71], 71, "new", "formed Tue"],
+    ["You're learning CoreML to move diarization on-device.", "CoreML", [12, 20, 31, 38, 47, 52, 58], 58, "new", "formed Wed"]]],
+  ["Strengthened", [["Rust is your primary working language.", "Rust", [80, 84, 86, 88, 89, 90, 91], 91, "up", "+2 pts"],
+    ["You prefer written async updates over calls.", "Communication", [52, 58, 61, 60, 68, 72, 77], 77, "up", "+9 pts"]]],
+  ["Started fading", [["You're evaluating Sortformer for diarization.", "Diarization", [30, 27, 24, 20, 17, 14, 12], 12, "down", "−18 pts"]]],
+];
+const ATTN = [["Browsing r/MechanicalKeyboards", "Thu 21:10 · 24m"], ["Untitled frames — “onboarding v3”", "Wed 17:02 · 18m"], ["invoice_0923.pdf", "Mon 12:40 · 6m"]];
+const spark = (pts, cls = "") => {
+  const w = 96, h = 28, step = w / (pts.length - 1), y = (p) => (h - 3 - (p / 100) * (h - 6)).toFixed(1);
+  return `<svg class="in-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" overflow="visible"><path d="${pts.map((p, i) => `${i ? "L" : "M"}${(i * step).toFixed(1)} ${y(p)}`).join(" ")}" stroke="var(--app-text-subtle)"/>
+    <circle cx="${w}" cy="${y(pts[pts.length - 1])}" r="3" fill="${cls === "new" ? "var(--app-accent)" : "var(--app-text-strong)"}" stroke="var(--app-bg)" stroke-width="1.5"/></svg>`;
+};
+let OVDATA = null; // last render's days, for the category modal
+function renderOverview() {
+  const u = OV.unit, days = periodDays(), st = stats(days); OVDATA = { days, st };
+  const scope = OV.current ? (u === "day" ? "today" : `this ${u}`) : OV.label;
+  const kickWhen = u === "week" ? `week ${isoWeek(dateOf(OV.start))}` : u === "month" ? dateOf(OV.start).toLocaleDateString("en-US", { month: "long" }) : dayLabel(OV.start);
+  const ask = $("#ov-ask"); $("span", ask).textContent = `Ask about ${scope}`;
+  ask.href = chatHref(`What did ${scope} add up to?`);
+  if (ENGINE_DOWN) { ask.setAttribute("aria-disabled", "true"); ask.dataset.tip = "Ask needs AI — turn it on in Settings"; }
+  else { ask.removeAttribute("aria-disabled"); ask.dataset.tip = `Opens Chat with ${scope} in scope`; }
+
+  if (S("loading")) {
+    return html("#ov-body", busy("Loading the overview", `<div class="in-read"><div>${skelRead()}</div>${skelStats()}</div>
+      <div class="in-ex"><div class="mx-panel in-week"><div class="mx-skel" style="width:160px;height:9px"></div><div class="mx-skel-chart" style="height:210px;margin-top:var(--s-4)">${"<div class=\"mx-skel\"></div>".repeat(7)}</div>${skelRows(3)}</div>
+      <div class="in-side"><div>${skelLines(3)}</div><div>${skelRows(4)}</div></div></div><div class="in-feed"><div>${skelRows(4)}</div><div class="mx-panel in-attn">${skelRows(3)}</div></div>`));
+  }
+  const capOnly = NO_DERIVE;      // usage charts only: no activities → no categories / focus / read
+  const nothing = !st.n;          // nothing captured in the period
+  const days1 = u === "day" ? "the day" : u;
+
+  // ---- Lede: the read (or the capture-only sentence) + stats
+  const topApp = st.apps[0]?.[0];
+  let lede;
+  const written = `<div class="in-read__foot"><span class="mx-label num">written ${OV.current ? "14:52" : "Oct 12, 09:02"}</span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" id="ov-reread"${S("rereading") ? ' aria-busy="true" disabled' : ""}>${S("rereading") ? `<span class="mx-spin mx-spin--sm"></span>Re-reading…` : `${icon("i-retry", 13)}Re-read`}</button></div>`;
+  const kicker = `<span class="mx-kicker">${OV.current ? "The read so far" : "The read"} · ${kickWhen}</span>`;
+  if (nothing) {
+    lede = `<span class="mx-kicker">${u === "day" ? "This day" : `This ${u}`} · ${kickWhen}</span><h1 class="mx-display">Nothing captured ${OV.current ? scope : OV.label}.</h1>
+      <p class="mx-prose">Mnema wasn't recording ${OV.current ? `${scope} yet` : "in this period"}, so there's nothing to read. Step to another ${days1}, or start recording.</p>`;
+  } else if (capOnly) {
+    lede = `<span class="mx-kicker">This ${u === "day" ? "day" : u} · ${kickWhen}</span><h1 class="mx-display">${fmtMin(st.app)} tracked across ${st.apps.length} apps. <em>Most of it in ${topApp}.</em></h1>`;
+  } else if (S("new-user")) {
+    lede = `${kicker}<h1 class="mx-display">Mnema is still learning your ${u === "day" ? "day" : u}.</h1>
+      <p class="mx-prose">It's backfilling your history now. The first read appears once a few activities are written up — check back this afternoon.</p>`;
+  } else if (S("digest-writing")) {
+    lede = `${kicker}<div aria-busy="true"><span class="mx-sr">Writing the read</span><div class="in-skel-read"><div class="mx-skel mx-skel--title"></div><div class="mx-skel mx-skel--title"></div>${skelLines(2)}</div></div>
+      <div class="in-read__foot">${inline("", "spin", `Writing the read for ${scope}…`)}</div>`;
+  } else if (S("too-few")) {
+    lede = `${kicker}<h1 class="mx-display">Too little captured ${OV.current ? scope : OV.label} to write a read.</h1>
+      <p class="mx-prose">A read needs at least two activities; this ${days1} has one so far. The numbers on the right still count.</p>`;
+  } else if (S("digest-failed")) {
+    lede = `${kicker}<h1 class="mx-display">${READ[u]?.[0] || DAYS[4].head}</h1>
+      <div class="in-read__foot">${inline("danger", "i-alert", "Couldn't re-read: the AI engine is not reachable right now. Try again in a moment.", `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry>Retry</button>`)}</div>`;
+  } else {
+    const day = DAYS.find((x) => x.iso === OV.start) || DAYS[4];
+    const [h, p] = u === "day" ? [day.head || DAYS[(dateOf(OV.start).getDay() + 4) % 5].head, day.sub] : READ[u];
+    lede = `${kicker}<h1 class="mx-display">${h}</h1><p class="mx-prose">${p}</p>${PAUSED ? "" : written}`;
+  }
+  const top = st.cats[0];
+  const need = S("derivation-off") ? "continuous derivation" : "AI";
+  const statsHtml = S("load-error") ? ["Tracked · app time", "Daily avg", "Deep focus · by activity", "Top category"].map((l) => stat(l, "—", "couldn't load")).join("")
+    : nothing ? stat("Tracked · app time", "0<small>m</small>", "no capture") + stat("Daily avg", "—")
+    : capOnly ? stat("Tracked · app time", big(fmtMin(st.app)), OV.current ? `+4h 10m vs ${u === "day" ? "yesterday" : "last " + u}` : "") + stat("Daily avg", big(fmtMin(st.app / Math.max(1, st.captured))), `over ${st.captured} captured day${st.captured === 1 ? "" : "s"}`)
+    : S("too-few") ? stat("Tracked · app time", big(fmtMin(st.app)), "app active time") + stat("Activities", st.n, "a read needs 2")
+    : stat("Tracked · app time", big(fmtMin(st.app)), S("new-user") ? "first week · nothing to compare" : `+4h 10m vs ${u === "day" ? "yesterday" : "last " + u}`, !S("new-user"))
+      + stat("Daily avg", big(fmtMin(st.app / Math.max(1, st.captured))), `over ${st.captured} captured day${st.captured === 1 ? "" : "s"}`)
+      + stat("Deep focus · by activity", `${st.deep}<small>%</small>`, `${st.foc.deep} of ${st.n} activit${st.n === 1 ? "y" : "ies"}${S("new-user") ? "" : " · +6 pts"}`, !S("new-user"))
+      + `<div class="mx-stat"><span class="mx-stat__label">Top category</span><span class="mx-stat__value in-tval"><span class="in-sw" style="--c:${cv(top[0])}"></span>${CAT[top[0]]}</span><span class="mx-stat__delta">${Math.round((top[1] / st.act) * 100)}% of activity time</span></div>`;
+
+  // ---- "Where the <unit> went" chart
+  const cols = columns(days, st), month = u === "month";
+  const colTot = (c) => (c.h ? Object.values(c.h).reduce((a, b) => a + b, 0) : 0);
+  // day: minutes per hour can pass 60 when activities overlap (same-start rows) — the axis grows to fit.
+  const MAX = u === "day" ? Math.max(1, Math.ceil(Math.max(0, ...cols.map(colTot)) * 4) / 4) : Math.max(8, Math.ceil(Math.max(0, ...cols.map(colTot)) / 2) * 2);
+  const ticks = [MAX, MAX * .75, MAX / 2, MAX / 4, 0];
+  const tl = (v) => (u === "day" ? `${Math.round(v * 60)}m` : `${Math.round(v)}h`);
+  let plot = `<div class="in-week__axis">${ticks.map((v) => `<span style="bottom:${(v / MAX) * 100}%">${tl(v)}</span>`).join("")}</div>
+    <div class="in-week__grid">${ticks.slice(0, 4).map((v) => `<i style="bottom:${(v / MAX) * 100}%"></i>`).join("")}</div>`;
+  cols.forEach((c, di) => {
+    const tot = colTot(c);
+    if (!tot) return (plot += `<div class="in-col"><div class="in-col--empty" data-v="${c.tip}|${c.future ? "not yet" : "nothing captured"}"${c.future && month ? ' style="opacity:.4"' : ""}></div></div>`);
+    if (capOnly) return (plot += `<div class="in-col${c.live && u === "week" ? " in-col--today" : ""}" style="height:${(tot * .93 / MAX) * 100}%;align-self:end"><i style="--c:var(--chart-grey-3);flex:1;--d:${di}" data-v="${c.tip}|${fmtMin(tot * 60 * .93)} app time"></i></div>`);
+    plot += `<div class="in-col${c.live && u === "week" ? " in-col--today" : ""}" style="height:${(tot / MAX) * 100}%;align-self:end">` +
+      ORDER.filter((k) => c.h[k]).map((k, i) => `<i data-cat="${k}" style="--c:${cv(k)};flex:${c.h[k]};--d:${di * 2 + i * .3}" data-c="${cv(k)}"
+        data-v="${CAT[k]} · ${fmtMin(c.h[k] * 60)}|${c.tip} · ${Math.round((c.h[k] / tot) * 100)}% of ${fmtMin(tot * 60)}"></i>`).join("") + `</div>`;
+  });
+  const daysRow = `<span></span>` + cols.map((c) => `<span${c.weekend && month ? ' style="color:var(--app-text-faint)"' : ""}><b>${c.k}</b>${month ? "" : colTot(c) ? fmtMin(colTot(c) * 60 * (capOnly ? .93 : 1)) + (c.live && u === "day" ? " so far" : "") : "—"}</span>`).join("");
+  const per = capOnly ? { day: "app time per hour", week: "app time per day", month: "app time per day" }[u]
+    : { day: "activity minutes per hour, by category", week: "activity hours per day, by category", month: "activity hours per day, by category" }[u];
+  const cats = capOnly ? `<div class="in-cats">${empty({ mod: "compact", tone: "", icon: "i-off", title: `Categories need ${need}`, text: "Activities are what carry a category; usage charts only know apps." })}</div>`
+    : `<div class="in-cats">${st.cats.map(([k, m], i) => `<button class="in-cat" data-cat-open="${k}" data-hl-cat="${k}">
+      <span class="in-sw" style="--c:${cv(k)}"></span><span>${CAT[k]}</span><span class="in-cat__bar"><i style="--c:${cv(k)};--w:${(m / st.cats[0][1]) * 100}%;--d:${i}"></i></span>
+      <span class="num">${fmtMin(m)}</span><span class="num">${Math.round((m / st.act) * 100)}%</span>${icon("in-right", 13)}</button>`).join("")}</div>`;
+  const chart = S("load-error") ? empty({ tone: "danger", icon: "i-alert", title: "Couldn't load your usage charts.", text: "database is locked", acts: retryBtn() })
+    : nothing ? `<div class="in-week__plot" style="--n:${cols.length || 1};--_g:${month ? "4px" : "var(--s-3)"}">${plot}</div><div class="in-week__days" style="--n:${cols.length || 1};--_g:${month ? "4px" : "var(--s-3)"}">${daysRow}</div>
+        ${empty({ mod: "compact", icon: "i-inbox", title: `Nothing captured ${OV.current ? scope : "in this period"}`, text: "Columns fill in as you record." })}`
+    : `<div class="in-week__plot" id="ov-plot" style="--n:${cols.length};--_g:${month ? "4px" : "var(--s-3)"}">${plot}</div>
+      <div class="in-week__days" style="--n:${cols.length};--_g:${month ? "4px" : "var(--s-3)"}">${daysRow}</div>${cats}`;
+
+  // ---- Focus + apps (side)
+  const heat = heatRows(days);
+  const focusBlk = capOnly ? empty({ mod: "compact", icon: "i-off", title: `Focus needs ${need}`, text: "Deep / mixed / scattered is judged per activity." })
+    : S("load-error") ? `<p>${inline("danger", "i-alert", "Couldn't load.", `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry>Retry</button>`)}</p>`
+    : nothing ? empty({ mod: "compact", icon: "i-inbox", title: "No focus signal yet", text: "Appears once activities are written up." })
+    : `<div class="in-dist">${["deep", "mid", "distracted"].map((k) => `<i style="--c:var(--focus-${k});flex:${st.foc[k]}" data-c="var(--focus-${k})" data-v="${FOC[k][1]} · ${Math.round((st.foc[k] / st.n) * 100)}%|${st.foc[k]} of ${st.n} activities"></i>`).join("")}</div>
+      <div class="in-dist-l">${["deep", "mid", "distracted"].map((k) => `<span><span class="in-sw" style="--c:var(--focus-${k})"></span>${FOC[k][1]} <b>${Math.round((st.foc[k] / st.n) * 100)}%</b></span>`).join("")}<span style="margin-left:auto">of activities</span></div>
+      <div class="in-heat"><span></span>${Array.from({ length: 12 }, (_, i) => `<span class="h">${i % 3 === 0 ? String(8 + i).padStart(2, "0") : ""}</span>`).join("")}
+      ${heat.map((r, ri) => `<span>${r.label}</span>` + r.cells.map((c, i) => !c ? `<i style="--d:${ri * 12 + i}"></i>`
+        : `<i style="--c:color-mix(in srgb, var(--focus-${c.f}) ${c.m >= 40 ? 88 : 42}%, var(--app-surface));--d:${ri * 12 + i}" data-c="var(--focus-${c.f})" data-v="${FOC[c.f][1]} · ${Math.round(c.m)}m|${r.tip} ${clk(c.s)}–${clk(c.s + 60)}"></i>`).join("")).join("")}</div>`;
+  const apps = S("load-error") ? `<p>${inline("danger", "i-alert", "Couldn't load.", `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry>Retry</button>`)}</p>`
+    : nothing ? empty({ mod: "compact", icon: "i-inbox", title: "No tracked app time in this range" })
+    : `<dl class="mx-spec in-apps">${st.apps.slice(0, 6).map(([a, m], i) => `<div><dt>${a}</dt><dd><span class="in-cat__bar"><i style="--w:${(m / st.apps[0][1]) * 100}%;--d:${i + 4}"></i></span></dd><dd class="mx-spec__note num">${fmtMin(m * .93)}</dd></div>`).join("")}</dl>`;
+
+  // ---- Feed: what changed + needs attention (engine only)
+  let feed = "";
+  if (!capOnly) {
+    const quiet = S("nothing-changed", "new-user") || nothing;
+    const changed = S("load-error") ? empty({ tone: "danger", icon: "i-alert", title: "Couldn't load your engine data.", text: "The conclusions query failed. Nothing is lost.", acts: retryBtn() })
+      : quiet ? empty({ icon: "i-inbox", title: `Nothing changed ${OV.current ? scope : "in this " + u}.`,
+          text: S("new-user") ? "A conclusion needs at least two supporting activities. Mnema is backfilling your history — they build up over the first days."
+            : "No conclusions formed, strengthened or faded in this range. Your standing dossier lives on Subjects.", acts: `<button class="mx-btn mx-btn--sm" data-go="subjects">Open Subjects</button>` })
+      : CH.map(([g, rows]) => `<p class="in-group">${g === "Formed" ? `Formed this ${u}` : g} · ${rows.length}</p>` + rows.map(([s, subj, pts, c, kind, delta]) =>
+        `<div class="in-concl${kind === "down" ? " in-concl--faded" : ""}" data-subject="${subj}">
+          <div><p>${s}</p><span class="in-concl__meta"><span class="mx-chip">${subj}</span>${kind === "new" ? `<span class="in-new">● new</span>` : ""}${kind === "down" ? "below the display floor — kept for history" : ""}</span></div>
+          ${spark(pts, kind)}<span class="num">${c}%<small class="${kind === "down" ? "down" : "up"}">${delta}</small></span></div>`).join("")).join("");
+    const attnRows = quiet || S("load-error") ? [] : ATTN;
+    feed = `<div class="in-feed">
+      <div class="mx-reveal" style="--i:6"><div class="in-sec"><h2 class="mx-h2">What changed</h2><span class="mx-label">in your dossier ${OV.current ? scope : "that " + u}</span></div>${changed}</div>
+      <div class="mx-panel in-attn mx-reveal" style="--i:7"><div class="in-sec"><span class="mx-kicker">Needs attention</span><span class="mx-spacer"></span><span class="mx-label num" id="attn-count">${attnRows.length ? `${attnRows.length} untagged` : ""}</span></div>
+        ${attnRows.length ? `<p class="mx-prose" style="font-size:var(--text-base);margin-bottom:var(--s-2)">Mnema couldn't place these. One tap teaches it.</p><div id="ov-attn">` + attnRows.map(([t, m]) => `<div class="in-attn__row"><div><b>${t}</b><div class="mx-label num">${m}</div></div>
+          <div class="in-attn__pick">${["creating", "research", "organizing", "personal", "entertainment"].map((k) => `<button class="mx-btn mx-btn--sm" aria-pressed="false" data-tag="${k}"><span class="in-sw" style="--c:${cv(k)}"></span>${CAT[k]}</button>`).join("")}</div></div>`).join("") + `</div>`
+        : S("load-error") ? `<p>${inline("danger", "i-alert", "Couldn't load.", `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry>Retry</button>`)}</p>`
+        : empty({ mod: "compact", tone: "ok", icon: "i-check", title: "All caught up", text: "Every activity in this range has a category." })}</div></div>`;
+  }
+
+  html("#ov-body", `<div class="in-read">
+      <div class="mx-reveal" style="--i:1">${lede}</div>
+      <div class="in-lede-stats mx-reveal" style="--i:2">${statsHtml}</div></div>
+    <div class="in-ex">
+      <div class="mx-panel in-week mx-reveal" style="--i:3"><div class="in-sec"><span class="mx-kicker">Where the ${u} went</span><span class="mx-spacer"></span><span class="mx-label">${per}</span></div>${chart}</div>
+      <div class="in-side">
+        <div class="mx-reveal" style="--i:4"><div class="in-sec"><span class="mx-kicker">Focus</span><span class="mx-spacer"></span>${capOnly || nothing ? "" : `<button class="mx-btn mx-btn--ghost mx-btn--sm">Focus detail${icon("i-arrow", 13)}</button>`}</div>${focusBlk}</div>
+        <div class="mx-reveal" style="--i:5"><div class="in-sec"><span class="mx-kicker">Time in apps</span><span class="mx-spacer"></span>${nothing ? "" : `<button class="mx-btn mx-btn--ghost mx-btn--sm">All ${st.apps.length} apps${icon("i-arrow", 13)}</button>`}</div>${apps}</div>
+      </div></div>${feed}`);
+  $$("[data-hl-cat]").forEach((b) => {
+    const plotEl = $("#ov-plot"); if (!plotEl) return;
+    b.addEventListener("mouseenter", () => $$(".in-col > i", plotEl).forEach((i) => (i.style.opacity = i.dataset.cat === b.dataset.hlCat ? 1 : .2)));
+    b.addEventListener("mouseleave", () => $$(".in-col > i", plotEl).forEach((i) => (i.style.opacity = "")));
+  });
+}
+$("#ov-range").addEventListener("mx-change", (e) => {
+  const { start, end, unit } = e.detail, a = dateOf(start), b = dateOf(end);
+  const md = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  Object.assign(OV, { unit, start, end, current: end >= TODAY,
+    label: unit === "day" ? dayLabel(start) : unit === "month" ? a.toLocaleDateString("en-US", { month: "long", year: "numeric" }) : a.getMonth() === b.getMonth() ? `${md(a)} – ${b.getDate()}` : `${md(a)} – ${md(b)}` });
+  renderOverview();
+});
+// Needs attention: tagging is the user's own action → toast with Undo (kit mx.toast).
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tag]"); if (!b) return;
+  const row = b.closest(".in-attn__row"); if (row.hasAttribute("data-done")) return;
+  b.setAttribute("aria-pressed", "true"); b.firstElementChild.outerHTML = icon("i-check", 13);
+  row.setAttribute("data-done", "");
+  const left = $$(".in-attn__row:not([data-done])").length;
+  $("#attn-count").textContent = left ? `${left} untagged` : "all caught up";
+  mx.toast(`Tagged as ${CAT[b.dataset.tag]}`, { action: "Undo" });
+});
+// Re-read: in flight on the button (aria-busy + spinner + "-ing…"), then the read re-renders. ?state=rereading freezes it.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("#ov-reread"); if (!b || b.disabled) return;
+  b.disabled = true; b.setAttribute("aria-busy", "true"); b.innerHTML = `<span class="mx-spin mx-spin--sm"></span>Re-reading…`;
+  setTimeout(renderOverview, 1600);
+});
+
+/* ===== Category modal: threads grouped from the period's activities ======= */
+const modal = $("#cat-modal");
+function openCat(k) {
+  const { days, st } = OVDATA;
+  const per = days.filter((x) => x.acts.length && !x.future);
+  const m = (x) => x.acts.filter((a) => notGap(a) && a[2] === k).reduce((s, a) => s + mins(a), 0);
+  const mx = Math.max(1, ...per.map(m));
+  const groups = {};
+  per.forEach((x) => x.acts.filter((a) => notGap(a) && a[2] === k).forEach((a) => {
+    const key = a[3].split(/:| — /)[0]; (groups[key] ||= []).push([`${dateOf(x.iso).toLocaleDateString("en-US", { weekday: "short" })} ${a[0]}–${a[1]}`, a[3], a[5].join(" · "), mins(a)]);
+  }));
+  const th = Object.entries(groups).sort((a, b) => b[1].reduce((s, x) => s + x[3], 0) - a[1].reduce((s, x) => s + x[3], 0));
+  const tot = st.cats.find((c) => c[0] === k)?.[1] || 0;
+  html("#cm-panel", `<div class="in-modal__head">
+      <div><span class="mx-kicker">Category · ${OV.label || "Oct 5 – 11"}</span><h2 class="mx-h2" id="cm-title" style="margin-top:8px"><span class="in-sw" style="--c:${cv(k)}"></span>${CAT[k]}</h2>
+        <p class="mx-label" style="margin:8px 0 0"><span class="num" style="color:var(--app-text-strong)">${fmtMin(tot)}</span> · ${Math.round((tot / st.act) * 100)}% of activity time · ${th.reduce((s, t) => s + t[1].length, 0)} activities</p></div>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-close aria-label="Close">${icon("i-x")}</button>
+      ${per.length > 1 ? `<div class="in-mini">${per.map((x, i) => `<div><i style="--c:${cv(k)};height:${Math.max(m(x) ? 4 : 0, (m(x) / mx) * 32)}px;animation-delay:${i * 40}ms" data-c="${cv(k)}" data-v="${dayLabel(x.iso)} · ${fmtMin(m(x))}"></i>${OV.unit === "month" ? dateOf(x.iso).getDate() : dateOf(x.iso).toLocaleDateString("en-US", { weekday: "short" })}</div>`).join("")}</div>` : ""}
+    </div>
+    <div class="in-threads"><p class="in-group" style="margin:var(--s-3) var(--s-2) var(--s-1)">What you worked on</p>
+    ${th.length ? th.map(([t, acts], i) => `<div class="in-thread"${i === 0 ? " data-open" : ""}><button><span>${t}</span><span class="num">${acts.length} act</span><span class="num" style="color:var(--app-text-strong)">${fmtMin(acts.reduce((s, x) => s + x[3], 0))}</span>${icon("in-right", 13)}</button>
+      <ul>${acts.map(([tm, a, app]) => `<li><time class="num">${tm}</time><span>${a} <span class="mx-label" style="font-size:var(--text-xs)">· ${app}</span></span><button class="mx-btn mx-btn--ghost mx-btn--sm">Adjust</button></li>`).join("")}</ul></div>`).join("")
+      : empty({ mod: "compact", title: "No categorized activity in this range." })}</div>`);
+  modal.setAttribute("data-open", "");
+  setTimeout(() => $("[data-close]", modal).focus(), 50);
+}
+const closeModal = () => modal.removeAttribute("data-open");
+document.addEventListener("click", (e) => {
+  const c = e.target.closest("[data-cat-open]"); if (c) return openCat(c.dataset.catOpen);
+  if (e.target === modal || e.target.closest("[data-close]")) return closeModal();
+  const t = e.target.closest(".in-thread > button"); if (t) t.parentElement.toggleAttribute("data-open");
+  const r = e.target.closest("[data-retry]"); if (r) { r.setAttribute("aria-busy", "true"); r.innerHTML = `<span class="mx-spin mx-spin--sm"></span>Retrying…`; }
+});
+document.addEventListener("keydown", (e) => e.key === "Escape" && closeModal());
+
+/* ===== Journal ========================================================== */
+let jIso = TODAY;
+function journalDay(iso) {
+  if (S("too-few")) return ALT["too-few"];
+  if (S("being-written")) return ALT["being-written"];
+  if (S("nothing-captured")) return { iso: "2026-10-04", acts: [] };
+  return dayFor(iso);
+}
+const FOCUS_OF = (f) => `<span class="mx-chip in-focus" style="--c:var(--focus-${FOC[f][0]})">${FOC[f][1]}</span>`;
+function renderJournal() {
+  const D = journalDay(jIso), iso = D.iso, label = dayLabel(iso), today = iso === TODAY;
+  $("#j-today").disabled = jIso === TODAY;
+  const st = stats([D]);
+  const pending = today && (S("being-written") || st.n > 0) && !S("too-few"); // frames past the watermark (journal-day.ts)
+  const since = S("being-written") ? toMin("08:41") : S("new-user") ? toMin("11:48") : COVERED;
+  if (S("loading")) {
+    return html("#j-body", busy("Loading the day", `<div class="in-read"><div>${skelRead()}</div>${skelStats()}</div>
+      <div class="mx-panel in-spine"><div class="mx-skel" style="width:120px;height:9px"></div><div class="mx-skel" style="height:64px;margin-top:var(--s-5)"></div></div>
+      <div class="in-feed"><div>${skelRows(5)}</div><div class="in-side">${skelLines(4)}</div></div>`));
+  }
+  if (S("load-error")) {
+    return html("#j-body", empty({ mod: "center", tone: "danger", icon: "i-alert", title: `Couldn't load ${label}`, text: "Reading this day's activities failed. Nothing is lost — the footage is still on the Timeline.",
+      acts: retryBtn() + `<a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html">Open in Timeline</a>` }));
+  }
+  if (S("not-set-up")) {
+    return html("#j-body", empty({ mod: "center", icon: "i-sparkle", title: "Your journal is written by AI", text: "Once a provider is connected, Mnema writes each half hour up as an activity — with a digest of the day on top. Capture is already on the Timeline.",
+      acts: `<a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Set up AI</a><a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html">Open Timeline</a>` }));
+  }
+  if (!st.n && !pending && !D.runs) {
+    return html("#j-body", `<div class="in-jwrap">` + empty({ mod: "center", icon: "i-inbox", title: `Nothing captured on ${label}`,
+      text: "There's no capture on this day, so there's no journal to show. Days with any recording at all show whatever was captured.",
+      acts: `<button class="mx-btn mx-btn--sm" data-jtoday>Go to today</button>` }) + `</div>`);
+  }
+
+  if (D.runs) { // Decision 6: a captured day with nothing written up — capture runs on the spine, no cards, no categories or focus.
+    const draw = D.runs.map((r, i) => (today && i === D.runs.length - 1 ? [r[0], clk(NOW), r[2]] : r));
+    const rfirst = toMin(draw[0][0]), rlast = toMin(draw[draw.length - 1][1]);
+    const S0 = Math.floor((rfirst - 10) / 60) * 60, S1 = Math.ceil((rlast + 10) / 60) * 60, pct = (m) => ((m - S0) / (S1 - S0)) * 100;
+    const stepH = S1 - S0 <= 360 ? 60 : S1 - S0 <= 720 ? 120 : 180;
+    const grid = Array.from({ length: Math.floor((S1 - S0) / stepH) + 1 }, (_, i) => `<span style="left:${pct(S0 + i * stepH)}%"><b>${clk(S0 + i * stepH)}</b></span>`).join("");
+    const app = Math.round(runsMin(draw) * .93); // usage charts: app active time — its own source, no engine involved
+    const byApp = {}; draw.forEach(([s, e, apps]) => apps.forEach((x) => (byApp[x] = (byApp[x] || 0) + (toMin(e) - toMin(s)) / apps.length)));
+    const appsArr = Object.entries(byApp).sort((a, b) => b[1] - a[1]);
+    let lane = "";
+    draw.forEach(([s, e, apps], i) => {
+      if (i) { const p = draw[i - 1]; lane += `<span class="in-sp__gap" style="left:${pct(toMin(p[1]))}%;width:${pct(toMin(s)) - pct(toMin(p[1]))}%" data-v="Away · ${span(p[1], s)}|${p[1]}–${s} · no capture">away</span>`; }
+      const w = pct(toMin(e)) - pct(toMin(s));
+      lane += `<span class="in-sp__run" style="left:${pct(toMin(s))}%;width:calc(${w}% - 2px);--d:${i}" data-v="Captured · ${span(s, e)}|${s}–${e} · ${apps.join(", ")}">${w > 6 ? `<b>${apps.join(" · ")}</b><small>${span(s, e)} captured</small>` : ""}</span>`;
+    });
+    const now = today ? `<span class="in-sp__now" style="left:${pct(NOW)}%"></span>` : "";
+    const why = STATE === "derivation-off" ? "Continuous derivation is off, so nothing was written up." : "AI features were off, so nothing was written up.";
+    const lede = `<span class="mx-kicker">${label}</span><h1 class="mx-display">${fmtMin(app)} tracked. <em>Nothing written up.</em></h1><p class="mx-prose">${why} Everything captured is on the Timeline.</p>`;
+    const statsHtml = stat("Tracked · app time", big(fmtMin(app)), today ? `through ${clk(NOW)}` : "app active time") + stat("Activities", "—", "none · needs AI");
+    const mon = addDays(iso, -((dateOf(iso).getDay() + 6) % 7));
+    const wk = Array.from({ length: 7 }, (_, i) => {
+      const di = addDays(mon, i), x = di === iso ? D : dayFor(di), s2 = stats([x]), wd = dateOf(di).toLocaleDateString("en-US", { weekday: "short" });
+      if (x.future) return `<button disabled><span class="in-wk__bar"></span><b>${wd}</b>—</button>`;
+      const bars = s2.cats.slice().reverse().map(([k, m]) => `<i style="--c:${cv(k)};height:${(m / 480) * 48}px"></i>`).join("");
+      const capOnlyMin = !s2.n && x.runs ? Math.round(runsMin(x.runs) * .93) : 0;
+      return `<button data-day="${di}" aria-pressed="${di === iso}" data-v="${dayLabel(di)}|${s2.n ? `${fmtMin(s2.act)} · ${s2.n} activities` : capOnlyMin ? `${fmtMin(capOnlyMin)} captured · nothing written up` : "nothing captured"}"><span class="in-wk__bar">${capOnlyMin ? `<i style="--c:var(--chart-grey-3);height:${(capOnlyMin / 480) * 48}px"></i>` : bars}</span><b>${wd}</b>${s2.n ? fmtMin(s2.act).replace(/ \d+m$/, "") : capOnlyMin ? fmtMin(capOnlyMin).replace(/ \d+m$/, "") : "—"}</button>`;
+    }).join("");
+    const apps = appsArr.slice(0, 5).map(([a, m], i) => `<div><dt>${a}</dt><dd><span class="in-cat__bar"><i style="--w:${(m / appsArr[0][1]) * 100}%;--d:${i + 4}"></i></span></dd><dd class="mx-spec__note num">${fmtMin(m * .93)}</dd></div>`).join("");
+    return html("#j-body", `<div class="in-jwrap">
+      <div class="in-read"><div class="mx-reveal" style="--i:1">${lede}</div><div class="in-lede-stats mx-reveal" style="--i:2">${statsHtml}</div></div>
+      <div class="mx-panel in-spine mx-reveal" style="--i:3">
+        <div class="in-sec"><span class="mx-kicker">Day spine</span><span class="mx-label num">${clk(rfirst)} – ${today ? "now" : clk(rlast)} captured</span><span class="mx-spacer"></span>
+          <span class="in-sp__legend"><span><span class="in-sw" style="--c:var(--chart-grey-3)"></span>capture runs</span><span>no activities · categories and focus need AI</span></span></div>
+        <div class="in-sp"><div class="in-sp__grid">${grid}</div><div class="in-sp__lane" style="--lanes:1">${lane}</div>${now}</div>
+      </div>
+      <div class="in-feed">
+        <div class="mx-reveal" style="--i:4"><div class="in-sec"><h2 class="mx-h2">What you did</h2><span class="mx-label">nothing written up</span></div>
+          ${empty({ mod: "compact", icon: "i-off", title: `Nothing written up on ${label}`, text: `${why} The Timeline has everything captured.` })}</div>
+        <div class="in-side mx-reveal" style="--i:5">
+          <div><div class="in-sec"><span class="mx-kicker">This week</span><span class="mx-spacer"></span><span class="mx-label"><kbd>[</kbd> <kbd>]</kbd> to step</span></div><div class="in-wk">${wk}</div></div>
+          <div><div class="in-sec"><span class="mx-kicker">Apps</span><span class="mx-spacer"></span><span class="mx-label">app time</span></div><dl class="mx-spec in-apps">${apps}</dl></div>
+        </div>
+      </div></div>`);
+  }
+
+  // Spine spans the real captured range: first activity (or first frame) → last activity / now, padded to the hour.
+  const acts = st.acts;
+  const starts = acts.map((a) => toMin(a[0])).concat(pending ? [since] : []), ends = acts.map((a) => toMin(a[1])).concat(today ? [NOW] : []);
+  const first = Math.min(...starts), last = Math.max(...ends);
+  const S0 = Math.floor((first - 10) / 60) * 60, S1 = Math.ceil((last + 10) / 60) * 60, pct = (m) => ((m - S0) / (S1 - S0)) * 100;
+  const stepH = S1 - S0 <= 360 ? 60 : S1 - S0 <= 720 ? 120 : 180;
+  const grid = Array.from({ length: Math.floor((S1 - S0) / stepH) + 1 }, (_, i) => `<span style="left:${pct(S0 + i * stepH)}%"><b>${clk(S0 + i * stepH)}</b></span>`).join("");
+  // Overlaps / same-start activities → greedy sub-lanes.
+  const order = acts.map((a, i) => i).sort((x, y) => toMin(acts[x][0]) - toMin(acts[y][0]) || mins(acts[y]) - mins(acts[x]));
+  const laneEnd = [], laneOf = {};
+  order.forEach((i) => { const s = toMin(acts[i][0]); let l = laneEnd.findIndex((e) => e <= s); if (l < 0) l = laneEnd.length; laneEnd[l] = toMin(acts[i][1]); laneOf[i] = l; });
+  const lanes = Math.max(1, laneEnd.length);
+  let lane = D.acts.filter((a) => !notGap(a)).map((g) => `<span class="in-sp__gap" style="left:${pct(toMin(g[1]))}%;width:${pct(toMin(g[2])) - pct(toMin(g[1]))}%" data-v="Away · ${span(g[1], g[2])}|${g[1]}–${g[2]} · no capture">away</span>`).join("");
+  let focus = "";
+  acts.forEach((a, i) => {
+    const w = pct(toMin(a[1])) - pct(toMin(a[0]));
+    lane += `<button class="in-sp__a" data-a="${i}" style="left:${pct(toMin(a[0]))}%;width:calc(${w}% - 2px);--l:${laneOf[i]};--c:${cv(a[2])};--d:${i}" data-c="${cv(a[2])}" data-v="${a[3]}|${a[0]}–${a[1]} · ${span(a[0], a[1])} · ${CAT[a[2]]}">
+      ${w > 6 ? `<b>${a[3]}</b>${lanes === 1 ? `<small>${span(a[0], a[1])}</small>` : ""}` : ""}</button>`;
+    focus += `<i style="left:${pct(toMin(a[0]))}%;width:calc(${w}% - 2px);--c:var(--focus-${FOC[a[6]][0]})" data-c="var(--focus-${FOC[a[6]][0]})" data-v="${FOC[a[6]][1]}|${a[0]}–${a[1]}"></i>`;
+  });
+  if (pending) lane += `<span class="in-sp__pend" style="left:${pct(since)}%;width:${pct(NOW) - pct(since)}%" data-v="${PAUSED ? "Paused" : "Writing up"}|${clk(since)} → now">${pct(NOW) - pct(since) > 6 ? (PAUSED ? "paused" : "writing up") : ""}</span>`;
+  const now = today ? `<span class="in-sp__now" style="left:${pct(NOW)}%"></span>` : "";
+
+  // River: newest first. The live edge is UI from pending.sinceMs — never digest prose.
+  const pendRow = !pending ? "" : `<div class="in-pending"><time class="num">${clk(since)}</time><div>${PAUSED
+    ? `<span class="mx-kicker">Not written up · ${clk(since)} → now</span>${inline(ENGINE[STATE][0] === "off" ? "" : ENGINE[STATE][0], ENGINE[STATE][1], PAUSED_COPY[STATE])}`
+    : `<span class="mx-kicker mx-kicker--live">Writing up ${clk(since)} → now</span><div class="mx-skel" style="width:46%;height:12px"></div><div class="mx-skel" style="width:72%"></div>
+       <span class="mx-label">The journal trails live capture by up to 30 minutes — the footage is already on the Timeline.</span>`}</div></div>`;
+  let river = pendRow;
+  const rows = D.acts.map((a, i) => ({ a, i })).sort((x, y) => toMin(y.a[notGap(y.a) ? 0 : 1]) - toMin(x.a[notGap(x.a) ? 0 : 1]) || (notGap(y.a) && notGap(x.a) ? mins(x.a) - mins(y.a) : 0));
+  rows.forEach(({ a }) => {
+    if (!notGap(a)) return (river += `<div class="in-gap">Away · ${span(a[1], a[2])} · ${a[1]}–${a[2]}</div>`);
+    const ai = acts.indexOf(a), [s, e, c, t, sum, apps, f, rc] = a;
+    const rcv = rc && /^receipt-/.test(STATE) ? STATE : rc ? "receipt" : null;
+    const expired = rcv === "receipt-expired";
+    river += `<article class="in-act" data-a="${ai}" data-s="${s}" data-e="${e}"${rc ? " data-open" : ""}>
+      <div class="in-act__t"><time>${s}</time><span class="num">${span(s, e)}</span></div>
+      <div><h4><span class="in-sw" style="--c:${cv(c)}"></span>${t}</h4><p>${sum}</p>
+        <div class="in-act__meta"><span class="mx-chip mx-chip--cat" style="--c:${cv(c)}">${CAT[c]}</span>${FOCUS_OF(f)}
+          ${apps.map((x) => `<span class="mx-chip">${x}</span>`).join("")}${rc ? `<span class="mx-chip mx-chip--mic">2 speakers</span>` : ""}
+          ${expired ? `<span class="mx-chip">footage expired</span>` : ""}
+          <button class="mx-btn mx-btn--ghost mx-btn--sm" data-receipt aria-pressed="${!!rc}">${icon("in-play", 11)}Receipt</button></div>
+        <div class="mx-panel mx-panel--inset in-receipt">${rc ? receipt(s, e, rcv) : receipt(s, e, "receipt")}</div></div>
+    </article>`;
+  });
+  if (!st.n) river += empty({ mod: "compact", icon: "i-inbox", title: "Your day is being written", text: "Capture is landing. The first card appears once the first half-hour window is summarized." });
+
+  // Lede: digest (≥ 2 activities) or its honest absence.
+  const kick = `<span class="mx-kicker">${today ? "Digest so far" : "Digest"} · ${label}</span>`;
+  let lede;
+  if (S("digest-writing")) lede = `${kick}<div aria-busy="true"><span class="mx-sr">Writing the digest</span><div class="in-skel-read"><div class="mx-skel mx-skel--title"></div><div class="mx-skel mx-skel--title"></div>${skelLines(2)}</div></div><div class="in-read__foot">${inline("", "spin", "Writing the digest…")}</div>`;
+  else if (st.n < 2) lede = `${kick}<h1 class="mx-display">${st.n ? `Too little captured on ${label} to write a digest.` : "Your day is being written."}</h1>
+    <p class="mx-prose">${st.n ? "A digest needs at least two activities; this day has one. It's below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>`;
+  else if (NO_DERIVE) lede = `<span class="mx-kicker">${label}</span><h1 class="mx-display">${st.n} activities, ${fmtMin(st.app)} tracked.</h1><p class="mx-prose">No digest while ${STATE === "derivation-off" ? "continuous derivation" : "AI"} is off — the cards below were written before.</p>`;
+  else lede = `${kick}<h1 class="mx-display">${D.head || DAYS[(dateOf(iso).getDay() + 4) % 5].head}</h1><p class="mx-prose">${D.sub}</p>
+    <div class="in-read__foot"><span class="mx-label num">written ${today ? "14:52 · covers through 14:50" : "next morning"}</span>${PAUSED ? "" : `<button class="mx-btn mx-btn--ghost mx-btn--sm">${icon("i-retry", 13)}Re-read</button>`}</div>`;
+  const top = st.cats[0];
+  if (!st.n && pending) st.app = Math.round((NOW - since) * .9); // usage charts count capture even before any activity is written up
+  const statsHtml = stat("Tracked · app time", big(fmtMin(st.app)), today ? `through ${clk(NOW)}` : "app active time")
+    + stat("Activities", `${st.n}`, !st.n ? "none written up yet" : (() => { const g = D.acts.filter((a) => !notGap(a)).length; return `${g} away-gap${g === 1 ? "" : "s"}`; })())
+    + (st.n ? stat("Deep focus · by activity", `${st.deep}<small>%</small>`, `${st.foc.deep} of ${st.n} activit${st.n === 1 ? "y" : "ies"}`) : "")
+    + (top ? `<div class="mx-stat"><span class="mx-stat__label">Top category</span><span class="mx-stat__value in-tval"><span class="in-sw" style="--c:${cv(top[0])}"></span>${CAT[top[0]]}</span><span class="mx-stat__delta">${Math.round((top[1] / st.act) * 100)}% of activity time</span></div>` : "");
+
+  // Side: this week (day picker) · day mix · apps
+  const mon = addDays(iso, -((dateOf(iso).getDay() + 6) % 7));
+  const wk = Array.from({ length: 7 }, (_, i) => {
+    const di = addDays(mon, i), x = di === iso ? D : dayFor(di), s2 = stats([x]), wd = dateOf(di).toLocaleDateString("en-US", { weekday: "short" });
+    if (x.future) return `<button disabled><span class="in-wk__bar"></span><b>${wd}</b>—</button>`;
+    const bars = s2.cats.slice().reverse().map(([k, m]) => `<i style="--c:${cv(k)};height:${(m / 480) * 48}px"></i>`).join("");
+    const capOnlyMin = !s2.n && x.runs ? Math.round(runsMin(x.runs) * .93) : 0;
+    return `<button data-day="${di}" aria-pressed="${di === iso}" data-v="${dayLabel(di)}|${s2.n ? `${fmtMin(s2.act)} · ${s2.n} activities` : capOnlyMin ? `${fmtMin(capOnlyMin)} captured · nothing written up` : "nothing captured"}"><span class="in-wk__bar">${capOnlyMin ? `<i style="--c:var(--chart-grey-3);height:${(capOnlyMin / 480) * 48}px"></i>` : bars}</span><b>${wd}</b>${s2.n ? fmtMin(s2.act).replace(/ \d+m$/, "") : capOnlyMin ? fmtMin(capOnlyMin).replace(/ \d+m$/, "") : "—"}</button>`;
+  }).join("");
+  const mix = st.cats.map(([k, m], i) => `<div class="in-mixrow"><span class="in-sw" style="--c:${cv(k)}"></span><span>${CAT[k]}</span>
+    <span class="in-cat__bar"><i style="--c:${cv(k)};--w:${(m / top[1]) * 100}%;--d:${i}"></i></span><span class="num">${fmtMin(m)}</span><span class="num">${Math.round((m / st.act) * 100)}%</span></div>`).join("");
+  const apps = st.apps.slice(0, 5).map(([a, m], i) => `<div><dt>${a}</dt><dd><span class="in-cat__bar"><i style="--w:${(m / st.apps[0][1]) * 100}%;--d:${i + 4}"></i></span></dd><dd class="mx-spec__note num">${fmtMin(m * .93)}</dd></div>`).join("");
+
+  html("#j-body", `<div class="in-jwrap">
+    <div class="in-read"><div class="mx-reveal" style="--i:1">${lede}</div><div class="in-lede-stats mx-reveal" style="--i:2">${statsHtml}</div></div>
+    <div class="mx-panel in-spine mx-reveal" style="--i:3">
+      <div class="in-sec"><span class="mx-kicker">Day spine</span><span class="mx-label num">${clk(first)} – ${today ? "now" : clk(last)} captured</span><span class="mx-spacer"></span>
+        <span class="in-sp__legend"><span>activity by category</span><span><span class="in-sw" style="--c:var(--focus-deep)"></span>deep</span><span><span class="in-sw" style="--c:var(--focus-mid)"></span>mixed</span><span><span class="in-sw" style="--c:var(--focus-distracted)"></span>scattered</span></span></div>
+      <div class="in-sp"><div class="in-sp__grid">${grid}</div><div class="in-sp__lane" style="--lanes:${lanes}"${lanes > 1 ? " data-multi" : ""}>${lane}</div><div class="in-sp__focus">${focus}</div>${now}</div>
+    </div>
+    <div class="in-feed">
+      <div class="mx-reveal" style="--i:4"><div class="in-sec"><h2 class="mx-h2">What you did</h2><span class="mx-label">${st.n} activit${st.n === 1 ? "y" : "ies"} · newest first</span></div>${river}</div>
+      <div class="in-side mx-reveal" style="--i:5">
+        <div><div class="in-sec"><span class="mx-kicker">This week</span><span class="mx-spacer"></span><span class="mx-label"><kbd>[</kbd> <kbd>]</kbd> to step</span></div><div class="in-wk">${wk}</div></div>
+        ${st.n ? `<div><div class="in-sec"><span class="mx-kicker">Day mix</span><span class="mx-spacer"></span><span class="mx-label">activity time</span></div><div class="in-mixrows">${mix}</div></div>
+        <div><div class="in-sec"><span class="mx-kicker">Apps</span><span class="mx-spacer"></span><span class="mx-label">app time</span></div><dl class="mx-spec in-apps">${apps}</dl></div>` : ""}
+      </div>
+    </div></div>`);
+  $$("#j-body .in-receipt .mx-seg").forEach(placeThumb);
+}
+const TURNS = [["Ana", "--cat-meetings", "00:12", "If we hoist the GC we still need the index, right? Otherwise startup just moves the stall."],
+  ["You", "--cat-research", "01:40", "Yes — 0049 adds it. Hoisted GC runs after the window opens."],
+  ["Ana", "--cat-meetings", "04:05", "Then ship it Monday. I'll write the release note."]];
+const turnsHtml = () => `<div class="in-turns">${TURNS.map(([w, col, t, x], i) => `<div class="in-turn"${i === 0 ? " data-on" : ""} style="--c:var(${col})"><time class="num">${t}</time><span><b>${w}</b>${x}</span></div>`).join("")}
+  <a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html" style="margin:6px 0 0 -1px;justify-self:start">Open in Timeline${icon("i-arrow", 13)}</a></div>`;
+// Receipt variants = receipt-audio.ts receiptViewState: frames › audio-only › expired; plus loading and "no readable speech".
+function receipt(s, e, v) {
+  const ticks = Array.from({ length: 18 }, (_, i) => `<i style="left:${(i / 17) * 100}%"${[3, 8, 13].includes(i) ? ' class="cited"' : ""}></i>`).join("");
+  const controls = `<div class="in-scrub" data-scrub>${ticks}<span class="head"></span></div>
+    <div class="in-playrow"><button class="mx-btn mx-btn--sm" data-play>${icon("in-play", 11)}Play</button>
+      <div class="mx-seg mx-seg--mono" role="group" aria-label="Speed"><button aria-pressed="true">1×</button><button aria-pressed="false">8×</button><button aria-pressed="false">16×</button></div>
+      <span class="num" data-clock>${s}:00</span></div>`;
+  if (v === "receipt-loading") return busy("Loading footage", `<div><div class="mx-skel mx-skel--thumb"></div>${skelLines(1)}</div>`) + `<div>${skelLines(4)}</div><div class="in-rfoot">Loading footage…</div>`;
+  if (v === "receipt-expired") return `<div style="grid-column:1/-1">${empty({ mod: "compact", icon: "i-inbox", title: "Footage expired", text: "Retention Cleanup removed the frames behind this card. The card, its summary and its evidence list are kept — only the pixels age out." })}</div>
+    <div class="in-rfoot">0 frames still on disk · summary retained</div>`;
+  if (v === "receipt-audio" || v === "receipt-no-speech") {
+    const ok = v === "receipt-audio";
+    return `<div><div class="in-audio">
+        <button class="mx-btn mx-btn--icon" aria-label="Play spoken evidence"${ok ? "" : " disabled"}>${icon("in-play", 14)}</button>
+        ${ok ? `<b style="--c:var(--cat-meetings)"><i></i>Ana <span class="mx-label">via microphone</span></b><span class="mx-label num">spoken segment · 11:52–11:56 · captured as audio</span>`
+          : `<span class="mx-label">No readable speech in the cited audio</span>`}</div>${ok ? controls : ""}</div>
+      ${ok ? turnsHtml() : `<div>${empty({ mod: "compact", icon: "i-info", title: "Nothing to play", text: "The cited audio was silent, or transcription found no words." })}</div>`}
+      <div class="in-rfoot">0 screen frames — screen frames have expired · ${ok ? "Ana, you" : "1 spoken segment cited"}</div>`;
+  }
+  return `<div><div class="in-screen"><div class="in-screen__bar"><i></i><i></i><i></i>&nbsp;Zoom — Ana Ruiz</div>
+      <div class="in-screen__body"><div class="tile" data-on>AR<small>Ana Ruiz</small></div><div class="tile" style="--c:var(--cat-research)">SZ<small>You</small></div></div></div>${controls}</div>
+    ${turnsHtml()}<div class="in-rfoot">18 frames across 2 capture segments · 6 frames + 3 spoken segments cited</div>`;
+}
+let playT;
+function setHead(scrub, p) {
+  scrub.querySelector(".head").style.left = `calc(${p * 100}% - 1px)`;
+  const card = scrub.closest(".in-act"), s = card.dataset.s, e = card.dataset.e;
+  const m = Math.round(toMin(s) + p * (toMin(e) - toMin(s)));
+  card.querySelector("[data-clock]").textContent = `${clk(m)}:${String(Math.round(p * 59) % 60).padStart(2, "0")}`;
+  const turns = card.querySelectorAll(".in-turn"), idx = Math.min(turns.length - 1, Math.floor(p * turns.length));
+  turns.forEach((t, i) => t.toggleAttribute("data-on", i === idx));
+  card.querySelectorAll(".tile").forEach((t, i) => t.toggleAttribute("data-on", i === (idx === 1 ? 1 : 0)));
+}
+$("#j-body").addEventListener("click", (e) => {
+  const day = e.target.closest("[data-day]"); if (day) return jDay.mxDate.step(Math.round((dateOf(day.dataset.day) - dateOf(jIso)) / 864e5));
+  if (e.target.closest("[data-jtoday]")) return jDay.mxDate.latest();
+  const blk = e.target.closest(".in-sp__a");
+  if (blk) { $(`.in-act[data-a="${blk.dataset.a}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+  const r = e.target.closest("[data-receipt]");
+  if (r) { const card = r.closest(".in-act"); r.setAttribute("aria-pressed", card.toggleAttribute("data-open")); return $$(".mx-seg", card).forEach(placeThumb); }
+  const sc = e.target.closest("[data-scrub]");
+  if (sc) { const b = sc.getBoundingClientRect(); return setHead(sc, Math.max(0, Math.min(1, (e.clientX - b.left) / b.width))); }
+  const pl = e.target.closest("[data-play]");
+  if (pl) {
+    const scrub = pl.closest(".in-receipt").querySelector("[data-scrub]");
+    clearInterval(playT); if (pl.dataset.on) { delete pl.dataset.on; pl.lastChild.textContent = "Play"; return; }
+    pl.dataset.on = 1; pl.lastChild.textContent = "Pause"; let p = parseFloat(scrub.querySelector(".head").style.left.match(/[\d.]+/)?.[0] || 0) / 100;
+    playT = setInterval(() => { p += .01; if (p >= 1) { p = 1; clearInterval(playT); delete pl.dataset.on; pl.lastChild.textContent = "Play"; } setHead(scrub, p); }, 60);
+  }
+  const sp = e.target.closest(".in-receipt .mx-seg button");
+  if (sp) { sp.parentElement.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === sp))); placeThumb(sp.parentElement); }
+});
+$("#j-body").addEventListener("mouseover", (e) => {
+  const t = e.target.closest("[data-a]");
+  $$("#j-body [data-hot]").forEach((x) => x.removeAttribute("data-hot"));
+  if (t) $$(`#j-body [data-a="${t.dataset.a}"]`).forEach((x) => x.setAttribute("data-hot", ""));
+});
+function placeThumb(seg) {
+  const th = seg.querySelector(".mx-seg__thumb") || seg.insertAdjacentElement("afterbegin", Object.assign(document.createElement("span"), { className: "mx-seg__thumb" }));
+  const b = seg.querySelector('[aria-pressed="true"]');
+  if (b) { th.style.width = b.offsetWidth + "px"; th.style.transform = `translateX(${b.offsetLeft}px)`; }
+}
+const jDay = $("#j-day");
+jDay.addEventListener("mx-change", (e) => { jIso = e.detail.start; renderJournal(); });
+$("#j-today").onclick = () => jDay.mxDate.latest();
+document.addEventListener("keydown", (e) => {
+  if (current !== "journal" || e.target.closest("input, textarea, select")) return;
+  if (e.key === "[") jDay.mxDate.step(-1); if (e.key === "]") jDay.mxDate.step(1);
+});
+
+/* ===== Subjects ========================================================= */
+// Tiers = subjectsTiers.ts: strongly held ≥ 68% · forming ≥ 30% · just taking shape < 30% · fading (all conclusions below the 15% display floor).
+// [name, trend, since, conclusions [[conf, text]], 14-day delta (null = formed this fortnight)]
+let SUBJ = [
+  ["Mnema", "up", "Aug 2", [[94, "Mnema is your main project."], [88, "You own the native capture stack end to end."], [80, "You ship on Fridays when you can."], [61, "You're preparing a paid launch."], [55, "You care more about power draw than features."]], 6],
+  ["Rust", "steady", "Jul 19", [[91, "Rust is your primary working language."], [82, "You reach for sqlx over an ORM."], [74, "You write regression tests for every crash fix."], [66, "You're comfortable in unsafe FFI to Apple frameworks."]], 2],
+  ["Communication", "up", "Aug 9", [[77, "You prefer written async updates over calls."], [60, "You batch Slack into two windows a day."]], 9],
+  ["Work rhythm", "up", "Oct 6", [[71, "You do your deepest work before lunch, and protect it."], [68, "Thursdays are your meeting day."], [52, "You work late when a release is close."]], null],
+  ["CoreML", "up", "Oct 7", [[58, "You're learning CoreML to move diarization on-device."], [41, "You've read most of the coremltools docs on stateful models."]], null],
+  ["Keyboards", "down", "Sep 14", [[26, "You're into mechanical keyboards — mostly browsing, not buying."]], -5],
+  ["Diarization", "down", "Jun 30", [[12, "You're evaluating Sortformer for diarization."], [9, "You're benchmarking against a 10.9% DER baseline."]], -18],
+  ["Fitness", "down", "May 11", [[8, "You run on weekday mornings."]], -9],
+];
+if (S("sparse")) SUBJ = SUBJ.filter((s) => ["Mnema", "CoreML", "Keyboards"].includes(s[0]));
+if (S("none-yet", "new-user", "not-set-up")) SUBJ = [];
+const topC = (s) => s[3][0][0];
+const isFading = (s) => s[3].every(([c]) => c < 15); // app parity (Subjects.svelte:247): every conclusion under the floor, not just the lead
+const TIER = { conviction: [["strong", "Strongly held", "lead ≥ 68%", (s) => topC(s) >= 68], ["forming", "Forming", "30 – 68% · building support", (s) => topC(s) >= 30 && topC(s) < 68],
+    ["shaping", "Just taking shape", "under 30% · early", (s) => !isFading(s) && topC(s) < 30], ["fading", "Fading · kept for history", "every conclusion below the 15% floor", isFading, true]],
+  movement: [["warming", "Warming", "gaining support", (s) => !isFading(s) && s[1] === "up"], ["steady", "Steady", "holding", (s) => !isFading(s) && s[1] === "steady"],
+    ["cooling", "Cooling", "losing support", (s) => !isFading(s) && s[1] === "down"], ["fading", "Fading · kept for history", "every conclusion below the 15% floor", isFading, true]] };
+const series = (c, tr, k) => Array.from({ length: 9 }, (_, i) => {
+  const t = i / 8, base = tr === "up" ? c - 26 * (1 - t) : tr === "down" ? c + 22 * (1 - t) : c + Math.sin(i + k) * 3;
+  return i === 8 ? c : Math.max(3, Math.min(98, base + Math.sin(i * 1.7 + k * 2.3) * 3));
+});
+function multiSpark(concls, tr, w = 100, h = 30) {
+  const y = (v) => (h - 3 - (v / 100) * (h - 6)).toFixed(1);
+  return `<svg class="in-spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" overflow="visible">` +
+    concls.map(([c], k) => `<path d="${series(c, tr, k).map((p, i) => `${i ? "L" : "M"}${((i / 8) * w).toFixed(1)} ${y(p)}`).join(" ")}" stroke="${k === 0 ? "var(--app-text-strong)" : "var(--chart-grey-2)"}"/>`).reverse().join("")
+    + `<circle cx="${w}" cy="${y(concls[0][0])}" r="2.5" fill="var(--app-text-strong)"/></svg>`;
+}
+const deltaTxt = (dl) => (dl === null ? ["new", "new"] : dl > 0 ? [`+${dl}`, "up"] : dl < 0 ? [`−${-dl}`, "down"] : ["±0", ""]);
+const listNames = (xs) => (xs.length <= 2 ? xs.join(" and ") : `${xs.slice(0, 2).join(", ")} and ${xs.length - 2} more`);
+let axis = "conviction";
+function renderSubjects() {
+  $("#tab-s").textContent = SUBJ.length;
+  if (S("loading")) return html("#s-index", busy("Loading subjects", `<div class="in-read"><div>${skelRead()}</div>${skelStats()}</div><div class="mx-panel in-map">${skelRows(6)}</div><div class="in-feed"><div>${skelRows(5)}</div><div>${skelLines(4)}</div></div>`));
+  if (S("load-error")) return html("#s-index", empty({ mod: "center", tone: "danger", icon: "i-alert", title: "Couldn't load Subjects.", text: "Reading your conclusions failed. Nothing is lost.", acts: retryBtn() }));
+  if (!SUBJ.length) return html("#s-index", empty({ mod: "center", icon: "i-inbox", title: S("not-set-up") ? "Subjects appear once AI is set up" : "No subjects yet.",
+    text: S("not-set-up") ? "Subjects are the views Mnema forms about you from your activity — each with its own confidence over time."
+      : `As Mnema forms views about you, each one appears here with its own confidence over time. A view needs at least two supporting activities.${S("new-user") ? " It's backfilling your history now — check back later today." : ""}`,
+    acts: S("not-set-up") ? `<a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Set up AI</a>` : "" }));
+  const f = S("no-match") ? "kubernetes" : ($("#s-filter").value || "").toLowerCase();
+  if (S("no-match")) $("#s-filter").value = f;
+  const list = SUBJ.filter((s) => !f || s[0].toLowerCase().includes(f) || s[3].some((c) => c[1].toLowerCase().includes(f)));
+  const by = Object.fromEntries(TIER.conviction.map(([id, , , fn]) => [id, SUBJ.filter(fn)]));
+  const names = (id) => by[id].map((s) => s[0]);
+  const verb = (id) => (by[id].length > 1 ? "are" : "is");
+  // Headline = template over the tiers (no LLM pass).
+  const head = [by.strong.length && `${listNames(names("strong"))} ${verb("strong")} strongly held.`, by.forming.length && `${listNames(names("forming"))} ${verb("forming")} forming${by.fading.length ? "" : "."}`,
+    by.fading.length && `<em>— and ${listNames(names("fading"))} ${verb("fading")} fading into history.</em>`].filter(Boolean).join(" ");
+  const sparse = SUBJ.length < 5;
+  const bands = `<div class="in-map__bands"><span class="fade" style="left:0;width:15%"><b>fading</b></span><span style="left:15%;width:15%"><b>taking shape</b></span><span style="left:30%;width:38%"><b>forming</b></span><span class="firm" style="left:68%;width:32%"><b>strongly held</b></span></div>`;
+  const ax = `<div class="in-map__axis"><span></span><div>${[0, 15, 30, 68, 100].map((v) => `<span style="left:${v}%">${v}%</span>`).join("")}</div><span></span></div>`;
+  const rows = [...list].sort((a, b) => topC(b) - topC(a)).map((s, i) => {
+    const c = topC(s), dl = s[4], prev = dl === null ? null : c - dl, [dt, dk] = deltaTxt(dl);
+    const lo = prev === null ? c : Math.min(prev, c), wd = prev === null ? 0 : Math.abs(dl);
+    const col = dl > 0 ? "var(--focus-deep)" : dl < 0 ? "var(--focus-distracted)" : "var(--chart-grey-3)";
+    return `<div class="in-map__row${isFading(s) ? " in-map__row--faded" : ""}" data-subject="${s[0]}" style="--d:${i}" data-v="${s[0]} · ${c}%|${s[3][0][1]}|${s[3].length} conclusion${s[3].length > 1 ? "s" : ""} · ${prev === null ? "formed this fortnight" : `was ${prev}% 14 days ago`}">
+      <span class="in-map__name">${s[0]}<small>${s[3].length}</small></span>
+      <div class="in-map__track">${s[3].slice(1).map(([cc]) => `<i class="in-map__tick" style="left:${cc}%"></i>`).join("")}
+        ${wd ? `<i class="in-map__tail" style="left:${lo}%;width:${wd}%;--c:${col};--o:${dl > 0 ? "left" : "right"}"></i><i class="in-map__then" style="left:${prev}%"></i>` : ""}
+        <i class="in-map__now${dl === null ? " in-map__now--new" : ""}" style="left:${c}%"></i></div>
+      <span class="in-map__val">${c}%<small class="${dk}">${dt}</small></span></div>`;
+  }).join("");
+  const subjRow = (s) => `<div class="in-subj" data-subject="${s[0]}"><div class="in-subj__name">${s[0]}<small>${s[3].length} concl. · since ${s[2]}</small></div>
+    <p>${s[3][0][1]}</p>${multiSpark(s[3], s[1])}<span class="num">${topC(s)}%</span><svg class="arrow" width="14" height="14"><use href="#in-right"/></svg></div>`;
+  const noMatch = empty({ icon: "i-search", title: `No subjects match “${f}”.`, text: "Filter looks at subject names and the wording of each belief. Try a shorter term, or clear it.",
+    acts: `<button class="mx-btn mx-btn--sm" data-clear-filter>Clear filter</button>` });
+  const tiers = !list.length ? noMatch : f || sparse ? `<div class="in-tier">${f ? `<p class="in-group">${list.length} match${list.length === 1 ? "" : "es"}</p>` : ""}${list.map(subjRow).join("")}</div>`
+    : TIER[axis].map(([, name, note, fn, faded]) => { const rs = list.filter(fn).sort((a, b) => topC(b) - topC(a)); if (!rs.length) return "";
+      return `<div class="in-tier${faded ? " in-tier--faded" : ""}"><p class="in-group">${name} · ${rs.length} <span style="text-transform:none;letter-spacing:0;color:var(--app-text-faint)">${note}</span></p>${rs.map(subjRow).join("")}</div>`; }).join("");
+  html("#s-index", `${S("updated") ? `<div class="in-refresh"><button class="mx-btn mx-btn--sm" data-refresh>${icon("i-retry", 13)}2 views updated · Refresh</button></div>` : ""}
+    <div class="in-read">
+      <div class="mx-reveal" style="--i:1"><span class="mx-kicker">Your dossier · ${SUBJ.length} subjects · ${SUBJ.reduce((n, s) => n + s[3].length, 0)} conclusions</span>
+        <h1 class="mx-display">${head}</h1>
+        <p class="mx-prose">What Mnema has come to believe about you. Each subject is scored by its strongest conclusion; confidence rises with fresh evidence, halves every 30 days without it, and drops faster when activity contradicts it.</p></div>
+      <div class="in-lede-stats mx-reveal" style="--i:2">
+        ${stat("Strongly held", by.strong.length, "lead ≥ 68%")}${stat("Forming", by.forming.length, "30 – 68%")}
+        ${stat("Just taking shape", by.shaping.length, "under 30%")}${stat("Fading", by.fading.length, "kept for history")}</div>
+    </div>
+    <div class="mx-panel in-map mx-reveal" style="--i:3"><div class="in-sec"><span class="mx-kicker">Conviction map</span><span class="mx-spacer"></span>
+      <span class="in-map__legend"><span><i class="d"></i>now</span><span><i class="o"></i>14 days ago</span><span><i class="t"></i>other conclusions</span></span></div>
+      <div class="in-map__plot">${list.length ? bands + ax + rows : noMatch}</div></div>
+    <div class="in-feed">
+      <div class="mx-reveal" style="--i:4">${list.length ? tiers : ""}${sparse && !f ? `<p class="mx-body-sm" style="margin-top:var(--s-3)">Tiers appear once there are five or more subjects.</p>` : ""}</div>
+      <div class="in-side mx-reveal" style="--i:5">
+        <div><div class="in-sec"><span class="mx-kicker">Moving this fortnight</span></div>
+          <dl class="mx-spec in-move">${[...SUBJ].filter((s) => s[4] !== 0).sort((a, b) => (b[4] ?? 99) - (a[4] ?? 99)).map((s) => { const [dt, dk] = deltaTxt(s[4]);
+            return `<div data-subject="${s[0]}" style="cursor:pointer"><dt>${s[0]}</dt><dd class="${dk === "up" ? "in-up" : dk === "down" ? "in-down" : "in-new"}">${dk === "new" ? `formed ${s[2]}` : `${dt} pts`}</dd></div>`; }).join("")}</dl></div>
+        <div class="mx-panel mx-panel--inset in-guard"><div class="in-sec"><span class="mx-kicker">How conviction works</span></div>
+          <dl class="mx-spec" style="grid-template-columns:118px 1fr">
+            <div><dt>strongly held</dt><dd style="font-size:var(--text-base)">Lead conclusion at 68% or more.</dd></div>
+            <div><dt>forming</dt><dd style="font-size:var(--text-base)">30–68%. Building support.</dd></div>
+            <div><dt>taking shape</dt><dd style="font-size:var(--text-base)">Under 30% — early, or cooling.</dd></div>
+            <div><dt>fading</dt><dd style="font-size:var(--text-base)">Every conclusion below the 15% display floor: leaves the dossier, history kept. Never deleted.</dd></div>
+            <div><dt>decay</dt><dd style="font-size:var(--text-base)">Halves every 30 days without fresh evidence. Pin stops it.</dd></div>
+          </dl></div>
+      </div></div>`);
+}
+$("#s-axis").addEventListener("mx-change", (e) => { axis = e.detail; renderSubjects(); });
+$("#s-filter").addEventListener("input", () => { showIndex(); renderSubjects(); });
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-clear-filter]")) { $("#s-filter").value = ""; renderSubjects(); }
+  const rf = e.target.closest("[data-refresh]"); if (rf) { rf.parentElement.remove(); mx.toast("Subjects updated"); }
+});
+
+function openSubject(name, sel = 0) {
+  const s = SUBJ.find((x) => x[0] === name) || SUBJ.find((x) => x[0] === "Rust") || SUBJ[0];
+  $("#s-index").hidden = true; $("#s-detail").hidden = false; $("#main").scrollTop = 0;
+  const crumb = `<div class="in-crumb mx-reveal"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-back>${icon("in-left", 13)}Subjects</button><span>/</span><b>${s[0]}</b><span class="mx-spacer"></span>
+    <a class="mx-btn mx-btn--ghost mx-btn--sm" href="${chatHref(`What do you know about ${s[0]}?`)}" ${ENGINE_DOWN ? 'aria-disabled="true" data-tip="Ask needs AI — turn it on in Settings"' : 'data-tip="Opens Chat with this subject in scope"'}><svg class="mx-btn__accent" width="13" height="13"><use href="#i-sparkle"/></svg>Ask about ${s[0]}<kbd>⌘J</kbd></a></div>`;
+  if (S("detail-loading")) return html("#s-detail", crumb + busy(`Loading ${s[0]}`, `<div class="in-read"><div>${skelRead()}</div>${skelStats()}</div><div class="in-ex"><div class="mx-panel in-week"><div class="mx-skel" style="height:230px"></div></div><div>${skelRows(4)}</div></div>`));
+  if (S("detail-error")) return html("#s-detail", crumb + empty({ mod: "center", tone: "danger", icon: "i-alert", title: "Couldn't load this subject.", text: "Reading its conclusions and history failed.", acts: retryBtn() }));
+  if (S("detail-empty")) return html("#s-detail", crumb + empty({ mod: "center", icon: "i-inbox", title: `Nothing concluded about ${s[0]} yet.`, text: "Its conclusions were dismissed or haven't formed. Views appear here once two activities support them." }));
+  const [c, st] = s[3][sel], all = s[3].map(([cc], k) => series(cc, s[1], k)), pts = all[sel];
+  const W = 600, H = 230, y = (v) => H - (v / 100) * H, x = (i) => (i / 8) * W;
+  const path = (p) => p.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const evIdx = [0, 2, 4, 6, 7, 8], evLab = ["formed", "Zed session", "call with Ana", "docs read", "Zed session", "today"];
+  const ev = [["origin", s[2], `Formed from 2 supporting activities`, `first pattern: ${s[0]} work across 2 days`],
+    ["ev", "Sep 03", `${s[0]}: long session`, "2h 14m · cited 4 frames"], ["conf", "Sep 10", `Confidence ${Math.round(pts[3])}% → ${Math.round(pts[5])}%`],
+    ["ev", "Sep 22", `Mentioned on a call with Ana`, "transcript 00:41"], ["ev", "Oct 06", `Read docs and issues on ${s[0]}`, "38m"],
+    ["conf", "Oct 08", `Confidence ${Math.round(pts[6])}% → ${c}%`], ["ev", "Oct 09", `${s[0]}: today, 09:20–11:48`, "cited 3 frames"]].reverse();
+  const [dt, dk] = deltaTxt(s[4]);
+  const trendWord = isFading(s) ? "fading" : { up: "warming", steady: "steady", down: "cooling" }[s[1]];
+  html("#s-detail", crumb + `<div class="in-read">
+      <div class="mx-reveal" style="--i:1"><span class="mx-kicker">Subject · since ${s[2]} · ${trendWord}</span><h1 class="mx-display">${s[0]}</h1>
+        <p class="mx-prose" style="font-size:var(--text-lg)">${s[3][0][1]} <span style="color:var(--app-text-subtle)">— its strongest conclusion, at ${topC(s)}%.</span></p></div>
+      <div class="in-lede-stats mx-reveal" style="--i:2">
+        ${stat("Lead confidence", `${topC(s)}<small>%</small>`, dk === "new" ? "formed this fortnight" : `${dt} pts in 14d`, dk === "up")}
+        ${stat("Conclusions", s[3].length, `${s[3].filter((q) => q[0] >= 15).length} above the display floor`)}
+        ${stat("Evidence", "14", "activities cited")}${stat("Last support", "2<small>h ago</small>", "today")}</div></div>
+    <div class="in-ex">
+      <div class="mx-panel in-week mx-reveal" style="--i:3"><div class="in-sec"><span class="mx-kicker">Confidence over time</span><span class="mx-spacer"></span><span class="mx-label">selected conclusion · others in grey · ● evidence</span></div>
+        <div class="in-cc"><div class="in-cc__y">${[100, 68, 30, 15, 0].map((v) => `<span style="bottom:${v}%">${v}</span>`).join("")}</div>
+          <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+            ${[30, 68, 100].map((v) => `<line x1="0" x2="${W}" y1="${y(v)}" y2="${y(v)}" stroke="var(--mx-hairline)" vector-effect="non-scaling-stroke"/>`).join("")}
+            <line x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" stroke="var(--app-border)" vector-effect="non-scaling-stroke"/>
+            <line x1="0" x2="${W}" y1="${y(15)}" y2="${y(15)}" stroke="var(--app-border-strong)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>
+            ${all.map((p, k) => (k === sel ? "" : `<path d="${path(p)}" stroke="var(--chart-grey-2)" vector-effect="non-scaling-stroke"/>`)).join("")}
+            <path d="${path(pts)} L${W} ${H} L0 ${H}Z" fill="color-mix(in srgb, var(--app-text-strong) 7%, transparent)" stroke="none"/>
+            <path d="${path(pts)}" stroke="var(--app-text-strong)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+          <span class="in-cc__fade" style="top:${100 - 15}%">display floor 15%</span>
+          ${evIdx.map((i, k) => `<i class="in-cc__ev${k === 0 ? " in-cc__ev--origin" : ""}" style="left:${(i / 8) * 100}%;top:${100 - pts[i]}%;--d:${k}" data-v="${evLab[k]} · ${Math.round(pts[i])}%|evidence for conclusion ${sel + 1}"></i>`).join("")}</div>
+        <div class="in-cc__x"><span>${s[2]}</span><span>Sep</span><span>today</span></div></div>
+      <div class="mx-reveal" style="--i:4"><div class="in-sec"><span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span><span class="mx-label">${s[3].length} · by confidence</span></div>
+        <div class="in-cls">${s[3].map(([cc, t], i) => { const dd = Math.round(cc - all[i][6]);
+          return `<button class="in-cl" data-pick="${i}" aria-pressed="${i === sel}"><span class="num">${cc}%</span><span>${t}</span><small class="${dd > 0 ? "in-up" : dd < 0 ? "in-down" : ""}">${dd > 0 ? "+" : dd < 0 ? "−" : "±"}${Math.abs(dd)}</small></button>`; }).join("")}</div></div></div>
+    <div class="in-feed mx-reveal" style="--i:5">
+      <div><span class="mx-kicker">Why Mnema believes this · ${sel + 1} of ${s[3].length}</span><h2 class="in-cd__statement">${st}</h2>
+        <div style="display:flex;gap:6px"><button class="mx-btn mx-btn--sm" data-pin>${icon("in-pin", 13)}Pin</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-dismiss-c>Dismiss</button></div>
+        <ol class="in-tl">${ev.map(([k, dd, t, sm], i) => `<li class="${k}" style="--i:${i}"><time class="num">${dd}</time><div>${t}${sm ? `<small>${sm}</small>` : ""}</div></li>`).join("")}</ol></div>
+      <div class="mx-panel mx-panel--inset in-guard"><div class="in-sec"><span class="mx-kicker">This conclusion</span></div>
+        <dl class="mx-spec" style="grid-template-columns:96px 1fr">
+          <div><dt>confidence</dt><dd class="num">${c}%</dd></div>
+          <div><dt>peak</dt><dd class="num">${Math.max(c, ...pts.map(Math.round))}%</dd></div>
+          <div><dt>evidence</dt><dd>14 activities · 7 frames · 1 transcript</dd></div>
+          <div><dt>decay</dt><dd>halves every 30 days without support</dd></div>
+          <div><dt>pinned</dt><dd>no — pin it to stop it fading</dd></div></dl>
+        <a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html" style="margin:var(--s-3) 0 0 -9px">Open evidence in Timeline${icon("i-arrow", 13)}</a></div></div>`);
+}
+const showIndex = () => { $("#s-detail").hidden = true; $("#s-index").hidden = false; };
+document.addEventListener("click", (e) => {
+  const subj = e.target.closest("[data-subject]");
+  if (subj && SUBJ.length) { go("subjects"); return openSubject(subj.dataset.subject); }
+  const pick = e.target.closest("[data-pick]");
+  if (pick) return openSubject($(".in-crumb b").textContent, +pick.dataset.pick);
+  if (e.target.closest("[data-back]")) { showIndex(); renderSubjects(); $("#main").scrollTop = 0; }
+  // Pin / Dismiss are the user's own actions → toasts; Dismiss is a 5 s delayed commit with Undo (as Overview's).
+  if (e.target.closest("[data-pin]")) { const b = e.target.closest("[data-pin]"); b.setAttribute("aria-pressed", "true"); b.lastChild.textContent = "Pinned"; mx.toast("Pinned — it won't fade"); }
+  if (e.target.closest("[data-dismiss-c]")) mx.toast("Dismissed — it won't be re-inferred", { action: "Undo" });
+});
+
+/* ===== Context ========================================================== */
+const TOPIC = { Work: "creating", Preferences: "organizing", People: "communication", Goals: "learning" };
+let CTX = [
+  ["Work", "I'm building Mnema, a local-first screen memory app, mostly solo.", "Aug 2"],
+  ["People", "Ana is my co-founder. She owns licensing and the website.", "Aug 2"],
+  ["Preferences", "I prefer written async updates; calls only when something is blocked.", "Aug 19"],
+  ["Preferences", "Late-night browsing isn't work, even when it's in Arc.", "Sep 3"],
+  ["Goals", "Ship the redesign before the end of October.", "Oct 1"],
+];
+if (S("empty")) CTX = [];
+// over-cap: newest first; only the newest 4,000 characters go to the model, so the 4 oldest (bottom) aren't sent.
+if (S("over-cap")) CTX = [
+  ["Goals", "Ship the redesign before the end of October.", "Oct 1"],
+  ["Work", "Reviewing PRs is real work — GitHub time counts.", "Sep 28"],
+  ["People", "Priya is our contractor for the Windows port; she works Pacific hours.", "Sep 22"],
+  ["Preferences", "I write release notes on Fridays — don't call that admin.", "Sep 15"],
+  ["Goals", "Get the first 100 paying customers before the year ends.", "Sep 9"],
+  ["Preferences", "Late-night browsing isn't work, even when it's in Arc.", "Sep 3"],
+  ["Work", "Rust is my main language now; TypeScript only in the desktop UI.", "Aug 27"],
+  ["People", "Tom is my accountant — invoices and tax threads are with him.", "Aug 19"],
+  ["Preferences", "I prefer written async updates; calls only when something is blocked.", "Aug 19"],
+  ["Goals", "Read one paper a week on speaker diarization.", "Aug 11"],
+  ["Work", "Tuesday mornings are blocked for support tickets.", "Aug 5"],
+  ["Work", "I'm building Mnema, a local-first screen memory app, mostly solo.", "Aug 2"],
+  ["People", "Ana is my co-founder. She owns licensing and the website.", "Aug 2"],
+  ["Preferences", "Music is on while I code — Spotify isn't a distraction.", "Jul 20"],
+  ["Goals", "Keep a 4-day work week through the summer.", "Jul 6"],
+  ["Work", "Before Mnema I was a backend engineer at a fintech.", "Jun 14"],
+];
+const UNSENT = S("over-cap") ? 2 : 0; // 16 × ≤280 chars: at most 2 fall outside a 4,000-char budget
+const INFERRED = S("not-set-up", "new-user") ? 0 : SUBJ.reduce((n, s) => n + s[3].filter((c) => c[0] >= 15).length, 0); // status.conclusionCount (visible)
+const DISMISSED = S("empty", "not-set-up", "new-user") ? [] : [["You're job-hunting.", "Career", "Sep 12"], ["You play video games on weeknights.", "Gaming", "Aug 30"]];
+const SENSITIVE = ["health & mental health", "sexuality", "religion", "politics", "other protected"]; // guardrail.rs SensitiveCategory (5)
+const WORDS = ["Nothing", "One thing", "Two things", "Three things", "Four things", "Five things", "Six things", "Seven things", "Eight things", "Nine things"];
+function renderContext() {
+  const failed = S("load-error"), n = failed ? 0 : CTX.length; // a failed load shows no counts, never a fake 0
+  $("#tab-ctx").textContent = failed ? "" : n;
+  if (S("loading")) return html("#c-body", busy("Loading context", `<div class="in-read"><div>${skelRead()}</div>${skelStats()}</div><div class="in-ex"><div><div class="mx-panel in-compose">${skelLines(3)}</div>${skelRows(5)}</div><div class="in-side">${skelLines(5)}</div></div>`));
+  const adding = S("adding");
+  const strongest = SUBJ.flatMap((s) => s[3].map(([c, t]) => [c, t, s[0]])).sort((a, b) => b[0] - a[0]).slice(0, 3);
+  const list = S("load-error") ? empty({ tone: "danger", icon: "i-alert", title: "Couldn't load your context.", text: "Reading your statements failed. Nothing is lost.", acts: retryBtn() })
+    : !n ? empty({ icon: "i-inbox", title: "No standing context yet.", text: "Add a short statement above — your role, what you're working on, how you work, what you care about. It steers the dossier, and it never fades." })
+    : CTX.map(([t, s, d], i) => `<div class="in-stmt${d === "just now" ? " in-stmt--fresh" : ""}${i >= n - UNSENT ? " in-stmt--unsent" : ""}">
+      <span class="in-stmt__topic"><span class="in-sw" style="--c:${cv(TOPIC[t])}"></span>${t}</span><p>${s}<small>authored ${d} · ${i >= n - UNSENT ? `<span class="num">not sent</span>` : "never fades"}</small></p>
+      <span class="in-stmt__acts"><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Edit" data-tip="Edit">${icon("in-edit", 13)}</button><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Delete" data-tip="Delete" data-del="${i}">${icon("in-trash", 13)}</button></span></div>`).join("");
+  const by = Object.fromEntries(Object.keys(TOPIC).map((t) => [t, CTX.filter((c) => c[0] === t).length]));
+  const mxT = Math.max(1, ...Object.values(by));
+  html("#c-body", `<div class="in-read">
+      <div class="mx-reveal" style="--i:1"><span class="mx-kicker">Context · in your own words</span>
+        <h1 class="mx-display">${failed ? "What you've told Mnema. <em>It steers the dossier, and never fades.</em>"
+          : n ? `${WORDS[n] || `${n} things`} you've told Mnema. <em>${UNSENT ? "They steer the dossier first — the newest 4,000 characters are sent." : "They steer the dossier first, and they never fade."}</em>`
+          : "Nothing you've told Mnema yet. <em>What you write here steers the dossier, and never fades.</em>"}</h1>
+        <p class="mx-prose">Everything else Mnema knows is inferred from activity and scored on confidence. What you write here is taken as given — and outranks an inference that disagrees.</p></div>
+      <div class="in-lede-stats mx-reveal" style="--i:2">
+        ${stat("Authored", failed ? "—" : n, failed ? "couldn't load" : "never fades")}${stat("Inferred", INFERRED, "scored · can fade")}
+        ${stat("Dismissed", DISMISSED.length, "won't be re-inferred")}${stat("Guarded", SENSITIVE.length, "categories never inferred")}</div></div>
+    <div class="in-ex">
+      <div>
+        <div class="mx-panel mx-panel--raised in-compose mx-reveal" style="--i:3">
+          <span class="mx-kicker">Add context</span>
+          <div class="in-compose__ta"><textarea id="c-text" placeholder="e.g. “I'm a designer — Figma time is real work even when it looks like browsing.”" aria-label="Add context"${adding ? " disabled" : ""}>${S("adding", "add-error") ? "I'm hiring a second engineer this quarter." : ""}</textarea>
+            <span class="num in-compose__count" id="c-count">${S("adding", "add-error") ? 42 : 0} / 280</span></div>
+          <div class="in-compose__row"><span class="mx-label" style="margin-right:4px">Topic</span>
+            <div class="mx-seg" role="group" aria-label="Topic" id="c-topics">${Object.keys(TOPIC).map((t, i) => `<button value="${t}" aria-pressed="${S("adding", "add-error") ? t === "Goals" : i === 0}"><span class="in-sw" style="--c:${cv(TOPIC[t])}"></span>${t}</button>`).join("")}</div>
+            <span class="mx-spacer"></span>
+            <button class="mx-btn mx-btn--primary mx-btn--sm" id="c-add"${adding ? ' aria-busy="true" disabled' : ""}>${adding ? `<span class="mx-spin mx-spin--sm"></span>Adding…` : `${icon("in-plus", 13)}Add context<kbd>⌘↵</kbd>`}</button></div>
+          <div class="in-compose__priv">${icon("i-cloud", 13)}Goes to Anthropic each time Mnema forms conclusions · stays on this Mac with a local model.</div>
+          ${S("add-error") ? `<div>${inline("danger", "i-alert", "Couldn't save that statement — the database is busy. Your text is still here.", `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry>Retry</button>`)}</div>` : ""}
+        </div>
+        <div class="mx-reveal" style="--i:4"><div class="in-sec"><h2 class="mx-h2">Standing context</h2><span class="mx-label num">${failed ? "" : UNSENT ? `${n - UNSENT} of ${n} statements sent · older ones aren't sent (4,000-character limit)` : `${n} statement${n === 1 ? "" : "s"}${n ? " · all sent" : ""}`}</span></div><div id="c-list">${list}</div></div>
+      </div>
+      <div class="in-side">
+        <div class="mx-panel in-mix mx-reveal" style="--i:4"><div class="in-sec"><span class="mx-kicker">What the dossier is built from</span></div>
+          <div class="in-mix__total"><i style="--c:var(--app-text-strong);flex:${n || .001}" data-v="Authored · ${n}|you said it — never fades"></i><i style="--c:var(--chart-grey-3);flex:${INFERRED || .001}" data-v="Inferred · ${INFERRED}|read from activity — scored, can fade"></i></div>
+          <div class="in-mix__l"><span><span class="in-sw" style="--c:var(--app-text-strong)"></span>authored <b>${n}</b></span><span><span class="in-sw in-sw--hatch" style="--c:var(--chart-grey-4)"></span>inferred <b>${INFERRED}</b></span></div>
+          ${n ? Object.keys(TOPIC).map((t, i) => `<div class="in-mix__row"><span><span class="in-sw" style="--c:${cv(TOPIC[t])}"></span>${t}</span>
+            <div class="in-mix__bar" style="width:${(by[t] / mxT) * 100}%;--c:${cv(TOPIC[t])}">${by[t] ? `<i class="a" style="flex:1;--d:${i}"></i>` : ""}</div><span class="num"><b>${by[t]}</b></span></div>`).join("") : ""}</div>
+        <!-- Was "Steering your dossier · backed by '…'": no authored→conclusion link exists in the backend, so this lists the strongest
+             inferred views instead (top 3 by confidence — the same pick Context.svelte makes) and claims no backing. -->
+        <div class="mx-reveal" style="--i:5"><div class="in-sec"><span class="mx-kicker">Strongest inferred views</span><span class="mx-spacer"></span><span class="mx-label">by confidence</span></div>
+          ${strongest.length ? `<div class="in-steer">${strongest.map(([c, t, subj]) => `<div data-subject="${subj}">${t}<span class="num">${c}%</span><small>${subj} · inferred — say it here to make it standing</small></div>`).join("")}</div>`
+            : empty({ mod: "compact", icon: "i-inbox", title: "No inferred views yet", text: "As Mnema forms views, the strongest show here." })}</div>
+        <div class="mx-panel mx-panel--inset in-guard mx-reveal" style="--i:6">
+          <span class="mx-kicker">${icon("i-lock", 12)}Sensitive Category Guardrail</span>
+          <div class="in-guard__chips">${SENSITIVE.map((c) => `<span class="mx-chip"${c === "other protected" ? ' data-tip="race / ethnicity, disability, immigration status, financial distress"' : ""}>${c}</span>`).join("")}</div>
+          Mnema never infers these categories about you. What you write here is sent as written.
+        </div>
+        ${DISMISSED.length ? `<div class="mx-reveal" style="--i:7"><div class="in-sec"><span class="mx-kicker">Dismissed beliefs</span><span class="mx-spacer"></span><span class="mx-label">won't be re-inferred</span></div>
+          <div id="c-dismissed">${DISMISSED.map(([t, subj, d]) => `<div class="in-dismiss"><div><p>${t}</p><small>${subj} · dismissed ${d}</small></div><button class="mx-btn mx-btn--ghost mx-btn--sm" data-restore>Restore</button></div>`).join("")}</div></div>` : ""}
+      </div></div>`);
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-restore]");
+  if (b) { b.setAttribute("aria-busy", "true"); b.innerHTML = `<span class="mx-spin mx-spin--sm"></span>Restoring…`;
+    setTimeout(() => { b.closest(".in-dismiss").setAttribute("data-done", ""); b.removeAttribute("aria-busy"); b.textContent = "Restored"; b.disabled = true; }, 700); }
+  const d = e.target.closest("[data-del]"); if (d) { const [gone] = CTX.splice(+d.dataset.del, 1); renderContext(); mx.toast("Statement deleted", { action: "Undo", onAction: () => { CTX.splice(+d.dataset.del, 0, gone); renderContext(); } }); }
+  if (e.target.closest("#c-add")) addCtx();
+});
+function addCtx() {
+  const v = $("#c-text").value.trim(); if (!v) return $("#c-text").focus();
+  CTX.unshift([$("#c-topics [aria-pressed=true]").value, v, "just now"]); renderContext(); wireSegs($("#c-body"));
+}
+document.addEventListener("keydown", (e) => e.target.id === "c-text" && e.key === "Enter" && e.metaKey && addCtx());
+document.addEventListener("input", (e) => e.target.id === "c-text" && ($("#c-count").textContent = `${e.target.value.length} / 280`));
+// Segmented controls rendered after kit.js init: wire thumb + selection by hand (kit only wires static ones).
+function wireSegs(root) {
+  $$(".mx-seg", root).forEach((seg) => { if (seg.dataset.wired) return; seg.dataset.wired = 1; placeThumb(seg);
+    seg.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b || b.closest(".in-receipt")) return;
+      $$("button", seg).forEach((x) => x.setAttribute("aria-pressed", String(x === b))); placeThumb(seg); }); });
+}
+
+/* ===== Section switching ================================================ */
+const VIEWS = ["overview", "journal", "subjects", "context"];
+let current = "overview";
+const ink = $(".in-tabs__ink");
+const placeInk = () => { const b = $(".in-tabs [aria-current=true]"); ink.style.width = b.offsetWidth + "px"; ink.style.transform = `translateX(${b.offsetLeft}px)`; };
+function go(v) {
+  current = v;
+  $$(".in-view").forEach((s) => s.toggleAttribute("data-active", s.dataset.view === v));
+  $$(".in-tabs button").forEach((b) => b.setAttribute("aria-current", String(b.dataset.go === v)));
+  $$(".in-bar__ctl").forEach((c) => c.toggleAttribute("data-on", c.dataset.for === v));
+  $("#main").scrollTop = 0;
+  $$(`[data-for="${v}"] .mx-seg, [data-view="${v}"] .mx-seg`).forEach(placeThumb);
+  placeInk(); fillMock();
+  history.replaceState(null, "", location.search + "#" + v);
+}
+document.addEventListener("click", (e) => {
+  const g = e.target.closest("[data-go]"); if (!g) return;
+  if (g.dataset.go === "subjects") showIndex();
+  go(g.dataset.go);
+});
+// States that only exist on one view land there when no #view is given.
+const homeOf = (s) => VIEWS.find((v) => STATES[v].some(([id]) => id === s) && !VIEWS.some((w) => w !== v && STATES[w].some(([id]) => id === s)));
+const fromHash = () => { const h = location.hash.slice(1); go(VIEWS.includes(h) ? h : homeOf(STATE) || current); };
+addEventListener("hashchange", fromHash);
+new ResizeObserver(placeInk).observe($(".in-tabs"));
+
+/* ===== Mockup state picker ============================================== */
+function fillMock() {
+  const opt = ([id, l]) => `<option value="${id}"${id === RAW ? " selected" : ""}>${l}</option>`;
+  html("#mock-state", `<optgroup label="Any view">${STATES.any.map(opt).join("")}</optgroup><optgroup label="${current[0].toUpperCase() + current.slice(1)}">${STATES[current].map(opt).join("")}</optgroup>`);
+}
+$("#mock-state").addEventListener("change", (e) => {
+  const p = new URLSearchParams(location.search); e.target.value === "default" ? p.delete("state") : p.set("state", e.target.value);
+  location.href = `${location.pathname}${p.toString() ? `?${p}` : ""}#${current}`;
+});
+
+/* ===== Boot ============================================================= */
+paintNotices();
+renderJournal(); renderSubjects(); renderContext();
+document.addEventListener("DOMContentLoaded", () => {
+  const unit = Q.get("ovpop") || Q.get("unit");
+  if (S("empty-range")) $("#ov-range").mxDate.step(-1); // a past week with no capture
+  if (S("too-few", "nothing-captured")) jDay.mxDate.step(-5); // Sun, Oct 4
+  if (unit && unit !== "week") $("#ov-range").mxDate.setUnit(unit);
+  if (!OV.label) { OV.label = "Oct 5 – 11"; renderOverview(); }
+  if (Q.get("ovpop")) $("#ov-range .mx-date__btn").click();
+  wireSegs(document);
+  fromHash();
+  const subj = Q.get("subject") || (/^detail/.test(STATE) ? "Rust" : null);
+  if (subj && current === "subjects") openSubject(subj);
+  if (Q.get("scroll")) $("#main").scrollTop = +Q.get("scroll"); // render hook
+});
+</script>
+</body>
+</html>

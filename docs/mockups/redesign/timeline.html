@@ -1,0 +1,1872 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Timeline</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <script>{ const t = new URLSearchParams(location.search).get("theme"); if (t) document.documentElement.dataset.theme = t; } /* mockup test hook, pre-paint */
+    addEventListener("error", (e) => { document.documentElement.dataset.jsError = e.message; }); /* surfaced for headless checks */</script>
+  <style>
+    /* ====================================================================
+       Timeline (dashboard) — page-only styles. Prefix: tl- (page chrome),
+       fx- (the fake captured screenshots, scoped under .tl-frame).
+       Interaction model mirrors apps/desktop/src/routes/+page.svelte:
+       preview stage on top, a native horizontally-scrolling tick rail with a
+       fixed center playhead (newest frame anchored right), an audio lane
+       below that tracks the rail's scroll, and a bottom-sheet audio drawer.
+       ==================================================================== */
+    .tl-body { overflow: hidden; }
+    .tl {
+      height: 100%; min-height: 0;
+      display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: var(--s-3);
+      padding: var(--s-3) var(--s-4) var(--s-3);
+    }
+
+    /* --- Bar ------------------------------------------------------------ */
+    .tl-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); min-height: 32px; }
+    .tl-bar__group { display: flex; align-items: center; gap: var(--s-2); }
+    /* Jumper trigger: one compact 28px control (same height as the toolbar buttons) — calendar icon · day · mono time.
+       Relative day ("today", "3 days ago") lives in the tooltip; it opens the jumper, it doesn't drag. */
+    .tl-bar .mx-btn { --_h: 28px; }
+    .tl-jump.mx-date__btn { height: 28px; gap: 7px; padding: 0 10px 0 9px; cursor: pointer; }
+    .tl-jump b { font: 500 var(--text-md)/1 var(--font-sans); letter-spacing: -0.01em; }
+    .tl-jump__time { padding-left: 8px; border-left: 1px solid var(--mx-hairline); height: 14px; display: inline-flex; align-items: center;
+      font: 500 var(--text-base)/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; color: var(--app-text-muted); }
+
+    .tl-ocr-chip { font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .tl-count { font: 500 var(--text-xs)/1 var(--font-mono); font-variant-numeric: tabular-nums; padding: 3px 5px; border-radius: var(--r-xs);
+      color: var(--app-accent); background: var(--app-accent-bg); }
+    .tl-searchchip { display: inline-flex; align-items: center; gap: 6px; }
+    [hidden] { display: none !important; }
+
+    /* --- Jumper popover: kit calendar (day = preview) + hour list (hour = commit) --- */
+    .tl-jpop { padding: 0; }
+    .tl-jpop__head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); padding: var(--s-3) var(--s-3) var(--s-2) var(--s-4); }
+    .tl-jpop__panes { display: grid; grid-template-columns: auto 212px; border-top: 1px solid var(--mx-hairline); border-bottom: 1px solid var(--mx-hairline); }
+    .tl-jpop .mx-cal { padding: 10px 10px 8px; }
+    /* the playhead's day, when you're previewing another one */
+    .tl-jpop .mx-cal__day[data-here]:not([data-sel]) { background: color-mix(in srgb, var(--app-accent) 11%, transparent); color: var(--app-text-strong); }
+    .tl-times { border-left: 1px solid var(--mx-hairline); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+    .tl-times__head { display: flex; align-items: baseline; justify-content: space-between; padding: var(--s-3) var(--s-3) var(--s-2); }
+    .tl-times__day { font: 600 var(--text-base)/1 var(--font-sans); color: var(--app-text-strong); }
+    .tl-times__scroll { height: 236px; overflow: auto; padding: 0 6px; scrollbar-width: thin; }
+    .tl-hour {
+      position: relative; width: 100%; display: grid; grid-template-columns: 1fr auto; align-items: center; height: 28px;
+      padding: 0 10px 0 14px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; overflow: hidden;
+      font: 500 var(--text-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text); text-align: left;
+      transition: background-color var(--t-fast) var(--ease-quart);
+    }
+    .tl-hour:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+    .tl-hour:disabled { color: var(--app-text-faint); cursor: default; }
+    .tl-hour--here { background: var(--mx-selected); color: var(--app-text-strong); }
+    .tl-hour__density { position: absolute; left: 0; top: 4px; bottom: 4px; width: calc(var(--d) * 100%); border-radius: var(--r-xs);
+      background: color-mix(in srgb, var(--chart-grey-3) 22%, transparent); pointer-events: none; }
+    .tl-hour__label, .tl-hour__count { position: relative; }
+    .tl-hour__count { color: var(--app-text-subtle); font-size: var(--text-xs); }
+    .tl-hour--flash { background: var(--app-accent-bg); color: var(--app-accent); }
+    .tl-times__foot { padding: var(--s-2) var(--s-3); border-top: 1px solid var(--mx-hairline); }
+    .tl-jpop__foot { padding: var(--s-2) var(--s-4) var(--s-3); }
+    .tl-jpop__foot--warn { color: var(--app-warn); }
+
+    /* --- Stage ------------------------------------------------------------ */
+    .tl-stage {
+      position: relative; min-height: 0; overflow: hidden; border-radius: var(--r-lg);
+      border: 1px solid var(--app-border);
+      background:
+        radial-gradient(120% 90% at 50% 42%, color-mix(in srgb, var(--app-surface-raised) 70%, transparent), transparent 70%),
+        var(--app-surface-subtle);
+    }
+    .tl-frame {
+      position: absolute; left: 0; top: 0; width: 1280px; height: 800px; transform-origin: 0 0;
+      border-radius: 14px; overflow: hidden;
+      outline: 1px solid color-mix(in srgb, var(--app-border-strong) 80%, transparent); outline-offset: 0;
+      transition: filter var(--t-med) var(--ease-quart), opacity var(--t-med) var(--ease-quart);
+    }
+    /* Scrub preview: low-res stand-in while moving; settles to the exact frame. */
+    .tl-frame.is-scrub { filter: blur(1.4px) saturate(0.9); opacity: 0.94; transition: none; }
+    .tl-stage-actions { position: absolute; z-index: 3; top: var(--s-3); right: var(--s-3); display: flex; gap: 6px; }
+    #tl-moment[data-src="mic"] svg { color: var(--app-source-mic); }
+    #tl-moment[data-src="sysaudio"] svg { color: var(--app-source-sysaudio); }
+    .tl-framemenu { min-width: 200px; }
+    .tl-framemenu .mx-menu li svg { color: var(--app-text-subtle); }
+
+    /* OCR overlay lives inside the scaled frame, so it tracks the painted image. */
+    .tl-ocr { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+    .tl-ocr__box {
+      position: absolute; pointer-events: auto; cursor: text; border-radius: 3px;
+      border: 1.5px solid var(--app-ocr-box); background: color-mix(in srgb, var(--app-ocr-box-fill) 30%, transparent);
+      animation: tl-ocr-in var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 6ms);
+      transition: border-color var(--t-fast) var(--ease-quart), background-color var(--t-fast) var(--ease-quart);
+    }
+    @keyframes tl-ocr-in { from { opacity: 0; transform: scale(0.96); } }
+    .tl-ocr__box:hover { border-color: var(--app-ocr-box-hover); background: var(--app-ocr-box-fill); }
+    .tl-ocr__box--match { border-color: var(--app-accent); background: color-mix(in srgb, var(--app-accent) 14%, transparent); box-shadow: 0 0 0 4px var(--app-accent-glow); }
+    .tl-ocr__text {
+      position: absolute; left: -2px; top: 50%; translate: 0 -50%; padding: 4px 8px; white-space: nowrap;
+      background: var(--app-ocr-chip-bg); color: var(--app-ocr-chip-text); border: 1px solid var(--app-ocr-chip-border);
+      border-radius: 4px; font: 500 calc(13px / var(--k, 1))/1 var(--font-sans);
+      box-shadow: 0 6px 18px var(--app-ocr-hover-shadow);
+    }
+    .tl-ocr__text small { color: color-mix(in srgb, var(--app-ocr-chip-text) 60%, transparent); margin-left: 8px; font-size: 0.85em; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .tl-ocr-hint {
+      position: absolute; z-index: 3; left: var(--s-3); bottom: var(--s-3);
+      display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: var(--r-sm);
+      background: var(--app-ocr-chip-bg); color: var(--app-ocr-chip-text); border: 1px solid var(--app-ocr-chip-border);
+      font: 500 var(--text-sm)/1 var(--font-sans); opacity: 0.85; pointer-events: none;
+    }
+    @keyframes tl-rise { from { opacity: 0; transform: translateY(8px); } }
+
+
+    /* --- Mockup states: slots the kit States components render into (no page skins) --- */
+    .tl-notice { position: absolute; z-index: 4; top: var(--s-3); left: var(--s-3); right: 120px; display: grid; justify-items: start; pointer-events: none; }
+    .tl-notice > * { pointer-events: auto; max-width: 620px; background: color-mix(in srgb, var(--app-surface-raised) 92%, transparent);
+      -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+    .tl-notice > .mx-notice[data-tone] { background: color-mix(in srgb, var(--tone-bg) 100%, var(--app-surface-raised)); }
+    .tl-cover { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; background: var(--app-surface-subtle); }
+    .tl-cover[hidden] { display: none; }
+    .tl-cover .mx-skel--thumb { width: auto; height: calc(100% - 32px); max-width: calc(100% - 40px); aspect-ratio: 16 / 10; }
+    .tl-cover__list { display: grid; gap: 2px; justify-items: center; margin-top: 2px; }
+    .tl-ocrstat { position: absolute; z-index: 3; left: var(--s-3); bottom: var(--s-3); padding: 4px 6px 4px 9px; border-radius: var(--r-sm);
+      background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border); }
+    .tl-stage.is-stale .tl-frame { opacity: 0.55; filter: saturate(0.6); }
+    .tl-railnote { position: absolute; z-index: 6; left: 10px; top: 12px; padding: 0 8px; height: 26px; display: inline-flex; align-items: center;
+      border-radius: var(--r-sm); background: var(--app-surface-raised); border: 1px solid var(--app-border); }
+    .tl-railnote:empty, .tl-lanenote:empty { display: none; }
+    .tl-lanenote { position: absolute; z-index: 3; left: 34px; top: 0; bottom: 0; display: flex; align-items: center; }
+    .tl-lanenote .mx-inline { font-size: var(--text-sm); }
+    .tl--empty :is(.tl-track, .tl-lane__track, .tl-readout), .tl--empty .tl-railwrap::before, .tl--empty .tl-railwrap::after { visibility: hidden; }
+    .tl--nolane .tl-lane__row { display: none; }
+    .tl-framemenu li[aria-disabled] { opacity: var(--app-disabled-opacity); pointer-events: none; }
+    .tl-panel { display: grid; gap: var(--s-3); padding: var(--s-5) 22px var(--s-5) 18px; }
+    .tl-panel .mx-empty { padding: 0; max-width: 560px; }
+    .tl-panel--top { padding: 12px 18px 6px; }
+    .tl-panel .mx-progress { max-width: 420px; }
+    .tl-foot { margin: 0; font: 400 var(--text-xs)/1.4 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .tl-skturn { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: var(--s-5); padding: 14px 22px 14px 18px; }
+    .tl-skturn + .tl-skturn { border-top: 1px solid var(--mx-hairline); }
+    .tl-skturn > .mx-skel { width: 112px; height: 12px; min-height: 0; }
+    .tl-who--plain { display: inline-flex; align-items: center; gap: 7px; height: 26px; font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-muted); }
+    .tl-times__msg { padding: var(--s-3) var(--s-2); }
+    .tl-times__msg .mx-skel { height: 22px; min-height: 0; margin: 0 4px 6px; }
+    .tl-switch { position: fixed; z-index: 100; left: 50%; bottom: 7px; translate: -50% 0; display: flex; align-items: center; gap: var(--s-2); }
+    .tl-switch .mx-input { height: 26px; width: 380px; font-size: var(--text-sm); }
+    .tl-switch .mx-label { white-space: nowrap; }
+
+    /* --- Rail ----------------------------------------------------------- */
+    .tl-railwrap { position: relative; display: grid; gap: 6px; padding-top: 2px; }
+    /* Fixed center playhead: two neutral carets framing the rail midpoint. */
+    .tl-railwrap::before, .tl-railwrap::after {
+      content: ""; position: absolute; z-index: 5; left: 50%; translate: -50% 0; width: 0; height: 0; pointer-events: none;
+      border-left: 5px solid transparent; border-right: 5px solid transparent;
+    }
+    .tl-railwrap::before { top: 0; border-top: 6px solid var(--app-text-muted); }
+    .tl-railwrap::after { top: 38px; border-bottom: 6px solid var(--app-text-muted); }
+    .tl-rail {
+      position: relative; height: 42px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+      container-type: inline-size; cursor: pointer;
+      background: var(--app-surface); border: 1px solid var(--app-border); border-radius: var(--r-md);
+
+      -webkit-mask-image: linear-gradient(90deg, transparent, var(--app-fg) 5%, var(--app-fg) 95%, transparent);
+              mask-image: linear-gradient(90deg, transparent, var(--app-fg) 5%, var(--app-fg) 95%, transparent);
+    }
+    .tl-rail::-webkit-scrollbar { display: none; }
+    .tl-rail:focus-visible { border-color: var(--app-accent-border); box-shadow: var(--app-ring); }
+    .tl-track {
+      position: relative; height: 100%;
+      margin-inline: calc(50cqi - 4px);
+      /* minor ticks: 1px every slot, centered in each 8px slot */
+      background-image: linear-gradient(90deg, transparent 3.5px, var(--app-border-strong) 3.5px, var(--app-border-strong) 4.5px, transparent 4.5px);
+      background-size: 8px 8px; background-repeat: repeat-x; background-position: 0 calc(100% - 9px);
+    }
+    .tl-group {
+      position: absolute; top: 0; bottom: 0; pointer-events: none;
+      background: linear-gradient(180deg, color-mix(in srgb, var(--c) 16%, transparent), color-mix(in srgb, var(--c) 4%, transparent));
+      border-left: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    }
+    .tl-group::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: color-mix(in srgb, var(--c) 75%, transparent); }
+    .tl-group__icon {
+      position: absolute; left: 5px; top: 7px; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px;
+      font: 700 10px/1 var(--font-sans); color: var(--app-text-strong);
+      background: color-mix(in srgb, var(--c) 32%, var(--app-surface-raised));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent);
+    }
+    .tl-major { position: absolute; bottom: 9px; width: 1px; height: 16px; margin-right: 3.5px; background: var(--app-text-subtle); pointer-events: none; }
+    .tl-hovertick { position: absolute; bottom: 9px; width: 1px; height: 14px; margin-right: 3.5px; background: var(--app-text-strong); pointer-events: none; opacity: 0; }
+    .tl-hovertick.is-on { opacity: 1; }
+    .tl-active {
+      position: absolute; z-index: 3; bottom: 6px; width: 2px; height: 28px; margin-right: 3px; border-radius: 1px;
+      background: var(--app-accent); box-shadow: 0 0 0 1px var(--app-accent-glow), 0 0 10px var(--app-accent-glow); pointer-events: none;
+    }
+    .tl-matchmark { position: absolute; top: 4px; width: 4px; height: 4px; margin-right: 2px; border-radius: 50%; background: var(--app-accent);
+      box-shadow: 0 0 0 2px var(--app-accent-glow); pointer-events: none; animation: tl-rise var(--t-slow) var(--ease-expo) both; }
+    .tl-liveedge { position: absolute; right: -10px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%;
+      background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); pointer-events: none; }
+
+    /* Audio lane: sibling of the rail, translated by the rail's scrollLeft. */
+    .tl-lane { position: relative; height: 26px; }
+    .tl-lane__viewport { position: absolute; inset: 0; overflow: hidden; container-type: inline-size; }
+    .tl-lane__track { position: relative; height: 100%; margin-inline: calc(50cqi - 4px); will-change: transform; }
+    .tl-lane__row { position: absolute; left: 0; right: 0; height: 10px; }
+    .tl-lane__row--mic { top: 1px; } .tl-lane__row--sys { top: 15px; }
+    .tl-lane__labels { position: absolute; z-index: 2; left: 0; top: 0; bottom: 0; display: grid; grid-template-rows: 1fr 1fr; align-items: center;
+      padding: 0 10px 0 2px; background: linear-gradient(90deg, var(--app-bg) 60%, transparent); pointer-events: none;
+      font: 500 9px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+    .tl-lane__labels span:first-child { color: var(--app-source-mic); }
+    .tl-lane__labels span:last-child { color: var(--app-source-sysaudio); }
+    .tl-abar {
+      position: absolute; top: 0; height: 10px; padding: 0; border: 0; border-radius: 3px; cursor: pointer;
+      background: var(--src);
+      transition: filter var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart);
+    }
+    .tl-abar::before { content: ""; position: absolute; inset: -3px -1px; }
+    .tl-abar--mic { --src: var(--app-source-mic); --src-strong: var(--app-source-mic-strong); }
+    .tl-abar--sys { --src: var(--app-source-sysaudio); --src-strong: var(--app-source-sysaudio-strong); }
+    .tl-abar:hover { filter: brightness(1.15); }
+    .tl-abar[aria-pressed="true"] { box-shadow: 0 0 0 1.5px var(--app-accent), 0 0 10px var(--app-accent-glow); z-index: 1; }
+
+    /* Readout: pinned above the playhead; follows the cursor while hovering the rail. */
+    .tl-readout {
+      position: absolute; z-index: 6; bottom: calc(100% + 6px); left: 50%; translate: -50% 0;
+      display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; column-gap: 10px;
+      min-width: 210px; padding: 7px 12px 7px 7px; border-radius: var(--r-md); pointer-events: none;
+      background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border);
+      -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+      box-shadow: var(--app-shadow-popover);
+    }
+    .tl-readout::after { content: ""; position: absolute; top: 100%; left: 50%; translate: -50% 0; width: 0; height: 0;
+      border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 5px solid var(--app-overlay-border); }
+    .tl-readout--hover { border-color: var(--app-border-hover); }
+    .tl-readout__icon { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; overflow: hidden;
+      font: 700 12px/1 var(--font-sans); color: var(--app-text-strong);
+      background: color-mix(in srgb, var(--c) 34%, var(--app-surface-raised)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent); }
+    .tl-readout__copy { display: grid; gap: 5px; min-width: 0; }
+    .tl-readout__name { font: 600 var(--text-base)/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tl-readout__meta { display: flex; align-items: center; gap: 8px; font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); white-space: nowrap; }
+    .tl-readout__time { color: var(--app-text); font: 500 var(--text-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+    .tl-readout__live { display: inline-flex; align-items: center; gap: 5px; color: var(--app-accent); font: 500 10px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+    .tl-readout__live::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 2px var(--app-accent-glow); }
+
+    /* --- Audio drawer (bottom sheet) ------------------------------------- */
+    .tl-drawer {
+      position: absolute; z-index: 30; left: var(--s-4); right: var(--s-4); bottom: calc(30px + var(--s-3));
+      max-height: 50%; display: flex; flex-direction: column; overflow: hidden; outline: none;
+      background: color-mix(in srgb, var(--app-surface-raised) 94%, transparent);
+      border: 1px solid var(--app-border-strong); border-radius: var(--r-lg);
+      -webkit-backdrop-filter: blur(24px) saturate(1.3); backdrop-filter: blur(24px) saturate(1.3);
+      box-shadow: var(--app-shadow-popover);
+      animation: tl-drawer-in var(--t-slow) var(--ease-expo) both;
+    }
+    @keyframes tl-drawer-in { from { opacity: 0; transform: translateY(16px); } }
+    .tl-drawer--expanded { top: calc(var(--mx-titlebar-h) + var(--s-3)); max-height: none; }
+    .tl-dh { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 10px 10px 14px; border-bottom: 1px solid var(--mx-hairline);
+      font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-muted); }
+    .tl-dh__sep { color: var(--app-text-faint); }
+    .tl-dh__file { color: var(--app-text-subtle); font: 400 var(--text-xs)/1 var(--font-mono); margin-left: 4px; }
+    .tl-reader { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 4px 0; scroll-behavior: smooth; }
+    .tl-turn { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: var(--s-5); padding: 12px 22px 12px 18px; position: relative;
+      transition: background-color var(--t-med) var(--ease-quart); }
+    .tl-turn + .tl-turn { border-top: 1px solid var(--mx-hairline); }
+    .tl-turn.is-active { background: color-mix(in srgb, var(--sp) 8%, transparent); }
+        .tl-gutter { display: grid; align-content: start; gap: 6px; }
+    .tl-who { justify-self: start; margin-left: -9px; --_fg: var(--app-text-strong); } /* align the ghost label with the column */
+    .tl-who--unknown { --_fg: var(--app-text-muted); }
+    /* Speaker mark = colour AND shape (SpeakerMark.svelte): colour alone dies in greyscale / colour blindness.
+       Unnamed = hollow (dashed) for circle/square, hatched for triangle/diamond (clip-path eats a border). */
+    .tl-mark { width: 12px; height: 12px; flex: none; background: var(--sp); }
+    .tl-mark--circle { border-radius: 50%; } .tl-mark--square { border-radius: 2px; }
+    .tl-mark--triangle { clip-path: polygon(50% 0, 100% 100%, 0 100%); } .tl-mark--diamond { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+    .tl-mark--ghost { background: none; border: 1.5px dashed var(--sp); }
+    .tl-mark--triangle.tl-mark--ghost, .tl-mark--diamond.tl-mark--ghost { border: 0; background: repeating-linear-gradient(45deg, var(--sp) 0 1.2px, transparent 1.2px 3.5px); }
+    .tl-who__edit { opacity: 0; color: var(--app-text-subtle); transition: opacity var(--t-fast) var(--ease-quart); }
+    .tl-who:hover .tl-who__edit, .tl-who:focus-visible .tl-who__edit, .tl-who--needs .tl-who__edit { opacity: 1; }
+    .tl-gnote { font: 400 var(--text-sm)/1.2 var(--font-sans); color: var(--app-text-muted); }
+    .tl-suggest { display: inline-flex; align-items: center; gap: 2px; flex-wrap: wrap; font: 400 var(--text-sm)/1.3 var(--font-sans); color: var(--app-text-muted); }
+    .tl-suggest b { font-weight: 500; color: var(--app-text); }
+    .tl-suggest .num { color: var(--app-text-subtle); margin-right: 2px; }
+    /* speaker selection: highlight = everyone else recedes; "only" = filter to them */
+    .tl-reader[data-sel] .tl-turn:not(.is-sel) { opacity: 0.38; }
+    .tl-reader[data-sel] .tl-turn.is-sel { background: var(--mx-wash); }
+    .tl-reader[data-sel] .tl-turn.is-sel.is-active { background: color-mix(in srgb, var(--sp) 8%, transparent); }
+    .tl-reader[data-only] .tl-turn:not(.is-sel) { display: none; }
+    .tl-reader[data-only] .tl-turn.is-sel ~ .tl-turn.is-sel { border-top: 1px solid var(--mx-hairline); }
+    .tl-turn.is-fixing { background: var(--mx-selected); }
+    .tl-wave[data-sel] .tl-wave__bar:not(.is-sel) { opacity: 0.1; }
+    .tl-wave[data-sel] .tl-wave__bar.is-sel:not(.is-played) { opacity: 0.6; }
+
+    /* --- Speaker strip (under the drawer header) --------------------------- */
+    .tl-spk { display: flex; align-items: center; gap: 2px; padding: 5px 10px 5px 14px; border-bottom: 1px solid var(--mx-hairline); min-width: 0; }
+    .tl-spk__lbl { font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); margin-right: 8px; white-space: nowrap; }
+    .tl-spk__list { display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+    .tl-sp { gap: 7px; flex: none; }
+    .tl-sp__share { font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .tl-sp__state { font-weight: 400; color: var(--app-text-subtle); }
+    .tl-sp--unnamed { color: var(--app-text-muted); }
+    .tl-spk__hint { font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); white-space: nowrap; margin-right: 6px; }
+
+    /* --- Waveform hover: who held the floor -------------------------------- */
+    .tl-wave__tip { position: absolute; bottom: calc(100% + 8px); z-index: 5; translate: -50% 0; display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 8px; border-radius: var(--r-sm); white-space: nowrap; pointer-events: none;
+      font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-strong);
+      background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border); box-shadow: var(--app-shadow-popover); }
+    .tl-wave__tip .num { color: var(--app-text-subtle); font-weight: 400; }
+    .tl-wave__tip[hidden] { display: none; }
+
+    /* --- Speaker repair: right-edge slide-over over the reader (SpeakerRepairPanel) ---
+       Never a centred popover over the text: you keep reading the lines you're attributing. */
+    .tl-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .tl-drawer.has-fix { max-height: 76%; }
+    .tl-fix { position: absolute; z-index: 6; top: 0; right: 0; bottom: 0; width: min(352px, 92%); display: flex; flex-direction: column;
+      background: var(--app-surface-raised); border-left: 1px solid var(--app-border-strong); box-shadow: var(--app-shadow-popover);
+      animation: tl-fix-in var(--t-med) var(--ease-expo) both; }
+    @keyframes tl-fix-in { from { transform: translateX(24px); opacity: 0; } }
+    .tl-fix__head { display: flex; align-items: center; gap: 9px; padding: 10px 8px 0 16px; }
+    .tl-fix__nm { font: 600 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tl-fix__sum { padding: 4px 16px 10px 36px; font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--mx-hairline); }
+    .tl-fix__body { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 14px; padding: 14px 16px 16px; }
+    .tl-fix__field { display: grid; gap: 7px; }
+    .tl-fix__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .tl-fix__hint { margin: 0; font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-text-subtle); }
+    .tl-fix__warn { margin: 0; font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-warn); }
+    .tl-fix__warn[hidden] { display: none; }
+    .tl-fix .mx-input { width: 100%; }
+    .tl-fix .mx-choice--list .mx-choice__opt { padding: 7px 40px 7px 10px; column-gap: 10px; }
+    .tl-fix .mx-choice--list .mx-choice__icon { width: 24px; height: 24px; border-radius: var(--r-sm); font: 600 var(--text-sm)/1 var(--font-sans); }
+    .tl-fix .mx-choice__title { font-size: var(--text-md); }
+    .tl-fix .mx-choice__desc { font-size: var(--text-sm); }
+    .tl-fix .mx-choice__opt:not(:has(.mx-choice__desc)) .mx-choice__icon { grid-row: auto; }
+    .tl-fix .mx-choice__title .mx-choice__tag { margin-left: auto; font-weight: 400; }
+    .tl-fix .mx-choice--list .mx-choice__opt::before { right: 12px; } .tl-fix .mx-choice--list .mx-choice__opt::after { right: 17.5px; }
+    .tl-fix__card { display: grid; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--app-surface); border: 1px solid var(--app-border); }
+    .tl-fix__card-h { display: flex; align-items: center; gap: 8px; font: 600 var(--text-md)/1.3 var(--font-sans); color: var(--app-text-strong); }
+    .tl-fix__card p { margin: 0; font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-text-muted); }
+    .tl-fix__card-acts { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+    .tl-fix__foot { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--mx-hairline); }
+    .tl-fix__left { font: 400 var(--text-sm)/1.3 var(--font-mono); color: var(--app-text-subtle); }
+    .tl-ts { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .tl-drawer[data-ts="off"] .tl-ts { display: none; }
+    .tl-para { margin: 0; max-width: 78ch; font: 400 var(--text-base)/1.65 var(--font-sans); color: var(--app-text-subtle); }
+    .tl-w { cursor: pointer; border-radius: 3px; transition: color var(--t-fast) var(--ease-quart); }
+    .tl-w:hover { color: var(--app-text-strong); }
+    .tl-w.is-done { color: var(--app-text); }
+    .tl-w.is-now { color: var(--app-accent); background: var(--app-accent-bg); box-shadow: 0 0 0 2px var(--app-accent-bg); }
+    .tl-tp { display: flex; align-items: center; gap: var(--s-3); padding: 10px 14px; border-top: 1px solid var(--mx-hairline); font: 500 var(--text-sm)/1 var(--font-mono); color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+    .tl-wave { position: relative; flex: 1; height: 32px; }
+    .tl-wave__bars { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; pointer-events: none; }
+    .tl-wave__bar { flex: 1; min-width: 0; border-radius: 2px; background: var(--bar, var(--app-text-faint)); opacity: 0.32; transition: opacity 90ms linear; }
+    .tl-wave__bar.is-played { opacity: 1; }
+    .tl-wave__bar.is-silent { opacity: 0.18; }
+    .tl-wave__head { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--app-accent); box-shadow: 0 0 8px var(--app-accent-glow); pointer-events: none; }
+    .tl-wave input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+    .tl-expand-cta { position: absolute; right: 18px; bottom: 60px; }
+
+    /* ==================================================================
+       Fake captured screenshots (1280×800 canvas). Each sets its own
+       data-theme — a screenshot keeps the captured app's look.
+       ================================================================== */
+    .fx { position: absolute; inset: 0; background: var(--app-bg); color: var(--app-text); font: 400 13px/1.4 var(--font-sans); display: grid; grid-template-rows: 26px 1fr; }
+    .fx-mb { display: flex; align-items: center; gap: 18px; padding: 0 14px; font: 500 13px/1 var(--font-sans); color: var(--app-text-strong);
+      background: color-mix(in srgb, var(--app-surface) 88%, transparent); border-bottom: 1px solid var(--app-border); }
+    .fx-mb b { font-weight: 700; }
+    .fx-mb span { color: var(--app-text); }
+    .fx-mb .fx-mb__r { margin-left: auto; display: flex; gap: 16px; }
+    .fx-app { min-height: 0; overflow: hidden; display: grid; }
+    .fx-mono { font-family: var(--font-mono); }
+    .fx-side { background: var(--app-surface-subtle); border-right: 1px solid var(--app-border); padding: 12px 10px; overflow: hidden; display: flex; flex-direction: column; gap: 2px; }
+    .fx-side__h { font: 600 10.5px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); padding: 10px 8px 6px; }
+    .fx-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; white-space: nowrap; color: var(--app-text); font-size: 13px; }
+    .fx-row.on { background: var(--app-surface-active); color: var(--app-text-strong); }
+    .fx-sq { width: 14px; height: 14px; border-radius: 4px; background: var(--c, var(--app-border-strong)); flex: none; }
+    /* code editor */
+    .fx-code { grid-template-columns: 236px 1fr; }
+    .fx-code__main { display: grid; grid-template-rows: 34px 1fr 24px; min-width: 0; }
+    .fx-tabs { display: flex; background: var(--app-surface-subtle); border-bottom: 1px solid var(--app-border); }
+    .fx-tab { display: flex; align-items: center; padding: 0 16px; font: 400 12.5px/1 var(--font-sans); color: var(--app-text-subtle); border-right: 1px solid var(--app-border); }
+    .fx-tab.on { background: var(--app-bg); color: var(--app-text-strong); }
+    .fx-ed { overflow: hidden; padding-top: 6px; font: 400 13.5px/21px var(--font-mono); }
+    .fx-ln { display: grid; grid-template-columns: 52px 1fr; white-space: pre; }
+    .fx-ln > i { font-style: normal; text-align: right; padding-right: 16px; color: var(--app-text-faint); }
+    .fx-ln.cur { background: var(--app-surface-hover); }
+    .fx-ln.cur > i { color: var(--app-text); }
+    .k-kw { color: var(--cat-personal); } .k-fn { color: var(--cat-research); } .k-str { color: var(--cat-learning); }
+    .k-ty { color: var(--cat-communication); } .k-cm { color: var(--app-text-subtle); font-style: italic; }
+    .fx-caret { display: inline-block; width: 2px; height: 16px; vertical-align: -3px; background: var(--app-text-strong); }
+    .fx-status { display: flex; align-items: center; gap: 18px; padding: 0 12px; font: 400 11.5px/1 var(--font-mono); color: var(--app-text-subtle); border-top: 1px solid var(--app-border); background: var(--app-surface-subtle); }
+    /* browser */
+    .fx-browser { grid-template-columns: 228px 1fr; background: color-mix(in srgb, var(--c) 14%, var(--app-bg)); }
+    .fx-browser .fx-side { background: transparent; border: 0; }
+    .fx-url { margin: 2px 4px 12px; padding: 7px 10px; border-radius: 7px; background: color-mix(in srgb, var(--app-surface) 70%, transparent); font: 400 12px/1 var(--font-sans); color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .fx-page { margin: 8px 8px 8px 0; border-radius: 10px; background: var(--app-surface); border: 1px solid var(--app-border); overflow: hidden; position: relative; }
+    .fx-page__in { padding: 44px 64px; max-width: 860px; transition: none; }
+    .fx-crumb { font: 500 12px/1 var(--font-mono); color: var(--app-text-subtle); margin-bottom: 18px; }
+    .fx-h1 { font: 700 32px/1.15 var(--font-sans); color: var(--app-text-strong); letter-spacing: -0.02em; margin: 0 0 14px; }
+    .fx-h2 { font: 650 20px/1.3 var(--font-sans); color: var(--app-text-strong); margin: 28px 0 10px; }
+    .fx-p { font: 400 15.5px/1.65 var(--font-sans); color: var(--app-text); margin: 0 0 14px; }
+    .fx-pre { font: 400 13px/1.6 var(--font-mono); background: var(--app-surface-subtle); border: 1px solid var(--app-border); border-radius: 8px; padding: 14px 16px; margin: 0 0 16px; white-space: pre; color: var(--app-text-strong); }
+    .fx-video { aspect-ratio: 16/9; border-radius: 12px; position: relative; overflow: hidden;
+      background: radial-gradient(80% 90% at 30% 30%, color-mix(in srgb, var(--cat-research) 55%, var(--app-bg)), transparent), radial-gradient(70% 80% at 80% 80%, color-mix(in srgb, var(--cat-personal) 50%, var(--app-bg)), var(--app-bg)); }
+    .fx-video__t { position: absolute; left: 48px; top: 40%; font: 700 44px/1.1 var(--font-sans); color: var(--app-text-strong); letter-spacing: -0.02em; }
+    .fx-video__s { position: absolute; left: 50px; top: calc(40% + 62px); font: 500 18px/1 var(--font-sans); color: var(--app-text); }
+    .fx-video__bar { position: absolute; left: 16px; right: 16px; bottom: 16px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--app-fg) 25%, transparent); }
+    .fx-video__bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--app-danger); }
+    .fx-video__time { position: absolute; left: 16px; bottom: 28px; font: 500 13px/1 var(--font-mono); color: var(--app-text-strong); }
+    /* chat */
+    .fx-chat { grid-template-columns: 250px 1fr; }
+    .fx-chat .fx-side { background: color-mix(in srgb, var(--cat-personal) 22%, var(--app-bg)); border-color: transparent; }
+    .fx-chat .fx-row { color: color-mix(in srgb, var(--app-text) 85%, transparent); }
+    .fx-chat .fx-row.on { background: color-mix(in srgb, var(--cat-research) 45%, var(--app-surface)); color: var(--app-text-strong); }
+    .fx-ws { font: 700 17px/1 var(--font-sans); color: var(--app-text-strong); padding: 6px 8px 12px; }
+    .fx-chat__main { display: grid; grid-template-rows: 52px 1fr auto; min-width: 0; }
+    .fx-chhead { display: flex; align-items: center; gap: 10px; padding: 0 20px; border-bottom: 1px solid var(--app-border); font: 700 16px/1 var(--font-sans); color: var(--app-text-strong); }
+    .fx-chhead small { font: 400 13px/1 var(--font-sans); color: var(--app-text-subtle); }
+    .fx-msgs { display: flex; flex-direction: column; justify-content: flex-end; gap: 16px; padding: 16px 20px; overflow: hidden; }
+    .fx-msg { display: grid; grid-template-columns: 38px 1fr; gap: 12px; }
+    .fx-av { width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center; font: 700 14px/1 var(--font-sans); color: var(--app-text-strong); background: color-mix(in srgb, var(--c) 55%, var(--app-surface)); }
+    .fx-msg b { font: 700 14.5px/1 var(--font-sans); color: var(--app-text-strong); margin-right: 8px; }
+    .fx-msg time { font: 400 11.5px/1 var(--font-sans); color: var(--app-text-subtle); }
+    .fx-msg p { margin: 5px 0 0; font: 400 14.5px/1.5 var(--font-sans); color: var(--app-text); }
+    .fx-compose { margin: 0 20px 18px; padding: 12px 14px; border: 1px solid var(--app-border-strong); border-radius: 10px; color: var(--app-text-subtle); font-size: 14px; }
+    .fx-huddle { margin: 0 20px 10px; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 10px;
+      background: color-mix(in srgb, var(--app-source-mic) 16%, var(--app-surface)); border: 1px solid color-mix(in srgb, var(--app-source-mic) 40%, transparent); font: 600 13.5px/1 var(--font-sans); color: var(--app-text-strong); }
+    .fx-huddle i { width: 8px; height: 8px; border-radius: 50%; background: var(--app-source-mic); }
+    .fx-huddle span { font: 400 12.5px/1 var(--font-mono); color: var(--app-text); margin-left: auto; }
+    /* meeting */
+    .fx-meet { grid-template-rows: 40px 1fr 64px; background: var(--app-bg); }
+    .fx-meet__top { display: flex; align-items: center; justify-content: space-between; padding: 0 18px; font: 600 13px/1 var(--font-sans); color: var(--app-text-strong); }
+    .fx-meet__top span { font: 500 12.5px/1 var(--font-mono); color: var(--app-text-muted); }
+    .fx-tiles { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8px; padding: 0 12px; }
+    .fx-tile { position: relative; border-radius: 10px; overflow: hidden; display: grid; place-items: center; border: 2px solid transparent;
+      background: radial-gradient(70% 90% at 50% 30%, color-mix(in srgb, var(--c) 40%, var(--app-surface)), color-mix(in srgb, var(--c) 10%, var(--app-bg))); }
+    .fx-tile.on { border-color: var(--app-source-mic); }
+    .fx-face { width: 120px; height: 120px; border-radius: 50%; display: grid; place-items: center; font: 600 40px/1 var(--font-sans); color: var(--app-text-strong); background: color-mix(in srgb, var(--c) 60%, var(--app-surface)); }
+    .fx-tile__n { position: absolute; left: 12px; bottom: 12px; padding: 5px 9px; border-radius: 6px; background: color-mix(in srgb, var(--app-bg) 70%, transparent); font: 500 13px/1 var(--font-sans); color: var(--app-text-strong); }
+    .fx-meet__bar { display: flex; align-items: center; justify-content: center; gap: 26px; font: 500 12.5px/1 var(--font-sans); color: var(--app-text); }
+    .fx-meet__bar span { display: grid; justify-items: center; gap: 6px; }
+    .fx-meet__bar span::before { content: ""; width: 20px; height: 18px; border-radius: 5px; background: var(--app-border-strong); }
+    .fx-meet__bar .leave { padding: 9px 16px; border-radius: 8px; background: var(--app-danger); color: var(--app-text-strong); }
+    .fx-meet__bar .leave::before { display: none; }
+    /* design */
+    .fx-design { grid-template-rows: 44px 1fr; }
+    .fx-dtop { display: flex; align-items: center; gap: 18px; padding: 0 14px; background: var(--app-surface-raised); border-bottom: 1px solid var(--app-border); font: 500 13px/1 var(--font-sans); color: var(--app-text-strong); }
+    .fx-dtop span { color: var(--app-text-subtle); }
+    .fx-dbody { display: grid; grid-template-columns: 240px 1fr 250px; min-height: 0; }
+    .fx-canvas { position: relative; background-color: var(--app-surface-subtle);
+      background-image: radial-gradient(color-mix(in srgb, var(--app-fg) 9%, transparent) 1px, transparent 1.2px); background-size: 20px 20px; }
+    .fx-board { position: absolute; left: 60px; top: 70px; width: 640px; height: 420px; background: var(--app-surface); border: 1px solid var(--app-border); border-radius: 4px; }
+    .fx-board__lbl { position: absolute; left: 60px; top: 50px; font: 500 12px/1 var(--font-sans); color: var(--app-text-subtle); }
+    .fx-el { position: absolute; border-radius: 6px; }
+    .fx-sel { position: absolute; border: 1.5px solid var(--cat-research); pointer-events: none; }
+    .fx-sel::after { content: attr(data-s); position: absolute; left: 50%; top: calc(100% + 6px); translate: -50% 0; padding: 3px 6px; border-radius: 4px; background: var(--cat-research); color: var(--app-surface); font: 600 11px/1 var(--font-mono); white-space: nowrap; }
+    .fx-insp { border-left: 1px solid var(--app-border); background: var(--app-surface-raised); padding: 14px; display: grid; align-content: start; gap: 10px; font: 400 12.5px/1 var(--font-sans); }
+    .fx-insp div { display: flex; justify-content: space-between; color: var(--app-text-subtle); }
+    .fx-insp b { font-weight: 500; color: var(--app-text-strong); font-family: var(--font-mono); }
+    /* terminal */
+    .fx-term { padding: 14px 18px; font: 400 13.5px/21px var(--font-mono); color: var(--app-text); background: color-mix(in srgb, var(--app-bg) 92%, var(--cat-research)); align-content: start; }
+    .fx-term div { white-space: pre; }
+    .t-ok { color: var(--focus-deep); } .t-dim { color: var(--app-text-subtle); } .t-acc { color: var(--cat-research); } .t-warn { color: var(--app-warn); } .t-b { color: var(--app-text-strong); font-weight: 600; }
+    /* issue tracker */
+    .fx-issue { grid-template-columns: 220px 1fr 260px; }
+    .fx-issue__main { padding: 36px 48px; min-width: 0; }
+    .fx-iid { font: 500 13px/1 var(--font-mono); color: var(--app-text-subtle); margin-bottom: 12px; }
+    .fx-props { padding: 30px 18px; border-left: 1px solid var(--app-border); display: grid; align-content: start; gap: 14px; font-size: 13px; }
+    .fx-props div { display: grid; grid-template-columns: 80px 1fr; color: var(--app-text-subtle); }
+    .fx-props b { font-weight: 500; color: var(--app-text-strong); }
+    .fx-act { display: grid; grid-template-columns: 26px 1fr; gap: 10px; margin-top: 14px; font-size: 13.5px; color: var(--app-text); }
+    .fx-act .fx-av { width: 26px; height: 26px; font-size: 11px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <!-- states -->
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-record" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+    <!-- timeline-only icons -->
+    <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 9h10M7 13h7M7 17h4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-headphones" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+    <symbol id="i-latest" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h12"/><path d="m11 6 6 6-6 6"/><path d="M20 5v14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="m21 3-7 7"/><path d="m3 21 7-7"/></symbol>
+    <symbol id="i-chev-l" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></symbol>
+    <symbol id="i-chev-r" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  </defs>
+</svg>
+
+<div class="mx-desk">
+  <div class="mx-window">
+    <!-- ===== Titlebar (identical across pages) ===== -->
+    <header class="mx-titlebar" data-tauri-drag-region>
+      <div class="mx-titlebar__lead">
+        <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Main surface">
+          <a href="timeline.html" aria-label="Timeline" data-tip="Timeline  ⌘1"><svg width="15" height="15"><use href="#i-timeline"/></svg></a>
+          <a href="insights.html" aria-label="Insights" data-tip="Insights  ⌘2"><svg width="15" height="15"><use href="#i-insights"/></svg></a>
+        </nav>
+      </div>
+      <label class="mx-cmd" for="mx-q" data-mode="recall">
+        <button type="button" class="mx-cmd__mode" tabindex="-1" aria-label="Switch between recall and ask (Tab)">
+          <svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg>
+          <svg class="mx-cmd__ask" width="13" height="13"><use href="#i-sparkle"/></svg><b>Ask</b>
+        </button>
+        <input id="mx-q" placeholder="Recall anything…" aria-label="Recall anything — Tab to ask instead" autocomplete="off" spellcheck="false" />
+        <span class="mx-cmd__keys" aria-hidden="true">
+          <kbd class="mx-cmd__k-idle">⌘K</kbd>
+          <span class="mx-cmd__k-recall"><kbd>⇥</kbd>to ask</span>
+          <span class="mx-cmd__k-ask"><kbd>↵</kbd>ask in chat</span>
+        </span>
+      </label>
+      <div class="mx-titlebar__trail">
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="chat.html" aria-label="Chats" data-tip="Chats"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+        <div class="mx-pop-anchor">
+          <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-pop="notif" aria-label="Notifications" data-tip="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge"></span></button>
+          <div class="mx-pop mx-notifs" id="notif" role="dialog" aria-label="Notifications">
+            <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span><span class="num">1</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-clear-all>Clear all</button></div>
+            <ul class="mx-notifs__list">
+              <li class="mx-notif" data-tone="info"><b class="mx-notif__title">Mnema update available</b><time class="mx-notif__time">09:02</time>
+                <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+                <p class="mx-notif__text">Version 0.1.24 is ready to install from Settings.</p>
+                <div class="mx-notif__acts"><a class="mx-btn mx-btn--sm" href="update.html">See what’s new</a></div></li>
+            </ul>
+            <div class="mx-empty mx-empty--compact mx-notifs__empty"><span class="mx-empty__glyph"><svg width="15" height="15"><use href="#i-bell"/></svg></span>
+              <b class="mx-empty__title">You’re all caught up</b><p class="mx-empty__text">Capture, model and update warnings land here.</p></div>
+          </div>
+        </div>
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="settings.html" aria-label="Settings" data-tip="Settings  ⌘,"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+      </div>
+    </header>
+
+    <!-- ===== Body ===== -->
+    <main class="mx-body mx-texture tl-body">
+      <section class="tl" id="tl">
+        <header class="tl-bar">
+          <div class="tl-bar__group">
+            <!-- kit date capsule visuals (mx-date*); jumper logic below stays page-owned: day click previews, hour click commits -->
+            <div class="mx-date" data-mode="day">
+              <button class="mx-date__btn tl-jump" id="tl-jump" data-pop="tl-jpop" aria-haspopup="dialog" aria-expanded="false" data-tip="Today · jump to date and time  J">
+                <svg class="mx-date__icon" width="14" height="14"><use href="#i-calendar"/></svg>
+                <b id="tl-jump-day">Fri, Oct 9</b>
+                <span class="tl-jump__time" id="tl-jump-time">2:41:07 PM</span>
+              </button>
+              <div class="mx-pop mx-date__pop tl-jpop" id="tl-jpop" role="dialog" aria-label="Jump to date and time"></div>
+            </div>
+            <button class="mx-btn mx-btn--sm" id="tl-latest" hidden data-tip="Jump to latest frame"><svg class="mx-btn__accent" width="13" height="13"><use href="#i-latest"/></svg>latest<kbd>L</kbd></button>
+          </div>
+          <div class="tl-bar__group">
+            <span id="tl-barnote"></span>
+            <span class="tl-searchchip" id="tl-searchchip" hidden></span>
+            <span class="tl-ocr-chip" id="tl-ocr-provider" hidden data-tip="OCR provider">apple vision · accurate</span>
+            <button class="mx-btn mx-btn--ghost mx-btn--sm" id="tl-ocr-rerun" hidden data-tip="Rerun OCR for the active frame with current settings">rerun OCR</button>
+            <button class="mx-btn mx-btn--ghost mx-btn--sm" id="tl-ocr" aria-pressed="false" data-tip="Show recognized text  O"><svg width="14" height="14"><use href="#i-scan"/></svg><span id="tl-ocr-label">show OCR</span></button>
+            <button class="mx-btn mx-btn--ghost mx-btn--sm" id="tl-refresh" data-tip="Refresh dashboard timeline  R"><svg width="13" height="13"><use href="#i-refresh"/></svg>refresh</button>
+          </div>
+        </header>
+
+        <div class="tl-stage" id="tl-stage">
+          <div class="tl-frame" id="tl-frame" role="img" aria-label="frame"></div>
+          <div class="tl-stage-actions">
+            <button class="mx-btn mx-btn--icon" id="tl-moment" hidden aria-label="Play audio at this moment" data-tip="Play audio at this moment  P"><svg width="15" height="15"><use href="#i-headphones"/></svg></button>
+            <div class="mx-pop-anchor">
+              <button class="mx-btn mx-btn--icon" data-pop="tl-framemenu" aria-label="Frame actions" data-tip="Frame actions  C copy · D download"><svg width="15" height="15"><use href="#i-more"/></svg></button>
+              <div class="mx-pop tl-framemenu" id="tl-framemenu" role="group" aria-label="Frame actions">
+                <ul class="mx-menu">
+                  <li data-act="copy"><svg width="14" height="14"><use href="#i-copy"/></svg>Copy image <span class="mx-menu__meta">C</span></li>
+                  <li data-act="download"><svg width="14" height="14"><use href="#i-download"/></svg>Download image <span class="mx-menu__meta">D</span></li>
+                  <li data-act="text" id="tl-copytext" hidden><svg width="14" height="14"><use href="#i-scan"/></svg>Copy text</li>
+                  <li data-act="open" id="tl-openhost" hidden><svg width="14" height="14"><use href="#i-external"/></svg><span id="tl-openhost-name">docs.rs</span></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <span class="tl-ocr-hint" id="tl-ocr-hint" hidden>hover to read · copy all in ⋯</span>
+          <span class="tl-ocrstat" id="tl-ocrstat" role="status" hidden></span>
+          <div class="tl-cover" id="tl-cover" hidden></div>
+          <div class="tl-notice" id="tl-notice"></div>
+        </div>
+
+        <div class="tl-railwrap" id="tl-railwrap">
+          <div class="tl-readout" id="tl-readout" role="tooltip">
+            <span class="tl-readout__icon" id="tl-ro-icon">S</span>
+            <span class="tl-readout__copy">
+              <span class="tl-readout__name" id="tl-ro-name">Slack</span>
+              <span class="tl-readout__meta"><span class="tl-readout__time" id="tl-ro-time">2:41:07 PM</span><span id="tl-ro-date">Thu, Oct 9</span><span class="tl-readout__live" id="tl-ro-live">live</span></span>
+            </span>
+          </div>
+          <div class="tl-railnote" id="tl-railnote" role="status"></div>
+          <div class="tl-rail" id="tl-rail" role="slider" tabindex="0" aria-label="Timeline scrubber">
+            <div class="tl-track" id="tl-track"></div>
+          </div>
+          <div class="tl-lane" aria-label="Audio segments">
+            <div class="tl-lane__viewport"><div class="tl-lane__track" id="tl-lane"></div></div>
+            <div class="tl-lane__labels"><span>mic</span><span>sys</span></div>
+            <div class="tl-lanenote" id="tl-lanenote" role="status"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="tl-drawer-slot" style="display:contents"></div>
+
+    <footer class="mx-statusbar" id="tl-sb"></footer>
+  </div>
+  <!-- Mockup-only: every state the Timeline can be in. Fixed below the window; one ?state=<name> hook. -->
+  <label class="tl-switch"><span class="mx-label">Mockup state</span><select class="mx-input" id="tl-states" aria-label="Mockup state"></select></label>
+</div>
+
+<script>
+(() => {
+  // ------------------------------------------------------------------ util
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  let seed = 7;
+  const rnd = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const DAY = new Date(2026, 9, 9);
+  const at = (hh, mm, ss = 0) => new Date(2026, 9, 9, hh, mm, ss).getTime();
+  const fmtTime = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const fmtShort = (t) => new Date(t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const fmtDate = (t) => new Date(t).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const SLOT = 8;
+  // Mockup state (?state=<name>, see STATES at the bottom). Read first: "not recording" states drop the live chip.
+  const STATE = new URLSearchParams(location.search).get("state") || "default";
+  const REC = !/^(first-run|load-error|loading|not-recording|permission|readonly|stopped|sb-off|sb-permission|sb-readonly|sb-stopped)$/.test(STATE);
+  const LIVE = REC && !/^(display-asleep|privacy-retry|privacy-restart|paused-idle|paused-user|low-disk|stale)$/.test(STATE); // newest frame is "now"
+  const ease = "cubic-bezier(0.16, 1, 0.3, 1)";
+
+  // ------------------------------------------------------------------ data
+  const APPS = {
+    slack: { name: "Slack", letter: "S" }, linear: { name: "Linear", letter: "L" }, zed: { name: "Zed", letter: "Z" },
+    ghostty: { name: "Ghostty", letter: "G" }, arc: { name: "Arc", letter: "A" }, zoom: { name: "zoom.us", letter: "Z" }, figma: { name: "Figma", letter: "F" },
+  };
+  // [start h, m, minutes, app, category, window title, template, variant]
+  const RUNS = [
+    [9, 12, 14, "slack", "communication", "#mnema-dev — Mnema", "chat", "dev"],
+    [9, 26, 9, "linear", "organizing", "MNE-412 System audio goes silent after AirPods switch", "issue"],
+    [9, 35, 38, "zed", "creating", "tap.rs — mnema", "code", 0],
+    [10, 13, 7, "ghostty", "creating", "cargo test -p capture-system-audio", "term", "cargo"],
+    [10, 20, 16, "arc", "research", "Capturing system audio with Core Audio taps", "browser", "docs"],
+    [10, 36, 24, "zed", "creating", "aggregate_device.rs — mnema", "code", 1],
+    [11, 0, 35, "zoom", "meetings", "Weekly sync — Mnema", "meet"],
+    [11, 35, 6, "slack", "communication", "#design — Mnema", "chat", "design"],
+    [11, 41, 32, "figma", "creating", "Timeline — redesign v3", "design"],
+    [13, 2, 18, "arc", "entertainment", "WWDC25 — What’s new in Core Audio", "browser", "video"],
+    [13, 20, 41, "zed", "creating", "lifecycle.rs — mnema", "code", 2],
+    [14, 1, 5, "ghostty", "creating", "bun run check", "term", "bun"],
+    [14, 6, 12, "arc", "research", "Rebuild tap on sample-rate renegotiation · PR #251", "browser", "pr"],
+    [14, 18, 23.2, "slack", "communication", "Huddle with Priya Raman", "chat", "huddle"],
+  ];
+  const chrono = [];
+  RUNS.forEach(([h, m, mins, app, cat, title, tpl, variant], r) => {
+    const start = at(h, m, 4), end = start + mins * 60000;
+    const run = { r, app, cat, title, tpl, variant, start, end, frames: [] };
+    for (let t = start; t < end; t += 14000 + rnd() * 30000) run.frames.push(t);
+    run.frames.forEach((t, k) => chrono.push({ t, run, k, n: run.frames.length }));
+  });
+  chrono[chrono.length - 1].t = at(14, 41, 7);
+  const frames = chrono.slice().reverse(); // index 0 = newest (anchored right)
+  const N = frames.length;
+  const catVar = (c) => `var(--cat-${c})`;
+
+  // ------------------------------------------------------------ templates
+  const mb = (f, menus = "File Edit View Window Help") =>
+    `<div class="fx-mb"><b data-ocr>${APPS[f.run.app].name}</b>${menus.split(" ").map((x) => `<span data-ocr>${x}</span>`).join("")}<div class="fx-mb__r"><span data-ocr>${new Date(f.t).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span><span data-ocr>${fmtShort(f.t)}</span></div></div>`;
+
+  const CODE = [
+`//! System-audio tap lifecycle (ADR 0052).`,
+`use cidre::{core_audio as ca, ns, os};`,
+`use crate::{AggregateDevice, TapError, LOG_PREFIX};`,
+``,
+`/// Why a tap generation was torn down and rebuilt.`,
+`#[derive(Debug, Clone, Copy, PartialEq, Eq)]`,
+`pub enum RebuildReason {`,
+`    DeviceChanged,`,
+`    SampleRateRenegotiated { from_hz: u32, to_hz: u32 },`,
+`    ExcludeListMoved,`,
+`    ZeroWatchdog { silent_for_ms: u64 },`,
+`}`,
+``,
+`pub struct TapSession {`,
+`    tap: ca::TapDesc,`,
+`    device: AggregateDevice,`,
+`    generation: u32,`,
+`    backoff: Backoff,`,
+`}`,
+``,
+`impl TapSession {`,
+`    pub fn rebuild(&mut self, reason: RebuildReason) -> Result<(), TapError> {`,
+`        log::info!("{LOG_PREFIX} rebuild gen={} reason={reason:?}", self.generation);`,
+`        // Finalize the segment first: never splice a generation into a live writer.`,
+`        self.device.stop()?;`,
+`        let nominal = self.device.nominal_sample_rate()?;`,
+`        let desc = ca::TapDesc::with_stereo_global_tap_excluding_processes(`,
+`            &self.excluded_processes()?,`,
+`        );`,
+`        self.device = AggregateDevice::with_tap(&desc, nominal)?;`,
+`        self.generation += 1;`,
+`        if let RebuildReason::ZeroWatchdog { .. } = reason {`,
+`            self.backoff.step(); // 30 s → 600 s, resets on any sound`,
+`        } else {`,
+`            self.backoff.reset();`,
+`        }`,
+`        self.device.start()`,
+`    }`,
+``,
+`    fn excluded_processes(&self) -> Result<Vec<ca::Process>, TapError> {`,
+`        let mut pids = vec![std::process::id() as i32];`,
+`        pids.extend(privacy::excluded_app_pids()?);`,
+`        Ok(pids.into_iter().filter_map(ca::Process::with_pid).collect())`,
+`    }`,
+``,
+`    /// Trust the aggregate device's nominal rate, not the tap's claim.`,
+`    pub fn on_rate_change(&mut self, to_hz: u32) -> Result<(), TapError> {`,
+`        let from_hz = self.device.writer_rate();`,
+`        if from_hz == to_hz { return Ok(()); }`,
+`        self.rebuild(RebuildReason::SampleRateRenegotiated { from_hz, to_hz })`,
+`    }`,
+`}`,
+``,
+`#[cfg(test)]`,
+`mod tests {`,
+`    use super::*;`,
+``,
+`    #[test]`,
+`    fn rebuild_on_rate_change_opens_fresh_segment() {`,
+`        let mut s = TapSession::fake(48_000);`,
+`        s.on_rate_change(16_000).unwrap();`,
+`        assert_eq!(s.generation, 1);`,
+`        assert_eq!(s.device.writer_rate(), 16_000);`,
+`    }`,
+`}`,
+  ];
+  const KW = "fn|let|pub|impl|match|if|else|return|self|use|mut|struct|enum|for|in|as|mod|crate|super|Ok|Err|Some|None";
+  const hl = (line) => esc(line).replace(new RegExp(`(\\/\\/.*$)|(&quot;(?:(?!&quot;).)*&quot;)|\\b(${KW})\\b|\\b([A-Z][A-Za-z0-9_]*)\\b|\\b([a-z_][a-z0-9_]*)(?=\\(|!)`, "g"),
+    (m, cm, str, kw, ty, fn) => cm ? `<span class="k-cm">${cm}</span>` : str ? `<span class="k-str">${str}</span>` : kw ? `<span class="k-kw">${kw}</span>` : ty ? `<span class="k-ty">${ty}</span>` : `<span class="k-fn">${fn}</span>`);
+  const FILES = ["tap.rs", "aggregate_device.rs", "lifecycle.rs"];
+  const T = {};
+  T.code = (f) => {
+    const file = FILES[f.run.variant];
+    const top = (f.run.variant * 17 + Math.floor(f.k * 1.7)) % 40;
+    const cur = top + 6 + (f.k % 9);
+    const tree = ["crates", "  capture-system-audio", "    src", "      tap.rs", "      aggregate_device.rs", "      watchdog.rs", "      lib.rs", "  capture-writers", "apps/desktop/src-tauri", "  native_capture", "    lifecycle.rs", "    system_audio.rs", "docs/adr", "  0052-system-audio…md"]
+      .map((x) => { const nm = x.trim(); return `<div class="fx-row ${nm === file ? "on" : ""}" style="padding-left:${8 + (x.length - x.trimStart().length) * 6}px" data-ocr>${nm}</div>`; }).join("");
+    let lines = "";
+    for (let i = 0; i < 33; i++) {
+      const n = top + i, src = CODE[n % CODE.length];
+      lines += `<div class="fx-ln ${n === cur ? "cur" : ""}"><i>${n + 1}</i><span ${src.trim() ? "data-ocr" : ""}>${hl(src)}${n === cur ? '<span class="fx-caret"></span>' : ""}</span></div>`;
+    }
+    return `<div class="fx" data-theme="dark">${mb(f, "File Edit Selection View Go Window Help")}<div class="fx-app fx-code"><aside class="fx-side"><div class="fx-side__h" data-ocr>mnema</div>${tree}</aside>
+      <div class="fx-code__main"><div class="fx-tabs">${FILES.map((x) => `<div class="fx-tab ${x === file ? "on" : ""}" data-ocr>${x}</div>`).join("")}</div><div class="fx-ed">${lines}</div>
+      <div class="fx-status"><span data-ocr>main</span><span data-ocr>✓ 0 errors</span><span data-ocr>rust-analyzer</span><span style="margin-left:auto" data-ocr>Ln ${cur + 1}, Col ${8 + (f.k % 30)}</span><span data-ocr>Rust</span></div></div></div></div>`;
+  };
+
+  const CHATS = {
+    dev: ["mnema-dev", "12 members", [
+      ["Priya Raman", "personal", "morning — the AirPods → HFP switch still kills system audio on my M1. tap reports 48k, device is at 16k"],
+      ["Daniel Okafor", "learning", "can repro. the writer keeps 48k so everything comes out chipmunk-speed"],
+      ["Shaik Zeeshan", "research", "yeah we trust the tap's claim. I'll rebuild on rate renegotiation and follow the aggregate's nominal rate"],
+      ["Priya Raman", "personal", "👍 filed as MNE-412, assigned to you"],
+      ["Mei Tanaka", "meetings", "release train is Thursday, will hold 0.1.24 for it"],
+    ]],
+    design: ["design", "6 members", [
+      ["Mei Tanaka", "meetings", "timeline v3 is up in Figma, the rail got category bands"],
+      ["Shaik Zeeshan", "research", "love it. keep the playhead the only green thing"],
+      ["Mei Tanaka", "meetings", "done — audio lanes use source colors now"],
+    ]],
+    huddle: ["mnema-dev", "Huddle in progress", [
+      ["Priya Raman", "personal", "PR #251 looks good, left two nits on the backoff"],
+      ["Shaik Zeeshan", "research", "pushed — watchdog resets on any sound now"],
+      ["Priya Raman", "personal", "jumping on a huddle to walk the HFP drill?"],
+      ["Daniel Okafor", "learning", "I'll join in 5"],
+    ]],
+  };
+  T.chat = (f) => {
+    const [ch, sub, pool] = CHATS[f.run.variant];
+    const shown = clamp(2 + Math.floor((f.k / Math.max(1, f.n - 1)) * (pool.length - 1)), 2, pool.length);
+    const t0 = f.run.start;
+    const msgs = pool.slice(0, shown).map(([who, c, txt], i) => `<div class="fx-msg"><span class="fx-av" style="--c:var(--cat-${c})">${who.split(" ").map((w) => w[0]).join("")}</span><div><b data-ocr>${who}</b><time data-ocr>${fmtShort(t0 + i * 150000)}</time><p data-ocr>${esc(txt)}</p></div></div>`).join("");
+    const chans = ["general", "mnema-dev", "design", "releases", "random"].map((c) => `<div class="fx-row ${c === ch && f.run.variant !== "design" || (f.run.variant === "design" && c === "design") ? "on" : ""}" data-ocr># ${c}</div>`).join("");
+    const huddle = f.run.variant === "huddle" ? `<div class="fx-huddle"><i></i><span style="margin:0;font:600 13.5px/1 var(--font-sans);color:var(--app-text-strong)" data-ocr>Huddle with Priya Raman</span><span data-ocr>${mmss((f.t - f.run.start) / 1000)}</span></div>` : "";
+    return `<div class="fx" data-theme="dark">${mb(f)}<div class="fx-app fx-chat"><aside class="fx-side"><div class="fx-ws" data-ocr>Mnema</div><div class="fx-side__h" data-ocr>Channels</div>${chans}<div class="fx-side__h" data-ocr>Direct messages</div><div class="fx-row" data-ocr>Priya Raman</div><div class="fx-row" data-ocr>Daniel Okafor</div><div class="fx-row" data-ocr>Mei Tanaka</div></aside>
+      <div class="fx-chat__main"><div class="fx-chhead"><span data-ocr># ${ch}</span><small data-ocr>${sub}</small></div><div class="fx-msgs">${msgs}</div>${huddle}<div class="fx-compose" data-ocr>Message #${ch}</div></div></div></div>`;
+  };
+
+  const PAGES = {
+    docs: { url: "developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps", host: "developer.apple.com", crumb: "Core Audio › Taps", tabs: ["Core Audio taps", "CATapDescription", "docs.rs — cidre", "MNE-412 · Linear"],
+      body: `<h1 class="fx-h1" data-ocr>Capturing system audio with Core Audio taps</h1><p class="fx-p" data-ocr>Use a process tap to capture outgoing audio from a process or group of processes.</p><p class="fx-p" data-ocr>Create a CATapDescription, then call AudioHardwareCreateProcessTap to make the tap.</p><h2 class="fx-h2" data-ocr>Add the tap to an aggregate device</h2><p class="fx-p" data-ocr>Set kAudioAggregateDeviceTapListKey to include the tap's UID.</p><pre class="fx-pre" data-ocr>let tap = CATapDescription(stereoGlobalTapButExcludeProcesses: [ownPID])</pre><p class="fx-p" data-ocr>The aggregate device's nominal sample rate may differ from the tap format.</p><h2 class="fx-h2" data-ocr>Respond to device changes</h2><p class="fx-p" data-ocr>Listen for kAudioHardwarePropertyDefaultOutputDevice and rebuild the tap when it changes.</p><p class="fx-p" data-ocr>Bluetooth devices can renegotiate between A2DP and HFP at any time.</p>` },
+    pr: { url: "github.com/shaik-zeeshan/mnema/pull/251", host: "github.com", crumb: "shaik-zeeshan / mnema", tabs: ["PR #251 · mnema", "Actions · mnema", "MNE-412 · Linear"],
+      body: `<h1 class="fx-h1" data-ocr>Rebuild system-audio tap on sample-rate renegotiation #251</h1><p class="fx-p" data-ocr>Open · shaik-zeeshan wants to merge 4 commits into main</p><h2 class="fx-h2" data-ocr>Summary</h2><p class="fx-p" data-ocr>Follows the aggregate device's nominal rate instead of the tap's claimed 48 kHz.</p><p class="fx-p" data-ocr>Bluetooth A2DP → HFP switches now finalize the segment and open a fresh one.</p><pre class="fx-pre" data-ocr>test tap::tests::rebuild_on_rate_change_opens_fresh_segment ... ok</pre><h2 class="fx-h2" data-ocr>Review</h2><p class="fx-p" data-ocr>priya-raman approved these changes · 2 comments resolved</p><p class="fx-p" data-ocr>✓ All checks have passed — 6 successful checks</p>` },
+    video: { url: "youtube.com/watch?v=wwdc25-core-audio", host: "youtube.com", crumb: "", tabs: ["WWDC25 — Core Audio", "Capturing system audio", "PR #251 · mnema"], video: true },
+  };
+  T.browser = (f) => {
+    const p = PAGES[f.run.variant];
+    const tabs = p.tabs.map((t, i) => `<div class="fx-row ${i === 0 ? "on" : ""}"><span class="fx-sq" style="--c:var(--cat-${["research", "learning", "personal", "organizing"][i]})"></span><span data-ocr>${esc(t)}</span></div>`).join("");
+    let body;
+    if (p.video) {
+      const pos = 4 * 60 + f.k * 28, dur = 31 * 60 + 17;
+      body = `<div class="fx-page__in" style="max-width:none;padding:28px 36px"><div class="fx-video"><div class="fx-video__t" data-ocr>What’s new in Core Audio</div><div class="fx-video__s" data-ocr>Process taps · aggregate devices · WWDC25</div><div class="fx-video__time" data-ocr>${mmss(pos)} / ${mmss(dur)}</div><div class="fx-video__bar"><i style="width:${(pos / dur) * 100}%"></i></div></div><h1 class="fx-h1" style="font-size:22px;margin-top:18px" data-ocr>WWDC25: What’s new in Core Audio | Apple</h1><p class="fx-p" data-ocr>Apple Developer · 412K views · 4 months ago</p></div>`;
+    } else {
+      body = `<div class="fx-page__in" style="transform:translateY(${-Math.min(f.k * 14, 260)}px)"><div class="fx-crumb" data-ocr>${p.crumb}</div>${p.body}</div>`;
+    }
+    return `<div class="fx" data-theme="${p.video ? "dark" : "light"}">${mb(f, "File Edit View Spaces Tabs Window Help")}<div class="fx-app fx-browser" style="--c:var(--cat-${p.video ? "entertainment" : "research"})"><aside class="fx-side"><div class="fx-url" data-ocr>${p.url}</div>${tabs}</aside><div class="fx-page">${body}</div></div></div>`;
+  };
+
+  const PEOPLE = [["Shaik Zeeshan", "research"], ["Priya Raman", "personal"], ["Daniel Okafor", "learning"], ["Mei Tanaka", "meetings"]];
+  T.meet = (f) => {
+    const speaking = [1, 0, 0, 2, 1, 3, 0, 1][Math.floor(f.k / 3) % 8];
+    const tiles = PEOPLE.map(([n, c], i) => `<div class="fx-tile ${i === speaking ? "on" : ""}" style="--c:var(--cat-${c})"><span class="fx-face">${n.split(" ").map((w) => w[0]).join("")}</span><span class="fx-tile__n" data-ocr>${n}${i === 0 ? " (me)" : ""}</span></div>`).join("");
+    return `<div class="fx" data-theme="dark">${mb(f, "Meeting Edit View Window Help")}<div class="fx-app fx-meet"><div class="fx-meet__top"><b data-ocr>Weekly sync — Mnema</b><span data-ocr>${mmss((f.t - f.run.start) / 1000)}</span></div><div class="fx-tiles">${tiles}</div>
+      <div class="fx-meet__bar"><span data-ocr>Mute</span><span data-ocr>Stop Video</span><span data-ocr>Participants 4</span><span data-ocr>Share</span><span data-ocr>Record</span><b class="leave" data-ocr>Leave</b></div></div></div>`;
+  };
+
+  T.design = (f) => {
+    const layers = [["Stage", 20, 20, 600, 250], ["Readout", 250, 230, 140, 34], ["Rail", 20, 286, 600, 40], ["Audio lane", 20, 334, 600, 24], ["Bar", 20, 372, 600, 28]];
+    const s = layers[Math.floor(f.k / 4) % layers.length];
+    const ticks = Array.from({ length: 70 }, (_, i) => `<i class="fx-el" style="left:${28 + i * 8.4}px;top:${306 - (i % 9 ? 0 : 6)}px;width:1px;height:${i % 9 ? 10 : 16}px;border-radius:0;background:var(--app-border-strong)"></i>`).join("");
+    const bars = [[40, 140, "mic"], [210, 90, "sysaudio"], [330, 200, "mic"], [470, 110, "sysaudio"]].map(([x, w, s2]) => `<i class="fx-el" style="left:${x}px;top:${s2 === "mic" ? 336 : 347}px;width:${w}px;height:9px;border-radius:3px;background:var(--app-source-${s2})"></i>`).join("");
+    const groups = [["research", 20, 160], ["creating", 180, 220], ["meetings", 400, 120], ["communication", 520, 100]].map(([c, x, w]) => `<i class="fx-el" style="left:${x}px;top:286px;width:${w}px;height:40px;border-radius:0;background:color-mix(in srgb, var(--cat-${c}) 18%, transparent);border-top:2px solid var(--cat-${c})"></i>`).join("");
+    return `<div class="fx" data-theme="light">${mb(f, "File Edit View Object Text Arrange Help")}<div class="fx-app fx-design"><div class="fx-dtop"><b data-ocr>Mnema</b><span data-ocr>/</span><b data-ocr>Timeline — redesign v3</b><span style="margin-left:auto" data-ocr>Share</span><span data-ocr>${60 + (f.k % 3) * 25}%</span></div>
+      <div class="fx-dbody"><aside class="fx-side"><div class="fx-side__h" data-ocr>Layers</div><div class="fx-row" data-ocr>Timeline / Desktop</div>${layers.map((l) => `<div class="fx-row ${l === s ? "on" : ""}" style="padding-left:24px" data-ocr>${l[0]}</div>`).join("")}<div class="fx-side__h" data-ocr>Assets</div><div class="fx-row" data-ocr>Playhead</div><div class="fx-row" data-ocr>App tile</div></aside>
+      <div class="fx-canvas"><span class="fx-board__lbl" data-ocr>Timeline / Desktop</span><div class="fx-board">
+        <i class="fx-el" style="left:20px;top:20px;width:600px;height:250px;background:var(--app-surface-subtle);border:1px solid var(--app-border)"></i>
+        <i class="fx-el" style="left:150px;top:44px;width:340px;height:200px;background:color-mix(in srgb, var(--cat-research) 20%, var(--app-surface));border:1px solid var(--app-border)"></i>
+        <i class="fx-el" style="left:20px;top:286px;width:600px;height:40px;background:var(--app-surface);border:1px solid var(--app-border)"></i>${groups}${ticks}
+        <i class="fx-el" style="left:319px;top:290px;width:2px;height:32px;border-radius:1px;background:var(--app-accent)"></i>${bars}
+        <i class="fx-el" style="left:250px;top:230px;width:140px;height:34px;background:var(--app-surface-raised);border:1px solid var(--app-border-strong)"></i>
+        <i class="fx-el" style="left:20px;top:372px;width:600px;height:28px;background:var(--app-surface-subtle);border:1px solid var(--app-border)"></i>
+        <span class="fx-sel" style="left:${s[1] - 2}px;top:${s[2] - 2}px;width:${s[3] + 4}px;height:${s[4] + 4}px" data-s="${s[3]} × ${s[4]}"></span></div></div>
+      <div class="fx-insp"><div><span data-ocr>${s[0]}</span><b>Frame</b></div><div><span data-ocr>W</span><b data-ocr>${s[3]}</b></div><div><span data-ocr>H</span><b data-ocr>${s[4]}</b></div><div><span data-ocr>Radius</span><b data-ocr>8</b></div><div><span data-ocr>Fill</span><b data-ocr>surface</b></div><div><span data-ocr>Stroke</span><b data-ocr>1 hairline</b></div><div><span data-ocr>Auto layout</span><b data-ocr>row · 8</b></div></div></div></div></div>`;
+  };
+
+  const TERM = {
+    cargo: [
+      ['<span class="t-acc">~/Code/mnema</span> <span class="t-dim">on</span> <span class="t-warn">fix/tap-rate</span> <span class="t-b">❯</span> cargo test -p capture-system-audio', 0],
+      ['<span class="t-ok t-b">   Compiling</span> capture-system-audio v0.1.23 (crates/capture-system-audio)', 1],
+      ['<span class="t-ok t-b">    Finished</span> `test` profile [unoptimized + debuginfo] target(s) in 41.87s', 1],
+      ['<span class="t-ok t-b">     Running</span> unittests src/lib.rs', 0],
+      ["", 0], ["running 38 tests", 0],
+      ["test aggregate_device::tests::nominal_rate_wins_over_tap_claim ... <span class=\"t-ok\">ok</span>", 0],
+      ["test tap::tests::rebuild_on_rate_change_opens_fresh_segment ... <span class=\"t-ok\">ok</span>", 0],
+      ["test tap::tests::exclude_list_includes_own_pid ... <span class=\"t-ok\">ok</span>", 0],
+      ["test watchdog::tests::backoff_doubles_to_600s ... <span class=\"t-ok\">ok</span>", 0],
+      ["test watchdog::tests::any_sound_resets_backoff ... <span class=\"t-ok\">ok</span>", 0],
+      ["test writer::tests::never_splices_generation_into_live_writer ... <span class=\"t-ok\">ok</span>", 0],
+      ["", 0], ['test result: <span class="t-ok">ok</span>. 38 passed; 0 failed; 0 ignored; finished in 2.14s', 0], ["", 0],
+      ['<span class="t-acc">~/Code/mnema</span> <span class="t-dim">on</span> <span class="t-warn">fix/tap-rate</span> <span class="t-b">❯</span> git commit -am "tap: rebuild on rate renegotiation"', 0],
+    ],
+    bun: [
+      ['<span class="t-acc">~/Code/mnema</span> <span class="t-dim">on</span> <span class="t-warn">fix/tap-rate</span> <span class="t-b">❯</span> bun run check', 0],
+      ['<span class="t-dim">$ turbo run check</span>', 0], ['• Packages in scope: @mnema/desktop', 0], ['• Running check in 1 packages', 0],
+      ['@mnema/desktop:check: <span class="t-dim">svelte-kit sync && svelte-check --tsconfig ./tsconfig.json</span>', 0],
+      ['@mnema/desktop:check: Loading svelte-check in workspace: apps/desktop', 0],
+      ['@mnema/desktop:check: svelte-check found <span class="t-ok">0 errors</span> and <span class="t-ok">0 warnings</span>', 0],
+      ["", 0], [' Tasks:    <span class="t-ok">1 successful</span>, 1 total', 0], ['  Time:    9.214s', 0], ["", 0],
+      ['<span class="t-acc">~/Code/mnema</span> <span class="t-dim">on</span> <span class="t-warn">fix/tap-rate</span> <span class="t-b">❯</span> gh pr create --fill', 0],
+    ],
+  };
+  T.term = (f) => {
+    const all = TERM[f.run.variant];
+    const shown = clamp(2 + Math.ceil((f.k / Math.max(1, f.n - 1)) * all.length), 2, all.length);
+    return `<div class="fx" data-theme="dark">${mb(f, "Shell Edit View Window Help")}<div class="fx-app fx-term">${all.slice(0, shown).map(([l]) => `<div ${l ? "data-ocr" : ""}>${l || " "}</div>`).join("")}<div><span class="fx-caret"></span></div></div></div>`;
+  };
+
+  T.issue = (f) => `<div class="fx" data-theme="light">${mb(f)}<div class="fx-app fx-issue"><aside class="fx-side"><div class="fx-ws" data-ocr>Mnema</div><div class="fx-row" data-ocr>Inbox</div><div class="fx-row on" data-ocr>My issues</div><div class="fx-side__h" data-ocr>Teams</div><div class="fx-row" data-ocr>Capture</div><div class="fx-row" data-ocr>Desktop</div><div class="fx-row" data-ocr>Release 0.1.24</div></aside>
+    <div class="fx-issue__main"><div class="fx-iid" data-ocr>MNE-412</div><h1 class="fx-h1" data-ocr>System audio goes silent after AirPods switch to HFP</h1>
+      <p class="fx-p" data-ocr>When a call starts, AirPods renegotiate from A2DP to HFP and the device drops to 16 kHz.</p>
+      <p class="fx-p" data-ocr>The tap still claims 48 kHz, so the writer records speed-shifted audio.</p>
+      <p class="fx-p" data-ocr>Expected: rebuild the tap, finalize the segment, follow the nominal rate.</p>
+      <h2 class="fx-h2" data-ocr>Activity</h2>
+      ${[["PR", "personal", "Priya Raman created the issue · 9:04 AM"], ["SZ", "research", "Shaik Zeeshan moved to In Progress · 9:27 AM"], ["DO", "learning", "Daniel Okafor: repro on M1 Air, macOS 26.1"]].slice(0, 2 + (f.k > 6 ? 1 : 0)).map(([a, c, t]) => `<div class="fx-act"><span class="fx-av" style="--c:var(--cat-${c})">${a}</span><span data-ocr>${t}</span></div>`).join("")}</div>
+    <div class="fx-props"><div><span data-ocr>Status</span><b data-ocr>In Progress</b></div><div><span data-ocr>Priority</span><b data-ocr>High</b></div><div><span data-ocr>Assignee</span><b data-ocr>Shaik Zeeshan</b></div><div><span data-ocr>Labels</span><b data-ocr>capture, system-audio</b></div><div><span data-ocr>Cycle</span><b data-ocr>Cycle 31</b></div></div></div></div>`;
+
+  const frameHtml = (i) => T[frames[i].run.tpl](frames[i]);
+
+  // --------------------------------------------------------- audio segments
+  const DIALOG = {
+    meet: [[1, "Okay, let's start with system audio. MNE-412 is the big one this week."], [0, "Right. The tap claims forty-eight kilohertz even when AirPods drop to HFP, so we were writing speed-shifted audio."], [2, "And the fix is to trust the aggregate device's nominal rate instead?"], [0, "Yes. On a rate change we rebuild the tap, finalize the segment, and open a fresh one. We never splice into a live writer."], [3, "Does that hold the release? Thursday is still the plan for zero point one twenty-four."], [1, "I'd rather hold a day than ship chipmunk audio. Daniel, can you run the Bluetooth drill on the M1?"], [2, "Yep, I'll do it after this and post results in mnema-dev."], [-1, "Quick one before we drop: I'll post the drill results in mnema-dev by four."]],
+    huddle: [[1, "PR two fifty-one looks good, I left two nits on the backoff."], [0, "Pushed already. The watchdog resets on any sound now, thirty seconds up to six hundred."], [1, "Nice. Can we walk the HFP drill together? Start a call, switch to AirPods, then end it."], [0, "Sure, I'm sharing the log. You can see the rebuild line, reason sample rate renegotiated, sixteen thousand."], [2, "And the new segment opens at sixteen k. That's exactly what we wanted."], [1, "Ship it. I'll approve once CI is green."]],
+    video: [[4, "Welcome to what's new in Core Audio. Today we'll look at process taps."], [4, "A tap lets your app capture the output of other processes, or of the whole system, without a virtual driver."], [4, "You describe what to capture with a tap description, then add the tap to an aggregate device."], [4, "Keep in mind the aggregate device's sample rate is what your I/O proc actually receives."], [4, "Bluetooth devices can switch profiles at any time, so listen for those changes and rebuild."]],
+  };
+  // Speaker identity — mirrors PersonProfileDto (saved people; one is the account owner, i.e. "you",
+  // enrolled by voice in Settings) and SpeakerClusterDto (a diarized voice, session-scoped, labelled
+  // "Unknown Speaker N" until linked). Recognition only SUGGESTS (high/medium/low); the one exception is
+  // owner-only auto-linking, which is flagged `auto` so it can be told apart and undone.
+  const SAVED = [
+    { id: 1, name: "Shaik Zeeshan", samples: 34, owner: true },
+    { id: 2, name: "Priya Raman", samples: 12 },
+    { id: 3, name: "Daniel Okafor", samples: 6 },
+    { id: 4, name: "Mei Tanaka", samples: 3 },
+    { id: 5, name: "Arjun Mehta", samples: 2 },
+  ];
+  const CL = new Map();
+  const cl = (id, kind, n, o = {}) => CL.set(id, { id, kind, label: `Unknown Speaker ${n}`, person: null, auto: false, sug: null, conf: null, merge: null, mergeScore: null, ...o });
+  cl(11, "meet", 1, { person: 1, auto: true }); cl(12, "meet", 2, { person: 2 }); cl(13, "meet", 3, { sug: 3, conf: "high" });
+  cl(14, "meet", 4, { person: 4 }); cl(15, "meet", 5, { merge: 13, mergeScore: 0.71 });
+  cl(21, "huddle", 1, { person: 1, auto: true }); cl(22, "huddle", 2, { person: 2 }); cl(23, "huddle", 3, { sug: 3, conf: "medium" });
+  cl(31, "video", 1);
+  const SP2CL = { meet: { 0: 11, 1: 12, 2: 13, 3: 14, "-1": 15 }, huddle: { 0: 21, 1: 22, 2: 23 }, video: { 4: 31 } };
+  const segs = [];
+  const addSegs = (source, from, to, kind, idx0) => {
+    let i = idx0;
+    for (let s = from; s < to - 20000; s += 300000) {
+      const e = Math.min(s + 299000, to);
+      segs.push({ id: segs.length + 1, source, start: s, end: e, dur: (e - s) / 1000, index: i++, kind, file: `${source === "mic" ? "microphone" : "system-audio"}-${String(i).padStart(4, "0")}.m4a` });
+    }
+  };
+  addSegs("mic", at(11, 0, 20), at(11, 35, 0), "meet", 41);
+  addSegs("sys", at(11, 0, 22), at(11, 35, 0), "meet", 17);
+  addSegs("sys", at(13, 2, 30), at(13, 20, 0), "video", 24);
+  addSegs("mic", at(14, 18, 30), at(14, 41, 7), "huddle", 48);
+  segs.forEach((g, n) => {
+    const pool = DIALOG[g.kind];
+    // ~2.6 words/s speech with short pauses, cycling the pool until the segment is full.
+    // ponytail: repeated lines past the first pass — enough to feel a 5-minute conversation.
+    g.turns = [];
+    for (let j = 0, cur = 1.5; cur < g.dur - 4; j++) {
+      const [sp, text] = pool[(j + n) % pool.length], w = text.split(" "), start = cur;
+      g.turns.push({ sp, cl: SP2CL[g.kind][sp], text, start, end: start + w.length * 0.38, words: w.map((x, wi) => ({ x, s: start + wi * 0.38, e: start + (wi + 1) * 0.38 })) });
+      cur = start + w.length * 0.38 + 0.9 + ((j * 7) % 5) * 0.3;
+    }
+  });
+
+  // ------------------------------------------------------------- elements
+  const tl = $("#tl"), rail = $("#tl-rail"), track = $("#tl-track"), lane = $("#tl-lane"), stage = $("#tl-stage"), frameEl = $("#tl-frame");
+  const readout = $("#tl-readout"), wrap = $("#tl-railwrap");
+  track.style.width = `${N * SLOT}px`;
+  lane.style.width = `${N * SLOT}px`;
+  const slotX = (i) => i * SLOT; // css `right`
+
+  // app groups (consecutive frames of one run) + boundary ticks
+  let html = "";
+  RUNS.forEach((_, r) => {
+    const idx = frames.map((f, i) => (f.run.r === r ? i : -1)).filter((i) => i >= 0);
+    const lo = idx[0], hi = idx[idx.length - 1], run = frames[lo].run, w = (hi - lo + 1) * SLOT;
+    html += `<div class="tl-group" style="--c:${catVar(run.cat)};right:${slotX(lo)}px;width:${w}px" title="${esc(APPS[run.app].name)} · ${idx.length} frames">${w > 30 ? `<span class="tl-group__icon">${APPS[run.app].letter}</span>` : ""}</div>`;
+    html += `<span class="tl-major" style="right:${slotX(hi)}px"></span>`;
+  });
+  track.innerHTML = html + `<span class="tl-hovertick" id="tl-hovertick"></span><span class="tl-active" id="tl-active"></span><span class="tl-liveedge"></span><div id="tl-matches"></div>`;
+  const activeTick = $("#tl-active"), hoverTick = $("#tl-hovertick");
+
+  // audio bars: time → fractional slot
+  const asc = chrono.map((f) => f.t);
+  const slotAt = (t) => {
+    let j = asc.findIndex((x) => x > t);
+    if (j <= 0) j = j === 0 ? 1 : asc.length - 1;
+    const a = asc[j - 1], b = asc[j], c = clamp((t - a) / (b - a), 0, 1);
+    return N - 1 - (j - 1 + c);
+  };
+  lane.innerHTML = `<div class="tl-lane__row tl-lane__row--mic"></div><div class="tl-lane__row tl-lane__row--sys"></div>`;
+  segs.forEach((g) => {
+    const r = slotAt(g.end), l = slotAt(g.start);
+    const b = Object.assign(document.createElement("button"), { className: `tl-abar tl-abar--${g.source}`, type: "button" });
+    b.style.cssText = `right:${r * SLOT + 4}px;width:${Math.max(4, (l - r) * SLOT - 2)}px`;
+    b.dataset.seg = g.id;
+    b.setAttribute("aria-pressed", "false");
+    b.dataset.tip = `${g.source === "mic" ? "Microphone" : "System audio"} #${g.index} · ${fmtShort(g.start)} – ${fmtShort(g.end)}`;
+    b.dataset.tipPos = "top";
+    lane.children[g.source === "mic" ? 0 : 1].append(b);
+  });
+
+  // --------------------------------------------------------- frame scaling
+  let k = 1;
+  const fit = () => {
+    const w = stage.clientWidth - 40, h = stage.clientHeight - 32;
+    k = Math.min(w / 1280, h / 800);
+    const x = (stage.clientWidth - 1280 * k) / 2, y = (stage.clientHeight - 800 * k) / 2;
+    frameEl.style.transform = `translate(${x}px, ${y}px) scale(${k})`;
+    frameEl.style.setProperty("--k", k);
+  };
+
+  // -------------------------------------------------------- active state
+  let active = -1, dir = 1, lastScroll = 0, raf = 0, settleTimer = 0, lastSwap = 0, hovered = null;
+  let ocrOn = false, ocrBusy = false, query = "";
+  const maxScroll = () => rail.scrollWidth - rail.clientWidth;
+  const idxFromScroll = () => clamp(Math.round((maxScroll() - rail.scrollLeft) / SLOT), 0, N - 1);
+  const scrollToIdx = (i, smooth = true) => rail.scrollTo({ left: maxScroll() - clamp(i, 0, N - 1) * SLOT, behavior: smooth ? "smooth" : "auto" });
+
+  const segAtFrame = (i) => { const t = frames[i].t; return segs.filter((g) => t >= g.start && t <= g.end).sort((a) => (a.source === "mic" ? -1 : 1))[0] || null; };
+
+  let roKey = null;
+  const paintReadout = (i, hoverX) => {
+    const f = frames[i], app = APPS[f.run.app];
+    const key = f.run.r;
+    if (roKey !== null && roKey !== key) {
+      for (const el of [$("#tl-ro-icon"), $("#tl-ro-name")]) el.animate([{ transform: `translateX(${-dir * 9}px)`, opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 190, easing: ease });
+    }
+    roKey = key;
+    readout.style.setProperty("--c", catVar(f.run.cat));
+    $("#tl-ro-icon").textContent = app.letter;
+    $("#tl-ro-name").textContent = app.name;
+    $("#tl-ro-time").textContent = fmtTime(f.t);
+    $("#tl-ro-date").textContent = fmtDate(f.t);
+    $("#tl-ro-live").hidden = i !== 0 || !LIVE;
+    readout.classList.toggle("tl-readout--hover", hoverX != null);
+    readout.style.left = hoverX != null ? `${hoverX}px` : "50%";
+  };
+
+  const showFrame = (i, mode) => {
+    frameEl.innerHTML = frameHtml(i);
+    frameEl.setAttribute("aria-label", `${APPS[frames[i].run.app].name} — ${frames[i].run.title}`);
+    frameEl.classList.toggle("is-scrub", mode === "scrub");
+    if (mode === "exact") paintOcr(); else clearOcrBoxes();
+  };
+
+  const commit = (i) => {
+    if (i === active) return;
+    active = i;
+    activeTick.style.right = `${slotX(i)}px`;
+    rail.setAttribute("aria-valuenow", N - i);
+    rail.setAttribute("aria-valuetext", `Frame ${N - i} of ${N} — captured ${fmtTime(frames[i].t)}`);
+    if (hovered == null) paintReadout(i);
+    paintJump(frames[i].t);
+    $("#tl-latest").hidden = i <= 50; // app: showJumpToLatestButton = more than 50 frames behind the head
+    const seg = segAtFrame(i), mom = $("#tl-moment");
+    mom.hidden = !seg;
+    if (seg) { mom.dataset.src = seg.source === "mic" ? "mic" : "sysaudio"; mom.dataset.tip = `Play ${seg.source === "mic" ? "microphone" : "system audio"} at this moment  P`; }
+    const host = frames[i].run.tpl === "browser" ? PAGES[frames[i].run.variant].host : null;
+    $("#tl-openhost").hidden = !host;
+    if (host) $("#tl-openhost-name").textContent = `Open ${host}`;
+    // Scrub preview while moving (throttled swap), exact frame once settled.
+    const now = performance.now();
+    if (now - lastSwap > 45) { lastSwap = now; showFrame(i, "scrub"); }
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => showFrame(active, "exact"), 150);
+  };
+
+  rail.addEventListener("scroll", () => {
+    const left = rail.scrollLeft;
+    if (left !== lastScroll) dir = left > lastScroll ? -1 : 1;
+    lastScroll = left;
+    lane.style.transform = `translateX(${-left}px)`;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => commit(idxFromScroll()));
+  });
+
+  // Wheel anywhere on the timeline scrubs the rail (modifier = pass through).
+  tl.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest(".tl-jpop, .mx-pop")) return;
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!d) return;
+    e.preventDefault();
+    rail.scrollLeft -= d;
+  }, { passive: false });
+
+  // Click-to-seek relative to the center caret.
+  rail.addEventListener("click", (e) => {
+    const r = rail.getBoundingClientRect();
+    scrollToIdx(active + Math.round((r.width / 2 - (e.clientX - r.left)) / SLOT));
+    rail.focus({ preventScroll: true });
+  });
+  // Hover readout follows the cursor; leaving pins it back over the playhead.
+  rail.addEventListener("pointermove", (e) => {
+    const r = rail.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+    const af = (maxScroll() - rail.scrollLeft) / SLOT;
+    const h = Math.round(af + (r.width / 2 - (e.clientX - r.left)) / SLOT);
+    if (h < 0 || h >= N) { leave(); return; }
+    hovered = h;
+    hoverTick.style.right = `${slotX(h)}px`;
+    hoverTick.classList.add("is-on");
+    paintReadout(h, clamp(e.clientX - wr.left, 120, wr.width - 120));
+  });
+  const leave = () => { hovered = null; hoverTick.classList.remove("is-on"); paintReadout(active); };
+  rail.addEventListener("pointerleave", leave);
+
+  // ------------------------------------------------------------- OCR
+  const clearOcrBoxes = () => { frameEl.querySelector(".tl-ocr")?.remove(); $("#tl-ocr-hint").hidden = true; };
+  const paintOcr = () => {
+    clearOcrBoxes();
+    const q = query.length >= 2 ? query : "";
+    if (!ocrOn && !q) return;
+    const fr = frameEl.getBoundingClientRect();
+    const els = [...frameEl.querySelectorAll("[data-ocr]")].filter((el) => el.textContent.trim()).slice(0, 120);
+    const ov = Object.assign(document.createElement("div"), { className: "tl-ocr" });
+    ov.dataset.theme = frameEl.querySelector(".fx")?.dataset.theme || "dark"; // box tokens follow the captured pixels, not the app chrome
+    ov.setAttribute("role", "list");
+    let n = 0;
+    els.forEach((el) => {
+      const text = el.textContent.trim(), isMatch = q && text.toLowerCase().includes(q);
+      if (!ocrOn && !isMatch) return;
+      const b = el.getBoundingClientRect();
+      if (b.width < 2 || b.top >= fr.bottom || b.bottom <= fr.top) return;
+      const range = document.createRange(); range.selectNodeContents(el);
+      const tr = range.getBoundingClientRect();
+      const box = document.createElement("div");
+      box.className = `tl-ocr__box${isMatch ? " tl-ocr__box--match" : ""}`;
+      box.setAttribute("role", "listitem");
+      const conf = 86 + Math.floor((text.length * 7) % 14);
+      box.setAttribute("aria-label", `${text} (${conf}% confidence)`);
+      box.style.cssText = `--i:${n++};left:${(tr.left - fr.left) / k - 3}px;top:${(tr.top - fr.top) / k - 2}px;width:${Math.min(tr.width, fr.right - tr.left) / k + 6}px;height:${tr.height / k + 4}px`;
+      box.dataset.text = text; box.dataset.conf = conf;
+      ov.append(box);
+    });
+    frameEl.append(ov);
+    $("#tl-ocr-hint").hidden = !ocrOn;
+    if (ocrOn) $("#tl-ocr-label").innerHTML = `hide OCR <span class="tl-count">${ov.children.length}</span>`;
+  };
+  frameEl.addEventListener("mouseover", (e) => {
+    const box = e.target.closest(".tl-ocr__box");
+    frameEl.querySelectorAll(".tl-ocr__text").forEach((x) => x.remove());
+    if (box) box.innerHTML = `<span class="tl-ocr__text">${esc(box.dataset.text)}<small>${box.dataset.conf}%</small></span>`;
+  });
+  frameEl.addEventListener("mouseleave", () => frameEl.querySelectorAll(".tl-ocr__text").forEach((x) => x.remove()));
+
+  const runOcr = () => {
+    ocrBusy = true;
+    const btn = $("#tl-ocr");
+    btn.setAttribute("aria-busy", "true");
+    $("#tl-ocr-label").innerHTML = `<span class="mx-spin mx-spin--sm"></span>Loading OCR…`;
+    btn.querySelector("svg").style.display = "none";
+    setTimeout(() => { ocrBusy = false; ocrOn = true; btn.removeAttribute("aria-busy"); btn.querySelector("svg").style.display = ""; btn.setAttribute("aria-pressed", "true"); syncOcrChrome(); paintOcr(); }, 420);
+  };
+  const syncOcrChrome = () => {
+    $("#tl-ocr-provider").hidden = !ocrOn; $("#tl-ocr-rerun").hidden = !ocrOn; $("#tl-copytext").hidden = !ocrOn;
+    if (!ocrOn) $("#tl-ocr-label").textContent = "show OCR";
+  };
+  const toggleOcr = () => {
+    if (ocrBusy) return;
+    if (ocrOn) { ocrOn = false; $("#tl-ocr").setAttribute("aria-pressed", "false"); syncOcrChrome(); paintOcr(); }
+    else runOcr();
+  };
+  $("#tl-ocr").addEventListener("click", toggleOcr);
+  $("#tl-ocr-rerun").addEventListener("click", () => { clearOcrBoxes(); runOcr(); });
+
+  // ------------------------------------------------------------- toast (kit: result of the user's own action)
+  const copyFrame = () => mx.toast(`Copied frame · ${APPS[frames[active].run.app].name} ${fmtTime(frames[active].t)}`);
+  const downloadFrame = () => { const d = new Date(frames[active].t), p2 = (n) => String(n).padStart(2, "0"); mx.toast(`Saved mnema-frame-2026-10-09-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.png to Downloads`); };
+  $("#tl-framemenu").addEventListener("click", (e) => {
+    const li = e.target.closest("li"); if (!li) return;
+    $("#tl-framemenu").removeAttribute("data-open");
+    ({ copy: copyFrame, download: downloadFrame, text: () => mx.toast(`Copied ${frameEl.querySelectorAll(".tl-ocr__box").length} text regions`), open: () => mx.toast(`Opened ${PAGES[frames[active].run.variant].host} in your browser`) })[li.dataset.act]();
+  });
+  const refresh = () => {
+    const b = $("#tl-refresh"); if (b.disabled) return;
+    b.disabled = true; b.setAttribute("aria-busy", "true"); b.innerHTML = `<span class="mx-spin mx-spin--sm"></span>refreshing…`;
+    setTimeout(() => { b.disabled = false; b.removeAttribute("aria-busy"); b.innerHTML = `<svg width="13" height="13"><use href="#i-refresh"/></svg>refresh`; }, 700);
+  };
+  $("#tl-refresh").addEventListener("click", refresh);
+  $("#tl-latest").addEventListener("click", () => scrollToIdx(0));
+
+  // --------------------------------------------------------------- recall
+  // No in-page search (§8 #2, decided 2026-10-10): no match dots, no filtering, no ↵-stepping.
+  const q = $("#mx-q"), chip = $("#tl-searchchip"), marks = $("#tl-matches");
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); console.log("opens Quick Recall pre-filled:", q.value.trim()); } // app: Quick Recall window, not drawn here
+    if (e.key === "Escape") { q.value = ""; q.blur(); }
+  });
+  // Landing chip: Quick Recall opened the Timeline at a hit, so the query rides along — one mark at the landed frame (the playhead). Dismiss clears both.
+  const landFromRecall = (text) => {
+    query = text.toLowerCase(); // OCR overlay still highlights the landed query (paintOcr)
+    marks.innerHTML = `<span class="tl-matchmark" style="right:${slotX(active)}px"></span>`;
+    chip.hidden = false;
+    chip.innerHTML = `<span class="mx-chip mx-chip--accent">from Recall · “${esc(text)}”</span><button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss" data-tip="Dismiss">${ico("x")}</button>`;
+    chip.querySelector("button").addEventListener("click", () => { chip.hidden = true; chip.innerHTML = ""; marks.innerHTML = ""; query = ""; paintOcr(); });
+    paintOcr();
+  };
+
+  // --------------------------------------------------------------- jumper
+  const jpop = $("#tl-jpop"), jbtn = $("#tl-jump");
+  const capDays = new Set();
+  for (let d = new Date(2026, 8, 14); d <= DAY; d.setDate(d.getDate() + 1)) {
+    const wd = d.getDay(), key = d.toDateString();
+    if (!((wd === 0 || wd === 6) && d.getDate() % 3 !== 0)) capDays.add(key);
+  }
+  const dayBuckets = (d) => {
+    if (d.toDateString() === DAY.toDateString()) {
+      return Array.from({ length: 15 }, (_, h) => ({ h, n: frames.filter((f) => new Date(f.t).getHours() === h).length }));
+    }
+    seed = d.getDate() * 97 + d.getMonth();
+    return Array.from({ length: 24 }, (_, h) => ({ h, n: h >= 9 && h <= 18 && h !== 13 ? Math.floor(40 + rnd() * 120) : h === 13 || h === 19 ? Math.floor(rnd() * 30) : 0 }));
+  };
+  let view = new Date(2026, 9, 1), sel = new Date(DAY), jmsg = "";
+  const hourLabel = (h) => `${h % 12 === 0 ? 12 : h % 12}:00 ${h < 12 ? "AM" : "PM"}`;
+  const CAP0 = new Date(2026, 8, 14), DAY_MS = 864e5;
+  const dayIdx = (d) => Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - CAP0) / DAY_MS);
+  // kit density scale 0..3 (dots in the calendar, ticks on the capsule ruler)
+  const heatOf = (d) => {
+    if (!capDays.has(d.toDateString())) return 0;
+    const wd = d.getDay();
+    return d.toDateString() === DAY.toDateString() ? 2 : wd === 0 || wd === 6 ? 1 : (d.getDate() * 7) % 5 < 2 ? 2 : 3;
+  };
+  let jumpDay = -1;
+  const paintJump = (t) => {
+    $("#tl-jump-time").textContent = fmtTime(t);
+    const d = new Date(t), k = dayIdx(d);
+    if (k === jumpDay) return;
+    jumpDay = k;
+    $("#tl-jump-day").textContent = fmtDate(t);
+    const ago = Math.round((DAY - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / DAY_MS);
+    const rel = ago === 0 ? "Today" : ago === 1 ? "Yesterday" : `${ago} days ago`;
+    jbtn.dataset.tip = `${rel} · jump to date and time  J`;
+  };
+  const renderJumper = () => {
+    const here = new Date(frames[active].t);
+    const first = new Date(view.getFullYear(), view.getMonth(), 1);
+    const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7)); // Monday-first, like the kit
+    const dim = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+    const n = Math.ceil(((first.getDay() + 6) % 7 + dim) / 7) * 7;
+    let cells = "";
+    for (let i = 0; i < n; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), ds = d.toDateString(), has = capDays.has(ds);
+      const attrs = [d.getMonth() !== view.getMonth() && "data-out", ds === DAY.toDateString() && "data-today", ds === here.toDateString() && "data-here", ds === sel.toDateString() && "data-sel", !has && "disabled"].filter(Boolean).join(" ");
+      cells += `<button type="button" class="mx-cal__day" data-d="${d.getFullYear()}-${d.getMonth()}-${d.getDate()}" ${attrs} aria-label="${d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}"><span>${d.getDate()}</span><i data-h="${heatOf(d)}"></i></button>`;
+    }
+    const b = dayBuckets(sel), max = Math.max(...b.map((x) => x.n), 1);
+    const hours = b.map(({ h, n }) => `<button type="button" class="tl-hour${sel.toDateString() === here.toDateString() && here.getHours() === h && n ? " tl-hour--here" : ""}" data-hour="${h}" ${n ? "" : "disabled"}>${n ? `<span class="tl-hour__density" style="--d:${n / max}"></span>` : ""}<span class="tl-hour__label">${hourLabel(h)}</span><span class="tl-hour__count">${n || "·"}</span></button>`).join("");
+    const atMin = view <= new Date(2026, 8, 1), atMax = view.getMonth() === 9;
+    jpop.innerHTML = `<div class="tl-jpop__head"><span class="mx-h3">Jump to date &amp; time</span><button type="button" class="mx-btn mx-btn--sm" data-j="latest"><svg class="mx-btn__accent" width="13" height="13"><use href="#i-latest"/></svg>latest<kbd>L</kbd></button></div>
+      <div class="tl-jpop__panes"><div class="mx-cal"><div class="mx-cal__head"><span class="mx-cal__month">${view.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</span>
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-j="prev" aria-label="Previous month" ${atMin ? "disabled" : ""}><svg width="14" height="14"><use href="#i-chev-l"/></svg></button>
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-j="next" aria-label="Next month" ${atMax ? "disabled" : ""}><svg width="14" height="14"><use href="#i-chev-r"/></svg></button></div>
+        <div class="mx-cal__grid">${["M", "T", "W", "T", "F", "S", "S"].map((w) => `<span class="mx-cal__wd">${w}</span>`).join("")}${cells}</div>
+        <div class="mx-cal__foot"><span class="mx-cal__legend"><i></i><i></i><i></i>captured</span></div></div>
+        <div class="tl-times"><div class="tl-times__head"><span class="tl-times__day">${sel.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</span><span class="mx-label num">${b.filter((x) => x.n).length} hr</span></div>
+        <div class="tl-times__scroll">${hours}</div><div class="tl-times__foot"><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-j="daylatest"><svg width="13" height="13"><use href="#i-latest"/></svg>latest of day</button></div></div></div>
+      <div class="tl-jpop__foot mx-body-sm${jmsg ? " tl-jpop__foot--warn" : ""}">${jmsg || "Pick a day to preview its hours, then an hour to jump · Sep 14 → now"}</div>`;
+    const sc = jpop.querySelector(".tl-hour--here") || jpop.querySelector(".tl-hour:not(:disabled):last-of-type");
+    sc?.scrollIntoView({ block: "center" });
+  };
+  const openJumper = (open) => {
+    if (open) { const here = new Date(frames[active].t); sel = here; view = new Date(here.getFullYear(), here.getMonth(), 1); jmsg = ""; renderJumper(); jpop.setAttribute("data-open", ""); }
+    else { jpop.removeAttribute("data-open"); if (jpop.contains(document.activeElement)) rail.focus({ preventScroll: true }); }
+    jbtn.setAttribute("aria-expanded", String(open));
+  };
+  jbtn.addEventListener("click", () => { if (jpop.hasAttribute("data-open")) { jmsg = ""; renderJumper(); } }); // kit toggles; we seed content
+  jbtn.addEventListener("pointerdown", () => { if (!jpop.hasAttribute("data-open")) { const here = new Date(frames[active].t); sel = here; view = new Date(here.getFullYear(), here.getMonth(), 1); jmsg = ""; renderJumper(); } });
+  const commitTo = (i, row) => {
+    if (row) row.classList.add("tl-hour--flash");
+    setTimeout(() => { openJumper(false); scrollToIdx(i); }, 110);
+  };
+  jpop.addEventListener("click", (e) => {
+    e.stopPropagation(); // content re-renders; keep kit's outside-click from closing us
+    const t = e.target.closest("button"); if (!t || t.disabled) return;
+    const isToday = sel.toDateString() === DAY.toDateString();
+    if (t.dataset.j === "prev") { view.setMonth(view.getMonth() - 1); renderJumper(); }
+    else if (t.dataset.j === "next") { view.setMonth(view.getMonth() + 1); renderJumper(); }
+    else if (t.dataset.j === "latest") commitTo(0);
+    else if (t.dataset.d) { const [y, m, dd] = t.dataset.d.split("-").map(Number); sel = new Date(y, m, dd); if (m !== view.getMonth()) view = new Date(y, m, 1); jmsg = ""; renderJumper(); }
+    else if (t.dataset.hour || t.dataset.j === "daylatest") {
+      if (!isToday) { jmsg = "Mockup holds today’s frames only — earlier days preview their hours."; renderJumper(); return; }
+      const h = t.dataset.hour != null ? +t.dataset.hour : 23;
+      const end = new Date(2026, 9, 9, h + 1).getTime();
+      commitTo(Math.max(0, frames.findIndex((f) => f.t < end)), t.dataset.hour ? t : null);
+    }
+  });
+
+  // --------------------------------------------------------- audio drawer
+  const slot = $("#tl-drawer-slot");
+  let D = null; // { seg, el, cur, playing, lastTurn, bars, marks, sel, only, fix, hidden }
+  // Colour × shape in first-appearance order per segment (assignSpeakerMarks).
+  // ruling 2026-10-10: 4 colours (creating/green out — it reads as the accent playhead); the owner is pinned to communication and takes no slot, as in receipt-audio.ts
+  const PAL = ["meetings", "research", "entertainment", "learning"], SHAPES = ["circle", "square", "triangle", "diamond"];
+  const person = (id) => SAVED.find((p) => p.id === id) || null;
+  const first = (n) => n.split(" ")[0];
+  const spName = (c) => (c.person ? person(c.person).name : c.label);                                    // speakerPersistedName
+  const spUnnamed = (c) => !c.person && /^unknown speaker \d+$/i.test(c.label);                          // speakerIsUnnamed
+  const spOption = (c) => (c.person ? spName(c) + (c.auto ? " (auto)" : "") : c.sug ? person(c.sug).name : c.label); // speakerClusterOptionLabel
+  const validName = (v) => !v ? "A voice needs a name before it can become a saved person." : /^(unknown\s+speaker|speaker|voice)\s*\d*$/i.test(v) ? "Still the placeholder label. Give it a real name, or pick a saved person below." : ""; // validateSpeakerName
+  const marksFor = (seg) => { const m = new Map(); let next = 0; seg.turns.forEach((t) => { if (!m.has(t.cl)) { const i = m.size, owner = person(CL.get(t.cl).person)?.owner; m.set(t.cl, { c: `var(--cat-${owner ? "communication" : PAL[next++ % PAL.length]})`, shape: SHAPES[i % SHAPES.length] }); } }); return m; };
+  const markHtml = (m, ghost) => `<span class="tl-mark tl-mark--${m.shape}${ghost ? " tl-mark--ghost" : ""}" style="--sp:${m.c}" aria-hidden="true"></span>`;
+  const fmtDur = (s) => (s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, "0")}s` : `${Math.round(s)}s`);
+  const ico = (id, sz = 13) => `<svg width="${sz}" height="${sz}"><use href="#i-${id}"/></svg>`;
+  const statusText = () => `transcribed · ${D.marks.size} speaker${D.marks.size === 1 ? "" : "s"}`;
+  const flash = (msg) => { const st = D.el.querySelector(".tl-dh__status"); st.textContent = msg; clearTimeout(D.flashT); D.flashT = setTimeout(() => D && (st.textContent = statusText()), 2200); };
+
+  const closeDrawer = () => { if (!D) return; D.playing = false; clearTimeout(D.sampleT); D.el.remove(); D = null; document.querySelectorAll(".tl-abar").forEach((b) => b.setAttribute("aria-pressed", "false")); };
+  const openDrawer = (seg, seekS = 0) => {
+    if (D && D.seg === seg) { setCur(seekS); return; }
+    closeDrawer();
+    document.querySelectorAll(".tl-abar").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.seg === seg.id)));
+    const src = seg.source === "mic" ? "Microphone" : "System audio";
+    seed = seg.id * 13;
+    const bars = Array.from({ length: 140 }, (_, i) => {
+      const s = (i / 140) * seg.dur, ti = seg.turns.findIndex((x) => s >= x.start && s <= x.end);
+      return { s, ti, h: ti >= 0 ? clamp(25 + rnd() * 65 * (0.6 + 0.4 * Math.sin(i / 5)), 6, 100) : 8 };
+    });
+    const el = document.createElement("div");
+    el.className = "tl-drawer"; el.tabIndex = -1; el.dataset.ts = "on";
+    el.setAttribute("role", "dialog"); el.setAttribute("aria-label", `Audio segment player — ${src} #${seg.index}`);
+    el.innerHTML = `<header class="tl-dh"><span class="mx-chip mx-chip--${seg.source === "mic" ? "mic" : "sysaudio"}">${src.toLowerCase()}</span><span class="num">#${seg.index}</span><span class="tl-dh__sep">·</span><span class="num">${fmtTime(seg.start)} → ${fmtTime(seg.end)}</span><span class="tl-dh__sep">·</span><span class="num">${mmss(seg.dur)}</span><span class="tl-dh__sep">·</span><span data-tip="Transcribed with Parakeet TDT 0.6B v3">parakeet v3</span><span class="tl-dh__file">${seg.file}</span>
+      <span class="mx-spacer"></span><span class="mx-chip tl-dh__status" role="status"></span>
+      <button class="mx-btn mx-btn--ghost mx-btn--sm" data-d="rerun" data-tip="Re-transcribe this segment with current settings">rerun</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-d="ts" aria-pressed="true">timestamps</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-d="expand" aria-pressed="false">expand</button>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-d="close" aria-label="Close audio player" data-tip="Close  esc">${ico("x", 15)}</button></header>
+      <div class="tl-spk" role="toolbar" aria-label="Speakers in this segment"><span class="tl-spk__lbl">Speakers</span><div class="tl-spk__list"></div><span class="mx-spacer"></span>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" data-d="only" aria-pressed="false" disabled>only this voice</button></div>
+      <div class="tl-stage"><div class="tl-reader"></div></div>
+      <button class="mx-btn mx-btn--sm tl-expand-cta" data-d="expand">${ico("expand")}open reader</button>
+      <footer class="tl-tp"><button class="mx-btn mx-btn--icon tl-play" data-d="play" aria-label="Play" aria-pressed="false">${ico("play")}</button><span data-cur>0:00</span>
+        <div class="tl-wave"><div class="tl-wave__bars">${bars.map((b) => `<span class="tl-wave__bar${b.ti < 0 ? " is-silent" : ""}" data-s="${b.s}" style="height:${b.h}%"></span>`).join("")}</div><div class="tl-wave__head"></div><span class="tl-wave__tip" hidden></span><input type="range" min="0" max="${seg.dur}" step="0.05" value="0" aria-label="Seek within segment" /></div><span>${mmss(seg.dur)}</span></footer>`;
+    slot.append(el);
+    D = { seg, el, cur: 0, playing: false, lastTurn: -1, bars, sel: null, only: false, fix: null, hidden: new Set() };
+    paint();
+    setCur(seekS);
+    el.focus({ preventScroll: true });
+  };
+
+  // Re-derive everything speaker-shaped from the model, so a name change lands everywhere at once:
+  // strip, gutters, suggestion chips, waveform hues, wave tooltip, repair panel.
+  const paint = () => {
+    if (D.frozen) return; // a mockup state replaced the reader
+    const { seg, el } = D, marks = (D.marks = marksFor(seg));
+    if (D.sel != null && !marks.has(D.sel)) { D.sel = null; D.only = false; }
+    const talk = new Map(); let total = 0;
+    seg.turns.forEach((t) => { const d = t.end - t.start; talk.set(t.cl, (talk.get(t.cl) || 0) + d); total += d; });
+    el.querySelector(".tl-dh__status").textContent = statusText();
+    el.querySelector(".tl-spk__list").innerHTML = [...marks].map(([cid, m]) => {
+      const c = CL.get(cid), un = spUnnamed(c), p = person(c.person);
+      const state = p?.owner ? (c.auto ? "you · auto" : "you") : c.sug && !c.person ? `maybe ${first(person(c.sug).name)}` : un ? "unnamed" : "";
+      return `<button class="mx-btn mx-btn--ghost mx-btn--sm tl-sp${un ? " tl-sp--unnamed" : ""}" data-sp="${cid}" aria-pressed="${D.sel === cid}" aria-label="${esc(spName(c))}${state ? `, ${state}` : ""}, ${fmtDur(talk.get(cid))} talk time">${markHtml(m, un)}<span>${esc(spName(c))}</span>${state ? `<span class="tl-sp__state">${state}</span>` : ""}<span class="tl-sp__share">${Math.round((talk.get(cid) / total) * 100)}%</span></button>`;
+    }).join("");
+    const only = el.querySelector('[data-d="only"]');
+    only.disabled = D.sel == null; only.setAttribute("aria-pressed", String(D.only));
+
+    const firstAt = new Map(); seg.turns.forEach((t, i) => firstAt.has(t.cl) || firstAt.set(t.cl, i));
+    const reader = el.querySelector(".tl-reader"), top = reader.scrollTop;
+    reader.toggleAttribute("data-sel", D.sel != null); reader.toggleAttribute("data-only", D.only);
+    reader.innerHTML = seg.turns.map((t, ti) => {
+      const c = CL.get(t.cl), m = marks.get(t.cl), un = spUnnamed(c), sug = !c.person && c.sug ? person(c.sug) : null;
+      // the inline chip rides only the cluster's first visible turn (suggestionChipFor); ✕ hides it and writes nothing
+      const chip = sug && !D.hidden.has(c.id) && firstAt.get(t.cl) === ti;
+      const note = chip ? `<span class="tl-suggest">maybe <b>${esc(first(sug.name))}</b><span class="num">· ${c.conf}</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-fx="confirm" data-cl="${c.id}" aria-label="Confirm ${esc(sug.name)} — links this voice and saves a sample" data-tip="Confirm — links + saves a sample">${ico("check")}</button><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-fx="hide" data-cl="${c.id}" aria-label="Hide this suggestion — changes nothing" data-tip="Hide — writes nothing">${ico("x")}</button></span>`
+        : un ? `<span class="tl-gnote">name this voice</span>` : "";
+      return `<div class="tl-turn${D.sel === t.cl ? " is-sel" : ""}${D.fix?.ti === ti ? " is-fixing" : ""}" data-turn="${ti}" style="--sp:${m.c}"><div class="tl-gutter"><button class="mx-btn mx-btn--ghost mx-btn--sm tl-who${un ? " tl-who--unknown" : ""}${un || sug ? " tl-who--needs" : ""}" data-fix="${ti}" aria-haspopup="dialog" aria-label="Repair speaker ${esc(spName(c))}">${markHtml(m, un)}<span class="tl-who__nm">${esc(spName(c))}</span><span class="tl-who__edit" aria-hidden="true">${ico("more")}</span></button>${note}<span class="tl-ts">${fmtTime(seg.start + t.start * 1000)}</span></div>
+        <p class="tl-para">${t.words.map((w) => `<span class="tl-w" data-s="${w.s.toFixed(2)}">${esc(w.x)}</span>`).join(" ")}</p></div>`;
+    }).join("");
+    reader.scrollTo({ top, behavior: "instant" });
+
+    el.querySelector(".tl-wave").toggleAttribute("data-sel", D.sel != null);
+    el.querySelectorAll(".tl-wave__bar").forEach((b, i) => {
+      const ti = D.bars[i].ti; if (ti < 0) return;
+      const cid = seg.turns[ti].cl;
+      b.style.setProperty("--bar", marks.get(cid).c); b.classList.toggle("is-sel", cid === D.sel);
+    });
+    paintFix();
+    setCur(D.cur, false);
+  };
+
+  // --- repair slide-over (SpeakerRepairPanel) ---------------------------------
+  // kit.js wires .mx-seg once at load; this one renders later, so it gets its thumb here.
+  const segThumb = (seg) => {
+    const th = Object.assign(document.createElement("span"), { className: "mx-seg__thumb" }), on = seg.querySelector('[aria-pressed="true"]');
+    seg.prepend(th); th.style.width = `${on.offsetWidth}px`; th.style.transform = `translateX(${on.offsetLeft}px)`;
+  };
+  const optRow = (name, val, checked, icon, title, desc) => `<label class="mx-choice__opt"><input type="radio" name="${name}" value="${val}"${checked ? " checked" : ""} /><span class="mx-choice__icon">${icon}</span><span class="mx-choice__title">${title}</span>${desc ? `<span class="mx-choice__desc">${desc}</span>` : ""}</label>`;
+  const paintFix = () => {
+    let el = D.el.querySelector(".tl-fix");
+    D.el.classList.toggle("has-fix", !!D.fix);
+    if (!D.fix) { el?.remove(); return; }
+    const f = D.fix, seg = D.seg, c = CL.get(seg.turns[f.ti].cl), m = D.marks.get(c.id), un = spUnnamed(c);
+    const mine = seg.turns.filter((x) => x.cl === c.id), secs = mine.reduce((a, x) => a + x.end - x.start, 0);
+    const left = [...D.marks.keys()].filter((id) => id !== c.id && !CL.get(id).person).length;
+    const sug = !c.person && c.sug ? person(c.sug) : null, linked = person(c.person), tgt = c.merge != null ? CL.get(c.merge) : null;
+    const others = [...CL.values()].filter((x) => x.kind === c.kind && x.id !== c.id); // clusters are session-scoped
+    if (!el) { el = document.createElement("aside"); el.className = "tl-fix"; el.setAttribute("role", "dialog"); D.el.querySelector(".tl-stage").append(el); }
+    el.setAttribute("aria-label", `Speaker repair — ${spName(c)}`);
+    el.innerHTML = `<div class="tl-fix__head">${markHtml(m, un)}<span class="tl-fix__nm">${esc(spName(c))}</span>${linked?.owner ? `<span class="mx-chip">you</span>` : ""}${c.auto ? `<span class="mx-chip" data-tip="Linked automatically from your voiceprint">auto</span>` : ""}<span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-fx="close" aria-label="Close speaker repair" data-tip="Close  esc">${ico("x", 15)}</button></div>
+      <div class="tl-fix__sum">cluster ${c.id} · ${mine.length} turn${mine.length === 1 ? "" : "s"} · ${fmtDur(secs)}</div>
+      <div class="tl-fix__body">
+        ${sug ? `<div class="tl-fix__card"><div class="tl-fix__card-h">Sounds like ${esc(sug.name)}<span class="mx-chip" data-tip="Recognition confidence">${c.conf}</span></div>
+          <p>Only a suggestion. Confirm links this voice and saves a sample; “Not ${esc(first(sug.name))}” stops suggesting ${esc(first(sug.name))} for this voice only.</p>
+          <div class="tl-fix__card-acts"><button class="mx-btn mx-btn--sm" data-fx="confirm" data-cl="${c.id}">${ico("check")}Confirm ${esc(first(sug.name))}</button><button class="mx-btn mx-btn--danger mx-btn--sm" data-fx="reject">Not ${esc(first(sug.name))}</button></div></div>` : ""}
+        ${tgt && f.scope === "speaker" ? `<div class="tl-fix__card"><div class="tl-fix__card-h">Possibly the same voice as ${esc(spOption(tgt))}</div>
+          <p>Over-segmentation is the common failure — one person split in two. Merging folds every turn of this voice into theirs.</p>
+          <div class="tl-fix__card-acts"><button class="mx-btn mx-btn--sm" data-fx="merge">Merge them</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-fx="samples">${ico("play", 11)}Play 8s of each</button></div></div>` : ""}
+        <div class="tl-fix__field"><div class="tl-fix__row"><span class="mx-label">Apply to</span><div class="mx-seg" role="group" aria-label="Repair scope"><button value="speaker" aria-pressed="${f.scope === "speaker"}">This speaker</button><button value="line" aria-pressed="${f.scope === "line"}">This line only</button></div></div>
+          <p class="tl-fix__hint">${f.scope === "speaker" ? `Every turn this voice holds — ${mine.length} in this segment.` : "Naming is always speaker-wide, so a single line moves to another speaker instead."}</p></div>
+        ${f.scope === "speaker" ? `<div class="tl-fix__field"><label class="mx-label" for="tl-fix-q">Name this voice, or find a saved person</label>
+          <input id="tl-fix-q" class="mx-input" autocomplete="off" spellcheck="false" placeholder="Type a name…" value="${esc(f.q)}" />
+          <p class="tl-fix__warn" hidden></p>
+          <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Saved people" data-fix-list></div></div>
+        ${linked ? `<div class="tl-fix__field"><div><button class="mx-btn mx-btn--danger mx-btn--sm" data-fx="unlink">Unlink ${esc(first(linked.name))}</button></div>
+          <p class="tl-fix__hint">Unlinks this voice only. ${esc(first(linked.name))}’s saved voice and every other recording stay as they are.</p></div>` : ""}`
+        : `<div class="tl-fix__field"><span class="mx-label">Move this line to</span>
+          <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Move this line to">${others.map((o) => {
+            const om = D.marks.get(o.id), n = seg.turns.filter((x) => x.cl === o.id).length;
+            return optRow("fix-move", o.id, f.move === o.id, om ? markHtml(om, spUnnamed(o)) : "", esc(spOption(o)), n ? `${n} turn${n === 1 ? "" : "s"} in this segment` : "elsewhere in this session");
+          }).join("")}</div></div>`}
+      </div>
+      <div class="tl-fix__foot"><button class="mx-btn mx-btn--primary" data-fx="commit"></button>${left ? `<span class="tl-fix__left">${left} more unnamed here</span>` : ""}</div>`;
+    segThumb(el.querySelector(".mx-seg"));
+    if (f.scope === "speaker") paintPeople();
+    paintCommit();
+  };
+  // One field does both jobs: filters saved people, and offers to create the typed name.
+  const paintPeople = () => {
+    const f = D.fix, c = CL.get(D.seg.turns[f.ti].cl), q = f.q.trim(), ql = q.toLowerCase();
+    const ppl = SAVED.filter((p) => p.id !== c.person && (!ql || p.name.toLowerCase().includes(ql)));
+    const warn = q ? validName(q) : "", create = q && !warn && !SAVED.some((p) => p.name.toLowerCase() === ql);
+    if ((f.pick === "new" && !create) || (typeof f.pick === "number" && !ppl.some((p) => p.id === f.pick))) f.pick = null;
+    if (f.pick == null && create && !ppl.length) f.pick = "new";
+    const w = D.el.querySelector(".tl-fix__warn"); w.textContent = warn; w.hidden = !warn;
+    D.el.querySelector("[data-fix-list]").innerHTML = ppl.map((p) => optRow("fix-pick", p.id, f.pick === p.id, p.name.split(" ").map((x) => x[0]).join(""),
+      `${esc(p.name)}<span class="mx-choice__tag">${p.owner ? "you · " : ""}${p.samples} sample${p.samples === 1 ? "" : "s"}</span>`)).join("")
+      + (create ? optRow("fix-pick", "new", f.pick === "new", "+", `Create “${esc(q)}”<span class="mx-choice__tag">new person</span>`) : "")
+      || (SAVED.length ? `<span class="mx-inline" style="padding:8px 2px">${ico("search")}No saved person matches “${esc(q)}”.</span>`
+        : `<div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph">${ico("inbox", 14)}</span><b class="mx-empty__title">No saved people yet</b><p class="mx-empty__text">Type a name to save this voice as the first one.</p></div>`);
+  };
+  const paintCommit = () => {
+    const f = D.fix, b = D.el.querySelector('[data-fx="commit"]');
+    const [label, ok] = f.scope === "line" ? ["Move this line", f.move != null] : f.pick === "new" ? ["Name & apply", true] : f.pick != null ? [`Link to ${person(f.pick).name}`, true] : ["Name & apply", false];
+    b.textContent = label; b.disabled = !ok;
+  };
+  const openFix = (ti) => {
+    D.fix = { ti, scope: "speaker", q: "", pick: null, move: null };
+    paint();
+    D.el.querySelector("#tl-fix-q")?.focus({ preventScroll: true });
+  };
+  const closeFix = () => { const ti = D.fix?.ti; D.fix = null; paint(); D.el.querySelector(`[data-fix="${ti}"]`)?.focus({ preventScroll: true }); };
+  const link = (c, pid) => Object.assign(c, { person: pid, auto: false, sug: null });
+  // ponytail: no undo — none of the app's speaker writes has a backend inverse (see SpeakerRepairPanel).
+  const fixAct = (a, b) => {
+    const f = D.fix, c = f ? CL.get(D.seg.turns[f.ti].cl) : null;
+    if (a === "close") return closeFix();
+    if (a === "hide") { D.hidden.add(+b.dataset.cl); return paint(); }
+    if (a === "confirm") { const k = CL.get(+b.dataset.cl), p = person(k.sug); p.samples++; link(k, p.id); D.fix = null; paint(); return flash(`linked · ${p.name}`); }
+    if (a === "reject") { const n = person(c.sug).name; c.sug = null; c.conf = null; paint(); return flash(`not ${first(n)} · this voice only`); }
+    if (a === "unlink") { const n = person(c.person).name; c.person = null; c.auto = false; paint(); return flash(`unlinked · ${n}`); }
+    if (a === "merge") {
+      const to = CL.get(c.merge);
+      segs.forEach((g) => g.turns.forEach((x) => { if (x.cl === c.id) x.cl = to.id; }));
+      CL.delete(c.id); if (D.sel === c.id) D.sel = to.id;
+      D.fix = null; paint(); return flash(`merged into ${spOption(to)}`);
+    }
+    if (a === "samples") { // bounded 8s previews: this voice, then the merge candidate
+      const heads = [c.id, c.merge].map((id) => D.seg.turns.find((x) => x.cl === id)?.start).filter((x) => x != null);
+      const run = (i) => { if (!D) return; if (i >= heads.length) { if (D.playing) togglePlay(); return; } setCur(heads[i]); if (!D.playing) togglePlay(); D.sampleT = setTimeout(() => run(i + 1), 8000); };
+      clearTimeout(D.sampleT); return run(0);
+    }
+    if (a === "commit") {
+      if (f.scope === "line") { if (f.move == null) return; D.seg.turns[f.ti].cl = f.move; D.fix = null; paint(); return flash(`line moved · ${spName(CL.get(f.move))}`); }
+      if (f.pick === "new") { const p = { id: Math.max(...SAVED.map((x) => x.id)) + 1, name: f.q.trim(), samples: 1 }; SAVED.push(p); link(c, p.id); D.fix = null; paint(); return flash(`named · ${p.name}`); }
+      if (f.pick != null) { link(c, f.pick); D.fix = null; paint(); return flash(`linked · ${person(c.person).name}`); }
+    }
+  };
+  // waveform hover: who held the floor at that point (names resolve live)
+  const showWaveTip = (x) => {
+    const wave = D.el.querySelector(".tl-wave"), tip = wave.querySelector(".tl-wave__tip"), w = wave.clientWidth;
+    x = clamp(x, 0, w);
+    const s = (x / w) * D.seg.dur, t = D.seg.turns.find((u) => s >= u.start && s <= u.end), c = t && CL.get(t.cl);
+    tip.innerHTML = c ? `${markHtml(D.marks.get(c.id), spUnnamed(c))}${esc(spName(c))}<span class="num">${mmss(s)}</span>` : `no speech<span class="num">${mmss(s)}</span>`;
+    tip.style.left = `${x}px`; tip.hidden = false;
+  };
+
+  const setCur = (s, follow = true) => {
+    if (!D) return;
+    const { seg, el } = D;
+    D.cur = clamp(s, 0, seg.dur);
+    el.querySelector("[data-cur]").textContent = mmss(D.cur);
+    el.querySelector(".tl-wave input").value = D.cur;
+    el.querySelector(".tl-wave__head").style.left = `${(D.cur / seg.dur) * 100}%`;
+    el.querySelectorAll(".tl-wave__bar").forEach((b) => b.classList.toggle("is-played", +b.dataset.s <= D.cur));
+    const ti = seg.turns.findIndex((t) => D.cur >= t.start && D.cur <= t.end + 1);
+    el.querySelectorAll(".tl-turn").forEach((t, i) => {
+      t.classList.toggle("is-active", i === ti);
+      t.querySelectorAll(".tl-w").forEach((w, wi) => {
+        const ww = seg.turns[i].words[wi];
+        w.classList.toggle("is-now", i === ti && D.cur >= ww.s && D.cur < ww.e);
+        w.classList.toggle("is-done", ww.e <= D.cur && !(i === ti && D.cur >= ww.s && D.cur < ww.e));
+      });
+    });
+    if (follow && ti !== D.lastTurn && ti >= 0) {
+      const r = el.querySelector(".tl-reader"), t = el.querySelectorAll(".tl-turn")[ti];
+      if (t.offsetParent) r.scrollTo({ top: t.offsetTop - 8, behavior: "smooth" }); // filtered-out turns don't steal the scroll
+    }
+    D.lastTurn = ti;
+  };
+  const togglePlay = () => {
+    if (!D) return;
+    D.playing = !D.playing;
+    const b = D.el.querySelector(".tl-play");
+    b.setAttribute("aria-pressed", String(D.playing)); b.setAttribute("aria-label", D.playing ? "Pause" : "Play");
+    b.innerHTML = ico(D.playing ? "pause" : "play");
+    if (D.playing) { let last = performance.now(); const d0 = D; const step = (now) => { if (!D || D !== d0 || !D.playing) return; setCur(D.cur + (now - last) / 1000); last = now; if (D.cur >= D.seg.dur) togglePlay(); else requestAnimationFrame(step); }; requestAnimationFrame(step); }
+  };
+  slot.addEventListener("click", (e) => {
+    if (!D) return;
+    const w = e.target.closest(".tl-w"); if (w) { setCur(+w.dataset.s); return; }
+    const sp = e.target.closest("[data-sp]");
+    if (sp) { const id = +sp.dataset.sp; D.sel = D.sel === id ? null : id; if (D.sel == null) D.only = false; paint(); return; }
+    const fx = e.target.closest("[data-fix]"); if (fx) { openFix(+fx.dataset.fix); return; }
+    const sb = e.target.closest(".tl-fix .mx-seg button");
+    if (sb) { if (D.fix.scope !== sb.value) { D.fix.scope = sb.value; paintFix(); } return; }
+    const ac = e.target.closest("[data-fx]"); if (ac) { if (!ac.disabled) fixAct(ac.dataset.fx, ac); return; }
+    const b = e.target.closest("[data-d]"); if (!b) return;
+    const a = b.dataset.d;
+    if (a === "close") closeDrawer();
+    else if (a === "play") togglePlay();
+    else if (a === "only") { D.only = !D.only; paint(); }
+    else if (a === "ts") { const on = D.el.dataset.ts !== "on"; D.el.dataset.ts = on ? "on" : "off"; b.setAttribute("aria-pressed", String(on)); }
+    else if (a === "expand") { const x = !D.el.classList.contains("tl-drawer--expanded"); D.el.classList.toggle("tl-drawer--expanded", x); D.el.querySelector('.tl-dh [data-d="expand"]').setAttribute("aria-pressed", String(x)); D.el.querySelector('.tl-dh [data-d="expand"]').textContent = x ? "collapse" : "expand"; D.el.querySelector(".tl-expand-cta").hidden = x; }
+    else if (a === "rerun") { const st = D.el.querySelector(".tl-dh__status"); st.textContent = "queued · re-transcribing"; setTimeout(() => D && (st.textContent = statusText()), 1400); }
+  });
+  slot.addEventListener("input", (e) => {
+    if (!D) return;
+    if (e.target.matches(".tl-wave input")) setCur(+e.target.value);
+    else if (e.target.id === "tl-fix-q") { D.fix.q = e.target.value; paintPeople(); paintCommit(); }
+  });
+  slot.addEventListener("change", (e) => {
+    if (!D?.fix || !e.target.matches(".tl-fix input[type=radio]")) return;
+    const v = e.target.value;
+    if (e.target.name === "fix-move") D.fix.move = +v; else D.fix.pick = v === "new" ? "new" : +v;
+    paintCommit();
+  });
+  slot.addEventListener("pointermove", (e) => { if (D && e.target.closest(".tl-wave")) showWaveTip(e.clientX - D.el.querySelector(".tl-wave").getBoundingClientRect().left); });
+  slot.addEventListener("pointerout", (e) => { if (D && e.target.closest(".tl-wave") && !e.relatedTarget?.closest?.(".tl-wave")) D.el.querySelector(".tl-wave__tip").hidden = true; });
+  slot.addEventListener("keydown", (e) => {
+    if (!D) return;
+    if (e.target.matches(".tl-fix input")) { if (e.key === "Enter") { e.preventDefault(); fixAct("commit"); } return; } // typing / radio arrows stay local
+    if (e.key === " " && !e.target.matches("button")) { e.preventDefault(); togglePlay(); }
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setCur(D.cur + (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 30 : 5)); }
+  });
+  lane.addEventListener("click", (e) => {
+    const b = e.target.closest(".tl-abar"); if (!b) return;
+    e.stopPropagation();
+    const seg = segs.find((g) => g.id === +b.dataset.seg);
+    if (D && D.seg === seg) closeDrawer(); else openDrawer(seg);
+  });
+  const playMoment = () => { const seg = segAtFrame(active); if (seg) openDrawer(seg, (frames[active].t - seg.start) / 1000); };
+  $("#tl-moment").addEventListener("click", playMoment);
+
+  // ------------------------------------------------------------ keyboard
+  window.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
+    const tg = e.target;
+    const typing = tg.matches?.("input, textarea, [contenteditable]");
+    if (e.key === "Escape") {
+      if (D) { if (D.fix) closeFix(); else closeDrawer(); e.stopPropagation(); return; } // layered: repair panel, then drawer
+      if (jpop.hasAttribute("data-open")) { openJumper(false); return; }
+      return;
+    }
+    const suppressed = typing || tg.closest?.(".tl-jpop, .tl-framemenu, .tl-drawer");
+    if (suppressed || e.metaKey || e.ctrlKey || e.altKey) return;
+    const key = e.key.toLowerCase();
+    const acts = { j: () => !jpop.hasAttribute("data-open") && openJumper(true), l: () => scrollToIdx(0), o: toggleOcr, r: refresh, c: copyFrame, d: downloadFrame, p: playMoment };
+    if (acts[key]) { e.preventDefault(); acts[key](); return; }
+    const onRail = tg === rail;
+    const m = { ArrowLeft: e.shiftKey ? 10 : 1, ArrowRight: e.shiftKey ? -10 : -1 };
+    if (onRail) Object.assign(m, { PageUp: -10, PageDown: 10, Home: -N, End: N });
+    if (e.key in m) { e.preventDefault(); scrollToIdx(active + m[e.key]); }
+  });
+
+  // ================================================================ mockup states
+  // One ?state=<name> per condition the real app can be in (+ the redesign's new ones). Each reuses kit
+  // States components only. Switcher at the bottom of the page reloads with ?state= (keeps &theme=).
+  const sv = (id, sz = 15) => `<svg width="${sz}" height="${sz}"><use href="#i-${id}"/></svg>`;
+  const notice = (tone, icon, title, text = "", acts = "") => `<div class="mx-notice"${tone ? ` data-tone="${tone}"` : ""}><span class="mx-notice__icon">${sv(icon)}</span><b class="mx-notice__title">${title}</b>${text ? `<p class="mx-notice__text">${text}</p>` : ""}${acts ? `<div class="mx-notice__acts">${acts}</div>` : ""}</div>`;
+  const empty = (mod, tone, icon, title, text = "", acts = "", extra = "") => `<div class="mx-empty${mod ? ` mx-empty--${mod}` : ""}"${tone ? ` data-tone="${tone}"` : ""}><span class="mx-empty__glyph">${sv(icon, mod === "compact" ? 14 : 18)}</span><h4 class="mx-empty__title">${title}</h4>${text ? `<p class="mx-empty__text">${text}</p>` : ""}${extra}${acts ? `<div class="mx-empty__acts">${acts}</div>` : ""}</div>`;
+  const inline = (tone, icon, text, act = "") => `<span class="mx-inline"${tone ? ` data-tone="${tone}"` : ""}>${icon === "spin" ? `<span class="mx-spin mx-spin--sm"></span>` : sv(icon, 13)}${text}${act}</span>`;
+  const btn = (label, { cls = "", icon = "", href = "", dis = false, busy = false } = {}) => {
+    const inner = `${busy ? `<span class="mx-spin mx-spin--sm"></span>` : icon ? sv(icon, 13) : ""}${label}`;
+    return href ? `<a class="mx-btn mx-btn--sm ${cls}" href="${href}">${inner}</a>` : `<button type="button" class="mx-btn mx-btn--sm ${cls}"${dis ? " disabled" : ""}${busy ? ' aria-busy="true"' : ""}>${inner}</button>`;
+  };
+  const toSettings = (label = "Turn on in Settings →", hash = "") => btn(label, { cls: "mx-btn--ghost", href: `settings.html${hash}` });
+  const SYS_PERM = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+  // --- status bar (SHELL.md › Status bar) ---
+  const sbBtn = (id, label, tip, dis = "") => `<button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="${label}" data-tip="${tip}" data-tip-pos="top" ${dis}>${sv(id, 11)}</button>`;
+  const recordBtn = (dis = "") => `<button class="mx-btn mx-btn--sm" style="--_h:22px" data-tip="Start recording  ⌥⌘R" data-tip-pos="top" ${dis}><svg width="10" height="10"${dis ? "" : ' style="color:var(--app-danger)"'}><use href="#i-record"/></svg>Record</button>`;
+  const RIGHT = `<span>today <span class="num">4h 41m</span></span><span class="mx-sep"></span><span class="num">1.2 GB</span><span class="mx-sep"></span><span>local only</span>`;
+  const SP = `<span class="mx-spacer"></span>`;
+  // Keyboard help (decision 24): the last thing in the status bar, in every state. Rows mirror the app's
+  // global-shortcuts.ts + the Timeline's own DASHBOARD_SHORTCUTS; in the app the list is live and per-surface.
+  const KEYS = [
+    ["Here", [["Recall anything", "⌘K"], ["Ask", "⌘J"], ["Timeline · Insights", "⌘1 ⌘2"], ["Settings", "⌘,"], ["This list", "/"]]],
+    ["Anywhere", [["Quick Recall", "⌥⌘Space"], ["Start or stop recording", "⌥⌘R"], ["Pause or resume", "⌥⌘P"], ["Show or hide Mnema", "⌥⌘M"]]],
+    ["Timeline", [["Older · newer frame", "← →"], ["10 frames at a time", "⇧← ⇧→"], ["Jump to a time", "J"], ["Latest", "L"], ["Play this moment", "Space"], ["Show OCR", "O"], ["Refresh", "R"], ["Copy · download frame", "C D"]]],
+    ["While not recording", [["Screen · mic · system for the next recording", "1 2 3"]]],
+  ];
+  const HELP = `<div class="mx-pop-anchor"><button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" style="--_h:22px" data-pop="keys" aria-haspopup="dialog" aria-expanded="false" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts · /" data-tip-pos="top"><svg width="14" height="14"><use href="#i-help"/></svg></button>
+    <div class="mx-pop mx-pop--up mx-keys" id="keys" role="dialog" aria-label="Keyboard shortcuts"><div class="mx-pop__head"><span class="mx-kicker">Keyboard shortcuts</span><span class="mx-spacer"></span><a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-shortcuts">Rebind the global ones</a></div>
+    <div class="mx-keys__cols">${KEYS.map(([g, rows]) => `<div class="mx-keys__grp"><span class="mx-label">${g}</span><ul>${rows.map(([l, k]) => `<li><span>${l}</span><span class="mx-keys__k">${k.split(" ").map((x) => `<kbd>${x}</kbd>`).join("")}</span></li>`).join("")}</ul></div>`).join("")}</div></div></div>`;
+  const ln = (src, label, mod, small = "", tip = "") => `<span class="mx-lane mx-lane--${src} mx-lane--${mod}"${tip ? ` data-tip="${tip}" data-tip-pos="top"` : ""}>${label}${small ? ` <small>${small}</small>` : ""}</span>`;
+  const lanes = (s = ["on"], m = ["on"], y = ["on"]) => ln("screen", "screen", ...s) + ln("mic", "mic", ...m) + ln("sysaudio", "system", ...y);
+  const tog = (src, label, on, extra = "", small = "", dis = "") => `<button class="mx-lane mx-lane--${src}${extra}" aria-pressed="${on}" ${dis}>${label}${small ? ` <small>${small}</small>` : ""}</button>`;
+  const togs = (dis = "", screen = "") => (screen || tog("screen", "screen", true, "", "", dis)) + tog("mic", "mic", true, "", "", dis) + tog("sysaudio", "system", true, "", "", dis);
+  const running = (pause = sbBtn("pause", "Pause", "Pause recording")) => `<span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num" id="tl-rec">01:39:07</span></span>${pause}${sbBtn("stop", "Stop", "Stop recording  ⌥⌘R")}<span class="mx-sep"></span>`;
+  const notRec = (dis = "") => `<span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>${recordBtn(dis)}<span class="mx-sep"></span>`;
+  const SB = {
+    rec: running() + lanes() + SP + RIGHT,
+    off: notRec() + togs() + SP + RIGHT,
+    permission: notRec() + togs("", tog("screen", "screen", true, " mx-lane--blocked", "no permission")) + SP + `<a class="mx-flag" data-tone="warn" href="${SYS_PERM}">Screen Recording off · <b>Open System Settings</b></a>`,
+    readonly: notRec('aria-disabled="true"') + togs("disabled") + SP + `<a class="mx-flag" data-tone="danger" href="settings.html#s-license">read-only · <b>buy a license</b></a>`,
+    starting: `<span class="mx-rec mx-rec--starting"><span class="mx-spin mx-spin--sm"></span>STARTING…</span>${sbBtn("stop", "Stop", "Stop", "disabled")}<span class="mx-sep"></span>` + lanes(["on"], ["starting"], ["starting"]) + SP + RIGHT,
+    idle: running() + lanes(["paused", "idle", "Screen: paused — nothing changing on screen"]) + SP + RIGHT,
+    pausedIdle: `<span class="mx-rec mx-rec--paused"><span class="mx-rec__dot"></span>PAUSED · idle</span>${sbBtn("pause", "Pause the whole session", "Pause the whole session")}${sbBtn("stop", "Stop", "Stop recording  ⌥⌘R")}<span class="mx-sep"></span>` + lanes(["paused"], ["paused"], ["paused"]) + SP + `<span>resumes when you’re back</span>`,
+    pausedUser: `<span class="mx-rec mx-rec--paused"><span class="mx-rec__dot"></span>PAUSED <span class="num">00:12</span></span>${sbBtn("play", "Resume", "Resume recording")}${sbBtn("stop", "Stop", "Stop recording  ⌥⌘R")}<span class="mx-sep"></span>` + lanes(["paused"], ["paused"], ["paused"]) + SP + RIGHT,
+    lowDisk: `<span class="mx-rec mx-rec--suspended"><span class="mx-rec__dot"></span>PAUSED · low disk</span>${sbBtn("play", "Resume", "Resumes on its own once space frees up", "disabled")}${sbBtn("stop", "Stop", "Stop recording  ⌥⌘R")}<span class="mx-sep"></span>` + lanes(["paused"], ["paused"], ["paused"]) + SP + `<a class="mx-flag" data-tone="warn" href="settings.html#s-storage">free up space · <b>resumes on its own</b></a>`,
+    stopped: `<span class="mx-rec mx-rec--stopped"><span class="mx-rec__dot"></span>STOPPED · disk full</span>${recordBtn()}<span class="mx-sep"></span>` + togs() + SP + `<a class="mx-flag" data-tone="danger" href="settings.html#s-storage"><b>Open Storage</b></a>`,
+    display: running() + lanes(["waiting", "display asleep", "Screen resumes when the display is back"]) + SP + RIGHT,
+    privacyRetry: running() + lanes(["error", "stopped"], ["on"], ["on"]) + SP + `<span class="mx-flag" data-tone="warn" data-tip="The privacy filter couldn't be applied. Mnema is retrying. Microphone and system audio keep recording." data-tip-pos="top">privacy filter failed · <b>retrying</b></span>`,
+    privacyRestart: running() + lanes(["error", "stopped"]) + SP + `<button class="mx-flag" data-tone="danger">restart to resume screen · <b>Restart</b></button>`,
+    sysBlocked: running() + lanes(["on"], ["on"], ["blocked", "possibly blocked", "No system sound has reached Mnema yet. Check Screen &amp; System Audio Recording."]) + SP + `<a class="mx-flag" data-tone="info" href="${SYS_PERM}">no system sound yet · <b>Open System Settings</b></a>`,
+    sysReconnect: running() + lanes(["on"], ["on"], ["waiting", "reconnecting", "Output device changed — reconnecting"]) + SP + RIGHT,
+    screenOff: running() + lanes(["off"]) + SP + RIGHT,
+    engineSetup: running() + lanes() + SP + `<a class="mx-engine" href="settings.html#s-providers" data-tip="No AI provider set up — Insights shows capture-only views" data-tip-pos="top">engine <b>not set up</b></a><span class="mx-sep"></span>` + RIGHT,
+    engineOffline: running() + lanes() + SP + `<a class="mx-engine mx-engine--error" href="settings.html#s-providers" data-tip="Can't reach ChatGPT — resumes on its own. Your sign-in is fine." data-tip-pos="top">engine <b>offline</b></a><span class="mx-sep"></span>` + RIGHT,
+  };
+  const BANNER = {
+    lowDisk: `<div class="mx-banner" data-tone="warn" role="status"><p><b>Recording paused — your disk is almost full.</b> Free up space and it resumes on its own.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-storage">Open Storage</a></div></div>`,
+    readonly: `<div class="mx-banner" data-tone="danger" role="alert"><p><b>Your free trial has ended.</b> Everything you recorded stays here and searchable; new recording is paused.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-license">Buy a license</a><a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-license">Enter license</a></div></div>`,
+    trial: `<div class="mx-banner" data-tone="warn" role="status"><p><b>Free trial ends in 3 days.</b> Your history stays searchable after; only new recording pauses.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-license">Buy Mnema</a><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss">${sv("x", 13)}</button></div></div>`,
+  };
+  const banner = (k) => { const w = $(".mx-window"); w.insertBefore(Object.assign(document.createElement("div"), { innerHTML: BANNER[k] }).firstElementChild, $("main.mx-body")); };
+  const sb = (k) => { $("#tl-sb").innerHTML = SB[k] + HELP; };
+  document.addEventListener("keydown", (e) => { // / and ? open the same popover (global-shortcuts.ts toggleShortcutsHelp)
+    if ((e.key === "/" || e.key === "?") && !e.target.closest("input, textarea, [contenteditable]")) { e.preventDefault(); $("#keys")?.toggleAttribute("data-open"); }
+  });
+
+  // --- page slots ---
+  const cover = (html) => { const c = $("#tl-cover"); c.innerHTML = html; c.hidden = false; };
+  const stageNotice = (html) => { $("#tl-notice").innerHTML = html; };
+  // Permission helper window (decision 20): every "Open System Settings" link also floats it; drawn fixed here.
+  const HLIST = { Privacy_ScreenCapture: "Screen Recording", Privacy_Microphone: "Microphone", Privacy_AudioCapture: "Screen & System Audio Recording", Privacy_Accessibility: "Accessibility" };
+  const helper = (pane = "Privacy_ScreenCapture") => { const h = $("#tl-helper"); h.hidden = false; h.dataset.state = "waiting";
+    $("#tl-helper-title").textContent = `Turn on Mnema in the ${HLIST[pane] ?? HLIST.Privacy_ScreenCapture} list`;
+    $("#tl-helper-state").innerHTML = `<span class="mx-spin mx-spin--sm"></span>Waiting for the switch — this closes by itself`; };
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest('a[href^="x-apple.systempreferences"]'); if (a) { e.preventDefault(); return helper(a.getAttribute("href").split("?")[1]); }
+    if (e.target.closest('[data-act="dismiss-helper"]')) $("#tl-helper").hidden = true;
+  });
+  const ocrstat = (html) => { const o = $("#tl-ocrstat"); o.innerHTML = html; o.hidden = false; $("#tl-ocr-hint").hidden = true; };
+  const noFrames = (label = "No frames yet") => {
+    tl.classList.add("tl--empty"); track.innerHTML = ""; lane.innerHTML = ""; // app: placeholder rail, empty lane
+    $("#tl-jump-day").textContent = label; $("#tl-jump-time").hidden = true; jbtn.disabled = true;
+    for (const id of ["#tl-ocr", "#tl-moment"]) $(id).disabled = true;
+    $("#tl-moment").hidden = true; $(".tl-stage-actions").hidden = true;
+  };
+  const ocrShow = (label = "hide OCR") => { ocrOn = true; $("#tl-ocr").setAttribute("aria-pressed", "true"); syncOcrChrome(); $("#tl-ocr-label").textContent = label; };
+  const skelFrame = `<div class="mx-skel mx-skel--thumb" aria-busy="true"><span class="mx-sr">Loading frames</span></div>`;
+  const sysSeg = segs.find((g) => g.source === "sys" && g.kind === "video"), micSeg = segs[0];
+
+  // --- drawer states (AudioDrawer + DrawerStatePanels + DrawerHeader pill) ---
+  const voiceTurns = (seg) => seg.turns.map((t) => `<div class="tl-turn"><div class="tl-gutter"><span class="tl-who--plain">${markHtml({ c: "var(--app-text-subtle)", shape: "circle" }, true)}Voice</span><span class="tl-ts">${fmtTime(seg.start + t.start * 1000)}</span></div><p class="tl-para">${esc(t.text)}</p></div>`).join("");
+  const skelTurns = `<div aria-busy="true"><span class="mx-sr">Loading transcript</span>${Array.from({ length: 4 }, () => `<div class="tl-skturn"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div></div>`).join("")}</div>`;
+  const drawer = ({ seg = micSeg, at = 12, status, tone = "", strip, panel, top, voice, run, noPlay, model = true, modelLabel } = {}) => {
+    openDrawer(seg, at);
+    const el = D.el;
+    if (status != null) { const st = el.querySelector(".tl-dh__status"); st.className = `mx-chip tl-dh__status${tone ? ` mx-chip--${tone}` : ""}`; st.innerHTML = status; }
+    if (run) { const r = el.querySelector('[data-d="rerun"]'); r.textContent = run.label; r.disabled = !!run.dis; if (run.tip) r.dataset.tip = run.tip; }
+    if (strip !== undefined) { const s = el.querySelector(".tl-spk"); if (strip === null) s.remove(); else s.innerHTML = `<span class="tl-spk__lbl">Speakers</span>${strip}`; }
+    if (panel || voice || top) {
+      D.frozen = true;
+      const r = el.querySelector(".tl-reader");
+      r.innerHTML = (top ? `<div class="tl-panel tl-panel--top">${top}</div>` : "") + (panel ? `<div class="tl-panel">${panel}</div>` : voice ? voiceTurns(D.seg) : r.innerHTML);
+      if (panel) el.querySelector(".tl-expand-cta").hidden = true;
+      r.scrollTo({ top: 0, behavior: "instant" });
+    }
+    if (strip !== undefined) el.querySelectorAll(".tl-wave__bar").forEach((b) => b.style.removeProperty("--bar")); // no speakers → neutral waveform
+    const ml = el.querySelector('[data-tip^="Transcribed with"]');
+    if (!model) ml.remove(); else if (modelLabel) { ml.textContent = modelLabel; ml.dataset.tip = "Queued for Deepgram Nova-3 (cloud)"; }
+    if (noPlay) { const p = el.querySelector(".tl-play"); p.disabled = true; el.querySelector(".tl-wave input").disabled = true; }
+  };
+  const stripSkel = `<span class="mx-skel" style="width:120px;height:14px;min-height:0;margin-right:10px"></span><span class="mx-skel" style="width:96px;height:14px;min-height:0;margin-right:10px"></span>`;
+
+  // --- jumper states ---
+  const jumper = (fn) => { openJumper(true); fn(); };
+  const times = (html) => { $("#tl-jpop .tl-times__scroll").innerHTML = `<div class="tl-times__msg">${html}</div>`; $("#tl-jpop .tl-times__head .num").textContent = ""; $('#tl-jpop [data-j="daylatest"]').disabled = true; };
+  const jfoot = (html) => { const f = $("#tl-jpop .tl-jpop__foot"); f.className = "tl-jpop__foot"; f.innerHTML = html; };
+
+  const STATES = {
+    "Page": {
+      default: ["Recording · live (default)", () => {}],
+      loading: ["First load — skeleton", () => { noFrames("Loading…"); cover(skelFrame); $("#tl-lanenote").innerHTML = inline("", "spin", "Loading audio…"); sb("off"); }],
+      "first-run": ["Never recorded", () => { noFrames(); sb("off");
+        cover(empty("center", "", "timeline", "Nothing recorded yet", "Your timeline fills in as Mnema captures your screen, microphone and system audio — all on this Mac.", `<button type="button" class="mx-btn mx-btn--primary">${sv("record", 12)}Start recording<kbd>⌥⌘R</kbd></button>`)); }],
+      starting: ["Recording started — no frames yet", () => { noFrames(); sb("starting");
+        cover(empty("center", "", "timeline", "Recording started", "Your first frames appear here in a moment.", "", `<span class="mx-inline">${`<span class="mx-spin mx-spin--sm"></span>`}Waiting for the first frame…</span>`)); }],
+      "load-error": ["Timeline failed to load", () => { noFrames("No frames"); sb("off");
+        cover(empty("center", "danger", "alert", "Couldn’t load your timeline", "The database didn’t answer: database is locked. Your recordings are safe.", btn("Retry", { icon: "retry" }))); }],
+      stale: ["Refresh failed — stale frames", () => { stage.classList.add("is-stale");
+        stageNotice(notice("warn", "alert", "Couldn’t refresh the timeline", "Showing what was already loaded. New frames appear once it reconnects.", btn("Retry", { icon: "retry" }))); }],
+      refreshing: ["Refresh in flight", () => { const b = $("#tl-refresh"); b.disabled = true; b.setAttribute("aria-busy", "true"); b.innerHTML = `<span class="mx-spin mx-spin--sm"></span>refreshing…`; }],
+      "not-recording": ["History, not recording", () => { sb("off"); }],
+      permission: ["Screen Recording permission missing", () => { sb("permission");
+        stageNotice(notice("warn", "lock", "Screen Recording is off for Mnema", "macOS blocks screen capture until you allow it. Your earlier frames are still here.", btn("Open System Settings", { icon: "external", href: SYS_PERM }))); }],
+      "permission-helper": ["Permission missing · helper floating beside System Settings", () => { STATES.Page.permission[1](); helper(); }],
+      "screen-off": ["Screen off — audio-only session", () => { noFrames("No frames"); sb("screenOff");
+        const list = segs.slice(-4).reverse().map((g) => `<button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-openseg="${g.id}"><span class="mx-chip mx-chip--${g.source === "mic" ? "mic" : "sysaudio"}">${g.source === "mic" ? "mic" : "system"}</span><span class="num">${fmtShort(g.start)} – ${fmtShort(g.end)}</span></button>`).join("");
+        cover(empty("center", "off", "monitor", "Screen isn’t being recorded", "Microphone and system audio are. Open a recent segment to listen or read it.", toSettings("Record the screen too →", "#s-capture"), `<div class="tl-cover__list">${list}</div>`));
+        $("#tl-cover").addEventListener("click", (e) => { const b = e.target.closest("[data-openseg]"); if (b) openDrawer(segs.find((g) => g.id === +b.dataset.openseg)); }); }],
+      "display-asleep": ["Display asleep (screen waits, audio continues)", () => { sb("display");
+        stageNotice(notice("info", "monitor", "Display is asleep", "Screen capture resumes when it wakes. Microphone and system audio keep recording.")); }],
+      landed: ["Landed from Quick Recall — chip + one mark", () => landFromRecall("tap")],
+      "loading-more": ["Paging older frames", () => { scrollToIdx(N - 1, false); $("#tl-railnote").innerHTML = inline("", "spin", "Loading older frames…"); }],
+      "end-of-history": ["Start of history", () => { scrollToIdx(N - 1, false); $("#tl-railnote").innerHTML = inline("", "info", "Start of history · frames older than 30 days are removed"); }],
+    },
+    "Status bar": {
+      keys: ["Keyboard shortcuts popover (the ? at the far right)", () => { sb("rec"); $("#keys").setAttribute("data-open", ""); $('[data-pop="keys"]').setAttribute("aria-expanded", "true"); }],
+      "sb-off": ["Off · ready (lanes are toggles)", () => sb("off")],
+      "sb-permission": ["Off · permission missing", () => sb("permission")],
+      readonly: ["Off · read-only (trial ended) + banner", () => { sb("readonly"); banner("readonly"); }],
+      trial: ["Trial ending banner", () => banner("trial")],
+      "sb-starting": ["Starting", () => sb("starting")],
+      "sb-idle-source": ["Recording · screen idle", () => sb("idle")],
+      "paused-idle": ["Paused · idle", () => sb("pausedIdle")],
+      "paused-user": ["Paused · by you", () => sb("pausedUser")],
+      "low-disk": ["Suspended · low disk + banner", () => { sb("lowDisk"); banner("lowDisk"); }],
+      stopped: ["Stopped by the system · disk full", () => sb("stopped")],
+      "privacy-retry": ["Privacy filter failed · retrying", () => sb("privacyRetry")],
+      "privacy-restart": ["Privacy filter · restart needed", () => sb("privacyRestart")],
+      "sysaudio-blocked": ["System audio possibly blocked", () => sb("sysBlocked")],
+      "sysaudio-reconnecting": ["System audio reconnecting", () => sb("sysReconnect")],
+      "engine-setup": ["Engine not set up", () => sb("engineSetup")],
+      "engine-offline": ["Engine offline", () => sb("engineOffline")],
+    },
+    "Preview & frame": {
+      "preview-decoding": ["Preview decoding", () => cover(skelFrame.replace("Loading frames", "Decoding preview"))],
+      "preview-failed": ["Preview couldn’t be displayed", () => { $("#tl-framemenu").querySelectorAll('[data-act="copy"],[data-act="download"]').forEach((li) => li.setAttribute("aria-disabled", "true"));
+        cover(empty("center", "danger", "alert", "Preview couldn’t be displayed", "This frame’s image failed to decode after several attempts. Neighbouring frames are fine.", btn("Retry", { icon: "retry" }) + btn("Next frame", { cls: "mx-btn--ghost" }))); }],
+      "frame-missing": ["Frame file gone from disk", () => cover(empty("center", "warn", "disk", "This frame is no longer on disk", "Its recording file was moved or deleted outside Mnema. The rest of your history is untouched.", btn("Show nearest frame")))],
+      "frame-deleted": ["Active frame deleted (retention / delete recent)", () => stageNotice(`<div class="mx-notice" data-tone="info"><span class="mx-notice__icon">${sv("info")}</span><b class="mx-notice__title">This capture was deleted — showing the nearest frame.</b><div class="mx-notice__acts"><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss">${sv("x", 13)}</button></div></div>`)],
+      "menu-not-ready": ["⋯ menu while preview isn’t ready", () => { $("#tl-framemenu").querySelectorAll('[data-act="copy"],[data-act="download"]').forEach((li) => { li.setAttribute("aria-disabled", "true"); li.querySelector(".mx-menu__meta").textContent = "not ready"; }); $("#tl-framemenu").setAttribute("data-open", ""); }],
+      "toast-copied": ["Toast · copied", () => mx.toast(`Copied frame · Slack ${fmtTime(frames[0].t)}`, { ttl: 6e5 })],
+      "toast-copy-failed": ["Toast · copy failed", () => mx.toast("Couldn’t copy the frame — clipboard write was rejected", { tone: "danger", action: "Retry", ttl: 6e5 })],
+    },
+    "OCR": {
+      "ocr-running": ["Loading OCR", () => { const b = $("#tl-ocr"); b.setAttribute("aria-busy", "true"); b.querySelector("svg").style.display = "none"; $("#tl-ocr-label").innerHTML = `<span class="mx-spin mx-spin--sm"></span>Loading OCR…`; }],
+      "ocr-empty": ["No text on this frame", () => { ocrShow(); ocrstat(inline("", "scan", "No text detected on this frame")); }],
+      "ocr-reused": ["Text reused from an identical frame", () => { ocrShow(); paintOcr(); ocrstat(inline("info", "info", "Same screen as frame 4,812 — showing its text")); }],
+      "ocr-missing": ["No OCR for this frame yet", () => { ocrShow(); $("#tl-ocr-rerun").textContent = "run OCR"; ocrstat(inline("", "scan", "No OCR for this frame yet", btn("Run OCR", { cls: "mx-btn--ghost" }))); }],
+      "ocr-error": ["OCR failed", () => { ocrShow(); ocrstat(inline("danger", "alert", "OCR failed — Vision request timed out", btn("Retry", { cls: "mx-btn--ghost" }))); }],
+      "ocr-off": ["OCR turned off (saved text still viewable)", () => { ocrShow(); paintOcr(); const r = $("#tl-ocr-rerun"); r.disabled = true; r.dataset.tip = "OCR is off. Turn it on in Settings to run OCR again.";
+        $("#tl-ocr").dataset.tip = "OCR is off. Saved OCR text can still be viewed.  O"; ocrstat(inline("off", "off", "OCR is off — new frames aren’t read", toSettings("Turn on in Settings →", "#s-ocr"))); }],
+      "ocr-unpositioned": ["Text found, can’t be positioned", () => { ocrShow("hide OCR"); ocrstat(inline("info", "info", "Text detected but can’t be positioned — use ⋯ → Copy text")); $("#tl-copytext").hidden = false; }],
+    },
+    "Audio lane": {
+      "audio-loading": ["Loading audio", () => { lane.innerHTML = ""; $("#tl-moment").hidden = true; $("#tl-lanenote").innerHTML = inline("", "spin", "Loading audio…"); }],
+      "audio-error": ["Audio failed to load", () => { lane.innerHTML = ""; $("#tl-moment").hidden = true; $("#tl-lanenote").innerHTML = inline("danger", "alert", "Audio unavailable — database is locked", btn("Retry", { cls: "mx-btn--ghost" })); }],
+      "audio-none": ["No audio in range", () => { lane.innerHTML = ""; $("#tl-moment").hidden = true; $("#tl-moment").hidden = true; $("#tl-lanenote").innerHTML = inline("", "wave", "No audio here — microphone and system audio were off"); }],
+    },
+    "Audio drawer": {
+      "drawer": ["Reader (transcribed, 5 speakers)", () => drawer()],
+      "drawer-loading": ["Transcript loading", () => drawer({ status: `<span class="mx-spin mx-spin--sm"></span>loading`, strip: stripSkel, panel: skelTurns, run: { label: "rerun", dis: true, tip: "Transcript is still loading" } })],
+      "drawer-processing": ["Still processing (system audio, stage 2 of 3)", () => drawer({ seg: sysSeg, status: `<span class="mx-spin mx-spin--sm"></span>transcribing`, strip: null, run: { label: "rerun", dis: true, tip: "Transcription is queued or still processing" },
+        panel: empty("", "", "wave", "Still working on this one", "Speech detection runs first, then transcription, then speaker analysis. The text appears as each stage lands — you don’t have to wait here.", "", `<div style="width:100%;max-width:420px"><div class="mx-progress__meta"><b>Transcribing</b><span>stage 2 of 3 · queued 40s ago</span></div><div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Transcribing"><i></i></div></div>`) })],
+      "drawer-waiting-network": ["Cloud provider unreachable (Deepgram)", () => drawer({ modelLabel: "deepgram nova-3", status: "waiting for network", tone: "warn", strip: null, run: { label: "rerun", dis: true, tip: "Queued — retries on its own" },
+        panel: notice("warn", "cloud-off", "Can’t reach Deepgram", "This segment is queued and transcribes on its own once Deepgram is reachable. Nothing is lost and no retry is used up.") + `<p class="tl-foot">queued 12 min ago · last try 2 min ago · connection timed out</p>` })],
+      "drawer-model-missing": ["Transcription model not installed", () => drawer({ status: "not transcribed", tone: "warn", model: false, strip: null, run: { label: "run", dis: true, tip: "Install or choose a transcription model first" },
+        panel: notice("warn", "download", "Parakeet TDT 0.6B v3 isn’t installed", "Audio isn’t transcribed until you install it or choose another model. You can still play this segment.", toSettings("Open Transcription settings", "#s-transcription").replace("mx-btn--ghost", "")) })],
+      "drawer-not-transcribed": ["No transcript yet (transcription on)", () => drawer({ status: "not transcribed", model: false, strip: null, run: { label: "run", tip: "Run transcription with current settings" },
+        panel: empty("", "", "wave", "Not transcribed yet", "There’s no transcript for this segment. Transcribing it uses your current settings and changes nothing else.", btn("Transcribe now")) })],
+      "drawer-transcription-off": ["Transcription turned off", () => drawer({ status: "not transcribed", model: false, strip: null, run: { label: "run", dis: true, tip: "Transcription is off. Turn it on in Settings." },
+        panel: notice("off", "off", "Transcription is off", "You can still play this segment. Turn transcription on to read and search what was said.", toSettings("Turn on in Settings →", "#s-transcription")) })],
+      "drawer-no-speech": ["No speech in segment", () => drawer({ seg: sysSeg, status: "no speech", strip: null,
+        panel: empty("", "", "wave", "No speech in this segment", `${mmss(sysSeg.dur)} of room tone. Nothing was transcribed because there was nothing to transcribe.`, btn("Play it anyway", { icon: "play" }) + btn("Rerun analysis", { cls: "mx-btn--ghost" }), `<p class="tl-foot">skipReason silent · audioPeak 0.004</p>`) })],
+      "drawer-failed": ["Transcription failed", () => drawer({ status: "failed", tone: "danger", strip: null,
+        panel: empty("", "danger", "alert", "This segment couldn’t be transcribed", "Parakeet stopped: the audio file ended before its header said it would.", btn("Retry transcription", { icon: "retry" }), `<p class="tl-foot">attempt 3 of 3 · chunkingMode safe_chunked · 5 chunks</p>`) })],
+      "drawer-rerun-failed": ["Rerun request failed", () => drawer({ top: inline("danger", "alert", "Couldn’t start a rerun — a job for this segment is already running.", btn("Retry", { cls: "mx-btn--ghost" })) })],
+      "drawer-playback-error": ["Audio file missing / won’t play", () => drawer({ noPlay: true, top: notice("danger", "alert", "Can’t play this segment", "microphone-0042.m4a is missing or unreadable. The transcript is still here.") })],
+    },
+    "Speakers": {
+      "speakers-running": ["Finding speakers", () => drawer({ status: `<span class="mx-spin mx-spin--sm"></span>finding speakers`, strip: stripSkel + inline("", "spin", "Separating voices — names appear when it finishes"), voice: true })],
+      "speakers-failed": ["Speaker analysis failed (words are here)", () => drawer({ status: "speaker analysis failed", tone: "danger", strip: null, voice: true,
+        top: notice("danger", "alert", "The words are here. The speakers aren’t.", "Speaker analysis stopped partway: CoreML model failed to load.", btn("Retry speaker analysis", { icon: "retry" })) })],
+      "speakers-none": ["No speaker turns found", () => drawer({ status: "transcribed", strip: inline("", "info", "No speaker turns found — speaker analysis skipped: no speech-level audio detected"), voice: true })],
+      "speakers-off": ["Speaker separation off", () => drawer({ status: "transcribed", strip: inline("off", "off", "Speaker separation is off", toSettings("Turn on in Settings →", "#s-speakers")), voice: true })],
+      "recognition-off": ["Voice recognition off (no suggestions)", () => { CL.forEach((c) => { c.sug = null; c.conf = null; if (c.auto) { c.person = null; c.auto = false; } }); drawer(); openFix(D.seg.turns.findIndex((t) => t.cl === 13));
+        $(".tl-fix__body").insertAdjacentHTML("afterbegin", inline("off", "off", "Voice recognition is off — Mnema won’t suggest names", toSettings("Turn on →", "#s-speakers"))); }],
+      "repair": ["Repair panel (suggestion)", () => { drawer(); openFix(D.seg.turns.findIndex((t) => t.cl === 13)); }],
+      "repair-saving": ["Repair · saving", () => { drawer(); openFix(D.seg.turns.findIndex((t) => t.cl === 15)); D.fix.q = "Arjun"; D.fix.pick = 5; paintFix();
+        const f = $(".tl-fix"); f.setAttribute("aria-busy", "true"); f.querySelectorAll("input, .tl-fix__body button").forEach((x) => (x.disabled = true));
+        const c = f.querySelector('[data-fx="commit"]'); c.disabled = true; c.innerHTML = `<span class="mx-spin mx-spin--sm"></span>Linking…`; }],
+      "repair-error": ["Repair · save failed", () => { drawer(); openFix(D.seg.turns.findIndex((t) => t.cl === 15)); D.fix.q = "Arjun"; D.fix.pick = 5; paintFix();
+        $(".tl-fix__foot").insertAdjacentHTML("beforebegin", `<div style="padding:0 16px 10px">${inline("danger", "alert", "Couldn’t save — the database was busy.", btn("Try again", { cls: "mx-btn--ghost" }))}</div>`); }],
+      "repair-no-people": ["Repair · no saved people yet", () => { SAVED.length = 0; CL.forEach((c) => { c.person = null; c.sug = null; c.auto = false; }); drawer(); openFix(0); }],
+    },
+    "Jumper": {
+      jump: ["Jumper open", () => openJumper(true)],
+      "jump-loading": ["Month loading", () => jumper(() => times(`<span class="mx-sr">Loading month</span><div aria-busy="true">${'<div class="mx-skel"></div>'.repeat(7)}</div>`))],
+      "jump-empty-day": ["Day with no frames", () => jumper(() => { sel = new Date(2026, 9, 4); renderJumper(); times(empty("compact", "", "calendar", "No frames on this day", "Mnema wasn’t recording.")); })],
+      "jump-error": ["Month failed to load", () => jumper(() => jfoot(inline("danger", "alert", "Couldn’t load October — database is locked.", btn("Retry", { cls: "mx-btn--ghost" }))))],
+      "jump-no-frame": ["Hour picked, nothing there", () => jumper(() => jfoot(inline("warn", "info", "No frame in that hour — pick another.")))],
+    },
+    "Notifications": {
+      notifs: ["Bell open", () => $("#notif").setAttribute("data-open", "")],
+      "notifs-warn": ["Bell · warning", () => { $(".mx-titlebar .mx-badge").dataset.tone = "warn"; $(".mx-notifs__head .num").textContent = "2";
+        $(".mx-notifs__list").insertAdjacentHTML("afterbegin", `<li class="mx-notif" data-tone="warn"><b class="mx-notif__title">Transcription model unavailable</b><time class="mx-notif__time">08:41</time><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss">${sv("x", 13)}</button><p class="mx-notif__text">Parakeet TDT 0.6B v3 is not available. Requested audio will not be transcribed until you install or choose an available model.</p><div class="mx-notif__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-transcription">Open settings</a></div></li>`);
+        $("#notif").setAttribute("data-open", ""); }],
+      "notifs-empty": ["Bell · all caught up", () => { $(".mx-notifs__list").innerHTML = ""; $(".mx-titlebar .mx-badge").remove(); $("#notif").setAttribute("data-open", ""); }],
+      "notifs-error": ["Bell · failed to load", () => { $(".mx-notifs__head").insertAdjacentHTML("afterend", `<div class="mx-notifs__error">${inline("danger", "alert", "Couldn’t load notifications.", btn("Retry", { cls: "mx-btn--ghost" }))}</div>`); $("#notif").setAttribute("data-open", ""); }],
+    },
+  };
+  const applyState = () => {
+    sb(REC ? "rec" : "off");
+    const sel2 = $("#tl-states");
+    sel2.innerHTML = Object.entries(STATES).map(([g, m]) => `<optgroup label="${g}">${Object.entries(m).map(([k, [label]]) => `<option value="${k}"${k === STATE ? " selected" : ""}>${label} · ${k}</option>`).join("")}</optgroup>`).join("");
+    sel2.addEventListener("change", () => { const q = new URLSearchParams(location.search); q.set("state", sel2.value); for (const k of ["drawer", "jump", "speaker", "sel", "only", "scope", "q", "wtip"]) q.delete(k); location.search = q.toString(); });
+    for (const m of Object.values(STATES)) if (m[STATE]) { m[STATE][1](); break; }
+  };
+
+  // ------------------------------------------------------------- boot
+  const boot = () => {
+    fit();
+    rail.scrollLeft = maxScroll();
+    lastScroll = rail.scrollLeft;
+    lane.style.transform = `translateX(${-rail.scrollLeft}px)`;
+    commit(0);
+    clearTimeout(settleTimer); showFrame(0, "exact");
+    rail.setAttribute("aria-valuemin", 1); rail.setAttribute("aria-valuemax", N);
+    // mockup test hooks (+ ?theme= in <head>; ?state=<name> = every UI state, see STATES / the switcher): ?jump=1 jumper open · ?drawer=1 audio drawer open
+    //   &sel=<cluster> speaker selected (+&only filter) · &speaker[=<cluster>] repair panel open (default 13: has a suggestion)
+    //   (+&scope=line, &q=<text>) · &wtip=<0..1> waveform tooltip shown. Clusters: 11 you(auto) 12 Priya 13 suggested 14 Mei 15 merge.
+    const P = new URLSearchParams(location.search);
+    if (P.has("jump")) openJumper(true);
+    if (P.has("drawer")) {
+      openDrawer(segs[0], 12);
+      if (P.has("sel")) { D.sel = +P.get("sel") || 12; D.only = P.has("only"); paint(); }
+      if (P.has("speaker")) {
+        const cid = +P.get("speaker") > 10 ? +P.get("speaker") : 13;
+        openFix(Math.max(0, segs[0].turns.findIndex((t) => t.cl === cid)));
+        if (P.get("scope") === "line") { D.fix.scope = "line"; paintFix(); }
+        if (P.has("q")) { D.fix.q = P.get("q"); paintFix(); }
+      }
+      if (P.has("wtip")) requestAnimationFrame(() => showWaveTip(+P.get("wtip") * D.el.querySelector(".tl-wave").clientWidth));
+    }
+    applyState();
+  };
+  new ResizeObserver(() => { fit(); if (active >= 0) { rail.scrollLeft = maxScroll() - active * SLOT; showFrame(active, "exact"); } }).observe(stage);
+  document.addEventListener("DOMContentLoaded", boot);
+  if (document.readyState !== "loading") boot();
+
+  // statusbar REC timer
+  let rec = 1 * 3600 + 39 * 60 + 7;
+  setInterval(() => { rec++; if ($("#tl-rec")) $("#tl-rec").textContent = [rec / 3600, (rec / 60) % 60, rec % 60].map((x) => String(Math.floor(x)).padStart(2, "0")).join(":"); }, 1000);
+})();
+</script>
+<!-- Permission helper — the app's own always-on-top, non-activating window (decision 20); drawn fixed here. -->
+<div class="mx-helper" id="tl-helper" hidden data-state="waiting"><span class="mx-helper__icon"><img src="../../../apps/desktop/src-tauri/icons/128x128.png" alt=""></span>
+  <div><div class="mx-helper__title" id="tl-helper-title"></div><div class="mx-helper__state" id="tl-helper-state"></div></div>
+  <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-act="dismiss-helper" aria-label="Dismiss"><svg width="14" height="14"><use href="#i-x"/></svg></button></div>
+</body>
+</html>

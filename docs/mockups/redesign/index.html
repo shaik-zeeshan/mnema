@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — redesign kit</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Gallery-only layout. Pages should not need anything like this. */
+    .mx-window.gallery { height: auto; grid-template-rows: var(--mx-titlebar-h) auto 30px; }
+    .g-wrap { padding: var(--s-7) var(--s-7) var(--s-8); display: grid; gap: var(--s-8); }
+    .g-hero { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--s-7); align-items: start; }
+    .g-hero .mx-display { max-width: 16ch; margin: var(--s-3) 0 var(--s-4); }
+    .g-hero__acts { display: flex; gap: var(--s-2); margin-top: var(--s-5); }
+    .g-principles { counter-reset: p; list-style: none; margin: 0; padding: 0; }
+    .g-principles li { counter-increment: p; display: grid; grid-template-columns: 32px 1fr; padding: 9px 0;
+      border-top: 1px solid var(--mx-hairline); color: var(--app-text); }
+    .g-principles li::before { content: counter(p, decimal-leading-zero); font: 500 var(--text-xs)/1.9 var(--font-mono); color: var(--app-text-subtle); }
+    .g-principles b { color: var(--app-text-strong); font-weight: 600; }
+    .g-pages { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-3); }
+    .g-page { display: grid; gap: var(--s-2); padding: var(--s-4); text-decoration: none; color: inherit; }
+    .g-page .mx-h3 { display: flex; align-items: center; gap: var(--s-2); }
+    .g-page .arrow { margin-left: auto; color: var(--app-text-subtle); transition: transform var(--t-med) var(--ease-expo), color var(--t-fast); }
+    .g-page:hover .arrow { transform: translateX(3px); color: var(--app-accent); }
+    .g-page .mx-prose { font-size: var(--text-base); }
+    .g-sectionhead { display: flex; align-items: baseline; gap: var(--s-4); margin-bottom: var(--s-4); }
+    .g-sectionhead .mx-prose { font-size: var(--text-base); }
+    .g-panes { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-4); }
+    .g-pane { background: var(--app-bg); color: var(--app-text); border: 1px solid var(--app-border); border-radius: var(--r-xl);
+      padding: var(--s-5); display: grid; gap: var(--s-6); align-content: start; min-width: 0; }
+    .g-row { display: grid; gap: var(--s-3); min-width: 0; }
+    .g-row > .mx-label:first-child { display: flex; justify-content: space-between; gap: var(--s-3); padding-bottom: 6px; border-bottom: 1px solid var(--mx-hairline); color: var(--app-text-strong); font-weight: 600; }
+    .g-row > .mx-label:first-child span { font: 400 var(--text-xs)/1.4 var(--font-mono); color: var(--app-text-subtle); font-weight: 400; }
+    .g-flex { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+    .g-note { font-size: var(--text-base); color: var(--app-text-muted); margin: 0; }
+    .g-note code { font-size: var(--text-sm); color: var(--app-text); }
+    /* type scale */
+    .g-type { display: grid; grid-template-columns: 92px 1fr; align-items: baseline; row-gap: 10px; column-gap: var(--s-3); }
+    .g-type > .mx-kicker { display: block; white-space: nowrap; }
+    .g-type > .mx-kicker::before { display: none; }
+    .g-type small { display: block; margin-top: 3px; font: 400 var(--text-xs)/1.3 var(--font-mono); color: var(--app-text-subtle); letter-spacing: 0; text-transform: none; }
+    /* button matrix */
+    .g-matrix { display: grid; grid-template-columns: 64px repeat(5, max-content); align-items: center; justify-items: start; gap: 10px 14px; }
+    .g-matrix > .mx-kicker::before, .g-matrix > .g-colh { display: none; }
+    .g-matrix .g-colh { display: block; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .g-focus { outline: 2px solid var(--app-accent) !important; outline-offset: 2px; }
+    /* date stages leave room for the open popovers */
+    .g-date-stage, .g-date-stage--range { align-content: start; }
+    .g-date-stage { min-height: 430px; }
+    .g-date-stage--range { min-height: 440px; }
+    /* static titlebar states */
+    .g-tbs { display: grid; gap: var(--s-3); }
+    .g-tb { border: 1px solid var(--app-border-strong); border-radius: var(--r-lg); overflow: hidden; }
+    .g-tb .mx-titlebar { border-bottom: 0; }
+    .g-tb__cap { display: flex; gap: var(--s-3); align-items: baseline; }
+    .g-tb .mx-cmd.g-focused { background: var(--app-surface-subtle); box-shadow: inset 0 0 0 1px var(--app-border-hover), var(--app-ring); }
+    .g-tb .mx-cmd[data-mode="ask"].g-focused { box-shadow: inset 0 0 0 1px var(--app-accent-border), var(--app-ring); }
+    .g-tb .mx-cmd.g-focused .mx-cmd__k-idle { display: none; }
+    .g-tb .mx-cmd.g-focused[data-mode="recall"] .mx-cmd__k-recall, .g-tb .mx-cmd.g-focused[data-mode="ask"] .mx-cmd__k-ask { display: inline-flex; }
+    .g-tb .mx-cmd input::placeholder { color: var(--app-text-subtle); }
+    /* misc specimens */
+    .g-stats { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .g-stats .mx-stat { padding: var(--s-4); border-left: 1px solid var(--mx-hairline); }
+    .g-stats .mx-stat:first-child { border-left: 0; }
+    .g-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px; margin-top: var(--s-3); }
+    .g-bar i { background: var(--c); }
+    .g-pop-static { position: static; opacity: 1; transform: none; pointer-events: auto; width: 100%; }
+    .g-statusbars { display: grid; gap: 6px; }
+    .g-statusbars .mx-statusbar { height: 30px; border: 1px solid var(--app-status-border); border-radius: var(--r-md); }
+    .g-skel { display: grid; grid-template-columns: 56px 1fr; gap: var(--s-3); align-items: center; }
+    .g-foot { display: flex; gap: var(--s-4); align-items: center; color: var(--app-text-subtle); }
+    /* states */
+    .g-shell { display: grid; gap: var(--s-6); padding: var(--s-5); border: 1px solid var(--app-border); border-radius: var(--r-xl); background: var(--app-bg); color: var(--app-text); }
+    .g-sb { display: grid; grid-template-columns: 228px minmax(0, 1fr); gap: var(--s-3); align-items: center; }
+    .g-sb + .g-sb { margin-top: 6px; }
+    .g-sb__cap { display: grid; gap: 3px; font: 500 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-strong); }
+    .g-sb__cap small { font: 400 var(--text-xs)/1.35 var(--font-mono); color: var(--app-text-subtle); }
+    .g-sb__cap .mx-chip { justify-self: start; height: 17px; font-size: 9.5px; }
+    .g-sb .mx-statusbar { height: 30px; border: 1px solid var(--app-status-border); border-radius: var(--r-md); }
+    .g-sb .mx-banner { border: 1px solid color-mix(in srgb, var(--tone-bd) 70%, var(--app-border)); border-radius: var(--r-md); }
+    .g-group { display: grid; gap: var(--s-2); }
+    .g-group > .mx-kicker { margin-bottom: 4px; }
+    .g-frame { border: 1px solid var(--app-border-strong); border-radius: var(--r-lg); overflow: hidden; display: grid; }
+    .g-frame .mx-titlebar { border-bottom: 0; }
+    .g-frame .mx-banner { border-top: 1px solid var(--mx-hairline); }
+    .g-frame__body { height: 44px; }
+    .g-thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+    .g-stack { display: grid; gap: var(--s-2); }
+    .g-toasts { display: grid; gap: var(--s-2); justify-items: start; }
+    .g-toasts .mx-toast { animation: none; }
+    .g-notifs { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); align-items: start; }
+    .g-notifs .mx-notifs { width: auto; }
+    @media (max-width: 1100px) { .g-hero, .g-panes, .g-pages { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <!-- state icons (feedback vocabulary — pages copy these with the sprite) -->
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17 19 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z"/></symbol>
+    <symbol id="i-record" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></symbol>
+    <!-- gallery-only icons (choice demos) -->
+    <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4c-6 0-12 4-13 13l-3 3"/><path d="M7 17c6 0 10-3 11-9"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4.5 4.5 0 0 1-.5-9A6 6 0 0 1 18 8.5 4.5 4.5 0 0 1 17.5 18z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+  </defs>
+</svg>
+
+<div class="mx-desk">
+  <div class="mx-window gallery">
+    <header class="mx-titlebar" data-tauri-drag-region>
+      <div class="mx-titlebar__lead">
+        <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Main surface">
+          <a href="timeline.html" aria-label="Timeline" data-tip="Timeline  ⌘1"><svg width="15" height="15"><use href="#i-timeline"/></svg></a>
+          <a href="insights.html" aria-label="Insights" data-tip="Insights  ⌘2"><svg width="15" height="15"><use href="#i-insights"/></svg></a>
+        </nav>
+      </div>
+      <label class="mx-cmd" for="mx-q" data-mode="recall">
+        <button type="button" class="mx-cmd__mode" tabindex="-1" aria-label="Switch between recall and ask (Tab)">
+          <svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg>
+          <svg class="mx-cmd__ask" width="13" height="13"><use href="#i-sparkle"/></svg><b>Ask</b>
+        </button>
+        <input id="mx-q" placeholder="Recall anything…" aria-label="Recall anything — Tab to ask instead" autocomplete="off" spellcheck="false" />
+        <span class="mx-cmd__keys" aria-hidden="true">
+          <kbd class="mx-cmd__k-idle">⌘K</kbd>
+          <span class="mx-cmd__k-recall"><kbd>⇥</kbd>to ask</span>
+          <span class="mx-cmd__k-ask"><kbd>↵</kbd>ask in chat</span>
+        </span>
+      </label>
+      <div class="mx-titlebar__trail">
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="chat.html" aria-label="Chats" data-tip="Chats"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+        <div class="mx-pop-anchor">
+          <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-pop="notif" aria-label="Notifications" data-tip="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge" data-tone="warn"></span></button>
+          <div class="mx-pop mx-notifs" id="notif" role="dialog" aria-label="Notifications">
+            <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span><span class="num">2</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-clear-all>Clear all</button></div>
+            <ul class="mx-notifs__list">
+              <li class="mx-notif" data-tone="warn"><b class="mx-notif__title">Capture paused — low disk space</b><time class="mx-notif__time">08:41</time>
+                <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+                <p class="mx-notif__text">Free up space and recording resumes automatically.</p></li>
+              <li class="mx-notif" data-tone="info"><b class="mx-notif__title">Mnema update available</b><time class="mx-notif__time">yday</time>
+                <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+                <p class="mx-notif__text">0.1.24 is ready to download.</p>
+                <div class="mx-notif__acts"><a class="mx-btn mx-btn--sm" href="update.html">See what’s new</a></div></li>
+            </ul>
+            <div class="mx-empty mx-empty--compact mx-notifs__empty"><span class="mx-empty__glyph"><svg width="15" height="15"><use href="#i-bell"/></svg></span>
+              <b class="mx-empty__title">You’re all caught up</b><p class="mx-empty__text">Capture, model and update warnings land here.</p></div>
+          </div>
+        </div>
+        <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="settings.html" aria-label="Settings" data-tip="Settings  ⌘,"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+      </div>
+    </header>
+
+    <!-- ===== Body ===== -->
+    <main class="mx-body mx-texture">
+      <div class="g-wrap">
+        <section class="g-hero">
+          <div class="mx-reveal">
+            <span class="mx-kicker mx-kicker--live">Redesign kit · v1</span>
+            <h1 class="mx-display">A quieter instrument for remembering.</h1>
+            <p class="mx-prose">Shared shell and components for the Timeline, Insights, Chat and Settings mockups — one button system,
+              one choice control, one date input, one type scale. Every surface below is drawn from the app's real tokens; each component
+              block is shown in both themes side by side.</p>
+            <div class="g-hero__acts">
+              <button class="mx-btn" data-theme-toggle>Flip theme<kbd>⇧⌘L</kbd></button>
+              <a class="mx-btn mx-btn--ghost" href="fonts.html">Font pairings<svg width="14" height="14"><use href="#i-arrow"/></svg></a>
+            </div>
+          </div>
+          <div class="mx-reveal" style="--i:2">
+            <span class="mx-label">Design principles</span>
+            <ol class="g-principles" style="margin-top: var(--s-2)">
+              <li><span><b>Near-black, not black.</b> Depth comes from surface lightness and 1px hairlines — flat, no bevels, no inner highlights, no shadows.</span></li>
+              <li><span><b>Green is a signal.</b> ≈10% budget: live state, matches, selected marks, the one primary button, focus. Never a large fill.</span></li>
+              <li><span><b>Sans carries the interface.</b> Hanken Grotesk for titles, prose, buttons, nav and labels; Spline Sans Mono only for the record — data, times, kickers.</span></li>
+              <li><span><b>Two control heights.</b> 26 and 32px. Buttons, segmented, date capsule and inputs all snap to them.</span></li>
+              <li><span><b>Spec rows over card grids.</b> Asymmetric, left-aligned; one dominant idea per view.</span></li>
+              <li><span><b>Ease-out, no bounce.</b> Transform/opacity only; one staggered reveal per load; honor reduced motion.</span></li>
+            </ol>
+          </div>
+        </section>
+
+        <section class="mx-reveal" style="--i:3">
+          <div class="g-sectionhead"><h2 class="mx-h2">Pages</h2><span class="mx-label">built on this kit</span></div>
+          <div class="g-pages">
+            <a class="mx-panel mx-panel--interactive g-page" href="timeline.html">
+              <span class="mx-kicker">01 · Main</span>
+              <span class="mx-h3"><svg width="16" height="16"><use href="#i-timeline"/></svg>Timeline<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Scrub your day. Same scroll and scrub interaction as today — new skin.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="insights.html">
+              <span class="mx-kicker">02 · Main</span>
+              <span class="mx-h3"><svg width="16" height="16"><use href="#i-insights"/></svg>Insights<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Where the day went: categories, focus, subjects and Ask.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="chat.html">
+              <span class="mx-kicker">03 · Main</span>
+              <span class="mx-h3"><svg width="16" height="16"><use href="#i-chat"/></svg>Chat<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Conversations over your history; the command field's Ask mode lands here.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="settings.html">
+              <span class="mx-kicker">04 · Mode</span>
+              <span class="mx-h3"><svg width="16" height="16"><use href="#i-gear"/></svg>Settings<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Quiet rows, one decision per line. Capture, privacy, AI, storage.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="onboarding.html">
+              <span class="mx-kicker">05 · Window</span>
+              <span class="mx-h3">Onboarding<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">The locked #195 flow, Welcome to Finale, in the new skin.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="recall.html">
+              <span class="mx-kicker">06 · Window</span>
+              <span class="mx-h3"><svg width="16" height="16"><use href="#i-search"/></svg>Quick Recall<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">The chosen ⌥⌘Space bar (C + B's Quick Look). Phrases turn into pills, one best moment leads, and questions are answered inline with selectable citations. Space or → opens Quick Look under the bar: scrub ±15 s and ↵ opens that exact frame.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="access.html">
+              <span class="mx-kicker">07 · Window</span>
+              <span class="mx-h3">CLI Access<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Approval request, scope widen, and managing allowed and blocked tools.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="update.html">
+              <span class="mx-kicker">08 · Window</span>
+              <span class="mx-h3">Update<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Available, downloading, ready, and outside your update window.</p>
+            </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="backend.html">
+              <span class="mx-kicker">09 · Report</span>
+              <span class="mx-h3">Backend changes<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">What the redesign needs from Rust: commands, prompts, migrations, decisions.</p>
+            </a>
+          </div>
+        </section>
+
+        <section class="mx-reveal" style="--i:4">
+          <div class="g-sectionhead"><h2 class="mx-h2">Titlebar</h2>
+            <p class="mx-prose">Icon-led and calm. One text door — the command field recalls, and <b>Tab</b> flips it to Ask. Chats, notifications and settings are icons. No theme toggle (Settings → Appearance). Engine status is not here.</p></div>
+          <div class="g-tbs">
+            <div class="g-tb__cap"><span class="mx-kicker">Idle · on Insights</span><span class="mx-label">⌘K focuses · ⌘J focuses in Ask mode · ⌘1 / ⌘2 switch surface · ⌥⌘Space is the global Quick Recall window, never this field</span></div>
+            <div class="g-tb">
+              <div class="mx-titlebar">
+                <div class="mx-titlebar__lead"><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+                  <nav class="mx-nav" aria-label="Surface (demo)"><a href="#" aria-label="Timeline"><svg width="15" height="15"><use href="#i-timeline"/></svg></a><a href="#" aria-label="Insights" aria-current="page"><svg width="15" height="15"><use href="#i-insights"/></svg></a></nav></div>
+                <label class="mx-cmd" data-mode="recall"><span class="mx-cmd__mode"><svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg></span><input placeholder="Recall anything…" tabindex="-1" aria-label="demo" /><span class="mx-cmd__keys"><kbd class="mx-cmd__k-idle">⌘K</kbd></span></label>
+                <div class="mx-titlebar__trail"><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-chat"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge"></span></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-gear"/></svg></span></div>
+              </div>
+            </div>
+            <div class="g-tb__cap"><span class="mx-kicker">Focused · recall</span><span class="mx-label">↵ opens Quick Recall pre-filled · hint teaches Tab</span></div>
+            <div class="g-tb">
+              <div class="mx-titlebar">
+                <div class="mx-titlebar__lead"><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+                  <nav class="mx-nav" aria-label="Surface (demo)"><a href="#" aria-label="Timeline" aria-current="page"><svg width="15" height="15"><use href="#i-timeline"/></svg></a><a href="#" aria-label="Insights"><svg width="15" height="15"><use href="#i-insights"/></svg></a></nav></div>
+                <label class="mx-cmd g-focused" data-mode="recall"><span class="mx-cmd__mode"><svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg></span><input value="retention gc" tabindex="-1" aria-label="demo" /><span class="mx-cmd__keys"><kbd class="mx-cmd__k-idle">⌘K</kbd><span class="mx-cmd__k-recall"><kbd>⇥</kbd>to ask</span></span></label>
+                <div class="mx-titlebar__trail"><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-chat"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-gear"/></svg></span></div>
+              </div>
+            </div>
+            <div class="g-tb__cap"><span class="mx-kicker">Ask mode · after Tab</span><span class="mx-label">↵ (or ⌘↵ from either mode) opens Chat with the question</span></div>
+            <div class="g-tb">
+              <div class="mx-titlebar">
+                <div class="mx-titlebar__lead"><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+                  <nav class="mx-nav" aria-label="Surface (demo)"><a href="#" aria-label="Timeline" aria-current="page"><svg width="15" height="15"><use href="#i-timeline"/></svg></a><a href="#" aria-label="Insights"><svg width="15" height="15"><use href="#i-insights"/></svg></a></nav></div>
+                <label class="mx-cmd g-focused" data-mode="ask"><span class="mx-cmd__mode"><svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg><svg class="mx-cmd__ask" width="13" height="13"><use href="#i-sparkle"/></svg><b>Ask</b></span><input value="why did the retention GC lock the DB?" tabindex="-1" aria-label="demo" /><span class="mx-cmd__keys"><kbd class="mx-cmd__k-idle">⌘K</kbd><span class="mx-cmd__k-ask"><kbd>↵</kbd>ask in chat</span></span></label>
+                <div class="mx-titlebar__trail"><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-chat"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-gear"/></svg></span></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="mx-reveal" style="--i:5">
+          <div class="g-sectionhead"><h2 class="mx-h2">Components</h2><span class="mx-label">left = current theme · right = the other one</span></div>
+          <div class="g-panes">
+            <div class="g-pane" data-specimen></div>
+            <div class="g-pane" data-specimen data-theme-invert></div>
+          </div>
+        </section>
+
+        <section class="mx-reveal" style="--i:6">
+          <div class="g-sectionhead"><h2 class="mx-h2">States</h2>
+            <p class="mx-prose">Every recording, source, license, engine and notification state the shell can be in, then the feedback parts pages use for empty, loading, error, offline, off and permission states. One tone attribute drives all of them. Spec: SHELL.md › States.</p></div>
+          <div class="g-stack" style="gap: var(--s-4)">
+            <div class="g-shell" data-specimen="shell-states"></div>
+            <div class="g-shell" data-specimen="shell-states" data-theme-invert></div>
+          </div>
+        </section>
+
+        <section class="mx-reveal" style="--i:7">
+          <div class="g-sectionhead"><h2 class="mx-h2">Feedback parts</h2><span class="mx-label">left = current theme · right = the other one</span></div>
+          <div class="g-panes">
+            <div class="g-pane" data-specimen="feedback"></div>
+            <div class="g-pane" data-specimen="feedback" data-theme-invert></div>
+          </div>
+        </section>
+
+        <footer class="g-foot mx-label">
+          <span>kit.css · kit.js · tokens.css · fonts/</span><span class="mx-sep"></span><span>Spec → SHELL.md</span><span class="mx-sep"></span><a href="fonts.html" style="color:inherit">fonts.html</a><span class="mx-sep"></span><a href="topbar-options.html" style="color:inherit">topbar-options.html</a>
+        </footer>
+      </div>
+    </main>
+
+    <!-- ===== Status bar ===== -->
+    <footer class="mx-statusbar">
+      <span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Pause" data-tip="Pause capture" data-tip-pos="top"><svg width="11" height="11"><use href="#i-pause"/></svg></button>
+      <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop" data-tip="Stop capture" data-tip-pos="top"><svg width="11" height="11"><use href="#i-stop"/></svg></button>
+      <span class="mx-sep"></span>
+      <span class="mx-lane mx-lane--screen mx-lane--on">screen</span>
+      <span class="mx-lane mx-lane--mic mx-lane--on">mic</span>
+      <span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span>
+      <span class="mx-spacer"></span>
+      <span>today <span class="num">6h 12m</span></span><span class="mx-sep"></span>
+      <span><span class="num">1.2 GB</span></span><span class="mx-sep"></span>
+      <span>local only</span>
+    </footer>
+  </div>
+</div>
+
+<template id="specimen">
+  <div class="g-row">
+    <span class="mx-label">Type scale <span>sans = interface · mono = record</span></span>
+    <div class="g-type">
+      <span class="mx-kicker">display<small>40/1.04 · 600</small></span><span class="mx-display" style="font-size:34px">Deep work, mostly.</span>
+      <span class="mx-kicker">title<small>28 · .mx-h1</small></span><span class="mx-h1">Tuesday, 14 October</span>
+      <span class="mx-kicker">heading<small>20 · .mx-h2</small></span><span class="mx-h2">Where the week went</span>
+      <span class="mx-kicker">subhead<small>16 · .mx-h3</small></span><span class="mx-h3">Microphone voice detection</span>
+      <span class="mx-kicker">prose<small>14/1.6</small></span><span class="mx-prose">You spent most of the morning in Zed; a 20-minute call with Ana broke it up at <time>11:40</time>.</span>
+      <span class="mx-kicker">body<small>13/1.55</small></span><span>Pause capture when the system has been idle.</span>
+      <span class="mx-kicker">label<small>12 · 500</small></span><span class="mx-label">hours per day, by category</span>
+      <span class="mx-kicker">data<small>mono · tnum</small></span><span class="mx-data">14:32:08 · 2h 41m · 1,204 frames</span>
+      <span class="mx-kicker">kicker<small>mono 10 caps</small></span><span class="mx-kicker">This week</span>
+    </div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Buttons <span>.mx-btn + variant + size</span></span>
+    <div class="g-matrix">
+      <span></span><span class="g-colh">md 32</span><span class="g-colh">sm 26</span><span class="g-colh">icon md · sm</span><span class="g-colh">focus</span><span class="g-colh">disabled</span>
+      <span class="mx-kicker">primary</span>
+      <button class="mx-btn mx-btn--primary">Save changes</button>
+      <button class="mx-btn mx-btn--primary mx-btn--sm"><svg width="13" height="13"><use href="#i-download"/></svg>Install</button>
+      <span class="g-flex"><button class="mx-btn mx-btn--primary mx-btn--icon" aria-label="Download"><svg width="15" height="15"><use href="#i-download"/></svg></button><button class="mx-btn mx-btn--primary mx-btn--icon mx-btn--sm" aria-label="Download"><svg width="13" height="13"><use href="#i-download"/></svg></button></span>
+      <button class="mx-btn mx-btn--primary g-focus">Save</button>
+      <button class="mx-btn mx-btn--primary" disabled>Save</button>
+      <span class="mx-kicker">secondary</span>
+      <button class="mx-btn">Export<kbd>⌘E</kbd></button>
+      <button class="mx-btn mx-btn--sm"><svg width="13" height="13"><use href="#i-download"/></svg>Export</button>
+      <span class="g-flex"><button class="mx-btn mx-btn--icon" aria-label="Search"><svg width="15" height="15"><use href="#i-search"/></svg></button><button class="mx-btn mx-btn--icon mx-btn--sm" aria-label="Search"><svg width="13" height="13"><use href="#i-search"/></svg></button></span>
+      <button class="mx-btn g-focus">Export</button>
+      <button class="mx-btn" disabled>Export</button>
+      <span class="mx-kicker">ghost</span>
+      <button class="mx-btn mx-btn--ghost">Cancel</button>
+      <button class="mx-btn mx-btn--ghost mx-btn--sm" aria-pressed="true"><svg width="13" height="13"><use href="#i-insights"/></svg>show OCR</button>
+      <span class="g-flex"><button class="mx-btn mx-btn--ghost mx-btn--icon" aria-label="Settings"><svg width="15" height="15"><use href="#i-gear"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed="true" aria-label="Notifications"><svg width="14" height="14"><use href="#i-bell"/></svg></button></span>
+      <button class="mx-btn mx-btn--ghost g-focus">Cancel</button>
+      <button class="mx-btn mx-btn--ghost" disabled>Cancel</button>
+      <span class="mx-kicker">danger</span>
+      <button class="mx-btn mx-btn--danger">Delete last 15 min</button>
+      <button class="mx-btn mx-btn--danger mx-btn--sm"><svg width="13" height="13"><use href="#i-trash"/></svg>Remove</button>
+      <span class="g-flex"><button class="mx-btn mx-btn--danger mx-btn--icon" aria-label="Delete"><svg width="15" height="15"><use href="#i-trash"/></svg></button><button class="mx-btn mx-btn--danger mx-btn--icon mx-btn--sm" aria-label="Delete"><svg width="13" height="13"><use href="#i-trash"/></svg></button></span>
+      <button class="mx-btn mx-btn--danger g-focus" style="outline-color: var(--app-danger) !important">Delete</button>
+      <button class="mx-btn mx-btn--danger" disabled>Delete</button>
+    </div>
+    <div class="g-flex"><span class="mx-kicker" style="width:64px">action</span><button class="mx-btn mx-btn--ghost mx-btn--sm"><svg class="mx-btn__accent" width="13" height="13"><use href="#i-sparkle"/></svg>Ask about this week<kbd>⌘J</kbd></button><button class="mx-btn mx-btn--sm" aria-busy="true">Refreshing…</button><button class="mx-btn mx-btn--sm" aria-pressed="true">Pinned</button></div>
+    <p class="g-note">Pressed toggles use <code>aria-pressed="true"</code>; in-flight uses <code>aria-busy="true"</code>. Ask actions (“Ask about this week”) are ghost buttons with the sparkle accent, placed in the header row beside the scope they ask about — there is no separate pill button.</p>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Segmented <span>.mx-seg · --md · --mono</span></span>
+    <div class="g-flex">
+      <div class="mx-seg" role="group" aria-label="Range"><button aria-pressed="false">Day</button><button aria-pressed="true">Week</button><button aria-pressed="false">Month</button></div>
+      <div class="mx-seg mx-seg--mono" role="group" aria-label="Segment"><button>1m</button><button>2m</button><button aria-pressed="true">5m</button></div>
+      <div class="mx-seg mx-seg--md" role="group" aria-label="Theme"><button aria-pressed="true"><svg width="14" height="14"><use href="#i-moon"/></svg>Dark</button><button><svg width="14" height="14"><use href="#i-sun"/></svg>Light</button><button>System</button></div>
+    </div>
+    <div class="g-flex"><input type="checkbox" class="mx-switch" checked aria-label="Enabled" /><input type="checkbox" class="mx-switch" aria-label="Disabled" /><input class="mx-input" placeholder="Label" style="width:140px" /></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Choice · tiles <span>.mx-choice — replaces radio groups</span></span>
+    <div class="mx-choice" role="radiogroup" aria-label="Microphone voice detection">
+      <label class="mx-choice__opt"><input type="radio" name="vad" checked />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-wave"/></svg></span>
+        <span class="mx-choice__title">Silero <span class="mx-choice__tag">default</span></span>
+        <span class="mx-choice__desc">Neural speech detector. Falls back to WebRTC.</span></label>
+      <label class="mx-choice__opt"><input type="radio" name="vad" />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-feather"/></svg></span>
+        <span class="mx-choice__title">WebRTC</span>
+        <span class="mx-choice__desc">Lightweight local detector, lowest CPU.</span></label>
+      <label class="mx-choice__opt"><input type="radio" name="vad" />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-off"/></svg></span>
+        <span class="mx-choice__title">Off</span>
+        <span class="mx-choice__desc">Use microphone peak level only.</span></label>
+    </div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Choice · list <span>.mx-choice--list — long descriptions</span></span>
+    <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Transcription provider">
+      <label class="mx-choice__opt"><input type="radio" name="asr" />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+        <span class="mx-choice__title">Parakeet <span class="mx-choice__tag">on-device · 800 MB</span></span>
+        <span class="mx-choice__desc">Fast English transcription on the Neural Engine.</span></label>
+      <label class="mx-choice__opt"><input type="radio" name="asr" checked />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+        <span class="mx-choice__title">Whisper <span class="mx-choice__tag">on-device · 1.4 GB</span></span>
+        <span class="mx-choice__desc">Multilingual; slower and heavier on memory.</span></label>
+      <label class="mx-choice__opt"><input type="radio" name="asr" />
+        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-cloud"/></svg></span>
+        <span class="mx-choice__title">Deepgram <span class="mx-choice__tag">cloud</span></span>
+        <span class="mx-choice__desc">Uploads mic + system audio to your own Deepgram account.</span></label>
+    </div>
+  </div>
+
+  <div class="g-row g-date-stage">
+    <span class="mx-label">Date input · day <span>drag / wheel / ←→ to step · click for calendar</span></span>
+    <div class="g-flex"><div data-date-input="day" data-value="2026-10-07" data-today="2026-10-09" data-min="2026-08-20" data-date-open></div></div>
+  </div>
+
+  <div class="g-row g-date-stage--range">
+    <span class="mx-label">Date input · range <span>presets + drag-select · steps by week</span></span>
+    <div class="g-flex"><div data-date-input="range" data-unit="week" data-value="2026-10-05..2026-10-11" data-today="2026-10-09" data-min="2026-08-20" data-date-open></div></div>
+  </div>
+
+  <div class="g-row g-date-stage">
+    <span class="mx-label">Date input · period · week <span>Insights Overview · whole day / week / month · D·W·M switch</span></span>
+    <div class="g-flex" style="align-items:start"><div data-date-input="period" data-unit="week" data-value="2026-10-09" data-today="2026-10-09" data-min="2026-06-01" data-date-open></div></div>
+  </div>
+
+  <div class="g-row g-date-stage">
+    <span class="mx-label">Date input · period · month <span>the year as 12 months · steps a whole month</span></span>
+    <div class="g-flex"><div data-date-input="period" data-unit="month" data-value="2026-09-14" data-today="2026-10-09" data-min="2026-06-01" data-date-open></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Chips <span>status, not actions</span></span>
+    <div class="g-flex">
+      <span class="mx-chip mx-chip--screen">screen</span><span class="mx-chip mx-chip--mic">mic</span><span class="mx-chip mx-chip--sysaudio">system audio</span>
+      <span class="mx-chip mx-chip--accent">live</span><span class="mx-chip mx-chip--warn">paused</span><span class="mx-chip mx-chip--danger">failed</span><span class="mx-chip mx-chip--info">syncing</span>
+    </div>
+    <div class="g-flex">
+      <span class="mx-chip mx-chip--cat" style="--c:var(--cat-creating)">Creating</span><span class="mx-chip mx-chip--cat" style="--c:var(--cat-communication)">Communication</span>
+      <span class="mx-chip mx-chip--cat" style="--c:var(--cat-meetings)">Meetings</span><span class="mx-chip mx-chip--cat" style="--c:var(--cat-research)">Research</span>
+      <span class="mx-chip mx-chip--cat" style="--c:var(--cat-learning)">Learning</span><span class="mx-chip mx-chip--cat" style="--c:var(--cat-entertainment)">Entertainment</span>
+    </div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Search (in-page) <span>.mx-search</span></span>
+    <label class="mx-search"><svg width="14" height="14"><use href="#i-search"/></svg><input placeholder="Filter subjects" /><kbd>/</kbd></label>
+    <p class="mx-prose" style="font-size:var(--text-base)">…merged the <mark>retention</mark> fix after reviewing the <mark>retention</mark> GC query…</p>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Panel · stats · spec</span>
+    <div class="mx-panel">
+      <div class="mx-panel__head"><span class="mx-kicker">This week</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm">Details</button></div>
+      <div class="g-stats">
+        <div class="mx-stat"><span class="mx-stat__label">Captured</span><span class="mx-stat__value">31<small>h</small></span><span class="mx-stat__delta mx-stat__delta--up">+4h vs last</span></div>
+        <div class="mx-stat"><span class="mx-stat__label">Deep focus</span><span class="mx-stat__value">58<small>%</small></span><span class="mx-stat__delta">±0</span></div>
+        <div class="mx-stat"><span class="mx-stat__label">Apps</span><span class="mx-stat__value">24</span><span class="mx-stat__delta">3 new</span></div>
+      </div>
+      <div class="mx-panel__body" style="padding-top:0">
+        <div class="g-bar"><i style="--c:var(--cat-creating);flex:38"></i><i style="--c:var(--cat-research);flex:22"></i><i style="--c:var(--cat-communication);flex:16"></i><i style="--c:var(--cat-meetings);flex:12"></i><i style="--c:var(--cat-entertainment);flex:6"></i><i style="--c:var(--chart-grey-2);flex:6"></i></div>
+      </div>
+    </div>
+    <dl class="mx-spec">
+      <div><dt>Retention</dt><dd>30 days</dd><dd class="mx-spec__note">~8.1 GB</dd></div>
+      <div><dt>OCR</dt><dd>Apple Vision</dd><dd class="mx-spec__note">on-device</dd></div>
+      <div><dt>Transcription</dt><dd>Parakeet · low memory</dd><dd class="mx-spec__note">800 MB</dd></div>
+    </dl>
+  </div>
+
+</template>
+
+<template id="shell-states">
+  <!-- Status-bar building blocks used below (copy into pages):
+       pause/stop/resume = mx-btn ghost icon, style="--_h:22px" · Record = mx-btn sm, style="--_h:22px" -->
+  <div class="g-group">
+    <span class="mx-kicker">Status bar · recording</span>
+    <div class="g-sb"><span class="g-sb__cap">Off · ready<small>lanes are toggles for the next recording</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>
+        <button class="mx-btn mx-btn--sm" style="--_h:22px" data-tip="Start recording  ⌥⌘R" data-tip-pos="top"><svg width="10" height="10" style="color:var(--app-danger)"><use href="#i-record"/></svg>Record</button><span class="mx-sep"></span>
+        <button class="mx-lane mx-lane--screen" aria-pressed="true" data-tip="Screen: on — click to skip next time" data-tip-pos="top">screen</button>
+        <button class="mx-lane mx-lane--mic" aria-pressed="true" data-tip="Microphone: on — click to skip next time" data-tip-pos="top">mic</button>
+        <button class="mx-lane mx-lane--sysaudio" aria-pressed="false" data-tip="System audio: off — click to include" data-tip-pos="top">system</button>
+        <span class="mx-spacer"></span><span>today <span class="num">6h 12m</span></span><span class="mx-sep"></span><span class="num">1.2 GB</span><span class="mx-sep"></span><span>local only</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Off · permission missing<small>get_capture_permissions: denied</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>
+        <button class="mx-btn mx-btn--sm" style="--_h:22px"><svg width="10" height="10" style="color:var(--app-danger)"><use href="#i-record"/></svg>Record</button><span class="mx-sep"></span>
+        <button class="mx-lane mx-lane--screen mx-lane--blocked" aria-pressed="true">screen <small>no permission</small></button>
+        <button class="mx-lane mx-lane--mic" aria-pressed="true">mic</button>
+        <button class="mx-lane mx-lane--sysaudio" aria-pressed="false">system</button>
+        <span class="mx-spacer"></span><a class="mx-flag" data-tone="warn" href="#">Screen Recording off · <b>Open System Settings</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Off · read-only<small>trial ended / revoked / activation lapsed</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>
+        <button class="mx-btn mx-btn--sm" style="--_h:22px" aria-disabled="true"><svg width="10" height="10"><use href="#i-record"/></svg>Record</button><span class="mx-sep"></span>
+        <button class="mx-lane mx-lane--screen" aria-pressed="true" disabled>screen</button><button class="mx-lane mx-lane--mic" aria-pressed="true" disabled>mic</button>
+        <span class="mx-spacer"></span><a class="mx-flag" data-tone="danger" href="settings.html#s-license">read-only · <b>buy a license</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Starting<small>start in flight; sources attach one by one</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--starting"><span class="mx-spin mx-spin--sm"></span>STARTING…</span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop" disabled><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--on">screen</span><span class="mx-lane mx-lane--mic mx-lane--starting">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--starting">system</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Recording</span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Pause" data-tip="Pause recording" data-tip-pos="top"><svg width="11" height="11"><use href="#i-pause"/></svg></button>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop" data-tip="Stop recording  ⌥⌘R" data-tip-pos="top"><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--on">screen</span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span>
+        <span class="mx-spacer"></span><span>today <span class="num">6h 12m</span></span><span class="mx-sep"></span><span class="num">1.2 GB</span><span class="mx-sep"></span><span>local only</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Recording · one source idle<small>runtimeSources.screen.paused</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Pause"><svg width="11" height="11"><use href="#i-pause"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop"><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--paused" data-tip="Screen: paused — nothing changing on screen" data-tip-pos="top">screen <small>idle</small></span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--on">system</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Paused · idle<small>isInactivityPaused — Pause stays enabled</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--paused"><span class="mx-rec__dot"></span>PAUSED · idle</span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Pause the whole session" data-tip="Pause the whole session" data-tip-pos="top"><svg width="11" height="11"><use href="#i-pause"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop"><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--paused">screen</span><span class="mx-lane mx-lane--mic mx-lane--paused">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span>
+        <span class="mx-spacer"></span><span>resumes when you’re back</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Paused · by you<small>isUserPaused</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--paused"><span class="mx-rec__dot"></span>PAUSED <span class="num">00:12</span></span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Resume" data-tip="Resume recording" data-tip-pos="top"><svg width="11" height="11"><use href="#i-play"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop"><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--paused">screen</span><span class="mx-lane mx-lane--mic mx-lane--paused">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Suspended · low disk<small>isLowDiskSuspended — resume disabled</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--suspended"><span class="mx-rec__dot"></span>PAUSED · low disk</span>
+        <button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Resume" disabled><svg width="11" height="11"><use href="#i-play"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="Stop"><svg width="11" height="11"><use href="#i-stop"/></svg></button><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--paused">screen</span><span class="mx-lane mx-lane--mic mx-lane--paused">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--paused">system</span>
+        <span class="mx-spacer"></span><a class="mx-flag" data-tone="warn" href="settings.html#s-storage">free up space · <b>resumes on its own</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Stopped · error<small>disk full (also: trial ended, license revoked)</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--stopped"><span class="mx-rec__dot"></span>STOPPED · disk full</span>
+        <button class="mx-btn mx-btn--sm" style="--_h:22px"><svg width="10" height="10" style="color:var(--app-danger)"><use href="#i-record"/></svg>Record</button><span class="mx-sep"></span>
+        <button class="mx-lane mx-lane--screen" aria-pressed="true">screen</button><button class="mx-lane mx-lane--mic" aria-pressed="true">mic</button><button class="mx-lane mx-lane--sysaudio" aria-pressed="true">system</button>
+        <span class="mx-spacer"></span><a class="mx-flag" data-tone="danger" href="settings.html#s-storage"><b>Open Storage</b></a></footer></div>
+  </div>
+
+  <div class="g-group">
+    <span class="mx-kicker">Status bar · source conditions (session keeps recording)</span>
+    <div class="g-sb"><span class="g-sb__cap">Display asleep / disconnected<small>screen only; mic + system continue</small><span class="mx-chip mx-chip--warn">debug-only today</span></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--waiting" data-tip="Screen resumes when the display is back" data-tip-pos="top">screen <small>display asleep</small></span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--on">system</span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Privacy filter failed · retrying<small>reason privacy_filter_apply_failed</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--error">screen <small>stopped</small></span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--error">system <small>stopped</small></span>
+        <span class="mx-spacer"></span><span class="mx-flag" data-tone="warn" data-tip="The privacy filter couldn't be applied. Mnema is retrying. Microphone keeps recording." data-tip-pos="top">privacy filter failed · <b>retrying</b></span></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Privacy filter · restart needed<small>reason privacy_recovery_restart_required</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--error">screen <small>stopped</small></span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--off">system</span>
+        <span class="mx-spacer"></span><button class="mx-flag" data-tone="danger">restart to resume screen · <b>Restart</b></button></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">System audio · possibly blocked<small>permission possibly_blocked (inferred)</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--on">screen</span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--blocked" data-tip="No system sound has reached Mnema yet. Check Screen &amp; System Audio Recording." data-tip-pos="top">system <small>possibly blocked</small></span>
+        <span class="mx-spacer"></span><a class="mx-flag" data-tone="warn" href="#">no system sound yet · <b>Open System Settings</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">System audio · reconnecting<small>tap rebuild / device change</small><span class="mx-chip mx-chip--warn">needs backend</span></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
+        <span class="mx-lane mx-lane--screen mx-lane--on">screen</span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--waiting" data-tip="Output device changed — reconnecting" data-tip-pos="top">system <small>reconnecting</small></span></footer></div>
+  </div>
+
+  <div class="g-group">
+    <span class="mx-kicker">Status bar · engine (healthy or turned off by you = nothing)</span>
+    <div class="g-sb"><span class="g-sb__cap">Not set up<small>no_providers · no_default_model · no_provider_key</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-spacer"></span><a class="mx-engine" href="settings.html#s-providers" data-tip="No AI provider set up — Insights shows capture-only views" data-tip-pos="top">engine <b>not set up</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Needs reconnect<small>needs_reconnect:&lt;id&gt; — OpenAI rejected the grant</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-spacer"></span><a class="mx-engine mx-engine--error" href="settings.html#s-providers" data-tip="ChatGPT sign-in expired — reconnect in Settings" data-tip-pos="top">engine <b>needs reconnect</b></a></footer></div>
+    <div class="g-sb"><span class="g-sb__cap">Unreachable<small>provider_unreachable · local_endpoint_unreachable</small></span>
+      <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-spacer"></span><a class="mx-engine mx-engine--error" href="settings.html#s-providers" data-tip="Can't reach ChatGPT — resumes on its own. Your sign-in is fine." data-tip-pos="top">engine <b>offline</b></a></footer></div>
+  </div>
+
+  <div class="g-group">
+    <span class="mx-kicker">Banner · window top (one at a time, license precedence)</span>
+    <div class="g-frame">
+      <div class="mx-titlebar"><div class="mx-titlebar__lead"><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Surface (demo)"><a href="#" aria-label="Timeline" aria-current="page"><svg width="15" height="15"><use href="#i-timeline"/></svg></a><a href="#" aria-label="Insights"><svg width="15" height="15"><use href="#i-insights"/></svg></a></nav></div>
+        <label class="mx-cmd" data-mode="recall"><span class="mx-cmd__mode"><svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg></span><input placeholder="Recall anything…" tabindex="-1" aria-label="demo" /><span class="mx-cmd__keys"><kbd class="mx-cmd__k-idle">⌘K</kbd></span></label>
+        <div class="mx-titlebar__trail"><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-chat"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg></span><span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-gear"/></svg></span></div></div>
+      <div class="mx-banner" data-tone="info" role="status"><p><b>Free trial ends in 7 days.</b> After that, Mnema switches to Read-Only Mode — your history stays searchable; only new recording pauses until you buy.</p>
+        <div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="#">Buy Mnema</a><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button></div></div>
+      <div class="g-frame__body mx-texture"></div>
+    </div>
+    <div class="g-sb"><span class="g-sb__cap">Trial · 3 days<small>warn · dismissible (re-shows at 2)</small></span>
+      <div class="mx-banner" data-tone="warn" role="status"><p><b>Free trial ends in 3 days.</b> Your history stays searchable after; only new recording pauses.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="#">Buy Mnema</a><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Trial · last day<small>danger · dismissible</small></span>
+      <div class="mx-banner" data-tone="danger" role="status"><p><b>Your free trial ends today.</b> Recording pauses tonight; everything you recorded stays.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="#">Buy Mnema</a><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Activation pending<small>provisional ≤ 3 days · warn · dismissible</small></span>
+      <div class="mx-banner" data-tone="warn" role="status"><p><b>Activation still pending.</b> Connect to the internet within 2 days to keep recording.</p><div class="mx-banner__acts"><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Read-only<small>trial ended · firm (no dismiss)</small></span>
+      <div class="mx-banner" data-tone="danger" role="alert"><p><b>Your trial has ended.</b> Everything you recorded stays browsable and searchable. Buy a license to resume recording.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="#">Buy a license</a><a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-license">Enter license</a></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Revoked<small>firm</small></span>
+      <div class="mx-banner" data-tone="danger" role="alert"><p><b>This license has been revoked.</b> Your history stays browsable and searchable.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="#">Buy a license</a><a class="mx-btn mx-btn--ghost mx-btn--sm" href="#">Enter license</a></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Activation lapsed · checking<small>firm · offline verification failed</small></span>
+      <div class="mx-banner" data-tone="danger" role="alert"><p><b>We couldn’t confirm your license.</b> Connect to the internet once to finish activation — new recording is paused until then.</p><div class="mx-banner__acts"><button class="mx-btn mx-btn--sm" aria-busy="true"><span class="mx-spin mx-spin--sm"></span>Checking…</button><a class="mx-btn mx-btn--ghost mx-btn--sm" href="#">Enter license</a></div></div></div>
+    <div class="g-sb"><span class="g-sb__cap">Low disk<small>while isLowDiskSuspended · not dismissible</small></span>
+      <div class="mx-banner" data-tone="warn" role="status"><p><b>Recording paused — low disk space.</b> Free up space and it resumes on its own.</p><div class="mx-banner__acts"><a class="mx-btn mx-btn--sm" href="settings.html#s-storage">Open Storage</a></div></div></div>
+  </div>
+
+  <div class="g-group">
+    <span class="mx-kicker">Titlebar · bell (badge = worst unread severity; none = no badge)</span>
+    <div class="g-flex">
+      <span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="No notifications"><svg width="15" height="15"><use href="#i-bell"/></svg></span><span class="mx-label">none</span><span class="mx-sep"></span>
+      <span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge"></span></span><span class="mx-label">info</span><span class="mx-sep"></span>
+      <span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge" data-tone="warn"></span></span><span class="mx-label">warning</span><span class="mx-sep"></span>
+      <span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge" data-tone="danger"></span></span><span class="mx-label">error</span><span class="mx-sep"></span>
+      <span class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed="true"><svg width="15" height="15"><use href="#i-bell"/></svg></span><span class="mx-label">open</span>
+    </div>
+  </div>
+</template>
+
+<template id="feedback">
+  <div class="g-row">
+    <span class="mx-label">Empty <span>.mx-empty · --center · --compact</span></span>
+    <div class="mx-panel mx-panel--inset">
+      <div class="mx-empty">
+        <span class="mx-empty__glyph"><svg width="18" height="18"><use href="#i-inbox"/></svg></span>
+        <h4 class="mx-empty__title">Nothing captured yet today</h4>
+        <p class="mx-empty__text">Start recording and this fills in as you work. Nothing leaves your Mac.</p>
+        <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm">Start recording</button></div>
+      </div>
+    </div>
+    <div class="mx-panel"><div class="mx-empty mx-empty--compact">
+      <span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-search"/></svg></span>
+      <b class="mx-empty__title">No moments match “arc pricing”</b><p class="mx-empty__text">Try a wider range, or ask instead.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm">Any time</button></div></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Error · offline <span>.mx-empty[data-tone] — panel replaces its content</span></span>
+    <div class="mx-panel"><div class="mx-empty mx-empty--compact" data-tone="danger">
+      <span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-alert"/></svg></span>
+      <b class="mx-empty__title">Couldn’t load this week</b><p class="mx-empty__text">The database was busy. Nothing is lost.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="13" height="13"><use href="#i-retry"/></svg>Retry</button></div></div></div>
+    <div class="mx-panel"><div class="mx-empty mx-empty--compact" data-tone="warn">
+      <span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-cloud-off"/></svg></span>
+      <b class="mx-empty__title">Can’t reach ChatGPT</b><p class="mx-empty__text">Summaries resume on their own — your sign-in is fine.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm">Try now</button></div></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Notice <span>.mx-notice[data-tone] — off · permission · offline · failed · info</span></span>
+    <div class="mx-notice" data-tone="off"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-off"/></svg></span>
+      <b class="mx-notice__title">Summaries are off</b><p class="mx-notice__text">Turn on day summaries to see where the time went.</p>
+      <div class="mx-notice__acts"><a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-ai">Turn on in Settings<svg width="13" height="13"><use href="#i-arrow"/></svg></a></div></div>
+    <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span>
+      <b class="mx-notice__title">Screen Recording is off for Mnema</b><p class="mx-notice__text">macOS blocks screen capture until you allow it.</p>
+      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button></div></div>
+    <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-cloud-off"/></svg></span>
+      <b class="mx-notice__title">Can’t reach ChatGPT right now</b><p class="mx-notice__text">Answers resume on their own. You don’t need to sign in again.</p>
+      <div class="mx-notice__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm"><svg width="13" height="13"><use href="#i-retry"/></svg>Retry</button></div></div>
+    <div class="mx-notice" data-tone="danger"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+      <b class="mx-notice__title">ChatGPT sign-in expired</b><p class="mx-notice__text">Sign in again to keep summaries and Ask running.</p>
+      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Reconnect</button></div></div>
+    <div class="mx-notice" data-tone="info"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-info"/></svg></span>
+      <b class="mx-notice__title">No system sound yet</b><p class="mx-notice__text">If nothing has played, ignore this. Otherwise check Screen &amp; System Audio Recording.</p>
+      <div class="mx-notice__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-dismiss>Dismiss</button></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Inline <span>.mx-inline[data-tone] — under a field / in a row</span></span>
+    <div class="g-stack">
+      <span class="mx-inline" data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Saved</span>
+      <span class="mx-inline" data-tone="info"><svg width="13" height="13"><use href="#i-info"/></svg>Takes effect on the next recording.</span>
+      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-download"/></svg>Model not downloaded · <span class="num">419 MB</span><button class="mx-btn mx-btn--ghost mx-btn--sm">Download</button></span>
+      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>OpenAI rejected this key.<button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></span>
+      <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Checking the key…</span>
+    </div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Loading · skeletons <span>lines · rows · thumbs · chart — aria-busy on the region</span></span>
+    <div class="mx-panel mx-panel__body" aria-busy="true"><span class="mx-sr">Loading summary</span>
+      <div class="mx-skel mx-skel--title" style="margin-bottom:14px"></div>
+      <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div></div>
+    <div aria-busy="true"><span class="mx-sr">Loading moments</span>
+      <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel" style="width:62%"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+      <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel" style="width:48%"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div></div>
+    <div class="g-thumbs" aria-busy="true"><div class="mx-skel mx-skel--thumb"></div><div class="mx-skel mx-skel--thumb"></div><div class="mx-skel mx-skel--thumb"></div></div>
+    <div class="mx-skel-chart" aria-busy="true"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">In flight <span>.mx-spin · .mx-progress (determinate · indeterminate)</span></span>
+    <div class="g-flex">
+      <button class="mx-btn mx-btn--primary mx-btn--sm" aria-busy="true"><span class="mx-spin mx-spin--sm"></span>Installing…</button>
+      <button class="mx-btn mx-btn--sm" aria-busy="true"><span class="mx-spin mx-spin--sm"></span>Starting…</button>
+      <span class="mx-label"><span class="mx-spin"></span> 14</span><span class="mx-label"><span class="mx-spin mx-spin--lg"></span> 20</span>
+    </div>
+    <div><div class="mx-progress__meta"><b>Downloading Parakeet</b><span>312 / 800 MB · 2 min left</span></div>
+      <div class="mx-progress" role="progressbar" aria-label="Downloading Parakeet" aria-valuenow="39" aria-valuemin="0" aria-valuemax="100" style="--v:.39"><i></i></div></div>
+    <div><div class="mx-progress__meta"><b>Rebuilding the search index</b><span>this can take a few minutes</span></div>
+      <div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Rebuilding the search index"><i></i></div></div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Toast <span>.mx-toast[data-tone] — result of your own action · mx.toast()</span></span>
+    <div class="g-toasts">
+      <div class="mx-toast" data-tone="ok" role="status"><svg width="15" height="15"><use href="#i-check"/></svg><span>Deleted the last 15 minutes</span><button class="mx-btn mx-btn--ghost mx-btn--sm">Undo</button><i class="mx-toast__timer" style="--ttl:600s"></i></div>
+      <div class="mx-toast" data-tone="ok" role="status"><svg width="15" height="15"><use href="#i-check"/></svg><span>Link copied</span></div>
+      <div class="mx-toast" data-tone="danger" role="alert"><svg width="15" height="15"><use href="#i-alert"/></svg><span>Couldn’t export — the disk is full</span><button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></div>
+      <button class="mx-btn mx-btn--sm" onclick="mx.toast('Deleted 3 moments', { action: 'Undo' })">Show a live toast</button>
+    </div>
+  </div>
+
+  <div class="g-row">
+    <span class="mx-label">Notifications popover <span>.mx-notifs — items · empty · load error</span></span>
+    <div class="g-notifs">
+      <div class="mx-pop mx-notifs g-pop-static" id="g-notifs" aria-label="Notifications (demo)">
+        <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span><span class="num">3</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-clear-all>Clear all</button></div>
+        <ul class="mx-notifs__list">
+          <li class="mx-notif" data-tone="danger"><b class="mx-notif__title">Recording stopped — disk full</b><time class="mx-notif__time">09:12</time>
+            <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+            <p class="mx-notif__text">Free up space, then start recording again.</p></li>
+          <li class="mx-notif" data-tone="warn"><b class="mx-notif__title">Transcription model unavailable</b><time class="mx-notif__time">08:41</time>
+            <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+            <p class="mx-notif__text">Audio is kept and transcribed once the model is back.</p>
+            <div class="mx-notif__acts"><button class="mx-btn mx-btn--sm">Open transcription settings</button></div></li>
+          <li class="mx-notif" data-tone="info"><b class="mx-notif__title">Mnema update available</b><time class="mx-notif__time">yday</time>
+            <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm mx-notif__x" data-dismiss aria-label="Dismiss"><svg width="13" height="13"><use href="#i-x"/></svg></button>
+            <p class="mx-notif__text">0.1.24 is ready to download.</p></li>
+        </ul>
+        <div class="mx-empty mx-empty--compact mx-notifs__empty"><span class="mx-empty__glyph"><svg width="15" height="15"><use href="#i-bell"/></svg></span>
+          <b class="mx-empty__title">You’re all caught up</b><p class="mx-empty__text">Capture, model and update warnings land here.</p></div>
+      </div>
+      <div class="g-stack">
+        <div class="mx-pop mx-notifs g-pop-static" aria-label="Notifications, empty (demo)">
+          <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span></div>
+          <div class="mx-empty mx-empty--compact mx-notifs__empty"><span class="mx-empty__glyph"><svg width="15" height="15"><use href="#i-bell"/></svg></span>
+            <b class="mx-empty__title">You’re all caught up</b><p class="mx-empty__text">Capture, model and update warnings land here.</p></div>
+        </div>
+        <div class="mx-pop mx-notifs g-pop-static" aria-label="Notifications, load error (demo)">
+          <div class="mx-notifs__head"><span class="mx-kicker">Notifications</span></div>
+          <div class="mx-notifs__error"><span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Couldn’t load notifications.<button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+<script>
+  // Stamp the specimen into both theme panes (runs before kit.js's DOMContentLoaded wiring).
+  // Radio names get a per-pane suffix so the two panes are independent groups.
+  document.querySelectorAll("[data-specimen]").forEach((el, i) => {
+    const tpl = document.getElementById(el.dataset.specimen || "specimen");
+    // set the inverted theme now (kit.js re-syncs later) so nothing transitions in from the wrong theme
+    if (el.hasAttribute("data-theme-invert")) el.dataset.theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    el.append(tpl.content.cloneNode(true));
+    el.querySelectorAll("input[name]").forEach((r) => (r.name += `-${i}`));
+    el.querySelectorAll("[id]").forEach((n) => (n.id += `-${i}`));
+    el.querySelectorAll("[data-pop]").forEach((n) => (n.dataset.pop += `-${i}`));
+  });
+</script>
+</body>
+</html>

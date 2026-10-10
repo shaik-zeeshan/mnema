@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — font pairings</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Comparison board only. The two contenders not chosen are declared here, not in kit.css. */
+    @font-face { font-family: "Geist"; font-weight: 100 900; font-display: swap; src: url("./fonts/geist-latin-wght-normal.woff2") format("woff2-variations"); }
+    @font-face { font-family: "Geist Mono"; font-weight: 100 900; font-display: swap; src: url("./fonts/geist-mono-latin-wght-normal.woff2") format("woff2-variations"); }
+    @font-face { font-family: "Schibsted Grotesk"; font-weight: 400 900; font-display: swap; src: url("./fonts/schibsted-grotesk-latin-wght-normal.woff2") format("woff2-variations"); }
+    @font-face { font-family: "Martian Mono"; font-weight: 100 800; font-display: swap; src: url("./fonts/martian-mono-latin-wght-normal.woff2") format("woff2-variations"); }
+
+    .f-page { max-width: 1480px; margin: 0 auto; padding: var(--s-7) var(--s-6) var(--s-8); display: grid; gap: var(--s-7); }
+    .f-intro { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: var(--s-7); align-items: end; }
+    .f-intro .mx-h1 { margin: var(--s-3) 0 var(--s-3); }
+    .f-verdict { border-left: 2px solid var(--app-accent); padding: 2px 0 2px var(--s-4); display: grid; gap: var(--s-2); }
+    .f-verdict b { color: var(--app-text-strong); font-weight: 600; }
+    .f-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-4); }
+    .f-pair { background: var(--app-bg); color: var(--app-text); border: 1px solid var(--app-border); border-radius: var(--r-xl);
+      padding: var(--s-5); display: grid; gap: var(--s-5); align-content: start; }
+    .f-pair[data-pick] { border-color: var(--app-accent-border); }
+    .f-pair--a { --font-sans: "Hanken Grotesk", system-ui, sans-serif; --font-mono: "Spline Sans Mono", ui-monospace, monospace; }
+    .f-pair--b { --font-sans: "Geist", system-ui, sans-serif; --font-mono: "Geist Mono", ui-monospace, monospace; }
+    .f-pair--c { --font-sans: "Schibsted Grotesk", system-ui, sans-serif; --font-mono: "Martian Mono", ui-monospace, monospace; }
+    .f-pair { --mx-sans: var(--font-sans); --mx-mono: var(--font-mono); font-family: var(--font-sans); }
+    .f-head { display: flex; align-items: center; gap: var(--s-2); }
+    .f-head .mx-h3 { font-size: 15px; }
+    .f-head .mx-chip { margin-left: auto; }
+    .f-names { font: 400 var(--text-sm)/1.4 var(--font-mono); color: var(--app-text-subtle); margin-top: -14px; }
+    .f-display { margin: var(--s-2) 0 var(--s-2); font-size: 34px; }
+    .f-stats { display: grid; grid-template-columns: repeat(3, 1fr); padding: var(--s-3) 0; border-block: 1px solid var(--mx-hairline); }
+    .f-stats .mx-stat { padding-left: var(--s-3); border-left: 1px solid var(--mx-hairline); }
+    .f-stats .mx-stat:first-child { padding-left: 0; border-left: 0; }
+    .f-readout { display: grid; gap: 0; }
+    .f-readout div { display: grid; grid-template-columns: 64px 1fr auto; gap: var(--s-3); align-items: baseline; padding: 7px 0; border-top: 1px solid var(--mx-hairline); }
+    .f-readout div:first-child { border-top: 0; }
+    .f-readout time { font: 450 var(--text-base)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+    .f-readout span { color: var(--app-text-strong); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .f-readout span small { font-weight: 400; color: var(--app-text-muted); font-size: var(--text-base); }
+    .f-setting { display: grid; grid-template-columns: 1fr auto; gap: var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--mx-hairline); }
+    .f-setting__label { font: 500 var(--text-md)/1.3 var(--font-sans); color: var(--app-text-strong); }
+    .f-setting__desc { margin: 3px 0 0; font-size: var(--text-base); color: var(--app-text-muted); line-height: 1.45; }
+    .f-actions { display: flex; gap: var(--s-2); }
+    .f-glyphs { display: grid; gap: 6px; padding-top: var(--s-3); border-top: 1px solid var(--mx-hairline); }
+    .f-glyphs .s { font-size: 22px; font-weight: 500; letter-spacing: -0.02em; color: var(--app-text-strong); }
+    .f-glyphs .m { font: 400 15px/1.3 var(--font-mono); color: var(--app-text); font-variant-numeric: tabular-nums; }
+    .f-notes { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; font-size: var(--text-base); color: var(--app-text-muted); }
+    .f-notes li::before { content: "— "; color: var(--app-text-subtle); }
+    .f-theme { justify-self: start; }
+  </style>
+</head>
+<body>
+<div class="f-page">
+  <section class="f-intro">
+    <div>
+      <span class="mx-kicker">Typography · 3 pairings</span>
+      <h1 class="mx-h1">One sans for the interface, one mono for the record.</h1>
+      <p class="mx-prose">Each column renders the same slice of Mnema — an Overview headline, its stats, a timeline readout and a settings row — in a different pairing. All six faces are OFL-1.1, self-hosted from <code>fonts/</code> (latin subset, variable weight, 23–47 KB each), so they can ship inside the app bundle with no network request.</p>
+    </div>
+    <div class="f-verdict">
+      <span class="mx-kicker mx-kicker--live">Chosen</span>
+      <p class="mx-prose"><b>A · Hanken Grotesk + Spline Sans Mono.</b> It is the marketing site's pair (apps/web/DESIGN.md), so app and site read as one brand. Hanken's open apertures and slightly humanist forms stay calm and legible at 11–13px UI sizes, where Geist feels colder and Schibsted's tight spacing crowds. Spline Sans Mono has soft, wide numerals that make timestamps and durations scan in columns without the shout of Martian.</p>
+      <button class="mx-btn mx-btn--sm f-theme" data-theme-toggle>Flip theme <kbd>⇧⌘L</kbd></button>
+    </div>
+  </section>
+
+  <div class="f-row" data-row></div>
+  <div class="f-row" data-row data-theme-invert></div>
+</div>
+
+<template id="pair">
+  <article class="f-pair f-pair--a" data-pick>
+    <div class="f-head"><h2 class="mx-h3">A · Hanken Grotesk + Spline Sans Mono</h2><span class="mx-chip mx-chip--accent">chosen</span></div>
+    <div class="f-names">brand pair · matches mnema.day</div>
+    <!--snippet-->
+    <ul class="f-notes"><li>Warm, open; holds up at 11px</li><li>Mono numerals are wide and calm in columns</li><li>Same faces as the website — zero brand drift</li></ul>
+  </article>
+  <article class="f-pair f-pair--b">
+    <div class="f-head"><h2 class="mx-h3">B · Geist + Geist Mono</h2></div>
+    <div class="f-names">one superfamily · Vercel</div>
+    <!--snippet-->
+    <ul class="f-notes"><li>Crisp and tightly matched (one design)</li><li>Reads "developer tool"; cooler, more generic</li><li>Mono is narrow — dense tables, less character</li></ul>
+  </article>
+  <article class="f-pair f-pair--c">
+    <div class="f-head"><h2 class="mx-h3">C · Schibsted Grotesk + Martian Mono</h2></div>
+    <div class="f-names">editorial sans · wide mono</div>
+    <!--snippet-->
+    <ul class="f-notes"><li>Most distinctive; newspaper-grade headlines</li><li>Martian is wide and loud — kickers shout</li><li>Tight sans spacing crowds small UI labels</li></ul>
+  </article>
+</template>
+
+<template id="snippet">
+  <div>
+    <span class="mx-kicker">Week of Oct 5 – 11</span>
+    <h3 class="mx-display f-display">You built more than you talked this week.</h3>
+    <p class="mx-prose" style="font-size:var(--text-md)">Most of Tuesday and Wednesday went to the capture pipeline in Zed; meetings fell to 4h 10m, the lowest since September.</p>
+  </div>
+  <div class="f-stats">
+    <div class="mx-stat"><span class="mx-stat__label">Captured</span><span class="mx-stat__value">31<small>h</small></span><span class="mx-stat__delta mx-stat__delta--up">+4h 12m</span></div>
+    <div class="mx-stat"><span class="mx-stat__label">Deep focus</span><span class="mx-stat__value">58<small>%</small></span><span class="mx-stat__delta">±0</span></div>
+    <div class="mx-stat"><span class="mx-stat__label">Meetings</span><span class="mx-stat__value">4.2<small>h</small></span><span class="mx-stat__delta">−1h 40m</span></div>
+  </div>
+  <div class="f-readout">
+    <div><time>14:32:08</time><span>Zed <small>— capture_pipeline.rs</small></span><span class="mx-chip mx-chip--screen">screen</span></div>
+    <div><time>14:18:40</time><span>Huddle <small>with Priya Raman</small></span><span class="mx-chip mx-chip--mic">mic</span></div>
+    <div><time>13:57:02</time><span>Arc <small>— rig-core docs · tool_choice</small></span><span class="mx-chip mx-chip--screen">screen</span></div>
+  </div>
+  <div class="f-setting">
+    <div><div class="f-setting__label">Capture segment length</div><p class="f-setting__desc">Shorter segments make deletes finer; 5 minutes is the cap.</p></div>
+    <div class="mx-seg mx-seg--mono" role="group" aria-label="Segment"><button>1m</button><button>2m</button><button aria-pressed="true">5m</button></div>
+  </div>
+  <div class="f-actions"><button class="mx-btn mx-btn--primary mx-btn--sm">Save changes</button><button class="mx-btn mx-btn--sm"><svg class="mx-btn__accent" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>Ask about this week<kbd>⌘J</kbd></button></div>
+  <div class="f-glyphs"><span class="s">Recall · Rg 0123 &amp; 9:41</span><span class="m">02:14:07  1.2 GB  0O 1lI {}</span></div>
+</template>
+<script>
+  const pair = document.getElementById("pair").innerHTML, snip = document.getElementById("snippet").innerHTML;
+  document.querySelectorAll("[data-row]").forEach((row) => {
+    if (row.hasAttribute("data-theme-invert")) row.dataset.theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    row.innerHTML = pair.replaceAll("<!--snippet-->", snip);
+  });
+</script>
+</body>
+</html>

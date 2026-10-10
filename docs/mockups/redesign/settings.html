@@ -1,0 +1,1278 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Settings</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Settings page. Prefix: st-
+       Settings is its own focused mode of the main window (the /settings route): no app nav
+       titlebar, no recording status bar. The sidebar runs full height and hosts the traffic
+       lights; the content pane's slim header is the drag region. */
+    .mx-window.st-window { grid-template-rows: 1fr; }
+    .st-layout { display: grid; grid-template-columns: 252px minmax(0, 1fr); height: 100%; min-height: 0; }
+
+    /* --- Sidebar ---------------------------------------------------------- */
+    .st-side {
+      min-height: 0; display: flex; flex-direction: column;
+      background: color-mix(in srgb, var(--app-surface) 62%, var(--app-bg));
+      -webkit-backdrop-filter: blur(24px) saturate(1.3); backdrop-filter: blur(24px) saturate(1.3);
+      border-right: 1px solid var(--mx-hairline);
+      box-shadow: inset -1px 0 0 color-mix(in srgb, var(--app-fg) 2%, transparent);
+    }
+    [data-theme="light"] .st-side { background: color-mix(in srgb, var(--app-fg) 3.5%, var(--app-bg)); }
+    .st-side__top { height: 52px; flex: none; display: flex; align-items: center; user-select: none; }
+    .st-side__top .mx-lights { padding-left: 16px; }
+    .st-side__top:hover .mx-lights i:nth-child(1) { background: var(--app-status-running-dot); }
+    .st-side__top:hover .mx-lights i:nth-child(2) { background: var(--app-status-paused-dot); }
+    .st-side__top:hover .mx-lights i:nth-child(3) { background: var(--app-source-mic); }
+
+    .st-side__head { display: grid; gap: var(--s-3); padding: 0 var(--s-3) var(--s-3); }
+    /* Back = a kit ghost button; only its placement + arrow nudge are page-local. */
+    .st-back { justify-self: start; margin-left: -6px; }
+    .st-back svg { color: var(--app-text-subtle); transition: transform var(--t-med) var(--ease-expo); }
+    .st-back:hover svg { transform: translateX(-2px); color: var(--app-text); }
+    .st-side .mx-search { padding-left: 10px; background: color-mix(in srgb, var(--app-fg) 4%, transparent);
+      border-color: var(--mx-hairline); box-shadow: none; }
+    .st-side .mx-search input { font-size: var(--text-base); }
+    .st-side .mx-search kbd { height: 17px; border-bottom-width: 1px; background: transparent; border-color: var(--mx-hairline); }
+
+    .st-nav { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 2px; padding: var(--s-1) var(--s-3) var(--s-4); }
+    .st-group { display: grid; }
+    .st-group__btn {
+      display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 var(--s-2) 0 5px;
+      border: 0; border-radius: var(--r-md); background: none; cursor: pointer; text-align: left;
+      font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text);
+      transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
+    }
+    .st-group__btn:hover { background: color-mix(in srgb, var(--app-fg) 5%, transparent); color: var(--app-text-strong); }
+    .st-group__btn[aria-current="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    /* Icon tile: tinted square, monoline glyph. Quiet by default, full tint when its group is open. */
+    .st-tile {
+      flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px;
+      color: var(--t); background: color-mix(in srgb, var(--t) 13%, transparent);
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t) 22%, transparent);
+      transition: background-color var(--t-med) var(--ease-quart), color var(--t-med) var(--ease-quart);
+    }
+    .st-group__btn[aria-current="true"] .st-tile { color: var(--app-bg); background: var(--t); box-shadow: none; }
+    [data-theme="light"] .st-group__btn[aria-current="true"] .st-tile { color: var(--app-surface); }
+    .st-group__chev { margin-left: auto; color: var(--app-text-faint); transition: transform var(--t-med) var(--ease-expo); }
+    .st-group.is-open .st-group__chev { transform: rotate(90deg); color: var(--app-text-subtle); }
+    .st-group__count { margin-left: auto; min-width: 18px; height: 16px; padding: 0 5px; display: none; place-items: center;
+      border-radius: var(--r-pill); font: 500 var(--text-xs)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-accent); background: var(--app-accent-bg); }
+    .st-group__count:not(:empty) { display: inline-grid; }
+    .st-group__count:not(:empty) + .st-group__chev { display: none; }
+
+    /* Nested sub-sections: indented under the label, a hairline guide; the one in view gets the --mx-selected fill. */
+    .st-subnav { position: relative; display: grid; gap: 1px; margin: 2px 0 6px 16px; padding-left: 13px; }
+    .st-subnav::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 1px; background: var(--mx-hairline); }
+    .st-subnav a {
+      position: relative; display: block; padding: 5px var(--s-2); border-radius: var(--r-sm);
+      font: 400 var(--text-base)/1.25 var(--font-sans); color: var(--app-text-subtle); text-decoration: none;
+      transition: color var(--t-fast) var(--ease-quart), background-color var(--t-fast) var(--ease-quart);
+    }
+    .st-subnav a:hover { color: var(--app-text-strong); background: color-mix(in srgb, var(--app-fg) 4%, transparent); }
+    .st-subnav a[aria-current="true"] { color: var(--app-text-strong); font-weight: 500; background: var(--mx-selected); }
+    .st-group:not(.is-open) .st-subnav { display: none; }
+    .st-group.is-empty .st-group__btn { opacity: var(--app-disabled-opacity); }
+
+    .st-side__foot { flex: none; display: grid; gap: 8px; padding: var(--s-3) var(--s-4) var(--s-4); border-top: 1px solid var(--mx-hairline); }
+    .st-foot__rec { display: flex; align-items: center; gap: var(--s-2); font: 500 var(--text-xs)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .st-foot__rec .mx-rec { height: 18px; padding: 0 7px 0 6px; gap: 6px; }
+    .st-foot__lanes { display: inline-flex; gap: 4px; margin-left: auto; }
+    .st-foot__lanes .mx-lane { font-size: 0; gap: 0; }
+    .st-foot__lanes .mx-lane::before { width: 6px; height: 6px; }
+    .st-foot__meta { display: flex; align-items: center; gap: 4px; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+
+    /* --- Content pane ----------------------------------------------------- */
+    .st-content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+    .st-bar {
+      position: relative; z-index: 5; display: flex; align-items: center; gap: var(--s-3); padding: 0 var(--s-5) 0 var(--s-7);
+      border-bottom: 1px solid transparent; user-select: none;
+      transition: border-color var(--t-med) var(--ease-quart), background-color var(--t-med) var(--ease-quart);
+    }
+    .st-content.is-scrolled .st-bar { border-bottom-color: var(--mx-hairline); background: color-mix(in srgb, var(--app-bg) 80%, transparent); }
+    .st-bar__crumb { display: flex; align-items: center; gap: 6px; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .st-bar__crumb span { color: var(--app-text-subtle); font-weight: 400; }
+    .st-bar__crumb span:empty { display: none; }
+    .st-bar__crumb span::before { content: "›"; margin-right: 6px; color: var(--app-text-faint); }
+    .st-save { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .st-save::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--app-source-mic); }
+    .st-save.is-saving { color: var(--app-text); }
+    .st-save.is-saving::before { background: var(--app-warn); }
+    /* --- Content ---------------------------------------------------------- */
+    .st-main { padding: var(--s-4) var(--s-7) var(--s-8); min-width: 0; overflow: auto; }
+    .st-page { max-width: 760px; }
+    .st-page[hidden] { display: none; }
+    .st-page__head { display: grid; gap: var(--s-2); margin-bottom: var(--s-6); }
+    .st-section { margin-bottom: var(--s-7); scroll-margin-top: var(--s-5); }
+    .st-section[hidden] { display: none; }
+    .st-section__head { display: flex; align-items: baseline; gap: var(--s-3); padding-bottom: var(--s-2); }
+    .st-section__head .mx-h3 { font-size: var(--text-md); text-transform: none; }
+    .st-section__hint { margin: 0; font-size: var(--text-base); color: var(--app-text-subtle); }
+
+    /* Obsidian-style row: copy left, control right, hairline between. */
+    .st-rows { border-top: 1px solid var(--app-border); }
+    .st-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-6);
+      padding: 14px 0; border-bottom: 1px solid var(--mx-hairline);
+    }
+    .st-row[hidden] { display: none; }
+    .st-row--stack { grid-template-columns: 1fr; gap: var(--s-3); }
+    .st-row__label { font: 500 var(--text-md)/1.35 var(--font-sans); color: var(--app-text-strong); display: flex; align-items: center; gap: var(--s-2); }
+    .st-row__desc { margin: 3px 0 0; font-size: var(--text-base); line-height: 1.5; color: var(--app-text-muted); max-width: 52ch; }
+    .st-row__ctl { display: flex; align-items: center; gap: var(--s-2); justify-self: end; }
+    .st-row.is-off .st-row__label, .st-row.is-off .st-row__desc { opacity: 0.55; }
+
+    /* Select / combobox (native select, styled) */
+    .st-select {
+      appearance: none; height: var(--h-md); min-width: 200px; padding: 0 30px 0 var(--s-3); cursor: pointer;
+      border-radius: var(--r-md); border: 1px solid var(--app-border-strong); color: var(--app-text-strong);
+      font: 400 var(--text-md)/1 var(--font-sans);
+      background: var(--app-surface-raised) no-repeat right 10px center / 10px 10px;
+      background-image: linear-gradient(45deg, transparent 50%, var(--app-text-subtle) 50%), linear-gradient(-45deg, transparent 50%, var(--app-text-subtle) 50%);
+      background-size: 5px 5px, 5px 5px; background-position: right 15px center, right 10px center;
+    }
+    .st-select:hover { border-color: var(--app-border-hover); }
+    .st-combo { position: relative; display: inline-flex; align-items: center; }
+    .st-combo svg { position: absolute; left: 10px; color: var(--app-text-subtle); pointer-events: none; }
+    .st-combo .mx-input { width: 220px; padding-left: 30px; }
+
+
+    /* Capture sources: the switch takes its family's color. */
+    .st-src { width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
+    .st-src--screen { --c: var(--app-source-screen); }
+    .st-src--mic { --c: var(--app-source-mic); }
+    .st-src--sysaudio { --c: var(--app-source-sysaudio); }
+    .mx-switch.st-switch--screen:checked { background: var(--app-source-screen); }
+    .mx-switch.st-switch--mic:checked { background: var(--app-source-mic); }
+    .mx-switch.st-switch--sysaudio:checked { background: var(--app-source-sysaudio); }
+
+    /* Excluded-apps list */
+    .st-list { border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface); overflow: hidden; }
+    .st-list__item { display: flex; align-items: center; gap: var(--s-3); padding: 9px var(--s-3); border-top: 1px solid var(--mx-hairline); }
+    .st-list__item:first-child { border-top: 0; }
+    .st-app { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; flex: none;
+      font: 600 var(--text-sm)/1 var(--font-sans); color: var(--app-text-strong);
+      background: color-mix(in srgb, var(--c) 22%, var(--app-surface-raised)); border: 1px solid color-mix(in srgb, var(--c) 35%, var(--app-border)); }
+    .st-list__name { font: 500 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .st-list__meta { font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .st-list__item .mx-btn { margin-left: auto; }
+    .st-list__foot { display: flex; align-items: center; gap: var(--s-2); padding: 8px var(--s-3); border-top: 1px solid var(--mx-hairline); background: var(--app-surface-subtle); }
+    .st-list__foot .mx-label { margin-left: auto; }
+
+    /* Provider rows */
+    .st-prov__logo { width: 28px; height: 28px; border-radius: var(--r-sm); }
+    .st-prov__state { display: inline-flex; align-items: center; gap: 6px; margin-right: var(--s-1); font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .st-prov__state--ok { color: var(--app-accent); }
+    .st-prov__state--ok::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+
+    /* Storage meter */
+    .st-meter { display: grid; gap: var(--s-3); }
+    .st-meter__top { display: flex; align-items: baseline; gap: var(--s-3); }
+    .st-meter__bar { display: flex; gap: 2px; height: 10px; border-radius: var(--r-xs); overflow: hidden; background: var(--app-surface-hover); }
+    .st-meter__bar i { display: block; height: 100%; background: var(--c); }
+    .st-meter__legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-5); margin: 0; padding: 0; list-style: none; }
+    .st-meter__legend li { display: inline-flex; align-items: center; gap: 6px; font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); }
+    .st-meter__legend li::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+    .st-meter__legend b { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 500; color: var(--app-text-strong); }
+    .st-path { display: inline-flex; align-items: center; height: var(--h-md); box-sizing: border-box; padding: 0 var(--s-3);
+      font: 400 var(--text-base)/1 var(--font-mono); color: var(--app-text); border-radius: var(--r-md); background: var(--app-surface-subtle); border: 1px solid var(--app-border); }
+
+    /* Danger zone */
+    .st-danger { margin-top: var(--s-5); border: 1px solid var(--app-danger-border); border-radius: var(--r-md);
+      background: var(--app-danger-bg-soft); padding: 0 var(--s-4); }
+    .st-danger .st-row { border-bottom: 0; }
+    .st-danger .st-row__label { color: var(--app-danger-text); }
+    .st-danger__note { margin: 0; padding: 0 0 var(--s-3); font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+
+    /* Shortcut chips */
+    /* Rebind button = kit secondary button whose label is the key chord. */
+    .st-keys { display: inline-flex; gap: 3px; }
+    .mx-btn .st-keys kbd { margin: 0; min-width: 20px; height: 20px; font-size: var(--text-sm); }
+
+    .st-empty { display: none; }
+    .st-main.is-filter-empty .st-empty { display: grid; }
+    .st-bar__crumb b { font-weight: 600; }
+
+    /* --- Mockup states (?state=…#s-section). [data-st="a b"] shows only in those states;
+       [data-base="k"] is the healthy default, hidden when a shown variant has data-replaces="k". --- */
+    .is-st-off, .is-dep-off { display: none !important; }
+    .st-range { width: 180px; accent-color: var(--app-accent); }
+    .st-range__v { min-width: 34px; font-size: var(--text-sm); color: var(--app-text-muted); text-align: right; }
+    .st-row .mx-inline { display: flex; }
+    .st-statepick { position: fixed; z-index: 80; right: 40px; top: 2px; display: flex; align-items: center; gap: var(--s-2);
+      padding: 2px 2px 2px 10px; border-radius: var(--r-md); border: 1px dashed var(--app-border-strong);
+      background: var(--app-overlay-bg-strong); box-shadow: var(--app-shadow-popover); }
+    .st-statepick .st-select { min-width: 250px; height: var(--h-sm); font-size: var(--text-base); }
+    /* A state callout sits between rows: same hairline rhythm as a row. */
+    .st-rows > .mx-notice { margin: var(--s-3) 0; }
+    .st-section > .mx-notice { margin-bottom: var(--s-3); }
+    .st-row .mx-inline { margin-top: 6px; }
+    .st-row--stack > .mx-notice, .st-row--stack > .mx-progress__wrap { width: 100%; }
+    .st-skel-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: var(--s-6); align-items: center; padding: 16px 0; border-bottom: 1px solid var(--mx-hairline); }
+    .st-skel-row .mx-skel-lines { max-width: 420px; }
+    .st-save.is-failed { color: var(--app-danger-text); }
+    .st-save.is-failed::before { background: var(--app-danger); }
+    .st-save .mx-btn { --_h: 22px; }
+    .st-prov__state--warn { color: var(--app-warn); }
+    .st-prov__state--danger { color: var(--app-danger-text); }
+    .st-prov__state--warn::before, .st-prov__state--danger::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .st-keyfield { display: flex; gap: var(--s-2); width: 100%; }
+    .st-keyfield .mx-input { flex: 1; font-family: var(--font-mono); font-size: var(--text-base); }
+    .st-sub { display: grid; gap: var(--s-2); }
+
+    /* CLI Access rows — same parts as access.html?view=manage (ac-), so both pages map to one component. */
+    .ac-glyph { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-md);
+      background: var(--mx-wash); color: var(--app-text-muted); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+    .ac-list { border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface); }
+    .ac-tool { display: grid; grid-template-columns: 32px minmax(0, 1fr) 132px auto; align-items: center; gap: var(--s-3);
+      padding: 12px var(--s-3) 12px 14px; border-top: 1px solid var(--mx-hairline); }
+    .ac-tool:first-child { border-top: 0; }
+    .ac-tool__main { display: grid; gap: 5px; min-width: 0; }
+    .ac-tool__name { display: flex; align-items: center; gap: var(--s-2); font: 500 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .ac-tool__meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font: 400 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-subtle); }
+    .ac-tool__meta i { font-style: normal; color: var(--app-text-faint); }
+    .ac-tool__meta code { font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-muted); }
+    .ac-tool.is-blocked .ac-tool__name { color: var(--app-text-muted); }
+    .ac-tool.is-blocked .ac-glyph { color: var(--app-danger-text); background: var(--app-danger-bg); box-shadow: inset 0 0 0 1px var(--app-danger-border); }
+    .ac-tool > .mx-btn, .ac-tool > .mx-pop-anchor { justify-self: end; }
+    .ac-idle { display: grid; gap: 5px; }
+    .ac-idle b { font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); white-space: nowrap; }
+    .ac-idle__bar { height: 3px; border-radius: 2px; background: var(--mx-wash-strong); overflow: hidden; }
+    .ac-idle__bar i { display: block; height: 100%; width: var(--left); border-radius: 2px; background: var(--chart-grey-4); }
+    .ac-idle.is-soon b { color: var(--app-text-strong); }
+    .ac-idle--blocked b { color: var(--app-text-subtle); }
+    .ac-sec { margin-top: var(--s-5); }
+    .ac-sec__head { display: flex; align-items: baseline; gap: var(--s-3); padding-bottom: var(--s-2); }
+    .ac-sec__head b { font: 500 var(--text-md)/1.3 var(--font-sans); color: var(--app-text-strong); }
+    .ac-confirm { width: 300px; padding: var(--s-4); display: grid; gap: var(--s-3); }
+    .ac-confirm p { margin: 0; }
+    .ac-confirm__actions { display: flex; justify-content: flex-end; gap: var(--s-2); }
+    .ac-log { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; margin: 0; padding: 0; list-style: none; }
+    .ac-log li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; gap: var(--s-4);
+      padding: 9px 2px; border-bottom: 1px solid var(--mx-hairline); font: 400 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-muted); }
+    .ac-log b { font-weight: 500; color: var(--app-text); }
+    .ac-log code { font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text); }
+    .ac-log .num { font-size: var(--text-sm); color: var(--app-text-subtle); text-align: right; }
+    .ac-log .is-refused { color: var(--app-warn); font-weight: 500; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4c-6 0-12 4-13 13l-3 3"/><path d="M7 17c6 0 10-3 11-9"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4.5 4.5 0 0 1-.5-9A6 6 0 0 1 18 8.5 4.5 4.5 0 0 1 17.5 18z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17 19 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-record" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z"/></symbol>
+    <symbol id="ac-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+    <symbol id="ac-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></symbol>
+    <symbol id="st-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/></symbol>
+    <symbol id="st-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+  </defs>
+</svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="st-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="st-capture" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="st-data" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    <symbol id="st-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></symbol>
+    <symbol id="st-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="st-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="st-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></symbol>
+    <symbol id="st-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"/></symbol>
+    <symbol id="st-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="st-apple" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M8 8v8M16 8v8M4 11v2M20 11v2"/></symbol>
+    <symbol id="st-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  </defs>
+</svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="st-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 6-6 6 6 6"/></symbol>
+    <symbol id="st-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  </defs>
+</svg>
+
+<div class="mx-desk">
+  <div class="mx-window st-window">
+    <div class="st-layout">
+      <!-- ============ Sidebar (full height; hosts the traffic lights) ============ -->
+      <aside class="st-side" aria-label="Settings sections">
+        <div class="st-side__top" data-tauri-drag-region><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div></div>
+        <div class="st-side__head">
+          <a class="mx-btn mx-btn--ghost mx-btn--sm st-back" href="timeline.html"><svg width="14" height="14"><use href="#st-back"/></svg>Back to app<kbd>Esc</kbd></a>
+          <label class="mx-search"><svg width="13" height="13"><use href="#i-search"/></svg>
+            <input id="st-filter" placeholder="Search settings" aria-label="Search settings" /><kbd>/</kbd></label>
+        </div>
+        <nav class="st-nav" id="st-nav">
+          <div class="st-group" data-group="general">
+            <button class="st-group__btn"><span class="st-tile" style="--t:var(--chart-grey-4)"><svg width="13" height="13"><use href="#st-sliders"/></svg></span>General<span class="st-group__count"></span><svg class="st-group__chev" width="12" height="12"><use href="#st-chev"/></svg></button>
+            <div class="st-subnav"><a href="#s-appearance">Appearance</a><a href="#s-startup">Startup</a><a href="#s-shortcuts">Shortcuts</a></div>
+          </div>
+          <div class="st-group" data-group="capture">
+            <button class="st-group__btn"><span class="st-tile" style="--t:var(--app-source-screen)"><svg width="13" height="13"><use href="#st-capture"/></svg></span>Capture<span class="st-group__count"></span><svg class="st-group__chev" width="12" height="12"><use href="#st-chev"/></svg></button>
+            <div class="st-subnav"><a href="#s-capture">Sources</a><a href="#s-video">Video</a><a href="#s-audio">Microphone</a><a href="#s-privacy">Privacy</a></div>
+          </div>
+          <div class="st-group" data-group="intelligence">
+            <button class="st-group__btn"><span class="st-tile" style="--t:var(--cat-learning)"><svg width="13" height="13"><use href="#i-sparkle"/></svg></span>Intelligence<span class="st-group__count"></span><svg class="st-group__chev" width="12" height="12"><use href="#st-chev"/></svg></button>
+            <div class="st-subnav"><a href="#s-providers">Providers</a><a href="#s-askai">Ask AI</a><a href="#s-usercontext">User Context</a><a href="#s-ocr">OCR</a><a href="#s-transcription">Transcription</a><a href="#s-speakers">Speakers</a><a href="#s-semantic">Semantic Search</a></div>
+          </div>
+          <div class="st-group" data-group="data">
+            <button class="st-group__btn"><span class="st-tile" style="--t:var(--cat-organizing)"><svg width="13" height="13"><use href="#st-data"/></svg></span>Data<span class="st-group__count"></span><svg class="st-group__chev" width="12" height="12"><use href="#st-chev"/></svg></button>
+            <div class="st-subnav"><a href="#s-storage">Storage</a><a href="#s-access">CLI Access</a></div>
+          </div>
+          <div class="st-group" data-group="about">
+            <button class="st-group__btn"><span class="st-tile" style="--t:var(--cat-research)"><svg width="13" height="13"><use href="#st-info"/></svg></span>About<span class="st-group__count"></span><svg class="st-group__chev" width="12" height="12"><use href="#st-chev"/></svg></button>
+            <div class="st-subnav"><a href="#s-license">License &amp; Trial</a><a href="#s-about">Updates</a><a href="#s-developer">Developer</a></div>
+          </div>
+        </nav>
+        <div class="st-side__foot">
+          <div class="st-foot__rec">
+            <span class="mx-rec mx-rec--running" data-tip="Recording continues while you're in Settings" data-tip-pos="top"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span>
+            <span class="st-foot__lanes">
+              <span class="mx-lane mx-lane--screen mx-lane--on" data-lane-ind="screen" data-tip="screen" data-tip-pos="top">screen</span>
+              <span class="mx-lane mx-lane--mic mx-lane--on" data-lane-ind="mic" data-tip="mic" data-tip-pos="top">mic</span>
+              <span class="mx-lane mx-lane--sysaudio mx-lane--off" data-lane-ind="sysaudio" data-tip="system audio" data-tip-pos="top">system</span>
+            </span>
+          </div>
+          <div class="st-foot__meta">Mnema <span class="num">0.1.23</span></div>
+        </div>
+      </aside>
+
+      <!-- ============ Content ============ -->
+      <section class="st-content" id="st-content">
+        <header class="st-bar" data-tauri-drag-region>
+          <div class="st-bar__crumb"><b id="st-crumb-group">Capture</b><span id="st-crumb-sec"></span></div>
+          <span class="st-save" id="st-save" role="status" data-base="save">All changes saved</span>
+          <!-- rail footer priority (SettingsRail.svelte:53-63): save failed > resolve issues > saving > saved -->
+          <span class="st-save is-failed" role="alert" data-st="save-failed" data-replaces="save">Couldn’t save<button class="mx-btn mx-btn--ghost mx-btn--sm"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button></span>
+          <span class="st-save is-saving" role="status" data-st="validation shortcut-conflict bitrate-invalid" data-replaces="save">Resolve issues to save</span>
+        </header>
+        <div class="st-main" id="st-main">
+            <div class="mx-empty st-empty">
+              <span class="mx-empty__glyph"><svg width="18" height="18"><use href="#i-search"/></svg></span>
+              <h2 class="mx-h3">No setting matches “<span id="st-q"></span>”</h2>
+              <p class="mx-prose">Try a word from the setting’s name — “retention”, “bitrate”, “theme”.</p>
+            </div>
+  
+            <!-- ======== GENERAL ======== -->
+            <article class="st-page" data-page="general">
+              <header class="st-page__head"><h1 class="mx-h1">General</h1>
+                <p class="mx-prose">Appearance, startup, and keyboard shortcuts.</p></header>
+  
+              <section class="st-section" id="s-appearance">
+                <div class="st-section__head"><h2 class="mx-h3">Appearance</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Theme</div><p class="st-row__desc">System follows your OS setting; pick Light or Dark to override it.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md" id="st-theme" role="group" aria-label="Theme"><button value="system">System</button><button value="light">Light</button><button value="dark" aria-pressed="true">Dark</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Follow live recording</div><p class="st-row__desc">Keep the timeline pinned to the latest captured data while recording.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Follow live recording" /></div></div>
+                </div>
+              </section>
+  
+              <section class="st-section" id="s-startup">
+                <div class="st-section__head"><h2 class="mx-h3">Startup</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Auto-start recording on launch</div><p class="st-row__desc">Begin capturing immediately when the app opens.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Auto-start recording on launch" /></div></div>
+                </div>
+              </section>
+  
+              <section class="st-section" id="s-shortcuts">
+                <div class="st-section__head"><h2 class="mx-h3">Keyboard Shortcuts</h2><p class="st-section__hint">Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears.</p></div>
+                <div class="mx-notice" data-tone="danger" data-st="shortcut-conflict" role="alert"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+                  <b class="mx-notice__title">Shortcuts not saved</b><p class="mx-notice__text">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</p>
+                  <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Jump to conflict</button></div></div>
+                <div class="st-rows" data-base="kb">
+                  <div class="st-row"><div><div class="st-row__label">Global shortcuts</div><p class="st-row__desc">Work from any app while Mnema is in the background. Background shortcuts need Command/Control or Option.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Global shortcuts" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Quick Recall</div><p class="st-row__desc">Works even when Mnema is in the background.</p>
+                      <span class="mx-inline" data-tone="danger" data-st="shortcut-conflict"><svg width="13" height="13"><use href="#i-alert"/></svg>Conflicts with Start or stop recording.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn" aria-label="Rebind shortcut" data-base="kb-qr"><span class="st-keys"><kbd>⌥</kbd><kbd>⌘</kbd><kbd>Space</kbd></span></button>
+                      <button class="mx-btn" aria-pressed="true" data-st="shortcut-listening" data-replaces="kb-qr"><span class="mx-spin mx-spin--sm"></span>Press keys…</button>
+                      <button class="mx-btn" data-st="shortcut-conflict" data-replaces="kb-qr" style="--_bd:var(--app-danger-border)"><span class="st-keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>R</kbd></span></button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Start or stop recording</div><p class="st-row__desc">Works even when Mnema is in the background.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn" aria-label="Rebind shortcut"><span class="st-keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>R</kbd></span></button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Pause recording</div></div>
+                    <div class="st-row__ctl"><button class="mx-btn" aria-label="Rebind shortcut"><span class="st-keys"><kbd>⌃</kbd><kbd>⌥</kbd><kbd>P</kbd></span></button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Restore all default shortcuts</div><p class="st-row__desc">Asks first.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Restore defaults</button></div></div>
+                </div>
+                <div aria-busy="true" data-st="shortcuts-loading" data-replaces="kb"><span class="mx-sr">Loading shortcuts…</span>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:32px"></div></div>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div></div><div class="mx-skel" style="height:32px"></div></div>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div></div><div class="mx-skel" style="height:32px"></div></div></div>
+              </section>
+            </article>
+  
+            <!-- ======== CAPTURE ======== -->
+            <article class="st-page" data-page="capture">
+              <header class="st-page__head"><h1 class="mx-h1">Capture</h1>
+                <p class="mx-prose">What gets recorded, how it’s encoded, and what never is.</p></header>
+
+              <!-- save failed: the recording-settings error card (SettingsRail.svelte:298-342) — Retry re-sends, Dismiss restores the last saved value -->
+              <div class="mx-notice" data-tone="danger" data-st="save-failed" role="alert" style="margin-bottom:var(--s-5)"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+                <b class="mx-notice__title">Couldn’t save recording settings</b><p class="mx-notice__text">database is locked. Retrying on its own — or dismiss to put the last saved value back.</p>
+                <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button><button class="mx-btn mx-btn--ghost mx-btn--sm">Dismiss</button></div></div>
+
+              <section class="st-section" id="s-capture">
+                <div class="st-section__head"><h2 class="mx-h3">Sources</h2><p class="st-section__hint">Three independent families — any can run alone.</p></div>
+                <div class="mx-notice" data-tone="danger" data-st="validation" role="alert"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+                  <b class="mx-notice__title">Unsaved changes blocked</b><p class="mx-notice__text">At least one capture source (Screen, Microphone, or System Audio) must be enabled.</p></div>
+                <div aria-busy="true" data-st="capture-loading" data-replaces="sources"><span class="mx-sr">Loading settings…</span>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:18px;width:30px;justify-self:end"></div></div>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:18px;width:30px;justify-self:end"></div></div>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:18px;width:30px;justify-self:end"></div></div></div>
+                <div class="st-rows" data-base="sources">
+                  <div class="st-row" data-src data-base="src-screen"><div><div class="st-row__label"><span class="st-src st-src--screen"></span>Screen</div><p class="st-row__desc">Capture the display.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--screen" checked aria-label="Screen" data-lane="screen" /></div></div>
+                  <div class="st-row is-off" data-st="validation" data-replaces="src-screen src-mic"><div><div class="st-row__label"><span class="st-src st-src--screen"></span>Screen</div><p class="st-row__desc">Capture the display.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--screen" aria-label="Screen" /></div></div>
+                  <div class="st-row" data-src data-base="src-mic"><div><div class="st-row__label"><span class="st-src st-src--mic"></span>Microphone</div><p class="st-row__desc">Capture audio from microphone.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--mic" checked aria-label="Microphone" data-lane="mic" /></div></div>
+                  <div class="st-row is-off" data-st="validation"><div><div class="st-row__label"><span class="st-src st-src--mic"></span>Microphone</div><p class="st-row__desc">Capture audio from microphone.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--mic" aria-label="Microphone" /></div></div>
+                  <div class="st-row is-off" data-src data-base="src-sys"><div><div class="st-row__label"><span class="st-src st-src--sysaudio"></span>System Audio</div><p class="st-row__desc">Capture Mac system audio (macOS 15+) — meetings, videos, and app sound.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--sysaudio" aria-label="System Audio" data-lane="sysaudio" /></div></div>
+                  <!-- possibly_blocked is inferred (no TCC query exists): info tone, hedged. Shows only while System Audio is ON. -->
+                  <div class="st-row st-row--stack" data-st="sysaudio-blocked" data-replaces="src-sys"><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--s-6);align-items:center">
+                      <div><div class="st-row__label"><span class="st-src st-src--sysaudio"></span>System Audio <span class="mx-chip mx-chip--info">may be blocked</span></div><p class="st-row__desc">Capture Mac system audio (macOS 15+) — meetings, videos, and app sound.</p></div>
+                      <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--sysaudio" checked aria-label="System Audio" /></div></div>
+                    <div class="mx-notice" data-tone="info"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span>
+                      <b class="mx-notice__title">No system sound yet</b><p class="mx-notice__text">System audio is on, but no recording has captured a sound yet. If you denied the macOS prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If your Mac has simply been quiet, ignore this.</p>
+                      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-dismiss>Dismiss</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Segment Duration</div><p class="st-row__desc">How long each recording segment is before a new one starts.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md mx-seg--mono"><button>1m</button><button>2m</button><button aria-pressed="true">5m</button></div></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-inactivity" data-rail="s-capture">
+                <div class="st-section__head"><h2 class="mx-h3">Inactivity</h2><p class="st-section__hint">Pause and resume rules when you step away.</p></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Pause capture when idle</div><p class="st-row__desc">Pause after the whole Mac has been idle (no mouse, keyboard or other input), and resume when activity is detected.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" style="min-width:120px" aria-label="Idle timeout"><option>30 seconds</option><option selected>1 minute</option><option>2 minutes</option><option>5 minutes</option></select><input type="checkbox" class="mx-switch" checked aria-label="Pause capture when idle" /></div></div>
+                  <div class="st-row st-row--stack"><div class="mx-notice"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-wave"/></svg></span>
+                      <b class="mx-notice__title">Activity sources</b><p class="mx-notice__text">Keyboard and mouse input, on-screen changes, and source-specific audio. The microphone counts speech when voice detection is on; system audio uses its level threshold below.</p></div></div>
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Microphone Voice Detection</div><p class="st-row__desc">Decides when the microphone counts as active.</p></div>
+                    <div class="mx-choice" role="radiogroup" aria-label="Microphone voice detection">
+                      <label class="mx-choice__opt"><input type="radio" name="vad" checked />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-wave"/></svg></span>
+                        <span class="mx-choice__title">Silero <span class="mx-choice__tag">default</span></span>
+                        <span class="mx-choice__desc">Neural speech detector. Falls back to WebRTC when unavailable.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="vad" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-feather"/></svg></span>
+                        <span class="mx-choice__title">WebRTC</span>
+                        <span class="mx-choice__desc">Lightweight local speech detector.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="vad" id="st-vad-off" data-pick="vad-off" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-off"/></svg></span>
+                        <span class="mx-choice__title">Off</span>
+                        <span class="mx-choice__desc">Use the microphone peak level only.</span></label>
+                    </div></div>
+                  <!-- only while Voice Detection = Off (Capture.svelte:197-230) -->
+                  <div class="st-row" id="st-micsens"><div><div class="st-row__label"><span class="st-src st-src--mic"></span>Microphone activity sensitivity</div>
+                      <p class="st-row__desc"><b>Medium</b> — normal speech triggers activity. Recommended.</p></div>
+                    <div class="st-row__ctl"><input type="range" class="st-range" min="0" max="100" value="50" aria-label="Mic sensitivity" /><span class="num st-range__v">50%</span></div></div>
+                  <div class="st-row"><div><div class="st-row__label"><span class="st-src st-src--sysaudio"></span>System audio activity sensitivity</div>
+                      <p class="st-row__desc"><b>Medium</b> — typical media playback triggers activity. Recommended.</p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>System audio capture is off — this has no effect until you turn it on.</span></div>
+                    <div class="st-row__ctl"><input type="range" class="st-range" min="0" max="100" value="45" aria-label="System audio sensitivity" disabled /><span class="num st-range__v">45%</span></div></div>
+                  <div class="st-row st-row--stack"><span class="mx-inline"><svg width="13" height="13"><use href="#i-info"/></svg>System audio capture is off — only microphone audio is monitored for activity.</span></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-video">
+                <div class="st-section__head"><h2 class="mx-h3">Video</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Screen Capture Rate</div><p class="st-row__desc">How often a snapshot of your screen is captured. More frequent snapshots produce larger files.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md mx-seg--mono"><button>10/s</button><button>1/s</button><button aria-pressed="true">5s</button><button>15s</button><button>1/min</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Screen Resolution</div><p class="st-row__desc">Output files match the captured display’s native pixel size.</p>
+                      <span class="mx-inline" data-st="res-checking"><span class="mx-spin mx-spin--sm"></span>Checking capture support… scaled and custom sizes wait until it’s confirmed.</span>
+                      <span class="mx-inline" data-tone="warn" data-st="res-original-only"><svg width="13" height="13"><use href="#i-info"/></svg>Scaled and custom sizes need macOS 15 or later. Only Original is available on this Mac.</span></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button aria-pressed="true">Original</button><button>1080p</button><button>720p</button><button>540p</button><button>Custom</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Bitrate</div><p class="st-row__desc"><b>Medium</b> — about 8 Mbps. Balanced quality and file size for most screen recordings.</p>
+                      <span class="mx-inline" data-tone="danger" data-st="bitrate-invalid"><svg width="13" height="13"><use href="#i-alert"/></svg>Bitrate must not exceed 40 Mbps.</span></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Bitrate" data-base="br"><option>Low · ~3 Mbps</option><option selected>Medium · ~8 Mbps</option><option>High · ~20 Mbps</option><option>Custom…</option></select>
+                      <select class="st-select" style="min-width:120px" aria-label="Bitrate" data-st="bitrate-invalid" data-replaces="br"><option selected>Custom…</option></select><input class="mx-input num" value="64" style="width:72px;border-color:var(--app-danger-border)" aria-label="Bitrate (Mbps)" aria-invalid="true" data-st="bitrate-invalid" /></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-audio">
+                <div class="st-section__head"><h2 class="mx-h3">Microphone</h2></div>
+                <div class="st-rows" data-base="mic">
+                  <div class="st-row"><div><div class="st-row__label">Active device</div><p class="st-row__desc">The microphone currently in use.</p></div>
+                    <div class="st-row__ctl"><span class="mx-chip mx-chip--mic">MacBook Air Microphone</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Reload microphone state" data-tip="Reload"><svg width="14" height="14"><use href="#i-retry"/></svg></button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Preference</div><p class="st-row__desc">Which microphone capture should use.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button>System Default</button><button aria-pressed="true">Specific Device</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Device</div><p class="st-row__desc">Pick the microphone to lock to.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Device"><option selected>MacBook Air Microphone</option><option>AirPods Pro</option><option>Shure MV7</option></select></div></div>
+                  <div class="st-row"><div><div class="st-row__label">On Disconnect</div><p class="st-row__desc">What to do when the chosen microphone disconnects.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button aria-pressed="true">Fallback to Default</button><button>Wait for Same Device</button></div></div></div>
+                </div>
+                <div aria-busy="true" data-st="mic-loading" data-replaces="mic"><span class="mx-sr">Loading microphone state…</span>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:24px"></div></div>
+                  <div class="st-skel-row"><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel" style="height:32px"></div></div></div>
+                <div class="mx-empty mx-empty--compact" data-tone="danger" data-st="mic-failed" data-replaces="mic"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-alert"/></svg></span>
+                  <b class="mx-empty__title">Couldn’t load microphone state</b><p class="mx-empty__text">Devices and your preference will show here once it loads.</p>
+                  <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button></div></div>
+                <div data-st="mic-none" data-replaces="mic">
+                  <div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#st-mic"/></svg></span>
+                    <b class="mx-empty__title">No microphone devices found</b><p class="mx-empty__text">Plug one in or connect a headset — it shows up here on its own.</p></div>
+                  <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-alert"/></svg>Select a device before saving Specific Device mode.</span></div>
+              </section>
+
+              <section class="st-section" id="s-privacy">
+                <div class="st-section__head"><h2 class="mx-h3">Privacy</h2></div>
+                <div class="mx-notice" data-tone="info" data-st="excl-recommended"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#st-shield"/></svg></span>
+                  <b class="mx-notice__title">2 recommended app exclusions pending</b><p class="mx-notice__text">Password managers and Apple Passwords can be excluded from future screen capture.</p>
+                  <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Add exclusions</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-dismiss>Dismiss</button></div></div>
+                <div class="st-rows">
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Excluded Apps</div><p class="st-row__desc">Apps whose visible content is never recorded. Browsers, including private windows, are recorded unless the browser itself is excluded.</p></div>
+                    <div class="st-list" id="st-excluded" data-base="excl">
+                      <div class="st-list__item"><span class="st-app" style="--c:var(--cat-research)">1</span><span class="st-list__name">1Password</span><span class="st-list__meta">com.1password.1password</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-remove aria-label="Remove 1Password" data-tip="Remove exclusion"><svg width="15" height="15"><use href="#st-x"/></svg></button></div>
+                      <div class="st-list__item"><span class="st-app" style="--c:var(--cat-communication)">S</span><span class="st-list__name">Signal</span><span class="st-list__meta">org.whispersystems.signal-desktop</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-remove aria-label="Remove Signal" data-tip="Remove exclusion"><svg width="15" height="15"><use href="#st-x"/></svg></button></div>
+                      <div class="st-list__item"><span class="st-app" style="--c:var(--cat-meetings)">M</span><span class="st-list__name">Messages</span><span class="st-list__meta">com.apple.MobileSMS</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-remove aria-label="Remove Messages" data-tip="Remove exclusion"><svg width="15" height="15"><use href="#st-x"/></svg></button></div>
+                      <div class="st-list__item"><span class="st-app" style="--c:var(--cat-personal)">B</span><span class="st-list__name">Bank of Somewhere</span><span class="st-list__meta">com.example.bank</span><button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-remove aria-label="Remove Bank" data-tip="Remove exclusion"><svg width="15" height="15"><use href="#st-x"/></svg></button></div>
+                      <div class="st-list__foot"><button class="mx-btn mx-btn--sm"><svg width="14" height="14"><use href="#st-plus"/></svg>Add app…</button><span class="mx-label"><span class="num" id="st-excl-n">4</span> excluded</span></div>
+                    </div>
+                    <div class="st-list" data-st="excl-empty excl-recommended" data-replaces="excl">
+                      <div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#st-shield"/></svg></span>
+                        <b class="mx-empty__title">No app exclusions</b><p class="mx-empty__text">Every app’s visible content is recorded. Add the ones that should never be.</p>
+                        <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="14" height="14"><use href="#st-plus"/></svg>Add app…</button></div></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Filter system audio</div><p class="st-row__desc">Also keep audio from excluded apps out of recordings.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Filter system audio" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Capture frame context</div><p class="st-row__desc">Store app, window, and supported browser context with frames.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Capture frame context" /></div></div>
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Browser URL mode</div><p class="st-row__desc">How much of a captured browser URL is stored with the frame. Full asks first.</p></div>
+                    <div class="mx-choice" role="radiogroup" aria-label="Browser URL mode">
+                      <label class="mx-choice__opt"><input type="radio" name="url" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-off"/></svg></span>
+                        <span class="mx-choice__title">Off</span>
+                        <span class="mx-choice__desc">Don’t store browser URLs with captured frames.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="url" checked />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#st-shield"/></svg></span>
+                        <span class="mx-choice__title">Sanitized <span class="mx-choice__tag">default</span></span>
+                        <span class="mx-choice__desc">Keep scheme, host, port and path; drop query strings and fragments. <span class="num">github.com/mnema/pulls</span></span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="url" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#st-link"/></svg></span>
+                        <span class="mx-choice__title">Full</span>
+                        <span class="mx-choice__desc">The complete URL, including query strings and fragments.</span></label>
+                    </div></div>
+                  <!-- only when Firefox or Zen is installed, frame context is on and URL mode ≠ Off (Privacy.svelte:48-88) -->
+                  <div class="st-row" data-base="gecko"><div><div class="st-row__label">Browser URL access (Firefox / Zen)</div><p class="st-row__desc">Firefox and Zen expose no scriptable URL, so reading their page address needs the macOS Accessibility permission.</p>
+                      <span class="mx-inline" data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Zen · Accessibility granted</span></div><div class="st-row__ctl"></div></div>
+                  <div class="st-row st-row--stack" data-st="gecko-denied" data-replaces="gecko"><div><div class="st-row__label">Browser URL access (Firefox / Zen)</div><p class="st-row__desc">Firefox and Zen expose no scriptable URL, so reading their page address needs the macOS Accessibility permission.</p></div>
+                    <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span>
+                      <b class="mx-notice__title">Zen · Accessibility not granted</b><p class="mx-notice__text">Allow Mnema under Privacy &amp; Security → Accessibility to capture Zen’s page address.</p>
+                      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Grant access</button><button class="mx-btn mx-btn--sm">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button><button class="mx-btn mx-btn--ghost mx-btn--sm">Recheck</button></div></div></div>
+                </div>
+              </section>
+            </article>
+  
+            <!-- ======== INTELLIGENCE ======== -->
+            <article class="st-page" data-page="intelligence">
+              <header class="st-page__head"><h1 class="mx-h1">Intelligence</h1>
+                <p class="mx-prose">Models that read, transcribe, and answer over your history. Everything here is off until you turn it on.</p></header>
+
+              <section class="st-section" id="s-providers">
+                <div class="st-section__head"><h2 class="mx-h3">Providers</h2><p class="st-section__hint">One global default model; every AI feature inherits it.</p></div>
+                <div class="mx-notice" data-tone="warn" data-st="ai-not-ready no-providers"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-info"/></svg></span>
+                  <b class="mx-notice__title">AI features are on, but nothing is ready yet</b><p class="mx-notice__text">No AI providers connected yet. Connect a provider and choose a default model below.</p></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable AI features</div><p class="st-row__desc">The master switch for everything AI in Mnema. While off, nothing is sent to any AI model.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Enable AI features" /></div></div>
+                  <div class="st-row st-row--stack" data-st="no-providers" data-replaces="provs"><div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-sparkle"/></svg></span>
+                    <b class="mx-empty__title">No providers connected yet</b><p class="mx-empty__text">Connect one, then choose a default model.</p>
+                    <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="13" height="13"><use href="#st-plus"/></svg>Add provider</button></div></div></div>
+                  <div class="st-row" data-base="provs p-anth"><div><div class="st-row__label">Anthropic <span class="mx-chip">cloud</span></div><p class="st-row__desc">Key in the encrypted vault · <span class="num">sk-ant-…4f2a</span></p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">key saved</span><button class="mx-btn">Manage</button></div></div>
+                  <div class="st-row st-row--stack" data-st="key-saving key-rejected" data-replaces="p-anth"><div><div class="st-row__label">Anthropic <span class="mx-chip">cloud</span></div><p class="st-row__desc">A key is saved — paste a new one to replace it. It goes to the encrypted vault, never a config file.</p></div>
+                    <div class="st-keyfield"><input class="mx-input" type="password" value="sk-ant-api03-xxxxxxxxxxxxxxxx" aria-label="API key" />
+                      <button class="mx-btn" aria-busy="true" data-st="key-saving"><span class="mx-spin mx-spin--sm"></span>Saving…</button>
+                      <button class="mx-btn" data-st="key-rejected">Save key</button><button class="mx-btn mx-btn--ghost">Clear</button></div>
+                    <span class="mx-inline" data-tone="danger" data-st="key-rejected"><svg width="13" height="13"><use href="#i-alert"/></svg>Test connection failed — Anthropic rejected this key (401 invalid x-api-key).<button class="mx-btn mx-btn--ghost mx-btn--sm">Test again</button></span></div>
+                  <div class="st-row" data-base="provs p-oll"><div><div class="st-row__label">Ollama <span class="mx-chip">local</span></div><p class="st-row__desc"><span class="num">localhost:11434</span> · no key, nothing leaves this Mac</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">reachable</span><button class="mx-btn">Manage</button></div></div>
+                  <div class="st-row" data-st="ollama-down" data-replaces="p-oll"><div><div class="st-row__label">Ollama <span class="mx-chip">local</span></div><p class="st-row__desc"><span class="num">localhost:11434</span></p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>The local endpoint could not be reached. Start Ollama, then retry.<button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></span></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--warn">not reachable</span><button class="mx-btn">Manage</button></div></div>
+                  <div class="st-row" data-base="provs p-gpt"><div><div class="st-row__label">ChatGPT subscription</div><p class="st-row__desc">Your ChatGPT Plus/Pro plan — sign in, no API key. Usage counts against your plan’s Codex limits.</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state">not connected</span><button class="mx-btn">Connect ChatGPT</button></div></div>
+                  <div class="st-row st-row--stack" data-st="chatgpt-signin" data-replaces="p-gpt"><div><div class="st-row__label">ChatGPT subscription</div><p class="st-row__desc">Enter this code at <span class="num">auth.openai.com/codex/device</span> in the browser that opened.</p></div>
+                    <div class="st-keyfield"><span class="st-path" style="font-size:var(--text-lg);letter-spacing:.12em">K7QD-M2XF</span><button class="mx-btn">Copy code</button><span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Waiting for approval…</span><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost">Start over</button><button class="mx-btn mx-btn--ghost">Cancel</button></div></div>
+                  <div class="st-row" data-st="chatgpt-reconnect" data-replaces="p-gpt"><div><div class="st-row__label">ChatGPT subscription</div><p class="st-row__desc">Signed in as <span class="num">shaik@…</span></p>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>OpenAI rejected the saved sign-in. Sign in with ChatGPT again.</span></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--danger">needs reconnect</span><button class="mx-btn">Reconnect ChatGPT</button></div></div>
+                  <div class="st-row" data-st="chatgpt-unreachable" data-replaces="p-gpt"><div><div class="st-row__label">ChatGPT subscription</div><p class="st-row__desc">Signed in as <span class="num">shaik@…</span></p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Couldn’t reach ChatGPT — your sign-in is fine; this resumes when you’re back online.</span></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--warn">unreachable</span><button class="mx-btn">Manage</button></div></div>
+                  <div class="st-row" data-base="provs"><div><div class="st-row__label">Add a provider</div><p class="st-row__desc">Anthropic, OpenAI, ChatGPT, OpenAI-compatible, Ollama, Llamafile.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#st-plus"/></svg>Add provider…</button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Global default model</div><p class="st-row__desc">Used by every AI feature unless it sets its own override.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Global default model"><option selected>Anthropic · claude-sonnet-4.6</option><option>Anthropic · claude-haiku-4.5</option><option>Ollama · qwen3:14b</option><option>Ollama · llama3.2</option></select></div></div>
+                  <div class="st-row"><div><div class="st-row__label">AI runtime</div>
+                      <span class="mx-inline" data-tone="ok" data-base="rt"><svg width="13" height="13"><use href="#i-check"/></svg>Default model Anthropic · claude-sonnet-4.6 is configured and reachable.</span>
+                      <span class="mx-inline" data-tone="danger" data-st="key-rejected" data-replaces="rt"><svg width="13" height="13"><use href="#i-alert"/></svg>Isn’t ready — Anthropic rejected the saved key.</span>
+                      <span class="mx-inline" data-tone="warn" data-st="ai-not-ready no-providers" data-replaces="rt"><svg width="13" height="13"><use href="#i-info"/></svg>Isn’t ready yet — choose a global default model.</span>
+                      <span class="mx-inline" data-tone="danger" data-st="chatgpt-reconnect" data-replaces="rt"><svg width="13" height="13"><use href="#i-alert"/></svg>ChatGPT needs to be reconnected — sign in with ChatGPT again.</span>
+                      <span class="mx-inline" data-tone="warn" data-st="chatgpt-unreachable ollama-down" data-replaces="rt"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Couldn’t reach the default model’s provider — check your connection.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Test connection</button></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-mcp" data-rail="s-providers">
+                <div class="st-section__head"><h2 class="mx-h3">MCP connectors</h2><p class="st-section__hint">Tools chat can use. A connector works only when it’s enabled and authorized.</p></div>
+                <div class="st-rows" data-base="mcp">
+                  <div class="st-row"><div><div class="st-row__label">GitHub <span class="mx-chip">Bearer</span></div><p class="st-row__desc">Secret in keychain · <span class="num">26</span> tools · <span class="num">9</span> active</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost">Configure</button><input type="checkbox" class="mx-switch" checked aria-label="Enable GitHub" /></div></div>
+                  <div class="st-row" data-base="mcp-notion"><div><div class="st-row__label">Notion <span class="mx-chip">OAuth</span></div><p class="st-row__desc">Authorized · <span class="num">14</span> tools · <span class="num">14</span> active</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost">Disconnect</button><input type="checkbox" class="mx-switch" checked aria-label="Enable Notion" /></div></div>
+                  <div class="st-row" data-st="mcp-authorizing" data-replaces="mcp-notion"><div><div class="st-row__label">Notion <span class="mx-chip">OAuth</span></div><p class="st-row__desc">Waiting for your browser… approve access in the tab that opened.</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state"><span class="mx-spin mx-spin--sm"></span>authorizing…</span><button class="mx-btn mx-btn--ghost">Cancel</button><input type="checkbox" class="mx-switch" checked aria-label="Enable Notion" /></div></div>
+                  <div class="st-row" data-st="mcp-reconnect" data-replaces="mcp-notion"><div><div class="st-row__label">Notion <span class="mx-chip">OAuth</span></div><p class="st-row__desc">Token expired — chat reports it as unavailable until you reconnect.</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--warn">needs reconnect</span><button class="mx-btn">Reconnect</button><input type="checkbox" class="mx-switch" checked aria-label="Enable Notion" /></div></div>
+                  <div class="st-row" data-st="mcp-failed" data-replaces="mcp-notion"><div><div class="st-row__label">Notion <span class="mx-chip">OAuth</span></div><p class="st-row__desc">Not authorized yet — turn it on and Connect to start using it.</p>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Approval didn’t go through — you cancelled or denied access in the browser. Nothing was stored.</span></div>
+                    <div class="st-row__ctl"><span class="st-prov__state">not connected</span><button class="mx-btn">Try again</button><input type="checkbox" class="mx-switch" aria-label="Enable Notion" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Filesystem <span class="mx-chip">stdio</span> <span class="mx-chip mx-chip--warn">needs Node</span></div><p class="st-row__desc">Runs on this Mac and needs Node, which wasn’t found. Install it from nodejs.org.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost">Configure</button><input type="checkbox" class="mx-switch" aria-label="Enable Filesystem" disabled /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Add a connector</div><p class="st-row__desc">Secrets live only in the macOS keychain; removing a connector deletes its secret.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#st-plus"/></svg>Add connector…</button></div></div>
+                </div>
+                <div class="st-list" data-st="mcp-empty" data-replaces="mcp"><div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#st-plug"/></svg></span>
+                  <b class="mx-empty__title">No connectors yet</b><p class="mx-empty__text">Add one — GitHub, Notion, a folder on this Mac — then Connect or enable it.</p>
+                  <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="13" height="13"><use href="#st-plus"/></svg>Add connector…</button></div></div></div>
+              </section>
+
+              <section class="st-section" id="s-askai">
+                <div class="st-section__head"><h2 class="mx-h3">Ask AI</h2></div>
+                <div class="mx-notice" data-tone="warn" data-st="askai-unavailable"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-info"/></svg></span>
+                  <b class="mx-notice__title">Ask AI isn’t ready yet</b><p class="mx-notice__text">Choose a global default model in Providers above.</p>
+                  <div class="mx-notice__acts"><a class="mx-btn mx-btn--ghost mx-btn--sm" href="#s-providers">Go to Providers</a></div></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable Ask AI</div><p class="st-row__desc">Allow Quick Recall and Chat to answer questions over your redacted capture history.</p>
+                      <span class="mx-inline" data-tone="ok" data-base="askst"><svg width="13" height="13"><use href="#i-check"/></svg>Ask AI can answer over your redacted capture history.</span></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Enable Ask AI" /></div></div>
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Answer questions automatically</div><p class="st-row__desc">When you pause on a question in Quick Recall, start answering without a keypress. Each answer is one model call.</p></div>
+                    <div class="mx-choice" role="radiogroup" aria-label="Answer questions automatically">
+                      <label class="mx-choice__opt"><input type="radio" name="autoans" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-cloud"/></svg></span>
+                        <span class="mx-choice__title">Always</span>
+                        <span class="mx-choice__desc">Any model, cloud included. Every pause on a question spends a call and sends results to the provider.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="autoans" checked />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+                        <span class="mx-choice__title">Only with local models <span class="mx-choice__tag">default</span></span>
+                        <span class="mx-choice__desc">Answers on its own when the model runs on this Mac. With a cloud model, press Tab to ask.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="autoans" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-off"/></svg></span>
+                        <span class="mx-choice__title">Never</span>
+                        <span class="mx-choice__desc">Quick Recall only searches until you press Tab to ask.</span></label>
+                    </div></div>
+                  <div class="st-row"><div><div class="st-row__label">Model override</div><p class="st-row__desc">Optional override for Quick Recall and Chat.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Model override"><option selected>Use global default</option><option>Anthropic · claude-haiku-4.5</option><option>Ollama · qwen3:14b</option></select></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Limit tool calls per question</div><p class="st-row__desc">Cap how many follow-up searches Ask AI can run for one question.</p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>No cap: one question can run unlimited searches over your retained history.</span></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Limit tool calls per question" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Fetch pages you visited</div><p class="st-row__desc">Lets Ask AI re-request a page you visited (its address minus any secrets) to check its current state.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Fetch pages you visited" /></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-usercontext">
+                <div class="st-section__head"><h2 class="mx-h3">User Context</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Derive context continuously</div><p class="st-row__desc">Builds a quiet picture of your projects and people from captured activity.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Derive context continuously" /></div></div>
+                  <div class="st-row" data-base="ucst"><div><div class="st-row__label">Deriving activities</div><p class="st-row__desc"><span class="num">214</span> activities · <span class="num">38</span> conclusions · last run <span class="num">10:42</span> · ≈ <span class="num">1.2M</span> tokens so far (estimated)</p>
+                      <span class="mx-inline" data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Up to date for the covered window.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Run derivation now</button></div></div>
+                  <div class="st-row st-row--stack" data-st="uc-backfill" data-replaces="ucst"><div><div class="st-row__label">Deriving activities</div><p class="st-row__desc">Building your understanding — deriving from your history in the background, newest first.</p></div>
+                    <div><div class="mx-progress__meta"><b>Backfilling</b><span>back to Oct 3</span></div><div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Backfilling"><i></i></div></div></div>
+                  <div class="st-row" data-st="uc-paused" data-replaces="ucst"><div><div class="st-row__label">Derivation paused</div><p class="st-row__desc"><span class="num">214</span> activities · <span class="num">38</span> conclusions · last run Oct 7</p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>Choose a global default model to resume.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn" disabled>Run derivation now</button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Derivation Budget</div><p class="st-row__desc">Paces background work so tokens are spent as a trickle, never a one-time bill. Applies to a cloud default model.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button>Light</button><button aria-pressed="true">Balanced</button><button>Thorough</button></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Wipe User Context</div><p class="st-row__desc">Permanently clears everything derived about you. Captures are untouched. Asks first.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--danger">Wipe…</button></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-ocr">
+                <div class="st-section__head"><h2 class="mx-h3">OCR &amp; Previews</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable OCR</div><p class="st-row__desc">Queue OCR for captured screen frames when the selected engine is available. While on, recording waits for the engine.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Enable OCR" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Provider</div><p class="st-row__desc">Existing OCR results stay visible after switching.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md" id="st-ocr-prov"><button value="vision" aria-pressed="true">Apple Vision</button><button value="tesseract" data-pick="ocr-downloading ocr-failed ocr-missing">Tesseract</button></div></div></div>
+                  <div class="st-row" data-ocr="vision"><div><div class="st-row__label">Recognition mode</div></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button>Fast</button><button aria-pressed="true">Accurate</button></div></div></div>
+                  <div class="st-row" data-ocr="vision"><div><div class="st-row__label">Language correction</div></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Language correction" /></div></div>
+                  <div class="st-row" data-ocr="vision"><div><div class="st-row__label">Model status</div><p class="st-row__desc">Managed by macOS — nothing to download.</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">available</span></div></div>
+                  <div class="st-row" data-ocr="tesseract"><div><div class="st-row__label">Language</div></div>
+                    <div class="st-row__ctl"><label class="st-combo"><svg width="13" height="13"><use href="#i-search"/></svg><input class="mx-input" list="st-langs" value="English" aria-label="Language" /></label>
+                      <datalist id="st-langs"><option>English</option><option>Deutsch</option><option>Español</option><option>Français</option><option>日本語</option></datalist></div></div>
+                  <div class="st-row" data-ocr="tesseract"><div><div class="st-row__label">Page segmentation</div></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Page segmentation"><option selected>Auto</option><option>Single block</option><option>Single line</option><option>Single word</option><option>Sparse text</option></select></div></div>
+                  <div class="st-row" data-ocr="tesseract"><div><div class="st-row__label">Image preprocessing</div><p class="st-row__desc">Grayscale suits clean UI text. Thresholded black/white helps when edges are muddy or contrast is weak.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button aria-pressed="true">Grayscale</button><button>Thresholded</button></div></div></div>
+                  <div class="st-row" data-ocr="tesseract"><div><div class="st-row__label">Upscale before OCR</div><p class="st-row__desc">Tesseract works best around 300 DPI. For tiny text try 2× before 3× or 4×.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md mx-seg--mono"><button>1×</button><button aria-pressed="true">2×</button><button>3×</button><button>4×</button></div></div></div>
+                  <div class="st-row" data-ocr="tesseract"><div><div class="st-row__label">Character whitelist</div><p class="st-row__desc">Optional. Only these characters are recognised.</p></div>
+                    <div class="st-row__ctl"><input class="mx-input num" placeholder="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" style="width:240px" aria-label="Character whitelist" /></div></div>
+                  <div class="st-row" data-ocr="tesseract" data-base="tess"><div><div class="st-row__label">Model status</div><p class="st-row__desc">Tesseract <span class="num">5.4</span> · installed · <span class="num">57</span> MB</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">available</span></div></div>
+                  <div class="st-row st-row--stack" data-ocr="tesseract" data-st="ocr-downloading" data-replaces="tess"><div><div class="st-row__label">Model status</div></div>
+                    <div><div class="mx-progress__meta"><b>Downloading Tesseract</b><span>22 / 57 MB · 39%</span></div>
+                      <div class="mx-progress" role="progressbar" aria-valuenow="39" aria-valuemin="0" aria-valuemax="100" style="--v:.39"><i></i></div></div>
+                    <div><button class="mx-btn mx-btn--sm">Cancel download</button></div></div>
+                  <div class="st-row" data-ocr="tesseract" data-st="ocr-failed" data-replaces="tess"><div><div class="st-row__label">Model status</div><p class="st-row__desc">Tesseract · not installed</p>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Download failed: No space left on device (os error 28).</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-retry"/></svg>Download (57 MB)</button></div></div>
+                  <div class="st-row" data-ocr="tesseract" data-st="ocr-missing" data-replaces="tess"><div><div class="st-row__label">Model status <span class="mx-chip mx-chip--warn">missing</span></div><p class="st-row__desc">2 files missing — download to complete this model. A cancelled download lands here too.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-download"/></svg>Download (57 MB)</button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Cache duration</div><p class="st-row__desc">In-memory cache for frame and image previews.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Cache duration"><option>Disabled</option><option>5 minutes</option><option>15 minutes</option><option selected>1 hour (default)</option><option>6 hours</option><option>24 hours</option></select></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-transcription">
+                <div class="st-section__head"><h2 class="mx-h3">Transcription</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable audio transcription</div><p class="st-row__desc">Master switch for source-specific audio transcription.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Enable audio transcription" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label"><span class="st-src st-src--mic"></span>Transcribe microphone</div></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--mic" checked aria-label="Transcribe microphone" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label"><span class="st-src st-src--sysaudio"></span>Transcribe system audio</div><p class="st-row__desc">Transcribe system audio only when speech is detected.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch st-switch--sysaudio" checked aria-label="Transcribe system audio" /></div></div>
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Provider</div><p class="st-row__desc">Switching to Deepgram asks for consent first — it uploads mic and system audio.</p></div>
+                    <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Transcription provider">
+                      <label class="mx-choice__opt"><input type="radio" name="stt" checked />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+                        <span class="mx-choice__title">Parakeet <span class="mx-choice__tag">on-device</span></span>
+                        <span class="mx-choice__desc">Fast, English-first transcription on the Neural Engine.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="stt" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+                        <span class="mx-choice__title">Local Whisper <span class="mx-choice__tag">on-device</span></span>
+                        <span class="mx-choice__desc">Many languages; slower and heavier on memory.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="stt" data-pick="apple-denied" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#st-apple"/></svg></span>
+                        <span class="mx-choice__title">Apple Speech <span class="mx-choice__tag">on-device</span></span>
+                        <span class="mx-choice__desc">Built into macOS; needs Speech Recognition permission.</span></label>
+                      <label class="mx-choice__opt"><input type="radio" name="stt" data-pick="deepgram-rejected deepgram-unavailable" />
+                        <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-cloud"/></svg></span>
+                        <span class="mx-choice__title">Deepgram <span class="mx-choice__tag">cloud</span></span>
+                        <span class="mx-choice__desc">Uploads mic and system audio to your own Deepgram account. Needs an API key and your consent.</span></label>
+                    </div></div>
+                  <div class="st-row st-row--stack" data-st="deepgram-rejected deepgram-unavailable"><div><div class="st-row__label">Deepgram API key</div><p class="st-row__desc">Key saved to the macOS keychain.</p></div>
+                    <div class="st-keyfield"><input class="mx-input" type="password" placeholder="A key is saved — enter a new one to replace it" aria-label="Deepgram API key" /><button class="mx-btn">Save key</button><button class="mx-btn">Check connection</button><button class="mx-btn mx-btn--ghost">Remove key</button></div>
+                    <span class="mx-inline" data-tone="danger" data-st="deepgram-rejected"><svg width="13" height="13"><use href="#i-alert"/></svg>Deepgram rejected your API key. Paste a new one.</span>
+                    <span class="mx-inline" data-tone="warn" data-st="deepgram-unavailable"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Deepgram is temporarily unavailable (HTTP 503). Audio waits and transcribes when it’s back.</span></div>
+                  <div class="st-row" data-base="sttst"><div><div class="st-row__label">Model</div><p class="st-row__desc">Parakeet TDT 0.6B v3 · installed</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">available</span><select class="st-select" aria-label="Model"><option selected>parakeet-tdt-0.6b-v3</option><option>parakeet-tdt-0.6b-v3 · int8</option></select></div></div>
+                  <div class="st-row st-row--stack" data-st="stt-downloading" data-replaces="sttst"><div><div class="st-row__label">Model</div><p class="st-row__desc">Download is checked (sha256) before it’s marked installed.</p></div>
+                    <div><div class="mx-progress__meta"><b>Downloading Parakeet</b><span>312 / 640 MB · 49%</span></div>
+                      <div class="mx-progress" role="progressbar" aria-valuenow="49" aria-valuemin="0" aria-valuemax="100" style="--v:.49"><i></i></div></div>
+                    <div><button class="mx-btn mx-btn--sm">Cancel download</button></div></div>
+                  <div class="st-row" data-st="stt-failed" data-replaces="sttst"><div><div class="st-row__label">Model <span class="mx-chip mx-chip--danger">failed</span></div><p class="st-row__desc">Parakeet TDT 0.6B v3</p>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Download failed: No space left on device (os error 28).</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-retry"/></svg>Download (640 MB)</button></div></div>
+                  <div class="st-row" data-st="stt-missing" data-replaces="sttst"><div><div class="st-row__label">Model <span class="mx-chip mx-chip--warn">missing</span></div><p class="st-row__desc">Parakeet TDT 0.6B v3 isn’t downloaded. Microphone audio waits until it is. A cancelled download lands here.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-download"/></svg>Download (640 MB)</button></div></div>
+                  <div class="st-row st-row--stack" data-st="apple-denied" data-replaces="sttst pk"><div><div class="st-row__label">Model</div></div>
+                    <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span>
+                      <b class="mx-notice__title">Apple Speech · Permission denied</b><p class="mx-notice__text">Allow Mnema under Privacy &amp; Security → Speech Recognition, then come back.</p>
+                      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button></div></div></div>
+                  <div class="st-row" data-st="deepgram-rejected deepgram-unavailable" data-replaces="sttst pk"><div><div class="st-row__label">Model</div><p class="st-row__desc">Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.</p></div></div>
+                  <div class="st-row" data-base="pk"><div><div class="st-row__label">Parakeet memory mode</div></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button aria-pressed="true">Balanced</button><button>Low memory</button><button>Performance</button></div></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-speakers">
+                <div class="st-section__head"><h2 class="mx-h3">Speakers</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Separate speakers in transcripts</div><p class="st-row__desc">Queue local diarization after successful microphone transcription.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Separate speakers in transcripts" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Recognize saved people</div><p class="st-row__desc">Opt in to matching against confirmed local Person voice profiles.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Recognize saved people" /></div></div>
+                  <div class="st-row" data-base="spk"><div><div class="st-row__label">Speaker model</div><p class="st-row__desc">pyannote-community-1 + WeSpeaker · installed · <span class="num">419</span> MB</p></div>
+                    <div class="st-row__ctl"><span class="st-prov__state st-prov__state--ok">installed</span><button class="mx-btn mx-btn--ghost">Delete</button></div></div>
+                  <div class="st-row st-row--stack" data-st="spk-downloading" data-replaces="spk"><div><div class="st-row__label">Speaker model</div></div>
+                    <div><div class="mx-progress__meta"><b>Downloading speaker model</b><span>96 / 419 MB · 23%</span></div>
+                      <div class="mx-progress" role="progressbar" aria-valuenow="23" aria-valuemin="0" aria-valuemax="100" style="--v:.23"><i></i></div></div>
+                    <div><button class="mx-btn mx-btn--sm">Cancel download</button></div></div>
+                </div>
+              </section>
+
+              <!-- Your voice stacks under Speakers in the app (one rail entry). -->
+              <section class="st-section" id="s-voice" data-rail="s-speakers">
+                <div class="st-section__head"><h2 class="mx-h3">Your voice</h2><p class="st-section__hint">Label your turns with your name instead of “Speaker 1”.</p></div>
+                <div class="st-rows">
+                  <div class="st-row" data-base="voice"><div><div class="st-row__label">Voiceprint</div><p class="st-row__desc">Saved for Shaik. Your turns are labelled with your name on their own when the match is confident.</p>
+                      <span class="mx-inline" data-tone="ok" data-st="voice-saved"><svg width="13" height="13"><use href="#i-check"/></svg>Saved. Recognising saved people was switched on for you.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost mx-btn--danger">Delete voiceprint…</button><button class="mx-btn"><svg width="13" height="13"><use href="#i-record"/></svg>Record again (15s)</button></div></div>
+                  <div class="st-row" data-st="voice-none" data-replaces="voice"><div><div class="st-row__label">Voiceprint</div><p class="st-row__desc">No voiceprint saved. Your turns stay labelled “Speaker 1” until you record one.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-record"/></svg>Record 15 seconds</button></div></div>
+                  <div class="st-row st-row--stack" data-st="voice-recording voice-review voice-checking voice-rejected" data-replaces="voice"><div><div class="st-row__label">Voiceprint</div><p class="st-row__desc">Read this out loud:</p></div>
+                    <div class="mx-panel mx-panel--inset" style="padding:var(--s-3) var(--s-4)"><p class="mx-prose" style="margin:0;color:var(--app-text-strong)">“I keep my work on this machine, and I want my notes to know when I’m the one speaking. This sentence takes about fifteen seconds.”</p></div>
+                    <div data-st="voice-recording"><div class="mx-progress__meta"><b>Recording</b><span>9 s left</span></div>
+                      <div class="mx-progress" role="progressbar" aria-label="Input level" style="--v:.62"><i style="background:var(--app-source-mic)"></i></div></div>
+                    <span class="mx-inline" data-st="voice-review"><svg width="13" height="13"><use href="#i-info"/></svg>Listen back before you save it.</span>
+                    <span class="mx-inline" data-tone="danger" data-st="voice-rejected"><svg width="13" height="13"><use href="#i-alert"/></svg>Mnema heard 2 voices in that take. It can only learn one, so record somewhere quieter.</span>
+                    <div class="st-keyfield">
+                      <button class="mx-btn" aria-busy="true" data-st="voice-recording"><span class="mx-spin mx-spin--sm"></span>Recording…</button>
+                      <button class="mx-btn" data-st="voice-review"><svg width="12" height="12"><use href="#i-play"/></svg>Play the take</button><button class="mx-btn" data-st="voice-review">Use this take</button><button class="mx-btn mx-btn--ghost" data-st="voice-review">Discard</button>
+                      <button class="mx-btn" aria-busy="true" data-st="voice-checking"><span class="mx-spin mx-spin--sm"></span>Checking the take…</button>
+                      <button class="mx-btn" data-st="voice-rejected"><svg width="13" height="13"><use href="#i-record"/></svg>Record again (15s)</button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Label my voice automatically</div><p class="st-row__desc">When Mnema is confident a voice is yours, it applies your name without asking.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Label my voice automatically" /></div></div>
+                </div>
+                <p class="st-danger__note" style="padding-top:var(--s-2)">The voiceprint never leaves this device. Recognition is imperfect and won’t label every turn.</p>
+              </section>
+
+              <section class="st-section" id="s-semantic">
+                <div class="st-section__head"><h2 class="mx-h3">Semantic Search</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable semantic search</div><p class="st-row__desc">Fuse meaning-based results with keyword search. Inert until a model below is installed; keeps indexing in the background.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" checked aria-label="Enable semantic search" /></div></div>
+                  <div class="st-row" data-base="sem"><div><div class="st-row__label">Model <span class="mx-chip">not installed</span></div><p class="st-row__desc">English · ~140 MB on disk · 768-dim · runs on-device. Step 1: download · Step 2: use this model.</p></div>
+                    <div class="st-row__ctl"><select class="st-select" aria-label="Semantic model"><option selected>nomic-embed-text v1.5 · recommended</option><option>multilingual-e5-small · multilingual</option></select><button class="mx-btn"><svg width="14" height="14"><use href="#i-download"/></svg>Download</button></div></div>
+                  <div class="st-row st-row--stack" data-st="sem-downloading" data-replaces="sem"><div><div class="st-row__label">Model</div><p class="st-row__desc">nomic-embed-text v1.5</p></div>
+                    <div><div class="mx-progress__meta"><b>Downloading</b><span>61% · 85 of 140 MB</span></div>
+                      <div class="mx-progress" role="progressbar" aria-valuenow="61" aria-valuemin="0" aria-valuemax="100" style="--v:.61"><i></i></div></div>
+                    <div><button class="mx-btn mx-btn--sm">Cancel</button></div></div>
+                  <div class="st-row" data-st="sem-failed" data-replaces="sem"><div><div class="st-row__label">Model <span class="mx-chip mx-chip--danger">failed</span></div><p class="st-row__desc">nomic-embed-text v1.5</p>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Download failed: connection reset by peer.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-retry"/></svg>Download</button></div></div>
+                  <div class="st-row st-row--stack" data-st="sem-reindex" data-replaces="sem"><div><div class="st-row__label">Model <span class="mx-chip mx-chip--accent">active</span></div><p class="st-row__desc">Cleared 48,210 vectors; re-indexing in the background.</p></div>
+                    <div><div class="mx-progress__meta"><b>Re-indexing</b><span>catching up</span></div><div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Re-indexing"><i></i></div></div></div>
+                </div>
+              </section>
+            </article>
+  
+            <!-- ======== DATA ======== -->
+            <article class="st-page" data-page="data">
+              <header class="st-page__head"><h1 class="mx-h1">Data</h1>
+                <p class="mx-prose">Where capture lives on disk, how long it’s kept, and who else can read it.</p></header>
+
+              <section class="st-section" id="s-storage">
+                <div class="st-section__head"><h2 class="mx-h3">Storage</h2></div>
+                <div class="mx-notice" data-tone="warn" data-st="storage-restart"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#st-folder"/></svg></span>
+                  <b class="mx-notice__title">Saved — takes effect after a restart</b><p class="mx-notice__text">Captures already on disk stay where they are. Any recording in progress is saved first.</p>
+                  <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Restart Mnema</button></div></div>
+                <div class="st-rows">
+                  <!-- [DERIVED] meter: no storage-stats command exists (IMPLEMENTATION §6) -->
+                  <div class="st-row st-row--stack">
+                    <div class="st-meter">
+                      <div class="st-meter__top"><span class="mx-stat__value num">38.4<small>GB</small></span><span class="mx-label">used · <span class="num">142</span> GB free on Macintosh HD · <span class="num">~270</span> MB a day</span></div>
+                      <div class="st-meter__bar" role="img" aria-label="Storage breakdown">
+                        <i style="width:58%;--c:var(--app-source-screen)"></i><i style="width:14%;--c:var(--app-source-mic)"></i><i style="width:7%;--c:var(--app-source-sysaudio)"></i><i style="width:9%;--c:var(--chart-grey-4)"></i><i style="width:12%;--c:var(--chart-grey-2)"></i>
+                      </div>
+                      <ul class="st-meter__legend">
+                        <li style="--c:var(--app-source-screen)">screen <b>22.3 GB</b></li>
+                        <li style="--c:var(--app-source-mic)">mic <b>5.4 GB</b></li>
+                        <li style="--c:var(--app-source-sysaudio)">system <b>2.7 GB</b></li>
+                        <li style="--c:var(--chart-grey-4)">index <b>3.4 GB</b></li>
+                        <li style="--c:var(--chart-grey-2)">models <b>4.6 GB</b></li>
+                      </ul>
+                    </div>
+                  </div>
+                  <div class="st-row"><div><div class="st-row__label">Save directory</div><p class="st-row__desc">Where captures, the database, and model caches live on disk.</p>
+                      <span class="mx-inline" data-tone="danger" data-st="storage-failed"><svg width="13" height="13"><use href="#i-alert"/></svg>Couldn’t resolve storage location.<button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></span></div>
+                    <div class="st-row__ctl"><span class="st-path" data-base="path">~/.mnema</span><span class="st-path" data-st="storage-restart" data-replaces="path">/Volumes/Archive/mnema</span>
+                      <span class="st-path" aria-busy="true" data-st="storage-resolving" data-replaces="path" style="color:var(--app-text-subtle)"><span class="mx-skel mx-skel--line" style="width:90px"></span></span>
+                      <span class="st-path" data-st="storage-failed" data-replaces="path" style="color:var(--app-text-subtle)">—</span>
+                      <button class="mx-btn"><svg width="14" height="14"><use href="#st-folder"/></svg>Browse…</button></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Retention</div><p class="st-row__desc">Automatically delete captured data after the chosen window. Shortening it shows what will go first. Your User Context is kept.</p>
+                      <span class="mx-inline" data-tone="ok" data-st="cleanup-done"><svg width="13" height="13"><use href="#i-check"/></svg><b>Latest cleanup</b> 12 segments, 3,402 frames, 18 audio segments.</span>
+                      <span class="mx-inline" data-tone="danger" data-st="cleanup-failed"><svg width="13" height="13"><use href="#i-alert"/></svg>Cleanup failed: database is locked.<button class="mx-btn mx-btn--ghost mx-btn--sm">Retry</button></span></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md"><button>7 days</button><button>14 days</button><button aria-pressed="true">30 days</button><button>Forever</button></div>
+                      <button class="mx-btn mx-btn--ghost" data-base="cln">Run cleanup now</button><button class="mx-btn mx-btn--ghost" aria-busy="true" disabled data-st="cleanup-running" data-replaces="cln"><span class="mx-spin mx-spin--sm"></span>Running…</button></div></div>
+                </div>
+
+                <div class="st-danger">
+                  <div class="st-row"><div><div class="st-row__label">Delete Recent Capture</div><p class="st-row__desc">Permanently removes every segment that overlaps the window — screen, audio, OCR text, and transcripts. Can’t be undone.</p></div>
+                    <div class="st-row__ctl"><div class="mx-seg mx-seg--md mx-seg--mono" id="st-del-win" role="group" aria-label="Delete window"><button value="1">1 min</button><button value="5" aria-pressed="true">5 min</button><button value="15">15 min</button></div><button class="mx-btn mx-btn--danger" id="st-del-btn"><svg width="14" height="14"><use href="#st-trash"/></svg><span>Delete last 5 min…</span></button></div></div>
+                  <p class="st-danger__note">Also in the menu bar · Retention cleanup is separate and never touches User Context.</p>
+                </div>
+              </section>
+
+              <!-- CLI Access = access.html?view=manage (ADR 0059): time-window scopes, Block / Unblock, 30-day idle expiry. -->
+              <section class="st-section" id="s-access">
+                <div class="st-section__head"><h2 class="mx-h3">CLI Access</h2><p class="st-section__hint">One standing permission per tool. Unused for 30 days, it lapses.</p></div>
+                <p class="st-row__desc" style="margin:0 0 var(--s-3)">Local tools and AI agents can read your searchable Mnema text — screen text, transcripts and timeline results, with the app and window each came from. Never media files, raw database rows or full web addresses.</p>
+                <div class="st-rows">
+                  <div class="st-row" data-base="cli"><div><div class="st-row__label">mnema command</div><p class="st-row__desc">Installed at <span class="num">/usr/local/bin/mnema</span>.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Reinstall CLI</button></div></div>
+                  <div class="st-row" data-st="cli-missing" data-replaces="cli"><div><div class="st-row__label">mnema command</div>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>Not installed at <span class="num">/usr/local/bin/mnema</span> — install it before tools can ask for access.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Install CLI</button></div></div>
+                  <div class="st-row" data-st="cli-path" data-replaces="cli"><div><div class="st-row__label">mnema command</div>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>Installed at <span class="num">/usr/local/bin/mnema</span>, but <span class="num">/usr/local/bin</span> isn’t on PATH for this session.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Reinstall CLI</button></div></div>
+                  <div class="st-row" data-st="cli-installing" data-replaces="cli"><div><div class="st-row__label">mnema command</div><p class="st-row__desc">Linking <span class="num">/usr/local/bin/mnema</span>…</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn" aria-busy="true" disabled><span class="mx-spin mx-spin--sm"></span>Installing…</button></div></div>
+                  <div class="st-row" data-st="cli-failed" data-replaces="cli"><div><div class="st-row__label">mnema command</div>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>Refusing to overwrite existing non-symlink at <span class="num">/usr/local/bin/mnema</span>.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn"><svg width="13" height="13"><use href="#i-retry"/></svg>Install CLI</button></div></div>
+                </div>
+
+                <div class="ac-sec" data-base="grants">
+                  <div class="ac-sec__head"><b>Tools with access <span class="num mx-label">3</span></b><p class="st-section__hint">Each lapses 30 days after its last use.</p></div>
+                  <div class="ac-list">
+                    <div class="ac-tool"><span class="ac-glyph"><svg width="15" height="15"><use href="#ac-terminal"/></svg></span>
+                      <div class="ac-tool__main"><div class="ac-tool__name">Claude Code <span class="mx-chip" data-tip="Identity inferred from the process">Inferred</span></div>
+                        <div class="ac-tool__meta"><span class="mx-chip">last 7 days</span> <i>·</i> used 12 min ago <i>·</i> last ran <code>search</code></div></div>
+                      <div class="ac-idle" data-tip="Lapses Nov 9 if unused — the next request asks again" data-tip-pos="top"><b>Lapses in <span class="num">30</span> days</b><span class="ac-idle__bar" style="--left:100%"><i></i></span></div>
+                      <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm" data-tip="Refuse its future requests — no window, no asking" data-tip-pos="top">Block</button></div>
+                    <div class="ac-tool"><span class="ac-glyph"><svg width="15" height="15"><use href="#ac-terminal"/></svg></span>
+                      <div class="ac-tool__main"><div class="ac-tool__name">Codex <span class="mx-chip" data-tip="Identity inferred from the process">Inferred</span></div>
+                        <div class="ac-tool__meta"><span class="mx-chip">last day</span> <i>·</i> used 3 days ago <i>·</i> last ran <code>timeline</code></div></div>
+                      <div class="ac-idle"><b>Lapses in <span class="num">27</span> days</b><span class="ac-idle__bar" style="--left:90%"><i></i></span></div>
+                      <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm">Block</button></div>
+                    <div class="ac-tool"><span class="ac-glyph"><svg width="15" height="15"><use href="#ac-terminal"/></svg></span>
+                      <div class="ac-tool__main"><div class="ac-tool__name">Raycast notes <span class="mx-chip" data-tip="Identity declared by the tool">Declared</span></div>
+                        <div class="ac-tool__meta"><span class="mx-chip">all retained</span> <i>·</i> used 26 days ago <i>·</i> last ran <code>search</code></div></div>
+                      <div class="ac-idle is-soon"><b>Lapses in <span class="num">4</span> days</b><span class="ac-idle__bar" style="--left:13%"><i></i></span></div>
+                      <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm">Block</button></div>
+                  </div>
+                  <div class="ac-sec__head" style="margin-top:var(--s-5)"><b>Blocked <span class="num mx-label">1</span></b><p class="st-section__hint">Refused before any window opens. Never lapses.</p></div>
+                  <div class="ac-list">
+                    <div class="ac-tool is-blocked"><span class="ac-glyph"><svg width="15" height="15"><use href="#ac-ban"/></svg></span>
+                      <div class="ac-tool__main"><div class="ac-tool__name">curl-wrapper <span class="mx-chip" data-tip="Identity from an environment variable">From env</span></div>
+                        <div class="ac-tool__meta">Remembers <span class="mx-chip">all retained</span> <i>·</i> blocked Sep 30</div></div>
+                      <div class="ac-idle ac-idle--blocked"><b>Never lapses</b></div>
+                      <div class="mx-pop-anchor"><button class="mx-btn mx-btn--sm" data-pop="st-unblock">Unblock…</button>
+                        <div class="mx-pop ac-confirm" id="st-unblock" role="dialog" aria-label="Enable CLI access again?">
+                          <h3 class="mx-h3">Enable CLI access again?</h3>
+                          <p class="mx-body-sm">curl-wrapper will be able to read your entire retained history again, with no expiry, until you block it.</p>
+                          <div class="ac-confirm__actions"><button class="mx-btn mx-btn--ghost mx-btn--sm">Keep blocked</button><button class="mx-btn mx-btn--sm">Enable access</button></div></div></div></div>
+                  </div>
+                </div>
+                <div class="ac-sec" aria-busy="true" data-st="access-loading" data-replaces="grants"><span class="mx-sr">Loading tools…</span>
+                  <div class="ac-sec__head"><b>Tools with access</b></div>
+                  <div class="ac-list" style="padding:0 var(--s-3)"><div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+                    <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div></div></div>
+                <div class="ac-sec" data-st="access-error" data-replaces="grants"><div class="ac-sec__head"><b>Tools with access</b></div>
+                  <div class="ac-list"><div class="mx-empty mx-empty--compact" data-tone="danger"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-alert"/></svg></span>
+                    <b class="mx-empty__title">Couldn’t load CLI Access permissions</b><p class="mx-empty__text">database is locked. Tools keep the access they had.</p>
+                    <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button></div></div></div></div>
+                <div class="ac-sec" data-st="access-empty" data-replaces="grants act"><div class="ac-sec__head"><b>Tools with access</b></div>
+                  <div class="ac-list"><div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#ac-terminal"/></svg></span>
+                    <b class="mx-empty__title">No tool has access</b><p class="mx-empty__text">The first time an agent runs a command like <code class="num">mnema search</code>, a window asks you. Tools you allow or block show up here.</p></div></div></div>
+
+                <div class="ac-sec">
+                  <div class="ac-sec__head"><b>Recent activity</b><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-base="act"><svg width="13" height="13"><use href="#st-folder"/></svg>Reveal log in Finder</button></div>
+                  <ul class="ac-log" aria-label="Recent CLI activity" data-base="act">
+                    <li><b>Claude Code</b><code>search</code><span>14 results</span><span class="num">12 min ago</span></li>
+                    <li><b>Claude Code</b><code>show-text</code><span>1 result</span><span class="num">13 min ago</span></li>
+                    <li><b>Codex</b><code>timeline</code><span class="is-refused">Out of scope</span><span class="num">3 days ago</span></li>
+                    <li><b>curl-wrapper</b><code>search</code><span class="is-refused">Refused</span><span class="num">10 days ago</span></li>
+                  </ul>
+                  <p class="mx-body-sm" data-st="access-empty" style="margin:0">Nothing yet. Commands run by tools with access are recorded here.</p>
+                </div>
+              </section>
+            </article>
+
+            <!-- ======== ABOUT ======== -->
+            <article class="st-page" data-page="about">
+              <header class="st-page__head"><h1 class="mx-h1">About</h1>
+                <p class="mx-prose">License, version, updates, and diagnostics.</p></header>
+
+              <!-- Banner precedence lives in the app shell (licensing-banner.ts); Settings shows the same facts inline. -->
+              <section class="st-section" id="s-license">
+                <div class="st-section__head"><h2 class="mx-h3">License &amp; Trial</h2><p class="st-section__hint">Buy once, keep it forever. Verified offline.</p></div>
+                <div class="st-rows">
+                  <div class="st-row" data-base="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--accent">licensed</span></div><p class="st-row__desc">Licensed to Shaik Zeeshan · updates included through <span class="num">Aug 14, 2027</span> · <span class="num">1</span> of <span class="num">3</span> devices activated.</p></div></div>
+                  <div class="st-row" data-st="lic-checking" data-replaces="lic"><div><div class="st-row__label">Status</div><span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Checking license status…</span></div></div>
+                  <div class="st-row" data-st="lic-trial-ready" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip">trial ready</span></div><p class="st-row__desc">Free trial — starts when you first record (14 days).</p></div></div>
+                  <div class="st-row" data-st="lic-trial" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--info">trial</span></div><p class="st-row__desc"><b>3 days left</b> · ends Oct 13, 2026. After that Mnema switches to Read-Only Mode — your history stays searchable, only new recording pauses until you buy.</p></div></div>
+                  <div class="st-row" data-st="lic-readonly" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--warn">read-only</span></div>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-lock"/></svg>Trial ended — Read-Only Mode. History stays searchable; buy to resume recording.</span></div></div>
+                  <div class="st-row" data-st="lic-revoked" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--warn">revoked</span></div>
+                      <span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>This license has been revoked — Read-Only Mode. History stays searchable; new recording is paused.</span></div></div>
+                  <div class="st-row" data-st="lic-pending" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip">activating…</span></div><p class="st-row__desc">Licensed to Shaik Zeeshan. Finishing activation… (2 days to connect).</p></div></div>
+                  <div class="st-row" data-st="lic-lapsed" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--warn">not activated</span></div>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>We couldn’t confirm your license — connect to the internet once to finish activation. New recording is paused until then.</span></div></div>
+                  <div class="st-row st-row--stack" data-st="lic-devicelimit" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--warn">device limit</span></div></div>
+                    <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span>
+                      <b class="mx-notice__title">Already active on its 3 devices</b><p class="mx-notice__text">Free them up to move it here (once every 30 days), or buy another license.</p>
+                      <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm">Free up my devices…</button><a class="mx-btn mx-btn--ghost mx-btn--sm" href="#">Buy another<svg width="12" height="12"><use href="#i-external"/></svg></a></div></div></div>
+                  <div class="st-row" data-st="lic-outofwindow" data-replaces="lic"><div><div class="st-row__label">Status <span class="mx-chip mx-chip--accent">licensed</span></div><p class="st-row__desc">Licensed to Shaik Zeeshan · 1 of 3 devices activated.</p>
+                      <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-info"/></svg>Update window lapsed Sep 12, 2026 — you keep this version forever; renew for new builds.</span></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Refresh license status</div><p class="st-row__desc">Re-check with the license server — a renewal or freed-up device lands right away.</p>
+                      <span class="mx-inline" data-tone="danger" data-st="lic-refresh-failed"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Failed to reach the server.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn" data-base="lref">Refresh</button><button class="mx-btn" aria-busy="true" data-st="lic-checking" data-replaces="lref"><span class="mx-spin mx-spin--sm"></span>Checking…</button><button class="mx-btn" data-st="lic-refresh-failed" data-replaces="lref"><svg width="13" height="13"><use href="#i-retry"/></svg>Refresh</button></div></div>
+                  <div class="st-row" data-st="lic-trial-ready lic-trial lic-readonly lic-revoked"><div><div class="st-row__label">Buy Mnema</div><p class="st-row__desc">$69 one-time purchase — includes a 1-year update window. Pay once, own it forever.</p></div>
+                    <div class="st-row__ctl"><a class="mx-btn" href="#">Buy ($69)<svg width="12" height="12"><use href="#i-external"/></svg></a></div></div>
+                  <div class="st-row" data-st="lic-outofwindow"><div><div class="st-row__label">Renew</div><p class="st-row__desc">Renew ($29) to extend your update window for another year of new builds.</p></div>
+                    <div class="st-row__ctl"><a class="mx-btn" href="#">Renew ($29)<svg width="12" height="12"><use href="#i-external"/></svg></a></div></div>
+                  <div class="st-row st-row--stack"><div><div class="st-row__label">Activate license</div><p class="st-row__desc">Paste the license key from your purchase email to unlock recording on this device.</p></div>
+                    <div class="st-keyfield"><input class="mx-input" placeholder="Paste your license key" aria-label="License key" data-base="lkey" />
+                      <input class="mx-input" value="MNEMA-7F3K-…-Q9" aria-invalid="true" style="border-color:var(--app-danger-border)" aria-label="License key" data-st="lic-key-invalid" data-replaces="lkey" />
+                      <input class="mx-input" value="MNEMA-7F3K-…-Q9" aria-label="License key" disabled data-st="lic-activating" data-replaces="lkey" />
+                      <button class="mx-btn" disabled data-base="lact">Activate</button><button class="mx-btn" data-st="lic-key-invalid" data-replaces="lact">Activate</button>
+                      <button class="mx-btn" aria-busy="true" data-st="lic-activating" data-replaces="lact"><span class="mx-spin mx-spin--sm"></span>Activating…</button></div>
+                    <span class="mx-inline" data-tone="danger" data-st="lic-key-invalid"><svg width="13" height="13"><use href="#i-alert"/></svg>This license key is invalid or corrupted.</span>
+                    <span class="mx-inline" data-tone="ok" data-st="lic-activated"><svg width="13" height="13"><use href="#i-check"/></svg>License activated — recording unlocked on this device.</span></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-about">
+                <div class="st-section__head"><h2 class="mx-h3">Updates</h2><p class="st-section__hint">Mnema checks at startup and every 2 hours.</p></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Version <span class="num">0.1.23</span>
+                        <span class="mx-chip" data-base="ub">up to date</span><span class="mx-chip" data-st="upd-checking" data-replaces="ub">checking</span><span class="mx-chip mx-chip--accent" data-st="upd-available" data-replaces="ub">update available</span>
+                        <span class="mx-chip" data-st="upd-downloading" data-replaces="ub">downloading</span><span class="mx-chip mx-chip--accent" data-st="upd-restart" data-replaces="ub">restart required</span>
+                        <span class="mx-chip mx-chip--danger" data-st="upd-failed" data-replaces="ub">failed</span><span class="mx-chip mx-chip--warn" data-st="upd-outofwindow" data-replaces="ub">outside update window</span><span class="mx-chip" data-st="upd-incompatible" data-replaces="ub">incompatible</span></div>
+                      <p class="st-row__desc" data-base="um">Mnema is up to date. Last checked <span class="num">10:12</span>.</p>
+                      <p class="st-row__desc" data-st="upd-checking" data-replaces="um">Checking for updates…</p>
+                      <p class="st-row__desc" data-st="upd-available" data-replaces="um">Version <span class="num">0.1.24</span> is ready to download and install. Recording stops automatically for the install.</p>
+                      <p class="st-row__desc" data-st="upd-downloading" data-replaces="um">Downloading the update package. Recording stops automatically for the install.</p>
+                      <p class="st-row__desc" data-st="upd-restart" data-replaces="um">0.1.24 is installed. Restart Mnema when you’re ready to finish updating.</p>
+                      <p class="st-row__desc" data-st="upd-outofwindow" data-replaces="um">Version <span class="num">0.1.24</span> is past your update window. Renew to receive new builds — this version keeps working forever.</p>
+                      <p class="st-row__desc" data-st="upd-incompatible" data-replaces="um">No compatible update is available for this Mac.</p>
+                      <p class="st-row__desc" data-st="upd-failed" data-replaces="um">Last checked <span class="num">10:12</span>.</p>
+                      <span class="mx-inline" data-tone="warn" data-st="upd-failed"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Could not reach the update feed. Mnema tries again on its own.</span></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost">Copy details</button>
+                      <button class="mx-btn" data-base="ua">Check for updates</button>
+                      <button class="mx-btn" aria-busy="true" disabled data-st="upd-checking" data-replaces="ua"><span class="mx-spin mx-spin--sm"></span>Checking…</button>
+                      <button class="mx-btn" data-st="upd-available" data-replaces="ua">Install update</button>
+                      <button class="mx-btn" aria-busy="true" disabled data-st="upd-downloading" data-replaces="ua"><span class="mx-spin mx-spin--sm"></span>Installing…</button>
+                      <button class="mx-btn" data-st="upd-restart" data-replaces="ua">Restart to update</button>
+                      <button class="mx-btn" data-st="upd-failed" data-replaces="ua"><svg width="13" height="13"><use href="#i-retry"/></svg>Check for updates</button>
+                      <a class="mx-btn" href="#s-license" data-st="upd-outofwindow" data-replaces="ua">Renew…</a></div></div>
+                  <div class="st-row st-row--stack" data-st="upd-downloading"><div><div class="mx-progress__meta"><b>Downloading 0.1.24</b><span>21.5 of 38.4 MB · 56%</span></div>
+                    <div class="mx-progress" role="progressbar" aria-valuenow="56" aria-valuemin="0" aria-valuemax="100" style="--v:.56"><i></i></div></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Third-party notices</div><p class="st-row__desc">The full attribution list for the bundled open-source components.</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn">Copy notices</button></div></div>
+                </div>
+              </section>
+
+              <section class="st-section" id="s-developer">
+                <div class="st-section__head"><h2 class="mx-h3">Developer &amp; Logs</h2></div>
+                <div class="st-rows">
+                  <div class="st-row"><div><div class="st-row__label">Enable developer options</div></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Enable developer options" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">Native capture debug logging</div><p class="st-row__desc">Write native capture diagnostic output to a log file on disk for troubleshooting.</p></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Native capture debug logging" /></div></div>
+                  <div class="st-row"><div><div class="st-row__label">General application log</div><p class="st-row__desc"><span class="num">~/.mnema/logs/rust.log</span> · exists on disk</p></div>
+                    <div class="st-row__ctl"><button class="mx-btn mx-btn--ghost mx-btn--danger">Delete…</button><button class="mx-btn">Open log file</button></div></div>
+                </div>
+              </section>
+            </article>
+        </div>
+      </section>
+    </div>
+  </div>
+  <!-- Mockup-only state switcher (not product UI). ?state=<value> + the option's section hash. -->
+  <label class="st-statepick" id="st-statepick"><span class="mx-label">Mockup state</span>
+    <select class="st-select" aria-label="Mockup state">
+      <option value="" data-sec="">Healthy (default)</option>
+      <optgroup label="Whole page"><option value="save-failed" data-sec="">Save failed (Retry / Dismiss)</option><option value="validation" data-sec="s-capture">Resolve issues · no source on</option></optgroup>
+      <optgroup label="General"><option value="shortcuts-loading" data-sec="s-shortcuts">Shortcuts loading</option><option value="shortcut-listening" data-sec="s-shortcuts">Shortcut · press keys</option><option value="shortcut-conflict" data-sec="s-shortcuts">Shortcut conflict</option></optgroup>
+      <optgroup label="Capture"><option value="capture-loading" data-sec="s-capture">Recording settings loading</option><option value="sysaudio-blocked" data-sec="s-capture">System audio · may be blocked</option><option value="vad-off" data-sec="s-inactivity">Voice detection Off → mic sensitivity</option>
+        <option value="res-checking" data-sec="s-video">Resolution · checking support</option><option value="res-original-only" data-sec="s-video">Resolution · Original only</option><option value="bitrate-invalid" data-sec="s-video">Custom bitrate invalid</option>
+        <option value="mic-loading" data-sec="s-audio">Microphone loading</option><option value="mic-failed" data-sec="s-audio">Microphone failed to load</option><option value="mic-none" data-sec="s-audio">No microphones</option>
+        <option value="excl-empty" data-sec="s-privacy">No excluded apps</option><option value="excl-recommended" data-sec="s-privacy">Recommended exclusions pending</option><option value="gecko-denied" data-sec="s-privacy">Firefox/Zen · Accessibility missing</option></optgroup>
+      <optgroup label="Intelligence"><option value="ai-not-ready" data-sec="s-providers">AI on, nothing ready</option><option value="no-providers" data-sec="s-providers">No providers</option><option value="key-saving" data-sec="s-providers">API key saving</option><option value="key-rejected" data-sec="s-providers">API key rejected</option>
+        <option value="ollama-down" data-sec="s-providers">Ollama not reachable</option><option value="chatgpt-signin" data-sec="s-providers">ChatGPT · device-code sign-in</option><option value="chatgpt-reconnect" data-sec="s-providers">ChatGPT · needs reconnect</option><option value="chatgpt-unreachable" data-sec="s-providers">ChatGPT · unreachable</option>
+        <option value="mcp-empty" data-sec="s-mcp">MCP · no connectors</option><option value="mcp-authorizing" data-sec="s-mcp">MCP · authorizing</option><option value="mcp-reconnect" data-sec="s-mcp">MCP · token expired</option><option value="mcp-failed" data-sec="s-mcp">MCP · approval failed</option>
+        <option value="askai-unavailable" data-sec="s-askai">Ask AI unavailable</option><option value="uc-backfill" data-sec="s-usercontext">User Context backfilling</option><option value="uc-paused" data-sec="s-usercontext">User Context paused</option>
+        <option value="ocr-downloading" data-sec="s-ocr">OCR model downloading</option><option value="ocr-failed" data-sec="s-ocr">OCR download failed · disk full</option><option value="ocr-missing" data-sec="s-ocr">OCR model missing / cancelled</option>
+        <option value="stt-downloading" data-sec="s-transcription">Transcription model downloading</option><option value="stt-failed" data-sec="s-transcription">Transcription download failed</option><option value="stt-missing" data-sec="s-transcription">Transcription model missing / cancelled</option>
+        <option value="apple-denied" data-sec="s-transcription">Apple Speech permission denied</option><option value="deepgram-rejected" data-sec="s-transcription">Deepgram key rejected</option><option value="deepgram-unavailable" data-sec="s-transcription">Deepgram unavailable</option>
+        <option value="spk-downloading" data-sec="s-speakers">Speaker model downloading</option>
+        <option value="voice-none" data-sec="s-voice">Voice · none saved</option><option value="voice-recording" data-sec="s-voice">Voice · recording</option><option value="voice-review" data-sec="s-voice">Voice · review take</option><option value="voice-checking" data-sec="s-voice">Voice · checking take</option><option value="voice-rejected" data-sec="s-voice">Voice · rejected</option><option value="voice-saved" data-sec="s-voice">Voice · saved</option>
+        <option value="sem-downloading" data-sec="s-semantic">Semantic model downloading</option><option value="sem-failed" data-sec="s-semantic">Semantic download failed</option><option value="sem-reindex" data-sec="s-semantic">Semantic re-indexing</option></optgroup>
+      <optgroup label="Data"><option value="storage-resolving" data-sec="s-storage">Storage location resolving</option><option value="storage-failed" data-sec="s-storage">Storage location failed</option><option value="storage-restart" data-sec="s-storage">Storage moved · restart</option>
+        <option value="cleanup-running" data-sec="s-storage">Cleanup running</option><option value="cleanup-done" data-sec="s-storage">Cleanup done</option><option value="cleanup-failed" data-sec="s-storage">Cleanup failed</option>
+        <option value="cli-missing" data-sec="s-access">CLI not installed</option><option value="cli-path" data-sec="s-access">CLI not on PATH</option><option value="cli-installing" data-sec="s-access">CLI installing</option><option value="cli-failed" data-sec="s-access">CLI install failed</option>
+        <option value="access-loading" data-sec="s-access">Access list loading</option><option value="access-error" data-sec="s-access">Access list failed</option><option value="access-empty" data-sec="s-access">No CLI tools</option></optgroup>
+      <optgroup label="About"><option value="lic-checking" data-sec="s-license">License checking</option><option value="lic-trial-ready" data-sec="s-license">Trial ready</option><option value="lic-trial" data-sec="s-license">Trial · 3 days left</option><option value="lic-readonly" data-sec="s-license">Read-only (trial ended)</option>
+        <option value="lic-revoked" data-sec="s-license">Revoked</option><option value="lic-pending" data-sec="s-license">Activation pending</option><option value="lic-lapsed" data-sec="s-license">Activation lapsed</option><option value="lic-devicelimit" data-sec="s-license">Device limit</option>
+        <option value="lic-outofwindow" data-sec="s-license">Update window lapsed</option><option value="lic-refresh-failed" data-sec="s-license">Refresh failed</option><option value="lic-key-invalid" data-sec="s-license">Key invalid</option><option value="lic-activating" data-sec="s-license">Activating key</option><option value="lic-activated" data-sec="s-license">Key activated</option>
+        <option value="upd-checking" data-sec="s-about">Update · checking</option><option value="upd-available" data-sec="s-about">Update · available</option><option value="upd-downloading" data-sec="s-about">Update · downloading</option><option value="upd-restart" data-sec="s-about">Update · restart required</option>
+        <option value="upd-failed" data-sec="s-about">Update · check failed (offline)</option><option value="upd-incompatible" data-sec="s-about">Update · incompatible</option><option value="upd-outofwindow" data-sec="s-about">Update · outside window</option></optgroup>
+    </select></label>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const $ = (s, r = document) => r.querySelector(s), $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const root = document.documentElement;
+  const content = $("#st-content"), main = $("#st-main"), groups = $$(".st-group"), pages = $$(".st-page");
+  const filter = $("#st-filter");
+
+  // ---- Mockup states: ?state=<name> (+ #s-section). Runs before the row list is taken so the filter skips hidden variants.
+  const params = new URLSearchParams(location.search), STATE = params.get("state") || "";
+  const shown = (el) => el.dataset.st.split(" ").includes(STATE);
+  $$("[data-st]").forEach((el) => el.classList.toggle("is-st-off", !shown(el)));
+  $$("[data-st]").filter(shown).forEach((el) => el.dataset.replaces?.split(" ").forEach((k) =>
+    $$(`[data-base~="${k}"]`).forEach((b) => b.classList.add("is-st-off"))));
+  const pick = $("#st-statepick select");
+  pick.value = STATE;
+  const opt = pick.selectedOptions[0];
+  if (STATE && !location.hash && opt?.dataset.sec) history.replaceState(null, "", `${location.search}#${opt.dataset.sec}`);
+  pick.addEventListener("change", () => {
+    const o = pick.selectedOptions[0], p = new URLSearchParams(location.search);
+    o.value ? p.set("state", o.value) : p.delete("state");
+    location.href = `?${p}#${o.dataset.sec || ""}`;
+  });
+  // [data-pick="state…"] = the radio / segment that state implies (e.g. Tesseract for OCR download states).
+  $$("[data-pick]").filter((el) => el.dataset.pick.split(" ").includes(STATE)).forEach((el) => {
+    if (el.matches("input")) el.checked = true;
+    else $$("button", el.parentElement).forEach((b) => b.setAttribute("aria-pressed", String(b === el)));
+  });
+  const rows = $$(".st-row:not(.is-st-off)");
+  const crumbGroup = $("#st-crumb-group"), crumbSec = $("#st-crumb-sec");
+
+  // Segmented thumbs: kit measures them once, so a seg that was display:none (hidden page, or a row
+  // hidden by the search filter) when it changed measured 0 and lost its highlight. Only show() and
+  // applyFilter() toggle visibility here, so both re-place every visible thumb on the way out.
+  const placeSeg = (seg) => { const b = $('[aria-pressed="true"]', seg), th = $(".mx-seg__thumb", seg);
+    if (b && th && b.offsetWidth) { th.style.width = `${b.offsetWidth}px`; th.style.transform = `translateX(${b.offsetLeft}px)`; } };
+  const placeSegs = () => $$(".mx-seg").forEach(placeSeg);
+
+  // Scroll spy: mark the sub-section in view in the sidebar + header crumb.
+  const spy = () => {
+    content.classList.toggle("is-scrolled", main.scrollTop > 4);
+    const page = $(".st-page:not([hidden])"); if (!page || filter.value.trim()) { crumbSec.textContent = ""; return; }
+    const top = main.getBoundingClientRect().top + 80;
+    const secs = $$(".st-section:not([hidden])", page);
+    const atEnd = main.scrollTop + main.clientHeight >= main.scrollHeight - 4; // deep link to a last section that can't reach the top
+    const cur = (atEnd && location.hash && secs.find((s) => `#${s.id}` === location.hash)) || secs.filter((s) => s.getBoundingClientRect().top <= top).pop() || secs[0];
+    const railId = cur?.dataset.rail || cur?.id; // MCP + Your voice have no rail entry of their own (same as the app)
+    $$(".st-subnav a").forEach((a) => a.setAttribute("aria-current", String(a.getAttribute("href") === `#${railId}`)));
+    crumbSec.textContent = cur && cur !== secs[0] ? $(".st-section__head .mx-h3", cur).textContent : "";
+  };
+  main.addEventListener("scroll", spy, { passive: true });
+
+  // Section switching: one group's page at a time (deeplink via #s-… hash).
+  const show = (id) => {
+    groups.forEach((g) => { const on = g.dataset.group === id; g.classList.toggle("is-open", on); $(".st-group__btn", g).setAttribute("aria-current", String(on)); });
+    pages.forEach((p) => (p.hidden = p.dataset.page !== id));
+    crumbGroup.textContent = $(`.st-group[data-group="${id}"] .st-group__btn`).textContent.trim();
+    main.scrollTop = 0; spy(); placeSegs();
+  };
+  groups.forEach((g) => $(".st-group__btn", g).addEventListener("click", () => { filter.value = ""; applyFilter(); show(g.dataset.group); }));
+  const go = (hash) => { const el = $(hash); const pg = el?.closest(".st-page"); if (!pg) return;
+    if (filter.value) { filter.value = ""; applyFilter(); }
+    if (pg.hidden) show(pg.dataset.page); el.scrollIntoView(); spy(); };
+  const start = location.hash && $(location.hash)?.closest(".st-page")?.dataset.page;
+  show(start || "capture");
+  if (start) go(location.hash);
+  $("#st-nav").addEventListener("click", (e) => { const a = e.target.closest(".st-subnav a"); if (!a) return; e.preventDefault();
+    history.replaceState(null, "", a.hash); go(a.hash); });
+  addEventListener("hashchange", () => go(location.hash));
+
+  // Search-settings filter: across all groups, hide non-matching rows/sections.
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    if (!q) { rows.forEach((r) => (r.hidden = false)); $$(".st-section").forEach((s) => (s.hidden = false));
+      $$(".st-group__count").forEach((c) => (c.textContent = "")); groups.forEach((g) => g.classList.remove("is-empty"));
+      main.classList.remove("is-filter-empty"); show($(".st-group.is-open")?.dataset.group || "capture"); return; }
+    let total = 0;
+    pages.forEach((p) => {
+      let n = 0;
+      $$(".st-section", p).forEach((s) => {
+        const head = $(".st-section__head", s).textContent.toLowerCase().includes(q);
+        let m = 0;
+        $$(".st-row", s).forEach((r) => { const hit = head || r.textContent.toLowerCase().includes(q); r.hidden = !hit; m += hit; });
+        s.hidden = !m; n += m;
+      });
+      p.hidden = !n; total += n;
+      const g = $(`.st-group[data-group="${p.dataset.page}"]`);
+      $(".st-group__count", g).textContent = n || "";
+      g.classList.toggle("is-empty", !n); g.classList.toggle("is-open", false);
+      $(".st-group__btn", g).setAttribute("aria-current", "false");
+    });
+    $("#st-q").textContent = filter.value.trim();
+    crumbGroup.textContent = `Results for “${filter.value.trim()}”`; crumbSec.textContent = "";
+    main.classList.toggle("is-filter-empty", !total);
+    main.scrollTop = 0; placeSegs();
+  };
+  filter.addEventListener("input", applyFilter);
+  document.addEventListener("keydown", (e) => {
+    const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+    if (e.key === "/" && !typing) { e.preventDefault(); filter.focus(); }
+    else if (e.key === "Escape" && document.activeElement === filter) { filter.value = ""; applyFilter(); filter.blur(); }
+    else if (e.key === "Escape" && !typing && !$(".mx-pop[data-open]")) location.href = $(".st-back").href; // Esc = back to app
+  });
+
+  // "Autosave" pulse on any change.
+  const save = $("#st-save"); let t;
+  document.addEventListener("change", () => { save.classList.add("is-saving"); save.textContent = "Saving…";
+    clearTimeout(t); t = setTimeout(() => { save.classList.remove("is-saving"); save.textContent = "All changes saved"; }, 700); });
+  document.addEventListener("mx-change", () => document.dispatchEvent(new Event("change")));
+
+  // Source toggles drive the sidebar's recording lanes + dim the row.
+  $$("[data-lane]").forEach((sw) => sw.addEventListener("change", () => {
+    sw.closest(".st-row").classList.toggle("is-off", !sw.checked);
+    const lane = $(`[data-lane-ind="${sw.dataset.lane}"]`);
+    lane.classList.toggle("mx-lane--on", sw.checked); lane.classList.toggle("mx-lane--off", !sw.checked);
+  }));
+
+  // Theme: the Appearance segmented control is the toggle here (no app titlebar in Settings).
+  // Same storage key as kit.js so the choice carries to the other pages.
+  const themeSeg = $("#st-theme"), THEME_KEY = "mnema-mock-theme";
+  const sysTheme = () => (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+  themeSeg.addEventListener("mx-change", (e) => {
+    const want = e.detail === "system" ? sysTheme() : e.detail;
+    root.dataset.theme = want; localStorage.setItem(THEME_KEY, want);
+  });
+  const curBtn = $(`button[value=${root.dataset.theme}]`, themeSeg);
+  $$("button", themeSeg).forEach((b) => b.setAttribute("aria-pressed", String(b === curBtn)));
+  placeSeg(themeSeg);
+
+  // Delete-recent window label.
+  $("#st-del-win").addEventListener("mx-change", (e) => ($("#st-del-btn span").textContent = `Delete last ${e.detail} min…`));
+
+  // Live dependencies the app also has: Tesseract-only OCR rows, mic sensitivity only when voice detection is Off.
+  const setOcr = (p) => $$("[data-ocr]").forEach((r) => r.classList.toggle("is-dep-off", r.dataset.ocr !== p));
+  $("#st-ocr-prov").addEventListener("mx-change", (e) => { setOcr(e.detail); placeSegs(); });
+  setOcr($('#st-ocr-prov [aria-pressed="true"]').value);
+  const syncVad = () => $("#st-micsens").classList.toggle("is-dep-off", !$("#st-vad-off").checked);
+  $$('[name="vad"]').forEach((r) => r.addEventListener("change", syncVad)); syncVad();
+
+  // Excluded-apps remove.
+  $("#st-excluded").addEventListener("click", (e) => {
+    const x = e.target.closest("[data-remove]"); if (!x) return;
+    x.closest(".st-list__item").remove(); $("#st-excl-n").textContent = $$("#st-excluded .st-list__item").length;
+  });
+});
+</script>
+</body>
+</html>
