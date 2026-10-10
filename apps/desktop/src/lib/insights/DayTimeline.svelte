@@ -37,6 +37,7 @@
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
   import UpdatedStamp from "$lib/insights/UpdatedStamp.svelte";
+  import { inBar } from "$lib/insights/in-bar";
 
   // ── Day range (always mode "day"; local midnight bounds) ────────────────
   let anchorMs = $state<number>(Date.now());
@@ -429,7 +430,7 @@
         Your day, written down while you worked. <UpdatedStamp at={updatedAt} inline />
       </p>
     </div>
-    <div class="ov-controls">
+    <div class="ov-controls" use:inBar>
       <JournalDateStepper
         bind:anchorMs
         rangeStartMs={range.startMs}

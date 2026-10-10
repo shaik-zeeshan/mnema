@@ -18,7 +18,7 @@
   // Props:
   //   onOpenSubject?: (subject: string) => void — drill into a Subject.
   //   onOpenTab?: (tab) => void                 — jump Insights sub-surfaces.
-
+  import { inBar } from "$lib/insights/in-bar";
   import { untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -1271,7 +1271,7 @@
       <h1>Overview</h1>
       <p class="subtitle">Scan your {rangeMode}, then read what it adds up to.</p>
     </div>
-    <div class="ov-controls">
+    <div class="ov-controls" use:inBar>
       <Segmented
         options={RANGE_OPTIONS}
         value={rangeMode}

@@ -38,6 +38,7 @@
     UserContextStatus,
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
+  import { inBar } from "$lib/insights/in-bar";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
@@ -1053,7 +1054,7 @@
   <!-- Controls: search box + grouping-axis toggle. Hidden until there's
        something to search or group (SB-09). -->
   {#if conclusions && displayRows.length > 0}
-  <div class="conv-controls">
+  <div class="conv-controls" use:inBar>
     <div class="search">
       <svg
         class="search-glyph"
@@ -1321,7 +1322,6 @@
     line-height: 1.5;
   }
 
-  /* Search box — same surface as the Chat rail's search so the two read alike. */
   .search {
     display: flex;
     align-items: center;
