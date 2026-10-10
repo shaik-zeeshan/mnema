@@ -49,6 +49,7 @@
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
+  const isChatRoute = $derived(normalizedPathname.startsWith("/chat"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar stays visible on Settings too — it is the Main window's persistent
@@ -61,7 +62,7 @@
   // The Main window hosts the top-level Surfaces — Timeline (`/`) and Insights
   // (`/insights`) — under the shared titlebar, with the recording status bar
   // at the bottom. Settings keeps the titlebar but has no status bar.
-  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
+  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute || isChatRoute);
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -155,14 +156,12 @@
       else unlistenBrokerOpenCaptureResult = fn;
     });
 
-    // Quick Recall → Chat handoff (issue #111, ADR 0031): navigate the main
-    // window to the Insights surface so its Chat tab can select the handed-off
-    // conversation. The Insights page itself owns switching to the Chat tab and
-    // selecting the conversation (live event + a cold-window drain on mount);
-    // here we only ensure the route is on `/insights`.
-    listen("insights_open_conversation", () => {
-      if (isMainWindow && !isInsightsRoute) {
-        void goto("/insights");
+    // Quick Recall → Chat handoff (issue #111, ADR 0031): open the handed-off
+    // conversation on the Chat surface (`/chat?c=` selects it; a cold window's
+    // queue is drained by the Chat page on mount).
+    listen<{ conversationId: string }>("insights_open_conversation", (event) => {
+      if (isMainWindow) {
+        void goto(`/chat?c=${encodeURIComponent(event.payload.conversationId)}`);
       }
     }).then((fn) => {
       if (destroyed) fn();
@@ -179,15 +178,12 @@
 
     // Cold-window inverse: a freshly-opened main window boots on Timeline (`/`),
     // and the live `insights_open_conversation` event may have already fired
-    // before the listener above attached — so without this the handoff would
-    // strand on Timeline and the Insights surface (which owns the drain) would
-    // never mount. Peek the queue on mount and, if a handoff is pending, route
-    // to `/insights` so its on-mount drain runs. Non-draining: the Insights page
-    // still owns consuming the queue.
-    if (isMainWindow && !isInsightsRoute) {
+    // before the listener above attached. Peek the queue on mount and, if a
+    // handoff is pending, route to `/chat`, whose on-mount drain consumes it.
+    if (isMainWindow && !isChatRoute) {
       // Snapshot the route at peek time. The peek is async, so the user may
       // navigate during the drain window; if the route changed underneath us we
-      // bail rather than yanking them back to /insights (self-healing, but the
+      // bail rather than yanking them back to /chat (self-healing, but the
       // bounce is jarring). Comparing the captured pathname keeps the re-route
       // intent tied to the route this peek was started for.
       const peekPathname = normalizeAppPathname($page.url.pathname);
@@ -195,8 +191,8 @@
         .then((pending) => {
           const routeUnchanged =
             normalizeAppPathname($page.url.pathname) === peekPathname;
-          if (!destroyed && pending && routeUnchanged && !isInsightsRoute) {
-            void goto("/insights");
+          if (!destroyed && pending && routeUnchanged && !isChatRoute) {
+            void goto("/chat");
           }
         })
         .catch(() => {

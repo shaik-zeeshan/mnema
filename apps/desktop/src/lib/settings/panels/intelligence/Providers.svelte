@@ -4,7 +4,7 @@
   import { tip } from "$lib/components/tooltip";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";

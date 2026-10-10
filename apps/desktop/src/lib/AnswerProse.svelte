@@ -383,20 +383,16 @@
     font-weight: 600;
   }
 
-  /* ── Streaming caret ─────────────────────────────────────────────────── */
-  .answer-prose.is-streaming::after {
-    content: "▍";
-    color: var(--app-accent);
-    animation: answer-caret 1s step-end infinite;
-  }
-  @keyframes answer-caret {
-    50% {
-      opacity: 0;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .answer-prose.is-streaming::after {
-      animation: none;
-    }
+  /* ── Streaming caret: a static block at the insertion point (the end of
+     the last paragraph), never a looping blink. ───────────────────────── */
+  .answer-prose.is-streaming > :global(:last-child)::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 2px;
+    vertical-align: -2px;
+    border-radius: 1px;
+    background: var(--app-accent);
   }
 </style>

@@ -86,15 +86,18 @@ export class ConversationStore {
    *  same id still re-triggers the watcher. `prefill` (new-chat only) carries an
    *  optional question to seed the composer with — a hand-off (e.g. "Ask AI about
    *  {subject}") drops the user into a fresh chat with the prompt already typed,
-   *  ready to review/edit and send (it does NOT auto-send). */
+   *  ready to review/edit and send. `send` (the shell's ask field → `/chat?q=`)
+   *  sends the prefill once; Chat clears it via `settleOpen` when consumed. */
   pendingOpen = $state<{
     id: string | null;
     nonce: number;
     prefill: string | null;
+    send: boolean;
   }>({
     id: null,
     nonce: 0,
     prefill: null,
+    send: false,
   });
 
   /** Date-grouped view of `conversations` for the rail's section headers. */
@@ -147,8 +150,8 @@ export class ConversationStore {
       this.conversations = rows;
       this.historyError = false;
     } catch {
+      // A failure is an error state, never an empty list ("no chats").
       if (generation !== this.#historyGeneration) return;
-      this.conversations = [];
       this.historyError = true;
     } finally {
       if (generation === this.#historyGeneration) this.historyLoaded = true;
@@ -207,26 +210,28 @@ export class ConversationStore {
     }
   }
 
-  /** Delete a conversation after a Tauri confirm. If the deleted thread is the
-   *  open one, arm a fresh empty pane via the bus. The backend's
-   *  `conversation_changed` event refreshes the list. */
-  async deleteConversation(summary: ConversationSummary): Promise<void> {
+  /** Delete a conversation after a Tauri confirm; true once it's gone (for the
+   *  caller's toast). If it was the open thread, arm a fresh empty pane via the
+   *  bus. The backend's `conversation_changed` event refreshes the list. */
+  async deleteConversation(summary: ConversationSummary): Promise<boolean> {
     const ok = await confirm(
-      `Delete “${summary.title || summary.preview || "this conversation"}”? This can't be undone.`,
-      { title: "Delete conversation", kind: "warning" },
+      `Delete “${summary.title || summary.preview || "this chat"}”? This can’t be undone.`,
+      { title: "Delete chat", kind: "warning" },
     );
-    if (!ok) return;
+    if (!ok) return false;
     try {
       await invoke("delete_conversation", {
         conversationId: summary.conversationId,
       });
     } catch {
       // The conversation_changed listener refreshes the list regardless.
+      return false;
     }
     if (summary.conversationId === this.activeConversationId) {
       // The open conversation was deleted — arm a fresh empty pane.
       this.requestNewChat();
     }
+    return true;
   }
 
   // ── Selection bus ──────────────────────────────────────────────────────────
@@ -239,18 +244,32 @@ export class ConversationStore {
       id,
       nonce: this.pendingOpen.nonce + 1,
       prefill: null,
+      send: false,
     };
   }
 
   /** Ask Chat to start a fresh empty chat (id === null). An optional `prefill`
    *  seeds the composer (a Subject→Chat hand-off prefills "Ask AI about …"); the
    *  user reviews/edits and presses Enter — it is never auto-sent. */
-  requestNewChat(prefill?: string): void {
+  requestNewChat(prefill?: string, send = false): void {
     const seed = prefill?.trim() ?? "";
     this.pendingOpen = {
       id: null,
       nonce: this.pendingOpen.nonce + 1,
       prefill: seed.length > 0 ? seed : null,
+      send: send && seed.length > 0,
+    };
+  }
+
+  /** Rewrite the CURRENT request without bumping the nonce: Chat calls it once
+   *  it has consumed a request (a sent prefill, or a new chat that now has an
+   *  id), so a later remount replays "open this thread", never a second send. */
+  settleOpen(conversationId: string | null): void {
+    this.pendingOpen = {
+      id: conversationId,
+      nonce: this.pendingOpen.nonce,
+      prefill: null,
+      send: false,
     };
   }
 

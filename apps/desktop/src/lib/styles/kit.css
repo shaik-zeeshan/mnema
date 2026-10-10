@@ -105,6 +105,18 @@ kbd, .mx-kbd {
   background: transparent; border: 1px solid var(--mx-hairline); border-radius: var(--r-xs);
 }
 
+/* Search field: label.mx-search > svg + input (+ kbd). The titlebar door uses .mx-cmd. */
+.mx-search {
+  display: flex; align-items: center; gap: var(--s-2); height: var(--h-md); padding: 0 var(--s-2) 0 var(--s-3);
+  background: var(--app-surface-subtle); border: 1px solid var(--app-border); border-radius: var(--r-md); color: var(--app-text-subtle);
+  transition: border-color var(--t-fast) var(--ease-quart), box-shadow var(--t-med) var(--ease-quart);
+}
+.mx-search:hover { border-color: var(--app-border-strong); }
+.mx-search:focus-within { border-color: var(--app-accent-border); box-shadow: var(--app-ring); color: var(--app-accent); }
+.mx-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--app-text-strong); font: 400 var(--text-md)/1 var(--font-sans); }
+.mx-search input::placeholder { color: var(--app-text-subtle); }
+.mx-search input:focus-visible { box-shadow: none; }
+
 /* --- Recording state (status bar) --------------------------------------- */
 /* .mx-rec--running | --paused | --starting | --suspended | --stopped | (none = off) */
 .mx-rec { display: inline-flex; align-items: center; gap: 7px; height: 20px; padding: 0 9px 0 7px;

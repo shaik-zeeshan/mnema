@@ -1038,10 +1038,10 @@
     askContinuableConversationId !== null && askHasCompletedTurn,
   );
 
-  // Promote the current Quick Recall thread into the Insights → Chat workspace.
+  // Promote the current Quick Recall thread into Chat (`/chat` in the main window).
   // The thread is already persisted under askConversationId (origin
   // "quick_recall", written backend-side), so this just shows/navigates the main
-  // window to Insights → Chat and selects this conversation; Chat hydrates it via
+  // window to Chat and selects this conversation; Chat hydrates it via
   // get_conversation and continues it seamlessly. Mirrors the Answer Sources
   // hand-off (open_capture_result_in_main_window), which also dismisses the Quick
   // Recall window — so we do the same here for consistency.
@@ -2492,7 +2492,7 @@
         </div>
 
         <!-- "Open in Chat" / Go deep (issue #111, ADR 0031): promote this thread
-             into the full Insights → Chat workspace. The thread is already
+             into the Chat surface. The thread is already
              persisted under the same conversation id, so Chat continues it
              seamlessly. Shown once at least one turn has completed. -->
         {#if askCanOpenInChat}
@@ -2501,7 +2501,7 @@
               type="button"
               class="quick-recall__handoff"
               onclick={() => void openInChat()}
-              use:tip={"Continue this thread in the Insights Chat workspace"}
+              use:tip={"Continue this thread in Chat"}
             >
               Continue in Chat
               <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>
