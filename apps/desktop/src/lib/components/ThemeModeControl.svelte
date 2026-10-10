@@ -95,11 +95,11 @@
     width: 100%;
   }
 
-  .theme-mode--full :global(.segmented) {
+  .theme-mode--full :global(.mx-seg) {
     width: 100%;
   }
 
-  .theme-mode--full :global(.seg) {
+  .theme-mode--full :global(.mx-seg button) {
     flex: 1 1 0;
     min-width: 0;
   }
