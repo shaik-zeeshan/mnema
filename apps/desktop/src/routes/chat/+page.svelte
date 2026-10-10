@@ -2,7 +2,8 @@
   // `/chat` — Chat as its own surface in the Main window (chat.html): the chat
   // list beside the conversation. `?c=<id>` opens a chat (Quick Recall's "Open
   // in Chat" lands here via the layout), `?q=<text>` starts one and sends it
-  // once (the titlebar's ask field). Params are consumed, then stripped, so a
+  // once (the titlebar's ask field). `?from=&to=` (local ISO days) pre-scopes
+  // the chat, e.g. Overview's "Ask about this week". Params are consumed, then stripped, so a
   // reload or Back never re-sends.
   import { onMount, untrack } from "svelte";
   import { page } from "$app/stores";
@@ -11,17 +12,22 @@
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import Chat from "$lib/chat/Chat.svelte";
   import ChatList from "$lib/chat/ChatList.svelte";
+  import { defaultScope, scopeFromParams } from "$lib/chat/scope";
   import IconOk from "~icons/lucide/check";
   import IconFail from "~icons/lucide/circle-alert";
 
   let defaultModel = $state<string | null>(null);
+  // CH3: the chat view's scope; not persisted, resent with every turn.
+  let scope = $state(defaultScope());
 
   $effect(() => {
     const params = $page.url.searchParams;
     const c = params.get("c")?.trim();
     const q = params.get("q")?.trim();
-    if (!c && !q) return;
+    const scoped = untrack(() => scopeFromParams(params.get("from"), params.get("to"), scope.aboutYou));
+    if (!c && !q && !scoped) return;
     untrack(() => {
+      if (scoped) scope = scoped;
       if (c) conversationStore.requestOpen(c);
       else if (q) conversationStore.requestNewChat(q, true);
       void goto("/chat", { replaceState: true, keepFocus: true, noScroll: true });
@@ -72,7 +78,7 @@
 
 <main class="ch-body">
   <ChatList {defaultModel} ondeleted={showDeleted} />
-  <Chat bind:defaultModel ondeleted={showDeleted} />
+  <Chat bind:defaultModel bind:scope ondeleted={showDeleted} />
   {#if toast || pinFailure}
     <div class="mx-toasts">
       {#if toast}

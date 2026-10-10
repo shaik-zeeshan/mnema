@@ -62,6 +62,15 @@ export interface Conversation {
  *  the Quick Recall launcher (both now persist to the shared store — #111). */
 export type ConversationOrigin = "chat" | "quick_recall";
 
+/** A Chat turn's scope (CH3, `AskAiScope`): the window the data tools may read
+ *  (inclusive unix ms) and whether Mnema's notes about the user are offered.
+ *  Resent on every Chat turn, never persisted; Quick Recall sends none. */
+export interface AskAiScope {
+  fromMs: number;
+  toMs: number;
+  aboutYou: boolean;
+}
+
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
 // The BACKEND-OWNED render model for a streaming Ask AI turn, mirroring the Rust
 // types in `crates/capture-types/src/conversation.rs`. The backend decides what

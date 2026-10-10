@@ -241,10 +241,36 @@ pub enum TurnUpdate {
     Done,
 }
 
+/// A Chat turn's scope (CH3): the captured-history window its data tools may
+/// read, and whether `recall_context` (Mnema's notes about the user) is offered.
+/// Sent with every `ask_ai_start` / `ask_ai_followup` from Chat and never
+/// persisted; absent = unscoped (Quick Recall).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiScope {
+    /// Inclusive window start, unix ms (UTC).
+    pub from_ms: i64,
+    /// Inclusive window end, unix ms (UTC).
+    pub to_ms: i64,
+    pub about_you: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ask_ai_scope_round_trips_camel_case() {
+        let scope = AskAiScope {
+            from_ms: 1,
+            to_ms: 2,
+            about_you: false,
+        };
+        let value = serde_json::to_value(scope).unwrap();
+        assert_eq!(value, json!({ "fromMs": 1, "toMs": 2, "aboutYou": false }));
+        assert_eq!(serde_json::from_value::<AskAiScope>(value).unwrap(), scope);
+    }
 
     #[test]
     fn answer_block_prose_exact_shape() {

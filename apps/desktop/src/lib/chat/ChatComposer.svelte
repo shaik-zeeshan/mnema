@@ -6,6 +6,10 @@
   import { tick } from "svelte";
   import type { AiRuntimeSettings } from "$lib/types/recording";
   import ModelPicker from "./ModelPicker.svelte";
+  import ScopePanel from "./ScopePanel.svelte";
+  import { scopeLabel, type ChatScope, type GoesTo } from "./scope";
+  import { tip } from "$lib/components/tooltip";
+  import IconChev from "~icons/lucide/chevron-down";
   import IconSend from "~icons/lucide/arrow-up";
   import IconStop from "~icons/lucide/square";
   import IconOff from "~icons/lucide/circle-off";
@@ -30,6 +34,9 @@
     onselect: (engine: { provider: string; model: string } | null) => void;
     onsend: () => void;
     onstop: () => void;
+    /** The chat's scope (CH3) and where a turn goes, for the context panel. */
+    scope: ChatScope;
+    goesTo: GoesTo;
   }
   let {
     value = $bindable(),
@@ -47,7 +54,13 @@
     onselect,
     onsend,
     onstop,
+    scope = $bindable(),
+    goesTo,
   }: Props = $props();
+
+  // Docked, the context panel folds behind its summary button; under the
+  // new-chat greeting it's always open (chat.html).
+  let ctxOpen = $state(false);
 
   let el = $state<HTMLTextAreaElement | null>(null);
 
@@ -119,6 +132,9 @@
         bind:open={pickerOpen}
         {onselect}
       />
+      <button type="button" class="mx-btn ch-ctxbtn" class:ch-ctxbtn--open={ctxOpen} aria-expanded={!docked || ctxOpen} use:tip={"What the model may read"} onclick={() => (ctxOpen = !ctxOpen)}>
+        <span>{scopeLabel(scope)}{scope.aboutYou ? " · about you" : ""}</span><IconChev width="11" height="11" aria-hidden="true" />
+      </button>
       <span class="mx-spacer"></span>
       <button
         type="submit"
@@ -137,6 +153,7 @@
         {/if}
       </button>
     </div>
+    {#if !docked || ctxOpen}<ScopePanel bind:scope {goesTo} up={docked} />{/if}
   </form>
 {/if}
 
@@ -172,6 +189,9 @@
   textarea:disabled { opacity: 1; }
   .ch-composer--docked textarea { min-height: 48px; font-size: var(--text-md); padding: var(--s-3) var(--s-4) var(--s-1); }
   .ch-bar { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
+  .ch-ctxbtn { --_gap: 6px; --_fg: var(--app-text-muted); }
+  .ch-ctxbtn > :global(svg) { transition: transform var(--t-med) var(--ease-expo); }
+  .ch-ctxbtn--open > :global(svg) { transform: rotate(180deg); }
   .ch-send--stop :global(rect) { fill: currentColor; } /* lucide draws it hollow; the stop is solid */
   .ch-send kbd { border-color: color-mix(in srgb, currentColor 30%, transparent); color: inherit; opacity: 0.7; }
 </style>

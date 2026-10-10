@@ -33,7 +33,7 @@
   <div class="ch-hello mx-reveal" style="--i:0">
     <span class="mx-kicker">New chat</span>
     <h2 class="mx-display">{hello} <span>What do you want to remember?</span></h2>
-    <p class="mx-prose">Answers come from what Mnema captured on this Mac, through an AI model you choose.</p>
+    <p class="mx-prose">Answers come from what Mnema captured on this Mac. The model only reads inside the scope below, and you choose where it runs.</p>
   </div>
   <div class="ch-slot mx-reveal" style="--i:1">{@render children()}</div>
   {#if suggest}

@@ -38,6 +38,8 @@ export interface ChatTurn {
    *  (the steps line's duration; never persisted). */
   startedAtMs: number | null;
   elapsedMs: number | null;
+  /** UI-only (CH3): the scope this session sent the turn with ("this week"). */
+  scopeLabel?: string;
   /** When the question was asked (persisted createdAtMs, or now for a live one). */
   atMs: number | null;
 }

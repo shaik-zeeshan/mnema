@@ -44,7 +44,10 @@
   const liveLabel = $derived(
     `${turn.liveActivity?.label ?? (turn.phase === "streaming" ? "Writing" : "Thinking")}…`,
   );
-  const steps = $derived(stepsLine(turn.toolActivities.length, turn.elapsedMs));
+  const steps = $derived.by(() => {
+    const line = stepsLine(turn.toolActivities.length, turn.elapsedMs);
+    return line && turn.scopeLabel ? `${line} · searched ${turn.scopeLabel}` : line;
+  });
   const reasoningLive = $derived(live && (turn.reasoning ?? "").trim().length > 0 && turn.blocks.length === 0);
   const copyText = $derived(answerPlainText(turn));
 

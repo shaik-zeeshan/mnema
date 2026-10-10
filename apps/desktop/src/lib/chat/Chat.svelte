@@ -35,7 +35,8 @@
   import ChatTurnView from "./ChatTurn.svelte";
   import ChatComposer from "./ChatComposer.svelte";
   import ChatEmpty from "./ChatEmpty.svelte";
-  import { chatWhen, providerWhere } from "./chat-format";
+  import { chatWhen, providerVia, providerWhere } from "./chat-format";
+  import { defaultScope, scopeLabel, toWireScope, type ChatScope } from "./scope";
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
   import IconPin from "~icons/lucide/pin";
   import IconPinOff from "~icons/lucide/pin-off";
@@ -51,8 +52,10 @@
     defaultModel?: string | null;
     /** A chat was deleted from the header (the page shows the toast). */
     ondeleted?: () => void;
+    /** CH3: the chat view's scope, resent with every turn (never persisted). */
+    scope?: ChatScope;
   }
-  let { defaultModel = $bindable(null), ondeleted }: Props = $props();
+  let { defaultModel = $bindable(null), ondeleted, scope = $bindable(defaultScope()) }: Props = $props();
 
   const TITLE_MAX = 80;
 
@@ -89,6 +92,7 @@
   let pinProvider = $state<string | null>(null);
   let pinModel = $state<string | null>(null);
   let pickerOpen = $state(false);
+  let webFetch = $state(false);
 
   async function loadEngineSettings(): Promise<void> {
     try {
@@ -96,6 +100,7 @@
       aiRuntime = settings.aiRuntime;
       const override = settings.access?.askAiModel?.trim() ?? "";
       askAiModelOverride = override.length > 0 ? override : null;
+      webFetch = settings.access?.askAiWebFetchEnabled ?? false;
     } catch {
       aiRuntime = null;
       askAiModelOverride = null;
@@ -107,6 +112,13 @@
   const engineModel = $derived(pinModel ?? askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null));
   const engineWhere = $derived(engineProvider === null ? null : providerWhere(aiRuntime?.providers.find((p) => p.id === engineProvider)));
   const sendTo = $derived(engineProvider === null ? null : providerLabelById(aiRuntime?.providers, engineProvider));
+  const goesTo = $derived({
+    name: sendTo,
+    where: engineWhere,
+    via: providerVia(aiRuntime?.providers.find((p) => p.id === engineProvider)),
+    webFetch,
+    connectors: aiRuntime?.mcpServers?.filter((m) => m.enabled).length ?? 0,
+  });
   $effect(() => {
     defaultModel = askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null);
   });
@@ -313,6 +325,8 @@
     const turnIndex = turns.length;
     const turn = makeTurn(turnIndex, question, "thinking");
     turn.startedAtMs = turn.atMs = Date.now();
+    turn.scopeLabel = scopeLabel(scope);
+    const wireScope = toWireScope(scope);
     turns = [...turns, turn];
     streaming = true;
     await tick();
@@ -324,14 +338,14 @@
           await invoke("set_conversation_engine", { request: { conversationId, provider: pinProvider, model: pinModel } }).catch(() => {});
         }
         await invoke<void>("ask_ai_start", {
-          request: { conversationId, question, origin: "chat", title, ...askAiClock() },
+          request: { conversationId, question, origin: "chat", title, scope: wireScope, ...askAiClock() },
         });
         if (activeCreatedAtMs === null) activeCreatedAtMs = Date.now();
         // The bus now means "this chat": a remount reopens it instead of a blank one.
         if (store.pendingOpen.nonce === nonce) store.settleOpen(conversationId);
       } else {
         // The backend reloads history from the store, so a follow-up always works.
-        await invoke<void>("ask_ai_followup", { request: { conversationId, question, ...askAiClock() } });
+        await invoke<void>("ask_ai_followup", { request: { conversationId, question, scope: wireScope, ...askAiClock() } });
       }
     } catch (error) {
       if (activeConversationId !== conversationId) return;
@@ -510,6 +524,8 @@
     onselect={(engine) => void handleModelSelect(engine)}
     onsend={() => void send()}
     onstop={() => void stopStreaming()}
+    bind:scope
+    {goesTo}
   />
 {/snippet}
 
