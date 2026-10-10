@@ -145,6 +145,25 @@ impl UsageChartsStore {
         })
     }
 
+    /// Whether `[start_ms, end_ms)` holds any screen frame / any audio
+    /// segment overlapping it: `(screen, audio)`. Two `EXISTS` probes, so
+    /// Overview can tell "audio only" from "nothing captured".
+    pub async fn capture_presence(&self, start_ms: i64, end_ms: i64) -> Result<(bool, bool)> {
+        let row = sqlx::query(
+            "SELECT \
+               EXISTS (SELECT 1 FROM frames WHERE captured_at >= ?1 AND captured_at < ?2) AS screen, \
+               EXISTS (SELECT 1 FROM audio_segments WHERE started_at < ?2 AND ended_at > ?1) AS audio",
+        )
+        .bind(ms_to_rfc3339(start_ms))
+        .bind(ms_to_rfc3339(end_ms))
+        .fetch_one(self.pool())
+        .await?;
+        Ok((
+            row.get::<i64, _>("screen") != 0,
+            row.get::<i64, _>("audio") != 0,
+        ))
+    }
+
     /// Min / max `captured_at` over all frames, as unix-millis. Either side is
     /// `None` when there are no frames.
     async fn captured_at_extent(&self) -> Result<(Option<i64>, Option<i64>)> {
@@ -571,6 +590,49 @@ mod tests {
         // s1 tail (30s) + s2 tail (30s) = 60s. No cross-session gap or transition.
         assert_eq!(editor.active_ms, 60_000);
         assert!(transitions.is_empty());
+    }
+
+    #[test]
+    fn capture_presence_tells_screen_from_audio() {
+        block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db");
+            for ddl in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "INSERT INTO frames (captured_at) VALUES ('2026-01-01T10:00:00Z')",
+                "INSERT INTO audio_segments (started_at, ended_at) VALUES ('2026-01-02T09:55:00Z', '2026-01-02T10:05:00Z')",
+            ] {
+                sqlx::query(ddl).execute(&pool).await.expect("setup");
+            }
+            let store = UsageChartsStore::new(CaptureDb::single(pool));
+            let ms = |s: &str| rfc3339_to_ms(s).unwrap();
+            let day1 = (ms("2026-01-01T00:00:00Z"), ms("2026-01-02T00:00:00Z"));
+            let day2 = (ms("2026-01-02T00:00:00Z"), ms("2026-01-03T00:00:00Z"));
+            assert_eq!(
+                store.capture_presence(day1.0, day1.1).await.unwrap(),
+                (true, false)
+            );
+            assert_eq!(
+                store.capture_presence(day2.0, day2.1).await.unwrap(),
+                (false, true)
+            );
+            // A segment straddling the range edge still counts as audio.
+            let from_ten = ms("2026-01-02T10:00:00Z");
+            assert_eq!(
+                store.capture_presence(from_ten, day2.1).await.unwrap(),
+                (false, true)
+            );
+            // Half-open end: a frame exactly at `end` is not in the range.
+            let before = ms("2026-01-01T10:00:00Z");
+            assert_eq!(
+                store.capture_presence(day1.0, before).await.unwrap(),
+                (false, false)
+            );
+        });
     }
 
     /// End-to-end against an in-memory DB with the real `frames` +

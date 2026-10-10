@@ -221,6 +221,23 @@ pub struct UserContextStatus {
     pub local_offset_minutes: Option<i64>,
     /// The most recently generated day-kind Digest; `None` until one exists.
     pub last_day_digest: Option<UserContextDigest>,
+    /// Activity summarizing is failing: set while the newest `activity` /
+    /// `backfill` failures have no success after them. `None` when healthy.
+    #[serde(default)]
+    pub summarizing_failure: Option<UserContextSummarizingFailure>,
+}
+
+/// Why Activity summarizing keeps failing, for the Overview's red card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextSummarizingFailure {
+    pub at_ms: i64,
+    /// Failed window runs since the last success.
+    pub failures: i64,
+    /// Provider display name; `None` when the run recorded no provider.
+    pub provider: Option<String>,
+    /// One readable sentence (never a raw provider body).
+    pub reason: String,
 }
 
 /// The engine-written narrative lede for one Insights Overview range (the
@@ -576,6 +593,12 @@ mod tests {
                 narrative: "A day.".to_string(),
                 headline: None,
                 generated_at_ms: 3_000,
+            }),
+            summarizing_failure: Some(UserContextSummarizingFailure {
+                at_ms: 4_000,
+                failures: 6,
+                provider: Some("Anthropic".to_string()),
+                reason: "Rate limited.".to_string(),
             }),
         };
         let value = serde_json::to_value(&status).unwrap();

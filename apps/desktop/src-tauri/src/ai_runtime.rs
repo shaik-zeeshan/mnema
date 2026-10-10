@@ -20,6 +20,9 @@ use crate::native_capture::{read_recording_settings, RecordingSettingsState};
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeStatus {
     enabled: bool,
+    /// At least one provider was ever added — the Insights page pitches setup
+    /// only when this is false, never for a broken-but-set-up engine.
+    has_providers: bool,
     configured: bool,
     available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -444,6 +447,11 @@ fn chatgpt_engine_config(
             tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
         })?
         .ok_or_else(needs_reconnect)?;
+    // OpenAI rejected this set's refresh token (persisted mark): report it
+    // without a send having to fail first.
+    if token_set.rejected {
+        return Err(needs_reconnect());
+    }
     Ok(ai_engine::EngineConfig::Cloud {
         provider: ai_engine::CloudProvider::Chatgpt,
         model: model.to_string(),
@@ -477,7 +485,7 @@ fn chatgpt_static_models(
         .inspect_err(|error| {
             tauri_plugin_log::log::warn!("ai-runtime: reading chatgpt token set failed: {error}");
         })?
-        .is_some();
+        .is_some_and(|set| !set.rejected);
     if !connected {
         return Err(needs_reconnect());
     }
@@ -809,6 +817,17 @@ pub async fn mcp_has_server_secret(request: McpServerRequest) -> Result<bool, St
         .map_err(|error| error.to_string())
 }
 
+/// A denied keychain/vault surfaces as `AppInfraError::SecretVaultDenied`'s
+/// sentence; the status hands the UI a stable `vault_denied` code instead so
+/// nothing has to match on prose. Every other reason is already a code.
+fn status_reason_code(reason: String) -> String {
+    if classify_listing_failure(&reason) == "keychain access denied" {
+        "vault_denied".to_string()
+    } else {
+        reason
+    }
+}
+
 #[tauri::command]
 pub async fn get_ai_runtime_status(
     state: tauri::State<'_, RecordingSettingsState>,
@@ -820,9 +839,11 @@ pub async fn get_ai_runtime_status(
     // means. `configured` is "the static config is complete" (everything but a
     // local engine that is merely unreachable); `available` is the full
     // prerequisite (including the local reachability ping).
+    let has_providers = !settings.providers.is_empty();
     match engine_configured_prerequisite(&settings).await {
         Ok(()) => Ok(AiRuntimeStatus {
             enabled: settings.enabled,
+            has_providers,
             configured: true,
             available: true,
             default_model: settings.default_model,
@@ -830,12 +851,13 @@ pub async fn get_ai_runtime_status(
         }),
         Err(reason) => Ok(AiRuntimeStatus {
             enabled: settings.enabled,
+            has_providers,
             // Only the reachability ping fails AFTER the static config passed,
             // so that reason alone means "configured but currently offline".
             configured: reason == "local_endpoint_unreachable",
             available: false,
             default_model: settings.default_model,
-            reason: Some(reason),
+            reason: Some(status_reason_code(reason)),
         }),
     }
 }
@@ -1733,6 +1755,32 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_chatgpt_login_reports_needs_reconnect_without_a_send() {
+        let rejected = crate::chatgpt_auth::ChatgptTokenSet {
+            access_token: "a".to_string(),
+            refresh_token: Some("r".to_string()),
+            expires_at: Some(4_000_000_000),
+            rejected: true,
+        };
+        assert_eq!(
+            chatgpt_engine_config("chatgpt", "gpt-5.5", Ok(Some(rejected.clone()))).err(),
+            Some("needs_reconnect:chatgpt".to_string())
+        );
+        assert_eq!(
+            chatgpt_static_models("chatgpt", Ok(Some(rejected))).err(),
+            Some("needs_reconnect:chatgpt".to_string())
+        );
+    }
+
+    #[test]
+    fn a_denied_vault_is_a_stable_status_code() {
+        let denied =
+            app_infra::AppInfraError::SecretVaultDenied("user denied prompt".to_string()).to_string();
+        assert_eq!(status_reason_code(denied), "vault_denied");
+        assert_eq!(status_reason_code("no_base_url".to_string()), "no_base_url");
+    }
+
+    #[test]
     fn chatgpt_token_set_maps_to_an_access_token_config_or_needs_reconnect() {
         // The whole mapping, with the vault result supplied rather than read —
         // the previous version of this test resolved the real provider id
@@ -1746,6 +1794,7 @@ mod tests {
                 access_token: "the-access-token".to_string(),
                 refresh_token: Some("r".to_string()),
                 expires_at: Some(4_000_000_000),
+                rejected: false,
             })),
         );
         match connected {
@@ -1916,6 +1965,7 @@ mod tests {
                 access_token: "a".to_string(),
                 refresh_token: Some("r".to_string()),
                 expires_at: Some(4_000_000_000),
+                rejected: false,
             })),
         )
         .expect("a connected instance lists its catalog");
@@ -2088,6 +2138,7 @@ mod tests {
                 access_token: "second-account-token".to_string(),
                 refresh_token: Some("r".to_string()),
                 expires_at: Some(4_000_000_000),
+                rejected: false,
             },
         )
         .expect("seed the second account");

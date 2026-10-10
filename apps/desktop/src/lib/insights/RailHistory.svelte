@@ -78,6 +78,15 @@
         </div>
       {/each}
     </div>
+  {:else if conversationStore.historyError}
+    <p class="rail-empty">Couldn't load conversations.</p>
+    <button
+      type="button"
+      class="re-read"
+      onclick={() => void conversationStore.refreshHistory()}
+    >
+      <span class="re-read-ico" aria-hidden="true">↻</span> Try again
+    </button>
   {:else if conversationStore.conversations.length === 0}
     <p class="rail-empty">
       {conversationStore.searchQuery.trim().length > 0
@@ -259,6 +268,35 @@
   }
   .sk-row {
     display: flex;
+  }
+  /* ↻ pill — the app's re-read idiom (Overview's "The read" eyebrow). */
+  .re-read {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 8px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  .re-read:hover {
+    color: var(--app-text-strong);
+  }
+  .re-read:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .re-read-ico {
+    font-size: var(--text-base);
+    line-height: 1;
+    letter-spacing: 0;
   }
   .rail-empty {
     font-size: 11px;

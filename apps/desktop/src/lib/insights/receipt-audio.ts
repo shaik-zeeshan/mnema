@@ -49,7 +49,7 @@ export function frameIndexForMs(sortedMs: number[], targetMs: number): number {
   return ans;
 }
 
-export type ReceiptViewState = "frames" | "audio-only" | "expired";
+export type ReceiptViewState = "frames" | "audio-only" | "expired" | "error";
 
 /** Which viewer the receipt renders (ADR 0049): frames win; else audio if any
  *  spoken evidence survives; else the honest "footage expired" panel.
@@ -64,9 +64,17 @@ export function receiptViewState(
   audioEvidenceCount: number,
   turnsPending: boolean,
   turnCount: number,
+  /** Span segments still being transcribed — the audio exists, words don't yet. */
+  transcribing = 0,
+  /** A frame or audio listing failed: say so, never "expired". */
+  loadFailed = false,
 ): ReceiptViewState {
   if (frameCount > 0) return "frames";
-  if (audioEvidenceCount > 0 && (turnsPending || turnCount > 0)) return "audio-only";
+  // Spoken turns in the span count even when uncited (JR-22).
+  if (turnCount > 0 || transcribing > 0 || (audioEvidenceCount > 0 && turnsPending)) {
+    return "audio-only";
+  }
+  if (loadFailed) return "error";
   return "expired";
 }
 
@@ -172,9 +180,10 @@ export function clipStartOffsetSec(
   return Math.max(0, (atMs - turn.segmentStartMs) / 1000);
 }
 
-/** The audio-only footer's left cell: honest about why there are no frames. */
-export function audioFooterLeft(frameEvidenceCount: number): string {
-  return frameEvidenceCount > 0
+/** The audio-only footer's left cell: "expired" only when retention removed
+ *  the span's frames (see retention.ts); otherwise it was captured as audio. */
+export function audioFooterLeft(removedByRetention: boolean): string {
+  return removedByRetention
     ? "0 screen frames — screen frames have expired"
     : "0 screen frames — captured as audio";
 }

@@ -56,8 +56,12 @@
     }
     return "steady";
   });
+  // One confidence point = too new to have a trend; never call it "steady".
+  const isNew = $derived(!isFaded && (trajectory?.history.length ?? 0) < 2);
   const trendLabel = $derived(
-    headerTrend === "up"
+    isNew
+      ? "new — no trend yet"
+      : headerTrend === "up"
       ? "rising"
       : headerTrend === "down"
         ? "cooling"
@@ -215,7 +219,12 @@
       </div>
     {/if}
 
-    {#if trajNote}
+    {#if trajNote && trajNote.n === 1}
+      <div class="cd-traj-note">
+        Formed at <b>{trajNote.value}</b>. A trend appears once new evidence
+        strengthens it.
+      </div>
+    {:else if trajNote}
       <div class="cd-traj-note num">
         <span
           ><b>{trajNote.n}</b>

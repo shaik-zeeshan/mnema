@@ -26,3 +26,25 @@ pub async fn get_usage_charts(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Which capture families have anything in `[start_ms, end_ms)`. Overview uses
+/// it to say "audio only" instead of "0h tracked" (app time is screen-only).
+#[derive(serde::Serialize)]
+pub struct CapturePresence {
+    pub screen: bool,
+    pub audio: bool,
+}
+
+#[tauri::command]
+pub async fn capture_presence(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<CapturePresence, String> {
+    let (screen, audio) = infra
+        .usage_charts()
+        .capture_presence(start_ms, end_ms)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(CapturePresence { screen, audio })
+}

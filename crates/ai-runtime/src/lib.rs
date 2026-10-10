@@ -222,6 +222,31 @@ impl AiRuntimeError {
     }
 }
 
+impl AiRuntimeError {
+    /// A stable machine-readable bucket for this failure, so a UI can pick the
+    /// one action that helps: `settings` (fix the config), `quota`, `auth`,
+    /// `context_too_long` (start a new chat), `unreachable`, or `retryable`.
+    pub fn failure_kind(&self) -> &'static str {
+        let raw = match self {
+            AiRuntimeError::MissingModel
+            | AiRuntimeError::MissingKey
+            | AiRuntimeError::MissingBaseUrl => return "settings",
+            AiRuntimeError::Build(_) | AiRuntimeError::ClientBuild(_) => return "unreachable",
+            AiRuntimeError::Extraction(error) => error.to_string(),
+            AiRuntimeError::AgentLoop(message) => message.clone(),
+        };
+        match ProviderFailure::classify(&raw) {
+            ProviderFailure::Quota => "quota",
+            ProviderFailure::Auth => "auth",
+            ProviderFailure::ContextTooLong => "context_too_long",
+            ProviderFailure::Unreachable => "unreachable",
+            ProviderFailure::RateLimited | ProviderFailure::Outage | ProviderFailure::Unknown => {
+                "retryable"
+            }
+        }
+    }
+}
+
 impl EngineConfig {
     /// The cloud provider this config talks to, or `None` for a local runtime.
     /// Lets a caller word a failure for the engine that produced it
@@ -242,61 +267,101 @@ impl EngineConfig {
 /// generic 5xx/transport buckets so a "402 insufficient quota" doesn't read as a
 /// plain outage. Anything unrecognised falls back to a neutral retry sentence so
 /// the surface never shows a raw JSON body.
-fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
-    let lower = raw.to_lowercase();
-    let has = |needle: &str| lower.contains(needle);
-
-    if has("429") || has("too many requests") || has("rate_limit") || has("rate limit") {
-        "The AI provider is rate-limiting requests right now. Wait a moment and try again."
-            .to_string()
-    } else if has("insufficient_quota")
-        || (has("quota") && has("exceeded"))
-        || has("billing")
-        || has("insufficient funds")
-        || has("payment required")
-    {
-        "Your AI provider account is out of credit or quota. Check your provider billing, then try again."
-            .to_string()
-    } else if has("401")
-        || has("403")
-        || has("unauthorized")
-        || has("invalid x-api-key")
-        || has("invalid api key")
-        || has("authentication")
-        || has("permission")
-    {
-        if matches!(provider, Some(CloudProvider::Chatgpt)) {
+pub fn classify_provider_failure(raw: &str, provider: Option<CloudProvider>) -> String {
+    match ProviderFailure::classify(raw) {
+        ProviderFailure::RateLimited => {
+            "The AI provider is rate-limiting requests right now. Wait a moment and try again."
+                .to_string()
+        }
+        ProviderFailure::Quota => {
+            "Your AI provider account is out of credit or quota. Check your provider billing, then try again."
+                .to_string()
+        }
+        ProviderFailure::Auth if matches!(provider, Some(CloudProvider::Chatgpt)) => {
             // The subscription backend rejected the OAuth grant. There is no key
             // to check — the fix is a fresh sign-in.
             "ChatGPT rejected the sign-in. Sign in with ChatGPT again in Settings and try again."
                 .to_string()
-        } else {
+        }
+        ProviderFailure::Auth => {
             "The AI provider rejected your API key. Check it in Settings and try again.".to_string()
         }
-    } else if has("context")
-        && (has("length") || has("maximum") || has("too long") || has("token"))
-    {
-        "This conversation is too long for the selected model. Start a new chat and try again."
-            .to_string()
-    } else if has("timed out")
-        || has("timeout")
-        || has("connection")
-        || has("dns")
-        || has("unreachable")
-        || has("network")
-    {
-        "Couldn't reach the AI provider. Check your connection and try again.".to_string()
-    } else if has("500")
-        || has("502")
-        || has("503")
-        || has("529")
-        || has("overloaded")
-        || has("internal server error")
-        || has("service unavailable")
-    {
-        "The AI provider had a temporary problem. Try again in a moment.".to_string()
-    } else {
-        "The AI engine couldn't complete this request. Try again in a moment.".to_string()
+        ProviderFailure::ContextTooLong => {
+            "This conversation is too long for the selected model. Start a new chat and try again."
+                .to_string()
+        }
+        ProviderFailure::Unreachable => {
+            "Couldn't reach the AI provider. Check your connection and try again.".to_string()
+        }
+        ProviderFailure::Outage => {
+            "The AI provider had a temporary problem. Try again in a moment.".to_string()
+        }
+        ProviderFailure::Unknown => {
+            "The AI engine couldn't complete this request. Try again in a moment.".to_string()
+        }
+    }
+}
+
+/// The provider-failure buckets behind [`classify_provider_failure`], shared by
+/// the sentence and the machine-readable [`AiRuntimeError::failure_kind`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderFailure {
+    RateLimited,
+    Quota,
+    Auth,
+    ContextTooLong,
+    Unreachable,
+    Outage,
+    Unknown,
+}
+
+impl ProviderFailure {
+    fn classify(raw: &str) -> Self {
+        let lower = raw.to_lowercase();
+        let has = |needle: &str| lower.contains(needle);
+
+        if has("429") || has("too many requests") || has("rate_limit") || has("rate limit") {
+            Self::RateLimited
+        } else if has("insufficient_quota")
+            || (has("quota") && has("exceeded"))
+            || has("billing")
+            || has("insufficient funds")
+            || has("payment required")
+        {
+            Self::Quota
+        } else if has("401")
+            || has("403")
+            || has("unauthorized")
+            || has("invalid x-api-key")
+            || has("invalid api key")
+            || has("authentication")
+            || has("permission")
+        {
+            Self::Auth
+        } else if has("context")
+            && (has("length") || has("maximum") || has("too long") || has("token"))
+        {
+            Self::ContextTooLong
+        } else if has("timed out")
+            || has("timeout")
+            || has("connection")
+            || has("dns")
+            || has("unreachable")
+            || has("network")
+        {
+            Self::Unreachable
+        } else if has("500")
+            || has("502")
+            || has("503")
+            || has("529")
+            || has("overloaded")
+            || has("internal server error")
+            || has("service unavailable")
+        {
+            Self::Outage
+        } else {
+            Self::Unknown
+        }
     }
 }
 

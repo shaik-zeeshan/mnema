@@ -23,6 +23,7 @@
     connected,
     onchange,
     autostart = false,
+    signInLabel,
   }: {
     providerId: string;
     /** Does the vault hold a token set for this instance (parent-owned)? */
@@ -39,6 +40,8 @@
      * Ignored when already connected.
      */
     autostart?: boolean;
+    /** Override the primary button's idle label (Chat's "Sign in again"). */
+    signInLabel?: string;
   } = $props();
 
   interface LoginPrompt {
@@ -232,7 +235,9 @@
       >
         {phase.kind === "starting"
           ? "Contacting OpenAI…"
-          : connected
+          : signInLabel
+            ? signInLabel
+            : connected
             ? "Reconnect ChatGPT"
             : "Connect ChatGPT"}
       </button>

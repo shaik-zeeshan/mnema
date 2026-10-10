@@ -436,10 +436,10 @@
     </div>
   {:else if view && conclusionCount === 0}
     <div class="state">
-      <p class="state-title">Nothing concluded about {subject} yet.</p>
+      <p class="state-title">No beliefs to show about {subject}.</p>
       <p class="state-detail">
-        Conclusions form as evidence accumulates. This subject has no active or
-        faded conclusions to chart.
+        Nothing active or fading is left here. Anything you dismissed is in
+        Context › Dismissed.
       </p>
     </div>
   {:else if view}

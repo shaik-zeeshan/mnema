@@ -15,6 +15,7 @@
   import { clock, clockSec } from "$lib/insights/receipt-clock";
   import type { ReceiptViewState, TurnView } from "$lib/insights/receipt-audio";
   import type { FramePreviewDto } from "$lib/types/app-infra";
+  import type { RetentionVerdict } from "$lib/insights/retention";
 
   interface Props {
     loading: boolean;
@@ -28,6 +29,12 @@
     currentMs: number | null;
     hasOcr: boolean;
     currentPreview: FramePreviewDto | null;
+    /** Non-null only when retention explains the missing frames. */
+    retention: RetentionVerdict | null;
+    /** Span segments still being transcribed; null when none. */
+    transcribing: { done: number; total: number } | null;
+    activityStartMs: number;
+    onRetry: () => void;
     onTogglePlay: () => void;
   }
   let {
@@ -42,28 +49,48 @@
     currentMs,
     hasOcr,
     currentPreview,
+    retention,
+    transcribing,
+    activityStartMs,
+    onRetry,
     onTogglePlay,
   }: Props = $props();
+  const fromDate = $derived(
+    new Date(activityStartMs).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+  );
 </script>
 
 {#if loading}
   <div class="viewer"><div class="skeleton" aria-hidden="true"></div></div>
+{:else if viewState === "error"}
+  <div class="viewer viewer--expired" role="alert">
+    <div class="exp">
+      <h4>Couldn't load footage</h4>
+      <p>Reading this activity's frames failed this time. The summary above isn't affected.</p>
+      <button type="button" class="retry" onclick={onRetry}>↻ Try again</button>
+    </div>
+  </div>
 {:else if viewState === "expired"}
-  <!-- Retention removes frames while the card is kept (ADR 0029) AND nothing
-       spoken was cited, so this expired state is honest, not an edge case. -->
+  <!-- "Expired" only when retention removed the span (ADR 0029); otherwise the
+       screen simply wasn't captured. -->
   <div class="viewer viewer--expired">
     <div class="exp">
       <div class="exp__glyph" aria-hidden="true"><IconExpired /></div>
-      <h4>Footage expired</h4>
-      <p>
-        The raw frames behind this card were removed by Retention Cleanup. The
-        card, its summary, and its evidence list are kept — only the pixels age
-        out.
-      </p>
+      {#if retention}
+        <h4>Footage expired</h4>
+        <p>
+          Removed by your {retention.days}-day retention — this activity is from {fromDate}. The
+          card, its summary, and its evidence list are kept — only the pixels age out.
+        </p>
+      {:else}
+        <h4>No screen capture</h4>
+        <p>No screen frames were captured during this activity. The card and its summary are kept.</p>
+      {/if}
     </div>
   </div>
 {:else if viewState === "audio-only"}
   <div class="viewer viewer--audio">
+    {#if !retention}<div class="a-when">No screen frames — this activity was captured as audio only</div>{/if}
     <button
       type="button"
       class="big-play"
@@ -80,6 +107,10 @@
       <div class="a-when">spoken segment · {clock(selectedTurn.startMs)}–{clock(selectedTurn.endMs)} · captured as audio</div>
     {:else if turnsPending}
       <div class="a-when">Loading spoken evidence…</div>
+    {:else if transcribing}
+      <div class="a-when">
+        Transcribing this audio… {transcribing.done} of {transcribing.total} segments done
+      </div>
     {:else}
       <!-- Hydration finished with nothing readable (silent segments, or every
            fallback failed) — say so; a fake eternal "Loading…" reads as a hang. -->
@@ -125,6 +156,8 @@
   .exp__glyph { display: flex; justify-content: center; margin-bottom: 10px; color: var(--app-text-faint); }
   .exp__glyph :global(svg) { width: 30px; height: 30px; }
   .exp h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--app-text-strong); }
+  .retry { margin-top: 12px; padding: 4px 10px; font: inherit; font-size: 11.5px; color: var(--app-text); background: transparent; border: 1px solid var(--app-border-strong); border-radius: 6px; cursor: pointer; }
+  .retry:hover { border-color: var(--app-accent); color: var(--app-accent); }
   .exp p { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--app-text-muted); }
 
   /* Audio-only viewer — a bounded audio player, never a false "footage expired".
