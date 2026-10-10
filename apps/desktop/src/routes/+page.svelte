@@ -1291,15 +1291,6 @@
     }
   }
 
-  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
-    const trimmedLabel = label.trim();
-    if (trimmedLabel.length === 0) return;
-    await runSpeakerCorrection(clusterId, async () => {
-      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
-      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    });
-  }
-
   async function createAndLinkSpeakerProfile(clusterId: number, displayName: string): Promise<void> {
     const trimmedDisplayName = displayName.trim();
     if (trimmedDisplayName.length === 0) return;
@@ -2099,14 +2090,15 @@
 
   // ─── Speaker writes the drawer delegates back here ───────────────────────
 
-  /** "Name & apply". An unlinked cluster becomes a saved person (that is what
-   *  makes recognition stick); an already-linked one just gets relabelled. */
+  /** The repair panel's "Create '<name>'": always a new saved person, linked —
+   *  also for an already-linked cluster, where the link write records the old
+   *  person as rejected. (Relabelling a linked cluster changed nothing visible:
+   *  the person's name wins over the label.) */
   async function applySpeakerName(
     group: SpeakerTranscriptGroup,
     name: string,
   ): Promise<void> {
-    if (group.personId == null) await createAndLinkSpeakerProfile(group.clusterId, name);
-    else await saveSpeakerClusterName(group.clusterId, name);
+    await createAndLinkSpeakerProfile(group.clusterId, name);
   }
 
   /** The mockup collapses two distinct writes into one button, so fire whichever

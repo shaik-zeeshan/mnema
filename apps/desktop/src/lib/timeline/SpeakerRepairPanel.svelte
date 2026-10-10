@@ -1,11 +1,23 @@
 <script lang="ts">
   // Identity repair as a right-edge slide-over — never a modal, never a centred
   // popover over the text, because the whole point of a repair surface is that
-  // you can keep reading the lines you are trying to attribute. This replaces the
-  // old top-layer `popover="manual"` speaker-actions panel.
+  // you can keep reading the lines you are trying to attribute.
+  //
+  // One search box does both jobs: it filters the saved people and offers to
+  // create the typed name as a new one. One primary commits whatever is picked.
+  import IconCheck from "~icons/lucide/check";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconInbox from "~icons/lucide/inbox";
+  import IconPlay from "~icons/lucide/play";
+  import IconSearch from "~icons/lucide/search";
+  import IconX from "~icons/lucide/x";
+  import Input from "$lib/components/Input.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import { tip } from "$lib/components/tooltip";
   import {
     clusterSummaryLabel,
     embeddingCountLabel,
+    isDefaultSpeakerLabel,
     validateSpeakerName,
     type SpeakerMark,
     type SpeakerTranscriptGroup,
@@ -20,10 +32,13 @@
   interface Props {
     group: SpeakerTranscriptGroup;
     mark: SpeakerMark | undefined;
+    /** The drawer's cluster → mark map, for the move-line list. Optional until
+     *  AudioDrawer passes it (`{marks}`); without it those rows have no glyph. */
+    marks?: Map<number, SpeakerMark>;
     turns: SpeakerTurnDto[];
     clusters: SpeakerClusterDto[];
     profiles: PersonProfileDto[];
-    /** The name already persisted for this cluster (the field's initial value). */
+    /** The name shown for this cluster today (linked person, else its label). */
     persistedName: string;
     unnamed: boolean;
     busy: boolean;
@@ -38,7 +53,10 @@
     mergeScoreLabel: string | null;
     clusterOptionLabel: (cluster: SpeakerClusterDto) => string;
     onClose: () => void;
+    /** Create a saved person with this name and link this cluster to it. */
     onApplyName: (name: string) => void;
+    /** Link to a saved person. Confirming a suggestion is this same write
+     *  (`confirm_speaker_recognition_suggestion` is a link to the suggested id). */
     onLink: (personId: number) => void;
     onMerge: () => void;
     /** Reject a pending suggestion, or unlink a confirmed person — whichever this
@@ -52,6 +70,7 @@
   let {
     group,
     mark,
+    marks,
     turns,
     clusters,
     profiles,
@@ -74,524 +93,566 @@
     onPlaySamples,
   }: Props = $props();
 
-  // ponytail: no undo toast (mockup region K). Every speaker write here —
-  // name_speaker_cluster, link/unlink, merge_speaker_clusters,
-  // move_speaker_turn_to_cluster — has NO backend inverse, so an "Undo" would be
-  // invented state with real data-loss risk the moment it drifted from the DB.
-  // Add it when the Rust side ships a real inverse (e.g. a per-write journal the
-  // undo replays), not before.
+  // ponytail: no undo toast. Every speaker write here — create/link/unlink,
+  // merge_speaker_clusters, move_speaker_turn_to_cluster — has NO backend inverse,
+  // so an "Undo" would be invented state. Add it when the Rust side ships one.
 
-  let nameDraft = $state("");
+  type Pick = number | "new" | null;
   let scope = $state<"speaker" | "line">("speaker");
-  let linkChoice = $state("");
+  let query = $state("");
+  let pick = $state<Pick>(null);
   let moveChoice = $state("");
 
-  // Seed on mount, and re-seed whenever the panel is pointed at a different
-  // cluster (the drawer reuses one panel instance across gutter clicks).
+  // The drawer reuses one panel instance across gutter clicks: reset per cluster.
   let seededClusterId = $state<number | null>(null);
-  let seededName = $state("");
   $effect(() => {
-    if (seededClusterId !== group.clusterId) {
-      seededClusterId = group.clusterId;
-      seededName = persistedName;
-      nameDraft = persistedName;
-      scope = "speaker";
-      linkChoice = "";
-      moveChoice = "";
-      return;
-    }
-    // Same cluster, but the persisted name moved under us — which is what a landed
-    // write looks like from here, above all an unlink/reject: the cluster loses its
-    // person and `persistedName` reverts to the diarizer label. The field has to show
-    // what the DB says NOW, or it keeps offering the person the user just vetoed, one
-    // Enter from re-applying that name as a cluster label. A draft the user typed
-    // themselves is theirs, and survives.
-    if (persistedName === seededName) return;
-    const untouched = nameDraft === seededName;
-    seededName = persistedName;
-    if (untouched) nameDraft = persistedName;
+    if (seededClusterId === group.clusterId) return;
+    seededClusterId = group.clusterId;
+    scope = "speaker";
+    query = "";
+    pick = null;
+    moveChoice = "";
   });
 
-  const validation = $derived(validateSpeakerName(nameDraft));
-  const nameChanged = $derived(nameDraft.trim() !== persistedName.trim());
-  const applyDisabled = $derived(busy || !validation.ok || !nameChanged);
+  const first = (name: string) => name.split(" ")[0] ?? name;
+  const initials = (name: string) =>
+    name
+      .split(/\s+/)
+      .map((part) => part[0] ?? "")
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
+
   const summary = $derived(clusterSummaryLabel(group.clusterId, turns));
-  const linkable = $derived(profiles.filter((p) => p.id !== group.personId));
-  const moveTargets = $derived(clusters.filter((c) => c.id !== group.clusterId));
-  /** The person "Not this person" is actually about. */
-  const rejectSubject = $derived(
-    linkedPersonName ??
-      (group.suggestedPersonId != null
-        ? profiles.find((p) => p.id === group.suggestedPersonId)?.displayName ?? null
-        : null),
+  const turnCount = $derived(turns.filter((t) => t.clusterId === group.clusterId).length);
+  const cluster = $derived(clusters.find((c) => c.id === group.clusterId));
+  const linked = $derived(profiles.find((p) => p.id === group.personId) ?? null);
+  const suggested = $derived(
+    suggestionPending ? (profiles.find((p) => p.id === group.suggestedPersonId) ?? null) : null,
   );
 
-  function submitName(event: SubmitEvent): void {
-    event.preventDefault();
-    if (applyDisabled) return;
-    onApplyName(nameDraft.trim());
+  const q = $derived(query.trim());
+  const warning = $derived(q ? validateSpeakerName(q).message : null);
+  const people = $derived(
+    profiles.filter(
+      (p) => p.id !== group.personId && (!q || p.displayName.toLowerCase().includes(q.toLowerCase())),
+    ),
+  );
+  const canCreate = $derived(
+    q !== "" &&
+      warning == null &&
+      !profiles.some((p) => p.displayName.toLowerCase() === q.toLowerCase()),
+  );
+  // A pick that the filter (or a landed write) took away is no pick; a typed new
+  // name with nothing else matching picks itself.
+  const effectivePick = $derived<Pick>(
+    pick === "new"
+      ? canCreate
+        ? "new"
+        : null
+      : pick != null && people.some((p) => p.id === pick)
+        ? pick
+        : canCreate && people.length === 0
+          ? "new"
+          : null,
+  );
+  const pickedPerson = $derived(
+    typeof effectivePick === "number" ? profiles.find((p) => p.id === effectivePick) : undefined,
+  );
+  const moveTargets = $derived(clusters.filter((c) => c.id !== group.clusterId));
+
+  const commit = $derived.by(() => {
+    if (scope === "line") {
+      return { label: "Move this line", busyLabel: "Moving…", ready: moveChoice !== "" };
+    }
+    if (pickedPerson) {
+      return { label: `Link to ${pickedPerson.displayName}`, busyLabel: "Linking…", ready: true };
+    }
+    return { label: "Name & apply", busyLabel: "Saving…", ready: effectivePick === "new" };
+  });
+
+  // The mockup closes the panel once a commit or a confirm lands; a failed write
+  // keeps it open with the error. `busy` flips true synchronously when the write
+  // starts, so "busy went false with no error" is the success signal.
+  let closeWhenDone = false;
+  let wasBusy = false;
+  /** What "Try again" re-runs; cleared once a write lands. */
+  let lastAction = $state<(() => void) | null>(null);
+  $effect(() => {
+    if (busy) {
+      wasBusy = true;
+      return;
+    }
+    if (!wasBusy) return;
+    wasBusy = false;
+    if (error) return;
+    lastAction = null;
+    if (closeWhenDone) onClose();
+  });
+
+  function run(action: () => void, closeOnSuccess = false): void {
+    if (busy) return;
+    lastAction = action;
+    closeWhenDone = closeOnSuccess;
+    action();
+  }
+
+  function submit(): void {
+    if (!commit.ready) return;
+    if (scope === "line") {
+      const target = Number(moveChoice);
+      run(() => onMoveGroupTo(target), true);
+    } else if (effectivePick === "new") {
+      const name = q;
+      run(() => onApplyName(name), true);
+    } else if (pickedPerson) {
+      const id = pickedPerson.id;
+      run(() => onLink(id), true);
+    }
   }
 </script>
 
 <div
-  class="so"
+  class="fix"
   role="dialog"
   tabindex="-1"
-  aria-label={`Speaker repair — ${summary}`}
+  aria-label={`Speaker repair — ${persistedName}`}
   aria-busy={busy}
   onpointerdown={(event) => event.stopPropagation()}
 >
-  <div class="so__head">
+  <div class="fix__head">
     <SpeakerMarkGlyph {mark} ghosted={unnamed} />
-    <span class="so__t">{summary}</span>
-    <span class="so__grow"></span>
-    <button type="button" class="so__close" aria-label="Close speaker repair" onclick={onClose}
-      >✕</button
+    <span class="fix__nm">{persistedName}</span>
+    {#if linked?.isAccountOwner}<span class="mx-chip">you</span>{/if}
+    {#if cluster?.personLinkAuto && group.personId != null}
+      <span class="mx-chip" use:tip={"Linked automatically from your voiceprint"}>auto</span>
+    {/if}
+    <span class="mx-spacer"></span>
+    <button
+      type="button"
+      class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
+      aria-label="Close speaker repair"
+      onclick={onClose}><IconX width="15" height="15" /></button
     >
   </div>
+  <div class="fix__sum">{summary}</div>
 
-  <div class="so__body">
-    <form onsubmit={submitName}>
-      <label class="lbl" for={`repair-name-${group.clusterId}`}>name this voice</label>
-      <input
-        id={`repair-name-${group.clusterId}`}
-        class="inp"
-        class:is-error={scope === "speaker" && !validation.ok}
-        bind:value={nameDraft}
-        disabled={busy || scope === "line"}
-        aria-invalid={scope === "speaker" && !validation.ok}
-        aria-describedby={`repair-warn-${group.clusterId} repair-scope-${group.clusterId}`}
-      />
-      {#if scope === "speaker" && validation.message}
-        <p class="fieldwarn" id={`repair-warn-${group.clusterId}`}>
-          <span aria-hidden="true">▲</span>
-          <span>{validation.message}</span>
+  <div class="fix__body">
+    {#if suggested}
+      <div class="fix__card">
+        <div class="fix__card-h">
+          Sounds like {suggested.displayName}
+          {#if group.recognitionConfidence}
+            <span class="mx-chip" use:tip={"Recognition confidence"}
+              >{group.recognitionConfidence}</span
+            >
+          {/if}
+        </div>
+        <p>
+          Only a suggestion. Confirm links this voice and saves a sample; “Not {first(
+            suggested.displayName,
+          )}” stops suggesting {first(suggested.displayName)} for this voice only.
         </p>
-      {:else}
-        <p class="fieldwarn" id={`repair-warn-${group.clusterId}`} hidden></p>
-      {/if}
-    </form>
-
-    <div>
-      <span class="lbl">apply to</span>
-      <div class="scope" role="group" aria-label="Rename scope">
-        <button
-          type="button"
-          aria-pressed={scope === "speaker"}
-          onclick={() => (scope = "speaker")}>this speaker</button
-        >
-        <button type="button" aria-pressed={scope === "line"} onclick={() => (scope = "line")}
-          >this line only</button
-        >
+        <div class="fix__acts">
+          <button
+            type="button"
+            class="mx-btn mx-btn--sm"
+            disabled={busy}
+            onclick={() => {
+              const id = suggested.id;
+              run(() => onLink(id), true);
+            }}
+            ><IconCheck width="13" height="13" />Confirm {first(suggested.displayName)}</button
+          >
+          <button
+            type="button"
+            class="mx-btn mx-btn--danger mx-btn--sm"
+            disabled={busy}
+            onclick={() => run(onNotThisPerson)}>Not {first(suggested.displayName)}</button
+          >
+        </div>
       </div>
-      <p class="hint" id={`repair-scope-${group.clusterId}`}>
-        {#if scope === "speaker"}
-          Cluster-wide: every turn this voice holds in the segment.
-        {:else}
-          Naming is always cluster-wide, so this line gets moved to another speaker
-          instead.
-        {/if}
+    {/if}
+
+    {#if mergeTargetLabel && scope === "speaker"}
+      <div class="fix__card">
+        <div class="fix__card-h">Possibly the same voice as {mergeTargetLabel}</div>
+        <p>
+          {mergeScoreLabel ? `Centroid similarity ${mergeScoreLabel}. ` : ""}Over-segmentation is
+          the common failure — one person split in two. Merging folds every turn of this voice into
+          theirs.
+        </p>
+        <div class="fix__acts">
+          <button
+            type="button"
+            class="mx-btn mx-btn--sm"
+            disabled={busy}
+            onclick={() => run(onMerge, true)}>Merge them</button
+          >
+          <button
+            type="button"
+            class="mx-btn mx-btn--ghost mx-btn--sm"
+            disabled={busy}
+            onclick={onPlaySamples}><IconPlay width="11" height="11" />Play 8s of each</button
+          >
+        </div>
+      </div>
+    {/if}
+
+    <div class="fix__field">
+      <div class="fix__row">
+        <span class="mx-label">Apply to</span>
+        <Segmented
+          ariaLabel="Repair scope"
+          disabled={busy}
+          value={scope}
+          onValueChange={(v) => (scope = v === "line" ? "line" : "speaker")}
+          options={[
+            { value: "speaker", label: "This speaker" },
+            { value: "line", label: "This line only" },
+          ]}
+        />
+      </div>
+      <p class="fix__hint">
+        {scope === "speaker"
+          ? `Every turn this voice holds — ${turnCount} in this segment.`
+          : "Naming is always speaker-wide, so a single line moves to another speaker instead."}
       </p>
     </div>
 
     {#if scope === "speaker"}
-      <div>
-        <label class="lbl" for={`repair-link-${group.clusterId}`}>or link to a saved person</label>
-        <select
-          id={`repair-link-${group.clusterId}`}
-          class="inp"
-          disabled={busy || linkable.length === 0}
-          bind:value={linkChoice}
-          onchange={() => {
-            const id = Number(linkChoice);
-            if (Number.isFinite(id) && id > 0) onLink(id);
-          }}
+      <form
+        class="fix__field"
+        onsubmit={(event) => {
+          event.preventDefault();
+          submit();
+        }}
+      >
+        <label class="mx-label" for={`repair-q-${group.clusterId}`}
+          >Name this voice, or find a saved person</label
         >
-          <option value="">— none —</option>
-          {#each linkable as profile (profile.id)}
-            {@const samples = embeddingCountLabel(profile.embeddingCount)}
-            <option value={String(profile.id)}
-              >{profile.displayName}{samples ? ` · ${samples}` : ""}</option
+        <Input
+          id={`repair-q-${group.clusterId}`}
+          placeholder="Type a name…"
+          bind:value={query}
+          disabled={busy}
+          invalid={warning != null}
+          errorId={`repair-warn-${group.clusterId}`}
+        />
+        {#if warning}
+          <p class="mx-inline fix__warn" data-tone="warn" id={`repair-warn-${group.clusterId}`}>
+            {warning}
+          </p>
+        {/if}
+        <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Saved people">
+          {#each people as person (person.id)}
+            {@const samples = embeddingCountLabel(person.embeddingCount)}
+            <label class="mx-choice__opt">
+              <input
+                type="radio"
+                name={`repair-pick-${group.clusterId}`}
+                checked={effectivePick === person.id}
+                disabled={busy}
+                onchange={() => (pick = person.id)}
+              />
+              <span class="mx-choice__icon" aria-hidden="true">{initials(person.displayName)}</span>
+              <span class="mx-choice__title"
+                >{person.displayName}<span class="mx-choice__tag"
+                  >{person.isAccountOwner ? (samples ? "you · " : "you") : ""}{samples}</span
+                ></span
+              >
+            </label>
+          {/each}
+          {#if canCreate}
+            <label class="mx-choice__opt">
+              <input
+                type="radio"
+                name={`repair-pick-${group.clusterId}`}
+                checked={effectivePick === "new"}
+                disabled={busy}
+                onchange={() => (pick = "new")}
+              />
+              <span class="mx-choice__icon" aria-hidden="true">+</span>
+              <span class="mx-choice__title"
+                >Create “{q}”<span class="mx-choice__tag">new person</span></span
+              >
+            </label>
+          {/if}
+          {#if people.length === 0 && !canCreate}
+            {#if profiles.length > 0}
+              <span class="mx-inline fix__nomatch"
+                ><IconSearch width="13" height="13" />No saved person matches “{q}”.</span
+              >
+            {:else}
+              <div class="mx-empty mx-empty--compact">
+                <span class="mx-empty__glyph"><IconInbox width="14" height="14" /></span>
+                <b class="mx-empty__title">No saved people yet</b>
+                <p class="mx-empty__text">Type a name to save this voice as the first one.</p>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      </form>
+
+      {#if linkedPersonName}
+        <div class="fix__field">
+          <div>
+            <button
+              type="button"
+              class="mx-btn mx-btn--danger mx-btn--sm"
+              disabled={busy}
+              onclick={() => run(onNotThisPerson)}>Unlink {first(linkedPersonName)}</button
             >
-          {/each}
-        </select>
-      </div>
+          </div>
+          <p class="fix__hint">
+            Unlinks this voice only. {first(linkedPersonName)}’s saved voice and every other
+            recording stay as they are.
+          </p>
+        </div>
+      {/if}
     {:else}
-      <div>
-        <label class="lbl" for={`repair-move-${group.clusterId}`}>move this line to</label>
-        <select
-          id={`repair-move-${group.clusterId}`}
-          class="inp"
-          disabled={busy || moveTargets.length === 0}
-          bind:value={moveChoice}
-        >
-          <option value="">— pick a speaker —</option>
-          {#each moveTargets as cluster (cluster.id)}
-            <option value={String(cluster.id)}>{clusterOptionLabel(cluster)}</option>
+      <div class="fix__field">
+        <span class="mx-label">Move this line to</span>
+        <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Move this line to">
+          {#each moveTargets as target (target.id)}
+            {@const n = turns.filter((t) => t.clusterId === target.id).length}
+            <label class="mx-choice__opt">
+              <input
+                type="radio"
+                name={`repair-move-${group.clusterId}`}
+                value={String(target.id)}
+                bind:group={moveChoice}
+                disabled={busy}
+              />
+              {#if marks?.get(target.id)}
+                <span class="mx-choice__icon" aria-hidden="true"
+                  ><SpeakerMarkGlyph
+                    mark={marks.get(target.id)}
+                    ghosted={target.personId == null && isDefaultSpeakerLabel(target.speakerLabel)}
+                  /></span
+                >
+              {/if}
+              <span class="mx-choice__title">{clusterOptionLabel(target)}</span>
+              <span class="mx-choice__desc"
+                >{n ? `${n} turn${n === 1 ? "" : "s"} in this segment` : "elsewhere in this session"}</span
+              >
+            </label>
           {/each}
-        </select>
-      </div>
-    {/if}
-
-    {#if mergeTargetLabel}
-      <div class="card card--warn">
-        <div class="card__h">Possibly the same voice as {mergeTargetLabel}</div>
-        <div class="card__d">
-          {mergeScoreLabel ? `Centroid similarity ${mergeScoreLabel}. ` : ""}Over-segmentation is
-          the common failure — one person split in two.
-        </div>
-        <div class="row row--card">
-          <button type="button" class="btn btn--primary" disabled={busy} onclick={onMerge}
-            >Merge them</button
-          >
-          <button type="button" class="btn" disabled={busy} onclick={onPlaySamples}
-            >Play 8s of each</button
-          >
         </div>
       </div>
     {/if}
+  </div>
 
-    {#if error}
-      <p class="so__error" role="alert">{error}</p>
-    {/if}
-
-    <div class="row row--commit">
-      {#if scope === "speaker"}
-        <button
-          type="button"
-          class="btn btn--primary"
-          disabled={applyDisabled}
-          onclick={() => onApplyName(nameDraft.trim())}
-        >
-          {busy ? "Applying…" : "Name & apply"}
-        </button>
-      {:else}
-        <button
-          type="button"
-          class="btn btn--primary"
-          disabled={busy || !moveChoice}
-          onclick={() => onMoveGroupTo(Number(moveChoice))}
-        >
-          {busy ? "Moving…" : "Move this line"}
-        </button>
-      {/if}
-      {#if unnamedRemaining > 0}
-        <span class="so__mono"
-          >{unnamedRemaining} more unnamed in this segment</span
-        >
-      {/if}
+  {#if error}
+    <div class="fix__err">
+      <span class="mx-inline" data-tone="danger" role="alert"
+        ><IconAlert width="13" height="13" />{error}
+        {#if lastAction}
+          <button
+            type="button"
+            class="mx-btn mx-btn--ghost mx-btn--sm"
+            disabled={busy}
+            onclick={() => lastAction && run(lastAction, closeWhenDone)}>Try again</button
+          >
+        {/if}
+      </span>
     </div>
+  {/if}
 
-    {#if rejectSubject}
-      <div class="row">
-        <button type="button" class="btn btn--danger" disabled={busy} onclick={onNotThisPerson}>
-          {suggestionPending ? `Not ${rejectSubject}` : `Unlink ${rejectSubject}`}
-        </button>
-      </div>
-      <!-- The shipped copy, NOT the mockup's: rejections are per-cluster booleans
-           on this branch, so they are emphatically not "everywhere, from now on". -->
-      <p class="so__note">
-        <strong>Not {rejectSubject}</strong> applies to <em>this speaker only</em> — it stops
-        {rejectSubject} being suggested for this one voice in this segment, and changes nothing
-        about any other recording. The <code>✕</code> in the transcript only hides the suggestion.
-      </p>
+  <div class="fix__foot">
+    <button
+      type="button"
+      class="mx-btn mx-btn--primary"
+      disabled={busy || !commit.ready}
+      onclick={submit}
+    >
+      {#if busy}<span class="mx-spin mx-spin--sm"></span>{commit.busyLabel}{:else}{commit.label}{/if}
+    </button>
+    {#if unnamedRemaining > 0}
+      <span class="fix__left">{unnamedRemaining} more unnamed here</span>
     {/if}
   </div>
 </div>
 
 <style>
-  .so {
+  .fix {
     position: absolute;
+    z-index: 8;
     top: 0;
     right: 0;
     bottom: 0;
-    z-index: 8;
-    width: min(330px, 92%);
+    width: min(352px, 92%);
     display: flex;
     flex-direction: column;
     background: var(--app-surface-raised);
     border-left: 1px solid var(--app-border-strong);
     box-shadow: var(--app-shadow-popover);
-    animation: so-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    animation: fix-in var(--t-med) var(--ease-expo) both;
   }
 
-  @keyframes so-in {
+  @keyframes fix-in {
     from {
-      transform: translateX(100%);
-    }
-    to {
-      transform: translateX(0);
+      transform: translateX(24px);
+      opacity: 0;
     }
   }
 
-  .so[aria-busy="true"] {
+  .fix[aria-busy="true"] {
     cursor: progress;
   }
 
-  .so__head {
+  .fix__head {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 11px 14px;
-    border-bottom: 1px solid var(--app-border);
+    gap: 9px;
+    padding: 10px 8px 0 16px;
   }
 
-  .so__t {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+  .fix__nm {
+    font: 600 var(--text-md) / 1.2 var(--font-sans);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fix__sum {
+    padding: 4px 16px 10px 37px;
+    font: 400 var(--text-sm) / 1 var(--font-mono);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
+    border-bottom: 1px solid var(--mx-hairline);
   }
 
-  .so__grow {
-    flex: 1 1 auto;
-  }
-
-  .so__close {
-    padding: 2px 6px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .so__close:hover,
-  .so__close:focus-visible {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
-    color: var(--app-text-strong);
-    outline: none;
-  }
-
-  .so__body {
-    flex: 1 1 auto;
+  .fix__body {
+    flex: 1;
     min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
+    overflow: auto;
+    display: grid;
+    align-content: start;
     gap: 14px;
-    padding: 14px;
+    padding: 14px 16px 16px;
   }
 
-  .so__body form {
-    display: block;
-  }
-
-  .lbl {
-    display: block;
-    margin-bottom: 5px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-  }
-
-  .inp {
-    width: 100%;
-    padding: 6px 8px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text-strong);
-    font: inherit;
-    font-size: 12px;
-  }
-
-  select.inp {
-    cursor: pointer;
-  }
-
-  .inp:focus-visible {
-    border-color: var(--app-accent-border);
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .inp:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  /* AUDIT 9 — the name field can fail and now says so. */
-  .inp.is-error {
-    border-color: var(--app-danger-border);
-    background: color-mix(in srgb, var(--app-danger) 8%, transparent);
-  }
-
-  .fieldwarn {
-    display: flex;
-    gap: 6px;
-    margin: 5px 0 0;
-    font-size: 10px;
-    line-height: 1.5;
-    color: var(--app-danger-text, var(--app-danger));
-  }
-
-  .fieldwarn[hidden] {
-    display: none;
-  }
-
-  .hint {
-    margin: 5px 0 0;
-    font-size: 10px;
-    line-height: 1.5;
-    color: var(--app-text-muted);
-  }
-
-  .scope {
-    display: flex;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    overflow: hidden;
-  }
-
-  .scope button {
-    flex: 1 1 0;
-    padding: 5px 4px;
-    border: 0;
-    border-right: 1px solid var(--app-border-strong);
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 10px;
-    cursor: pointer;
-  }
-
-  .scope button:last-child {
-    border-right: none;
-  }
-
-  .scope button[aria-pressed="true"] {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-  }
-
-  .card {
-    padding: 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle, var(--app-surface));
-  }
-
-  .card--warn {
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 10%, transparent);
-  }
-
-  .card__h {
-    margin-bottom: 4px;
-    font-size: 11px;
-    color: var(--app-text-strong);
-  }
-
-  .card__d {
-    font-size: 10px;
-    line-height: 1.55;
-    color: var(--app-text-muted);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .row--card {
-    margin-top: 8px;
-  }
-
-  .row--commit {
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border);
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .btn:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn--primary {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-  }
-
-  .btn--primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--app-accent) 22%, transparent);
-  }
-
-  /* AUDIT 3 — the control that persists a rejection reads as destructive. */
-  .btn--danger {
-    border-color: var(--app-danger-border);
-    background: color-mix(in srgb, var(--app-danger) 10%, transparent);
-    color: var(--app-danger-text, var(--app-danger));
-  }
-
-  .btn--danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--app-danger) 22%, transparent);
-    border-color: var(--app-danger);
-  }
-
-  .so__mono {
-    font-family: var(--app-font-mono);
-    font-size: 10px;
-    color: var(--app-text-subtle);
-  }
-
-  .so__note {
-    margin: -6px 0 0;
-    font-size: 10px;
-    line-height: 1.55;
-    color: var(--app-text-muted);
-  }
-
-  .so__note strong {
-    color: var(--app-danger-text, var(--app-danger));
-  }
-
-  .so__note code {
-    font-family: var(--app-font-mono);
-  }
-
-  .so__error {
+  .fix__field {
+    display: grid;
+    gap: 7px;
     margin: 0;
-    font-family: var(--app-font-mono);
-    font-size: 10px;
-    line-height: 1.4;
-    color: var(--app-danger-text, var(--app-danger));
+  }
+
+  .fix__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .fix__hint,
+  .fix__warn {
+    margin: 0;
+    font: 400 var(--text-base) / 1.45 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+
+  .fix__warn {
+    color: var(--app-warn);
+  }
+
+  .fix__nomatch {
+    padding: 8px 2px;
+  }
+
+  .fix :global(.mx-input) {
+    width: 100%;
+  }
+
+  .fix .mx-choice--list .mx-choice__opt {
+    padding: 7px 40px 7px 10px;
+    column-gap: 10px;
+  }
+
+  .fix .mx-choice--list .mx-choice__icon {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--r-sm);
+    font: 600 var(--text-sm) / 1 var(--font-sans);
+  }
+
+  .fix .mx-choice__title {
+    font-size: var(--text-md);
+  }
+
+  .fix .mx-choice__desc {
+    font-size: var(--text-sm);
+  }
+
+  .fix .mx-choice__opt:not(:has(.mx-choice__desc)) .mx-choice__icon {
+    grid-row: auto;
+  }
+
+  .fix .mx-choice__title .mx-choice__tag {
+    margin-left: auto;
+    font-weight: 400;
+  }
+
+  .fix .mx-choice--list .mx-choice__opt::before {
+    right: 12px;
+  }
+
+  .fix .mx-choice--list .mx-choice__opt::after {
+    right: 17.5px;
+  }
+
+  .fix__card {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+  }
+
+  .fix__card-h {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 var(--text-md) / 1.3 var(--font-sans);
+    color: var(--app-text-strong);
+  }
+
+  .fix__card p {
+    margin: 0;
+    font: 400 var(--text-base) / 1.45 var(--font-sans);
+    color: var(--app-text-muted);
+  }
+
+  .fix__acts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding-top: 2px;
+  }
+
+  .fix__err {
+    padding: 0 16px 10px;
     word-break: break-word;
   }
 
+  .fix__foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--mx-hairline);
+  }
+
+  .fix__left {
+    font: 400 var(--text-sm) / 1.3 var(--font-mono);
+    color: var(--app-text-subtle);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .so {
+    .fix {
       animation: none;
     }
   }
