@@ -3,8 +3,16 @@
   // then the live status pill and the four chrome actions (rerun, timestamps,
   // expand/collapse, close). The status pill is a `role="status"` live region
   // because every frame-6 state changes without the user doing anything.
+  // Under it, the speaker strip: one toggle chip per voice (mark · name · state ·
+  // talk share); a selected chip dims every other voice, "only this voice" hides them.
   import { tip } from "$lib/components/tooltip";
-  import type { AudioSegmentRecord } from "./audio-drawer-view";
+  import SpeakerMarkGlyph from "./SpeakerMark.svelte";
+  import {
+    formatCompactDuration,
+    type AudioSegmentRecord,
+    type SpeakerMark,
+    type StripSpeaker,
+  } from "./audio-drawer-view";
 
   export type StatusTone = "ok" | "work" | "warn" | "bad" | "idle";
 
@@ -22,6 +30,10 @@
     rerunLoading: boolean;
     onRerun: () => void;
     onClose: () => void;
+    speakers: StripSpeaker[];
+    marks: Map<number, SpeakerMark>;
+    selectedClusterId?: number | null;
+    onlySelected?: boolean;
     showTimestamps?: boolean;
     expanded?: boolean;
     closeEl?: HTMLButtonElement | null;
@@ -41,10 +53,21 @@
     rerunLoading,
     onRerun,
     onClose,
+    speakers,
+    marks,
+    selectedClusterId = $bindable(null),
+    onlySelected = $bindable(false),
     showTimestamps = $bindable(false),
     expanded = $bindable(false),
     closeEl = $bindable(null),
   }: Props = $props();
+
+  const hasSelection = $derived(speakers.some((s) => s.clusterId === selectedClusterId));
+
+  function toggleSpeaker(clusterId: number): void {
+    selectedClusterId = selectedClusterId === clusterId ? null : clusterId;
+    if (selectedClusterId == null) onlySelected = false;
+  }
 </script>
 
 <header class="rhead">
@@ -77,7 +100,7 @@
   </span>
   <button
     type="button"
-    class="ghost"
+    class="mx-btn mx-btn--ghost mx-btn--sm"
     onclick={onRerun}
     disabled={actionDisabled}
     use:tip={actionTitle}
@@ -86,25 +109,28 @@
   </button>
   <button
     type="button"
-    class="ghost"
+    class="mx-btn mx-btn--ghost mx-btn--sm"
     aria-pressed={showTimestamps}
     onclick={() => (showTimestamps = !showTimestamps)}
   >
     timestamps
   </button>
-  <button type="button" class="ghost" aria-pressed={expanded} onclick={() => (expanded = !expanded)}>
+  <button
+    type="button"
+    class="mx-btn mx-btn--ghost mx-btn--sm"
+    aria-pressed={expanded} onclick={() => (expanded = !expanded)}>
     {expanded ? "collapse" : "expand"}
   </button>
   <button
     type="button"
-    class="rhead__close"
+    class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
     bind:this={closeEl}
     onclick={onClose}
     aria-label="Close audio player"
   >
     <svg
-      width="11"
-      height="11"
+      width="14"
+      height="14"
       viewBox="0 0 14 14"
       fill="none"
       stroke="currentColor"
@@ -116,6 +142,39 @@
     </svg>
   </button>
 </header>
+
+{#if speakers.length > 0}
+  <div class="spk" role="toolbar" aria-label="Speakers in this segment">
+    <span class="spk__lbl">Speakers</span>
+    <div class="spk__list">
+      {#each speakers as speaker (speaker.clusterId)}
+        <button
+          type="button"
+          class="mx-btn mx-btn--ghost mx-btn--sm sp"
+          class:sp--unnamed={speaker.unnamed}
+          aria-pressed={selectedClusterId === speaker.clusterId}
+          aria-label={`${speaker.name}${speaker.state ? `, ${speaker.state}` : ""}, ${formatCompactDuration(speaker.talkMs)} talk time`}
+          onclick={() => toggleSpeaker(speaker.clusterId)}
+        >
+          <SpeakerMarkGlyph mark={marks.get(speaker.clusterId)} ghosted={speaker.unnamed} />
+          <span>{speaker.name}</span>
+          {#if speaker.state}<span class="sp__state">{speaker.state}</span>{/if}
+          <span class="sp__share">{speaker.sharePct}%</span>
+        </button>
+      {/each}
+    </div>
+    <span class="rhead__grow"></span>
+    <button
+      type="button"
+      class="mx-btn mx-btn--ghost mx-btn--sm"
+      aria-pressed={onlySelected && hasSelection}
+      disabled={!hasSelection}
+      onclick={() => (onlySelected = !onlySelected)}
+    >
+      only this voice
+    </button>
+  </div>
+{/if}
 
 <style>
   .rhead {
@@ -236,61 +295,49 @@
     color: var(--app-danger-text, var(--app-danger));
   }
 
-  .ghost {
-    padding: 3px 9px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-  }
-
-  .ghost:hover:not(:disabled),
-  .ghost:focus-visible:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
-    color: var(--app-text-strong);
-    outline: none;
-  }
-
-  .ghost:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .ghost[aria-pressed="true"] {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-
-  .rhead__close {
-    width: 24px;
-    height: 24px;
-    display: inline-flex;
+  /* ── speaker strip ─────────────────────────────────────────────────────── */
+  .spk {
+    display: flex;
     align-items: center;
-    justify-content: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
+    gap: 2px;
+    min-width: 0;
+    padding: 5px 10px 5px 14px;
+    border-bottom: 1px solid var(--mx-hairline);
   }
 
-  .rhead__close:hover,
-  .rhead__close:focus-visible {
-    color: var(--app-danger);
-    border-color: var(--app-danger-strong);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
-    outline: none;
+  .spk__lbl {
+    margin-right: 8px;
+    font: 500 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-subtle);
+    white-space: nowrap;
   }
 
-  .rhead__close:focus-visible {
-    box-shadow: var(--app-ring);
+  .spk__list {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .sp {
+    --_gap: 7px;
+  }
+
+  .sp--unnamed {
+    --_fg: var(--app-text-muted);
+  }
+
+  .sp__state {
+    font-weight: 400;
+    color: var(--app-text-subtle);
+  }
+
+  .sp__share {
+    font: 400 var(--text-sm) / 1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
   }
 
   .spinner {

@@ -1,7 +1,12 @@
 <script lang="ts">
   // Play/pause, the two time readouts, and the waveform scrubber between them.
   import WaveformScrubber from "./WaveformScrubber.svelte";
-  import { formatPlayerTime, type WaveBar } from "./audio-drawer-view";
+  import {
+    formatPlayerTime,
+    type SpeakerMark,
+    type StripSpeaker,
+    type WaveBar,
+  } from "./audio-drawer-view";
 
   interface Props {
     isPlaying: boolean;
@@ -10,6 +15,9 @@
     playable: boolean;
     mediaLoading: boolean;
     bars: WaveBar[];
+    speakers: StripSpeaker[];
+    marks: Map<number, SpeakerMark>;
+    selectedClusterId: number | null;
     compact: boolean;
     onToggle: () => void;
     onScrubInput: (event: Event) => void;
@@ -23,6 +31,9 @@
     playable,
     mediaLoading,
     bars,
+    speakers,
+    marks,
+    selectedClusterId,
     compact,
     onToggle,
     onScrubInput,
@@ -58,6 +69,9 @@
   {:else}
     <WaveformScrubber
       {bars}
+      {speakers}
+      {marks}
+      {selectedClusterId}
       {currentTime}
       {duration}
       {compact}

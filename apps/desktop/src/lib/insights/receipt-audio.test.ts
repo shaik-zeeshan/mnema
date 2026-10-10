@@ -147,8 +147,11 @@ describe("audioFooterLeft", () => {
 });
 
 describe("assignSpeakerColors", () => {
-  it("pins You to the audio channel lavender", () => {
-    expect(assignSpeakerColors(["You"]).get("You")).toBe("--cat-communication");
+  it("pins the owner key to the audio channel lavender — not the name You", () => {
+    expect(assignSpeakerColors(["Shaik"], new Set(["Shaik"])).get("Shaik")).toBe(
+      "--cat-communication",
+    );
+    expect(assignSpeakerColors(["You"]).get("You")).toBe("--cat-meetings");
   });
   it("gives other names distinct palette colors in first-appearance order", () => {
     const colors = assignSpeakerColors(["Bob", "Carol"]);
@@ -156,11 +159,17 @@ describe("assignSpeakerColors", () => {
     expect(colors.get("Carol")).toBe("--cat-research");
     expect(colors.get("Bob")).not.toBe(colors.get("Carol"));
   });
-  it("reuses the same color for a repeated name and never spends a slot on You", () => {
-    const colors = assignSpeakerColors(["Bob", "You", "Carol", "Bob"]);
+  it("reuses the same color for a repeated name and never spends a slot on the owner", () => {
+    const colors = assignSpeakerColors(["Bob", "Me", "Carol", "Bob"], new Set(["Me"]));
     expect(colors.get("Bob")).toBe("--cat-meetings");
-    expect(colors.get("You")).toBe("--cat-communication");
-    expect(colors.get("Carol")).toBe("--cat-research"); // You did not consume a slot
+    expect(colors.get("Me")).toBe("--cat-communication");
+    expect(colors.get("Carol")).toBe("--cat-research"); // the owner did not consume a slot
+  });
+  it("cycles four colours, none of them green", () => {
+    const colors = assignSpeakerColors(["a", "b", "c", "d", "e"]);
+    expect(colors.get("d")).toBe("--cat-learning");
+    expect(colors.get("e")).toBe(colors.get("a"));
+    expect([...colors.values()]).not.toContain("--cat-creating");
   });
 });
 
@@ -235,6 +244,16 @@ describe("buildTurnViews", () => {
     expect(byKey["10:1"].colorVar).toBe("--cat-meetings");
     expect(byKey["20:2"].colorVar).toBe("--cat-research");
     expect(byKey["20:3"].colorVar).toBe("--cat-entertainment");
+  });
+
+  it("pins the account owner's voice to --cat-communication by the profile flag", () => {
+    const owned = [{ id: 7, displayName: "Bob", isAccountOwner: true }];
+    const views = buildTurnViews(segments, citedRefs, owned);
+    const byKey = Object.fromEntries(views.map((v) => [v.key, v]));
+    expect(byKey["20:2"].colorVar).toBe("--cat-communication");
+    // the owner takes no palette slot
+    expect(byKey["10:1"].colorVar).toBe("--cat-meetings");
+    expect(byKey["20:3"].colorVar).toBe("--cat-research");
   });
 
   it("drops a wordless turn so an over-cluster never adds a phantom speaker", () => {

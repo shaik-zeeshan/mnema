@@ -40,6 +40,10 @@
     activeGroupIndex: number | null;
     showTimestamps: boolean;
     expanded: boolean;
+    /** Speaker-strip selection: every other voice recedes (0.38). */
+    selectedClusterId: number | null;
+    /** "only this voice": the other voices' turns are hidden, not dimmed. */
+    onlySelected: boolean;
     speakerName: (group: SpeakerTranscriptGroup) => string;
     isUnnamed: (group: SpeakerTranscriptGroup) => boolean;
     /** Unnamed, or carrying an unconfirmed suggestion: show the repair door at rest. */
@@ -66,6 +70,8 @@
     activeGroupIndex,
     showTimestamps,
     expanded,
+    selectedClusterId,
+    onlySelected,
     speakerName,
     isUnnamed,
     needsAttention,
@@ -169,6 +175,8 @@
 <div
   class="reader"
   class:reader--expanded={expanded}
+  class:reader--sel={selectedClusterId != null}
+  class:reader--only={onlySelected}
   data-ts={showTimestamps ? "on" : "off"}
 >
   <div
@@ -188,6 +196,7 @@
           class="turn"
           class:turn--overlap={group.overlaps}
           class:is-active={activeGroupIndex === index}
+          class:is-sel={group.clusterId === selectedClusterId}
           data-speaker-group-index={index}
           role="listitem"
         >
@@ -336,6 +345,14 @@
     gap: 16px;
     margin-bottom: 16px;
     align-items: start;
+  }
+
+  .reader--sel .turn:not(.is-sel) {
+    opacity: 0.38;
+  }
+
+  .reader--only .turn:not(.is-sel) {
+    display: none;
   }
 
   .reader--expanded .turn {

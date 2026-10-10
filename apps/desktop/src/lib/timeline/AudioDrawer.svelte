@@ -37,6 +37,7 @@
     speakerIsUnnamed,
     speakerPersistedName,
     speakerProfileName,
+    speakerStrip,
     suggestedMergeTargetLabel,
     samplePreviewHeadsMs,
     suggestionChipFor,
@@ -213,6 +214,9 @@
   let followDetached = $state(false);
   /** "Read without speakers": ignore a failed speaker pass and read the words. */
   let ignoreSpeakerFailure = $state(false);
+  /** Speaker-strip selection: dims every other voice; `onlySelected` hides them. */
+  let selectedClusterId = $state<number | null>(null);
+  let onlySelected = $state(false);
   let closeEl = $state<HTMLButtonElement | null>(null);
   let repairEl = $state<HTMLElement | null>(null);
   let returnFocusEl: HTMLElement | null = null;
@@ -224,6 +228,8 @@
     followDetached = false;
     repairIndex = null;
     ignoreSpeakerFailure = false;
+    selectedClusterId = null;
+    onlySelected = false;
   });
 
   // ── audio element + transport ─────────────────────────────────────────────
@@ -271,7 +277,11 @@
   );
 
   const groups = $derived(speakerGroups.length > 0 ? speakerGroups : fallbackGroups);
-  const marks = $derived(assignSpeakerMarks(groups.map((g) => g.clusterId)));
+  const strip = $derived(speakerStrip(speakerGroups, turns, clusters, profiles));
+  const owners = $derived(new Set(strip.filter((s) => s.owner).map((s) => s.clusterId)));
+  const marks = $derived(assignSpeakerMarks(groups.map((g) => g.clusterId), owners));
+  // A merge can delete the selected cluster; the selection then simply lapses.
+  const selected = $derived(strip.some((s) => s.clusterId === selectedClusterId) ? selectedClusterId : null);
   const distinctSpeakers = $derived(new Set(speakerGroups.map((g) => g.clusterId)).size);
 
   const activeGroupIndex = $derived(
@@ -448,6 +458,10 @@
     rerunLoading={transcriptRerunLoading}
     onRerun={onRerunTranscript}
     {onClose}
+    speakers={strip}
+    {marks}
+    bind:selectedClusterId
+    bind:onlySelected
     bind:showTimestamps
     bind:expanded
     bind:closeEl
@@ -475,7 +489,6 @@
   {#if audioSrc}
     {#key segmentId}
       <audio
-        class="audio-drawer__native"
         preload="metadata"
         src={audioSrc}
         bind:this={transport.element}
@@ -502,6 +515,8 @@
         {activeGroupIndex}
         {showTimestamps}
         {expanded}
+        selectedClusterId={selected}
+        onlySelected={onlySelected && selected != null}
         speakerName={(group) =>
           group.clusterId < 0 ? group.speakerLabel : speakerPersistedName(group, profiles)}
         isUnnamed={(group) =>
@@ -602,6 +617,9 @@
     playable={audioSrc != null}
     {mediaLoading}
     bars={waveBars}
+    speakers={strip}
+    {marks}
+    selectedClusterId={selected}
     compact={!expanded}
     onToggle={transport.togglePlayPause}
     onScrubInput={(event) => {
@@ -683,10 +701,6 @@
       transform: translateY(0);
       opacity: 1;
     }
-  }
-
-  .audio-drawer__native {
-    display: none;
   }
 
   /* ── stage: the reader or a state panel, plus the repair slide-over ─────── */
