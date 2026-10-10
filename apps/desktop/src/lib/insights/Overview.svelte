@@ -1236,7 +1236,8 @@
   // 4a: "summarized through" watermark, only while it cuts into this range.
   const watermark = $derived.by<string | null>(() => {
     const covered = ctxStatus?.coveredUntilMs;
-    if (!engineOn || covered == null) return null;
+    // ponytail: no activities = nothing summarized; the cursor alone only marks empty time.
+    if (!engineOn || covered == null || rangeActivities.length === 0) return null;
     if (covered < range.startMs || covered >= Math.min(range.endMs, Date.now())) return null;
     return `summarized through ${clockLabel(covered)}`;
   });
@@ -1375,6 +1376,7 @@
         <span class="tick" aria-hidden="true"></span>
         The read
         <span class="rule"></span>
+        {#if watermark}<span class="eyebrow-when">{watermark}</span>{/if}
         {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
         <!-- Re-read: force a fresh narrative for this range, bypassing the
              backend cache. Hidden only for "not enough activity" (nothing a
@@ -1464,11 +1466,6 @@
               {/each}
             </div>
             <span class="lede-stat-cap">{summary.sparkLabel}</span>
-          </div>
-        {/if}
-        {#if watermark}
-          <div class="lede-stat lede-stat--aside">
-            <span class="lede-stat-cap">{watermark}</span>
           </div>
         {/if}
       </div>
@@ -2726,11 +2723,6 @@
   /* A missing figure with its cause in the caption (audio only, retention). */
   .lede-stat-n--none {
     color: var(--app-text-subtle);
-  }
-  /* The "summarized through" watermark rides at the footer's far end. */
-  .lede-stat--aside {
-    margin-left: auto;
-    justify-content: flex-end;
   }
   /* 2b / 4c: a quiet line in the read's place (same voice as ReadCard). */
   .lede-quiet {
