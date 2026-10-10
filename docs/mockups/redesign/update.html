@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Update</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Update window. Prefix: up-
+       ?state= available | checking | uptodate | check-failed | downloading | download-failed | installing | install-failed |
+       ready | incompatible | expired  (also #…; on-page switcher). ?theme=light for renders.
+       Real seam: routes/update/+page.svelte + lib/update-window.ts (AppWindow::Update, 480 wide,
+       height fits the notes 360–640). State = AppUpdateState: available · downloading/installing ·
+       restartRequired · availableOutOfWindow. Three bands; only the notes flex, so the buttons never move. */
+    .up-desk { position: relative; min-height: 100vh; display: grid; place-items: center; padding: 64px var(--s-6) var(--s-6); }
+    .up-switch { position: absolute; top: 14px; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: var(--s-3);
+      padding: 2px 2px 2px 10px; border-radius: var(--r-md); border: 1px dashed var(--app-border-strong); }
+    .up-switch select { appearance: none; height: var(--h-sm); min-width: 220px; padding: 0 26px 0 10px; border-radius: var(--r-sm);
+      border: 1px solid var(--app-border-strong); background: var(--app-surface-raised); color: var(--app-text-strong); font: 400 var(--text-base)/1 var(--font-sans); cursor: pointer; }
+
+    .mx-window.up-win { width: 480px; height: auto; min-height: 0; grid-template-rows: var(--mx-titlebar-h) auto auto auto; background: var(--app-surface); }
+    .up-strip { position: relative; display: flex; align-items: center; border-bottom: 1px solid var(--mx-hairline); user-select: none; }
+    .up-strip:hover .mx-lights i:nth-child(1) { background: var(--app-status-running-dot); }
+    .up-strip:hover .mx-lights i:nth-child(2) { background: var(--app-status-paused-dot); }
+    .up-strip:hover .mx-lights i:nth-child(3) { background: var(--app-source-mic); }
+    .up-strip__title { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+
+    /* Identity band */
+    .up-head { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; align-items: center; padding: var(--s-5) var(--s-5) var(--s-4); }
+    .up-mark { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 11px; color: var(--app-accent);
+      background: var(--app-surface-raised); box-shadow: inset 0 0 0 1px var(--app-border-strong); }
+    .up-head__text { display: grid; gap: 6px; min-width: 0; }
+    .up-ver { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font: 450 var(--text-base)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+    .up-ver b { font-weight: 500; color: var(--app-text-strong); }
+    .up-ver i { font-style: normal; color: var(--app-text-faint); }
+    .up-ver__words { font: 400 var(--text-base)/1.3 var(--font-sans); }
+
+    /* Notes band: the only flexible one */
+    .up-notes { margin: 0 var(--s-5); max-height: 248px; overflow: auto; padding: var(--s-3) var(--s-4) var(--s-4); }
+    .up-notes h3 { margin: 4px 0 6px; font: 600 var(--text-md)/1.3 var(--font-sans); color: var(--app-text-strong); }
+    .up-notes ul { margin: 0 0 var(--s-2); padding-left: 18px; display: grid; gap: 5px; }
+    .up-notes li { font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text-muted); }
+    .up-notes li::marker { color: var(--app-text-faint); }
+    .up-notes a { color: var(--app-text); text-decoration: underline; text-decoration-color: var(--app-border-hover); text-underline-offset: 2px; }
+    .up-notes code { font: 450 var(--text-sm)/1 var(--font-mono); padding: 1px 4px; border-radius: var(--r-xs); background: var(--mx-wash); color: var(--app-text); }
+    .up-notes__meta { margin: var(--s-2) 0 0; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+
+    /* Out-of-window explainer: spec rows instead of notes */
+    .up-lapsed { margin: 0 var(--s-5); display: grid; gap: var(--s-3); }
+    .up-lapsed .mx-spec { grid-template-columns: max-content 1fr; padding: 2px var(--s-4); }
+    .up-lapsed .mx-spec dd { font-size: var(--text-base); }
+    .up-lapsed .mx-notice { grid-template-columns: auto 1fr; align-items: start; }
+    .up-lapsed .mx-notice__text b { color: var(--app-text-strong); font-weight: 600; }
+    /* Message band for states with no notes (checking / up to date / check failed / incompatible) */
+    .up-msg { margin: 0 var(--s-5); }
+    .up-seenotes { justify-self: start; }
+
+    /* Controls band */
+    .up-foot { display: grid; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-5); margin-top: var(--s-4); border-top: 1px solid var(--mx-hairline); }
+    .up-foot > .mx-inline { min-height: 18px; flex-wrap: nowrap; align-items: flex-start; color: var(--tone, var(--app-text-subtle)); }
+    .up-foot > .mx-inline svg { margin-top: 2px; }
+    .up-actions { display: flex; align-items: center; gap: var(--s-2); }
+    .up-actions .mx-spacer { flex: 1; }
+
+    [hidden] { display: none !important; }
+    .up-win[data-state="expired"]:not([data-notes]) .up-notes { display: none; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <symbol id="up-power" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 2.2V7.6"/><path d="M4.4 4.3a5 5 0 1 0 7.2 0"/></symbol>
+    <symbol id="up-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="up-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8.5 7 10 4-1.5 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="up-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="up-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="up-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="up-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+  </defs>
+</svg>
+
+<div class="up-desk">
+  <label class="up-switch">
+    <span class="mx-label">Mockup state</span>
+    <select id="up-states" aria-label="Mockup state">
+      <option value="available">Available</option><option value="checking">Checking (re-check while open)</option><option value="uptodate">Up to date</option><option value="check-failed">Check failed · offline</option>
+      <option value="downloading">Downloading</option><option value="download-failed">Download failed</option><option value="installing">Installing</option><option value="install-failed">Install failed</option>
+      <option value="ready">Ready · restart</option><option value="incompatible">Incompatible</option><option value="expired">Outside update window</option>
+    </select>
+  </label>
+
+  <div class="mx-window up-win" id="up-win" data-state="available" role="dialog" aria-labelledby="up-title">
+    <div class="up-strip" data-tauri-drag-region>
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="up-strip__title">Software Update</span>
+    </div>
+
+    <!-- 1 · identity -->
+    <header class="up-head">
+      <span class="up-mark" aria-hidden="true"><svg width="22" height="22"><use href="#i-mark"/></svg></span>
+      <div class="up-head__text">
+        <span class="mx-kicker" id="up-kicker"></span>
+        <h1 class="mx-h2" id="up-title"></h1>
+        <div class="up-ver" id="up-ver"><span>0.1.23</span><i>→</i><b>0.1.24</b><i>·</i><span>Oct 8, 2026</span><i>·</i><span>38.4 MB</span></div>
+      </div>
+    </header>
+
+    <!-- 2 · notes (flexible) / out-of-window explainer -->
+    <div>
+      <div class="up-lapsed" data-only="expired">
+        <div class="mx-notice" data-tone="ok"><span class="mx-notice__icon"><svg width="14" height="14"><use href="#up-shield"/></svg></span>
+          <p class="mx-notice__text"><b>Nothing stops working.</b> Mnema <span class="num">0.1.23</span> is yours to keep — capture, search, Ask AI and every recording stay as they are. Renewing only brings newer builds.</p></div>
+        <dl class="mx-spec mx-panel mx-panel--inset">
+          <div><dt>Licensed to</dt><dd>Shaik Zeeshan</dd></div>
+          <div><dt>Update window</dt><dd>ended <span class="num">Sep 12, 2026</span></dd></div>
+          <div><dt>Renewal</dt><dd>another year of updates, same key</dd></div>
+        </dl>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm up-seenotes" id="up-seenotes" aria-expanded="false">What’s in 0.1.24</button>
+      </div>
+      <div class="up-msg" data-only="checking uptodate check-failed incompatible"><p class="mx-prose" id="up-msg" style="margin:0"></p></div>
+      <section class="mx-panel mx-panel--inset up-notes" aria-label="Release notes" data-only="available downloading download-failed installing install-failed ready expired">
+        <h3>What’s changed</h3>
+        <ul>
+          <li>Settings → CLI Access shows when each tool’s permission lapses.</li>
+          <li>System audio keeps recording when a Bluetooth headset switches into call mode.</li>
+          <li>Ask AI cites screen text with the app and window it came from.</li>
+          <li>Fixed: the Timeline could skip the last segment after the Mac woke from sleep.</li>
+          <li>Faster first search after launch on large histories.</li>
+        </ul>
+        <p class="up-notes__meta">Full changelog: <a href="#">0.1.23…0.1.24</a></p>
+      </section>
+    </div>
+
+    <!-- 3 · controls (fixed position across states) -->
+    <footer class="up-foot">
+      <span class="mx-inline" data-only="available download-failed install-failed"><svg width="14" height="14"><use href="#up-power"/></svg>Installing stops recording and relaunches Mnema.</span>
+      <div data-only="downloading" aria-live="polite">
+        <div class="mx-progress__meta"><b>Downloading</b><span id="up-bytes">21.5 of 38.4 MB · 56%</span></div>
+        <div class="mx-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="up-bar" style="--v:.56"><i></i></div>
+      </div>
+      <div data-only="installing" aria-live="polite">
+        <div class="mx-progress__meta"><b>Installing</b><span>keep Mnema open</span></div>
+        <div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Installing"><i></i></div>
+      </div>
+      <span class="mx-inline" data-tone="ok" data-only="ready"><svg width="14" height="14"><use href="#up-check"/></svg>Downloaded and verified. Restarting stops recording and relaunches Mnema.</span>
+      <span class="mx-inline" data-only="checking"><span class="mx-spin mx-spin--sm"></span>Checking…</span>
+      <span class="mx-inline" data-only="uptodate"><svg width="14" height="14"><use href="#up-check"/></svg>Mnema checks again every 2 hours.</span>
+      <span class="mx-inline" data-tone="warn" data-only="check-failed" role="alert"><svg width="14" height="14"><use href="#up-cloud-off"/></svg>Could not reach the update feed. Mnema tries again on its own.</span>
+      <span class="mx-inline" data-tone="danger" data-only="download-failed" role="alert"><svg width="14" height="14"><use href="#up-alert"/></svg>Update could not be verified. Nothing was installed.</span>
+      <span class="mx-inline" data-tone="danger" data-only="install-failed" role="alert"><svg width="14" height="14"><use href="#up-alert"/></svg>Update could not be installed. 0.1.23 is still running.</span>
+      <span class="mx-inline" data-only="incompatible"><svg width="14" height="14"><use href="#up-alert"/></svg>Your current version keeps working.</span>
+      <span class="mx-inline" data-only="expired" id="up-renew-line">Already renewed? Mnema checks your license again — no new key needed.</span>
+      <div class="up-actions">
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" data-only="expired" id="up-refresh"><svg width="13" height="13"><use href="#up-refresh"/></svg>Refresh license</button>
+        <span class="mx-spacer"></span>
+        <button class="mx-btn mx-btn--ghost" id="up-later"></button>
+        <button class="mx-btn mx-btn--primary" id="up-primary"></button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const win = $("#up-win");
+  const q = new URLSearchParams(location.search);
+  let timer = null, pct = 0.56;
+  const TOTAL = 38.4;
+  const DIFF = `<span>0.1.23</span><i>→</i><b>0.1.24</b><i>·</i><span>Oct 8, 2026</span><i>·</i><span>38.4 MB</span>`;
+  const WORDS = (t) => `<span class="up-ver__words">${t}</span>`;
+
+  // Headings follow lib/update-window.ts appUpdateHeading (keyed on state, never on a version); messages follow
+  // about.svelte.ts appUpdateStatusMessage. The window only OPENS on "available" (2-hourly check, once per version),
+  // but it is live-bound to app_update_status_changed, so a check while it's open walks it through checking → result.
+  // Buttons never move: secondary + primary on every state; primary = canInstall / canRestart (update-window.ts:21-29).
+  const VIEW = {
+    available: { kicker: "Update available", title: "Mnema 0.1.24 is available", ver: DIFF, later: "Later", primary: "Install and restart" },
+    checking: { kicker: "Software update", title: "Checking for updates", ver: WORDS("You have <b class=num>0.1.23</b>"),
+      msg: "Checking for updates.", later: "Close", primary: "Install and restart", off: true },
+    uptodate: { kicker: "Software update", title: "Mnema is up to date", ver: WORDS("You have <b class=num>0.1.23</b> · checked just now"),
+      msg: "Mnema is up to date.", later: "Close", primary: "Install and restart", off: true },
+    "check-failed": { kicker: "Software update", title: "Couldn’t check for updates", ver: WORDS("You have <b class=num>0.1.23</b> · last checked 10:12"),
+      msg: "The check didn’t reach the update feed, so there’s nothing to install yet. The version you have keeps working.", later: "Close", primary: "Install and restart", off: true },
+    downloading: { kicker: "Updating", title: "Downloading 0.1.24", ver: DIFF, later: "Continue in background", primary: "Downloading…", busy: true },
+    "download-failed": { kicker: "Update failed", title: "Couldn’t update to 0.1.24", ver: DIFF, later: "Later", primary: "Try again" },
+    installing: { kicker: "Updating", title: "Installing 0.1.24", ver: DIFF, later: "Later", primary: "Installing…", busy: true, laterOff: true },
+    "install-failed": { kicker: "Update failed", title: "Couldn’t update to 0.1.24", ver: DIFF, later: "Later", primary: "Try again" },
+    ready: { kicker: "Ready", title: "0.1.24 is ready to run", ver: DIFF, later: "Later", primary: "Restart now" },
+    incompatible: { kicker: "Software update", title: "No compatible update for this Mac", ver: WORDS("You have <b class=num>0.1.23</b>"),
+      msg: "No compatible update is available for this Mac.", later: "Close", primary: "Install and restart", off: true },
+    expired: { kicker: "Outside your update window", title: "0.1.24 is past your update window",
+      ver: WORDS("You have <b class=num>0.1.23</b> · updates covered through <span class=num>Sep 12, 2026</span>"), later: "Not now", primary: "Renew for a year · $29", ext: true },
+  };
+  let state = q.get("state") || location.hash.slice(1);
+  if (!VIEW[state]) state = "available";
+
+  const paintProgress = () => {
+    $("#up-bar").style.setProperty("--v", pct.toFixed(3)); $("#up-bar").setAttribute("aria-valuenow", Math.round(pct * 100));
+    $("#up-bytes").textContent = `${(TOTAL * pct).toFixed(1)} of ${TOTAL} MB · ${Math.round(pct * 100)}%`;
+  };
+
+  function set(s) {
+    state = s; win.dataset.state = s; delete win.dataset.notes;
+    document.querySelectorAll("[data-only]").forEach((el) => (el.hidden = !el.dataset.only.split(" ").includes(s)));
+    clearInterval(timer);
+    const v = VIEW[s];
+    $("#up-kicker").textContent = v.kicker;
+    $("#up-title").textContent = v.title;
+    $("#up-ver").innerHTML = v.ver;
+    $("#up-msg").textContent = v.msg || "";
+    const l = $("#up-later"); l.textContent = v.later; l.disabled = !!v.laterOff;
+    const p = $("#up-primary");
+    p.innerHTML = v.busy ? `<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>${v.primary}` : v.ext ? `${v.primary}<svg width="13" height="13"><use href="#up-external"/></svg>` : v.primary;
+    p.disabled = !!v.busy || !!v.off; p.toggleAttribute("aria-busy", !!v.busy);
+    $("#up-seenotes").setAttribute("aria-expanded", "false");
+    $("#up-renew-line").textContent = "Already renewed? Mnema checks your license again — no new key needed.";
+    if (s === "downloading") paintProgress();
+    $("#up-states").value = s;
+    history.replaceState(null, "", `?state=${s}${q.get("theme") ? `&theme=${q.get("theme")}` : ""}`);
+  }
+
+  // Interactive flow: Install → download ticks to 100% → ready (the app chains straight into restart).
+  $("#up-primary").addEventListener("click", () => {
+    if (state === "available" || state.endsWith("-failed")) {
+      set("downloading"); pct = 0.02; paintProgress();
+      timer = setInterval(() => { pct = Math.min(1, pct + 0.07); paintProgress(); if (pct >= 1) set("ready"); }, 160);
+    } else if (state === "ready") {
+      const p = $("#up-primary"); p.innerHTML = `<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>Restarting…`; p.disabled = true; p.setAttribute("aria-busy", "true");
+    } else if (state === "expired") {
+      $("#up-renew-line").textContent = "Checkout opened in your browser. Come back here when you’re done.";
+    }
+  });
+  $("#up-later").addEventListener("click", () => set("available"));
+  $("#up-refresh").addEventListener("click", (e) => {
+    const b = e.currentTarget; b.setAttribute("aria-busy", "true");
+    setTimeout(() => { b.removeAttribute("aria-busy"); $("#up-renew-line").textContent = "Checked just now — your window still ends Sep 12, 2026."; }, 700);
+  });
+  $("#up-seenotes").addEventListener("click", (e) => {
+    const open = win.toggleAttribute("data-notes");
+    e.currentTarget.setAttribute("aria-expanded", String(open));
+  });
+  $("#up-states").addEventListener("change", (e) => set(e.target.value));
+  set(state);
+})();
+</script>
+</body>
+</html>

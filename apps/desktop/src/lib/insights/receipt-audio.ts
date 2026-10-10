@@ -301,31 +301,37 @@ export interface HydratedSegment {
   turns: SpeakerTurnDto[];
 }
 
-/** Non-"You" speaker color cycle (category channels), assigned in first-
- *  appearance order and wrapping past four distinct other speakers. */
+/** Non-owner speaker color cycle (category channels), assigned in first-
+ *  appearance order and wrapping past four distinct other speakers. Four, not
+ *  five: `--cat-communication` is reserved for the owner, and green
+ *  (`--cat-creating`) reads as the accent playhead. */
 const SPEAKER_COLOR_PALETTE = [
   "--cat-meetings",
   "--cat-research",
   "--cat-entertainment",
-  "--cat-creating",
+  "--cat-learning",
 ];
 
 /**
- * Speaker-name → CSS var-name. "You" is pinned to --cat-communication (the
- * audio channel lavender) and never consumes a palette slot; other distinct
- * names cycle {@link SPEAKER_COLOR_PALETTE} in first-appearance order. Same
- * name always maps to the same var. Pure.
+ * Speaker key → CSS var-name. A key in `ownerKeys` (the account owner's voice,
+ * per `PersonProfileDto.isAccountOwner` — never the name "You") is pinned to
+ * --cat-communication (the audio channel lavender) and never consumes a palette
+ * slot; other distinct keys cycle {@link SPEAKER_COLOR_PALETTE} in first-
+ * appearance order. Same key always maps to the same var. Pure.
  */
-export function assignSpeakerColors(orderedNames: string[]): Map<string, string> {
+export function assignSpeakerColors(
+  orderedKeys: string[],
+  ownerKeys: ReadonlySet<string> = new Set(),
+): Map<string, string> {
   const out = new Map<string, string>();
   let next = 0;
-  for (const name of orderedNames) {
-    if (out.has(name)) continue;
-    if (name === "You") {
-      out.set(name, "--cat-communication");
+  for (const key of orderedKeys) {
+    if (out.has(key)) continue;
+    if (ownerKeys.has(key)) {
+      out.set(key, "--cat-communication");
       continue;
     }
-    out.set(name, SPEAKER_COLOR_PALETTE[next % SPEAKER_COLOR_PALETTE.length]);
+    out.set(key, SPEAKER_COLOR_PALETTE[next % SPEAKER_COLOR_PALETTE.length]);
     next++;
   }
   return out;
@@ -355,7 +361,9 @@ export function buildTurnViews(
       const segStart = Date.parse(segment.startedAt);
       return turns.map((turn) => {
         const speaker = speakerDisplay(turn, profiles);
+        const owner = profiles.find((p) => p.id === turn.personId)?.isAccountOwner === true;
         return {
+          owner,
           key: `${segment.id}:${turn.id}`,
           turnId: turn.id,
           audioSegmentId: segment.id,
@@ -385,8 +393,11 @@ export function buildTurnViews(
     .filter((r) => r.text.length > 0 && Number.isFinite(r.startMs) && Number.isFinite(r.endMs));
 
   rows.sort((a, b) => a.startMs - b.startMs || a.turnId - b.turnId);
-  const colors = assignSpeakerColors(rows.map((r) => r.speaker));
-  return rows.map((r) => ({ ...r, colorVar: colors.get(r.speaker) ?? "" }));
+  const colors = assignSpeakerColors(
+    rows.map((r) => r.speaker),
+    new Set(rows.filter((r) => r.owner).map((r) => r.speaker)),
+  );
+  return rows.map(({ owner: _owner, ...r }) => ({ ...r, colorVar: colors.get(r.speaker) ?? "" }));
 }
 
 /**

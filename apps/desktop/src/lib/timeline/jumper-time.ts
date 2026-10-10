@@ -80,3 +80,9 @@ export function hourRange(
   const end = new Date(d.year, d.month - 1, d.day, hour, 59, 59, 999);
   return { start, end };
 }
+
+/** Calendar density dot 0..3: a day's frame count against the month's busiest day. */
+export function dayHeat(count: number, monthMax: number): number {
+  if (count <= 0) return 0;
+  return Math.min(3, Math.ceil((count / Math.max(count, monthMax)) * 3));
+}

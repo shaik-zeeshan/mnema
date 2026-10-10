@@ -13,12 +13,15 @@
     bootstrapCaptureControls,
     captureControls,
     resyncCaptureSession,
+    sourceSelection,
+    startCapture,
   } from "$lib/capture-controls.svelte";
   import { renderIdle } from "$lib/render-idle.svelte";
   import { developerOptions } from "$lib/developer-options.svelte";
   import ActionSelect from "$lib/components/ActionSelect.svelte";
   import TimelineJumper from "$lib/timeline/TimelineJumper.svelte";
   import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
+  import { openSettings } from "$lib/surface-windows";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import {
@@ -28,6 +31,9 @@
     type AudioDrawerDismissContext,
   } from "$lib/audio-drawer-dismiss";
   import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
+  import RecallLandingChip from "$lib/timeline/RecallLandingChip.svelte";
+  import { transcriptModelLabel, type TranscriptModelLabel } from "$lib/timeline/transcript-model-label";
+  import { RailEpisodes } from "$lib/timeline/rail-episodes.svelte";
   import {
     parseSpeakerAnalysisProvenance,
     type DrawerShortcut,
@@ -50,7 +56,14 @@
   import { openCapturedUrl } from "$lib/open-captured-url";
   import IconScanText from "~icons/lucide/scan-text";
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
-  import IconClapperboard from "~icons/lucide/clapperboard";
+  import IconRefresh from "~icons/lucide/rotate-cw";
+  import IconRetry from "~icons/lucide/rotate-ccw";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconMonitor from "~icons/lucide/monitor";
+  import IconInfo from "~icons/lucide/info";
+  import IconCopy from "~icons/lucide/copy";
+  import IconDownload from "~icons/lucide/download";
+  import IconExternal from "~icons/lucide/external-link";
   import IconHeadphones from "~icons/lucide/headphones";
   import {
     activeExactPreviewDelayMs,
@@ -469,6 +482,8 @@
     // instead of the segment start. Null for the broker-URL path.
     spanStartMs?: number | null;
     alignedFrameId?: number | null;
+    // The Quick Recall query behind this hit → the landing chip. Absent elsewhere.
+    query?: string | null;
   };
   type AppIconResolution = {
     bundleId: string;
@@ -487,9 +502,10 @@
     iconSrc: string | null;
     showIcon: boolean;
     fallback: string;
-    variant: "single" | "range";
+    /** Band `--c`: the category of the engine episode the run overlaps most. */
+    color: string;
   };
-  type TimelineAppRun = Omit<TimelineAppGroup, "iconLeftPx" | "iconSrc" | "showIcon"> & {
+  type TimelineAppRun = Omit<TimelineAppGroup, "iconLeftPx" | "iconSrc" | "showIcon" | "color"> & {
     startIndex: number;
     endIndex: number;
   };
@@ -1004,7 +1020,7 @@
   // Provenance + the in-flight job behind the frame-6 state panels.
   let selectedAudioSpeakerProvenance = $state<SpeakerAnalysisProvenance | null>(null);
   let selectedAudioPendingJob = $state<{ processor: string; queuedAt: string } | null>(null);
-  let selectedAudioTranscriptModelLabel = $state<string | null>(null);
+  let selectedAudioTranscriptModelLabel = $state<TranscriptModelLabel | null>(null);
   let selectedAudioTranscriptError = $state<string | null>(null);
   let selectedAudioTranscriptRerunLoading = $state(false);
   let selectedAudioTranscriptRerunError = $state<string | null>(null);
@@ -1288,15 +1304,6 @@
     }
   }
 
-  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
-    const trimmedLabel = label.trim();
-    if (trimmedLabel.length === 0) return;
-    await runSpeakerCorrection(clusterId, async () => {
-      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
-      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    });
-  }
-
   async function createAndLinkSpeakerProfile(clusterId: number, displayName: string): Promise<void> {
     const trimmedDisplayName = displayName.trim();
     if (trimmedDisplayName.length === 0) return;
@@ -1476,23 +1483,10 @@
     }
   }
 
-  function formatAudioTranscriptionProviderLabel(provider: string): string {
-    switch (provider) {
-      case "local_whisper":
-        return "Local Whisper";
-      case "apple_speech_on_device":
-        return "Apple Speech (on-device)";
-      case "parakeet":
-        return "Parakeet";
-      default:
-        return provider;
-    }
-  }
-
   function resolveAudioTranscriptionModelLabel(
     jobPayloadJson: string | null | undefined,
     resultPayloadJson: string | null | undefined,
-  ): string | null {
+  ): TranscriptModelLabel | null {
     const jobPayload = parseAudioTranscriptionJobPayload(jobPayloadJson);
     const resultPayload = parseTranscriptionStructuredPayload(resultPayloadJson);
     const provider =
@@ -1502,14 +1496,13 @@
           ? jobPayload.provider
           : null;
     if (!provider) return null;
-    const providerLabel = formatAudioTranscriptionProviderLabel(provider);
     const modelId =
       typeof resultPayload?.modelId === "string"
         ? resultPayload.modelId
         : typeof jobPayload?.modelId === "string"
           ? jobPayload.modelId
           : null;
-    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
+    return transcriptModelLabel(provider, modelId);
   }
 
   function normalizeTranscriptionTimedRuns(
@@ -2096,14 +2089,15 @@
 
   // ─── Speaker writes the drawer delegates back here ───────────────────────
 
-  /** "Name & apply". An unlinked cluster becomes a saved person (that is what
-   *  makes recognition stick); an already-linked one just gets relabelled. */
+  /** The repair panel's "Create '<name>'": always a new saved person, linked —
+   *  also for an already-linked cluster, where the link write records the old
+   *  person as rejected. (Relabelling a linked cluster changed nothing visible:
+   *  the person's name wins over the label.) */
   async function applySpeakerName(
     group: SpeakerTranscriptGroup,
     name: string,
   ): Promise<void> {
-    if (group.personId == null) await createAndLinkSpeakerProfile(group.clusterId, name);
-    else await saveSpeakerClusterName(group.clusterId, name);
+    await createAndLinkSpeakerProfile(group.clusterId, name);
   }
 
   /** The mockup collapses two distinct writes into one button, so fire whichever
@@ -2417,7 +2411,6 @@
       const frameCount = runEnd - runStart + 1;
       const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
       const label = runAppName ?? runBundleId ?? "Unknown app";
-      const variant = frameCount === 1 ? "single" : "range";
       runs.push({
         key: timelineAppGroupKey(runIdentity, frames, runEnd),
         boundaryFrameId: endExclusive < frames.length ? frames[runEnd]?.id ?? null : null,
@@ -2430,7 +2423,6 @@
         rightPx: runStart * TIMELINE_SLOT_WIDTH,
         widthPx,
         fallback: timelineAppIconFallback(runAppName, runBundleId),
-        variant,
       });
     }
 
@@ -2503,6 +2495,8 @@
     return low;
   }
 
+  // Episodes for band colours: refetched only when the loaded range moves.
+  const railEpisodes = new RailEpisodes();
   const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
     const startedAt = performance.now();
     const runs = timelineAppRuns;
@@ -2511,7 +2505,7 @@
     if (runs.length === 0 || windowStart >= windowEnd) return [];
 
     const groups: TimelineAppGroup[] = [];
-    const iconSizePx = 20;
+    const frames = timelineFrames;
     const firstRun = firstTimelineAppRunEndingAtOrAfter(runs, windowStart);
     for (let i = firstRun; i < runs.length; i++) {
       const run = runs[i]!;
@@ -2521,19 +2515,16 @@
       const visibleStart = Math.max(run.startIndex, windowStart);
       const visibleEnd = Math.min(run.endIndex, windowEnd - 1);
       const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
-      const iconCenterOffsetFromRight =
-        (visibleStart - run.startIndex) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
       groups.push({
         ...run,
-        iconLeftPx: Math.max(
-          2,
-          Math.min(
-            Math.max(2, run.widthPx - iconSizePx - 2),
-            run.widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
-          ),
-        ),
+        // Letter tile 5px in from the oldest visible edge of the band.
+        iconLeftPx: (run.endIndex - visibleEnd) * TIMELINE_SLOT_WIDTH + 5,
         iconSrc: run.bundleId ? timelineAppIconSrc(run.bundleId) : null,
-        showIcon: run.variant === "range" && visibleWidthPx >= iconSizePx + 24,
+        showIcon: visibleWidthPx > 30,
+        color: railEpisodes.colorFor(
+          parseCapturedAt(frames[run.endIndex]!.capturedAt).getTime(),
+          parseCapturedAt(frames[run.startIndex]!.capturedAt).getTime(),
+        ),
       });
     }
 
@@ -2551,6 +2542,11 @@
         .map((group) => group.boundaryFrameId)
         .filter((id): id is number => id != null),
     );
+  });
+
+  $effect(() => {
+    const f = timelineFrames;
+    if (f.length) railEpisodes.sync(parseCapturedAt(f[f.length - 1]!.capturedAt).getTime(), parseCapturedAt(f[0]!.capturedAt).getTime());
   });
 
   $effect(() => {
@@ -3726,6 +3722,12 @@
   // Returns whether any payload was queued (regardless of whether its jump
   // succeeded) so the cold-mount init can skip the latest-frames load that would
   // otherwise clobber the handed-off frame (see `initializeTimeline`).
+  // From-Recall landing chip + its one rail mark at the landed frame (§8 #2).
+  let recallLanding = $state<{ query: string; frameId: number } | null>(null);
+  const recallLandingIndex = $derived(
+    recallLanding ? timelineFrames.findIndex((f) => f.id === recallLanding?.frameId) : -1,
+  );
+
   async function drainPendingBrokerOpenCaptureResults(): Promise<boolean> {
     let payloads: BrokerOpenCaptureResultPayload[];
     try {
@@ -3739,6 +3741,13 @@
     for (const payload of payloads) {
       try {
         await openBrokerCaptureResult(payload);
+        // Every handoff replaces the landing; only a Recall hit carries a query.
+        // A failed open leaves the old frame active, so require the target.
+        const target = payload.kind === "frame" ? payload.frameId : payload.alignedFrameId;
+        recallLanding =
+          payload.query && timelineActive && (target == null || target === timelineActive.id)
+            ? { query: payload.query, frameId: timelineActive.id }
+            : null;
       } catch {
         // get_frame / get_audio_segment threw (capture gone or DB error) — the
         // broker handoff must never fail silently, so surface a visible note.
@@ -3765,18 +3774,11 @@
    * fetch) cannot leave stale rows on screen.
    */
   async function refreshAudioSegments(): Promise<void> {
-    if (timelineFrames.length === 0) {
-      audioSegmentsGeneration += 1;
-      audioSegments = [];
-      audioSegmentsError = null;
-      audioSegmentsLoading = false;
-      return;
-    }
+    // No frames (screen off / audio-only): the last day of audio still lists.
     const newest = timelineFrames[0];
     const oldest = timelineFrames[timelineFrames.length - 1];
-    if (!newest || !oldest) return;
-    const newestMs = parseCapturedAt(newest.capturedAt).getTime();
-    const oldestMs = parseCapturedAt(oldest.capturedAt).getTime();
+    const newestMs = newest ? parseCapturedAt(newest.capturedAt).getTime() : Date.now();
+    const oldestMs = oldest ? parseCapturedAt(oldest.capturedAt).getTime() : Date.now() - 86_400_000;
     if (!Number.isFinite(newestMs) || !Number.isFinite(oldestMs)) return;
     const startMs = Math.min(newestMs, oldestMs) - AUDIO_SEGMENT_RANGE_PADDING_MS;
     const endMs = Math.max(newestMs, oldestMs) + AUDIO_SEGMENT_RANGE_PADDING_MS;
@@ -6107,11 +6109,6 @@
 <section class="timeline" onwheel={onTimelineWheel}>
   <header class="timeline__bar">
     <div class="timeline__bar-group timeline__bar-group--primary">
-      <!-- Recording status indicator and start/stop controls now live in
-           the app-wide title bar (see `routes/+layout.svelte`) so the
-           recording affordance is visible regardless of which route is
-           active. The timeline header retains only timeline-specific
-           controls below (jump, OCR toggle, refresh). -->
       <TimelineJumper
         bind:this={jumperRef}
         bind:open={pickerOpen}
@@ -6125,13 +6122,16 @@
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
+      {#if recallLanding}
+        <RecallLandingChip query={recallLanding.query} ondismiss={() => (recallLanding = null)} />
+      {/if}
       {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
         {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
+          <span class="timeline__ocr-chip" use:tip={"OCR provider"}>{ocrProviderLabel}</span>
         {/if}
         <button
           type="button"
-          class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
+          class="mx-btn mx-btn--ghost mx-btn--sm"
           onclick={reprocessOcrForActiveFrame}
           disabled={ocrRerunDisabled}
           use:tip={!ocrEnabled
@@ -6144,10 +6144,8 @@
         >{ocrRerunButtonLabel}</button>
       {/if}
       <button
-        class="btn btn--ghost btn--sm timeline__ocr-btn"
-        class:timeline__ocr-btn--running={ocrStatus === "running"}
-        class:timeline__ocr-btn--error={ocrStatus === "error"}
-        class:timeline__ocr-btn--success={ocrStatus === "success"}
+        class="mx-btn mx-btn--ghost mx-btn--sm"
+        aria-busy={ocrStatus === "running"}
         onclick={toggleOcrForActiveFrame}
         disabled={!timelineActive}
         use:tip={ocrToggleTitle}
@@ -6156,35 +6154,20 @@
           : "Show OCR data for active frame"}
         aria-pressed={ocrVisible}
       >
-        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
+        {#if ocrStatus === "running"}<span class="mx-spin mx-spin--sm"></span>{:else}<IconScanText width="14" height="14" />{/if}
         <span>{ocrButtonLabel}</span>
         {#if ocrStatus === "success" && ocrObservations.length > 0}
           <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
         {/if}
       </button>
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--ghost mx-btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
-        use:tip={"Refresh dashboard timeline (R)"}
-      >refresh</button>
+        use:tip={"Refresh dashboard timeline  R"}
+      ><IconRefresh width="13" height="13" />refresh</button>
     </div>
   </header>
-
-  {#if timelineError}
-    <div class="timeline__error" role="alert">
-      <div class="timeline__error-body">
-        <span class="timeline__error-label">load error</span>
-        <span class="timeline__error-msg">{timelineError}</span>
-      </div>
-      <button
-        type="button"
-        class="btn btn--ghost btn--sm timeline__error-retry"
-        onclick={refreshTimelineAndDashboard}
-        disabled={timelineLoading || timelineLoadingMore}
-      >{timelineLoading ? "retrying…" : "retry"}</button>
-    </div>
-  {/if}
 
   <!-- Audio segment player drawer. Rendered as a non-modal bottom sheet
        that slides in only when an audio segment is selected. The timeline
@@ -6199,6 +6182,20 @@
     class:timeline__stage--stale={timelineError && timelineFrames.length > 0}
     bind:this={stageEl}
   >
+    {#snippet retryBtn()}
+      <button type="button" class="mx-btn mx-btn--sm" onclick={refreshTimelineAndDashboard} aria-busy={timelineLoading} disabled={timelineLoading || timelineLoadingMore}
+        ><IconRetry width="13" height="13" />{timelineLoading ? "Retrying…" : "Retry"}</button>
+    {/snippet}
+    {#if timelineError && timelineFrames.length > 0}
+      <div class="timeline__notice">
+        <div class="mx-notice" data-tone="warn" role="alert">
+          <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+          <b class="mx-notice__title">Couldn’t refresh the timeline</b>
+          <p class="mx-notice__text">Showing what was already loaded. {timelineError.replace(/\.?$/, ".")}</p>
+          <div class="mx-notice__acts">{@render retryBtn()}</div>
+        </div>
+      </div>
+    {/if}
     <!-- Stage status banner is hoisted to a direct child of the stage (it is
          absolutely positioned bottom-right, so DOM order doesn't move it) so
          broker open-capture failures and deletion acks surface even when there
@@ -6234,33 +6231,46 @@
       </div>
     {/if}
     {#if timelineLoading && timelineFrames.length === 0}
-      <div class="timeline__preview-pending">
-        <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
-        <span>loading frames…</span>
-      </div>
+      <div class="mx-skel mx-skel--thumb timeline__skel" aria-busy="true"><span class="mx-sr">Loading frames</span></div>
     {:else if timelineFrames.length === 0}
-      {#if captureControls.isCapturing}
-        <!-- Capture is live but no frames have landed yet: drop the misleading
-             "Press Record" cue and reassure that the first frames are imminent. -->
-        <div class="timeline__empty timeline__empty--capturing">
-          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
-          <h2 class="timeline__empty-title">
-            <span class="timeline__empty-rec-dot" aria-hidden="true"></span>Recording started
-          </h2>
-          <p class="timeline__empty-hint">
-            Your first frames will appear here in a moment…
-          </p>
+      {#if timelineError}
+        <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
+          <span class="mx-empty__glyph"><IconAlert width="18" height="18" /></span>
+          <h2 class="mx-empty__title">Couldn’t load your timeline</h2>
+          <p class="mx-empty__text">{timelineError.replace(/\.?$/, ".")} Your recordings are safe.</p>
+          <div class="mx-empty__acts">{@render retryBtn()}</div>
+        </div>
+      {:else if (captureControls.isCapturing && !sourceSelection.screen) || audioSegments.length > 0}
+        <!-- Audio-only: the rail is frame-indexed, so recent audio is listed here instead. -->
+        <div class="mx-empty mx-empty--center" data-tone="off">
+          <span class="mx-empty__glyph"><IconMonitor width="18" height="18" /></span>
+          <h2 class="mx-empty__title">Screen isn’t being recorded</h2>
+          <p class="mx-empty__text">{captureControls.isCapturing ? "Microphone and system audio are." : "Only audio was recorded."} Open a recent segment to listen or read it.</p>
+          <div class="timeline__cover-list">
+            {#each audioSegments.slice(-4).reverse() as seg (seg.id)}
+              <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
+                ><span class="mx-chip mx-chip--{seg.source === "microphone" ? "mic" : "sysaudio"}">{seg.source === "microphone" ? "mic" : "system"}</span
+                ><span class="num">{formatTimeOfDay(seg.startUnixMs)} – {formatTimeOfDay(seg.endUnixMs)}</span></button>
+            {/each}
+          </div>
+          <div class="mx-empty__acts"><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void openSettings("capture")}>Record the screen too →</button></div>
+        </div>
+      {:else if captureControls.isCapturing}
+        <div class="mx-empty mx-empty--center">
+          <span class="mx-empty__glyph"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M3 12h18M7 8v8M12 5v14M17 9v6" /></svg></span>
+          <h2 class="mx-empty__title">Recording started</h2>
+          <p class="mx-empty__text">Your first frames appear here in a moment.</p>
+          <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Waiting for the first frame…</span>
         </div>
       {:else}
-        <div class="timeline__empty">
-          <span class="timeline__empty-glyph" aria-hidden="true"><IconClapperboard /></span>
-          <h2 class="timeline__empty-title">No frames yet</h2>
-          <p class="timeline__empty-hint">
-            Your timeline fills up as Mnema captures your screen.
-          </p>
-          <p class="timeline__empty-cue">
-            Press <span class="timeline__empty-cue-key">Record</span> in the title bar above to start a capture session.
-          </p>
+        <div class="mx-empty mx-empty--center">
+          <span class="mx-empty__glyph"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M3 12h18M7 8v8M12 5v14M17 9v6" /></svg></span>
+          <h2 class="mx-empty__title">Nothing recorded yet</h2>
+          <p class="mx-empty__text">Your timeline fills in as Mnema captures your screen, microphone and system audio — all on this Mac.</p>
+          <div class="mx-empty__acts">
+            <button type="button" class="mx-btn mx-btn--primary" disabled={captureControls.loadingStart} onclick={() => void startCapture()}
+              ><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="6" /></svg>Start recording</button>
+          </div>
         </div>
       {/if}
     {:else if timelineActive}
@@ -6280,15 +6290,15 @@
                  Mirrors the "P" dashboard shortcut. -->
             <button
               type="button"
-              class="btn btn--ghost btn--sm timeline__stage-action-trigger timeline__stage-play-moment"
+              class="mx-btn mx-btn--icon"
               aria-label={`Play audio at this moment (${audioSourceLabel(activeFrameAudioMoment.segment.source)})`}
               use:tip={"Play audio at this moment (P)"}
               onclick={playActiveFrameMoment}
-            ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconHeadphones /></span></button>
+            ><IconHeadphones width="15" height="15" /></button>
           {/if}
           <button
             type="button"
-            class="btn btn--ghost btn--sm timeline__stage-action-trigger"
+            class="mx-btn mx-btn--icon"
             aria-label="Frame actions"
             aria-haspopup="dialog"
             aria-expanded={stageActionsMenuOpen}
@@ -6298,11 +6308,12 @@
             onkeydown={onFrameActionsTriggerKeydown}
             onpointerdown={() => { stageActionsOpenedByKeyboard = false; }}
             onclick={() => toggleFrameActions(stageActionsOpenedByKeyboard)}
-          ><span class="timeline__stage-action-glyph" aria-hidden="true"><IconMoreHorizontal /></span></button>
+          ><IconMoreHorizontal width="15" height="15" /></button>
           {#if stageActionsMenuOpen}
             <div
               id="timeline-stage-action-menu"
-              class="timeline__stage-action-menu"
+              class="mx-pop mx-menu timeline__stage-action-menu"
+              data-open
               role="group"
               aria-label="Frame actions"
               bind:this={stageActionsMenuEl}
@@ -6315,7 +6326,7 @@
                 aria-label="Copy active frame image"
                 aria-busy={frameImageActionBusy === "copy"}
                 use:tip={"Copy image (C)"}
-              >{frameImageActionBusy === "copy" ? "copying…" : "copy"}</button>
+              ><IconCopy width="14" height="14" />{frameImageActionBusy === "copy" ? "Copying…" : "Copy image"}<span class="mx-menu__meta">C</span></button>
               <button
                 type="button"
                 class="timeline__stage-action-menu-item"
@@ -6324,7 +6335,7 @@
                 aria-label="Download active frame image"
                 aria-busy={frameImageActionBusy === "download"}
                 use:tip={"Download image (D)"}
-              >{frameImageActionBusy === "download" ? "saving…" : "download"}</button>
+              ><IconDownload width="14" height="14" />{frameImageActionBusy === "download" ? "Saving…" : "Download image"}<span class="mx-menu__meta">D</span></button>
               {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
                 <button
                   type="button"
@@ -6334,22 +6345,18 @@
                   aria-busy={ocrCopyAllBusy}
                   aria-label="Copy all recognized text"
                   use:tip={"Copy all recognized on-screen text"}
-                >{ocrCopyAllBusy ? "copying text…" : "copy text"}</button>
+                ><IconScanText width="14" height="14" />{ocrCopyAllBusy ? "Copying text…" : "Copy text"}</button>
               {/if}
               {#if currentFrameHost}
                 <button
                   type="button"
-                  class="timeline__stage-action-menu-item timeline__stage-action-menu-item--open"
+                  class="timeline__stage-action-menu-item"
                   onclick={openCurrentFrameUrl}
                   disabled={openingCurrentFrameUrl}
                   use:tip={`Open ${currentFrameHost} in browser`}
                   aria-label={`Open ${currentFrameHost} in browser`}
                 >
-                  <svg class="timeline__stage-action-open-glyph" width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M5.5 2.5H2.5v9h9v-3" />
-                    <path d="M8 2.5h3.5V6" />
-                    <path d="M7 7l4.5-4.5" />
-                  </svg>
+                  <IconExternal width="14" height="14" />
                   <span class="timeline__stage-action-open-host">{currentFrameHost}</span>
                 </button>
               {/if}
@@ -6421,45 +6428,33 @@
           </div>
         {/if}
       {:else}
-        <div class="timeline__preview-pending">
-          {#if frameActionStatus?.tone !== "error"}
-            <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
-          {/if}
-          <span>{frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}</span>
-        </div>
+        {#if frameActionStatus?.tone === "error"}
+          <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />Preview unavailable</span>
+        {:else}
+          <div class="mx-skel mx-skel--thumb timeline__skel" aria-busy="true"><span class="mx-sr">Decoding preview</span></div>
+        {/if}
       {/if}
     {/if}
 
     {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id && ocrStatus !== "idle" && ocrStatus !== "success"}
-      <div
-        class="timeline__ocr-status timeline__ocr-status--{ocrStatus}"
-        role="status"
-        aria-live="polite"
-      >
+      <div class="timeline__ocr-status" role="status" aria-live="polite">
         {#if ocrStatus === "running"}
-          <span class="timeline__ocr-spinner" aria-hidden="true"></span>
-          <span>loading OCR data…</span>
+          <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Loading OCR…</span>
         {:else if ocrStatus === "empty"}
-          <span class="timeline__ocr-status-glyph" aria-hidden="true">∅</span>
-          <span>
-            {ocrUsingEarlierFrame
-              ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
-              : "no text detected on this frame"}
-          </span>
+          <span class="mx-inline"><IconScanText width="13" height="13" />{ocrUsingEarlierFrame
+              ? `No text detected (reused from frame ${ocrSourceFrame?.id})`
+              : "No text detected on this frame"}</span>
         {:else if ocrStatus === "missing"}
-          <span class="timeline__ocr-status-glyph" aria-hidden="true">∅</span>
-          <span>no OCR data for this frame</span>
+          <span class="mx-inline"><IconScanText width="13" height="13" />No OCR for this frame yet</span>
         {:else if ocrStatus === "error"}
-          <span class="timeline__ocr-status-glyph" aria-hidden="true">!</span>
-          <span class="timeline__ocr-status-msg">{ocrError ?? "OCR failed"}</span>
+          <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{ocrError ?? "OCR failed"}</span>
         {/if}
       </div>
     {/if}
 
     {#if ocrSuccessUnpositionable}
-      <div class="timeline__ocr-status timeline__ocr-status--empty" role="status" aria-live="polite">
-        <span class="timeline__ocr-status-glyph" aria-hidden="true">⌶</span>
-        <span>Text detected but can't be positioned — use ⋯ → Copy text.</span>
+      <div class="timeline__ocr-status" role="status" aria-live="polite">
+        <span class="mx-inline" data-tone="info"><IconInfo width="13" height="13" />Text detected but can’t be positioned — use ⋯ → Copy text</span>
       </div>
     {/if}
 
@@ -6574,6 +6569,7 @@
        loading→loaded swap can change page/stage/rail height. -->
   <div
     class="timeline__rail-wrap"
+    class:timeline__rail-wrap--empty={timelineFrames.length === 0}
     bind:this={timelineRailWrap}
   >
     {#if timelineFrames.length > 0}
@@ -6602,18 +6598,13 @@
         >
           {#each timelineAppGroups as group (group.key)}
             <div
-              class="timeline-rail__app-group"
-              class:timeline-rail__app-group--single={group.variant === "single"}
-              class:timeline-rail__app-group--range={group.variant === "range"}
-              style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
+              class="tl-group"
+              style="right: {group.rightPx}px; width: {group.widthPx}px; --c: {group.color}"
               use:tip={timelineAppGroupTitle(group)}
               aria-hidden="true"
             >
               {#if group.showIcon}
-                <span
-                  class="timeline-rail__app-group-icon"
-                  class:timeline-rail__app-group-icon--image={!!group.iconSrc}
-                >
+                <span class="tl-group__icon" style="left: {group.iconLeftPx}px">
                   {#if group.iconSrc}
                     <img src={group.iconSrc} alt="" loading="lazy" />
                   {:else}
@@ -6644,6 +6635,9 @@
               <span class="timeline-rail__tick"></span>
             </div>
           {/each}
+          {#if recallLandingIndex >= 0}
+            <span class="tl-matchmark" style="right: {recallLandingIndex * TIMELINE_SLOT_WIDTH}px"></span>
+          {/if}
         </div>
       </div>
       <!-- Audio segment lane. Lives as a sibling of the slider rail (not
@@ -6717,7 +6711,7 @@
               <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
+                class="mx-btn mx-btn--ghost mx-btn--sm timeline-rail__audio-lane-retry"
                 onclick={(e) => { e.stopPropagation(); void refreshAudioSegments(); }}
                 onpointerdown={(e) => e.stopPropagation()}
                 disabled={audioSegmentsLoading}
@@ -6755,7 +6749,7 @@
               <span class="timeline-rail__audio-lane-error-label" use:tip={audioSegmentsError}>audio unavailable</span>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm timeline-rail__audio-lane-retry"
+                class="mx-btn mx-btn--ghost mx-btn--sm timeline-rail__audio-lane-retry"
                 onclick={() => void refreshAudioSegments()}
                 disabled={audioSegmentsLoading}
                 use:tip={`Retry loading audio · ${audioSegmentsError}`}
@@ -6769,7 +6763,10 @@
       </div>
     {/if}
     {#if timelineLoadingMore}
-      <div class="timeline-rail__loading">loading…</div>
+      <div class="timeline-rail__note" role="status"><span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Loading older frames…</span></div>
+    {:else if timelineExhausted && timelineFrames.length > 0 && timelineFrames.length - timelineActiveIndex <= TIMELINE_PREFETCH_AHEAD}
+      {@const keepDays = { never: 0, days_7: 7, days_14: 14, days_30: 30 }[captureControls.recordingSettings?.retentionPolicy ?? "never"]}
+      <div class="timeline-rail__note" role="status"><span class="mx-inline"><IconInfo width="13" height="13" />Start of history{keepDays ? ` · frames older than ${keepDays} days are removed` : ""}</span></div>
     {/if}
     {#if timelineFrames.length > 0 && tooltipFrame}
       {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrame)}
@@ -6778,9 +6775,7 @@
         id="timeline-rail-readout"
         class="timeline-rail__tooltip"
         class:timeline-rail__tooltip--pinned={!tooltipIsHovered}
-        style={tooltipIsHovered && hoveredX != null
-          ? `left: ${hoveredX}px; transform: translate(-50%, -100%);`
-          : "left: 50%; transform: translate(-50%, -100%);"}
+        style="left: {tooltipIsHovered && hoveredX != null ? `${hoveredX}px` : '50%'}; transform: translate(-50%, -100%); --c: {railEpisodes.colorFor(parseCapturedAt(tooltipFrame.capturedAt).getTime())}"
         role="tooltip"
       >
         {#if tooltipAppLabel}
@@ -6900,9 +6895,8 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 8px 6px;
-    background: var(--app-bg);
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
     /* Allow the stage child (flex: 1, min-height: 0) to actually shrink so
        the bottom rail stays in view regardless of preview intrinsic size. */
     min-height: 0;
@@ -6910,7 +6904,6 @@
   }
 
   .timeline__bar,
-  .timeline__error,
   .timeline__rail-wrap {
     flex: 0 0 auto;
     position: relative;
@@ -6939,207 +6932,52 @@
     margin-left: auto;
   }
 
-  /* Align bar-2 control typography with the app titlebar (10px). */
-  .timeline__bar .btn--sm {
-    font-size: var(--text-xs);
+  .timeline__bar .mx-btn {
+    --_h: 28px;
   }
 
-  /* ── Recording control cluster ─────────────────────────────
-     Recording status + start/stop now live in the app-wide title bar
-     (see `routes/+layout.svelte`); the previous `.timeline__capture*`
-     styles moved alongside as `.titlebar__status*` / `.titlebar__record*`. */
-
-  /* The drawer itself is styled inside lib/timeline/AudioDrawer.svelte and its
-     children; only the reduced-motion rules for the timeline's own animations
-     stay here. */
-  @media (prefers-reduced-motion: reduce) {
-    .timeline__ocr-btn--running .timeline__ocr-glyph {
-      animation: none;
-    }
-
-    .timeline__ocr-spinner,
-    .timeline__preview-pending-spinner {
-      animation: none;
-    }
+  .timeline__ocr-chip {
+    font: 400 var(--text-sm)/1 var(--font-sans);
+    color: var(--app-text-subtle);
   }
 
-  /* ── Buttons (subset used by the timeline) ─────────────────── */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
+  .timeline__ocr-count {
+    padding: 3px 5px;
+    border-radius: var(--r-xs);
+    font: 500 var(--text-xs)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
 
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
+  /* ── States (kit mx-empty / mx-skel / mx-notice in stage slots) ── */
+  .timeline__skel {
+    width: auto;
+    height: calc(100% - 32px);
+    max-width: calc(100% - 40px);
   }
 
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+  .timeline__notice {
+    position: absolute;
+    z-index: 4;
+    top: var(--s-3);
+    left: var(--s-3);
+    right: 120px;
+    display: grid;
+    justify-items: start;
+    pointer-events: none;
   }
 
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
+  .timeline__notice > * {
+    pointer-events: auto;
+    max-width: 620px;
+    background: color-mix(in srgb, var(--tone-bg) 100%, var(--app-surface-raised));
   }
 
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-    font-size: var(--text-sm);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
-  }
-
-  /* The previous dashboard-local settings/menu anchor moved into the shared
-     title bar as reusable surface actions, so those local rules were removed. */
-
-  /* ── Error / empty ─────────────────────────────────────────── */
-  .timeline__error {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px 12px;
-    flex-wrap: wrap;
-    padding: 10px 12px;
-    background: var(--app-danger-bg-soft);
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
-    font-size: var(--text-sm);
-    color: var(--app-danger-text);
-  }
-
-  .timeline__error-body {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .timeline__error-retry {
-    flex: 0 0 auto;
-  }
-
-  .timeline__error-label {
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-danger);
-  }
-
-  .timeline__error-msg {
-    font-family: var(--app-font-mono);
-    word-break: break-word;
-  }
-
-  .timeline__empty {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    max-width: 360px;
-    padding: 24px;
-  }
-
-  .timeline__empty-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 4px;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__empty-glyph :global(svg) {
-    width: 40px;
-    height: 40px;
-    stroke-width: 1.5;
-  }
-
-  .timeline__empty-title {
-    margin: 0;
-    font-family: inherit;
-    font-size: var(--text-lg);
-    font-weight: 700;
-    letter-spacing: 0.01em;
-    color: var(--app-text);
-  }
-
-  /* Live-capture variant of the empty state: a solid record dot inline with
-     the title so the surface reads as "recording, waiting for first frames"
-     rather than the idle "Press Record" prompt. */
-  .timeline__empty--capturing .timeline__empty-title {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .timeline__empty-rec-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--app-danger-strong);
-  }
-
-  .timeline__empty-hint {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.45;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__empty-cue {
-    margin: 4px 0 0;
-    font-size: 13px;
-    line-height: 1.45;
-    color: var(--app-text-muted);
-  }
-
-  /* "Record" is a title-bar button, not a keystroke — so it reads as an
-     emphasized inline label with a small record-dot glyph that matches the
-     title-bar control, rather than a misleading kbd chip. */
-  .timeline__empty-cue-key {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--app-text-strong);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .timeline__empty-cue-key::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-danger-strong);
+  .timeline__cover-list {
+    display: grid;
+    gap: 2px;
+    justify-items: center;
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
@@ -7147,21 +6985,22 @@
     position: relative;
     flex: 1 1 0;
     min-height: 0; /* allow the flex child to actually shrink as needed */
-    background: linear-gradient(135deg, var(--app-surface-raised) 0%, var(--app-surface) 100%);
+    background:
+      radial-gradient(120% 90% at 50% 42%, color-mix(in srgb, var(--app-surface-raised) 70%, transparent), transparent 70%),
+      var(--app-surface-subtle);
     border: 1px solid var(--app-border);
-    border-radius: 6px;
+    border-radius: var(--r-lg);
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
-  /* When the timeline load fails but stale frames remain decoded, dim and
-     desaturate the stage so the last preview never reads as live data. The
-     inline alert above carries the recovery action. */
-  .timeline__stage--stale {
-    opacity: var(--app-disabled-opacity);
-    filter: grayscale(0.6);
+  /* When a refresh fails but stale frames remain decoded, dim the frame so it
+     never reads as live data. The stage notice carries the recovery action. */
+  .timeline__stage--stale .timeline__preview {
+    opacity: 0.55;
+    filter: saturate(0.6);
   }
 
   .timeline__preview {
@@ -7192,161 +7031,48 @@
     gap: 6px;
   }
 
-  /* The play-this-moment trigger tints toward the recording accent so it reads
-     as a distinct "listen" affordance next to the neutral frame-actions menu. */
-  .timeline__stage-play-moment {
-    color: color-mix(in srgb, var(--app-accent) 70%, var(--app-text-muted));
-  }
-
-  .timeline__stage-play-moment:hover {
-    color: var(--app-accent-strong, var(--app-accent));
-  }
-
   .timeline__stage-actions--open {
     z-index: 3;
   }
 
-  .timeline__stage-action-trigger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 28px;
-    min-height: 28px;
-    padding: 0;
-    background: color-mix(in srgb, var(--app-surface-raised) 82%, transparent);
-    border: 1px solid color-mix(in srgb, var(--app-border-strong) 88%, transparent);
-    border-radius: 999px;
-    box-shadow:
-      0 8px 20px rgba(0, 0, 0, 0.22),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    color: var(--app-text-muted);
-    list-style: none;
-    font-size: 18px;
-    font-weight: 700;
-    line-height: 1;
-    letter-spacing: 0;
-    user-select: none;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    transition:
-      background 0.12s,
-      border-color 0.12s,
-      color 0.12s,
-      box-shadow 0.12s,
-      transform 0.12s;
-  }
-
-  .timeline__stage-action-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .timeline__stage-action-glyph :global(svg) {
-    width: 18px;
-    height: 18px;
-  }
-
-  .timeline__stage-action-trigger:hover {
-    background: color-mix(in srgb, var(--app-surface-hover) 88%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow:
-      0 10px 24px rgba(0, 0, 0, 0.26),
-      inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  }
-
-  .timeline__stage-action-trigger:focus-visible {
-    outline: none;
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow:
-      0 0 0 2px color-mix(in srgb, var(--app-border-hover) 48%, transparent),
-      0 10px 24px rgba(0, 0, 0, 0.26);
-  }
-
-  .timeline__stage-actions--open > .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface-hover) 92%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    transform: translateY(1px);
-  }
-
   .timeline__stage-action-menu {
-    position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
     display: grid;
-    min-width: 112px;
-    gap: 2px;
-    padding: 6px;
-    background: color-mix(in srgb, var(--app-surface) 94%, transparent);
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.28),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    min-width: 200px;
+    padding: 4px;
   }
 
   .timeline__stage-action-menu-item {
     display: flex;
     align-items: center;
-    justify-content: flex-start;
-    width: 100%;
-    padding: 8px 10px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    font: inherit;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    gap: var(--s-2);
+    padding: 7px 10px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    font: 400 var(--text-md)/1.2 var(--font-sans);
+    color: var(--app-text);
+    text-align: left;
     cursor: pointer;
   }
 
-  .timeline__stage-action-menu-item:hover {
+  .timeline__stage-action-menu-item :global(svg) {
+    flex: none;
+    color: var(--app-text-subtle);
+  }
+
+  .timeline__stage-action-menu-item:hover:not(:disabled) {
     background: var(--app-surface-hover);
-    border-color: color-mix(in srgb, var(--app-border-hover) 70%, transparent);
-    color: var(--app-text);
+    color: var(--app-text-strong);
   }
 
   .timeline__stage-action-menu-item:focus-visible {
-    outline: none;
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
+    outline: 2px solid var(--app-accent);
+    outline-offset: -2px;
   }
 
-  /* Disabled menu item (preview-not-ready, or an open already in flight): dim it
-     and drop the pointer cursor so it reads as inert without shifting layout. */
   .timeline__stage-action-menu-item:disabled {
     cursor: default;
     opacity: var(--app-disabled-opacity);
-  }
-
-  .timeline__stage-action-menu-item:disabled:hover {
-    background: transparent;
-    border-color: transparent;
-    color: var(--app-text-muted);
-  }
-
-  /* The "open in browser" peer reuses the menu-item shell so it reads as a
-     sibling of copy/download. The host is a real domain (mixed case), so it
-     opts out of the items' uppercase label transform and lets a long host
-     ellipsize within the menu's bounded width. */
-  .timeline__stage-action-menu-item--open {
-    gap: 7px;
-    text-transform: none;
-    letter-spacing: 0.02em;
-  }
-
-  .timeline__stage-action-open-glyph {
-    flex: 0 0 auto;
   }
 
   .timeline__stage-action-open-host {
@@ -7442,26 +7168,6 @@
     box-shadow: var(--app-ring);
   }
 
-  .timeline__preview-pending {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__preview-pending-spinner {
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
-    border-top-color: var(--app-text-muted);
-    animation: timeline-ocr-spin 0.9s linear infinite;
-  }
-
   /* Compact metadata pinned to the corner of the stage so the preview
      remains the visual anchor. Translucent panel with backdrop blur keeps
      it legible across both light and dark frames. */
@@ -7525,115 +7231,7 @@
     max-width: 100%;
   }
 
-  /* ── OCR header button + overlay ───────────────────────────── */
-  /* The button sits in the right-side cluster next to refresh. Its colour
-     mirrors the OCR run state: muted when idle, amber while running, green
-     on success, red on error — so the user can read OCR availability at a
-     glance without opening the tooltip. */
-  .timeline__ocr-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* When OCR is toggled ON the button carries a resting accent tint so its
-     stateful (pressed) nature reads at a glance, distinct from the plain
-     refresh ghost button. The :not() guards keep the run-state modifiers
-     (running/error/success) authoritative over this resting colour. */
-  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-
-  .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
-    color: var(--app-accent);
-  }
-
-  .timeline__ocr-glyph {
-    display: inline-flex;
-    align-items: center;
-    line-height: 1;
-    color: var(--app-text-muted);
-  }
-
-  .timeline__ocr-glyph :global(svg) {
-    width: 1.2em;
-    height: 1.2em;
-  }
-
-  .timeline__ocr-count {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 16px;
-    padding: 0 4px;
-    height: 14px;
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-
-  .timeline__ocr-provider-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 24px;
-    max-width: 240px;
-    padding: 0 8px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .timeline__ocr-rerun-btn {
-    color: var(--app-text-muted);
-  }
-
-  .timeline__ocr-rerun-btn:not(:disabled):hover {
-    color: var(--app-text);
-  }
-
-  .timeline__ocr-btn--running {
-    color: var(--app-warn);
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 6%, transparent);
-  }
-  .timeline__ocr-btn--running .timeline__ocr-glyph {
-    color: var(--app-warn);
-    animation: timeline-ocr-pulse 1.2s ease-in-out infinite;
-  }
-
-  .timeline__ocr-btn--success {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-  .timeline__ocr-btn--success .timeline__ocr-glyph {
-    color: var(--app-accent);
-  }
-
-  .timeline__ocr-btn--error {
-    color: var(--app-danger-text);
-    border-color: var(--app-danger-border);
-  }
-  .timeline__ocr-btn--error .timeline__ocr-glyph {
-    color: var(--app-danger-text);
-  }
-
-  @keyframes timeline-ocr-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
-  }
-
+  /* ── OCR overlay ───────────────────────────────────────────── */
   /* Overlay wrapper sized & positioned to match the actual rendered image
      rect (measured from the DOM each layout). `overflow: hidden` clips any
      OCR box whose normalized bounds slightly extend past the image edges
@@ -7746,78 +7344,16 @@
     pointer-events: auto;
   }
 
-  /* Compact inline status pill for non-success OCR states (running / empty /
-     error). Pinned to the bottom-left of the stage so it never competes with
-     the metadata overlay in the top-left corner. */
+  /* OCR state line (running / empty / missing / error), bottom-left of the stage. */
   .timeline__ocr-status {
     position: absolute;
-    left: 10px;
-    bottom: 10px;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 10px;
+    left: var(--s-3);
+    bottom: var(--s-3);
+    max-width: calc(100% - 24px);
+    padding: 4px 9px;
+    border-radius: var(--r-sm);
     background: var(--app-overlay-bg-strong);
     border: 1px solid var(--app-overlay-border);
-    border-radius: 4px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    font-size: var(--text-sm);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text);
-    max-width: calc(100% - 20px);
-  }
-
-  .timeline__ocr-status--running {
-    color: var(--app-warn);
-    border-color: var(--app-warn-border);
-  }
-
-  .timeline__ocr-status--empty {
-    color: var(--app-text-muted);
-  }
-
-  .timeline__ocr-status--missing {
-    color: var(--app-text-muted);
-  }
-
-  .timeline__ocr-status--error {
-    color: var(--app-danger-text);
-    border-color: var(--app-danger-border);
-  }
-
-  .timeline__ocr-status-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 1px solid currentColor;
-    font-size: 9px;
-    font-weight: 700;
-  }
-
-  .timeline__ocr-status-msg {
-    text-transform: none;
-    letter-spacing: 0;
-    font-family: var(--app-font-mono);
-    word-break: break-word;
-    max-width: 360px;
-  }
-
-  .timeline__ocr-spinner {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    border: 1.5px solid color-mix(in srgb, var(--app-warn) 30%, transparent);
-    border-top-color: var(--app-warn);
-    animation: timeline-ocr-spin 0.9s linear infinite;
-  }
-
-  @keyframes timeline-ocr-spin {
-    to { transform: rotate(360deg); }
   }
 
   /* ── Rail (bottom dock) ────────────────────────────────────── */
@@ -7859,6 +7395,11 @@
     z-index: 4;
   }
 
+  .timeline__rail-wrap--empty::before,
+  .timeline__rail-wrap--empty::after {
+    display: none;
+  }
+
   .timeline__rail-wrap::before {
     top: 0;
     border-top: 5px solid var(--app-text-subtle);
@@ -7896,7 +7437,7 @@
        scrollLeft math is straightforward and browser-portable. */
     background: var(--app-surface);
     border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border-radius: var(--r-md);
     padding: 0;
     scrollbar-width: none;
     /* Establish a containment context so the track's spacer margins can be
@@ -7913,7 +7454,7 @@
 
   .timeline-rail:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
+    border-color: var(--app-accent-border);
     box-shadow: var(--app-ring);
   }
 
@@ -7934,48 +7475,44 @@
     margin-right: calc(50cqi - 4px);
   }
 
-  .timeline-rail__app-group {
-    position: absolute;
-    top: 8px;
-    z-index: 1;
-    height: 20px;
-    overflow: visible;
-    pointer-events: none;
-  }
-
-  .timeline-rail__app-group-icon {
+  /* App run band; --c = the run's engine-episode category (neutral grey when
+     no episode covers it). */
+  .tl-group {
     position: absolute;
     top: 0;
-    left: var(--timeline-app-icon-left);
-    width: 20px;
-    height: 20px;
-    min-width: 20px;
-    min-height: 20px;
-    box-sizing: border-box;
+    bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--c) 16%, transparent), color-mix(in srgb, var(--c) 4%, transparent));
+    border-left: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+  }
+
+  .tl-group::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: color-mix(in srgb, var(--c) 75%, transparent);
+  }
+
+  .tl-group__icon {
+    position: absolute;
+    top: 7px;
+    width: 18px;
+    height: 18px;
     display: grid;
     place-items: center;
-    border-radius: 5px;
     overflow: hidden;
+    border-radius: 5px;
+    font: 700 10px/1 var(--font-sans);
     color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 800;
-    line-height: 1;
-    background: color-mix(in srgb, var(--app-surface-raised) 96%, var(--app-bg));
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 70%, transparent),
-      0 1px 3px rgba(0, 0, 0, 0.22);
+    background: color-mix(in srgb, var(--c) 32%, var(--app-surface-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent);
   }
 
-  .timeline-rail__app-group-icon--image {
-    padding: 2px;
-    background: color-mix(in srgb, var(--app-surface-raised) 88%, var(--app-bg));
-  }
-
-  .timeline-rail__app-group-icon img {
-    width: 100%;
-    height: 100%;
-    display: block;
-    border-radius: 3px;
+  .tl-group__icon img {
+    width: 14px;
+    height: 14px;
     object-fit: contain;
   }
 
@@ -8015,17 +7552,7 @@
     gap: 6px;
     width: 100%;
     min-width: 0;
-    /* Subtle inset background so the lane reads as a distinct surface
-       from the rail above without drawing a hard border. */
-    padding: 4px 0 4px 0;
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 0%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 30%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 70%,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 100%
-    );
-    border-radius: 4px;
+    padding: 4px 0;
   }
 
   .timeline-rail__audio-lane-labels {
@@ -8033,9 +7560,8 @@
     display: flex;
     flex-direction: column;
     padding: 0 4px 0 0;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font: 500 9px/1 var(--font-mono);
+    letter-spacing: 0.08em;
     text-transform: uppercase;
     user-select: none;
   }
@@ -8069,9 +7595,6 @@
        `cqi` margins resolve to the same pixel width and bars line up
        with the in-rail ticks. */
     container-type: inline-size;
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
-    box-shadow: inset 0 0 0 1px var(--app-border);
   }
 
   .timeline-rail__audio-lane-track {
@@ -8107,10 +7630,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
+    font: 400 var(--text-sm)/1 var(--font-sans);
     color: var(--app-text-subtle);
     pointer-events: none;
   }
@@ -8126,18 +7646,13 @@
   }
 
   .timeline-rail__audio-lane-error-label {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
+    font: 400 var(--text-sm)/1 var(--font-sans);
     color: var(--app-danger-text);
   }
 
-  /* The retry now reuses the shared `btn btn--ghost btn--sm` style so the
-     audio-lane retry matches the timeline retry (the danger-bordered variant
-     was the lone inconsistent retry affordance). This class only restores
-     pointer-events inside the pointer-events:none lane error row. */
+  /* Restores pointer-events inside the pointer-events:none lane error row. */
   .timeline-rail__audio-lane-retry {
+    --_h: 22px;
     pointer-events: auto;
   }
 
@@ -8145,19 +7660,15 @@
     position: absolute;
     top: 0;
     height: 11px;
-    border-radius: 2px;
+    border-radius: 3px;
     padding: 0;
     border: 0;
     appearance: none;
     cursor: pointer;
-    /* Larger hit area than the visual rectangle: a transparent ::before
-       extends 3px above and below so even narrow bars are easy to grab,
-       without shifting visual layout. */
-    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5);
+    /* Larger hit area: a transparent ::before extends 3px above and below. */
     transition:
-      filter 90ms ease,
-      box-shadow 90ms ease,
-      transform 90ms ease;
+      filter var(--t-fast) var(--ease-quart),
+      box-shadow var(--t-fast) var(--ease-quart);
   }
 
   .timeline-rail__audio-bar::before {
@@ -8168,41 +7679,25 @@
 
   .timeline-rail__audio-bar:hover {
     filter: brightness(1.15);
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.55),
-      0 0 0 1px var(--app-border-hover);
   }
 
   .timeline-rail__audio-bar:focus-visible {
     outline: none;
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      var(--app-ring);
+    box-shadow: var(--app-ring);
     z-index: 2;
   }
 
   .timeline-rail__audio-bar--selected {
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 1.5px var(--app-record-glyph-start),
-      0 0 8px color-mix(in srgb, var(--app-record-glyph-start) 45%, transparent);
+    box-shadow: 0 0 0 1.5px var(--app-accent), 0 0 10px var(--app-accent-glow);
     z-index: 1;
   }
 
   .timeline-rail__audio-bar--microphone {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-mic),
-      var(--app-source-mic-strong)
-    );
+    background: var(--app-source-mic);
   }
 
   .timeline-rail__audio-bar--systemAudio {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-sysaudio),
-      var(--app-source-sysaudio-strong)
-    );
+    background: var(--app-source-sysaudio);
   }
 
   /* Extend the pointer hit area beyond the visual 8px tick so dense ticks
@@ -8253,8 +7748,8 @@
   :global(.timeline-rail__slot--active.timeline-rail__slot--major) .timeline-rail__tick {
     width: 2px;
     height: 22px;
-    background: var(--app-record-glyph-start);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--app-record-glyph-start) 70%, transparent);
+    background: var(--app-accent);
+    box-shadow: 0 0 0 1px var(--app-accent-glow), 0 0 10px var(--app-accent-glow);
   }
 
   .timeline-rail--placeholder {
@@ -8265,25 +7760,20 @@
     pointer-events: none;
   }
 
-  .timeline-rail__loading {
-    /* Absolutely anchored to the rail-wrap rather than living inside the
-       (horizontally scrolling) rail, so showing/hiding the loader during
-       pagination cannot push the rail's height. Pinned to the LEFT/TOP of
-       the rail row to stay clear of both the newest-frame anchor on the
-       right AND the audio lane that now sits below the rail. */
+  /* Paging / start-of-history line, pinned left of the rail (clear of the
+     newest-frame anchor on the right and of the audio lane below). */
+  .timeline-rail__note {
     position: absolute;
-    left: 8px;
+    z-index: 6;
+    left: 10px;
     top: 4px;
-    width: fit-content;
-    padding: 2px 6px;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    background: color-mix(in srgb, var(--app-surface-raised) 90%, transparent);
+    height: 26px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
     border: 1px solid var(--app-border);
-    border-radius: 3px;
     pointer-events: none;
   }
 
@@ -8305,17 +7795,14 @@
     min-height: 40px;
     padding: 7px 10px 7px 7px;
     box-sizing: border-box;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0;
+    font: 600 10px/1 var(--font-sans);
     color: var(--app-text-strong);
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
+    background: var(--app-overlay-bg-strong);
+    border: 1px solid var(--app-overlay-border);
+    border-radius: var(--r-md);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    backdrop-filter: blur(18px) saturate(1.3);
+    box-shadow: var(--app-shadow-popover);
     pointer-events: none;
     /* Subtle pointer hint below the bubble. */
   }
@@ -8328,10 +7815,10 @@
     place-items: center;
     overflow: hidden;
     align-self: center;
-    border-radius: 4px;
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    color: var(--app-text-strong);
+    background: color-mix(in srgb, var(--c) 34%, var(--app-surface-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent);
     font-size: 10px;
     font-weight: 800;
     line-height: 1;
@@ -8393,9 +7880,7 @@
   .timeline-rail__tooltip-app-name {
     grid-area: 1 / 1;
     color: var(--app-text-strong);
-    font-size: 11px;
-    font-weight: 760;
-    line-height: 1.05;
+    font: 600 var(--text-md)/1.05 var(--font-sans);
   }
 
   /* Time leads, date trails on the same baseline so the readout answers
@@ -8410,10 +7895,8 @@
   .timeline-rail__tooltip-time {
     flex: 0 0 auto;
     color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 720;
+    font: 500 var(--text-base)/1 var(--font-mono);
     font-variant-numeric: tabular-nums;
-    line-height: 1;
     white-space: nowrap;
   }
 
@@ -8435,222 +7918,7 @@
     height: 0;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
-    border-top: 4px solid var(--app-status-bg);
+    border-top: 4px solid var(--app-overlay-border);
   }
 
-  .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-  }
-
-  .timeline-rail__tooltip--pinned::after {
-    border-top-color: var(--app-status-bg);
-  }
-
-  /* ── Light theme overrides ──────────────────────────────────
-     The dark palette above is the source of truth; this block flips the
-     dashboard's major surfaces, borders, and text colors when
-     `[data-theme="light"]` is active on the document root (driven by
-     `$lib/theme.svelte`). Kept narrow on purpose: the intent is to
-     re-tint surfaces and copy without restructuring layout, so any new
-     dark-only rule above will simply inherit a sensible light variant
-     here through the semantic-token cascade in `+layout.svelte`. */
-  :global([data-theme="light"]) .timeline {
-    background: var(--app-bg);
-  }
-
-  :global([data-theme="light"]) .btn {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .btn:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .btn--ghost:not(:disabled):hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface) 90%, transparent);
-    border-color: color-mix(in srgb, var(--app-border-strong) 92%, transparent);
-    box-shadow:
-      0 10px 24px rgba(20, 28, 40, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-    color: var(--app-text-muted);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-trigger:hover,
-  :global([data-theme="light"]) .timeline__stage-action-trigger:focus-visible,
-  :global([data-theme="light"]) .timeline__stage-actions--open > .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface-hover) 94%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 12px 28px rgba(20, 28, 40, 0.16),
-      inset 0 1px 0 rgba(255, 255, 255, 0.84);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-menu {
-    background: color-mix(in srgb, var(--app-surface) 96%, white 4%);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 36px rgba(20, 28, 40, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  }
-
-  :global([data-theme="light"]) .timeline__error {
-    background: var(--app-danger-bg-soft);
-    border-color: var(--app-danger-border);
-    color: var(--app-danger);
-  }
-  :global([data-theme="light"]) .timeline__error-label {
-    color: var(--app-danger);
-  }
-  :global([data-theme="light"]) .timeline__error-msg {
-    color: var(--app-danger-text);
-  }
-
-  :global([data-theme="light"]) .timeline__empty {
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline__empty-hint {
-    color: var(--app-text-muted);
-  }
-
-  :global([data-theme="light"]) .timeline__stage {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline__preview-pending {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__stage-status {
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-
-  :global([data-theme="light"]) .timeline__overlay {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline__overlay-key {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .timeline__overlay-val {
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline__overlay-link {
-    color: var(--app-accent-strong);
-  }
-  :global([data-theme="light"]) .timeline__overlay-link:hover {
-    color: var(--app-accent);
-  }
-
-  :global([data-theme="light"]) .timeline__ocr-btn {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline__ocr-btn:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  :global([data-theme="light"]) .timeline__ocr-btn[aria-pressed="true"]:not(.timeline__ocr-btn--running):not(.timeline__ocr-btn--error):not(.timeline__ocr-btn--success) .timeline__ocr-glyph {
-    color: var(--app-accent);
-  }
-  :global([data-theme="light"]) .timeline__ocr-glyph {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__ocr-count {
-    color: var(--app-text-muted);
-  }
-
-  :global([data-theme="light"]) .timeline__ocr-text {
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline__ocr-status {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__ocr-status-msg {
-    color: var(--app-text-muted);
-  }
-
-  :global([data-theme="light"]) .timeline__rail-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail {
-    background: var(--app-surface-raised);
-  }
-  :global([data-theme="light"]) .timeline-rail__track {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail__slot {
-    background: transparent;
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__audio-lane-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail__audio-lane-labels {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .timeline-rail__audio-lane-empty {
-    color: var(--app-text-subtle);
-  }
-  :global([data-theme="light"]) .timeline-rail--placeholder {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail__loading {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip {
-    background: var(--app-status-bg);
-    border-color: var(--app-status-border);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-icon {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-time {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip::after {
-    border-top-color: var(--app-status-bg);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
 </style>

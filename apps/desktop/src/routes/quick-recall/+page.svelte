@@ -38,6 +38,7 @@
   } from "$lib/quick-recall/searchStore.svelte";
   import { PICKER_OPT_PREFIX } from "$lib/quick-recall/filterSurfaces.svelte";
   import { buildScopedQuestion } from "$lib/quick-recall/filter-chips";
+  import { regeneratePlan } from "$lib/chat/regenerate";
   import {
     handleSearchKeydown as searchKeydown,
     handleLauncherCaptureKeydown as captureKeydown,
@@ -103,7 +104,7 @@
   // so a cited source always hops to the main Timeline window and dismisses the
   // launcher — the in-place FrameDetailModal is for the main-window surfaces
   // (Chat, Subjects), not here.
-  async function selectSource(source: AskAiSource): Promise<void> {
+  async function selectSource(source: AskAiSource, query: string): Promise<void> {
     // Carry the Audio Search Result Anchor for audio sources (frame sources
     // leave these null), mirroring openAudioResult so the dashboard lands on the
     // cited transcript match rather than the segment start.
@@ -114,6 +115,7 @@
         audioSegmentId: source.audioSegmentId,
         spanStartMs: source.spanStartMs ?? null,
         alignedFrameId: source.alignedFrameId ?? null,
+        query,
       });
     } catch (err) {
       await search.surfaceResultHandoffFailure(err);
@@ -372,6 +374,10 @@
     // persists the partial as an ordinary `done` turn) driving a "Stopped early"
     // tag in Quick Recall so the cut-off is acknowledged where it happened.
     stoppedEarly?: boolean;
+    // ask_ai_followup threw before the backend saved a row: Retry deletes nothing.
+    localOnly?: boolean;
+    // Stopped here, but the backend's terminal op (row final) hasn't landed yet.
+    stopping?: boolean;
   };
 
   // The thread id of the live, streamable thread. null when no thread is open,
@@ -896,6 +902,9 @@
   // the turn already finalized); stale/duplicate is ignored. The thread id is the
   // stale-thread guard, and `event.turnIndex` keys the live turn.
   async function handleAskUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
+    // A stopped turn's terminal op means its row is final: Retry may now delete it.
+    const stopped = askTurns.find((t) => t.stopping && t.turnIndex === event.turnIndex);
+    if (stopped && event.conversationId === askContinuableConversationId && (event.update.op === "done" || event.update.op === "error")) stopped.stopping = false;
     if (event.conversationId !== askConversationId) return;
     const turn = askTurns.find((t) => t.turnIndex === event.turnIndex);
     if (!turn) return; // start/followup appends the in-flight turn locally.
@@ -1037,10 +1046,10 @@
     askContinuableConversationId !== null && askHasCompletedTurn,
   );
 
-  // Promote the current Quick Recall thread into the Insights → Chat workspace.
+  // Promote the current Quick Recall thread into Chat (`/chat` in the main window).
   // The thread is already persisted under askConversationId (origin
   // "quick_recall", written backend-side), so this just shows/navigates the main
-  // window to Insights → Chat and selects this conversation; Chat hydrates it via
+  // window to Chat and selects this conversation; Chat hydrates it via
   // get_conversation and continues it seamlessly. Mirrors the Answer Sources
   // hand-off (open_capture_result_in_main_window), which also dismisses the Quick
   // Recall window — so we do the same here for consistency.
@@ -1110,6 +1119,7 @@
       if (turn) {
         turn.phase = "error";
         turn.errorMessage = humanizeError(error);
+        turn.localOnly = true;
       }
     }
   }
@@ -1357,41 +1367,44 @@
       el.scrollHeight > ASK_TEXTAREA_MAX_PX ? "auto" : "hidden";
   }
 
-  // Re-send a failed FOLLOW-UP turn's question through ask_ai_followup. The PI
-  // session stays resident after a follow-up error, so this appends a fresh
-  // attempt (mirroring a normal follow-up) rather than rebuilding the thread the
-  // way retryAsk does for a turn-1 failure.
+  // Retry a failed / empty FOLLOW-UP in place (CH4, same path as Chat): delete
+  // its row, drop it, and re-send so the fresh turn takes the freed index. Keyed
+  // off the *continuable* id: submitFollowup() re-adopts a stopped thread.
   async function retryFollowupTurn(turn: AskTurn): Promise<void> {
-    // Guard on the *continuable* id, not askConversationId: a Stop nulls
-    // askConversationId and parks the thread under stoppedConversationId, but the
-    // empty-answer "Try asking again" Retry is still offered. submitFollowup()
-    // re-adopts the stopped thread, so keying off askConversationId here makes
-    // Retry a dead click on a stopped-empty follow-up turn.
-    if (askStreaming || askContinuableConversationId === null) {
-      return;
+    const conversationId = askContinuableConversationId;
+    const plan = regeneratePlan(turn, askTurns.length, askStreaming);
+    if (conversationId === null || plan === null) return;
+    if (plan.deleteFirst) {
+      askStreaming = true; // blocks submitFollowup() while the delete runs
+      try {
+        await invoke("delete_last_turn", { conversationId, turnIndex: turn.turnIndex });
+      } catch (err) {
+        await message(`Couldn't retry: ${humanizeError(err)}`, { title: "Couldn't retry", kind: "error" });
+        return;
+      } finally {
+        askStreaming = false;
+      }
     }
+    askTurns = askTurns.slice(0, -1);
     followupInput = turn.question;
     await submitFollowup();
   }
 
-  // Stop a streaming answer in place: cooperatively cancel the turn and settle it
-  // to `done` so its partial answer stays rendered and copyable, rather than
-  // abandoning the whole surface the way Escape does. `cancelActiveAsk` nulls the
-  // live id (so late buffered updates stop applying), but the backend has already
-  // persisted the partial as an ordinary `done` turn — so we stash that id in
-  // `stoppedConversationId` to keep the thread continuable ("Continue in Chat" +
-  // the follow-up composer both re-point at it; a follow-up re-adopts it live).
+  // Stop in place: settle the turn to `done` locally (partial stays copyable,
+  // "Stopped early") and park its id in stoppedConversationId (set BEFORE the
+  // cancel so its terminal op isn't missed) to keep the thread continuable. The
+  // backend saves the partial row, then emits that op; `stopping` holds Retry
+  // until it lands, or Retry's delete could race the still-writing row.
   async function stopActiveAsk(): Promise<void> {
     const live = askLiveTurn;
-    const conversationId = askConversationId;
-    await cancelActiveAsk();
-    stoppedConversationId = conversationId;
+    stoppedConversationId = askConversationId;
     if (live && live.phase !== "done" && live.phase !== "error") {
       live.phase = "done";
       live.liveActivity = null;
-      // Tag this turn as cut off, so Quick Recall shows "Stopped early" on it.
       live.stoppedEarly = true;
+      live.stopping = true;
     }
+    await cancelActiveAsk();
     askStopped = true;
   }
 
@@ -1659,6 +1672,7 @@
 
   onMount(() => {
     void focusQuickRecall();
+    void search.takeSummonQuery();
     void loadAskAvailability();
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
@@ -1722,6 +1736,7 @@
             void hydrateAskFromStore(askConversationId);
           }
           void tick().then(() => focusQuickRecall());
+          void search.takeSummonQuery().then((taken) => { if (taken && mode === "ask") void backToSearch(); });
         }
       })
       .then((fn) => {
@@ -2161,21 +2176,13 @@
                   <p class="quick-recall__state quick-recall__state--error">
                     {turn.errorMessage ?? "Ask AI failed."}
                   </p>
-                  <!-- Every errored turn gets a retry. Turn 1 rebuilds the whole
-                       thread (same question); a follow-up error re-sends its
-                       question through ask_ai_followup on the still-resident session. -->
+                  <!-- Turn 1 rebuilds the thread; a follow-up retries in place. -->
                   <div class="quick-recall__retry-row">
                     <button
                       type="button"
                       class="quick-recall__retry"
-                      disabled={askStreaming}
-                      onclick={() => {
-                        if (ti === 0) {
-                          void retryAsk();
-                        } else {
-                          void retryFollowupTurn(turn);
-                        }
-                      }}
+                      disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
+                      onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
                     >
                       Retry
                     </button>
@@ -2397,7 +2404,7 @@
                                       ? (search.thumbnailCache.get(s.frameId) ?? null)
                                       : null}
                                     url={s.url}
-                                    onselect={() => void selectSource(s)}
+                                    onselect={() => void selectSource(s, turn.question)}
                                     onopenurl={() => openSourceUrl(s)}
                                   />
                                 {/each}
@@ -2418,7 +2425,7 @@
                                     endedAt={s.endedAt}
                                     sourceKind={s.sourceKind}
                                     url={s.url}
-                                    onselect={() => void selectSource(s)}
+                                    onselect={() => void selectSource(s, turn.question)}
                                   />
                                 {/each}
                               </div>
@@ -2427,11 +2434,8 @@
                         </div>
                       {/if}
 
-                      <!-- Empty-answer fallback: a settled turn that produced no
-                           answer blocks and no sources (e.g. the model returned
-                           nothing) would otherwise render a blank turn with no
-                           explanation or way forward. Surface a calm line plus the
-                           same retry the error branch offers. -->
+                      <!-- Empty-answer fallback: no blocks or sources came back;
+                           a calm line plus the error branch's retry. -->
                       {#if turn.phase === "done" && turn.blocks.length === 0 && turn.sources.length === 0}
                         <p class="quick-recall__state">
                           No answer came back. Try asking again.
@@ -2440,14 +2444,8 @@
                           <button
                             type="button"
                             class="quick-recall__retry"
-                            disabled={askStreaming}
-                            onclick={() => {
-                              if (ti === 0) {
-                                void retryAsk();
-                              } else {
-                                void retryFollowupTurn(turn);
-                              }
-                            }}
+                            disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
+                            onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
                           >
                             Retry
                           </button>
@@ -2489,7 +2487,7 @@
         </div>
 
         <!-- "Open in Chat" / Go deep (issue #111, ADR 0031): promote this thread
-             into the full Insights → Chat workspace. The thread is already
+             into the Chat surface. The thread is already
              persisted under the same conversation id, so Chat continues it
              seamlessly. Shown once at least one turn has completed. -->
         {#if askCanOpenInChat}
@@ -2498,7 +2496,7 @@
               type="button"
               class="quick-recall__handoff"
               onclick={() => void openInChat()}
-              use:tip={"Continue this thread in the Insights Chat workspace"}
+              use:tip={"Continue this thread in Chat"}
             >
               Continue in Chat
               <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>

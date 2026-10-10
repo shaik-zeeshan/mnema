@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";

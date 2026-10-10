@@ -1,0 +1,1471 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Quick Recall</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* =====================================================================
+       Quick Recall — the floating ⌥⌘Space launcher. Prefix rc-.
+       Answer-first bar; the window IS the bar (frameless, transparent, ~800 wide)
+       and is resized to this panel's measured height, top edge fixed:
+         slim bar (60px) → ↓ recents (⌫ removes the selected Recent) → best moment + ranked moments (≤420px)
+         → question detected / Tab → answer + cited evidence
+         → Quick Look (~590px): the bar stays on top, the preview opens below.
+       Natural language becomes inline pills (real operators shown in the
+       footer). → at the end of the text accepts the dimmed inline completion
+       (as search-keys.ts does today). ↓ moves from the field into the list;
+       there Space opens Quick Look (in the field Space is just a space), as do
+       the Quick Look button and a row's eye button. In Quick Look ←/→ scrub
+       ±15 s, ↑/↓ other results, ↵ opens THAT frame in Timeline, Esc/Space back
+       to the list with the same selection.
+       Auto-answer (Settings → Ask AI → "Answer questions automatically"):
+       always | local (default: only when the model runs on this Mac) | never.
+       When it's off for the current model, a detected question shows a quiet
+       "Press ⇥ to ask <model>" row instead of streaming.
+       On-frame outlines: solid = keyword, dashed = meaning.
+       Growth animates clip-path + transforms only (no layout animation):
+       the panel is --max tall, clipped to the measured --h; --cap is how tall
+       this state may get (420 list, 640 Quick Look).
+       Hooks: ?q=  ?state=<name> (see RC_STATES + the "Mockup state" picker bottom-left; each state
+              carries its own default ?q/?look/?tab)  ?sel=N  ?look=1  ?cite=N  ?tab=1  ?pill=app|date|src
+              ?auto=always|local|never (default local)  ?local=1 (local model)  ?keys=down,space  ?theme=light
+       ===================================================================== */
+    body { overflow: hidden; min-height: 100vh; }
+
+    /* --- Fake desktop, blurred ------------------------------------------- */
+    .rc-desk { position: fixed; inset: -40px; filter: blur(12px) saturate(1.15);
+      background:
+        radial-gradient(55% 60% at 22% 30%, color-mix(in srgb, var(--cat-research) 24%, transparent), transparent 70%),
+        radial-gradient(45% 55% at 82% 75%, color-mix(in srgb, var(--cat-meetings) 16%, transparent), transparent 70%),
+        radial-gradient(60% 50% at 65% 15%, color-mix(in srgb, var(--cat-learning) 14%, transparent), transparent 70%),
+        var(--app-bg); }
+    .rc-desk__menu { position: absolute; left: 40px; right: 40px; top: 40px; height: 26px; display: flex; align-items: center; gap: 22px; padding: 0 18px;
+      background: color-mix(in srgb, var(--app-surface) 55%, transparent); font: 600 13px/1 var(--font-sans); color: var(--app-text-strong); }
+    .rc-desk__menu span + span { font-weight: 400; }
+    .rc-desk__win { position: absolute; border-radius: 12px; overflow: hidden; border: 1px solid var(--app-border-strong); background: var(--app-surface);
+      display: grid; grid-template-rows: 30px 1fr; }
+    .rc-desk__win > i { background: var(--app-surface-subtle); border-bottom: 1px solid var(--app-border); }
+    .rc-desk__win > b { display: grid; align-content: start; gap: 14px; padding: 36px 40px; }
+    .rc-desk__win > b span { display: block; height: 11px; border-radius: 6px; width: var(--w); background: color-mix(in srgb, var(--c, var(--app-fg)) 20%, transparent); }
+    .rc-desk__dock { position: absolute; left: 50%; bottom: 52px; translate: -50% 0; display: flex; gap: 10px; padding: 8px 10px; border-radius: 18px;
+      background: color-mix(in srgb, var(--app-surface) 55%, transparent); border: 1px solid var(--app-overlay-border); }
+    .rc-desk__dock i { width: 44px; height: 44px; border-radius: 11px; background: color-mix(in srgb, var(--c) 40%, var(--app-surface)); }
+    .rc-scrim { position: fixed; inset: 0; background: color-mix(in srgb, var(--app-bg) 22%, transparent); }
+
+    /* --- The floating bar ---------------------------------------------------
+       .rc-float holds --h (measured visible height) and --max (tallest it may grow). */
+    .rc-float { --top: clamp(40px, 15vh, 140px); --max: min(640px, calc(100vh - var(--top) - 40px)); --cap: 420px; --h: 60px;
+      position: fixed; z-index: 10; left: 50%; top: var(--top); width: min(800px, calc(100vw - 40px)); translate: -50% 0;
+      transition: opacity var(--t-med) var(--ease-quart), transform var(--t-slow) var(--ease-expo); }
+    .rc-float[data-closed] { opacity: 0; transform: translateY(-8px) scale(0.98); pointer-events: none; }
+    /* Shadow source: a 100px block riding the bottom edge (translateY(--h)); the wrapper clips at the panel top. */
+    .rc-shadewrap { position: absolute; left: -160px; right: -160px; top: 0; height: calc(var(--max) + 200px); overflow: hidden; pointer-events: none; }
+    .rc-shade { position: absolute; left: 160px; right: 160px; top: 0; height: 100px; border-radius: var(--r-xl);
+      box-shadow: 0 34px 80px -26px color-mix(in srgb, var(--app-bg) 60%, black), 0 12px 28px -14px color-mix(in srgb, var(--app-bg) 50%, black);
+      transform: translateY(calc(var(--h) - 100px)); }
+    .rc { position: relative; height: var(--max); border-radius: var(--r-xl); border: 1px solid var(--app-border-strong);
+      background: color-mix(in srgb, var(--app-bg) 90%, transparent);
+      -webkit-backdrop-filter: blur(30px) saturate(1.4); backdrop-filter: blur(30px) saturate(1.4);
+      clip-path: inset(0 0 calc(var(--max) - var(--h)) 0 round var(--r-xl)); }
+    /* bottom edge + corners of the border, riding the clip */
+    .rc-cap { position: absolute; z-index: 1; left: 0; right: 0; top: 0; height: 24px; pointer-events: none;
+      border: 1px solid var(--app-border-strong); border-top: 0; border-radius: 0 0 var(--r-xl) var(--r-xl);
+      transform: translateY(calc(var(--h) - 24px)); }
+    .rc-float[data-ready] .rc { transition: clip-path var(--t-slow) var(--ease-expo); }
+    .rc-float[data-ready] :is(.rc-cap, .rc-shade) { transition: transform var(--t-slow) var(--ease-expo); }
+
+    .rc-float[data-look] { --cap: 640px; }
+    .rc-inner { display: flex; flex-direction: column; max-height: calc(min(var(--cap), var(--max)) - 2px); transition-property: none; } /* measured synchronously: keep kit's reduced-motion `all` transition off it */
+    /* the Quick Look key shows only once you've arrowed into the list (Space types a space in the field) */
+    .rc:not([data-nav]) .rc-k-nav, .rc-hero[aria-selected="false"] .rc-k-nav { display: none; }
+    .rc-ghost { color: var(--app-text-subtle); opacity: 0.7; } /* inline completion; → accepts */
+
+    /* --- Bar ------------------------------------------------------------- */
+    .rc-bar { flex: none; height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 14px 0 13px; }
+    .rc-mode { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; min-width: 30px; padding: 0 7px; border: 0; border-radius: var(--r-md);
+      background: none; color: var(--app-text-subtle); cursor: pointer; font: 600 var(--text-md)/1 var(--font-sans);
+      transition: background-color var(--t-med) var(--ease-quart), color var(--t-med) var(--ease-quart), box-shadow var(--t-med) var(--ease-quart); }
+    .rc-mode:hover { background: var(--mx-wash-strong); color: var(--app-text); }
+    .rc-mode__g { display: grid; width: 17px; height: 17px; }
+    .rc-mode__g svg { grid-area: 1 / 1; transition: transform var(--t-slow) var(--ease-expo), opacity var(--t-med) var(--ease-quart); }
+    .rc-mode__g svg + svg { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+    .rc-mode b { display: none; font-weight: 600; }
+    .rc-mode small { display: none; font: 500 var(--text-xs)/1 var(--font-mono); color: color-mix(in srgb, var(--app-accent) 70%, var(--app-text-subtle)); }
+    .rc[data-ask] .rc-mode { background: var(--app-accent-bg); color: var(--app-accent); box-shadow: inset 0 0 0 1px var(--app-accent-border); }
+    .rc[data-ask] .rc-mode b, .rc[data-ask][data-auto] .rc-mode small { display: inline; }
+    .rc[data-ask] .rc-mode__g svg:first-child { opacity: 0; transform: rotate(90deg) scale(0.5); }
+    .rc[data-ask] .rc-mode__g svg + svg { opacity: 1; transform: none; }
+
+    .rc-field { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; }
+    .rc-tok { flex: none; max-width: 220px; }
+    .rc-tok > span { overflow: hidden; text-overflow: ellipsis; }
+    .rc-tok svg { color: var(--app-text-subtle); }
+    .rc-tok .rc-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--c); }
+    .rc-tok[aria-pressed="true"] { --_bd: var(--app-border-hover); }
+    .rc-inwrap { position: relative; flex: 1; min-width: 120px; height: 34px; display: flex; overflow: hidden; }
+    .rc-inwrap input { flex: 1; min-width: 0; padding: 0; border: 0; outline: 0; background: none;
+      font: 400 19px/34px var(--font-sans); letter-spacing: -0.012em; color: transparent; caret-color: var(--app-text-strong); }
+    .rc-inwrap input::placeholder { color: var(--app-text-subtle); }
+    .rc-inwrap input::selection { color: transparent; }
+    .rc-inwrap input:focus-visible { box-shadow: none; }
+    .rc-mirror { position: absolute; inset: 0; pointer-events: none; white-space: pre; overflow: hidden;
+      font: 400 19px/34px var(--font-sans); letter-spacing: -0.012em; color: var(--app-text-strong); }
+    /* recognized phrase, still text: a pill drawn with shadow so glyph positions never move */
+    .rc-live { border-radius: 4px; background: var(--mx-selected); box-shadow: 0 0 0 3px var(--mx-selected);
+      animation: rc-tint var(--t-med) var(--ease-quart) both; }
+    @keyframes rc-tint { from { background: transparent; box-shadow: 0 0 0 3px transparent; } }
+    .rc-right { flex: none; display: inline-flex; align-items: center; gap: 12px; font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle);
+      font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .rc-right span { display: inline-flex; align-items: center; gap: 5px; }
+    .rc-right kbd { height: 18px; }
+    .rc-right b { font-weight: 500; color: var(--app-text); }
+
+    /* --- Body ------------------------------------------------------------ */
+    .rc-body { flex: 0 1 auto; min-height: 0; overflow: auto; padding: 8px 8px 10px; border-top: 1px solid var(--mx-hairline); scroll-padding: 8px; }
+    .rc-body:empty, .rc-foot:empty { display: none; }
+
+    /* Hero: one confident moment, rendered richly */
+    .rc-hero { display: grid; grid-template-columns: 268px minmax(0, 1fr); gap: 18px; padding: 10px; border-radius: var(--r-lg); cursor: default;
+      transition: background-color var(--t-fast) var(--ease-quart); }
+    .rc-hero[aria-selected="true"] { background: var(--mx-selected); }
+    .rc-crop { position: relative; height: 168px; overflow: hidden; border-radius: var(--r-md); background: var(--app-surface-subtle);
+      box-shadow: inset 0 0 0 1px var(--app-border); }
+    .rc-crop .rc-shot { position: absolute; left: 0; top: 0; transform-origin: 0 0; transition-property: none; } /* JS-driven zoom; keep kit's reduced-motion `all` transition off it */
+    .rc-crop::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--app-border); pointer-events: none; }
+    .rc-crop time { position: absolute; z-index: 1; left: 8px; bottom: 8px; padding: 3px 6px; border-radius: var(--r-xs);
+      background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-strong); }
+    .rc-hero__info { min-width: 0; display: grid; align-content: start; gap: 6px; padding-top: 2px; }
+    .rc-hero__k { display: flex; align-items: center; gap: 10px; }
+    .rc-hero__k .mono { margin-left: auto; font-size: var(--text-xs); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .rc-hero__t { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 2px 0 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.012em; color: var(--app-text-strong); }
+    .rc-hero__t span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rc-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font: 400 var(--text-sm)/1.4 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .rc-meta b { font-weight: 500; color: var(--app-text); }
+    .rc-snip { margin: 2px 0 0; font: 400 var(--text-md)/1.55 var(--font-sans); color: var(--app-text-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .rc-snip q { quotes: "“" "”"; color: var(--app-text); }
+    .rc-why { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 400 var(--text-sm)/1.3 var(--font-sans); color: var(--app-text-subtle); }
+    .rc-why .mx-chip { height: 18px; padding: 0 6px; }
+    .rc-acts[hidden] { display: none; }
+    .rc-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+
+    /* Audio crop: the matched stretch of the waveform */
+    .rc-acrop { display: grid; grid-template-rows: auto 1fr auto; gap: 8px; height: 100%; padding: 12px 12px 10px;
+      background: color-mix(in srgb, var(--s) 7%, var(--app-surface-subtle)); }
+    .rc-acrop header { display: flex; align-items: center; gap: 6px; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--s); letter-spacing: 0.02em; }
+    .rc-wave { position: relative; display: flex; align-items: center; gap: 2px; min-height: 0; }
+    .rc-wave i { flex: 1; height: calc(var(--v) * 1%); min-height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--app-fg) 18%, transparent); }
+    .rc-wave i.on { background: var(--app-accent); }
+    .rc-acrop footer { display: flex; justify-content: space-between; font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .rc-acrop footer b { font-weight: 500; color: var(--app-accent); }
+
+    /* Ranked list: one line per moment */
+    .rc-sec { display: flex; align-items: baseline; gap: 8px; margin: 10px 10px 4px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .rc-sec .mono { font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+    .rc-sec .mono:last-child { margin-left: auto; }
+    .rc-row { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto auto 26px; gap: 10px; align-items: center; height: 34px; padding: 0 10px;
+      border-radius: var(--r-md); cursor: default; color: var(--app-text); transition: background-color var(--t-fast) var(--ease-quart); }
+    .rc-row:hover, .rc-row[data-hot] { background: var(--mx-wash); }
+    .rc-row[aria-selected="true"] { background: var(--mx-selected); }
+    .rc-row--cited { grid-template-columns: 18px 18px minmax(0, 1fr) auto auto 26px; }
+    /* the row's Quick Look affordance: appears on hover / selection */
+    .rc-peek { opacity: 0; transition: opacity var(--t-fast) var(--ease-quart); }
+    .rc-row:hover .rc-peek, .rc-row[aria-selected="true"] .rc-peek, .rc-peek:focus-visible { opacity: 1; }
+    .rc-row--hit { padding-right: 4px; }
+    .rc-row__t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .rc-row__t span { margin-left: 8px; font-weight: 400; color: var(--app-text-muted); }
+    .rc-row__k { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .rc-row time { min-width: 64px; text-align: right; font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .rc-row[aria-selected="true"] time { color: var(--app-text); }
+    .rc-app { flex: none; display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; font: 700 10px/1 var(--font-sans); font-style: normal;
+      color: var(--c); background: color-mix(in srgb, var(--c) 18%, var(--app-surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 30%, transparent); }
+    .rc-app--sm { width: 15px; height: 15px; border-radius: 4px; font-size: 8.5px; }
+    .rc-num { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: var(--r-xs); font: 500 var(--text-xs)/1 var(--font-mono);
+      color: var(--app-text-muted); box-shadow: inset 0 0 0 1px var(--app-border-strong); }
+
+    /* Answer hero */
+    .rc-ans { display: block; padding: 14px 16px 12px; }
+    .rc-ans__h { display: flex; align-items: center; gap: 8px; font: 600 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .rc-ans__h > svg { color: var(--app-accent); }
+    .rc-ans__h .mono { font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .rc-ans__h .mx-btn { margin-left: auto; }
+    .rc-livetag { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); }
+    .rc-livetag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .rc-livetag--idle::before { background: var(--chart-grey-4); box-shadow: none; }
+    .rc-ans__body { margin-top: 10px; }
+    .rc-ans__body--split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; } /* block beside the prose keeps the answer ≤420 */
+    .rc-ans__body p { margin: 0; max-width: 74ch; font: 400 14px/1.65 var(--font-sans); color: var(--app-text); text-wrap: pretty; }
+    .rc-ans__body p strong { font-weight: 600; color: var(--app-text-strong); }
+    .rc-ans__wait { display: grid; gap: 8px; padding: 4px 0 2px; }
+    .rc-ans__wait .mx-skel { height: 11px; }
+    .rc-ans__wait span { font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+    .rc-cite { display: inline-grid; place-items: center; min-width: 16px; height: 16px; padding: 0 4px; margin: 0 1px; vertical-align: 1px; cursor: pointer;
+      border-radius: var(--r-xs); background: var(--app-surface-hover); border: 1px solid var(--app-border-strong);
+      font: 500 9.5px/1 var(--font-mono); color: var(--app-text-muted); transition: color var(--t-fast), border-color var(--t-fast); }
+    .rc-cite:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+    .rc-caret { display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: -2px; border-radius: 1px; background: var(--app-accent); }
+    .rc-tl { margin: 2px 0 0; padding: 10px 12px 6px; border-radius: var(--r-md); background: var(--app-surface); border: 1px solid var(--app-border);
+      animation: mx-rise var(--t-slow) var(--ease-expo) both; }
+    .rc-tl[data-seen], .rc-tl[data-seen] li { animation: none; }
+    .rc-tl h5 { margin: 0 0 6px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .rc-tl ol { list-style: none; margin: 0; padding: 0; position: relative; }
+    .rc-tl ol::before { content: ""; position: absolute; left: 68px; top: 12px; bottom: 12px; width: 1px; background: var(--app-border-strong); }
+    .rc-tl li { display: grid; grid-template-columns: 54px 9px minmax(0, 1fr) auto; gap: 0 10px; align-items: center; padding: 4px 0;
+      animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 70ms); }
+    .rc-tl time { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); text-align: right; font-variant-numeric: tabular-nums; }
+    .rc-tl li > i { width: 9px; height: 9px; border-radius: 50%; background: var(--app-bg); border: 1.5px solid var(--chart-grey-4); }
+    .rc-tl li.key > i { border-color: var(--app-accent); background: var(--app-accent); }
+    .rc-tl li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-text); }
+
+    /* Auto-answer off for this model: a quiet prompt in the hero slot, moments below */
+    .rc-gate { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; cursor: pointer; }
+    .rc-gate > svg { flex: none; color: var(--app-text-subtle); }
+    .rc-gate__t { font: 500 var(--text-md)/1.3 var(--font-sans); color: var(--app-text); }
+    .rc-gate__t b { font-weight: 600; color: var(--app-text-strong); }
+    .rc-gate__t kbd { height: 18px; margin: 0 2px; }
+    .rc-gate__why { margin-left: auto; font: 400 var(--text-sm)/1.3 var(--font-sans); color: var(--app-text-subtle); white-space: nowrap; }
+
+    /* No results: relaxations are rows you can pick */
+    .rc-none { padding: 14px 12px 4px; }
+    .rc-none p { margin: 0; font: 400 14px/1.5 var(--font-sans); color: var(--app-text-muted); }
+    .rc-none p b { font-weight: 600; color: var(--app-text-strong); }
+    .rc-row--relax { grid-template-columns: 18px minmax(0, 1fr) auto; }
+    .rc-row--relax > svg { color: var(--app-text-subtle); }
+
+    /* Recents / suggestions */
+    .rc-row--rec { grid-template-columns: 18px minmax(0, 1fr) auto; }
+    .rc-row--rec > svg { color: var(--app-text-subtle); }
+    .rc-row--rec .rc-row__t { font-weight: 400; color: var(--app-text); }
+    .rc-row--rec[aria-selected="true"] .rc-row__t { color: var(--app-text-strong); }
+    .rc-row--rec .rc-row__t em { font-style: normal; border-radius: 3px; background: var(--mx-wash-strong); box-shadow: 0 0 0 2px var(--mx-wash-strong); color: var(--app-text-strong); }
+
+    /* --- Footer: the real query under the hood + keys -------------------- */
+    .rc-foot { flex: none; height: 32px; display: flex; align-items: center; gap: var(--s-4); padding: 0 14px; border-top: 1px solid var(--mx-hairline);
+      background: color-mix(in srgb, var(--app-surface) 55%, transparent); font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); white-space: nowrap; }
+    .rc-foot__q { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+    .rc-foot__q code { min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-muted); }
+    .rc-foot__q code b { font-weight: 400; color: var(--app-text); }
+    .rc-foot__q svg { flex: none; }
+    .rc-foot__k { flex: none; display: flex; align-items: center; gap: 12px; }
+    .rc-foot__k span { display: inline-flex; align-items: center; gap: 5px; }
+    .rc-foot kbd { height: 17px; min-width: 17px; padding: 0 4px; }
+
+    /* --- Token edit popover (outside the clip) --------------------------- */
+    .rc-pop { position: absolute; z-index: 30; min-width: 240px; padding: 4px 0 0;
+      background: color-mix(in srgb, var(--app-surface-raised) 96%, transparent); border: 1px solid var(--app-overlay-border); border-radius: var(--r-lg);
+      -webkit-backdrop-filter: blur(22px) saturate(1.4); backdrop-filter: blur(22px) saturate(1.4); box-shadow: var(--app-shadow-popover);
+      opacity: 0; transform: translateY(-4px) scale(0.98); transform-origin: top left; pointer-events: none;
+      transition: opacity var(--t-fast) var(--ease-quart), transform var(--t-med) var(--ease-expo); }
+    .rc-pop[data-show] { opacity: 1; transform: none; pointer-events: auto; }
+    .rc-pop .mx-menu li[aria-selected="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    .rc-pop .mx-menu li > svg:last-child { margin-left: 6px; color: var(--app-accent); visibility: hidden; }
+    .rc-pop .mx-menu li[data-on] > svg:last-child { visibility: visible; }
+    .rc-pop__foot { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--mx-hairline); }
+    .rc-pop__op { padding: 8px 14px 4px; font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+
+    /* --- States (kit components; these only place them in the bar) ------- */
+    .rc-states { position: fixed; z-index: 40; left: 16px; bottom: 12px; display: flex; align-items: center; gap: var(--s-2); }
+    .rc-states select { height: var(--h-sm); width: 300px; padding: 0 var(--s-2); font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text); background: var(--app-surface-raised); }
+    .rc-note { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 10px 6px; }
+    .rc-note .mx-inline { font-size: var(--text-sm); }
+    .rc-slot { padding: 6px 2px 4px; }
+    .rc-hero.rc-slot { display: block; padding: 6px; }
+    .rc-slot .mx-notice, .rc-slot .mx-empty { max-width: none; }
+    .rc-body .mx-empty--center { padding: var(--s-5) var(--s-4); }
+    .rc-bad { color: var(--app-danger-text); text-decoration: underline wavy var(--app-danger-border); text-underline-offset: 4px; }
+    .rc-look__stage > .mx-empty { position: absolute; inset: 40px 0 0; align-content: center; }
+    .rc-film__img--gone { display: grid; place-items: center; background: var(--mx-wash); color: var(--app-text-faint); opacity: 1; }
+    .rc-skel-hero { display: grid; grid-template-columns: 268px minmax(0, 1fr); gap: 18px; padding: 10px; }
+    .rc-skel-hero .mx-skel--thumb { width: 100%; height: 168px; }
+    .rc-skel-hero .mx-skel-lines { align-content: start; padding-top: 4px; }
+
+    /* --- Fake captured frame (640×400 design size) ----------------------- */
+    .rc-shot { position: relative; width: 640px; height: 400px; display: grid; grid-template-rows: 24px minmax(0, 1fr); overflow: hidden;
+      background: var(--app-bg); color: var(--app-text); font: 400 12.5px/1.55 var(--font-sans); }
+    .rc-shot__bar { display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--app-surface-subtle); border-bottom: 1px solid var(--app-border);
+      font: 500 10.5px/1 var(--font-sans); color: var(--app-text-subtle); white-space: nowrap; overflow: hidden; }
+    .rc-shot__bar > i { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--app-border-strong); }
+    .rc-shot__bar span { margin-left: 8px; overflow: hidden; text-overflow: ellipsis; }
+    .rc-shot__in { display: grid; grid-template-columns: 140px minmax(0, 1fr); min-height: 0; }
+    .rc-shot__side { display: grid; align-content: start; gap: 9px; padding: 14px 12px; background: color-mix(in srgb, var(--c) 7%, var(--app-surface-subtle)); border-right: 1px solid var(--app-border); }
+    .rc-shot__side b { display: block; height: 7px; border-radius: 4px; width: var(--w); background: color-mix(in srgb, var(--app-fg) 12%, transparent); }
+    .rc-shot__side b:nth-child(3) { background: color-mix(in srgb, var(--c) 45%, transparent); }
+    .rc-shot__main { min-width: 0; padding: 16px 20px; overflow: hidden; display: grid; align-content: start; gap: 5px; }
+    .rc-shot__main p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rc-shot__main p.h { margin: 2px 0 8px; font: 700 21px/1.2 var(--font-sans); letter-spacing: -0.015em; color: var(--app-text-strong); white-space: normal; }
+    .rc-shot__url { margin: -4px 0 12px; padding: 6px 10px; border-radius: 7px; background: var(--app-surface-hover); font-size: 11px; color: var(--app-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rc-shot[data-l="code"] .rc-shot__main, .rc-shot[data-l="terminal"] .rc-shot__main { font: 400 11.5px/1.75 var(--font-mono); counter-reset: ln; gap: 0; }
+    .rc-shot[data-l="code"] .rc-shot__main p::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 26px; margin-right: 12px; text-align: right; color: var(--app-text-faint); }
+    .rc-shot[data-l="terminal"] .rc-shot__in { grid-template-columns: 1fr; background: var(--app-surface-subtle); }
+    .rc-shot[data-l="chat"] .rc-shot__main { gap: 12px; }
+    .rc-shot[data-l="chat"] .rc-shot__main p { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .rc-shot[data-l="chat"] .rc-shot__main p b { display: block; color: var(--app-text-strong); }
+    .rc-hit { padding: 0 2px; border-radius: 3px; background: var(--app-accent-bg); color: var(--app-text-strong); box-shadow: inset 0 0 0 1.5px var(--app-accent); }
+    .rc-near { padding: 0 2px; border-radius: 3px; background: color-mix(in srgb, var(--app-fg) 7%, transparent); border: 1px dashed var(--app-text-subtle); }
+    .rc-shot .sk { display: block; height: 8px; margin: 7px 0; border-radius: 4px; width: var(--w); background: color-mix(in srgb, var(--app-fg) 9%, transparent); }
+    .rc-cursor { position: absolute; z-index: 2; left: var(--x); top: var(--y); width: 13px; height: 19px; }
+    .rc-cursor path { fill: var(--app-text-strong); stroke: var(--app-bg); stroke-width: 1.4; stroke-linejoin: round; }
+    .rc-cite[aria-selected="true"] { background: var(--app-text-strong); border-color: var(--app-text-strong); color: var(--app-bg); }
+
+    /* --- Quick Look: opens under the bar, same surface ------------------- */
+    .rc-body--look { padding: 0; overflow: hidden; }
+    .rc-look { display: grid; grid-template-columns: minmax(0, 1fr) 256px; height: 476px; } /* fixed: scrubbing never changes the window height */
+    .rc-look__main { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+    .rc-look__stage { position: relative; overflow: hidden; background: color-mix(in srgb, var(--app-surface-subtle) 60%, transparent); }
+    .rc-look__frame { position: absolute; overflow: hidden; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--app-border-strong); }
+    .rc-look__frame .rc-shot, .rc-film__img .rc-shot, .rc-side__also > i .rc-shot { position: absolute; left: 0; top: 0; transform-origin: 0 0; transition-property: none; }
+    .rc-look__tag, .rc-look__legend { position: absolute; z-index: 3; top: 10px; display: inline-flex; align-items: center; gap: 7px; height: 22px; padding: 0 8px;
+      border-radius: var(--r-sm); background: var(--app-overlay-bg-strong); border: 1px solid var(--app-overlay-border); white-space: nowrap; }
+    .rc-look__tag { left: 12px; font: 450 var(--text-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
+    .rc-look__tag b { font-weight: 500; color: var(--app-text-strong); }
+    .rc-look__tag i { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); }
+    .rc-look__legend { right: 12px; gap: 12px; font: 400 var(--text-xs)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .rc-look__legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .rc-look__legend span::before { content: ""; width: 14px; height: 8px; border-radius: 2px; }
+    .rc-look__legend .kw::before { background: var(--app-accent-bg); outline: 1.5px solid var(--app-accent); }
+    .rc-look__legend .mn::before { outline: 1px dashed var(--app-text-subtle); }
+    .rc-strip { display: flex; gap: 6px; min-width: 0; padding: 8px 10px 9px; border-top: 1px solid var(--mx-hairline); }
+    .rc-film { flex: 1 1 0; min-width: 0; display: grid; grid-template-rows: auto 12px; gap: 5px; padding: 4px; border: 0; border-radius: var(--r-md); background: none; cursor: pointer;
+      font: 450 var(--text-xs)/12px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-subtle); text-align: center;
+      transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+    .rc-film:hover { background: var(--mx-wash); color: var(--app-text); }
+    .rc-film[aria-current="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    .rc-film__img { position: relative; aspect-ratio: 8 / 5; overflow: hidden; border-radius: 4px; box-shadow: 0 0 0 1px var(--app-border); opacity: 0.6;
+      transition: opacity var(--t-fast) var(--ease-quart); }
+    .rc-film:hover .rc-film__img, .rc-film[aria-current="true"] .rc-film__img { opacity: 1; }
+    .rc-film small { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font: inherit; }
+    .rc-film[data-match] small::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--app-accent); }
+    .rc-film--turn { grid-template-rows: 52px 12px; text-align: left; }
+    .rc-film--turn .rc-film__txt { padding: 6px 8px; border-radius: 4px; box-shadow: 0 0 0 1px var(--app-border); overflow: hidden;
+      font: 400 var(--text-sm)/1.35 var(--font-sans); color: var(--app-text-muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+    .rc-film--turn .rc-film__txt b { font-weight: 600; color: var(--app-text-strong); }
+    .rc-film--turn small { justify-content: flex-start; padding-left: 2px; }
+    .rc-look__side { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto; gap: 10px; padding: 14px 14px 12px;
+      border-left: 1px solid var(--mx-hairline); }
+    .rc-look--enter .rc-look__side, .rc-look--enter .rc-strip, .rc-look--enter .rc-look__tag, .rc-look--enter .rc-look__legend { animation: mx-rise var(--t-slow) var(--ease-expo) 120ms both; }
+    .rc-side__k { display: flex; align-items: center; gap: 8px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); }
+    .rc-side__k .mx-chip { margin-left: auto; }
+    .rc-side__t { margin: 0; font: 600 var(--text-md)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); overflow-wrap: anywhere; }
+    .rc-side__when { display: grid; gap: 5px; font: 450 var(--text-sm)/1.2 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text); }
+    .rc-side__when small { font-size: var(--text-xs); color: var(--app-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rc-side__txt { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 6px; }
+    .rc-side__txt header { display: flex; justify-content: space-between; align-items: baseline; }
+    .rc-side__txt header small { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .rc-side__lines { min-height: 0; overflow: auto; padding: 8px 10px; border-radius: var(--r-md); background: var(--app-surface-subtle); border: 1px solid var(--mx-hairline);
+      font: 400 var(--text-base)/1.55 var(--font-sans); color: var(--app-text-muted); }
+    .rc-side__lines p { margin: 0 0 2px; overflow-wrap: anywhere; }
+    .rc-side__lines p[data-m] { color: var(--app-text-strong); }
+    .rc-side__lines .turn { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 6px; margin: 0 -6px 2px; padding: 3px 6px; border-radius: var(--r-sm); }
+    .rc-side__lines .turn time { font: 450 var(--text-xs)/1.9 var(--font-mono); color: var(--app-text-subtle); }
+    .rc-side__lines .turn b { font-weight: 600; color: var(--app-text); }
+    .rc-side__lines .turn[data-cur] { background: var(--mx-selected); color: var(--app-text); }
+    .rc-side__also { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 10px; align-items: center; padding: 5px; margin: 0 -5px; border: 0; border-radius: var(--r-md);
+      background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; transition: background-color var(--t-fast) var(--ease-quart); }
+    .rc-side__also:hover { background: var(--mx-wash); }
+    .rc-side__also > i { grid-row: span 2; position: relative; width: 64px; height: 40px; overflow: hidden; border-radius: 4px; box-shadow: 0 0 0 1px var(--app-border); }
+    .rc-side__also b { font: 500 var(--text-base)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .rc-side__also small { font: 400 var(--text-xs)/1.2 var(--font-mono); color: var(--app-text-subtle); }
+    .rc-side__acts { display: grid; gap: 6px; }
+    .rc-side__acts .mx-btn { width: 100%; }
+    .rc-side__acts .mx-btn kbd { margin-left: auto; }
+    .rc-side__row { display: flex; gap: 6px; }
+    .rc-side__row .mx-btn { flex: 1; min-width: 0; }
+    /* audio stage: the line, large, over a zoomed waveform */
+    .rc-qa { position: absolute; inset: 0; display: grid; align-content: center; gap: 18px; padding: 44px 36px 20px; }
+    .rc-qa__who { display: flex; align-items: center; gap: 9px; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-muted); }
+    .rc-qa__who b { font-weight: 600; color: var(--app-text-strong); }
+    .rc-spk { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; font: 600 11px/1 var(--font-sans); font-style: normal;
+      color: var(--app-text-strong); background: color-mix(in srgb, var(--s) 26%, var(--app-surface)); }
+    .rc-qa blockquote { position: relative; margin: 0; padding-left: 38px; font: 500 24px/1.34 var(--font-sans); letter-spacing: -0.018em; color: var(--app-text-strong); text-wrap: pretty; overflow: hidden; }
+    .rc-qa blockquote::before { content: "\201C"; position: absolute; left: 0; top: -6px; font: 700 56px/1 var(--font-sans); color: color-mix(in srgb, var(--s) 72%, transparent); }
+    .rc-qa__wave { position: relative; display: flex; align-items: center; gap: 2px; height: 64px; }
+    .rc-qa__wave i { flex: 1; height: calc(var(--v) * 1%); min-height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--app-fg) 18%, transparent); }
+    .rc-qa__wave i[data-in] { background: color-mix(in srgb, var(--s) 70%, transparent); }
+    .rc-qa__wave b { position: absolute; top: -6px; bottom: -6px; left: var(--x); width: 1.5px; border-radius: 1px; background: var(--app-text-strong); transition: left var(--t-slow) var(--ease-expo); }
+    .rc-qa__wave b[data-match] { background: var(--app-accent); }
+    .rc-qa__axis { display: flex; justify-content: space-between; font: 450 var(--text-xs)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+    @media (prefers-reduced-motion: reduce) { .rc-tl, .rc-tl li, .rc-live, .rc-look--enter * { animation: none !important; } .rc-mode, .rc-mode__g svg { transition: none; }
+      .rc, .rc-cap, .rc-shade { transition-property: none !important; } /* reduced motion: the panel snaps to size */ }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-10"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></symbol>
+    <symbol id="i-screen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  </defs>
+</svg>
+
+<!-- Fake desktop (decorative, blurred) -->
+<div class="rc-desk" aria-hidden="true">
+  <div class="rc-desk__menu"><svg width="15" height="15"><use href="#i-mark"/></svg><span>Arc</span><span>File</span><span>Edit</span><span>View</span><span>Spaces</span></div>
+  <div class="rc-desk__win" style="left:140px;top:120px;width:860px;height:600px"><i></i><b><span style="--w:36%;--c:var(--cat-research)"></span><span style="--w:82%"></span><span style="--w:66%"></span><span style="--w:74%"></span><span style="--w:30%;--c:var(--cat-creating)"></span><span style="--w:88%"></span><span style="--w:58%"></span></b></div>
+  <div class="rc-desk__win" style="left:820px;top:280px;width:600px;height:460px"><i></i><b><span style="--w:54%;--c:var(--cat-meetings)"></span><span style="--w:86%"></span><span style="--w:70%"></span><span style="--w:48%"></span></b></div>
+  <div class="rc-desk__dock"><i style="--c:var(--cat-research)"></i><i style="--c:var(--cat-creating)"></i><i style="--c:var(--cat-communication)"></i><i style="--c:var(--cat-organizing)"></i><i style="--c:var(--cat-meetings)"></i></div>
+</div>
+<div class="rc-scrim" id="rc-scrim"></div>
+
+<div class="rc-float" id="rc-float">
+  <div class="rc-shadewrap" aria-hidden="true"><div class="rc-shade"></div></div>
+  <section class="rc" id="rc" role="dialog" aria-label="Quick Recall">
+    <div class="rc-inner" id="rc-inner">
+      <div class="rc-bar" data-tauri-drag-region>
+        <button type="button" class="rc-mode" id="rc-mode" tabindex="-1" aria-label="Search or ask (Tab)">
+          <span class="rc-mode__g"><svg width="17" height="17"><use href="#i-search"/></svg><svg width="16" height="16"><use href="#i-sparkle"/></svg></span><b>Ask</b><small>auto</small>
+        </button>
+        <div class="rc-field" id="rc-field">
+          <span class="rc-inwrap">
+            <span class="rc-mirror" id="rc-mirror" aria-hidden="true"></span>
+            <input id="rc-q" placeholder="Recall anything you saw or heard…" autocomplete="off" spellcheck="false"
+              role="combobox" aria-controls="rc-body" aria-expanded="false" aria-label="Recall anything — type a question to get an answer" />
+          </span>
+        </div>
+        <span class="rc-right" id="rc-right" aria-live="polite"></span>
+      </div>
+      <div class="rc-body" id="rc-body" role="listbox" aria-label="Moments"></div>
+      <footer class="rc-foot" id="rc-foot"></footer>
+    </div>
+  </section>
+  <div class="rc-cap" aria-hidden="true"></div>
+  <div class="rc-pop" id="rc-pop" role="dialog" aria-label="Edit filter"></div>
+</div>
+
+<label class="rc-states"><span class="mx-label">Mockup state</span><select class="mx-input" id="rc-state" aria-label="Mockup state"></select></label>
+
+<script>
+/* ===== Fake capture index (now = Fri Oct 9 2026, 16:40) ================ */
+const $ = (s, el = document) => el.querySelector(s), $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const NOW = new Date(2026, 9, 9, 16, 40);
+const at = (day, hm) => { const [h, m] = hm.split(":").map(Number); return new Date(2026, 9, day, h, m); };
+const APPS = { Arc: ["research", "A"], Zed: ["creating", "Z"], Slack: ["communication", "S"], Figma: ["creating", "F"], Linear: ["organizing", "L"],
+  Notion: ["organizing", "N"], Mail: ["communication", "M"], Ghostty: ["creating", "›"], Zoom: ["meetings", "Z"] };
+const R = [
+  { k: "screen", app: "Arc", l: "browser", t: at(6, "14:12"), mins: 12, title: "Pricing — Mnema", url: "mnema.day/pricing", about: ["pricing", "plans", "billing", "trial"],
+    lines: ["Pricing", "Draft pricing page — not linked from the nav yet", "Mnema · one-time purchase · $49", "Includes 12 months of updates, then keep what you have", "Free 14-day trial · no account needed", "Compare with Rewind and Screenpipe →"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(6, "15:03"), mins: 6, title: "Pricing – Linear", url: "linear.app/pricing", about: ["pricing", "plans", "billing"], m: 1,
+    lines: ["Plans that grow with you", "Free · Basic $8 · Business $14 per user / month", "Annual billing saves 20%", "Enterprise — talk to sales"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(6, "16:20"), mins: 9, title: "Embeddable pricing table — Stripe Docs", url: "docs.stripe.com/payments/checkout/pricing-table", about: ["pricing", "billing", "payment"],
+    lines: ["Embeddable pricing table", "Display a pricing table on your page and let customers check out", "<stripe-pricing-table pricing-table-id=\"prctbl_…\">", "Supports free trials, tiers and one-time prices"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(6, "13:05"), mins: 11, title: "Merchant of record fees, compared", url: "polar.sh/blog/mor-fees", about: ["pricing", "billing", "fees", "payment"], m: 1,
+    lines: ["Merchant of record, compared", "Polar 4% + 40¢ · Paddle 5% + 50¢ per transaction", "Both handle VAT and sales tax for you", "Payouts weekly, in USD or EUR"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(6, "15:40"), mins: 4, title: "Raycast Pro", url: "raycast.com/pro", about: ["pricing", "plans", "trial"], m: 1,
+    lines: ["Raycast Pro", "$8 / month, billed annually", "AI, cloud sync, custom themes", "Try it free for 14 days"] },
+  { k: "screen", app: "Figma", l: "doc", t: at(6, "10:20"), mins: 40, title: "Pricing page — v3", about: ["pricing", "design"],
+    lines: ["Pricing page — v3", "Hero: “Pay once. Keep it.”", "Card: $49 · 12 months of updates", "FAQ: what happens after the update window?"] },
+  { k: "screen", app: "Slack", l: "chat", t: at(7, "10:05"), mins: 5, title: "#launch — Slack", about: ["pricing", "trial", "retention"],
+    lines: ["<b>Ana Ruiz</b> can we put the trial length on the pricing page? people keep asking", "<b>you</b> yes — 14 days, adding it right under the price", "<b>Ana Ruiz</b> and link the retention post from the FAQ"],
+    more: ["<b>you</b> done — trial length is under the price now", "<b>Ana Ruiz</b> 🙌"] },
+  { k: "screen", app: "Linear", l: "doc", t: at(7, "17:10"), mins: 14, title: "MNE-240 Pricing page copy", about: ["pricing", "copy"],
+    lines: ["MNE-240 · Pricing page copy", "Owner: you · Reviewer: Ana Ruiz", "Say “one-time purchase” before the price, not after", "Add the trial length and the update window"] },
+  { k: "screen", app: "Zed", l: "code", t: at(8, "13:30"), mins: 22, title: "apps/web/src/routes/pricing/+page.svelte", about: ["pricing", "code"],
+    lines: ["<script lang=\"ts\">", "  // pricing page: one-time purchase, 12-month update window", "  import { PRICE_USD, TRIAL_DAYS } from \"$lib/plans\";", "<\/script>", "", "<h1>Pay once. Keep it.</h1>", "<p>{TRIAL_DAYS}-day free trial · ${PRICE_USD} once</p>"] },
+  { k: "screen", app: "Notion", l: "doc", t: at(8, "09:30"), mins: 7, title: "Retention notes — Q4", about: ["retention", "churn", "onboarding"],
+    lines: ["Retention notes — Q4", "Owner: Ana Ruiz", "D30 retention 41% (trial users who finish setup: 58%)", "Biggest drop: week two, after the first digest", "Bet: onboarding v2 → D30 in the mid-forties"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(7, "14:20"), mins: 18, title: "Retention · N-day — Amplitude", url: "analytics.amplitude.com/mnema/retention", about: ["retention", "churn", "cohort"],
+    lines: ["Retention · N-day", "Week 1 72% · Week 2 49% · Week 4 43%", "Cohort: trial started Sep 1 – Sep 30", "Segment: finished setup vs. skipped"] },
+  { k: "screen", app: "Mail", l: "doc", t: at(2, "09:41"), mins: 3, title: "Invoice #2041 from Hetzner Online", about: ["invoice", "bill", "billing", "payment"],
+    lines: ["Your invoice #2041", "Hetzner Online GmbH — Cloud servers, September 2026", "Total due: €48.20 · due Oct 14, 2026", "Paid with card ending •••• (redacted)"] },
+  { k: "screen", app: "Ghostty", l: "terminal", t: at(8, "16:55"), mins: 6, title: "bun run build — apps/web", about: ["error", "build", "deploy"],
+    lines: ["$ bun run build", "vite v6.2.0 building for production…", "✓ 412 modules transformed.", "error: PRICE_USD is not exported by src/lib/plans.ts", "    at src/routes/pricing/+page.svelte:3:11", "error: build failed in 2.41s"],
+    more: ["$ git diff src/lib/plans.ts", "+export const PRICE_USD = 49;", "$ bun run build", "✓ built in 2.12s"] },
+  { k: "audio", src: "mic", title: "Call with Ana", t: at(8, "11:00"), dur: 1240, m: 144, about: ["retention", "churn", "onboarding"], frame: "Ana Ruiz — Zoom",
+    turns: [["02:24", "Ana", "retention is fine for trial users who finish setup — it's the week-two drop that worries me"], ["02:31", "You", "after the first digest goes out?"], ["02:34", "Ana", "right. if onboarding v2 lands I think D30 goes from forty-one to the mid-forties"]] },
+  { k: "audio", src: "mic", title: "Weekly sync", t: at(5, "11:30"), dur: 1820, m: 251, about: ["pricing", "retention", "meeting"],
+    turns: [["04:05", "Ravi", "should we raise the price before launch?"], ["04:11", "Ana", "let's not touch pricing until we see the retention numbers"], ["04:18", "You", "fair — the pricing page ships as is, $49 once"]] },
+  { k: "audio", src: "system", title: "Lenny's Podcast — The retention playbook", t: at(6, "21:10"), dur: 3100, m: 1320, about: ["retention", "churn", "onboarding"],
+    turns: [["22:00", "Host", "the best predictor of retention is whether people hit the aha moment in week one"], ["22:09", "Guest", "and week two is where habit either forms or it doesn't"]] },
+  { k: "audio", src: "mic", title: "Voice note", t: at(7, "08:50"), dur: 40, m: 6, about: ["retention"],
+    turns: [["00:06", "You", "remember to ask Ana about the retention dip before Thursday"]] },
+  { k: "screen", app: "Zoom", l: "doc", t: at(8, "11:00"), mins: 21, title: "Ana Ruiz — Zoom", about: ["retention", "meeting", "cohort"], m: 2,
+    lines: ["Ana Ruiz is sharing her screen", "Retention · N-day — Amplitude", "Week 1 72% · Week 2 49% · Week 4 43%", "Cohort: trial started Sep 1 – Sep 30", "Participants: Ana Ruiz, you"] },
+  /* speakrs: the diarization memory fix, Thu–Fri */
+  { k: "screen", app: "Zed", l: "code", t: at(9, "14:32"), mins: 22, title: "speakrs.rs — mnema", sub: "crates/speaker-analysis/src/speakrs.rs", about: ["diarization", "speaker", "memory", "chunk"], m: 2,
+    lines: ["use speakrs::{Pipeline, ChunkConfig};", "", "/// Chunk long segments so speakrs never holds 5 min of audio.", "pub const CHUNK_SECS: u32 = 180;", "pub const STITCH_THRESHOLD: f32 = 0.6;", "", "pub fn diarize(samples: &[f32]) -> Result<Vec<Turn>> {", "    let cfg = ChunkConfig::new(CHUNK_SECS).stitch(STITCH_THRESHOLD);", "    let turns = Pipeline::community_1()?.run_chunked(samples, cfg)?;", "    // peak memory: 1.4 GB → 390 MB with chunking", "    Ok(merge_adjacent(turns))", "}"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(9, "14:41"), mins: 8, title: "speakrs: chunk long segments at 180 s · PR #212", url: "github.com/shaik-zeeshan/mnema/pull/212", about: ["diarization", "memory", "release", "chunk"], m: 2,
+    lines: ["speakrs: chunk long segments at 180 s #212", "Open · wants to merge 3 commits into main from speakrs-chunk", "Peak memory on a 5-minute segment drops from 1.4 GB to 390 MB.", "Stitching at 0.6 keeps the error rate flat (DER 7.39 vs 8.35 baseline).", "Checks: 18 passed · ready for review", "Reviewers: Ana Ruiz"] },
+  { k: "screen", app: "Ghostty", l: "terminal", t: at(9, "14:05"), mins: 6, title: "diarization_bench — zsh", about: ["memory", "diarization", "benchmark", "speaker"], m: 4,
+    lines: ["$ cargo run --release -p diarization_bench -- --chunk 180 --stitch 0.6", "   Finished release [optimized] target(s) in 1m 02s", "loading 232 clips from bench/ami-mix …", "speakrs   chunk=180s  stitch=0.60  backend=coreml", "DER        7.39 %   (baseline 8.35 %)", "peak RSS   390 MB   (was 1.4 GB)", "wall       6m 12s   (was 7m 48s)"],
+    more: ["$ git commit -am \"speakrs: chunk at 180 s\"", "[speakrs-chunk 4f1c2a9] speakrs: chunk at 180 s", "$ git push -u origin speakrs-chunk"] },
+  { k: "screen", app: "Arc", l: "browser", t: at(9, "13:44"), mins: 5, title: "Chunked inference for long recordings · Issue #41", url: "github.com/avencera/speakrs/issues/41", about: ["diarization", "memory", "speaker", "chunk"], m: 2,
+    lines: ["Chunked inference for long recordings #41", "Open · shaik-zeeshan opened this issue · 4 comments", "Running speakrs on a 5-minute segment peaks at ~1.4 GB RSS on an M1 Air.", "Proposal: chunk at 180 s and stitch speakers across chunk boundaries.", "avencera: happy to take a PR — the stitch step should live in the crate."] },
+  { k: "screen", app: "Linear", l: "doc", t: at(8, "17:20"), mins: 9, title: "MNE-212 Diarization memory peak", about: ["diarization", "speaker", "memory"], m: 2,
+    lines: ["MNE-212 · Diarization memory peak", "In progress · High · assigned to you · due Oct 16", "speakrs holds the whole 5-minute segment in memory and peaks at 1.4 GB.", "Fix: chunk at 180 s, stitch at 0.6. Ship behind the default pipeline.", "Acceptance: peak under 500 MB, error rate within 0.2 of baseline."] },
+  { k: "audio", src: "mic", title: "Standup", t: at(9, "10:02"), dur: 540, m: 188, about: ["release", "diarization", "memory"],
+    turns: [["03:01", "Ana", "anything blocking the release candidate?"], ["03:08", "Ravi", "just the speakrs bump — is it in yet?"], ["03:14", "You", "after lunch. chunking at a hundred and eighty seconds took the peak under four hundred megs"], ["03:22", "Ana", "great, then onboarding goes in the same build"]] },
+  { k: "audio", src: "system", title: "RustConf — Audio in Rust", t: at(5, "20:30"), dur: 2280, m: 1312, about: ["diarization", "speaker", "memory", "chunk"],
+    turns: [["21:44", "Speaker 1", "we chunk the audio into three-minute windows and stitch speakers across the boundary"], ["21:52", "Speaker 1", "speakrs does this with a cosine threshold, which keeps memory flat"], ["22:05", "Speaker 1", "and the error rate barely moves, which honestly surprised us"]] },
+];
+R.forEach((r, i) => (r.id = i));
+const isScreen = (r) => r.k === "screen";
+const strip = (s) => s.replace(/<[^>]+>/g, "");
+const hay = (r) => (r.hay ||= [r.title, r.app || "", r.url || "", r.sub || "", ...(r.lines || []), ...(r.turns || []).map((x) => `${x[1]} ${x[2]}`)].map(strip).join(" \n ").toLowerCase());
+
+const RECENT = [
+  { text: "speakrs", ago: "1h ago" },
+  { text: "invoice in Mail last week", ago: "2h ago" },
+  { text: "build error in Ghostty yesterday", ago: "yesterday" },
+  { text: "what did Ravi say about the price?", ago: "Wed", ask: true },
+];
+const TRY = [
+  { text: "pricing page in Arc last Tuesday afternoon" },
+  { text: "what did Ana say about retention?", ask: true },
+  { text: "on a call this week" },
+];
+
+/* ===== Helpers ========================================================= */
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// wrap terms in `open…close`, touching only text outside tags
+// whole words (+ plural/-ing/-ed), so "ana" never lights up "analytics"
+const termRe = (terms, f = "gi") => new RegExp(`\\b(?:${terms.map(reEsc).sort((a, b) => b.length - a.length).join("|")})(?:s|es|ed|ing)?\\b`, f);
+const hl = (html, terms, open, close) => {
+  if (!terms.length) return html;
+  const re = termRe(terms);
+  return html.split(/(<[^>]+>)/).map((p) => p.startsWith("<") ? p : p.replace(re, `${open}$&${close}`)).join("");
+};
+const cnt = (h, w) => (h.match(termRe([w], "g")) || []).length;
+const mark = (s, terms) => hl(esc(s), terms, "<mark>", "</mark>");
+const pad = (n) => String(n).padStart(2, "0");
+const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const daysAgo = (d) => Math.round((dayStart(NOW) - dayStart(d)) / 864e5);
+const wd = (d) => d.toLocaleDateString("en-US", { weekday: "short" });
+const md = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const relDay = (d) => { const k = daysAgo(d); return k === 0 ? "today" : k === 1 ? "yesterday" : `${k} days ago`; };
+const short = (d) => (daysAgo(d) === 0 ? hm(d) : `${wd(d)} ${hm(d)}`);
+const isoDay = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const clock = (s) => `${Math.floor(s / 60)}:${pad(Math.round(s % 60))}`;
+const icon = (id, s = 14) => `<svg width="${s}" height="${s}"><use href="#${id}"/></svg>`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const srcVar = (src) => (src === "mic" ? "var(--app-source-mic)" : src === "system" ? "var(--app-source-sysaudio)" : "var(--app-source-screen)");
+const appTile = (app, sm) => `<i class="rc-app${sm ? " rc-app--sm" : ""}" style="--c:var(--cat-${APPS[app][0]})">${APPS[app][1]}</i>`;
+const srcTile = (r) => isScreen(r) ? appTile(r.app) : `<i class="rc-app" style="--c:${srcVar(r.src)}">${icon(r.src === "mic" ? "i-mic" : "i-speaker", 11)}</i>`;
+const endOf = (r) => new Date(+r.t + (isScreen(r) ? r.mins * 6e4 : r.dur * 1e3));
+const where = (r) => isScreen(r) ? r.app : r.src === "mic" ? "Microphone" : "System audio";
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* ===== Natural language → tokens (real operators under the hood) ======= */
+const WD = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const PART = { morning: [5, 12], afternoon: [12, 18], evening: [18, 24] };
+const NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const dayN = (n) => new Date(2026, 9, 9 - n); // n days before today
+function dateTok(d0, d1, part, label, op) {
+  return { type: "date", d0, d1, part: part || null, label, op };
+}
+const dayLabel = (d) => { const k = daysAgo(d); return k === 0 ? "Today" : k === 1 ? "Yesterday" : `${wd(d)} ${md(d)}`; };
+const oneDay = (d, part) => dateTok(d, d, part, dayLabel(d), `date:${daysAgo(d) === 0 ? "today" : daysAgo(d) === 1 ? "yesterday" : isoDay(d)}`);
+const RULES = [
+  [/\b(app|source|date):("[^"]*"|\S+)/gi, (m) => {
+    const op = m[1].toLowerCase(), v = m[2].replace(/"/g, ""), lv = v.toLowerCase();
+    if (op === "app") { const a = Object.keys(APPS).find((x) => x.toLowerCase().startsWith(lv)); return a && { type: "app", app: a }; }
+    if (op === "source") { const s = { mic: "mic", microphone: "mic", system: "system", screen: "screen" }[lv]; return s && { type: "src", src: s }; }
+    if (lv === "today") return oneDay(dayN(0));
+    if (lv === "yesterday") return oneDay(dayN(1));
+    if (lv === "this-week") return dateTok(dayN(4), dayN(0), null, "This week", "date:this-week");
+    if (lv === "last-week") return dateTok(dayN(11), dayN(5), null, "Last week", "date:last-week");
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(lv) && new Date(`${lv}T12:00`);
+    return d && !isNaN(d) ? oneDay(dayStart(d)) : null;
+  }],
+  [/\b(?:(?:on|last)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+(morning|afternoon|evening))?\b/gi, (m) => {
+    const back = (NOW.getDay() - WD.indexOf(m[1].toLowerCase()) + 7) % 7 || 7;
+    return oneDay(dayN(back), m[2]?.toLowerCase());
+  }],
+  [/\b(?:this\s+(morning|afternoon|evening)|(tonight))\b/gi, (m) => oneDay(dayN(0), (m[1] || "evening").toLowerCase())],
+  [/\b(today|yesterday)(?:\s+(morning|afternoon|evening))?\b/gi, (m) => oneDay(dayN(m[1].toLowerCase() === "today" ? 0 : 1), m[2]?.toLowerCase())],
+  [/\b(this|last)\s+week\b/gi, (m) => m[1].toLowerCase() === "this" ? dateTok(dayN(4), dayN(0), null, "This week", "date:this-week") : dateTok(dayN(11), dayN(5), null, "Last week", "date:last-week")],
+  [/\b(\d+|one|two|three|four|five|six)\s+days?\s+ago\b/gi, (m) => oneDay(dayN(NUM[m[1].toLowerCase()] || +m[1]))],
+  [/\b(?:(?:in|on|from|using)\s+)?(arc|zed|slack|figma|linear|notion|mail|ghostty|zoom)\b/gi, (m) => ({ type: "app", app: Object.keys(APPS).find((a) => a.toLowerCase() === m[1].toLowerCase()) })],
+  [/\b(?:on|in|during)\s+(?:a\s+|the\s+)?(?:call|meeting)s?\b/gi, () => ({ type: "src", src: "mic" })],
+  [/\bon\s+(?:my\s+|the\s+)?screen\b/gi, () => ({ type: "src", src: "screen" })],
+  [/\b(?:in|on)\s+a\s+(?:podcast|video)\b/gi, () => ({ type: "src", src: "system" })],
+  [/\b(?:in\s+the\s+)?(morning|afternoon|evening)\b/gi, (m) => ({ type: "part", part: m[1].toLowerCase() })],
+];
+// ponytail: regex rules over a fixed vocabulary; the real thing resolves apps/dates in Rust (see notes).
+function parse(raw) {
+  const spans = [];
+  for (const [re, make] of RULES) {
+    for (const m of raw.matchAll(re)) {
+      const s = m.index, e = s + m[0].length;
+      if (spans.some((x) => s < x.e && e > x.s)) continue;
+      const tok = make(m);
+      if (tok) spans.push({ s, e, tok });
+    }
+  }
+  spans.sort((a, b) => a.s - b.s);
+  let residual = "", i = 0;
+  for (const sp of spans) { residual += raw.slice(i, sp.s); i = sp.e; }
+  residual = (residual + raw.slice(i)).replace(/\s{2,}/g, " ").replace(/\s+([?.!,])/g, "$1").trim();
+  return { spans, residual };
+}
+// Merge parsed tokens onto a token set (one per kind; a bare "afternoon" narrows the day).
+function mergeToks(base, list) {
+  const t = { ...base };
+  for (const k of list) {
+    if (k.type === "part") {
+      const d = t.date || oneDay(dayN(0));
+      t.date = { ...d, part: d.d0 === d.d1 || +d.d0 === +d.d1 ? k.part : null };
+    } else t[k.type] = k;
+  }
+  return t;
+}
+const TOK_ORDER = ["app", "date", "src"];
+const SRC = { screen: ["Screen", "i-screen"], mic: ["On a call", "i-mic"], system: ["System audio", "i-speaker"] };
+const tokLabel = (t) => t.type === "app" ? t.app : t.type === "src" ? SRC[t.src][0] : t.part ? `${t.label} · ${t.part}` : t.label;
+const datePhrase = (d) => d.label === "Today" && d.part ? `this ${d.part}`
+  : `${/^(Today|Yesterday|This week|Last week)$/.test(d.label) ? d.label.toLowerCase() : `on ${d.label}`}${d.part ? ` ${d.part}` : ""}`;
+const tokOps = (t) => t.type === "app" ? `app:${t.app}` : t.type === "src" ? `source:${t.src}` : t.op + (t.part ? ` hours:${PART[t.part].join("-")}` : "");
+
+/* ===== Search (hybrid stand-in: keywords, then "by meaning") =========== */
+const STOP = new Set("a an the of to in on at for and or is are was were be been do does did what who whom when where why how which that this it its my me i you we our us your he she they them about say said says from with by as any some there have has had can could should would will just tell remind".split(" "));
+function termsOf(text) {
+  const phrases = [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1].toLowerCase());
+  const words = text.replace(/"[^"]*"/g, " ").toLowerCase().split(/[^a-z0-9$€%#'-]+/).map((w) => w.replace(/^'+|'+$/g, "")).filter((w) => w && !STOP.has(w));
+  const all = [...phrases, ...words];
+  return { phrases, words, all, hl: words.length > 1 ? [words.join(" "), ...all] : all }; // hl: phrase first, so it lights up as one
+}
+const isQuestion = (s) => /\?\s*$/.test(s) || /^(who|what|when|where|why|how|did|do|does|was|were|is|are|can|could|should|which|summari[sz]e|remind me|tell me)\b/i.test(s.trim());
+function passes(r, t) {
+  if (t.app && (!isScreen(r) || r.app !== t.app.app)) return false;
+  if (t.src && (t.src.src === "screen" ? !isScreen(r) : isScreen(r) || r.src !== t.src.src)) return false;
+  if (t.date) {
+    const d = dayStart(r.t);
+    if (d < dayStart(t.date.d0) || d > dayStart(t.date.d1)) return false;
+    if (t.date.part) { const [a, b] = PART[t.date.part], h = r.t.getHours(); if (h < a || h >= b) return false; }
+  }
+  return true;
+}
+function search(q, t) {
+  const out = [];
+  for (const r of R) {
+    if (!passes(r, t)) continue;
+    const h = hay(r);
+    if (!q.all.length) { out.push({ r, kw: null, n: 0, score: isScreen(r) ? r.mins : r.dur / 60 }); continue; }
+    const literal = q.all.every((w) => cnt(h, w) > 0);
+    const phraseN = q.words.length > 1 ? cnt(h, q.words.join(" ")) : 0;
+    const n = q.all.reduce((s, w) => s + cnt(h, w), 0);
+    const near = !literal && q.all.some((w) => w.length > 3 && r.about.some((a) => a.slice(0, 4) === w.slice(0, 4)));
+    if (!literal && !near) continue;
+    const dwell = isScreen(r) ? r.mins : r.dur / 120;
+    out.push({ r, kw: literal, n, phraseN, score: literal ? 100 + phraseN * 8 + n * 3 + dwell * 0.4 : n + dwell * 0.2 });
+  }
+  return out.sort((a, b) => b.score - a.score || b.r.t - a.r.t);
+}
+
+/* ===== Fake frame (640×400) =========================================== */
+// The same frame k × 15 s away from the match: terminals/chats grow or shrink at the bottom,
+// pages scroll (k > 0) or are still filling in (k < 0). Stands in for the neighbouring captured frames.
+const STEP = 15, RANGE = 6;
+function frameRows(r, k = 0) {
+  let rows = r.lines.map((x, i) => ({ x, i }));
+  const sk = (n, seed) => Array.from({ length: n }, (_, j) => ({ sk: 30 + ((r.id * 17 + seed * 7 + j * 13 + 60) % 55) }));
+  if (r.l === "terminal" || r.l === "chat") {
+    if (k < 0) rows = rows.slice(0, Math.max(1, rows.length + k));
+    else if (k > 0) rows = rows.concat((r.more || []).slice(0, k).map((x, j) => ({ x, i: 100 + j })));
+  } else if (k > 0) rows = rows.slice(Math.min(k, rows.length - 1)).concat(sk(k, k));
+  else if (k < 0) { const n = Math.min(-k, rows.length - 1); rows = rows.slice(0, rows.length - n).concat(sk(n, k)); }
+  return rows;
+}
+const meaningLine = (r) => Math.min(r.m ?? 1, r.lines.length - 1);
+// kind: the hit's kw flag — false = found by meaning (dashed outline on the line it is about)
+function shot(r, terms, o = {}) {
+  const k = o.k || 0, head = r.l === "browser" || r.l === "doc", near = o.kind === false ? meaningLine(r) : -1;
+  const lines = frameRows(r, k).map((row) => {
+    if (row.sk != null) return `<i class="sk" style="--w:${row.sk}%"></i>`;
+    let inner = hl(row.x.includes("<b>") ? row.x : esc(row.x), terms, '<span class="rc-hit">', "</span>") || "&nbsp;";
+    if (row.i === near) inner = `<span class="rc-near">${inner}</span>`;
+    return `<p${head && row.i === 0 ? ' class="h"' : ""}>${inner}</p>`;
+  }).join("");
+  const side = r.l === "terminal" ? "" : `<div class="rc-shot__side">${[64, 82, 56, 74, 40, 68, 52, 78].map((w) => `<b style="--w:${w}%"></b>`).join("")}</div>`;
+  const url = r.url ? `<div class="rc-shot__url">https://${esc(r.url)}</div>` : "";
+  const c = (r.id * 97 + (k + 7) * 53) % 997;
+  const cursor = `<svg class="rc-cursor" style="--x:${200 + (c % 360)}px;--y:${90 + ((c * 7) % 240)}px" viewBox="0 0 13 19" aria-hidden="true"><path d="M1 1v15l4-3.6 2.6 5.6 2.4-1.1-2.6-5.4H13z"/></svg>`;
+  return `<div class="rc-shot" data-l="${r.l}" style="--c:var(--cat-${APPS[r.app][0]})"><div class="rc-shot__bar"><i></i><i></i><i></i><span>${esc(r.sub || r.title)}</span></div><div class="rc-shot__in">${side}<div class="rc-shot__main">${url}${lines}</div></div>${o.cursor ? cursor : ""}</div>`;
+}
+function wave(r, n) {
+  let s = r.dur * 7 + r.m;
+  const rnd = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+  const mi = Math.round(n * 0.5);
+  return Array.from({ length: n }, (_, i) => `<i class="${Math.abs(i - mi) <= 3 ? "on" : ""}" style="--v:${Math.round(16 + rnd() * 84)}"></i>`).join("");
+}
+function audioCrop(r) {
+  const mt = r.m;
+  const from = Math.max(0, mt - 20), to = Math.min(r.dur, mt + 20);
+  return `<div class="rc-acrop" style="--s:${srcVar(r.src)}"><header>${icon(r.src === "mic" ? "i-mic" : "i-speaker", 12)}${r.src === "mic" ? "microphone" : "system audio"} · ${clock(r.dur)}</header>
+    <div class="rc-wave">${wave(r, 44)}</div><footer><span>${clock(from)}</span><b>${clock(mt)}</b><span>${clock(to)}</span></footer></div>`;
+}
+// Zoom the frame so the first match sits in the middle of the crop ("camera" moves in from the full frame).
+function focusCrop(box, animate) {
+  const s = box.querySelector(".rc-shot"); if (!s) return;
+  const lit = (p) => $$(".rc-hit", p).reduce((n, h) => n + h.textContent.length, 0); // most matched text wins (the phrase beats a lone word)
+  const ps = $$(".rc-shot__main p", s), best = ps.reduce((a, p) => (lit(p) > lit(a) ? p : a), ps[0]);
+  const hit = (lit(best) ? best.querySelector(".rc-hit") : s.querySelector(".rc-near")) || best;
+  let x = 0, y = 0;
+  for (let el = hit; el && el !== s; el = el.offsetParent) { x += el.offsetLeft; y += el.offsetTop; }
+  const W = box.clientWidth, H = box.clientHeight, z = 1; // native pixels: a real crop, not a thumbnail
+  const cx = x + Math.min(hit.offsetWidth, W / z - 40) / 2, cy = y + hit.offsetHeight / 2;
+  const clamp = (v, lo) => Math.min(0, Math.max(lo, v));
+  const tx = clamp(W / 2 - cx * z, W - 640 * z), ty = clamp(H / 2 - cy * z, H - 400 * z);
+  const to = `translate(${tx}px, ${ty}px) scale(${z})`, z0 = Math.max(W / 640, H / 400);
+  s.style.transform = to;
+  if (animate && !reduced) s.animate([{ transform: `translate(${(W - 640 * z0) / 2}px, ${(H - 400 * z0) / 2}px) scale(${z0})` }, { transform: to }],
+    { duration: 760, delay: 140, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "backwards" });
+}
+function snippet(r, q) {
+  if (!isScreen(r)) {
+    const t = r.turns[bestTurn(r, q)];
+    return { html: `<b>${esc(t[1])}</b> <q>${mark(t[2], q.hl)}</q>`, at: t[0] };
+  }
+  const ls = r.lines.map(strip).filter(Boolean).slice(r.l === "browser" || r.l === "doc" ? 1 : 0); // the heading is already the title
+  const score = (l) => q.all.reduce((n, w) => n + cnt(l.toLowerCase(), w), 0);
+  const best = ls.slice().sort((a, b) => score(b) - score(a))[0];
+  return { html: mark(score(best) ? best : ls[0], q.hl) };
+}
+const bestTurn = (r, q) => Math.max(0, r.turns.findIndex((x) => q.all.some((w) => cnt(x[2].toLowerCase(), w))));
+const secs = (c) => { const [m, s] = c.split(":").map(Number); return m * 60 + s; };
+const hms = (d) => `${hm(d)}:${pad(d.getSeconds())}`;
+
+/* ===== State =========================================================== */
+const P = new URLSearchParams(location.search);
+// Mockup states: [label, default params]. Defaults only fill params the URL didn't set.
+const ASK_Q = "q=what did Ana say about retention%3F&tab=1";
+const RC_STATES = {
+  "": ["Idle bar", ""], recent: ["↓ Recent & Try", ""], results: ["Results · best moment + rows", "q=pricing page"],
+  "first-run": ["First run · nothing captured yet", ""], loading: ["Searching (first query)", "q=pricing page"],
+  indexing: ["Indexing behind · results partial", "q=pricing page"], "semantic-off": ["“Meaning” off · keyword only", "q=pricing"],
+  "semantic-building": ["“Meaning” still building", "q=pricing"], error: ["Search failed", "q=pricing page"],
+  "parse-error": ["Bad operator · results paused", "q=pricing date:tuesdy"], "no-results": ["No results · ways out", "q=invoice in Arc"],
+  "audio-pending": ["Audio not transcribed yet", "q=retention"], "capture-off": ["Not recording · history still searchable", "q=speakrs"],
+  look: ["Quick Look · screen", "q=pricing page&look=1"], "look-missing": ["Quick Look · frame missing on disk", "q=pricing page&look=1"],
+gate: ["Question · auto-answer off (Tab to ask)", "q=what did Ana say about retention%3F"],
+  "ask-streaming": ["Ask · streaming", ASK_Q], ask: ["Ask · answered", ASK_Q], "ask-stopped": ["Ask · stopped", ASK_Q], "ask-error": ["Ask · error mid-answer", ASK_Q],
+  "ask-no-provider": ["Ask · no provider set up", ASK_Q], "ask-off": ["Ask · AI turned off", ASK_Q], "ask-reconnect": ["Ask · needs reconnect", ASK_Q],
+  "ask-unreachable": ["Ask · provider unreachable", ASK_Q], "ask-offline": ["Ask · offline, cloud model", ASK_Q], closed: ["Closed · opened in Timeline", ""],
+};
+const STATE = RC_STATES[P.get("state")] ? P.get("state") : "";
+for (const [k, v] of new URLSearchParams(RC_STATES[STATE][1])) if (!P.has(k)) P.set(k, v);
+const ASKX = { "ask-no-provider": 1, "ask-off": 1, "ask-reconnect": 1, "ask-unreachable": 1, "ask-offline": 1 };
+const float = $("#rc-float"), shell = $("#rc"), inner = $("#rc-inner"), input = $("#rc-q"), mirror = $("#rc-mirror"), field = $("#rc-field");
+const body = $("#rc-body"), foot = $("#rc-foot"), right = $("#rc-right"), pop = $("#rc-pop");
+let toks = {};            // committed pills
+let forced = null;        // "ask" | "search" (Tab), cleared when the bar empties
+let recents = false;      // ↓ on an empty bar
+let view = "slim", items = [], sel = 0, pillSel = null, lastQ = null;
+let nav = false;          // arrowed into the list (↓): Space looks instead of typing a space
+// Settings → Ask AI → "Answer questions automatically": always | local (default) | never
+const AUTO = ["always", "local", "never"].includes(P.get("auto")) ? P.get("auto") : "local";
+const MODEL = P.has("local") ? { name: "qwen3:14b", local: true } : { name: "Claude Sonnet 4.6", local: false };
+const autoOk = () => AUTO === "always" || (AUTO === "local" && MODEL.local);
+let citeSel = 0;          // selected citation in the answer (0 = none)
+let look = null;          // Quick Look: { i: item index, k: frame offset ×15 s | transcript turn, fromCite, enter }
+let ans = { sig: null, phase: "idle", shown: 0, gen: 0 };
+let commitT = 0, askT = 0, onAnswerDone = null;
+
+/* ===== Inline completion (→ accepts at the end, as search-keys.ts does) == */
+// Completes the trailing word: operator names, operator values, and an app name after "in/on/from/using".
+const OPS = { "app:": Object.keys(APPS), "source:": ["mic", "system", "screen"], "date:": ["today", "yesterday", "this-week", "last-week"] };
+function ghostFor(v) {
+  if (look || nav || input.selectionStart !== v.length || input.selectionEnd !== v.length) return "";
+  const m = v.match(/(?:^|\s)(\S+)$/); if (!m) return "";
+  const tok = m[1], low = tok.toLowerCase(), c = low.indexOf(":");
+  const pick = (list, typed) => list.find((x) => x.toLowerCase().startsWith(typed.toLowerCase()) && x.length > typed.length)?.slice(typed.length) || "";
+  if (c > 0) return OPS[low.slice(0, c + 1)] ? pick(OPS[low.slice(0, c + 1)], tok.slice(c + 1)) : "";
+  if (tok.length < 2) return "";
+  return pick(Object.keys(OPS), low) || (/\b(?:in|on|from|using)\s+\S+$/i.test(v) ? pick(Object.keys(APPS), tok) : "");
+}
+let ghost = "";
+function acceptGhost() {
+  input.value += ghost + (ghost.endsWith(":") ? "" : " ");
+  input.setSelectionRange(input.value.length, input.value.length);
+  input.dispatchEvent(new Event("input"));
+}
+
+/* ===== Bar: mirror, pills, commit ===================================== */
+function renderMirror() {
+  const v = input.value, { spans } = parse(v);
+  let html = "", i = 0;
+  spans.forEach((sp, k) => { html += esc(v.slice(i, sp.s)) + `<span class="rc-live" data-s="${k}">${esc(v.slice(sp.s, sp.e))}</span>`; i = sp.e; });
+  ghost = ghostFor(v);
+  mirror.innerHTML = `<span>${(html + esc(v.slice(i))).replace("date:tuesdy", '<span class="rc-bad">date:tuesdy</span>')}${ghost ? `<span class="rc-ghost">${esc(ghost)}</span>` : ""}</span>`;
+  mirror.firstChild.style.transform = `translateX(${-input.scrollLeft}px)`;
+}
+function renderPills() {
+  $$(".rc-tok", field).forEach((el) => el.remove());
+  const wrap = $(".rc-inwrap", field);
+  for (const k of TOK_ORDER) {
+    const t = toks[k]; if (!t) continue;
+    const ic = k === "app" ? appTile(t.app, true) : k === "date" ? icon("i-calendar", 13) : `<i class="rc-dot" style="--c:${srcVar(t.src)}"></i>`;
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "mx-btn mx-btn--sm rc-tok"; b.dataset.k = k; b.tabIndex = -1;
+    b.setAttribute("aria-pressed", String(pillSel === k)); b.setAttribute("aria-label", `${tokLabel(t)} — ${tokOps(t)}. Click to change`);
+    b.innerHTML = `${ic}<span>${esc(tokLabel(t))}</span>`;
+    field.insertBefore(b, wrap);
+  }
+}
+// Recognized phrases hop out of the text and into pills (FLIP from the phrase's spot).
+function commit(animate = true) {
+  clearTimeout(commitT);
+  const { spans, residual } = parse(input.value);
+  if (!spans.length) return;
+  const from = spans.map((sp, k) => [sp.tok.type === "part" ? "date" : sp.tok.type, $(`[data-s="${k}"]`, mirror)?.getBoundingClientRect()]);
+  toks = mergeToks(toks, spans.map((s) => s.tok));
+  input.value = residual + (residual && !/[?]$/.test(residual) ? " " : "");
+  renderPills(); renderMirror();
+  if (animate && !reduced) for (const [k, r] of from) {
+    const el = $(`.rc-tok[data-k="${k}"]`, field); if (!el || !r) continue;
+    const n = el.getBoundingClientRect();
+    el.animate([{ transform: `translate(${r.left - n.left}px, ${r.top - n.top}px)`, opacity: 0.3 }, { transform: "none", opacity: 1 }],
+      { duration: 460, easing: "cubic-bezier(0.16, 1, 0.3, 1)" });
+  }
+  run();
+}
+function removePill(k) { delete toks[k]; pillSel = null; renderPills(); run(); }
+
+/* ===== Run: decide what the bar grows into ============================= */
+function current() {
+  const { spans, residual } = parse(input.value);
+  const t = mergeToks(toks, spans.map((s) => s.tok));
+  return { t, text: residual, q: termsOf(residual) };
+}
+function run() {
+  if (look) { look = null; float.removeAttribute("data-look"); } // the query changed: back to the list
+  const { t, text, q } = current();
+  const empty = !text && !Object.keys(t).length;
+  if (empty) forced = null;
+  const auto = isQuestion(text);
+  const ask = !empty && (forced ? forced === "ask" : auto && autoOk());
+  const gate = !empty && !forced && auto && !autoOk(); // a question, but auto-answer is off for this model
+  shell.toggleAttribute("data-ask", ask);
+  shell.toggleAttribute("data-auto", ask && !forced);
+  lastQ = { t, text, q, ask };
+  if (STATE === "first-run") { view = "first"; items = []; sel = 0; cancelAnswer(); render(); return; }
+  if (!empty && (STATE === "loading" || STATE === "error" || STATE === "parse-error")) { view = STATE; items = []; lastQ.hits = []; cancelAnswer(); render(); return; }
+  if (empty) { view = recents ? "recent" : "slim"; items = recents ? [...RECENT.map((x) => ({ type: "rec", x, hist: true })), ...TRY.map((x) => ({ type: "rec", x }))] : []; }
+  else {
+    const hits = search(q, t).filter((h) => STATE !== "semantic-off" || h.kw !== false); // keyword only
+    if (ask && ASKX[STATE]) view = "askx";
+    else if (ask) { view = hits.length ? "ask" : "none"; }
+    else view = hits.length ? (gate ? "gate" : "search") : "none";
+    lastQ.hits = hits;
+    if (view === "none") items = relaxations(q, t, text);
+    else if (view === "ask") items = [{ type: "ans" }, ...evidence(hits, text).map((h) => ({ type: "row", h, n: h.cite }))];
+    else if (view === "gate" || view === "askx") items = [{ type: view }, ...hits.slice(0, 8).map((h) => ({ type: "row", h }))];
+    else items = [{ type: "hero", h: hits[0] }, ...hits.slice(1, 8).map((h) => ({ type: "row", h }))];
+  }
+  sel = Math.min(sel, Math.max(0, items.length - 1));
+  if (view === "ask") scheduleAnswer(); else cancelAnswer();
+  render();
+}
+function relaxations(q, t, text) {
+  const out = [];
+  for (const k of TOK_ORDER) {
+    if (!t[k]) continue;
+    const rest = { ...t }; delete rest[k];
+    const n = search(q, rest).length;
+    if (n) out.push({ type: "relax", drop: k, n, label: k === "date" ? `Any time — not just ${datePhrase(t[k])}` : `Drop “${tokLabel(t[k])}”` });
+  }
+  if (t.date?.part) { const n = search(q, { ...t, date: { ...t.date, part: null } }).length; if (n) out.unshift({ type: "relax", widen: true, n, label: `All of ${t.date.label.toLowerCase() === "today" || t.date.label === "Yesterday" ? t.date.label.toLowerCase() : t.date.label}, not just the ${t.date.part}` }); }
+  if (text) out.push({ type: "relax", ask: true, label: "Ask instead — I’ll look harder" });
+  return out;
+}
+
+/* ===== Answers (stand-in for the Reasoning Engine) ===================== */
+const byTitle = (s) => R.find((r) => r.title === s);
+const ANSWERS = [
+  { re: /\bana\b[\s\S]*\bretention\b|\bretention\b[\s\S]*\bana\b/i, cites: [byTitle("Call with Ana"), byTitle("Weekly sync"), byTitle("Retention notes — Q4")],
+    from: "2 calls and a note", reading: "Reading 2 calls and a note…",
+    paras: ["Ana thinks retention is healthy for trial users who finish setup — what worries her is the **week-two drop**, right after the first digest [1]. She expects onboarding v2 to lift D30 from **41% to the mid-forties** [1][3], and asked to hold any pricing change until those numbers are in [2]."],
+    block: { title: "Where she said it", rows: [["Mon 11:34", "“Don’t touch pricing yet”", 2], ["Thu 09:30", "Her note: week two drops", 3], ["Thu 11:02", "“The week-two drop worries me”", 1, true]] } },
+];
+function evidence(hits, text) {
+  const a = ANSWERS.find((x) => x.re.test(text));
+  const cited = a ? a.cites : hits.slice(0, 3).map((h) => h.r);
+  const head = cited.map((r, i) => ({ ...(hits.find((h) => h.r === r) || { r, kw: true, n: 1 }), cite: i + 1 }));
+  return [...head, ...hits.filter((h) => !cited.includes(h.r)).slice(0, 5)];
+}
+function answerFor() {
+  const { text, hits, t, q } = lastQ;
+  const a = ANSWERS.find((x) => x.re.test(text));
+  if (a) return a;
+  const top = hits.slice(0, 3).map((h) => h.r);
+  const say = (r) => isScreen(r) ? `**${r.title}** in ${r.app}` : `**${r.title}**`;
+  const quote = strip(snippet(top[0], q).html.replace(/^<b>.*?<\/b> /, "")).slice(0, 90);
+  const scope = t.date ? ` ${datePhrase(t.date)}` : "";
+  const p = top.length === 1 ? `The one place this shows up${scope} is ${say(top[0])}, ${relDay(top[0].t)} at ${hm(top[0].t)} [1]: “${quote}”.`
+    : `This shows up in ${hits.length} moments${scope}. The strongest is ${say(top[0])}, ${relDay(top[0].t)} at ${hm(top[0].t)} [1]: “${quote}”. It also comes up in ${say(top[1])} [2]${top[2] ? ` and ${say(top[2])} [3]` : ""}.`;
+  return { from: `${hits.length} moment${hits.length > 1 ? "s" : ""}`, reading: `Reading ${hits.length} moment${hits.length > 1 ? "s" : ""}…`, paras: [p] };
+}
+function sigOf() { return lastQ.text + "|" + TOK_ORDER.map((k) => lastQ.t[k] ? tokOps(lastQ.t[k]) : "").join(","); }
+function cancelAnswer() { clearTimeout(askT); ans.gen++; if (ans.phase !== "idle") ans = { sig: null, phase: "idle", shown: 0, gen: ans.gen }; }
+function scheduleAnswer() {
+  const sig = sigOf();
+  if (ans.sig === sig) return;
+  clearTimeout(askT); ans.gen++; citeSel = 0;
+  ans = { sig, phase: "wait", shown: 0, gen: ans.gen, a: answerFor() };
+  paintAnswer();
+  askT = setTimeout(streamAnswer, 750); // answers once you pause typing
+}
+async function streamAnswer() {
+  const g = ans.gen;
+  ans.phase = "think"; paintAnswer(); renderChrome();
+  await sleep(900); if (g !== ans.gen) return;
+  ans.phase = "stream"; ans.words = ans.a.paras.join(" ¶ ").split(" ");
+  if (STATE === "ask-error") { await sleep(300); if (g !== ans.gen) return; ans.shown = Math.round(ans.words.length * 0.4); ans.phase = "error"; paintAnswer(); renderChrome(); return; }
+  const hold = STATE === "ask-streaming" || STATE === "ask-stopped" ? Math.round(ans.words.length * 0.55) : ans.words.length;
+  for (let i = 1; i <= hold; i++) { await sleep(26); if (g !== ans.gen) return; ans.shown = i; paintAnswer(); }
+  if (STATE === "ask-stopped") return act("stop");
+  if (hold < ans.words.length) return; // ?state=ask-streaming: freeze mid-stream
+  ans.phase = "done"; paintAnswer(); renderChrome();
+  onAnswerDone?.(); onAnswerDone = null;
+}
+const fmtAns = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\[(\d)\]/g, '<button type="button" class="rc-cite" data-cite="$1" aria-label="Source $1">$1</button>');
+function paintAnswer() {
+  const host = $("#rc-ans"); if (!host || !ans.a) return;
+  const a = ans.a, ph = ans.phase;
+  const status = ph === "wait" ? `<span class="rc-livetag rc-livetag--idle">answers when you pause</span>`
+    : ph === "think" ? `<span class="rc-livetag">${esc(a.reading)}</span>`
+    : ph === "stream" ? `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="stop">${icon("i-stop", 10)}Stop<kbd>esc</kbd></button>`
+    : ph === "error" ? `<span class="mx-inline" data-tone="danger" style="margin-left:auto">${icon("i-alert", 13)}Stopped partway<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="retry-ask">${icon("i-retry", 12)}Retry</button></span>`
+    : `<span class="mono">${ans.stopped ? "stopped" : `from ${esc(a.from)}`}</span><button class="mx-btn mx-btn--sm${sel === 0 ? " mx-btn--primary" : ""}" data-act="chat">${icon("i-chat", 13)}Continue in Chat<kbd>↵</kbd></button>`;
+  $(".rc-ans__h", host).innerHTML = `${icon("i-sparkle", 15)}<span>Answer</span>${status}`;
+  const b = $(".rc-ans__body", host);
+  if (ph === "wait" || ph === "think") {
+    b.innerHTML = `<div class="rc-ans__wait"><div class="mx-skel" style="width:92%"></div><div class="mx-skel" style="width:78%"></div><div class="mx-skel" style="width:54%"></div></div>`;
+  } else {
+    const text = ans.words.slice(0, ans.shown).join(" ").split(" ¶ ");
+    b.innerHTML = `<div>${text.map((p, i) => `<p>${fmtAns(p)}${ph === "stream" && i === text.length - 1 ? '<span class="rc-caret"></span>' : ""}</p>`).join("")}</div>`
+      + (ph === "error" ? `<p class="mx-body-sm" style="margin-top:8px">Anthropic returned an error (overloaded_error). The moments below are unaffected.</p>` : "")
+      + (ph === "done" && !ans.stopped && a.block ? `<div class="rc-tl"${ans.seen ? " data-seen" : ""}><h5>${esc(a.block.title)}</h5><ol>${a.block.rows.map(([w, s, c, key], i) =>
+        `<li class="${key ? "key" : ""}" style="--i:${i}"><time>${w}</time><i></i><span>${esc(s)}</span>${fmtAns(`[${c}]`)}</li>`).join("")}</ol></div>` : "");
+  }
+  b.classList.toggle("rc-ans__body--split", !!a.block && ph === "done" && !ans.stopped);
+  if (ph === "done") ans.seen = true;
+  paintCites();
+  measure();
+}
+const citeCount = () => Math.max(0, ...$$(".rc-ans__body p .rc-cite", body).map((b) => +b.dataset.cite));
+// the selected citation is filled in the prose and lights its evidence row
+function paintCites() {
+  const on = sel === 0 && view === "ask" && !look ? citeSel : 0;
+  $$(".rc-cite", body).forEach((b) => b.setAttribute("aria-selected", String(+b.dataset.cite === on)));
+  $$(".rc-row[data-hot]", body).forEach((r) => r.removeAttribute("data-hot"));
+  if (on) $(`.rc-row[data-n="${on}"]`, body)?.setAttribute("data-hot", "");
+}
+
+/* ===== Render ========================================================== */
+let lastSig = "", rv = "";
+const lookKey = `<kbd class="rc-k-nav">space</kbd>`;
+function heroHTML(h, i) {
+  const r = h.r, q = lastQ.q, sn = snippet(r, q);
+  const why = h.kw === null ? `<span class="mx-chip">filters only</span><span>longest stretch that fits</span>`
+    : h.kw ? `<span class="mx-chip mx-chip--accent">keyword</span><span>${h.phraseN ? `“${esc(q.words.join(" "))}”${h.phraseN > 1 ? ` ×${h.phraseN}` : ""}` : `${q.all.map((w) => `“${esc(w)}”`).join(" + ")}${h.n > q.all.length ? ` · ${h.n} hits` : ""}`} ${isScreen(r) ? "on screen" : "in the transcript"}</span>`
+    : `<span class="mx-chip">by meaning</span><span>about ${esc(r.about.slice(0, 2).join(" & "))} — no exact words</span>`;
+  const crop = isScreen(r) ? shot(r, q.hl, { kind: h.kw }) : audioCrop(r);
+  const page = isScreen(r) && r.url ? `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="page">${icon("i-external", 13)}Open page<kbd>⌘↵</kbd></button>` : "";
+  return `<article class="rc-hero${rv}" data-i="${i}" role="option" aria-selected="${sel === i}" style="--i:0">
+    <div class="rc-crop" data-crop>${crop}${isScreen(r) ? `<time>${hm(r.t)}</time>` : ""}</div>
+    <div class="rc-hero__info">
+      <div class="rc-hero__k"><span class="mx-kicker">best moment</span><span class="mono">${isScreen(r) ? `${r.mins} min on screen` : `${clock(r.dur)} recording`}</span></div>
+      <h2 class="rc-hero__t">${srcTile(r)}<span>${esc(r.title)}</span></h2>
+      <div class="rc-meta"><span><b>${wd(r.t)} ${md(r.t)}</b> · ${hm(r.t)}–${hm(endOf(r))}</span><span>${relDay(r.t)}</span>${r.url ? `<span>${esc(r.url.split("/")[0])}</span>` : `<span>${esc(where(r))}</span>`}</div>
+      <p class="rc-snip">${sn.html}</p>
+      <div class="rc-why">${why}</div>
+      <div class="rc-acts"><button class="mx-btn ${sel === i ? "mx-btn--primary" : ""} mx-btn--sm" data-act="open">${icon("i-timeline", 13)}Open in Timeline<kbd>↵</kbd></button>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="look">${icon("i-eye", 13)}Quick Look${lookKey}</button>${page}</div>
+    </div></article>`;
+}
+function rowHTML(it, i, k) {
+  const r = it.h.r, sn = snippet(r, lastQ.q);
+  const kind = it.h.kw === false ? `<span class="rc-row__k">meaning</span>` : "<span></span>";
+  return `<div class="rc-row rc-row--hit${it.n ? " rc-row--cited" : ""}${rv}" data-i="${i}" role="option" aria-selected="${sel === i}" style="--i:${k + 1}"${it.n ? ` data-n="${it.n}"` : ""}>
+    ${it.n ? `<span class="rc-num">${it.n}</span>` : ""}${srcTile(r)}<span class="rc-row__t">${esc(r.title)}<span>${sn.html.replace(/<\/?(b|q)>/g, "")}</span></span>${kind}<time>${short(r.t)}</time>
+    <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm rc-peek" tabindex="-1" data-act="look" aria-label="Quick Look" data-tip="Quick Look">${icon("i-eye", 14)}</button></div>`;
+}
+const recHTML = (it, i) => {
+  const { spans } = parse(it.x.text); let h = "", j = 0;
+  spans.forEach((sp) => { h += esc(it.x.text.slice(j, sp.s)) + `<em>${esc(it.x.text.slice(sp.s, sp.e))}</em>`; j = sp.e; });
+  h += esc(it.x.text.slice(j));
+  return `<div class="rc-row rc-row--rec${rv}" data-i="${i}" role="option" aria-selected="${sel === i}" style="--i:${i}">${icon(it.x.ask ? "i-sparkle" : it.hist ? "i-history" : "i-search", 14)}<span class="rc-row__t">${h}</span><time>${it.hist ? it.x.ago : it.x.ask ? "ask" : ""}</time></div>`;
+};
+
+/* ===== Quick Look: the preview opens under the bar ===================== */
+const hitIdx = () => items.flatMap((it, i) => (it.h ? [i] : []));
+function lookHTML() {
+  const it = items[look.i], h = it.h, r = h.r, q = lastQ.q, k = look.k;
+  const enter = look.enter ? " rc-look--enter" : ""; look.enter = false;
+  const acts = (openLabel, copyLabel) => `<div class="rc-side__acts"><button class="mx-btn mx-btn--primary mx-btn--sm" data-act="open">${icon("i-timeline", 13)}${openLabel}<kbd>↵</kbd></button>
+    <div class="rc-side__row"><button class="mx-btn mx-btn--sm" data-act="copy">${icon("i-copy", 12)}${copyLabel}<kbd>⌘C</kbd></button>${r.url ? `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="page">${icon("i-external", 12)}Page<kbd>⌘↵</kbd></button>` : ""}</div></div>`;
+  if (isScreen(r)) {
+    const t = new Date(+r.t + k * STEP * 1000);
+    const tag = k === 0 ? `<i></i><b>matched frame</b>` : `<b>${k > 0 ? "+" : "−"}${clock(Math.abs(k) * STEP)}</b>${k > 0 ? "after" : "before"} the match`;
+    const lo = Math.max(-RANGE, Math.min(RANGE - 6, k - 3));
+    // the segment's video is gone (missingReason from get_frame_scrub_previews): text stays, pictures don't
+    const GONE = STATE === "look-missing" ? ["disk", "This frame’s video is missing", "The Archive volume isn’t connected. The text read off it is still here."]
+      : null; // ponytail: no "cleared by retention" state — retention deletes search_documents with the frame (capture_retention.rs:622), so a pruned frame never appears as a hit
+    const films = Array.from({ length: 7 }, (_, j) => lo + j).map((j) => `<button type="button" class="rc-film" data-k="${j}" aria-current="${j === k}"${j === 0 ? " data-match" : ""} aria-label="${j === 0 ? "Matched frame" : `${Math.abs(j) * STEP} seconds ${j > 0 ? "after" : "before"}`}">${GONE ? `<span class="rc-film__img rc-film__img--gone">${icon("i-" + GONE[0], 13)}</span>` : `<span class="rc-film__img">${shot(r, q.hl, { k: j, kind: h.kw })}</span>`}<small>${j === 0 ? "match" : `${j > 0 ? "+" : "−"}${clock(Math.abs(j) * STEP)}`}</small></button>`).join("");
+    const near = h.kw === false ? meaningLine(r) : -1, kw = q.all.some((w) => cnt(hay(r), w));
+    const rows = frameRows(r, k).filter((x) => x.x != null && strip(x.x).trim());
+    const text = rows.map((row) => { const s = strip(row.x); return `<p${q.all.some((w) => cnt(s.toLowerCase(), w)) || row.i === near ? " data-m" : ""}>${mark(s, q.hl)}</p>`; }).join("");
+    const nHit = rows.reduce((n, row) => n + q.all.reduce((m, w) => m + cnt(strip(row.x).toLowerCase(), w), 0), 0);
+    return `<div class="rc-look${enter}" id="rc-look">
+      <div class="rc-look__main">
+        <div class="rc-look__stage"><span class="rc-look__tag">${tag}<span>· ${hms(t)}</span></span>
+          <span class="rc-look__legend">${kw ? '<span class="kw">keyword</span>' : ""}${h.kw === false ? '<span class="mn">meaning</span>' : ""}</span>
+          ${GONE ? `<div class="mx-empty mx-empty--center" data-tone="warn"><span class="mx-empty__glyph"><svg width="18" height="18"><use href="#i-${GONE[0]}"/></svg></span><h4 class="mx-empty__title">${GONE[1]}</h4><p class="mx-empty__text">${GONE[2]}</p></div>`
+            : `<div class="rc-look__frame" id="rc-look-frame">${shot(r, q.hl, { k, kind: h.kw, cursor: true })}</div>`}</div>
+        <div class="rc-strip" aria-label="Frames 15 s apart">${films}</div></div>
+      <aside class="rc-look__side">
+        <div class="rc-side__k">${appTile(r.app)}<span>${esc(r.app)}</span><span class="mx-chip mx-chip--screen">screen</span></div>
+        <h3 class="rc-side__t">${esc(r.title)}</h3>
+        <div class="rc-side__when"><span>${wd(t)} ${md(t)} · ${hms(t)}</span><small>${esc(r.url || r.sub || `${r.mins} min on screen`)}</small></div>
+        <div class="rc-why">${h.kw === false ? `<span class="mx-chip">by meaning</span><span>about ${esc(r.about.slice(0, 2).join(" & "))}</span>` : `<span class="mx-chip mx-chip--accent">keyword</span><span>${nHit} on this frame</span>`}</div>
+        <div class="rc-side__txt"><header><span class="mx-label">Text on this frame</span><small>${rows.length} lines</small></header><div class="rc-side__lines">${text}</div></div>
+        ${acts(GONE ? "Open in Timeline" : "Open this frame", "Copy text")}
+      </aside></div>`;
+  }
+  // audio: the line, large, over a zoomed waveform; the strip steps through the conversation
+  const [c, who, txt] = r.turns[k], m = bestTurn(r, q), sv = srcVar(r.src);
+  const w0 = Math.max(0, secs(r.turns[0][0]) - 40), w1 = Math.min(r.dur, secs(r.turns.at(-1)[0]) + 40);
+  const x = (cc) => `${(((secs(cc) - w0) / (w1 - w0)) * 100).toFixed(2)}%`;
+  const ti = r.turns.map((tt) => secs(tt[0])), lastEnd = ti.at(-1) + 9;
+  let seed = r.dur * 13 + 7; const rnd = () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
+  const bars = Array.from({ length: 120 }, (_, i) => { const at = w0 + ((w1 - w0) * i) / 119;
+    return `<i style="--v:${Math.round(14 + rnd() * 80)}"${at >= ti[0] - 1 && at <= lastEnd ? " data-in" : ""}></i>`; }).join("");
+  const tag = k === m ? `<i></i><b>matched line</b>` : `<b>${k > m ? "after" : "before"}</b>the match`;
+  const f = r.frame && byTitle(r.frame), at = new Date(+r.t + secs(c) * 1000);
+  return `<div class="rc-look${enter}" id="rc-look">
+    <div class="rc-look__main">
+      <div class="rc-look__stage"><span class="rc-look__tag">${tag}<span>· ${c} into the recording</span></span>
+        <div class="rc-qa" id="rc-look-frame" style="--s:${sv}"><div class="rc-qa__who"><i class="rc-spk">${esc(who[0])}</i><b>${esc(who)}</b><span>in ${esc(r.title)}</span></div>
+          <blockquote>${mark(txt, q.hl)}</blockquote>
+          <div class="rc-qa__wave" aria-hidden="true">${bars}<b data-match style="--x:${x(r.turns[m][0])}"></b>${k !== m ? `<b style="--x:${x(c)}"></b>` : ""}</div>
+          <div class="rc-qa__axis"><span>${clock(w0)}</span><span>of ${clock(r.dur)}</span><span>${clock(w1)}</span></div></div></div>
+      <div class="rc-strip" aria-label="Transcript lines">${r.turns.map(([cc, ww, tt], j) => `<button type="button" class="rc-film rc-film--turn" data-k="${j}" aria-current="${j === k}"${j === m ? " data-match" : ""}><span class="rc-film__txt"><b>${esc(ww)}</b> ${esc(tt)}</span><small>${cc}</small></button>`).join("")}</div></div>
+    <aside class="rc-look__side">
+      <div class="rc-side__k"><i class="rc-app" style="--c:${sv}">${icon(r.src === "mic" ? "i-mic" : "i-speaker", 11)}</i><span>${r.src === "mic" ? "Microphone" : "System audio"}</span><span class="mx-chip mx-chip--${r.src === "mic" ? "mic" : "sysaudio"}">${r.src === "mic" ? "mic" : "system"}</span></div>
+      <h3 class="rc-side__t">${esc(r.title)}</h3>
+      <div class="rc-side__when"><span>${wd(at)} ${md(at)} · ${hms(at)}</span><small>${clock(r.dur)} recording${it.n ? ` · source ${it.n}` : ""}</small></div>
+      ${f ? `<button type="button" class="rc-side__also" data-act="aligned"><i>${shot(f, [])}</i><b>On screen then</b><small>${esc(f.app)} · ${hm(f.t)}</small></button>` : `<div class="rc-why">${h.kw === false ? `<span class="mx-chip">by meaning</span>` : `<span class="mx-chip mx-chip--accent">keyword</span>`}<span>in the transcript</span></div>`}
+      <div class="rc-side__txt"><header><span class="mx-label">Transcript</span><small>${r.turns.length} lines</small></header><div class="rc-side__lines">${r.turns.map(([cc, ww, tt], j) => `<div class="turn"${j === k ? " data-cur" : ""}><time>${cc}</time><span><b>${esc(ww)}</b> ${mark(tt, q.hl)}</span></div>`).join("")}</div></div>
+      ${acts("Open at this line", "Copy quote")}
+    </aside></div>`;
+}
+function fitLook() {
+  const st = $(".rc-look__stage", body), fr = $("#rc-look-frame.rc-look__frame", body);
+  if (st && fr) {
+    const top = 40, W = st.clientWidth - 28, H = st.clientHeight - top - 12, z = Math.min(W / 640, H / 400);
+    $(".rc-shot", fr).style.transform = `scale(${z})`;
+    Object.assign(fr.style, { width: `${640 * z}px`, height: `${400 * z}px`, left: `${(st.clientWidth - 640 * z) / 2}px`, top: `${top + (H - 400 * z) / 2}px` });
+  }
+  $$(".rc-film__img, .rc-side__also > i", body).forEach((im) => { const sh = $(".rc-shot", im); if (sh) sh.style.transform = `scale(${im.clientWidth / 640})`; });
+}
+// Where the preview scales up from: the hero's crop, a citation chip, or a thumbnail-sized spot on the row.
+function sourceRect(i, from) {
+  if (from) return from;
+  const el = $(`[data-i="${i}"]`, body); if (!el) return null;
+  const crop = $("[data-crop]", el); if (crop) return crop.getBoundingClientRect();
+  const r = el.getBoundingClientRect(); return { left: r.left + 34, top: r.top + 2, width: 48, height: 30 };
+}
+function openLook(i, from, fromCite = false) {
+  const it = items[i]; if (!it?.h) return;
+  const src = sourceRect(i, from);
+  hidePop(); pillSel = null; renderPills();
+  sel = i; nav = true;
+  look = { i, k: isScreen(it.h.r) ? 0 : bestTurn(it.h.r, lastQ.q), fromCite, enter: !reduced };
+  float.setAttribute("data-look", "");
+  render();
+  const fr = $("#rc-look-frame", body);
+  if (src && fr && !reduced) {
+    const b = fr.getBoundingClientRect();
+    fr.animate([{ transformOrigin: "0 0", transform: `translate(${src.left - b.left}px, ${src.top - b.top}px) scale(${src.width / b.width}, ${src.height / b.height})`, opacity: 0.4 },
+      { transformOrigin: "0 0", transform: "none", opacity: 1 }], { duration: 460, easing: "cubic-bezier(0.16, 1, 0.3, 1)" });
+  }
+}
+function closeLook() {
+  if (!look) return;
+  const { i, fromCite } = look, n = items[i]?.n;
+  look = null; float.removeAttribute("data-look");
+  if (fromCite && n) { sel = 0; citeSel = n; } else sel = i;
+  render();
+  $(`[data-i="${sel}"]`, body)?.scrollIntoView({ block: "nearest" });
+}
+function scrub(d) {
+  const r = items[look.i].h.r, lo = isScreen(r) ? -RANGE : 0, hi = isScreen(r) ? RANGE : r.turns.length - 1;
+  const k = Math.max(lo, Math.min(hi, look.k + d)); if (k === look.k) return;
+  look.k = k; renderBody(); renderChrome();
+}
+function stepLook(d) {
+  const o = hitIdx(), j = o.indexOf(look.i) + d; if (j < 0 || j >= o.length) return;
+  const i = o[j], r = items[i].h.r;
+  Object.assign(look, { i, k: isScreen(r) ? 0 : bestTurn(r, lastQ.q) }); sel = i;
+  renderBody(); renderChrome();
+}
+
+function render() { renderBody(); renderChrome(); }
+function renderBody() {
+  body.classList.toggle("rc-body--look", !!look);
+  if (look) { body.innerHTML = lookHTML(); fitLook(); measure(); return; }
+  const { t, text, hits } = lastQ;
+  const sig = view + "|" + items.map((it) => it.h?.r.id ?? it.x?.text ?? it.label ?? it.type).join(",");
+  const fresh = sig !== lastSig; lastSig = sig; rv = fresh && !reduced ? " mx-reveal" : "";
+  let html = "";
+  const note = (tone, ic, txt, actHTML = "") => `<div class="rc-note"><span class="mx-inline"${tone ? ` data-tone="${tone}"` : ""}>${icon(ic, 13)}${txt}${actHTML}</span></div>`;
+  // conditions that ride above real results (none of these are exposed to search today — see notes)
+  const pre = STATE === "indexing" ? note("info", "i-info", "Still reading your last 4 min — 38 frames queued. Newer moments may be missing.")
+    : STATE === "semantic-off" ? note("", "i-off", "Searching keywords only — search by meaning is off.", `<button class="mx-btn mx-btn--ghost mx-btn--sm">Turn on in Settings →</button>`)
+    : STATE === "semantic-building" ? note("info", "i-info", "Search by meaning is still building — 62% of your history so far. Keyword results are complete.")
+    : STATE === "audio-pending" ? note("info", "i-info", "2 recordings from today are still being transcribed — they’ll show up once they are.")
+    : STATE === "capture-off" ? note("", "i-off", "Mnema isn’t recording right now — this searches everything up to Fri 12:04.") : "";
+  if (view === "first") {
+    html = `<div class="mx-empty mx-empty--center"><span class="mx-empty__glyph"><svg width="18" height="18"><use href="#i-inbox"/></svg></span>
+      <h4 class="mx-empty__title">Nothing captured yet</h4><p class="mx-empty__text">Quick Recall searches what Mnema records. Start recording and this fills in as you work.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm" data-act="open-app">Open Mnema</button></div></div>`;
+  } else if (view === "loading") {
+    html = `<div aria-busy="true"><span class="mx-sr">Searching</span><div class="rc-skel-hero"><div class="mx-skel mx-skel--thumb"></div><div class="mx-skel-lines"><div class="mx-skel mx-skel--title"></div><div class="mx-skel" style="width:60%"></div><div class="mx-skel"></div><div class="mx-skel" style="width:40%"></div></div></div>`
+      + Array.from({ length: 3 }, () => `<div class="mx-skel-row" style="padding:6px 10px"><div class="mx-skel" style="width:18px;height:18px"></div><div class="mx-skel-lines"><div class="mx-skel"></div></div><div class="mx-skel" style="width:56px"></div></div>`).join("") + `</div>`;
+  } else if (view === "error") {
+    html = `<div class="mx-empty mx-empty--center" data-tone="danger"><span class="mx-empty__glyph"><svg width="18" height="18"><use href="#i-alert"/></svg></span>
+      <h4 class="mx-empty__title">Search failed</h4><p class="mx-empty__text">The search index didn’t answer. Nothing is lost — try again.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm" data-act="retry">${icon("i-retry", 13)}Retry</button></div></div>`;
+  } else if (view === "parse-error") {
+    html = `<div class="rc-slot"><div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-calendar"/></svg></span>
+      <b class="mx-notice__title">Results paused — “tuesdy” isn’t a date I understand</b><p class="mx-notice__text">Try a day like 2026-10-06, or today / yesterday / last tuesday.</p>
+      <div class="mx-notice__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="as-text">Search it as text</button></div></div></div>`;
+  } else if (view === "askx") {
+    const N = {
+      "ask-no-provider": ["", "i-sparkle", "Ask AI needs a provider", "Add a provider API key in Settings, or run a model on this Mac. The moments below don’t need one.", `<button class="mx-btn mx-btn--sm">Set up AI</button>`],
+      "ask-off": ["off", "i-off", "Ask AI is off", "Search still works — these are the moments that match.", `<button class="mx-btn mx-btn--ghost mx-btn--sm">Turn on in Settings →</button>`],
+      "ask-reconnect": ["danger", "i-alert", "ChatGPT needs you to sign in again", "OpenAI ended this session. Reconnect, then ask again.", `<button class="mx-btn mx-btn--sm">Reconnect</button>`],
+      "ask-unreachable": ["warn", "i-cloud-off", "Can’t reach Anthropic right now", "Answers resume on their own. The moments below are all on this Mac.", ""],
+      "ask-offline": ["warn", "i-cloud-off", "You’re offline", `${esc(MODEL.name)} runs in the cloud. Search still works — answers resume when you’re back.`, ""],
+    }[STATE];
+    html = `<article class="rc-hero rc-slot${rv}" data-i="0" role="option" aria-selected="${sel === 0}"><div class="mx-notice"${N[0] ? ` data-tone="${N[0]}"` : ""}><span class="mx-notice__icon"><svg width="15" height="15"><use href="#${N[1]}"/></svg></span>
+      <b class="mx-notice__title">${N[2]}</b><p class="mx-notice__text">${N[3]}</p>${N[4] ? `<div class="mx-notice__acts">${N[4]}</div>` : ""}</div></article>`
+      + `<div class="rc-sec">Moments<span class="mono">${items.length - 1}</span></div>` + items.slice(1).map((it, k) => rowHTML(it, k + 1, k)).join("");
+  } else if (view === "recent") {
+    html = (items.some((x) => x.hist) ? `<div class="rc-sec">Recent</div>` : "") + items.filter((x) => x.hist).map((it) => recHTML(it, items.indexOf(it))).join("")
+      + `<div class="rc-sec">Try</div>` + items.filter((x) => !x.hist).map((it) => recHTML(it, items.indexOf(it))).join("");
+  } else if (view === "search") {
+    const days = new Set(hits.map((h) => isoDay(h.r.t))).size, audio = hits.filter((h) => !isScreen(h.r)).length;
+    html = pre + heroHTML(items[0].h, 0)
+      + (items.length > 1 ? `<div class="rc-sec">More moments<span class="mono">${items.length - 1}</span><span class="mono">${[hits.length - audio && `${hits.length - audio} screen`, audio && `${audio} audio`, `${days} day${days > 1 ? "s" : ""}`].filter(Boolean).join(" · ")}</span></div>` : "")
+      + items.slice(1).map((it, k) => rowHTML(it, k + 1, k)).join("");
+  } else if (view === "gate") {
+    html = `<article class="rc-hero rc-gate${rv}" data-i="0" role="option" aria-selected="${sel === 0}">${icon("i-sparkle", 15)}
+      <span class="rc-gate__t">Press <kbd>Tab</kbd> to ask <b>${esc(MODEL.name)}</b></span>
+      <span class="rc-gate__why">${AUTO === "never" ? "Answers only when you ask" : "Cloud model — answers only when you ask"}</span></article>`
+      + `<div class="rc-sec">Moments<span class="mono">${items.length - 1}</span></div>`
+      + items.slice(1).map((it, k) => rowHTML(it, k + 1, k)).join("");
+  } else if (view === "ask") {
+    html = `<article class="rc-hero rc-ans" id="rc-ans" data-i="0" role="option" aria-selected="${sel === 0}" aria-live="polite"><header class="rc-ans__h"></header><div class="rc-ans__body"></div></article>`
+      + `<div class="rc-sec">Evidence<span class="mono">${items.filter((x) => x.n).length} cited · ${items.length - 1 - items.filter((x) => x.n).length} more</span></div>`
+      + items.slice(1).map((it, k) => rowHTML(it, k + 1, k)).join("");
+  } else if (view === "none") {
+    const scope = TOK_ORDER.filter((k) => t[k]).map((k) => `<b>${esc(tokLabel(t[k]))}</b>`).join(" · ");
+    html = `<div class="rc-none"><p>Nothing ${text ? `matches <b>“${esc(text)}”</b>` : "was captured"}${scope ? ` in ${scope}` : ""}.${items.length ? " Closest ways out:" : ""}</p>
+      </div>` + pre
+      + items.map((it, i) => `<div class="rc-row rc-row--relax${rv}" data-i="${i}" role="option" aria-selected="${sel === i}" style="--i:${i}">${icon(it.ask ? "i-sparkle" : "i-arrow", 14)}<span class="rc-row__t">${esc(it.label)}</span><time>${it.n ? `${it.n} moment${it.n > 1 ? "s" : ""}` : "⇥"}</time></div>`).join("");
+  }
+  body.innerHTML = html;
+  input.setAttribute("aria-expanded", String(view !== "slim"));
+  if (view === "ask") paintAnswer();
+  $$("[data-crop]", body).forEach((b) => focusCrop(b, fresh));
+  measure();
+}
+function renderChrome() {
+  const { t, text, hits } = lastQ;
+  shell.toggleAttribute("data-nav", nav && !look);
+  renderMirror(); // the inline completion hides once you've arrowed into the list
+  const it = items[sel], lk = nav ? ["space", "look"] : ["↓ space", "look"];
+  // right side of the bar
+  if (look) {
+    const o = hitIdx();
+    right.innerHTML = `<span><b>${o.indexOf(look.i) + 1}</b> of ${o.length}</span><span><kbd>esc</kbd>back</span>`;
+  } else right.innerHTML = view === "loading" ? `<span><span class="mx-spin mx-spin--sm"></span>searching…</span>`
+    : view === "first" || view === "error" || view === "parse-error" ? `<span><kbd>esc</kbd>close</span>`
+    : view === "slim" ? `<span><kbd>↓</kbd>recent</span>`
+    : view === "recent" ? `<span><kbd>esc</kbd>close</span>`
+    : view === "search" || view === "gate" ? `<span><b>${hits.length}</b> moment${hits.length > 1 ? "s" : ""}</span><span><kbd>⇥</kbd>ask</span>`
+    : view === "ask" || view === "askx" ? `<span><kbd>⇥</kbd>${forced ? "search" : "just search"}</span>`
+    : `<span><kbd>⇥</kbd>ask</span>`;
+  // footer: the real query, then the keys that work right now
+  const ops = view === "slim" || view === "recent" || view === "first" ? null : [text && `<b>${esc(text)}</b>`, ...TOK_ORDER.filter((k) => t[k]).map((k) => esc(tokOps(t[k])))].filter(Boolean).join(" ")
+    .replace("date:tuesdy", '<span class="rc-bad">date:tuesdy</span>');
+  const page = it?.h?.r.url ? [["⌘↵", "page"]] : [];
+  const keys0 = ghost && !look ? [["→", "complete"]] : [];
+  const keys = look ? (isScreen(items[look.i].h.r) ? [["←→", "±15 s"], ["↑↓", "results"], ["↵", /^look-missing$/.test(STATE) ? "open in Timeline" : "open this frame"], ...page, ["⌘C", "copy text"], ["space", "back"]]
+      : [["←→", "lines"], ["↑↓", "results"], ["↵", "open at this line"], ["⌘C", "copy quote"], ["space", "back"]])
+    : view === "recent" ? [["↑↓", "pick"], ["↵", "use"], ...(items[sel]?.hist ? [["⌫", "remove"]] : [])]
+    : view === "search" ? [["↵", "open"], lk, ...page, ["⌘C", "copy"]]
+    : view === "gate" ? (sel !== 0 ? [["↵", "open"], lk, ...page, ["⌘C", "copy"]] : [["⇥", "ask"], ["↓", "moments"]])
+    : view === "ask" ? (sel !== 0 ? [["↵", "open"], lk, ["⌘C", "copy"]]
+      : ans.phase === "stream" || ans.phase === "think" ? [["esc", "stop"]]
+      : ans.phase === "error" ? [["↓", "evidence"], ["esc", "clear"]]
+      : citeSel ? [["←→", "source"], ["space", "look"], ["↵", "continue in chat"]]
+      : [["↵", "continue in chat"], (nav && citeCount() ? ["←→", "sources"] : ["↓", "evidence"]), ["⌘C", "copy"]])
+    : view === "none" ? [["↵", "apply"], ["esc", "clear"]]
+    : view === "askx" ? (sel !== 0 ? [["↵", "open"], lk, ["⌘C", "copy"]] : [["↓", "moments"], ["⇥", "just search"]])
+    : view === "error" ? [["↵", "retry"], ["esc", "close"]]
+    : view === "parse-error" ? [["esc", "clear"]] : [];
+  foot.innerHTML = view === "slim" || view === "first" ? "" : `<span class="rc-foot__q">${ops ? `${icon("i-code", 13)}<code>${ops}</code>` : `Type naturally — “in Arc”, “yesterday afternoon”, “on a call” — or a question.`}</span>
+    <span class="rc-foot__k">${[...keys0, ...keys].map(([k, l]) => `<span><kbd>${k}</kbd>${l}</span>`).join("")}</span>`;
+}
+function measure() { float.style.setProperty("--h", `${Math.ceil(inner.getBoundingClientRect().height) + 2}px`); }
+new ResizeObserver(measure).observe(inner);
+
+/* ===== Selection / actions ============================================ */
+function select(i, scroll = true) {
+  sel = Math.max(0, Math.min(items.length - 1, i));
+  if (sel !== 0 || view !== "ask") citeSel = 0;
+  $$("[data-i]", body).forEach((el) => el.setAttribute("aria-selected", String(+el.dataset.i === sel)));
+  // the one green primary follows the selection
+  $$(".rc-hero [data-act=open], .rc-ans [data-act=chat]", body).forEach((b) => b.classList.toggle("mx-btn--primary", sel === 0));
+  paintCites(); renderChrome();
+  if (scroll) $(`[data-i="${sel}"]`, body)?.scrollIntoView({ block: "nearest" });
+}
+function rec() { return items[sel]?.h?.r || null; }
+// kit toast (result of the user's own action); plain text only
+let dropToast = null;
+function toast(html, ms = 2600, action) {
+  dropToast?.();
+  dropToast = mx.toast(strip(html).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"), { ttl: ms, ...(action ? { action, onAction: reopen } : {}) });
+}
+function close(msg, ms) {
+  float.setAttribute("data-closed", ""); hidePop(); cancelAnswer();
+  toast(`${msg || "Quick Recall closed"} · ⌥⌘Space to recall`, ms || (msg ? 3200 : 60000), "Reopen");
+}
+function reopen() {
+  const last = [input.value.trim(), ...TOK_ORDER.filter((k) => toks[k]).map((k) => tokLabel(toks[k]))].filter(Boolean).join(" ");
+  if (last && !RECENT.some((x) => x.text === last)) RECENT.unshift({ text: last, ago: "just now", ask: lastQ?.ask }), RECENT.length = Math.min(RECENT.length, 4);
+  toks = {}; input.value = ""; forced = null; recents = false; sel = 0; pillSel = null; nav = false; citeSel = 0;
+  renderPills(); renderMirror(); run();
+  float.removeAttribute("data-closed"); dropToast?.();
+  input.focus();
+}
+const sign = (k) => `${k > 0 ? "+" : "−"}${clock(Math.abs(k) * STEP)}`;
+function act(a) {
+  const r = rec() || (view === "search" ? items[0].h.r : null);
+  if (a === "open" && r) {
+    if (look && isScreen(r)) close(`Opening <b>Timeline</b> at <span class="mono">${wd(r.t)} ${hms(new Date(+r.t + look.k * STEP * 1000))}</span>${look.k ? ` <span class="mono">(${sign(look.k)} from the match)</span>` : ""} — ${esc(r.title)}`);
+    else if (look) close(`Opening <b>Timeline</b> at <span class="mono">${wd(r.t)} ${hms(new Date(+r.t + secs(r.turns[look.k][0]) * 1000))}</span> — ${esc(r.title)}, ${esc(r.turns[look.k][1])}’s line`);
+    else close(`Opening <b>Timeline</b> at <span class="mono">${wd(r.t)} ${hm(r.t)}</span> — ${esc(r.title)}`);
+  }
+  else if (a === "look") { if (items[sel]?.type === "ans") openCite(citeSel || 1); else openLook(sel); }
+  else if (a === "aligned" && r?.frame) { const f = byTitle(r.frame); close(`Opening <b>Timeline</b> at <span class="mono">${wd(f.t)} ${hm(f.t)}</span> — ${esc(f.title)}`); }
+  else if (a === "page") { if (r?.url) close(`Opened <b>${esc(r.url.split("/")[0])}</b> in your browser`); else toast("This moment has no page to open"); }
+  else if (a === "copy") {
+    if (look && isScreen(r)) toast(`Copied the text on this frame <span class="mono">· ${frameRows(r, look.k).filter((x) => x.x && strip(x.x).trim()).length} lines · ${hms(new Date(+r.t + look.k * STEP * 1000))}</span>`);
+    else if (look) toast(`Copied ${esc(r.turns[look.k][1])}’s line from <b>${esc(r.title)}</b>`);
+    else if (view === "ask" && sel === 0) toast("Copied the answer with its sources");
+    else if (r) toast(`Copied ${isScreen(r) ? `${r.lines.filter(Boolean).length} lines from ${r.app}` : `${r.turns.length} transcript lines`}`);
+  }
+  else if (a === "chat") close(`Continuing in <b>Chat</b> — “${esc(lastQ.text)}”`);
+  else if (a === "stop") { ans.gen++; ans.phase = "done"; ans.stopped = true; paintAnswer(); renderChrome(); }
+  else if (a === "tab") toggleMode();
+  else if (a === "retry") toast("Searching again…");
+  else if (a === "retry-ask") { ans.sig = null; scheduleAnswer(); }
+  else if (a === "as-text") { input.value = input.value.replace("date:tuesdy", "tuesdy"); renderMirror(); run(); }
+  else if (a === "open-app") close("Opening Mnema");
+  else if (a === "reopen") reopen();
+}
+function openCite(n, from) { const i = items.findIndex((x) => x.n === n); if (i > 0) { citeSel = n; openLook(i, from, true); } }
+function activate() {
+  const it = items[sel]; if (!it) return;
+  if (it.type === "rec") { fill(it.x.text); return; }
+  if (it.type === "gate") { commit(false); toggleMode(); return; }
+  if (it.type === "relax") {
+    if (it.ask) { forced = "ask"; run(); }
+    else if (it.widen) { toks.date = { ...toks.date, part: null }; renderPills(); run(); }
+    else removePill(it.drop);
+    return;
+  }
+  act(it.type === "ans" ? "chat" : "open");
+}
+// Tab flips search ⇄ ask; with auto-answer off for this model a question starts in search, so Tab asks
+function toggleMode() { const { text } = current(); const auto = isQuestion(text) && autoOk(); const now = forced ? forced === "ask" : auto; forced = now ? "search" : "ask"; if ((forced === "ask") === auto) forced = null; sel = 0; nav = false; run(); }
+// Picking a recent/suggestion types it in, lets you see the phrases light up, then they hop into pills.
+async function fill(text) {
+  recents = false; toks = {}; nav = false; renderPills();
+  input.value = text; renderMirror(); run(); input.focus();
+  await sleep(reduced ? 0 : 520);
+  commit(true);
+}
+
+/* ===== Token popover =================================================== */
+function showPop(k) {
+  const t = toks[k], el = $(`.rc-tok[data-k="${k}"]`, field); if (!t || !el) return;
+  const { q } = current(), base = { ...toks };
+  const count = (patch) => { const x = { ...base, ...patch }; for (const key in x) if (!x[key]) delete x[key]; return search(q, x).length; };
+  let opts;
+  if (k === "app") opts = [...Object.keys(APPS).map((a) => [a, { app: { type: "app", app: a } }, appTile(a, true)]), ["Any app", { app: null }, icon("i-x", 13)]];
+  else if (k === "src") opts = [["Screen", { src: { type: "src", src: "screen" } }, icon("i-screen", 13)], ["On a call (mic)", { src: { type: "src", src: "mic" } }, icon("i-mic", 13)], ["System audio", { src: { type: "src", src: "system" } }, icon("i-speaker", 13)], ["Any source", { src: null }, icon("i-x", 13)]];
+  else {
+    opts = [...["morning", "afternoon", "evening"].filter(() => +t.d0 === +t.d1).map((p) => [`${t.label} · ${p}`, { date: { ...t, part: p } }]),
+      ...(+t.d0 === +t.d1 ? [[`${t.label} · all day`, { date: { ...t, part: null } }]] : []),
+      ["This week", { date: dateTok(dayN(4), dayN(0), null, "This week", "date:this-week") }], ["Last week", { date: dateTok(dayN(11), dayN(5), null, "Last week", "date:last-week") }],
+      ["Any time", { date: null }]].map((o) => [...o, icon("i-calendar", 13)]);
+  }
+  const cur = tokOps(t);
+  pop.innerHTML = `<div class="rc-pop__op">${esc(cur)}</div><ul class="mx-menu" role="menu">${opts.map(([label, patch, ic], i) => {
+    const n = count(patch), on = patch[k] && tokOps(patch[k]) === cur;
+    return n || on || !patch[k] ? `<li role="menuitem" data-o="${i}"${on ? " data-on" : ""}>${ic}${esc(label)}<span class="mx-menu__meta">${n}</span>${icon("i-check", 13)}</li>` : "";
+  }).join("")}</ul><div class="rc-pop__foot"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-pa="edit">Edit as text</button><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-pa="remove">Remove<kbd>⌫</kbd></button></div>`;
+  pop.onclick = (e) => {
+    const li = e.target.closest("li[data-o]"), pa = e.target.closest("[data-pa]")?.dataset.pa;
+    if (li) { const patch = opts[+li.dataset.o][1]; if (patch[k]) toks[k] = patch[k]; else delete toks[k]; }
+    else if (pa === "remove") delete toks[k];
+    else if (pa === "edit") { const txt = k === "app" ? `in ${t.app}` : k === "src" ? (t.src === "mic" ? "on a call" : t.src === "screen" ? "on screen" : "in a video") : tokLabel(t).replace(" · ", " "); delete toks[k]; input.value = `${input.value.trim()} ${txt}`.trim(); }
+    else return;
+    hidePop(); pillSel = null; renderPills(); renderMirror(); run(); input.focus();
+  };
+  const fr = float.getBoundingClientRect(), r = el.getBoundingClientRect();
+  pop.style.left = `${r.left - fr.left}px`; pop.style.top = `${r.bottom - fr.top + 8}px`;
+  pop.setAttribute("data-show", ""); pop.dataset.k = k;
+}
+function hidePop() { pop.removeAttribute("data-show"); }
+
+/* ===== Events ========================================================== */
+input.addEventListener("input", () => {
+  recents = false; pillSel = null; nav = false; citeSel = 0; renderPills(); renderMirror(); hidePop();
+  sel = 0; run();
+  clearTimeout(commitT); commitT = setTimeout(() => commit(true), 700); // phrases hop into pills when you pause
+});
+input.addEventListener("scroll", renderMirror);
+input.addEventListener("keydown", (e) => {
+  if (e.isComposing) return;
+  // Quick Look owns the arrows; typing falls through to the bar (and closes it)
+  if (look) {
+    const m = { ArrowLeft: () => scrub(-1), ArrowRight: () => scrub(1), ArrowUp: () => stepLook(-1), ArrowDown: () => stepLook(1), Escape: closeLook, " ": closeLook };
+    if (e.key === "Enter") { e.preventDefault(); act(e.metaKey ? "page" : "open"); return; }
+    if ((e.key === "c" || e.key === "C") && e.metaKey) { e.preventDefault(); act("copy"); return; }
+    if (m[e.key]) { e.preventDefault(); m[e.key](); return; }
+    if (e.key === "Tab") { e.preventDefault(); closeLook(); return; }
+    if ((e.key.length === 1 && !e.metaKey && !e.ctrlKey) || e.key === "Backspace") closeLook(); // then let it type
+    else return;
+  }
+  const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+  const atStart = input.selectionStart === 0 && input.selectionEnd === 0;
+  const pills = TOK_ORDER.filter((k) => toks[k]);
+  const it = items[sel], onAns = it?.type === "ans" && ans.phase !== "wait" && ans.phase !== "think";
+  // pill selection (⌫ at the start of the text walks into the pills)
+  if (pillSel) {
+    const i = pills.indexOf(pillSel);
+    if (e.key === "Backspace" || e.key === "Delete") { e.preventDefault(); removePill(pillSel); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); pillSel = pills[Math.max(0, i - 1)]; renderPills(); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); pillSel = pills[i + 1] || null; renderPills(); return; }
+    if (e.key === "Enter") { e.preventDefault(); showPop(pillSel); return; }
+    if (e.key === "Escape") { e.preventDefault(); pillSel = null; hidePop(); renderPills(); return; }
+    pillSel = null; renderPills();
+  }
+  // Space looks once you've arrowed into the list; otherwise it's just a space
+  if (e.key === " " && nav && !e.metaKey && (it?.h || (onAns && citeCount()))) { e.preventDefault(); act("look"); return; }
+  // → at the end of the text accepts the inline completion (search-keys.ts); it never opens Quick Look
+  if (e.key === "ArrowRight" && atEnd && ghost && !nav && !e.metaKey && !e.altKey && !e.shiftKey) { e.preventDefault(); acceptGhost(); return; }
+  // in the list, ←/→ walk the answer's citations
+  if (e.key === "ArrowRight" && nav && onAns && citeCount()) { e.preventDefault(); nav = true; citeSel = Math.min(citeCount(), citeSel + 1); paintCites(); renderChrome(); return; }
+  if (e.key === "ArrowLeft" && nav && onAns && citeSel) { e.preventDefault(); citeSel--; paintCites(); renderChrome(); return; }
+  // ⌫ on a selected Recent row forgets that query (Try rows aren't removable); run() re-clamps sel
+  if (e.key === "Backspace" && view === "recent" && !input.value && it?.hist) { e.preventDefault(); RECENT.splice(RECENT.indexOf(it.x), 1); run(); return; }
+  if (e.key === "Backspace" && atStart && pills.length) { e.preventDefault(); pillSel = pills[pills.length - 1]; renderPills(); return; }
+  if (e.key === "ArrowLeft" && atStart && pills.length && !e.metaKey) { e.preventDefault(); pillSel = pills[pills.length - 1]; renderPills(); return; }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (view === "slim") { recents = true; sel = 0; run(); } else { nav = true; select(sel + 1); }
+  } else if (e.key === "ArrowUp") { e.preventDefault(); nav = true; select(sel - 1); }
+  else if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); if (view !== "slim" && view !== "recent") { commit(true); toggleMode(); } }
+  else if (e.key === "Enter" && e.metaKey) { e.preventDefault(); act(view === "ask" && sel === 0 ? "chat" : "page"); }
+  else if (e.key === "Enter") { e.preventDefault(); commit(false); activate(); }
+  else if ((e.key === "c" || e.key === "C") && e.metaKey && input.selectionStart === input.selectionEnd) { e.preventDefault(); act("copy"); }
+  else if (e.key === "Escape") {
+    e.preventDefault();
+    if (pop.hasAttribute("data-show")) hidePop();
+    else if (ans.phase === "stream" || ans.phase === "think") act("stop");
+    else if (citeSel) { citeSel = 0; paintCites(); renderChrome(); }
+    else if (view === "recent") { recents = false; run(); }
+    else if (input.value || Object.keys(toks).length) { input.value = ""; toks = {}; sel = 0; nav = false; renderPills(); renderMirror(); run(); }
+    else close();
+  }
+});
+field.addEventListener("click", (e) => {
+  const tok = e.target.closest(".rc-tok");
+  if (tok) { pillSel = tok.dataset.k; renderPills(); pop.hasAttribute("data-show") && pop.dataset.k === tok.dataset.k ? hidePop() : showPop(tok.dataset.k); }
+  else input.focus();
+});
+$("#rc-mode").addEventListener("click", () => { if (view !== "slim" && view !== "recent") toggleMode(); input.focus(); });
+body.addEventListener("click", (e) => {
+  const film = e.target.closest(".rc-film");
+  if (film && look) { look.k = +film.dataset.k; renderBody(); renderChrome(); input.focus(); return; }
+  const cite = e.target.closest("[data-cite]");
+  if (cite) { sel = 0; nav = true; openCite(+cite.dataset.cite, cite.getBoundingClientRect()); input.focus(); return; }
+  const b = e.target.closest("[data-act]");
+  if (b) { const row = !look && b.closest("[data-i]"); if (row) sel = +row.dataset.i; act(b.dataset.act); input.focus(); return; }
+  const row = e.target.closest("[data-i]");
+  if (row && !look) { const i = +row.dataset.i; nav = true; if (i === sel && items[i].type !== "ans") activate(); else select(i, false); }
+  input.focus();
+});
+body.addEventListener("pointerover", (e) => {
+  if (look) return;
+  const c = e.target.closest("[data-cite]");
+  $$(".rc-row[data-hot]", body).forEach((r) => r.removeAttribute("data-hot"));
+  if (c) $(`.rc-row[data-n="${c.dataset.cite}"]`, body)?.setAttribute("data-hot", "");
+  else paintCites();
+});
+$("#rc-scrim").addEventListener("click", () => !float.hasAttribute("data-closed") && close());
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest(".rc-pop, .rc-tok")) hidePop(); });
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" && e.altKey && e.metaKey) { e.preventDefault(); float.hasAttribute("data-closed") ? reopen() : close(); }
+});
+window.addEventListener("resize", () => look && fitLook());
+
+/* ===== Boot + hooks ==================================================== */
+const picker = $("#rc-state");
+picker.innerHTML = Object.entries(RC_STATES).map(([k, [l]]) => `<option value="${k}"${k === STATE ? " selected" : ""}>${l}</option>`).join("");
+picker.addEventListener("change", () => { const th = new URLSearchParams(location.search).get("theme"); location.search = new URLSearchParams({ ...(picker.value ? { state: picker.value } : {}), ...(th ? { theme: th } : {}) }); });
+(async () => {
+  renderMirror(); run();
+  if (P.get("state") === "recent") { recents = true; run(); }
+  if (P.has("q")) {
+    input.value = P.get("q"); renderMirror(); run(); commit(false);
+    if (P.has("tab")) toggleMode();
+  }
+  if (P.has("sel")) { nav = true; select(+P.get("sel")); }
+  if (P.get("pill") && toks[P.get("pill")]) { await document.fonts.ready; pillSel = P.get("pill"); renderPills(); showPop(pillSel); }
+  if (P.get("state") === "closed") close(`Opening <b>Timeline</b> at <span class="mono">Tue 14:12:15</span> <span class="mono">(+0:15 from the match)</span> — Pricing — Mnema`, 60000);
+  await document.fonts.ready; renderMirror(); render();
+  requestAnimationFrame(() => float.setAttribute("data-ready", ""));
+  input.focus();
+  const wantCite = +P.get("cite") || (P.has("look") && view === "ask" ? 1 : 0);
+  if (view === "ask" && wantCite) onAnswerDone = () => { sel = 0; nav = true; citeSel = wantCite; paintCites(); renderChrome(); if (P.has("look")) openCite(wantCite); };
+  else if (P.has("look")) openLook(sel);
+  // ?keys=down,space — replays keys into the bar (render checks of the keymap)
+  const KEY = { down: "ArrowDown", up: "ArrowUp", left: "ArrowLeft", right: "ArrowRight", space: " ", tab: "Tab", enter: "Enter", esc: "Escape" };
+  for (const k of (P.get("keys") || "").split(",").filter(Boolean)) { await sleep(400); input.dispatchEvent(new KeyboardEvent("keydown", { key: KEY[k] || k, bubbles: true, cancelable: true })); }
+})();
+</script>
+</body>
+</html>

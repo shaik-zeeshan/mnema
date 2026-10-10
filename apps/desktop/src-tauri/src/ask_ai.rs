@@ -34,7 +34,7 @@ use app_infra::brokered_access::{
     BrokerSearchRequest, BrokerSearchResult, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
-use capture_types::{AiRuntimeSettings, TurnSnapshot, TurnUpdate, TurnView};
+use capture_types::{AiRuntimeSettings, AskAiScope, TurnSnapshot, TurnUpdate, TurnView};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -45,6 +45,7 @@ use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
 pub(crate) mod answer_view;
 pub(crate) mod app_control;
 pub(crate) mod mcp;
+mod scope;
 pub(crate) mod tool_activity;
 pub(crate) mod web_fetch;
 
@@ -994,6 +995,9 @@ pub struct AskAiStartRequest {
     /// IANA zone name for display in the temporal grounding. Optional.
     #[serde(default)]
     time_zone: Option<String>,
+    /// Chat's scope (CH3), resent every turn; absent = unscoped.
+    #[serde(default)]
+    scope: Option<AskAiScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1007,6 +1011,9 @@ pub struct AskAiFollowupRequest {
     /// See [`AskAiStartRequest::time_zone`].
     #[serde(default)]
     time_zone: Option<String>,
+    /// See [`AskAiStartRequest::scope`].
+    #[serde(default)]
+    scope: Option<AskAiScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1182,12 +1189,20 @@ such tools are present, the user has configured no connectors — do not mention
 /// system instruction lives in the preamble (see [`build_ask_ai_preamble`]);
 /// conversation history is fed separately to the agent loop, so it is NOT in the
 /// prompt.
-fn build_ask_ai_prompt(question: &str, now_ms: i64, clock: &ClientClock) -> String {
+fn build_ask_ai_prompt(
+    question: &str,
+    now_ms: i64,
+    clock: &ClientClock,
+    scope: Option<&AskAiScope>,
+) -> String {
     let mut prompt = String::new();
 
     // Temporal grounding leads the prompt so the model anchors relative dates and
     // knows the local↔UTC relationship before reading any captures.
     prompt.push_str(&build_temporal_grounding(now_ms, clock));
+    if let Some(scope) = scope {
+        prompt.push_str(&scope::scope_prompt_line(scope, clock.utc_offset_minutes));
+    }
 
     prompt.push_str(&format!("Question: {question}"));
     prompt
@@ -1767,6 +1782,7 @@ async fn run_ask_ai_turn(
     origin: String,
     title: String,
     clock: ClientClock,
+    scope: Option<AskAiScope>,
     cancel: Arc<AtomicBool>,
 ) {
     // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
@@ -2008,6 +2024,8 @@ async fn run_ask_ai_turn(
                         .map_err(|error| format!("failed to serialize reference ack: {error}"));
                 }
 
+                // CH3: clamp captured-history windows into the chat's scope.
+                let params = scope::scope_tool_params(scope.as_ref(), &tool, params)?;
                 // Data tool: record the activity, run it through the broker seam,
                 // retain any search results, return the JSON result as a string.
                 if let Ok(mut buffer) = tool_activities.lock() {
@@ -2064,10 +2082,13 @@ async fn run_ask_ai_turn(
     let mcp_manager = (*app_handle.state::<mcp::McpManager>()).clone();
     let (mcp_tools, mcp_notes) = mcp_manager.tools_for_turn(&app_handle).await;
 
-    let tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
+    let mut tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
+    if scope.is_some_and(|scope| !scope.about_you) {
+        tools.retain(|tool| tool.name != "recall_context");
+    }
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
     let preamble = build_ask_ai_preamble(&mcp_notes);
-    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock);
+    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock, scope.as_ref());
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2560,6 +2581,7 @@ pub async fn ask_ai_start(
         prior_transcript: _,
         utc_offset_minutes,
         time_zone,
+        scope,
     } = request;
 
     // Register the in-flight cancel flag FIRST — before the async readiness check —
@@ -2593,6 +2615,7 @@ pub async fn ask_ai_start(
         origin,
         title,
         clock,
+        scope,
         cancel,
     ));
 
@@ -2616,6 +2639,7 @@ pub async fn ask_ai_followup(
         question,
         utc_offset_minutes,
         time_zone,
+        scope,
     } = request;
     let question = question.trim().to_string();
     if question.is_empty() {
@@ -2644,6 +2668,7 @@ pub async fn ask_ai_followup(
         ASK_AI_DEFAULT_ORIGIN.to_string(),
         String::new(),
         clock,
+        scope,
         cancel,
     ));
 
@@ -3083,7 +3108,7 @@ model believes the narrower contract: {}",
 
     #[test]
     fn prompt_is_grounding_then_question() {
-        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default());
+        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default(), None);
         // The temporal grounding leads; the bare question trails. No capture
         // context is ever injected — the model gathers it with tool calls.
         assert!(prompt.starts_with("Temporal grounding: "));
@@ -3837,6 +3862,20 @@ model believes the narrower contract: {}",
         .expect("extra fields are ignored");
         assert_eq!(request.conversation_id, "conv-2");
         assert_eq!(request.question, "more");
+        assert_eq!(request.scope, None);
+
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"c","question":"q","scope":{"fromMs":1,"toMs":2,"aboutYou":false}}"#,
+        )
+        .expect("a scoped follow-up deserializes");
+        assert_eq!(
+            request.scope,
+            Some(AskAiScope {
+                from_ms: 1,
+                to_ms: 2,
+                about_you: false
+            })
+        );
     }
 
     #[test]

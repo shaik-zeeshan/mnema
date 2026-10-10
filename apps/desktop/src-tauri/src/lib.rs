@@ -84,6 +84,10 @@ struct BrokerOpenCaptureResultPayload {
     span_start_ms: Option<i64>,
     #[serde(default)]
     aligned_frame_id: Option<i64>,
+    /// The Quick Recall query that found this hit, so the Timeline can show a
+    /// dismissible `from Recall · "query"` landing chip. Absent for other senders.
+    #[serde(default)]
+    query: Option<String>,
 }
 
 #[derive(Default)]
@@ -108,6 +112,7 @@ fn open_capture_result_in_main_window(
     audio_segment_id: Option<i64>,
     span_start_ms: Option<i64>,
     aligned_frame_id: Option<i64>,
+    query: Option<String>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrokerOpenCaptureResultState>,
 ) {
@@ -118,6 +123,7 @@ fn open_capture_result_in_main_window(
         audio_segment_id,
         span_start_ms,
         aligned_frame_id,
+        query,
     };
     if let Ok(mut pending) = state.pending.lock() {
         pending.push_back(payload.clone());
@@ -379,6 +385,7 @@ async fn broker_payload_from_url(
         // no search-result anchor; the audio receiver falls back to the segment start.
         span_start_ms: None,
         aligned_frame_id: None,
+        query: None,
     })
 }
 
@@ -804,7 +811,9 @@ pub fn run() {
             conversation::commands::search_conversations,
             conversation::commands::set_conversation_engine,
             conversation::commands::set_conversation_title,
+            conversation::commands::set_conversation_pinned,
             conversation::commands::delete_conversation,
+            conversation::commands::delete_last_turn,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,
             privacy_redaction_sources::add_privacy_excluded_app,
@@ -832,6 +841,7 @@ pub fn run() {
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
             windows::summon_quick_recall_window_command,
+            windows::take_quick_recall_query,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,

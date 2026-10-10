@@ -72,6 +72,9 @@ pub struct ConversationSummary {
     pub updated_at_ms: i64,
     pub turn_count: i64,
     pub preview: String,
+    /// The user pinned this chat to the top of the history list. Unrelated to
+    /// the per-chat engine pin ([`Conversation::provider`]/[`Conversation::model`]).
+    pub pinned: bool,
 }
 
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
@@ -238,10 +241,36 @@ pub enum TurnUpdate {
     Done,
 }
 
+/// A Chat turn's scope (CH3): the captured-history window its data tools may
+/// read, and whether `recall_context` (Mnema's notes about the user) is offered.
+/// Sent with every `ask_ai_start` / `ask_ai_followup` from Chat and never
+/// persisted; absent = unscoped (Quick Recall).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiScope {
+    /// Inclusive window start, unix ms (UTC).
+    pub from_ms: i64,
+    /// Inclusive window end, unix ms (UTC).
+    pub to_ms: i64,
+    pub about_you: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn ask_ai_scope_round_trips_camel_case() {
+        let scope = AskAiScope {
+            from_ms: 1,
+            to_ms: 2,
+            about_you: false,
+        };
+        let value = serde_json::to_value(scope).unwrap();
+        assert_eq!(value, json!({ "fromMs": 1, "toMs": 2, "aboutYou": false }));
+        assert_eq!(serde_json::from_value::<AskAiScope>(value).unwrap(), scope);
+    }
 
     #[test]
     fn answer_block_prose_exact_shape() {
@@ -465,5 +494,26 @@ mod tests {
         let value = serde_json::to_value(&bare).unwrap();
         assert_eq!(value, json!({ "op": "error", "message": "boom" }));
         assert_eq!(serde_json::from_value::<TurnUpdate>(value).unwrap(), bare);
+    }
+
+    #[test]
+    fn conversation_summary_round_trips_pinned() {
+        let summary = ConversationSummary {
+            conversation_id: "conv-1".to_string(),
+            title: "t".to_string(),
+            origin: "chat".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            turn_count: 3,
+            preview: "q".to_string(),
+            pinned: true,
+        };
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["pinned"], json!(true));
+        assert_eq!(value["turnCount"], json!(3));
+        assert_eq!(
+            serde_json::from_value::<ConversationSummary>(value).unwrap(),
+            summary
+        );
     }
 }

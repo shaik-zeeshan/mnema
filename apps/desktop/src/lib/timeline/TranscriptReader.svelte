@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The reading surface: speaker-labelled prose blocks with a quiet, right-
-  // aligned identity gutter and a ~58ch measure. Slices 1, 3, 4, 7 and 8 of the
+  // The reading surface: one padded row per speaker turn — a left speaker column
+  // (mark · name, the turn's clock time under it) beside a ~78ch prose measure. Slices 1, 3, 4, 7 and 8 of the
   // redesign live here — typography, the dual-encoded marker, the timestamps
   // toggle, follow mode, and word-level karaoke.
   //
@@ -20,6 +20,11 @@
     type SpeakerTranscriptGroup,
   } from "./audio-drawer-view";
   import SpeakerMarkGlyph from "./SpeakerMark.svelte";
+  import IconArrowDown from "~icons/lucide/arrow-down";
+  import IconCheck from "~icons/lucide/check";
+  import IconMore from "~icons/lucide/ellipsis";
+  import IconX from "~icons/lucide/x";
+  import { tip } from "$lib/components/tooltip";
   import type { TranscriptionSegment, TranscriptionWord } from "$lib/types/app-infra";
 
   interface SuggestionChip {
@@ -39,7 +44,14 @@
     currentMs: number;
     activeGroupIndex: number | null;
     showTimestamps: boolean;
-    expanded: boolean;
+    /** Wall-clock start of the segment; a turn's time = this + its offset. */
+    segmentStartMs: number;
+    /** The turn the repair slide-over is aimed at, drawn selected. */
+    fixingIndex: number | null;
+    /** Speaker-strip selection: every other voice recedes (0.38). */
+    selectedClusterId: number | null;
+    /** "only this voice": the other voices' turns are hidden, not dimmed. */
+    onlySelected: boolean;
     speakerName: (group: SpeakerTranscriptGroup) => string;
     isUnnamed: (group: SpeakerTranscriptGroup) => boolean;
     /** Unnamed, or carrying an unconfirmed suggestion: show the repair door at rest. */
@@ -65,7 +77,10 @@
     currentMs,
     activeGroupIndex,
     showTimestamps,
-    expanded,
+    segmentStartMs,
+    fixingIndex,
+    selectedClusterId,
+    onlySelected,
     speakerName,
     isUnnamed,
     needsAttention,
@@ -168,7 +183,8 @@
 
 <div
   class="reader"
-  class:reader--expanded={expanded}
+  class:reader--sel={selectedClusterId != null}
+  class:reader--only={onlySelected}
   data-ts={showTimestamps ? "on" : "off"}
 >
   <div
@@ -177,106 +193,114 @@
     bind:this={containerEl}
     ontouchmove={detach}
   >
-    <article class="doc">
-      {#each groups as group, index (index)}
-        {@const chip = softDismissed.includes(group.clusterId)
-          ? null
-          : suggestionFor(group, index)}
-        {@const unnamed = isUnnamed(group)}
-        {@const timeLabel = formatTranscriptSegmentTitle(group)}
-        <div
-          class="turn"
-          class:turn--overlap={group.overlaps}
-          class:is-active={activeGroupIndex === index}
-          data-speaker-group-index={index}
-          role="listitem"
-        >
-          <div class="gutter">
-            {#if repairable(group)}
-              <button
-                type="button"
-                class="who"
-                class:who--unknown={unnamed}
-                class:who--needs={needsAttention(group)}
-                aria-haspopup="dialog"
-                aria-label={`Repair speaker ${speakerName(group)}`}
-                onclick={() => onOpenRepair(index)}
-              >
-                <SpeakerMarkGlyph mark={marks.get(group.clusterId)} ghosted={unnamed} />
-                <span class="who__nm">{speakerName(group)}</span>
-                <span class="who__edit" aria-hidden="true">⋯</span>
-              </button>
-            {:else}
-              <span class="who who--static" class:who--unknown={unnamed}>
-                <SpeakerMarkGlyph mark={marks.get(group.clusterId)} ghosted={unnamed} />
-                <span class="who__nm">{speakerName(group)}</span>
-              </span>
-            {/if}
-            {#if unnamed && repairable(group) && !chip}
-              <span class="gnote">name this voice</span>
-            {:else if group.overlaps}
-              <span class="gnote">overlapping speech</span>
-            {/if}
-            {#if chip}
-              <span class="gsuggest">
-                <span class="gsuggest__label"
-                  >maybe {chip.name}{chip.meta ? ` · ${chip.meta}` : ""}</span
-                >
-                <button
-                  type="button"
-                  class="gsuggest__yes"
-                  disabled={suggestionBusy(group)}
-                  aria-label={`Confirm ${chip.name} — links this voice and saves a sample`}
-                  onclick={() => onConfirmSuggestion(group)}>✓</button
-                >
-                <button
-                  type="button"
-                  class="gsuggest__no"
-                  aria-label="Hide this suggestion — changes nothing, ask me later"
-                  title={'Hide — writes nothing. "Not this person" lives in the repair panel.'}
-                  onclick={() => (softDismissed = [...softDismissed, group.clusterId])}>✕</button
-                >
-              </span>
-            {/if}
-            <span class="ts">{timeLabel}</span>
-          </div>
-
-          {#if karaoke[index]}
-            {@const wordList = karaoke[index] ?? []}
-            {@const nowIndex =
-              activeGroupIndex === index ? activeKaraokeIndex(wordList, currentMs) : -1}
-            <p class="para">
-              {#each wordList as word, wi (wi)}<button
-                  type="button"
-                  class="w"
-                  class:is-done={word.endMs <= currentMs && wi !== nowIndex}
-                  class:is-now={wi === nowIndex}
-                  tabindex="-1"
-                  onclick={() => onSeekMs(wordSeekMs(word, group))}>{word.text}</button
-                >{" "}{/each}
-            </p>
-          {:else}
-            <!-- Degraded: no word timings, so the transcription run is the seek
-                 unit (not the whole speaker group's start). -->
+    {#each groups as group, index (index)}
+      {@const chip = softDismissed.includes(group.clusterId)
+        ? null
+        : suggestionFor(group, index)}
+      {@const unnamed = isUnnamed(group)}
+      {@const mark = marks.get(group.clusterId)}
+      <div
+        class="turn"
+        class:turn--overlap={group.overlaps}
+        class:is-active={activeGroupIndex === index}
+        class:is-sel={group.clusterId === selectedClusterId}
+        class:is-fixing={fixingIndex === index}
+        style={mark?.colorVar ? `--sp: var(${mark.colorVar})` : undefined}
+        data-speaker-group-index={index}
+        role="listitem"
+      >
+        <div class="gutter">
+          {#if repairable(group)}
             <button
               type="button"
-              class="para para--button"
-              class:is-seg-now={activeGroupIndex === index}
-              title={`Jump to ${timeLabel}`}
-              onclick={() => onSeekMs(segmentSeekMs(segments, group))}>{group.text}</button
+              class="mx-btn mx-btn--ghost mx-btn--sm who"
+              class:who--unknown={unnamed}
+              class:who--needs={needsAttention(group)}
+              aria-haspopup="dialog"
+              aria-label={`Repair speaker ${speakerName(group)}`}
+              onclick={() => onOpenRepair(index)}
             >
+              <SpeakerMarkGlyph {mark} ghosted={unnamed} />
+              <span class="who__nm">{speakerName(group)}</span>
+              <IconMore class="who__edit" width="13" height="13" aria-hidden="true" />
+            </button>
+          {:else}
+            <span class="who who--static" class:who--unknown={unnamed}>
+              <SpeakerMarkGlyph {mark} ghosted={unnamed} />
+              <span class="who__nm">{speakerName(group)}</span>
+            </span>
           {/if}
+          {#if unnamed && repairable(group) && !chip}
+            <span class="gnote">name this voice</span>
+          {:else if group.overlaps}
+            <span class="gnote">overlapping speech</span>
+          {/if}
+          {#if chip}
+            <span class="suggest">
+              maybe <b>{chip.name.split(" ")[0]}</b>{#if chip.meta}<span class="num"
+                  >· {chip.meta}</span
+                >{/if}
+              <button
+                type="button"
+                class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
+                disabled={suggestionBusy(group)}
+                aria-label={`Confirm ${chip.name} — links this voice and saves a sample`}
+                use:tip={"Confirm — links + saves a sample"}
+                onclick={() => onConfirmSuggestion(group)}
+                ><IconCheck width="13" height="13" aria-hidden="true" /></button
+              >
+              <button
+                type="button"
+                class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
+                aria-label="Hide this suggestion — changes nothing, ask me later"
+                use:tip={"Hide — writes nothing"}
+                onclick={() => (softDismissed = [...softDismissed, group.clusterId])}
+                ><IconX width="13" height="13" aria-hidden="true" /></button
+              >
+            </span>
+          {/if}
+          <span class="ts">{new Date(segmentStartMs + group.startMs).toLocaleTimeString()}</span>
         </div>
-      {/each}
-    </article>
+
+        {#if karaoke[index]}
+          {@const wordList = karaoke[index] ?? []}
+          {@const nowIndex =
+            activeGroupIndex === index ? activeKaraokeIndex(wordList, currentMs) : -1}
+          <p class="para">
+            {#each wordList as word, wi (wi)}<button
+                type="button"
+                class="w"
+                class:is-done={word.endMs <= currentMs && wi !== nowIndex}
+                class:is-now={wi === nowIndex}
+                tabindex="-1"
+                onclick={() => onSeekMs(wordSeekMs(word, group))}>{word.text}</button
+              >{" "}{/each}
+          </p>
+        {:else}
+          <!-- Degraded: no word timings, so the transcription run is the seek
+               unit (not the whole speaker group's start). -->
+          <button
+            type="button"
+            class="para para--button"
+            class:is-seg-now={activeGroupIndex === index}
+            title={`Jump to ${formatTranscriptSegmentTitle(group)}`}
+            onclick={() => onSeekMs(segmentSeekMs(segments, group))}>{group.text}</button
+          >
+        {/if}
+      </div>
+    {/each}
   </div>
 
-  <div class="jump" data-show={followDetached ? "1" : "0"} aria-hidden={!followDetached}>
-    <button type="button" tabindex={followDetached ? 0 : -1} onclick={jumpToPlayhead}
-      >↓ jump to playhead</button
-    >
-    <kbd>esc</kbd>
-  </div>
+  <button
+    type="button"
+    class="mx-btn mx-btn--sm jump"
+    data-show={followDetached ? "1" : "0"}
+    aria-hidden={!followDetached}
+    tabindex={followDetached ? 0 : -1}
+    onclick={jumpToPlayhead}
+  >
+    <IconArrowDown width="13" height="13" aria-hidden="true" />jump to playhead<kbd>esc</kbd>
+  </button>
 </div>
 
 <style>
@@ -296,117 +320,77 @@
     scroll-behavior: smooth;
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
-    padding: 10px 0;
+    padding: 4px 0;
   }
 
-  .reader--expanded .reader__scroll {
-    padding: 28px 0;
-  }
-
-  .reader__scroll::-webkit-scrollbar {
-    width: 8px;
-  }
-
-  .reader__scroll::-webkit-scrollbar-thumb {
-    background: var(--app-border-strong);
-    border-radius: 4px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
-  }
-
-  .doc {
-    max-width: 97%;
-    margin: 0 auto;
-    padding: 0 16px;
-  }
-
-  .reader--expanded .doc {
-    padding: 0 24px;
-  }
-
-  /* The prose column fills the doc rather than sitting at a fixed ch measure:
-     `.doc` at 97% of the scroll area puts the prose at ~75% of the window,
-     which is what was asked for. ponytail: percentages have no upper bound, so
-     on a very wide display the line runs well past the ~58ch comfortable for
-     monospace (already ~96ch at 1280) — add a px ceiling to `.doc` (e.g.
-     `min(97%, 1400px)`) if long lines start to hurt. */
+  /* One padded row per turn, so the active / selected wash has room to read. */
   .turn {
     display: grid;
-    grid-template-columns: 150px minmax(0, 1fr);
-    gap: 16px;
-    margin-bottom: 16px;
-    align-items: start;
+    grid-template-columns: 176px minmax(0, 1fr);
+    gap: var(--s-5);
+    padding: 12px 22px 12px 18px;
+    transition: background-color var(--t-med) var(--ease-quart);
   }
 
-  .reader--expanded .turn {
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 24px;
-    margin-bottom: 24px;
+  .turn + .turn {
+    border-top: 1px solid var(--mx-hairline);
+  }
+
+  .turn.is-active {
+    background: color-mix(in srgb, var(--sp, var(--app-text-subtle)) 8%, transparent);
+  }
+
+  /* Speaker selection: everyone else recedes; "only" filters to them. */
+  .reader--sel .turn:not(.is-sel) {
+    opacity: 0.38;
+  }
+
+  .reader--sel .turn.is-sel:not(.is-active) {
+    background: var(--mx-wash);
+  }
+
+  .reader--only .turn:not(.is-sel) {
+    display: none;
+  }
+
+  .turn.is-fixing {
+    background: var(--mx-selected);
   }
 
   @media (max-width: 820px) {
-    /* No side margin to spare down here — the 3% cost the wide measure pays
-       measured narrower than the old fixed one at an 800px window. */
-    .doc {
-      max-width: 100%;
-    }
-
-    .turn,
-    .reader--expanded .turn {
+    .turn {
       grid-template-columns: minmax(0, 1fr);
       gap: 4px;
     }
   }
 
-  /* ── the quiet identity gutter ───────────────────────────────────────────── */
+  /* ── the speaker column ─────────────────────────────────────────────────── */
   .gutter {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 5px;
-    text-align: right;
-    padding-top: 5px;
+    display: grid;
+    align-content: start;
+    justify-items: start;
+    gap: 6px;
     min-width: 0;
   }
 
-  @media (max-width: 820px) {
-    .gutter {
-      align-items: flex-start;
-      text-align: left;
-    }
-  }
-
   .who {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
     max-width: 100%;
-    padding: 2px 5px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11px;
-    letter-spacing: 0.01em;
-    text-align: right;
-    cursor: pointer;
-  }
-
-  .who:hover,
-  .who:focus-visible {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
-    color: var(--app-text-strong);
-    outline: none;
-  }
-
-  .who:focus-visible {
-    box-shadow: var(--app-ring);
+    /* Align the ghost button's label with the column edge. */
+    margin-left: -9px;
+    --_fg: var(--app-text-strong);
   }
 
   .who--static {
-    cursor: default;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-left: 0;
+    font: 500 var(--text-md) / 1 var(--font-sans);
+    color: var(--_fg);
+  }
+
+  .who--unknown {
+    --_fg: var(--app-text-muted);
   }
 
   .who__nm {
@@ -415,118 +399,64 @@
     white-space: nowrap;
   }
 
-  .who--unknown .who__nm {
-    color: var(--app-text-subtle);
-  }
-
   /* AUDIT 5 — the repair door is not hover-only. A cluster that still needs the
      user shows its marker at rest; a settled one reveals it on hover. */
-  .who__edit {
-    font-size: 10px;
+  .who :global(.who__edit) {
+    flex: none;
     color: var(--app-text-subtle);
     opacity: 0;
-    transition: opacity 120ms ease;
+    transition: opacity var(--t-fast) var(--ease-quart);
   }
 
-  .who:hover .who__edit,
-  .who:focus-visible .who__edit {
+  .who:hover :global(.who__edit),
+  .who:focus-visible :global(.who__edit),
+  .who--needs :global(.who__edit) {
     opacity: 1;
   }
 
-  .who--needs .who__edit {
-    opacity: 0.75;
-  }
-
   .gnote {
-    padding-right: 5px;
-    font-size: 10px;
-    letter-spacing: 0.04em;
-    color: var(--app-text-subtle);
-  }
-
-  .gsuggest {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    padding: 2px 4px 2px 8px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
-    background: var(--app-surface-subtle, var(--app-surface));
-    font-size: 10px;
+    font: 400 var(--text-sm) / 1.2 var(--font-sans);
     color: var(--app-text-muted);
   }
 
-  .gsuggest__label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .suggest {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+    font: 400 var(--text-sm) / 1.3 var(--font-sans);
+    color: var(--app-text-muted);
   }
 
-  .gsuggest__yes,
-  .gsuggest__no {
-    flex: none;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: transparent;
-    font: inherit;
-    font-size: 10px;
-    cursor: pointer;
-  }
-
-  .gsuggest__yes {
-    border: 1px solid var(--app-accent-border);
-    color: var(--app-accent);
-  }
-
-  .gsuggest__yes:hover:not(:disabled) {
-    background: var(--app-accent-bg);
-  }
-
-  .gsuggest__yes:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: progress;
-  }
-
-  /* AUDIT 3 — a SOFT DISMISS. It writes nothing. */
-  .gsuggest__no {
-    border: 1px solid var(--app-border-strong);
-    color: var(--app-text-subtle);
-  }
-
-  .gsuggest__no:hover {
-    background: var(--app-surface-hover);
+  .suggest b {
+    font-weight: 500;
     color: var(--app-text);
   }
 
-  /* Timestamps: off by default, one toggle away, and on a SECOND GUTTER LINE —
+  .suggest .num {
+    margin-right: 2px;
+    color: var(--app-text-subtle);
+  }
+
+  /* Timestamps: off by default, one toggle away, on a second gutter line —
      never a third column, so turning them on never reflows the measure. */
   .ts {
-    display: none;
-    font-family: var(--app-font-mono);
-    font-size: 10px;
+    font: 400 var(--text-xs) / 1 var(--font-mono);
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.06em;
     color: var(--app-text-subtle);
   }
 
-  [data-ts="on"] .ts {
-    display: block;
+  [data-ts="off"] .ts {
+    display: none;
   }
 
-  /* ── the prose: the one house-style break, taken deliberately ───────────── */
+  /* ── the prose ──────────────────────────────────────────────────────────── */
   .para {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.62;
-    color: var(--app-text);
-    letter-spacing: 0.005em;
+    max-width: 78ch;
+    font: 400 var(--text-base) / 1.65 var(--font-sans);
+    color: var(--app-text-subtle);
     text-wrap: pretty;
-  }
-
-  .reader--expanded .para {
-    font-size: 15px;
-    line-height: 1.72;
   }
 
   .turn--overlap .para {
@@ -535,50 +465,37 @@
     margin-left: -16px;
   }
 
-  /* ── word states: underline-led, never a filled box ──────────────────────
-     Every state changes COLOUR and text-decoration only. No background, no
-     transform, no padding/weight change: these fire while the text is
-     reflowing under the playhead, and `text-decoration` doesn't grow the line
-     box the way `border-bottom` would. */
+  /* ── word states: colour + a wash on the current word. Nothing here changes
+     the box (no padding / weight), because these fire while the text reflows
+     under the playhead. */
   .w {
-    padding: 0 0.5px;
+    padding: 0;
     border: 0;
+    border-radius: 3px;
     background: transparent;
     color: inherit;
     font: inherit;
-    text-decoration: underline 1px transparent;
-    text-underline-offset: 3px;
-    text-decoration-skip-ink: none;
     cursor: pointer;
-    transition:
-      color 80ms ease,
-      text-decoration-color 80ms ease;
+    transition: color var(--t-fast) var(--ease-quart);
   }
 
   .w:hover {
     color: var(--app-text-strong);
-    text-decoration-color: var(--app-text-subtle);
   }
 
   .w.is-done {
-    color: var(--app-text-muted);
+    color: var(--app-text);
   }
 
   .w.is-now {
     color: var(--app-accent);
-    text-decoration-color: var(--app-accent);
-  }
-
-  /* Pressed: the text dims for the duration of the press. Nothing moves. */
-  .w:active,
-  .para--button:active {
-    color: var(--app-text-subtle);
+    background: var(--app-accent-bg);
+    box-shadow: 0 0 0 2px var(--app-accent-bg);
   }
 
   /* Quieter states must not cost keyboard users the focus indicator. */
   .w:focus-visible {
     outline: none;
-    border-radius: 3px;
     box-shadow: var(--app-ring);
   }
 
@@ -588,24 +505,14 @@
     width: 100%;
     padding: 0;
     border: 0;
-    /* A <button> brings a UA background + sans font with it; the degraded branch
-       must read as the same prose the karaoke branch does. */
     appearance: none;
     -webkit-appearance: none;
     background: transparent;
-    color: var(--app-text);
-    font-family: inherit;
-    font-weight: inherit;
-    letter-spacing: inherit;
     text-align: left;
     cursor: pointer;
-    /* No underline anywhere on this branch — see the :hover rule below. */
-    transition: color 80ms ease;
+    transition: color var(--t-fast) var(--ease-quart);
   }
 
-  /* Colour only, deliberately NOT the word branch's underline: a rule under
-     every line of a multi-line paragraph reads as a hyperlink block rather than
-     as prose. Brightening the whole block is affordance enough at this size. */
   .para--button:hover {
     color: var(--app-text-strong);
   }
@@ -620,60 +527,26 @@
     color: var(--app-accent);
   }
 
-  /* ── jump-to-playhead ────────────────────────────────────────────────────
-     AUDIT 4 — neutral chrome, not accent: full-strength accent is reserved for
-     the playhead and the current word. AUDIT 10 — it genuinely fades, which
-     display:none could never do. */
+  /* ── jump-to-playhead: it genuinely fades, which display:none never could. */
   .jump {
     position: absolute;
     left: 50%;
     bottom: 10px;
     z-index: 5;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 5px 12px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-surface-raised);
     box-shadow: var(--app-shadow-popover);
-    color: var(--app-text-strong);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
     opacity: 0;
     visibility: hidden;
     transform: translate(-50%, 6px);
     transition:
-      opacity 180ms ease,
-      transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1),
-      visibility 180ms;
+      opacity var(--t-med) var(--ease-quart),
+      transform var(--t-med) var(--ease-expo),
+      visibility var(--t-med);
   }
 
   .jump[data-show="1"] {
     opacity: 1;
     visibility: visible;
     transform: translate(-50%, 0);
-  }
-
-  .jump button {
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-transform: inherit;
-    letter-spacing: inherit;
-    cursor: pointer;
-  }
-
-  .jump kbd {
-    padding: 0 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 3px;
-    color: var(--app-text-subtle);
-    font-family: var(--app-font-mono);
-    text-transform: none;
-    letter-spacing: 0;
   }
 
   @media (prefers-reduced-motion: reduce) {

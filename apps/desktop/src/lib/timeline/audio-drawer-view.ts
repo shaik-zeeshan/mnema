@@ -271,10 +271,15 @@ export interface SpeakerMark {
 /**
  * Cluster id → {colour, shape}, both assigned in first-appearance order so two
  * clusters visible in the same segment never collide on either channel until
- * there are more than four of them. Pure.
+ * there are more than four of them. An owner cluster is pinned to the owner
+ * colour (see `assignSpeakerColors`) but still takes its shape slot. Pure.
  */
-export function assignSpeakerMarks(orderedClusterIds: number[]): Map<number, SpeakerMark> {
-  const colors = assignSpeakerColors(orderedClusterIds.map(String));
+export function assignSpeakerMarks(
+  orderedClusterIds: number[],
+  ownerClusterIds: ReadonlySet<number> = new Set(),
+): Map<number, SpeakerMark> {
+  const owners = new Set([...ownerClusterIds].map(String));
+  const colors = assignSpeakerColors(orderedClusterIds.map(String), owners);
   const out = new Map<number, SpeakerMark>();
   let next = 0;
   for (const clusterId of orderedClusterIds) {
@@ -284,6 +289,54 @@ export function assignSpeakerMarks(orderedClusterIds: number[]): Map<number, Spe
       shape: SPEAKER_SHAPES[next % SPEAKER_SHAPES.length],
     });
     next += 1;
+  }
+  return out;
+}
+
+// ── Speaker strip ───────────────────────────────────────────────────────────
+
+export interface StripSpeaker {
+  clusterId: number;
+  name: string;
+  /** Linked to the account owner's profile (`isAccountOwner`), never by name. */
+  owner: boolean;
+  state: string; // "you · auto" / "you" / "maybe Daniel" / "unnamed" / ""
+  unnamed: boolean;
+  talkMs: number;
+  sharePct: number;
+}
+
+/** One entry per diarized speaker in first-appearance order, with talk time
+ *  summed over the text-bearing turns (the same turns the reader shows). */
+export function speakerStrip(
+  groups: SpeakerTranscriptGroup[],
+  turns: SpeakerTurnDto[],
+  clusters: SpeakerClusterDto[],
+  profiles: PersonProfileDto[],
+): StripSpeaker[] {
+  const talk = new Map<number, number>();
+  let total = 0;
+  for (const t of turns) {
+    if (!t.transcriptText?.trim()) continue;
+    const ms = Math.max(0, t.endMs - t.startMs);
+    talk.set(t.clusterId, (talk.get(t.clusterId) ?? 0) + ms);
+    total += ms;
+  }
+  const ownerIds = new Set(profiles.filter((p) => p.isAccountOwner).map((p) => p.id));
+  const out: StripSpeaker[] = [];
+  for (const g of groups) {
+    if (g.clusterId < 0 || out.some((s) => s.clusterId === g.clusterId)) continue;
+    const unnamed = speakerIsUnnamed(g, profiles);
+    const owner = g.personId != null && ownerIds.has(g.personId);
+    const auto = clusters.find((c) => c.id === g.clusterId)?.personLinkAuto === true;
+    const state = owner
+      ? auto ? "you · auto" : "you"
+      : g.personId == null && g.suggestedPersonId != null
+        ? `maybe ${speakerSuggestedPersonName(g, profiles).split(" ")[0]}`
+        : unnamed ? "unnamed" : "";
+    const talkMs = talk.get(g.clusterId) ?? 0;
+    const sharePct = total > 0 ? Math.round((talkMs / total) * 100) : 0;
+    out.push({ clusterId: g.clusterId, name: speakerPersistedName(g, profiles), owner, state, unnamed, talkMs, sharePct });
   }
   return out;
 }
@@ -482,6 +535,8 @@ export interface WaveBar {
   heightPct: number;
   /** CSS custom-property name of the speaker holding the floor, else null (gap). */
   colorVar: string | null;
+  /** The cluster holding the floor, else null (gap). */
+  clusterId: number | null;
   atMs: number;
 }
 
@@ -507,6 +562,7 @@ export function waveformBars(
       // Floor at 4% so a silent bucket still draws a hairline instead of nothing.
       heightPct: Math.max(4, Math.round(amp * 100)),
       colorVar: turn ? marks.get(turn.clusterId)?.colorVar ?? null : null,
+      clusterId: turn?.clusterId ?? null,
       atMs,
     };
   });
@@ -578,23 +634,23 @@ export function drawerStatusPill(input: {
   distinctSpeakers: number;
 }): StatusPill {
   const systemAudio = input.source === "systemAudio";
-  if (input.speakerAnalysisRunning) return { tone: "work", label: "speakers", busy: true };
+  if (input.speakerAnalysisRunning) return { tone: "work", label: "finding speakers", busy: true };
   if (input.transcriptStatus === "loading") return { tone: "work", label: "loading", busy: true };
   if (input.transcriptStatus === "running") {
-    return { tone: "work", label: systemAudio ? "detecting speech" : "processing", busy: true };
+    return { tone: "work", label: systemAudio ? "detecting speech" : "transcribing", busy: true };
   }
   if (input.transcriptStatus === "error") {
-    return { tone: "bad", label: systemAudio ? "speech detection failed" : "error", busy: false };
+    return { tone: "bad", label: systemAudio ? "speech detection failed" : "failed", busy: false };
   }
   if (input.speakerAnalysisFailed) {
     return { tone: "bad", label: "speaker analysis failed", busy: false };
   }
   if (input.transcriptStatus === "empty") return { tone: "idle", label: "no speech", busy: false };
-  if (input.transcriptStatus === "missing") return { tone: "warn", label: "not run", busy: false };
+  if (input.transcriptStatus === "missing") return { tone: "warn", label: "not transcribed", busy: false };
   if (input.transcriptStatus === "success") {
     return {
       tone: "ok",
-      label: input.distinctSpeakers > 0 ? `${input.distinctSpeakers} speakers` : "completed",
+      label: `transcribed${input.distinctSpeakers > 0 ? ` · ${input.distinctSpeakers} speaker${input.distinctSpeakers === 1 ? "" : "s"}` : ""}`,
       busy: false,
     };
   }

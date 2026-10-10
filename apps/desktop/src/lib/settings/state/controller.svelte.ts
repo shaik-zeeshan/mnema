@@ -17,7 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
 import { humanizeError } from "$lib/format-error";
 import { retentionToDays } from "$lib/components/retention";
-import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
 import { setAppearance } from "$lib/theme.svelte";
 import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";

@@ -34,8 +34,8 @@
   {inputmode}
   {placeholder}
   {disabled}
-  class="input"
-  class:input--invalid={invalid}
+  class="mx-input"
+  class:num={inputmode === "numeric" || inputmode === "decimal"}
   bind:value
   aria-label={ariaLabel}
   aria-invalid={invalid}
@@ -45,47 +45,10 @@
 />
 
 <style>
-  .input {
+  /* Look lives in kit.css (.mx-input; aria-invalid = danger border). Call sites
+     size it by its container. */
+  .mx-input {
     width: 100%;
     min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
-  }
-
-  .input::placeholder {
-    /* Format hints must clear AA contrast; --app-text-faint is decoration-only
-       and falls below it. Match Select/Combobox placeholder text. */
-    color: var(--app-text-subtle);
-  }
-
-  .input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), var(--app-ring);
-  }
-
-  .input--invalid {
-    border-color: var(--app-danger);
-  }
-
-  .input--invalid:focus {
-    border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
-  }
-
-  .input:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
   }
 </style>

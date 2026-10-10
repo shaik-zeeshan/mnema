@@ -541,9 +541,9 @@
     padding-right: 8px;
   }
   /* A row that is about to move says so on its switch too. */
-  .row.willmove :global(.switch-track[data-state="checked"]) {
-    border-color: var(--app-warn-border);
-    border-style: dashed;
+  .row.willmove :global(.mx-switch:checked) {
+    outline: 1px dashed var(--app-warn-border);
+    outline-offset: 2px;
   }
 
   /* ── gate, undo, totals ─────────────────────────────────────────────────── */

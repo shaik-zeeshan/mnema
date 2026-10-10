@@ -1,7 +1,7 @@
 // Svelte action `use:tip={text}` — a themed replacement for the native `title`
 // attribute. One shared popover node is portaled to <body> and reused by every
-// trigger (no per-trigger DOM). Styling lives in the `.app-tooltip` global rule
-// in routes/+layout.svelte so it reads the same `--app-*` tokens as the app.
+// trigger (no per-trigger DOM). Styling lives in the kit's `.mx-tip` rule
+// (lib/styles/kit.css) so it reads the same `--app-*` tokens as the app.
 // Not interactive (pointer-events: none) — parity with `title`.
 //
 // ponytail: hand-rolled positioning instead of the installed bits-ui Tooltip —
@@ -24,7 +24,7 @@ function ensureEl(): HTMLDivElement {
   if (el) return el;
   const node = document.createElement("div");
   node.id = TIP_ID;
-  node.className = "app-tooltip";
+  node.className = "mx-tip";
   node.setAttribute("role", "tooltip");
   node.dataset.show = "false";
   document.body.appendChild(node);

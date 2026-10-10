@@ -32,6 +32,12 @@ const QUICK_RECALL_SUMMON_BLUR_GRACE: Duration = Duration::from_millis(300);
 // the `QUICK_RECALL_SUMMON_BLUR_GRACE` window in the `Focused(false)` handler.
 static LAST_QUICK_RECALL_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
 
+// Text the main window's titlebar field handed over with ↵ (recall mode). Held
+// here until the Quick Recall webview reads it on summon/focus, so a cold-built
+// window (whose listeners aren't attached yet) still gets it. One slot: a newer
+// summon replaces an unread one.
+static PENDING_QUICK_RECALL_QUERY: Mutex<Option<String>> = Mutex::new(None);
+
 // One-shot suppression of the very next Quick Recall blur-dismiss. The frontend
 // sets this (via `quick_recall_suppress_blur_dismiss`) immediately before opening
 // an answer link in the OS browser: activating the browser blurs the panel, and
@@ -1425,12 +1431,40 @@ pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
     toggle_main_window_visibility(&app);
 }
 
-/// Summon (toggle) the Quick Recall panel from in-app UI — the titlebar
-/// "Search / Recall" affordance. Mirrors what the ⌥Space global shortcut does so
-/// the launcher is discoverable by mouse, not only by chord.
+/// Summon the Quick Recall panel from in-app UI. Without a `query` it toggles,
+/// exactly like the ⌥⌘Space global shortcut. With a non-blank `query` (↵ in the
+/// titlebar's recall field) it always shows the panel — never dismisses it — and
+/// parks the text for `take_quick_recall_query`.
 #[tauri::command]
-pub fn summon_quick_recall_window_command(app: tauri::AppHandle) -> Result<(), String> {
-    toggle_quick_recall_window(&app)
+pub fn summon_quick_recall_window_command(
+    app: tauri::AppHandle,
+    query: Option<String>,
+) -> Result<(), String> {
+    let Some(query) = summon_query(query) else {
+        return toggle_quick_recall_window(&app);
+    };
+    if let Ok(mut pending) = PENDING_QUICK_RECALL_QUERY.lock() {
+        *pending = Some(query);
+    }
+    let window = match app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
+        Some(existing) => existing,
+        None => build_quick_recall_window(&app)?,
+    };
+    summon_quick_recall_window(&window);
+    Ok(())
+}
+
+/// The handed-over titlebar query, once. The Quick Recall page reads it on mount
+/// and on every focus.
+#[tauri::command]
+pub fn take_quick_recall_query() -> Option<String> {
+    PENDING_QUICK_RECALL_QUERY.lock().ok()?.take()
+}
+
+/// A summon query worth handing over: trimmed, non-blank.
+fn summon_query(query: Option<String>) -> Option<String> {
+    let trimmed = query?.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 #[tauri::command]
@@ -1472,9 +1506,19 @@ mod tests {
         close_window_focuses_main_before_close, destroyed_window_action,
         enqueue_cold_open_settings, is_known_settings_tab, load_onboarding_state_from_path,
         normalize_settings_focus, normalize_settings_tab, normalized_open_settings_payload,
-        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction, OnboardingState,
-        OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
+        settings_tab_focus_path, summon_query, AppExitCoordinatorState, DestroyedWindowAction,
+        OnboardingState, OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
     };
+
+    #[test]
+    fn summon_query_hands_over_only_non_blank_text() {
+        assert_eq!(summon_query(None), None);
+        assert_eq!(summon_query(Some("   ".into())), None);
+        assert_eq!(
+            summon_query(Some("  pricing page ".into())),
+            Some("pricing page".into())
+        );
+    }
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {

@@ -7,6 +7,7 @@ import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
+  PermissionsMap,
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
@@ -24,6 +25,8 @@ const _state = $state<{
   bootstrapped: boolean;
   sessionGeneration: number;
   runtimeSources: RuntimeSourcesStatus | null;
+  permissions: PermissionsMap | null;
+  startError: string | null;
 }>({
   recordingSettings: null,
   loadingStart: false,
@@ -33,6 +36,8 @@ const _state = $state<{
   bootstrapped: false,
   sessionGeneration: 0,
   runtimeSources: null,
+  permissions: null,
+  startError: null,
 });
 
 const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
@@ -128,6 +133,14 @@ export const captureControls = {
   get runtimeSources(): RuntimeSourcesStatus | null {
     return _state.runtimeSources;
   },
+  /** OS capture permissions from the last `get_capture_permissions` read. */
+  get permissions(): PermissionsMap | null {
+    return _state.permissions;
+  },
+  /** Why the last Record press failed; kept for the status bar until the next start. */
+  get startError(): string | null {
+    return _state.startError;
+  },
 };
 
 export async function bootstrapCaptureControls(): Promise<void> {
@@ -142,6 +155,7 @@ export async function bootstrapCaptureControls(): Promise<void> {
     if (perm.session && _state.sessionGeneration === gen) {
       setSession(perm.session);
     }
+    _state.permissions = perm.permissions;
     _state.recordingSettings = settings;
   } catch (err) {
     reportCaptureError(err);
@@ -221,6 +235,7 @@ export async function resumeCapture(): Promise<void> {
 export async function startCapture(): Promise<void> {
   if (_state.loadingStart || captureControls.isRunning) return;
   _state.loadingStart = true;
+  _state.startError = null;
   try {
     const result = await invoke<{ session: CaptureSession }>(
       "start_native_capture",
@@ -234,6 +249,7 @@ export async function startCapture(): Promise<void> {
     );
     applyCaptureSession(result.session);
   } catch (err) {
+    _state.startError = humanizeError(err);
     reportCaptureError(err);
   } finally {
     _state.loadingStart = false;
@@ -257,6 +273,7 @@ export async function resyncCaptureSession(): Promise<void> {
   const gen = _state.sessionGeneration;
   try {
     const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
+    _state.permissions = result.permissions;
     if (_state.sessionGeneration !== gen) return;
     if (result.session) setSession(result.session);
   } catch {

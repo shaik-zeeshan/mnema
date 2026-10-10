@@ -10,7 +10,9 @@
   // `null` (the menu's "Default" row) clears the pin back to the global default
   // model; the trigger label shows what "Default" resolves to. See ADR 0033/0034.
   import { untrack } from "svelte";
-  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import ModelPickerMenu from "./ModelPickerMenu.svelte";
+  import { openSettings } from "$lib/surface-windows";
+  import { providerWhere } from "./chat-format";
   import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
   import {
     defaultEnginePinProvider,
@@ -26,6 +28,7 @@
     pinProvider,
     pinModel,
     open = $bindable(false),
+    up = false,
     onselect,
   }: {
     /** The aiRuntime settings snapshot backing default/provider labels. */
@@ -38,6 +41,8 @@
     pinModel: string | null;
     /** Open state — bindable so the parent can close on thread switch. */
     open?: boolean;
+    /** Open the menu upward (the composer is docked at the bottom). */
+    up?: boolean;
     /** Commit a chosen engine, or `null` to clear the pin to default. */
     onselect: (engine: { provider: string; model: string } | null) => void;
   } = $props();
@@ -56,39 +61,18 @@
         : defaultEngineModel(aiRuntime),
   );
 
-  // The trigger shows a SHORT, legible model label (the `/`-tail) so a long
-  // routing path isn't cut off mid-id; the full, unshortened label rides on the
-  // trigger's `title=` (activeModelTitle).
-  let activeModelLabel = $derived.by(() => {
-    if (pinProvider === null || pinModel === null) {
-      return resolvedDefaultModel === null
-        ? "Default"
-        : `Default · ${shortModelLabel(resolvedDefaultModel)}`;
-    }
-    if (defaultProvider !== null && pinProvider === defaultProvider) {
-      return shortModelLabel(pinModel);
-    }
-    // A non-default-provider pin keeps its provider context.
-    return `${providerLabelById(aiRuntime?.providers, pinProvider)} · ${shortModelLabel(pinModel)}`;
-  });
+  // The trigger shows the SHORT id of the model answering this chat (pin, else
+  // what Default resolves to) with its provider letter and cloud/local chip; the
+  // full id rides on the tooltip.
+  let activeProvider = $derived(pinProvider ?? defaultProvider);
+  let activeModel = $derived(pinModel ?? resolvedDefaultModel);
+  let activeConfig = $derived(aiRuntime?.providers.find((p) => p.id === activeProvider));
+  let activeModelLabel = $derived(activeModel === null ? "Default" : shortModelLabel(activeModel));
   let activeModelTitle = $derived.by(() => {
-    if (pinProvider === null || pinModel === null) {
-      return resolvedDefaultModel === null
-        ? "Default"
-        : `Default · ${resolvedDefaultModel}`;
-    }
-    if (defaultProvider !== null && pinProvider === defaultProvider) {
-      return pinModel;
-    }
-    return `${providerLabelById(aiRuntime?.providers, pinProvider)} · ${pinModel}`;
+    const model = activeModel ?? "Default";
+    const head = pinProvider === null ? "Default · " : "";
+    return activeProvider === null ? `${head}${model}` : `${head}${providerLabelById(aiRuntime?.providers, activeProvider)} · ${model}`;
   });
-
-  // The "Default" row's label — what clearing the pin resolves to.
-  let defaultSentinelLabel = $derived(
-    resolvedDefaultModel === null
-      ? "Default"
-      : `Default · ${shortModelLabel(resolvedDefaultModel)}`,
-  );
 
   // The merged provider-tagged model pool, discovered ONE PROVIDER AT A TIME so
   // a fast provider's models show immediately instead of waiting on the slowest
@@ -138,15 +122,25 @@
 <!-- Per-thread model pin: choose which model answers this thread — a pooled
      model, a typed id attributed to a provider, or "Default" to clear the pin.
      The label shows what "Default" resolves to when unpinned. -->
+{#snippet foot()}
+  applies to this chat only
+  <button type="button" class="ch-pop__link" onmousedown={(e) => e.preventDefault()} onclick={() => void openSettings("intelligence")}>Settings → AI ↗</button>
+{/snippet}
+
 <ModelPickerMenu
   label={activeModelLabel}
   title={activeModelTitle}
-  ariaLabel="Model for this thread"
+  ariaLabel="Choose model"
+  glyph={activeProvider === null ? null : providerLabelById(aiRuntime?.providers, activeProvider).charAt(0).toUpperCase()}
+  where={activeProvider === null ? null : providerWhere(activeConfig)}
+  {up}
+  {foot}
   modelPool={loader.pool}
   providers={aiRuntime?.providers ?? []}
   firstProvider={defaultProvider}
-  sentinelLabel={defaultSentinelLabel}
-  sentinelTitle={activeModelTitle}
+  sentinelLabel="Default"
+  sentinelDetail={resolvedDefaultModel}
+  sentinelTitle={resolvedDefaultModel === null ? "Default" : `Default · ${resolvedDefaultModel}`}
   sentinelSelected={pinProvider === null}
   selectedProvider={pinProvider}
   selectedModel={pinModel}
@@ -157,3 +151,8 @@
   onopen={handleOpen}
   {onselect}
 />
+
+<style>
+  .ch-pop__link { margin-left: auto; padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: var(--app-text-muted); }
+  .ch-pop__link:hover { color: var(--app-text-strong); }
+</style>

@@ -22,7 +22,7 @@
   import Subjects from "$lib/insights/Subjects.svelte";
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
   import Context from "$lib/insights/Context.svelte";
-  import Chat from "$lib/insights/Chat.svelte";
+  import Chat from "$lib/chat/Chat.svelte";
   import InsightsRail from "$lib/insights/InsightsRail.svelte";
   import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
@@ -50,7 +50,7 @@
   // A bus request (from the handoff above, or — in a later slice — the rail
   // clicking a row from another surface) switches the shell to the Chat
   // sub-surface. Track the nonce; skip 0 (nothing requested yet on mount).
-  let lastHandoffNonce = 0;
+  let lastHandoffNonce = conversationStore.pendingOpen.nonce; // requests made on /chat aren't ours
   $effect(() => {
     const pending = conversationStore.pendingOpen;
     untrack(() => {
