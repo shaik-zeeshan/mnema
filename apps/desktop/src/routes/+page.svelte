@@ -33,6 +33,7 @@
   import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
   import RecallLandingChip from "$lib/timeline/RecallLandingChip.svelte";
   import { transcriptModelLabel, type TranscriptModelLabel } from "$lib/timeline/transcript-model-label";
+  import { RailEpisodes } from "$lib/timeline/rail-episodes.svelte";
   import {
     parseSpeakerAnalysisProvenance,
     type DrawerShortcut,
@@ -501,9 +502,10 @@
     iconSrc: string | null;
     showIcon: boolean;
     fallback: string;
-    variant: "single" | "range";
+    /** Band `--c`: the category of the engine episode the run overlaps most. */
+    color: string;
   };
-  type TimelineAppRun = Omit<TimelineAppGroup, "iconLeftPx" | "iconSrc" | "showIcon"> & {
+  type TimelineAppRun = Omit<TimelineAppGroup, "iconLeftPx" | "iconSrc" | "showIcon" | "color"> & {
     startIndex: number;
     endIndex: number;
   };
@@ -2409,7 +2411,6 @@
       const frameCount = runEnd - runStart + 1;
       const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
       const label = runAppName ?? runBundleId ?? "Unknown app";
-      const variant = frameCount === 1 ? "single" : "range";
       runs.push({
         key: timelineAppGroupKey(runIdentity, frames, runEnd),
         boundaryFrameId: endExclusive < frames.length ? frames[runEnd]?.id ?? null : null,
@@ -2422,7 +2423,6 @@
         rightPx: runStart * TIMELINE_SLOT_WIDTH,
         widthPx,
         fallback: timelineAppIconFallback(runAppName, runBundleId),
-        variant,
       });
     }
 
@@ -2495,6 +2495,8 @@
     return low;
   }
 
+  // Episodes for band colours: refetched only when the loaded range moves.
+  const railEpisodes = new RailEpisodes();
   const timelineAppGroups = $derived.by<TimelineAppGroup[]>(() => {
     const startedAt = performance.now();
     const runs = timelineAppRuns;
@@ -2503,7 +2505,7 @@
     if (runs.length === 0 || windowStart >= windowEnd) return [];
 
     const groups: TimelineAppGroup[] = [];
-    const iconSizePx = 20;
+    const frames = timelineFrames;
     const firstRun = firstTimelineAppRunEndingAtOrAfter(runs, windowStart);
     for (let i = firstRun; i < runs.length; i++) {
       const run = runs[i]!;
@@ -2513,19 +2515,16 @@
       const visibleStart = Math.max(run.startIndex, windowStart);
       const visibleEnd = Math.min(run.endIndex, windowEnd - 1);
       const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
-      const iconCenterOffsetFromRight =
-        (visibleStart - run.startIndex) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
       groups.push({
         ...run,
-        iconLeftPx: Math.max(
-          2,
-          Math.min(
-            Math.max(2, run.widthPx - iconSizePx - 2),
-            run.widthPx - iconCenterOffsetFromRight - iconSizePx / 2,
-          ),
-        ),
+        // Letter tile 5px in from the oldest visible edge of the band.
+        iconLeftPx: (run.endIndex - visibleEnd) * TIMELINE_SLOT_WIDTH + 5,
         iconSrc: run.bundleId ? timelineAppIconSrc(run.bundleId) : null,
-        showIcon: run.variant === "range" && visibleWidthPx >= iconSizePx + 24,
+        showIcon: visibleWidthPx > 30,
+        color: railEpisodes.colorFor(
+          parseCapturedAt(frames[run.endIndex]!.capturedAt).getTime(),
+          parseCapturedAt(frames[run.startIndex]!.capturedAt).getTime(),
+        ),
       });
     }
 
@@ -2543,6 +2542,11 @@
         .map((group) => group.boundaryFrameId)
         .filter((id): id is number => id != null),
     );
+  });
+
+  $effect(() => {
+    const f = timelineFrames;
+    if (f.length) railEpisodes.sync(parseCapturedAt(f[f.length - 1]!.capturedAt).getTime(), parseCapturedAt(f[0]!.capturedAt).getTime());
   });
 
   $effect(() => {
@@ -6594,18 +6598,13 @@
         >
           {#each timelineAppGroups as group (group.key)}
             <div
-              class="timeline-rail__app-group"
-              class:timeline-rail__app-group--single={group.variant === "single"}
-              class:timeline-rail__app-group--range={group.variant === "range"}
-              style="right: {group.rightPx}px; width: {group.widthPx}px; --timeline-app-icon-left: {group.iconLeftPx}px"
+              class="tl-group"
+              style="right: {group.rightPx}px; width: {group.widthPx}px; --c: {group.color}"
               use:tip={timelineAppGroupTitle(group)}
               aria-hidden="true"
             >
               {#if group.showIcon}
-                <span
-                  class="timeline-rail__app-group-icon"
-                  class:timeline-rail__app-group-icon--image={!!group.iconSrc}
-                >
+                <span class="tl-group__icon" style="left: {group.iconLeftPx}px">
                   {#if group.iconSrc}
                     <img src={group.iconSrc} alt="" loading="lazy" />
                   {:else}
@@ -6776,9 +6775,7 @@
         id="timeline-rail-readout"
         class="timeline-rail__tooltip"
         class:timeline-rail__tooltip--pinned={!tooltipIsHovered}
-        style={tooltipIsHovered && hoveredX != null
-          ? `left: ${hoveredX}px; transform: translate(-50%, -100%);`
-          : "left: 50%; transform: translate(-50%, -100%);"}
+        style="left: {tooltipIsHovered && hoveredX != null ? `${hoveredX}px` : '50%'}; transform: translate(-50%, -100%); --c: {railEpisodes.colorFor(parseCapturedAt(tooltipFrame.capturedAt).getTime())}"
         role="tooltip"
       >
         {#if tooltipAppLabel}
@@ -7478,48 +7475,44 @@
     margin-right: calc(50cqi - 4px);
   }
 
-  .timeline-rail__app-group {
-    position: absolute;
-    top: 8px;
-    z-index: 1;
-    height: 20px;
-    overflow: visible;
-    pointer-events: none;
-  }
-
-  .timeline-rail__app-group-icon {
+  /* App run band; --c = the run's engine-episode category (neutral grey when
+     no episode covers it). */
+  .tl-group {
     position: absolute;
     top: 0;
-    left: var(--timeline-app-icon-left);
-    width: 20px;
-    height: 20px;
-    min-width: 20px;
-    min-height: 20px;
-    box-sizing: border-box;
+    bottom: 0;
+    z-index: 1;
+    pointer-events: none;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--c) 16%, transparent), color-mix(in srgb, var(--c) 4%, transparent));
+    border-left: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+  }
+
+  .tl-group::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: color-mix(in srgb, var(--c) 75%, transparent);
+  }
+
+  .tl-group__icon {
+    position: absolute;
+    top: 7px;
+    width: 18px;
+    height: 18px;
     display: grid;
     place-items: center;
-    border-radius: 5px;
     overflow: hidden;
+    border-radius: 5px;
+    font: 700 10px/1 var(--font-sans);
     color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 800;
-    line-height: 1;
-    background: color-mix(in srgb, var(--app-surface-raised) 96%, var(--app-bg));
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--app-border-strong) 70%, transparent),
-      0 1px 3px rgba(0, 0, 0, 0.22);
+    background: color-mix(in srgb, var(--c) 32%, var(--app-surface-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 50%, transparent);
   }
 
-  .timeline-rail__app-group-icon--image {
-    padding: 2px;
-    background: color-mix(in srgb, var(--app-surface-raised) 88%, var(--app-bg));
-  }
-
-  .timeline-rail__app-group-icon img {
-    width: 100%;
-    height: 100%;
-    display: block;
-    border-radius: 3px;
+  .tl-group__icon img {
+    width: 14px;
+    height: 14px;
     object-fit: contain;
   }
 
@@ -7822,10 +7815,10 @@
     place-items: center;
     overflow: hidden;
     align-self: center;
-    border-radius: 4px;
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
+    border-radius: 6px;
+    color: var(--app-text-strong);
+    background: color-mix(in srgb, var(--c) 34%, var(--app-surface-raised));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent);
     font-size: 10px;
     font-weight: 800;
     line-height: 1;
