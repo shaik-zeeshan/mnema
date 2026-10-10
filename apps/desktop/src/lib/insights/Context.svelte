@@ -15,7 +15,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { confirm, message } from "@tauri-apps/plugin-dialog";
-  import type { AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
+  import type { AiProviderKind, AiRuntimeStatus, AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
+  import { aiProviderKindLabel, isCloudAiProviderKind } from "$lib/settings/state/ai-providers";
   import { humanizeError } from "$lib/format-error";
   import ContextSide, { GUARDED, TOPICS, topicColor } from "$lib/insights/ContextSide.svelte";
   import IconPlus from "~icons/lucide/plus";
@@ -24,6 +25,8 @@
   import IconInbox from "~icons/lucide/inbox";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconRetry from "~icons/lucide/rotate-ccw";
+  import IconCloud from "~icons/lucide/cloud";
+  import IconLaptop from "~icons/lucide/laptop";
 
   interface Props {
     // Subjects' "View dismissed": land with the Dismissed archive in view.
@@ -32,7 +35,7 @@
   }
   let { openDismissed = false, onOpenSubject }: Props = $props();
 
-  // Per-statement limit (ruling #15); the commands enforce it too once IN-B2 lands.
+  // Per-statement limit (ruling #15); the add/update commands enforce it too.
   const MAX_CHARS = 280;
   const WORDS = ["Nothing", "One thing", "Two things", "Three things", "Four things", "Five things", "Six things", "Seven things", "Eight things", "Nine things"];
 
@@ -40,6 +43,8 @@
   let loadError = $state(false);
   let loading = $state(true);
   let inferred = $state<Conclusion[] | null>(null);
+  /** The default model's provider kind — where statements go (null: no default). */
+  let providerKind = $state<AiProviderKind | null>(null);
   let dismissed = $state<DismissedView[]>([]);
   let dismissedError = $state<string | null>(null);
   let restoringKey = $state<string | null>(null);
@@ -79,6 +84,11 @@
   async function loadInferred(): Promise<void> {
     const list = await invoke<Conclusion[]>("list_user_context_conclusions", { includeFaded: false }).catch(() => null);
     if (list) inferred = list.filter((c) => c.status === "visible");
+  }
+
+  async function loadProvider(): Promise<void> {
+    const status = await invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null);
+    providerKind = status?.defaultProviderKind ?? null;
   }
 
   async function loadDismissed(): Promise<void> {
@@ -171,6 +181,7 @@
     void untrack(() => loadStatements());
     void untrack(() => loadInferred());
     void untrack(() => loadDismissed());
+    void untrack(() => loadProvider());
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
@@ -260,8 +271,17 @@
             {#if submitting}<span class="mx-spin mx-spin--sm"></span>Adding…{:else}<IconPlus width="13" height="13" aria-hidden="true" />Add context<kbd>⌘↵</kbd>{/if}
           </button>
         </div>
-        <!-- wire after IN-B2: "Goes to <provider> each time Mnema forms conclusions · stays on this
-             Mac with a local model." needs the default provider's kind on AiRuntimeStatus. -->
+        {#if providerKind}
+          <div class="in-compose__priv">
+            {#if isCloudAiProviderKind(providerKind)}
+              <IconCloud width="13" height="13" aria-hidden="true" />Goes to {aiProviderKindLabel(providerKind)} each time Mnema
+              forms conclusions · stays on this Mac with a local model.
+            {:else}
+              <IconLaptop width="13" height="13" aria-hidden="true" />Stays on this Mac — {aiProviderKindLabel(providerKind)} forms
+              conclusions locally.
+            {/if}
+          </div>
+        {/if}
         {#if composerError}
           <div>
             <span class="mx-inline" data-tone="danger">
@@ -453,6 +473,21 @@
     gap: 6px;
     padding-top: var(--s-3);
     border-top: 1px solid var(--mx-hairline);
+  }
+  .in-compose__priv {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: calc(var(--s-3) * -1 + 4px);
+    font: 400 var(--text-sm) / 1.4 var(--font-sans);
+    color: var(--app-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .in-compose__priv :global(svg) {
+    flex: none;
+    color: var(--app-text-subtle);
   }
   .in-compose__row > .mx-label {
     margin-right: 4px;

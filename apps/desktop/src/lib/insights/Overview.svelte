@@ -28,7 +28,9 @@
     Activity,
     ActivityCategory,
     Conclusion,
+    DigestAbsentReason,
     UserContextDigest,
+    UserContextDigestResult,
     UserContextStatus,
     AiRuntimeStatus,
   } from "$lib/types/recording";
@@ -153,6 +155,7 @@
   // failure is shown (`digestError` carries the one-sentence reason).
   let digestRegenerating = $state(false);
   let digestError = $state<string | null>(null);
+  let digestReason = $state<DigestAbsentReason | null>(null);
 
   let loadingFree = $state(true);
   // Quiet refresh (OV-22): skeletons only until the CURRENT range has loaded
@@ -368,7 +371,7 @@
   let digestRequestToken = 0;
   async function loadDigest(force = false): Promise<void> {
     if (!statusLoaded || !engineOn) {
-      digest = null;
+      digest = digestReason = null;
       digestLoading = false;
       return;
     }
@@ -379,12 +382,12 @@
     digestError = null;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<{ digest?: UserContextDigest }>(
+      const next = await invoke<UserContextDigestResult>(
         force ? "regenerate_user_context_digest" : "get_user_context_digest",
         { rangeKind: rangeMode, startMs, endMs },
       );
       if (token !== digestRequestToken) return; // range moved on — stale
-      digest = next.digest ?? null;
+      [digest, digestReason] = [next.digest ?? null, next.reason ?? null];
     } catch (error) {
       if (token === digestRequestToken) digestError = String(error);
     } finally {
@@ -404,7 +407,7 @@
     // Drop the old range's prose at once and invalidate in-flight responses —
     // last week's lede never sits over this week's cards.
     digestRequestToken += 1;
-    digest = null;
+    digest = digestReason = null;
     // A new range drops any pending re-read and its error — last range's reason
     // never sits over this one (the token bump also frees a stuck spinner).
     digestRegenerating = false;
@@ -647,6 +650,7 @@
     deepDelta,
     top: ledeStats.topCategory,
     digest,
+    digestReason,
     digestLoading,
     regenerating: digestRegenerating,
     digestError,

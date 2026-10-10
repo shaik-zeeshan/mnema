@@ -4,7 +4,7 @@
   // each card expanding in place into its receipt; beside it the side column
   // (This week day bars, Day mix, Apps). Pure presentation: the parent builds
   // the rows (journal-view.ts) and owns all loading.
-  import type { ActivityFocus, UserContextSummarizingFailure } from "$lib/types/recording";
+  import type { ActivityFocus, ActivityMeta, UserContextSummarizingFailure } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import { hhmm, pendingReasonCopy, riverRowKey, type RiverRow, type WeekDay } from "$lib/insights/journal-view";
   import { CATEGORY_COLOR, UNCATEGORIZED_COLOR, categoryLabel, humanizeMs } from "$lib/insights/activity-helpers";
@@ -20,6 +20,8 @@
   interface Props {
     rows: RiverRow[];
     pending: JournalPending;
+    /** Per-activity app chips + speaker count; absent ids have neither. */
+    meta: Record<number, ActivityMeta>;
     /** Summarizing keeps failing (status field); null when healthy. */
     failure: UserContextSummarizingFailure | null;
     dayLabel: string;
@@ -33,7 +35,7 @@
     onHot: (id: number | null) => void;
     onPickDay: (startMs: number) => void;
   }
-  let { rows, pending, failure, dayLabel, nothingWrittenWhy, week, dayStartMs, mix, apps, hot, onHot, onPickDay }: Props =
+  let { rows, pending, meta, failure, dayLabel, nothingWrittenWhy, week, dayStartMs, mix, apps, hot, onHot, onPickDay }: Props =
     $props();
 
   let openId = $state<number | null>(null);
@@ -117,11 +119,14 @@
             <div>
               <h4><span class="in-sw" style="--c:{cat(a.category ?? null)}"></span>{a.title}</h4>
               {#if a.summary}<p>{a.summary}</p>{/if}
-              <!-- App chips and "N speakers" land with IN-B3 (per-activity apps + speakers). -->
               <div class="in-act__meta">
                 <span class="mx-chip mx-chip--cat" style="--c:{cat(a.category ?? null)}">{catName(a.category ?? null)}</span>
                 {#if a.focus}
                   <span class="mx-chip in-focus" style="--c:var({FOCUS[a.focus][0]})">{FOCUS[a.focus][1]}</span>
+                {/if}
+                {#each meta[a.id]?.apps ?? [] as app (app)}<span class="mx-chip">{app}</span>{/each}
+                {#if meta[a.id]?.speakers}
+                  <span class="mx-chip mx-chip--mic">{meta[a.id].speakers} speaker{meta[a.id].speakers === 1 ? "" : "s"}</span>
                 {/if}
                 {#if row.slot.media === "expired"}<span class="mx-chip">footage expired</span>{/if}
                 <button

@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  import type { UserContextDigest } from "$lib/types/recording";
+  import type { DigestAbsentReason, UserContextDigest } from "$lib/types/recording";
   import type { FocusCounts, LedeTopCategory } from "$lib/insights/lede-stats";
   import type { OverviewState } from "$lib/insights/OverviewStates.svelte";
 
@@ -44,6 +44,8 @@
     deepDelta: number | null;
     top: LedeTopCategory | null;
     digest: UserContextDigest | null;
+    /** Why the digest command served no read (null while loading / on a read). */
+    digestReason: DigestAbsentReason | null;
     digestLoading: boolean;
     regenerating: boolean;
     digestError: string | null;
@@ -86,7 +88,15 @@
   const prevWord = $derived(p.unit === "day" ? "yesterday" : `last ${p.unit}`);
   const held = $derived(e.digestError === SENSITIVE_HOLD);
   const failText = $derived(e.digestError && !held ? turnErrorCopy(e.digestError, null, null).text : "");
-  const tooFew = $derived(e.activityCount < 2);
+  const tooFew = $derived(e.digestReason === "too_few");
+  /** What stops a new read: the status guess, then the digest's own reason. */
+  const pausedBy = $derived(
+    e.digestReason === "derivation_off"
+      ? "continuous derivation is off"
+      : e.paused || e.digestReason === "engine_not_ready"
+        ? "AI is paused"
+        : null,
+  );
   // IN-B1 joins `headline — turn`; the turn reads de-emphasized.
   const headline = $derived.by(() => {
     const h = e.digest?.headline?.trim() ?? "";
@@ -142,10 +152,12 @@
           {c.appCount === 1 ? "app" : "apps"}.{#if c.topApp}{" "}<em>Most of it in {c.topApp}.</em>{/if}
         </h1>
       {/if}
-    {:else if e.paused && !e.digest}
+    {:else if pausedBy && !e.digest}
       <span class="mx-kicker">{kicker}</span>
-      <h1 class="mx-display">No new read while AI is paused.</h1>
-      <p class="mx-prose">Everything below was written before. The read comes back on its own.</p>
+      <h1 class="mx-display">No new read while {pausedBy}.</h1>
+      <p class="mx-prose">
+        Everything below was written before.{e.digestReason === "derivation_off" ? "" : " The read comes back on its own."}
+      </p>
     {:else if e.digest}
       <span class="mx-kicker">{kicker}</span>
       {#key e.digest.generatedAtMs}
@@ -216,12 +228,12 @@
       <h1 class="mx-display">No read for this {unitWord}.</h1>
       <p class="mx-prose">{e.olderNote}</p>
     {:else if tooFew}
-      <!-- wire after IN-B: the digest's `reason` (too_few / guardrail / …) replaces this count guess. -->
       <span class="mx-kicker">{kicker}</span>
       <h1 class="mx-display">Too little captured {p.scope} to write a read.</h1>
       <p class="mx-prose">
-        A read needs at least two activities; this {unitWord} has {e.activityCount === 1 ? "one" : "none"}
-        so far. The numbers on the right still count.
+        A read needs at least two activities{e.activityCount < 2
+          ? `; this ${unitWord} has ${e.activityCount === 1 ? "one" : "none"} so far`
+          : " it can use"}. The numbers on the right still count.
       </p>
     {:else}
       <span class="mx-kicker">{kicker}</span>

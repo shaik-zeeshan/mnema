@@ -10,7 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { goto } from "$app/navigation";
-  import type { Activity, AiRuntimeStatus, UserContextDigest, UserContextStatus } from "$lib/types/recording";
+  import type { Activity, ActivityMeta, AiRuntimeStatus, DigestAbsentReason, UserContextDigest, UserContextDigestResult, UserContextStatus } from "$lib/types/recording";
   import type { AudioSegmentDto, FrameSummaryDto } from "$lib/types/app-infra";
   import type { Span } from "$lib/insights/journal-day";
   import type { JournalEmpty } from "$lib/insights/journal-view";
@@ -64,6 +64,7 @@
   // ── Loaded data ─────────────────────────────────────────────────────────
   let activities = $state<Activity[]>([]);
   let weekActivities = $state<Activity[]>([]);
+  let actMeta = $state<Record<number, ActivityMeta>>({}); // card app chips + "N speakers"
   let frames = $state<FrameSummaryDto[]>([]);
   let audio = $state<Span[]>([]);
   let failedWindows = $state<Span[]>([]);
@@ -80,6 +81,7 @@
   let digestLoading = $state(false);
   let digestRegenerating = $state(false);
   let digestError = $state<string | null>(null);
+  let digestReason = $state<DigestAbsentReason | null>(null);
 
   // ── Derived model ───────────────────────────────────────────────────────
   const rangeActivities = $derived(
@@ -179,6 +181,11 @@
   });
   const n = $derived(model.slots.length);
   const headline = $derived((digest?.headline ?? "").split(" — "));
+  // The digest's own absent reason backs up the status guess (`noDerive`).
+  const digestOff = $derived(noDerive || digestReason === "derivation_off" || digestReason === "engine_not_ready");
+  const offWhat = $derived(
+    ctxStatus?.reason === "user_context_disabled" || digestReason === "derivation_off" ? "continuous derivation" : "AI",
+  );
   const week = $derived(
     weekDays(range.startMs, weekActivities, capturedHoursByDay(history?.activityHeatmap ?? []), Date.now()),
   );
@@ -207,7 +214,7 @@
     const weekStartMs = weekDays(startMs, [], {}, 0)[0].startMs;
     try {
       const request = { capturedAtStart: new Date(startMs).toISOString(), capturedAtEnd: new Date(endMs).toISOString() };
-      const [nextActivities, nextFrames, nextAudio, nextFailed, nextWeek] = await Promise.all([
+      const [nextActivities, nextFrames, nextAudio, nextFailed, nextWeek, nextMeta] = await Promise.all([
         invoke<Activity[]>("list_user_context_activities", { startMs, endMs }),
         invoke<FrameSummaryDto[]>("list_frame_summaries_in_range", { request }),
         invoke<AudioSegmentDto[]>("list_audio_segments", { request }),
@@ -216,6 +223,7 @@
         invoke<Activity[]>("list_user_context_activities", { startMs: weekStartMs, endMs: weekStartMs + 7 * DAY_MS }).catch(
           () => [] as Activity[],
         ),
+        invoke<ActivityMeta[]>("list_user_context_activity_meta", { startMs, endMs }).catch(() => [] as ActivityMeta[]),
       ]);
       if (token !== rangeToken) return; // day moved on — stale
       activities = nextActivities;
@@ -223,6 +231,7 @@
       audio = nextAudio.map((a) => ({ startMs: Date.parse(a.startedAt), endMs: Date.parse(a.endedAt) }));
       failedWindows = nextFailed.map(([s, e]) => ({ startMs: s, endMs: e }));
       weekActivities = nextWeek;
+      actMeta = Object.fromEntries(nextMeta.map((m) => [m.activityId, m]));
       nowMs = Date.now();
       loadError = false;
     } catch {
@@ -273,6 +282,7 @@
   async function loadDigest(): Promise<void> {
     if (!statusLoaded || !engineOn) {
       digest = null;
+      digestReason = null;
       digestLoading = false;
       return;
     }
@@ -280,12 +290,12 @@
     digestLoading = true;
     digestError = null;
     try {
-      const next = await invoke<{ digest?: UserContextDigest }>("get_user_context_digest", {
+      const next = await invoke<UserContextDigestResult>("get_user_context_digest", {
         rangeKind: "day",
         startMs: range.startMs,
         endMs: range.endMs,
       });
-      if (token === digestToken) digest = next.digest ?? null;
+      if (token === digestToken) [digest, digestReason] = [next.digest ?? null, next.reason ?? null];
     } catch (error) {
       if (token === digestToken) digestError = String(error);
     } finally {
@@ -305,12 +315,12 @@
     digestLoading = false;
     digestError = null;
     try {
-      const next = await invoke<{ digest?: UserContextDigest }>("regenerate_user_context_digest", {
+      const next = await invoke<UserContextDigestResult>("regenerate_user_context_digest", {
         rangeKind: "day",
         startMs: range.startMs,
         endMs: range.endMs,
       });
-      if (token === digestToken) digest = next.digest ?? null;
+      if (token === digestToken) [digest, digestReason] = [next.digest ?? null, next.reason ?? null];
     } catch (error) {
       if (token === digestToken) digestError = String(error);
     } finally {
@@ -324,6 +334,7 @@
   function scheduleDigestLoad(): void {
     digestToken += 1;
     digest = null;
+    digestReason = null;
     digestRegenerating = false;
     digestError = null;
     if (digestDebounceTimer != null) clearTimeout(digestDebounceTimer);
@@ -495,16 +506,16 @@
           <h1 class="mx-display">{tracked} tracked. <em>Nothing written up.</em></h1>
           <p class="mx-prose">{nothingWrittenWhy} Everything captured is on the Timeline.</p>
         {:else}
-          <span class="mx-kicker">{noDerive && !digest ? dayLabel : `${atLatest ? "Digest so far" : "Digest"} · ${dayLabel}`}</span>
+          <span class="mx-kicker">{digestOff && !digest ? dayLabel : `${atLatest ? "Digest so far" : "Digest"} · ${dayLabel}`}</span>
           {#if n >= 2 && engineOn && !digest && (digestLoading || digestRegenerating)}
             <div aria-busy="true">
               <span class="mx-sr">Writing the digest</span>
               <div class="in-skel-read"><div class="mx-skel mx-skel--title"></div><div class="mx-skel mx-skel--title"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div></div>
             </div>
             <div class="in-read__foot"><span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Writing the digest…</span></div>
-          {:else if n < 2}
+          {:else if n < 2 || digestReason === "too_few"}
             <h1 class="mx-display">{n ? `Too little captured on ${dayLabel} to write a digest.` : "Your day is being written."}</h1>
-            <p class="mx-prose">{n ? "A digest needs at least two activities; this day has one. It's below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>
+            <p class="mx-prose">{n === 1 ? "A digest needs at least two activities; this day has one. It's below, as captured." : n ? "A digest needs at least two activities it can use. They're below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>
           {:else if digest}
             <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}<em> — {headline.slice(1).join(" — ")}</em>{/if}</h1>
             <p class="mx-prose">{digest.narrative}</p>
@@ -517,11 +528,10 @@
               {/if}
             </div>
           {:else}
-            <!-- ponytail: one copy for every "no digest" cause until IN-B1's reason lands. -->
             <h1 class="mx-display">{n} activities, {tracked} tracked.</h1>
             <p class="mx-prose">
-              {noDerive
-                ? `No digest while ${ctxStatus?.reason === "user_context_disabled" ? "continuous derivation" : "AI"} is off — the cards below were written before.`
+              {digestOff
+                ? `No digest while ${offWhat} is off — the cards below were written before.`
                 : digestError
                   ? "Couldn't write the digest this time. The cards below are unaffected."
                   : "No digest for this day yet."}
@@ -574,6 +584,7 @@
     <JournalRiver
       {rows}
       {pending}
+      meta={actMeta}
       failure={engineOn ? (ctxStatus?.summarizingFailure ?? null) : null}
       {dayLabel}
       {nothingWrittenWhy}
