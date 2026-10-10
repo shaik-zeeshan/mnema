@@ -2416,14 +2416,15 @@ impl UserContextStore {
         Ok(())
     }
 
-    /// List every user-authored Context statement, newest first (by
-    /// `created_at_ms`). Used by both the settings surface and the derivation
-    /// pass (which feeds them to the engine as standing context).
+    /// List every user-authored Context statement, most recently edited first
+    /// (by `updated_at_ms`), so editing a statement keeps it inside the
+    /// derivation pass's char cap. Used by both the Context surface and the
+    /// derivation pass (which feeds them to the engine as standing context).
     pub async fn list_authored_context(&self) -> Result<Vec<AuthoredContext>> {
         let rows = sqlx::query(
             "SELECT id, text, topic, created_at_ms, updated_at_ms \
              FROM user_context_authored \
-             ORDER BY created_at_ms DESC, id DESC",
+             ORDER BY updated_at_ms DESC, id DESC",
         )
         .fetch_all(self.db.read())
         .await?;
@@ -5693,7 +5694,7 @@ mod tests {
         block_on(async {
             let store = test_store().await;
 
-            // Add two statements; list is newest-first by created_at_ms.
+            // Add two statements; list is most-recently-edited first.
             let first = store
                 .add_authored_context("I'm a designer", Some("role"), 1_000)
                 .await
@@ -5729,6 +5730,8 @@ mod tests {
             assert_eq!(updated.topic.as_deref(), Some("job"));
             assert_eq!(updated.created_at_ms, 1_000, "created_at_ms unchanged");
             assert_eq!(updated.updated_at_ms, 5_000, "updated_at_ms bumped");
+            let listed = store.list_authored_context().await.expect("list");
+            assert_eq!(listed[0].id, first, "an edit moves the statement to the front");
 
             // Delete removes only the named row.
             store.delete_authored_context(first).await.expect("delete");

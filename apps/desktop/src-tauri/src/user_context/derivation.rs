@@ -1088,13 +1088,14 @@ fn now_ms() -> i64 {
 }
 
 /// Total char budget for the USER-AUTHORED CONTEXT block (#107). Statements are
-/// included newest-first (the store lists them that way) until adding the next one
-/// would exceed this cap; the remaining (older) statements are dropped. Bounds the
-/// prompt growth from a user who authors many statements.
-const AUTHORED_CONTEXT_CHAR_CAP: usize = 2_000;
+/// included most-recently-edited first (the store lists them by `updated_at_ms`)
+/// until adding the next one would exceed this cap; the remaining (older)
+/// statements are dropped and the Context surface flags them `inPrompt: false`.
+/// ≈1,000 tokens per pass, next to a ≈36k-char activity block.
+const AUTHORED_CONTEXT_CHAR_CAP: usize = 4_000;
 
 /// The ONE counting rule for the authored-context budget: per statement (in the
-/// store's newest-first order), its prompt line if it is read, else `None`. Blank
+/// store's most-recently-edited-first order), its prompt line if it is read, else `None`. Blank
 /// statements are skipped; the newest non-blank one is always included; the scan
 /// stops at the first statement that would overflow the cap, so everything older
 /// is out too. The Context surface's `inPrompt` flag reads this same rule.
@@ -1125,7 +1126,7 @@ pub(crate) fn authored_prompt_lines(authored: &[AuthoredContext]) -> Vec<Option<
 /// self-asserted statements, fed to the engine as authoritative context that should
 /// steer which Conclusions form and what Subjects matter — clearly labeled as
 /// user-asserted, distinct from the derived Activity evidence above. Statements
-/// arrive newest-first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
+/// arrive most-recently-edited first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
 /// (older ones are dropped). Empty (no trailing block) when the user has authored
 /// none, so a default dossier's prompt is unchanged.
 fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
@@ -1579,7 +1580,7 @@ mod tests {
         assert_eq!(in_prompt(&[authored(1, &huge, None), authored(0, "short", None)]), [true, false]);
         // Stop at the first overflow: a short older statement that WOULD fit after
         // the overflowing one is still out.
-        let big = "y".repeat(1_200);
+        let big = "y".repeat(AUTHORED_CONTEXT_CHAR_CAP / 2 + 100);
         let items = [
             authored(3, &big, None),
             authored(2, &big, None),
@@ -1592,6 +1593,37 @@ mod tests {
         assert!(!block.contains("tiny"));
         // Blank statements are never read.
         assert_eq!(in_prompt(&[authored(2, "  ", None), authored(1, "a", None)]), [false, true]);
+    }
+
+    /// At the cap, a statement edited today is read before an older untouched
+    /// one, even though it was created first (store order is `updated_at_ms`).
+    #[tokio::test]
+    async fn an_edited_statement_is_included_before_an_older_untouched_one_at_the_cap() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("authored-cap-order-{unique}"));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let infra = app_infra::AppInfra::initialize(&dir).await.expect("app infra");
+        let store = infra.user_context();
+
+        let half = "z".repeat(AUTHORED_CONTEXT_CHAR_CAP / 2 + 100);
+        let edited = store.add_authored_context(&half, None, 1_000).await.expect("add");
+        let untouched = store.add_authored_context(&half, None, 2_000).await.expect("add");
+        store
+            .update_authored_context(edited, &half, Some("Work"), 3_000)
+            .await
+            .expect("edit");
+
+        let listed = store.list_authored_context().await.expect("list");
+        let read: Vec<(i64, bool)> = listed
+            .iter()
+            .zip(authored_prompt_lines(&listed))
+            .map(|(item, line)| (item.id, line.is_some()))
+            .collect();
+        assert_eq!(read, [(edited, true), (untouched, false)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

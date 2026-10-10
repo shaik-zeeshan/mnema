@@ -1120,13 +1120,7 @@ async fn worker_tick(
     // Pacing depends on the provider *kind* (cloud vs local), so resolve the
     // default model's provider instance id back to its kind via the provider
     // list.
-    let Some(default_provider) = ai_runtime.default_model.as_ref().and_then(|model| {
-        ai_runtime
-            .providers
-            .iter()
-            .find(|provider| provider.id == model.provider)
-            .map(|provider| provider.kind)
-    }) else {
+    let Some(default_provider) = default_provider_kind(&ai_runtime) else {
         return IDLE_INTERVAL;
     };
     let provider_label = provider_label_for(&ai_runtime);
@@ -1302,6 +1296,19 @@ pub(crate) fn provider_label_for(settings: &capture_types::AiRuntimeSettings) ->
         .default_model
         .as_ref()
         .map(|model| model.provider.clone())
+}
+
+/// The global default model's provider *kind*, resolved from its instance id
+/// through the provider list (`None` when no default or a dangling id).
+pub(crate) fn default_provider_kind(
+    settings: &capture_types::AiRuntimeSettings,
+) -> Option<capture_types::AiProviderKind> {
+    let model = settings.default_model.as_ref()?;
+    settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == model.provider)
+        .map(|provider| provider.kind)
 }
 
 /// Model label for the run ledger (the global default model id).

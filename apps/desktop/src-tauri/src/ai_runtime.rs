@@ -16,7 +16,7 @@ use crate::native_capture::{read_recording_settings, RecordingSettingsState};
 
 /// Availability snapshot for the configured engine, mirroring Ask AI's
 /// "Ok with available:false + reason" shape for the normal not-ready cases.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeStatus {
     enabled: bool,
@@ -25,9 +25,13 @@ pub struct AiRuntimeStatus {
     has_providers: bool,
     configured: bool,
     available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     default_model: Option<AiEngineRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The default model's provider *kind* (cloud vs local), so the Context
+    /// composer can say where authored statements go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_provider_kind: Option<AiProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
 
@@ -840,6 +844,7 @@ pub async fn get_ai_runtime_status(
     // local engine that is merely unreachable); `available` is the full
     // prerequisite (including the local reachability ping).
     let has_providers = !settings.providers.is_empty();
+    let default_provider_kind = crate::user_context::worker::default_provider_kind(&settings);
     match engine_configured_prerequisite(&settings).await {
         Ok(()) => Ok(AiRuntimeStatus {
             enabled: settings.enabled,
@@ -847,6 +852,7 @@ pub async fn get_ai_runtime_status(
             configured: true,
             available: true,
             default_model: settings.default_model,
+            default_provider_kind,
             reason: None,
         }),
         Err(reason) => Ok(AiRuntimeStatus {
@@ -857,6 +863,7 @@ pub async fn get_ai_runtime_status(
             configured: reason == "local_endpoint_unreachable",
             available: false,
             default_model: settings.default_model,
+            default_provider_kind,
             reason: Some(status_reason_code(reason)),
         }),
     }
@@ -1395,6 +1402,35 @@ mod tests {
             }),
             mcp_servers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn ai_runtime_status_round_trips_with_has_providers_and_kind() {
+        let settings = local_settings();
+        let status = AiRuntimeStatus {
+            enabled: true,
+            has_providers: true,
+            configured: true,
+            available: false,
+            default_model: settings.default_model.clone(),
+            default_provider_kind: crate::user_context::worker::default_provider_kind(&settings),
+            reason: Some("local_endpoint_unreachable".to_string()),
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "enabled": true, "hasProviders": true, "configured": true, "available": false,
+                "defaultModel": { "provider": "ollama", "model": "llama-default" },
+                "defaultProviderKind": "ollama",
+                "reason": "local_endpoint_unreachable"
+            })
+        );
+        assert_eq!(serde_json::from_value::<AiRuntimeStatus>(value).unwrap(), status);
+
+        // No default model → no kind key at all.
+        let bare = AiRuntimeSettings { default_model: None, ..settings };
+        assert_eq!(crate::user_context::worker::default_provider_kind(&bare), None);
     }
 
     fn expect_local(config: ai_engine::EngineConfig) -> (ai_engine::LocalKind, String, String) {

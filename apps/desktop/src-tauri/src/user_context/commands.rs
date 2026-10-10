@@ -719,8 +719,8 @@ pub async fn user_context_correct_activity_focus(
 }
 
 /// One authored statement plus whether the engine actually reads it: `in_prompt`
-/// is false for statements past the authored-context char cap (CX-06).
-#[derive(Debug, Clone, Serialize)]
+/// is false for statements past the 4,000-char authored-context cap (CX-06).
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthoredContextRow {
     #[serde(flatten)]
@@ -728,7 +728,8 @@ pub struct AuthoredContextRow {
     pub in_prompt: bool,
 }
 
-/// List every **user-authored Context** statement (#107), newest first. These are
+/// List every **user-authored Context** statement (#107), most recently edited
+/// first. These are
 /// standing statements the user wrote about themselves; they are user-asserted, so
 /// they carry no confidence and never decay — but only the newest that fit the
 /// prompt cap are read, flagged per row via `inPrompt`.
@@ -749,8 +750,39 @@ pub async fn list_user_context_authored(
         .collect())
 }
 
+/// Longest authored statement, in chars (ruling #15).
+const AUTHORED_STATEMENT_CHAR_LIMIT: usize = 280;
+
+/// The fixed authored topics (ruling #9). The column stays free TEXT.
+const AUTHORED_TOPICS: [&str; 4] = ["Work", "Preferences", "People", "Goals"];
+
+/// Shared add/update validation: trimmed, non-empty, at most
+/// [`AUTHORED_STATEMENT_CHAR_LIMIT`] chars; topic one of [`AUTHORED_TOPICS`] or
+/// none (blank counts as none).
+fn validate_authored<'a>(
+    text: &'a str,
+    topic: Option<&'a str>,
+) -> Result<(&'a str, Option<&'a str>), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Authored context text cannot be empty.".to_string());
+    }
+    if text.chars().count() > AUTHORED_STATEMENT_CHAR_LIMIT {
+        return Err(format!(
+            "Keep a statement to {AUTHORED_STATEMENT_CHAR_LIMIT} characters or fewer."
+        ));
+    }
+    match topic.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) if !AUTHORED_TOPICS.contains(&t) => Err(format!(
+            "Unknown topic \"{t}\": use Work, Preferences, People or Goals."
+        )),
+        topic => Ok((text, topic)),
+    }
+}
+
 /// Add a **user-authored Context** statement (#107). Stored verbatim with an
-/// optional `topic` grouping handle; stamped with the same `now_ms` time source the
+/// optional `topic` (one of [`AUTHORED_TOPICS`]), at most
+/// [`AUTHORED_STATEMENT_CHAR_LIMIT`] chars; stamped with the same `now_ms` time source the
 /// rest of the module uses. Returns the persisted row and emits
 /// `user_context_changed` so the surface refreshes.
 #[tauri::command]
@@ -760,22 +792,18 @@ pub async fn user_context_add_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<AuthoredContext, String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Authored context text cannot be empty.".to_string());
-    }
+    let (text, topic) = validate_authored(&text, topic.as_deref())?;
     let now = now_ms();
-    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let store = infra.user_context();
     let id = store
-        .add_authored_context(text, topic.as_deref(), now)
+        .add_authored_context(text, topic, now)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(AuthoredContext {
         id,
         text: text.to_string(),
-        topic,
+        topic: topic.map(str::to_string),
         created_at_ms: now,
         updated_at_ms: now,
     })
@@ -791,14 +819,10 @@ pub async fn user_context_update_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<(), String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Authored context text cannot be empty.".to_string());
-    }
-    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let (text, topic) = validate_authored(&text, topic.as_deref())?;
     infra
         .user_context()
-        .update_authored_context(id, text, topic.as_deref(), now_ms())
+        .update_authored_context(id, text, topic, now_ms())
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
@@ -916,6 +940,41 @@ mod tests {
             dismissed_at_ms,
             source: "user".to_string(),
         }
+    }
+
+    #[test]
+    fn authored_validation_limits_length_and_fixes_topics() {
+        assert_eq!(validate_authored("  hi ", Some(" ")), Ok(("hi", None)));
+        assert_eq!(validate_authored("hi", Some("Goals")), Ok(("hi", Some("Goals"))));
+        assert!(validate_authored("hi", Some("role")).is_err());
+        assert!(validate_authored("hi", Some("work")).is_err(), "exact names only");
+        assert!(validate_authored("   ", None).is_err());
+        let at_limit = "é".repeat(AUTHORED_STATEMENT_CHAR_LIMIT);
+        assert!(validate_authored(&at_limit, None).is_ok(), "chars, not bytes");
+        assert!(validate_authored(&format!("{at_limit}x"), None).is_err());
+    }
+
+    #[test]
+    fn authored_row_round_trips_flat_with_in_prompt() {
+        let row = AuthoredContextRow {
+            item: AuthoredContext {
+                id: 5,
+                text: "I'm a designer".to_string(),
+                topic: Some("Work".to_string()),
+                created_at_ms: 10,
+                updated_at_ms: 20,
+            },
+            in_prompt: false,
+        };
+        let value = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": 5, "text": "I'm a designer", "topic": "Work",
+                "createdAtMs": 10, "updatedAtMs": 20, "inPrompt": false
+            })
+        );
+        assert_eq!(serde_json::from_value::<AuthoredContextRow>(value).unwrap(), row);
     }
 
     #[test]

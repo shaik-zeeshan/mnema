@@ -216,6 +216,8 @@ export interface AiRuntimeStatus {
 	configured: boolean;
 	available: boolean;
 	defaultModel?: AiEngineRef | null;
+	/** The default model's provider kind (cloud vs local); absent with no default. */
+	defaultProviderKind?: AiProviderKind | null;
 	reason?: string | null;
 }
 
@@ -264,6 +266,9 @@ export interface Activity {
 	evidence: ActivityEvidenceRef[];
 }
 
+/** The only topics `user_context_add_authored` / `_update_authored` accept (or null). */
+export type AuthoredTopic = "Work" | "Preferences" | "People" | "Goals";
+
 /** One user-authored standing context statement (issue #107 backend DTO). */
 export interface AuthoredContext {
 	id: number;
@@ -272,7 +277,9 @@ export interface AuthoredContext {
 	createdAtMs: number;
 	updatedAtMs: number;
 	/** From `list_user_context_authored` only: false when the statement falls past
-	 * the ~2,000-character prompt cap and the engine doesn't read it. */
+	 * the 4,000-character prompt cap and the engine doesn't read it. The list is
+	 * most-recently-edited first; `text` ≤280 chars; `topic` is an
+	 * `AuthoredTopic` or null. Mirrors the Rust `AuthoredContextRow`. */
 	inPrompt?: boolean;
 }
 
