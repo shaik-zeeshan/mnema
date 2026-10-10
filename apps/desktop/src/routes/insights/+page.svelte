@@ -223,7 +223,7 @@
   </div>
 
   <section class="in-view" aria-label={TABS.find((t) => t.id === view)?.label}>
-    {#if notice}
+    {#if notice && !(engine.kind === "pitch" && view === "journal")}
       {@const Icon = notice.icon}
       <div class="in-notices">
         <div class="mx-notice" data-tone={notice.tone || undefined} role="status">

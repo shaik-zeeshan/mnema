@@ -1,6 +1,6 @@
 // receipt-audio-loader — the invoke-touching hydration behind the Activity
 // Receipt's audio evidence (ADR 0049), split out (mirroring receipt-frames.ts)
-// to keep ActivityReceipt.svelte under the 800-line ceiling: resolves the
+// to keep ReceiptViewer.svelte under the 800-line ceiling: resolves the
 // shared person profiles once, hydrates every audio segment in the span into an
 // ordered `TurnView[]`, and fetches a clip's playable media on demand.
 // Generation-guarded — a new activity drops any stale hydration.

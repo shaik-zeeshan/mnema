@@ -1,4 +1,4 @@
-// Pure playback helpers for the Activity Receipt (ActivityReceipt.svelte): a
+// Pure playback helpers for the Activity Receipt (ReceiptViewer.svelte): a
 // bounded LRU for decoded frame previews, index stepping with clamped bounds,
 // a speed→fps mapping, and a gap-based capture-segment count. No DOM, no
 // Svelte — unit-testable in bun.

@@ -1,8 +1,8 @@
 <script lang="ts">
   // One answer's sources row (chat.html › sources): compact frame chips with a
   // thumbnail, audio chips, and a host chip for a frame with a captured page.
-  // A frame peeks in place (FrameDetailModal), an audio clip plays in the
-  // Activity Receipt; the raw-Timeline hand-off is the fallback.
+  // A frame peeks in place (FrameDetailModal), an audio clip plays in an
+  // inline receipt under the row; the raw-Timeline hand-off is the fallback.
   import { invoke } from "@tauri-apps/api/core";
   import { message } from "@tauri-apps/plugin-dialog";
   import { tip } from "$lib/components/tooltip";
@@ -11,7 +11,7 @@
   import { humanizeError } from "$lib/format-error";
   import { parseCapturedAt } from "$lib/format-time";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
-  import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
+  import ReceiptViewer from "$lib/insights/ReceiptViewer.svelte";
   import type { AskAiSource } from "$lib/insights/conversation";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type { Activity } from "$lib/types/recording";
@@ -77,6 +77,7 @@
       void openInTimeline(source);
       return;
     }
+    if (receipt?.id === source.audioSegmentId) return void (receipt = null); // a second click closes it
     receipt = {
       id: source.audioSegmentId,
       title: source.sourceKind === "system" ? "System audio" : source.sourceKind === "microphone" ? "Microphone audio" : "Spoken audio",
@@ -135,7 +136,7 @@
   onOpenInTimeline={peek ? () => peek && void openInTimeline(peek) : undefined}
 />
 {#if receipt}
-  <ActivityReceipt activity={receipt} onClose={() => (receipt = null)} />
+  <ReceiptViewer activity={receipt} />
 {/if}
 
 <style>

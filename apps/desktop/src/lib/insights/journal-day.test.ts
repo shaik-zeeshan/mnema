@@ -245,3 +245,20 @@ describe("midnight boundaries", () => {
     expect(model.slots[0].activity.startedAtMs).toBe(DAY_END - 5 * MIN);
   });
 });
+
+describe("capture runs", () => {
+  it("merges frames and audio, cutting only at gaps ≥ AWAY_GAP_MIN_MS", () => {
+    const frames = [...framesEvery(at(60), at(90), MIN), ...framesEvery(at(120), at(130), MIN)];
+    const audio = [{ startMs: at(88), endMs: at(100) }]; // audio bridges 90→100, then 20 min of nothing
+    const model = buildJournalDay(baseInput({ frames, audio }));
+    expect(model.runs).toEqual([
+      { startMs: at(60), endMs: at(100) },
+      { startMs: at(120), endMs: at(129) },
+    ]);
+  });
+
+  it("a silence just under the threshold stays one run", () => {
+    const frames = [frame(at(60)), frame(at(60) + AWAY_GAP_MIN_MS - 1)];
+    expect(buildJournalDay(baseInput({ frames })).runs).toHaveLength(1);
+  });
+});

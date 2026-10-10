@@ -1,727 +1,262 @@
 <script lang="ts">
-  // JournalRiver — the river half of the Journal surface (Slice 3), split out of
-  // DayTimeline.svelte to keep both files under the 800-line ceiling. Given the
-  // banded river + pending model (built by the parent from `buildJournalDay` +
-  // `journal-view.ts`) it renders the `.slot` grid (when | spine | card), the
-  // away-gaps, the live-edge pending slot, plus the loading skeleton and the two
-  // empty-state panels. Activities under 5 minutes (`isShortActivity`) render as
-  // compact one-line rows instead of full cards to keep the river dense. It owns
-  // no data loading — pure presentation.
-  import { untrack } from "svelte";
-  import type {
-    Activity,
-    ActivityFocus,
-    UserContextSummarizingFailure,
-  } from "$lib/types/recording";
-  import type { CardMedia, JournalPending } from "$lib/insights/journal-day";
-  import type { JournalEmpty, RiverBand } from "$lib/insights/journal-view";
+  // JournalRiver — the Journal's lower half (insights.html `.in-feed`): "What
+  // you did", newest first (the live edge on top, then cards and away-gaps),
+  // each card expanding in place into its receipt; beside it the side column
+  // (This week day bars, Day mix, Apps). Pure presentation: the parent builds
+  // the rows (journal-view.ts) and owns all loading.
+  import type { ActivityFocus, UserContextSummarizingFailure } from "$lib/types/recording";
+  import type { JournalPending } from "$lib/insights/journal-day";
+  import { hhmm, pendingReasonCopy, riverRowKey, type RiverRow, type WeekDay } from "$lib/insights/journal-view";
+  import { CATEGORY_COLOR, UNCATEGORIZED_COLOR, categoryLabel, humanizeMs } from "$lib/insights/activity-helpers";
   import { openSettings } from "$lib/surface-windows";
-  import { captureControls, resumeCapture, startCapture } from "$lib/capture-controls.svelte";
-  import { isShortActivity, pendingReasonCopy, riverRowKey } from "$lib/insights/journal-view";
-  import {
-    CATEGORY_COLOR,
-    UNCATEGORIZED_COLOR,
-    categoryLabel,
-    focusHint,
-    humanizeMs,
-  } from "$lib/insights/activity-helpers";
-  import Skeleton from "$lib/insights/Skeleton.svelte";
-  import ScrollTimeBubble from "$lib/insights/ScrollTimeBubble.svelte";
+  import { tip } from "$lib/components/tooltip";
+  import ReceiptViewer from "$lib/insights/ReceiptViewer.svelte";
+  import IconPlay from "~icons/lucide/play";
+  import IconOff from "~icons/lucide/circle-off";
+  import IconInbox from "~icons/lucide/inbox";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
+  type Mix = { category: keyof typeof CATEGORY_COLOR | null; ms: number }[];
   interface Props {
-    bands: RiverBand[];
+    rows: RiverRow[];
     pending: JournalPending;
-    showSkeleton: boolean;
-    hasCards: boolean;
-    /** The zero-row panel; null when the spine has something to draw. */
-    empty: JournalEmpty | null;
-    /** Summarizing keeps failing (slice 4's status field). */
+    /** Summarizing keeps failing (status field); null when healthy. */
     failure: UserContextSummarizingFailure | null;
     dayLabel: string;
-    isToday: boolean;
-    onOpenActivity: (activity: Activity) => void;
+    /** Capture-run day: why nothing was written up (replaces the river). */
+    nothingWrittenWhy: string | null;
+    week: WeekDay[];
+    dayStartMs: number;
+    mix: Mix;
+    apps: { app: string; activeMs: number }[];
+    hot: number | null;
+    onHot: (id: number | null) => void;
+    onPickDay: (startMs: number) => void;
   }
+  let { rows, pending, failure, dayLabel, nothingWrittenWhy, week, dayStartMs, mix, apps, hot, onHot, onPickDay }: Props =
+    $props();
 
-  let {
-    bands,
-    pending,
-    showSkeleton,
-    hasCards,
-    empty,
-    failure,
-    dayLabel,
-    isToday,
-    onOpenActivity,
-  }: Props = $props();
+  let openId = $state<number | null>(null);
 
-  // ---- Live edge (today only): every day opens at the top; the "↓ now" pill
-  // is the opt-in jump to the most recent activity. ----
-  let sentinelEl = $state<HTMLElement | null>(null);
-  let liveEdgeVisible = $state(false);
-
-  $effect(() => {
-    const el = sentinelEl;
-    if (!el) return;
-    const io = new IntersectionObserver((entries) => {
-      liveEdgeVisible = entries[entries.length - 1].isIntersecting;
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  });
-
-  // Follow-bottom: only bands/pending changes retrigger this; visibility is
-  // read untracked so the user scrolling back down never forces a jump.
-  $effect(() => {
-    bands;
-    pending;
-    untrack(() => {
-      if (isToday && liveEdgeVisible) sentinelEl?.scrollIntoView({ block: "end" });
-    });
-  });
-
-  function jumpToNow() {
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    sentinelEl?.scrollIntoView({ block: "end", behavior: reduce ? "auto" : "smooth" });
-  }
-
-  function clock(ms: number): string {
-    return new Date(ms).toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-  }
-  // Category → CSS colour value (named category token, else the neutral grey).
-  function catVar(category: Activity["category"]): string {
-    return category ? `var(${CATEGORY_COLOR[category]})` : `var(${UNCATEGORIZED_COLOR})`;
-  }
-  const FOCUS_TOKEN: Record<ActivityFocus, string> = {
-    deep: "--focus-deep",
-    mixed: "--focus-mid",
-    distracted: "--focus-distracted",
+  const cat = (c: Mix[number]["category"]) => `var(${c ? CATEGORY_COLOR[c] : UNCATEGORIZED_COLOR})`;
+  const catName = (c: Mix[number]["category"]) => (c ? categoryLabel(c) : "Uncategorized");
+  const FOCUS: Record<ActivityFocus, [string, string]> = {
+    deep: ["--focus-deep", "Deep"],
+    mixed: ["--focus-mid", "Mixed"],
+    distracted: ["--focus-distracted", "Scattered"],
   };
-  function receiptLabel(media: CardMedia, n: number): string {
-    if (media === "frames") return `▸ ${n} ${n === 1 ? "frame" : "frames"} · receipt`;
-    if (media === "audio") return "▸ audio · receipt";
-    return media === "expired" ? "footage expired" : "no screen capture";
-  }
+  const cards = $derived(rows.filter((r) => r.kind === "card").length);
+  const mixTotal = $derived(mix.reduce((t, m) => t + m.ms, 0));
+  /** "7h" — the week bar's caption drops the minutes. */
+  const hoursOnly = (ms: number) => humanizeMs(ms).replace(/ \d+m$/, "");
+  const BAR_MS = 8 * 3_600_000; // a full 48px bar = 8h
+  const weekday = (ms: number) => new Date(ms).toLocaleDateString(undefined, { weekday: "short" });
+  const longDay = (ms: number) => new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 </script>
 
-{#if showSkeleton}
-  <section class="river" aria-busy="true">
-    {#each Array.from({ length: 4 }) as _, i (i)}
-      <div class="slot">
-        <div class="when"><Skeleton variant="text" width="34px" height="11px" /></div>
-        <div class="spine"><span class="node node--sk"></span></div>
-        <div class="card card--sk">
-          <Skeleton variant="text" width="52%" height="12px" />
-          <Skeleton variant="text" width="84%" height="10px" />
-        </div>
+<div class="in-feed">
+  <div class="mx-reveal" style="--i:4">
+    <div class="in-sec">
+      <h2 class="mx-h2">What you did</h2>
+      <span class="mx-label">
+        {nothingWrittenWhy ? "nothing written up" : `${cards} activit${cards === 1 ? "y" : "ies"} · newest first`}
+      </span>
+    </div>
+    {#if nothingWrittenWhy}
+      <div class="mx-empty mx-empty--compact">
+        <span class="mx-empty__glyph"><IconOff width="14" height="14" aria-hidden="true" /></span>
+        <b class="mx-empty__title">Nothing written up on {dayLabel}</b>
+        <p class="mx-empty__text">{nothingWrittenWhy} The Timeline has everything captured.</p>
       </div>
-    {/each}
-  </section>
-{:else if !empty}
-  <section class="river" aria-label="Activity journal">
-    <ScrollTimeBubble />
-    {#each bands as band (band.label + band.rows[0].atMs)}
-      <div class="day-rule"><span>{band.label}</span><span class="rule"></span></div>
-      {#each band.rows as row (riverRowKey(row))}
+    {:else}
+      {#if pending.active && pending.reason && pending.sinceMs !== null}
+        {@const since = hhmm(pending.sinceMs)}
+        <div class="in-pending">
+          <time class="num">{since}</time>
+          <div>
+            {#if pending.reason.kind === "summarizing" && failure}
+              <span class="mx-kicker">Not written up · {since} → now</span>
+              <span class="mx-inline" data-tone="danger">
+                <IconAlert width="13" height="13" aria-hidden="true" />
+                Summaries are failing — {failure.provider ?? "the AI provider"} turned away the last
+                {failure.failures === 1 ? "try" : `${failure.failures} tries`}.
+                <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void openSettings("intelligence")}>Open engine settings</button>
+              </span>
+            {:else if pending.reason.kind === "summarizing"}
+              <span class="mx-kicker mx-kicker--live">Writing up {since} → now</span>
+              <div class="mx-skel" style="width:46%;height:12px"></div>
+              <div class="mx-skel" style="width:72%"></div>
+              <span class="mx-label">
+                {pending.audioOnly
+                  ? "Screen capture is off, so this stretch is built from what the mic and system audio picked up."
+                  : "The journal trails live capture by up to 30 minutes — the footage is already on the Timeline."}
+              </span>
+            {:else}
+              <span class="mx-kicker">Not written up · {since} → now</span>
+              <span class="mx-inline"><IconOff width="13" height="13" aria-hidden="true" />{pendingReasonCopy(pending.reason.reason)}</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
+      {#each rows as row (riverRowKey(row))}
         {#if row.kind === "gap"}
-          <div class="gap-note" data-at-ms={row.atMs}>
-            <div class="when"></div>
-            <div class="spine"></div>
-            <div class="txt">
-              {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · no screen capture{row.gap.audio
-                ? " · audio only"
-                : ""}
-            </div>
-          </div>
+          <div class="in-gap">Away · {humanizeMs(row.gap.endMs - row.gap.startMs)} · {hhmm(row.gap.startMs)}–{hhmm(row.gap.endMs)}{row.gap.audio ? " · audio only" : ""}</div>
         {:else if row.kind === "failed"}
-          <div class="gap-note gap-note--failed" data-at-ms={row.atMs}>
-            <div class="when"></div>
-            <div class="spine"><span class="node node--hollow"></span></div>
-            <div class="txt">
-              {clock(row.span.startMs)} – {clock(row.span.endMs)} · captured, but summarizing it failed
-            </div>
-          </div>
-        {:else if isShortActivity(row.slot.activity)}
-          {@const a = row.slot.activity}
-          <div class="slot slot--compact" data-at-ms={row.atMs}>
-            <div class="when">
-              {clock(a.startedAtMs)}
-              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
-            </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button type="button" class="row-compact" onclick={() => onOpenActivity(a)}>
-              <span class="swatch" style="background:{catVar(a.category)};"></span>
-              <span class="row-title">{a.title}</span>
-            </button>
-          </div>
+          <div class="in-gap">Captured, but summarizing it failed · {hhmm(row.span.startMs)}–{hhmm(row.span.endMs)}</div>
         {:else}
           {@const a = row.slot.activity}
-          <div class="slot" data-at-ms={row.atMs}>
-            <div class="when">
-              {clock(a.startedAtMs)}
-              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
-            </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button
-              type="button"
-              class="card"
-              style="--cat: {catVar(a.category)};"
-              onclick={() => onOpenActivity(a)}
-            >
-              <div class="card-top">
-                <span class="chip">
-                  <span class="swatch" style="background:{catVar(a.category)};"></span>
-                  {a.category ? categoryLabel(a.category) : "Uncategorized"}
-                </span>
+          {@const open = openId === a.id}
+          <article
+            class="in-act"
+            id="in-act-{a.id}"
+            data-hot={hot === a.id ? "" : undefined}
+            onmouseenter={() => onHot(a.id)}
+            onmouseleave={() => onHot(null)}
+          >
+            <div class="in-act__t"><time>{hhmm(a.startedAtMs)}</time><span class="num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span></div>
+            <div>
+              <h4><span class="in-sw" style="--c:{cat(a.category ?? null)}"></span>{a.title}</h4>
+              {#if a.summary}<p>{a.summary}</p>{/if}
+              <!-- App chips and "N speakers" land with IN-B3 (per-activity apps + speakers). -->
+              <div class="in-act__meta">
+                <span class="mx-chip mx-chip--cat" style="--c:{cat(a.category ?? null)}">{catName(a.category ?? null)}</span>
                 {#if a.focus}
-                  <span class="focus">
-                    <i style="background:var({FOCUS_TOKEN[a.focus]});"></i>
-                    {focusHint(a.focus)}
-                  </span>
+                  <span class="mx-chip in-focus" style="--c:var({FOCUS[a.focus][0]})">{FOCUS[a.focus][1]}</span>
                 {/if}
+                {#if row.slot.media === "expired"}<span class="mx-chip">footage expired</span>{/if}
+                <button
+                  type="button"
+                  class="mx-btn mx-btn--ghost mx-btn--sm"
+                  aria-pressed={open}
+                  aria-expanded={open}
+                  onclick={() => (openId = open ? null : a.id)}
+                ><IconPlay width="11" height="11" aria-hidden="true" />Receipt</button>
               </div>
-              <h3>{a.title}</h3>
-              <p>{a.summary}</p>
-              <div class="card-foot">
-                <span class="receipt">
-                  {receiptLabel(row.slot.media, row.slot.frameCount)}
-                </span>
-              </div>
-            </button>
-          </div>
+              {#if open}<ReceiptViewer activity={a} />{/if}
+            </div>
+          </article>
         {/if}
       {/each}
-    {/each}
-
-    {#if pending.active && pending.reason}
-      <div class="slot">
-        <div class="when">
-          {pending.sinceMs !== null ? clock(pending.sinceMs) : ""}
-          <span class="dur">now</span>
+      {#if cards === 0 && pending.active}
+        <div class="mx-empty mx-empty--compact">
+          <span class="mx-empty__glyph"><IconInbox width="14" height="14" aria-hidden="true" /></span>
+          <b class="mx-empty__title">Your day is being written</b>
+          <p class="mx-empty__text">Capture is landing. The first card appears once the first half-hour window is summarized.</p>
         </div>
-        <div class="spine"><span class="node node--pending"></span></div>
-        <div class="card card--pending" class:card--failing={failure && pending.reason.kind === "summarizing"}>
-          {#if pending.reason.kind === "summarizing" && failure}
-            <!-- 7d: the cadence is blown; stop pulsing and name the cause. -->
-            <div class="pt pt--paused">
-              Summaries are failing — {failure.provider ?? "the AI provider"} turned away the last
-              {failure.failures === 1 ? "try" : `${failure.failures} tries`}.
-            </div>
-            <div class="sub">
-              {failure.reason} Recording isn't affected{pending.sinceMs !== null
-                ? `; everything since ${clock(pending.sinceMs)} is on the Timeline`
-                : ""}.
-            </div>
-            <button type="button" class="btn" onclick={() => void openSettings("intelligence")}
-              >Open engine settings</button
-            >
-          {:else if pending.reason.kind === "summarizing"}
-            <div class="pt">
-              <span class="spin"></span>{pending.audioOnly
-                ? "Summarizing from audio…"
-                : hasCards
-                  ? "Summarizing this window…"
-                  : "Summarizing your first stretch…"}
-            </div>
-            <div class="sub">
-              {#if pending.audioOnly}
-                Screen capture is off, so this stretch is built from what the mic and system audio
-                picked up. {hasCards ? "New cards usually land" : "The first card usually lands"} within
-                about 10 minutes, once the audio is transcribed and summarized.
-              {:else}
-                {!hasCards && pending.sinceMs !== null ? `Recording since ${clock(pending.sinceMs)}. ` : ""}{hasCards
-                  ? "New cards usually land"
-                  : "The first card usually lands"} within about 10 minutes — the footage itself is already
-                on the Timeline.
-              {/if}
-            </div>
+      {/if}
+    {/if}
+  </div>
+
+  <div class="in-side mx-reveal" style="--i:5">
+    <div>
+      <div class="in-sec"><span class="mx-kicker">This week</span><span class="in-spacer"></span><span class="mx-label"><kbd>[</kbd> <kbd>]</kbd> to step</span></div>
+      <div class="in-wk">
+        {#each week as d (d.startMs)}
+          {#if d.future}
+            <button type="button" disabled><span class="in-wk__bar"></span><b>{weekday(d.startMs)}</b>—</button>
           {:else}
-            <div class="pt pt--paused">{pendingReasonCopy(pending.reason.reason)}</div>
-            <button type="button" class="btn" onclick={() => void openSettings("intelligence")}
-              >Open engine settings</button
+            {@const capOnly = d.activities === 0 && d.capturedHours > 0}
+            <button
+              type="button"
+              aria-pressed={d.startMs === dayStartMs}
+              use:tip={`${longDay(d.startMs)} · ${d.activities ? `${humanizeMs(d.activityMs)} · ${d.activities} activities` : capOnly ? `~${d.capturedHours}h captured · nothing written up` : "nothing captured"}`}
+              onclick={() => onPickDay(d.startMs)}
             >
+              <span class="in-wk__bar">
+                {#if capOnly}
+                  <i style="--c:var(--chart-grey-3);height:{Math.min(48, (d.capturedHours / 8) * 48)}px"></i>
+                {:else}
+                  {#each [...d.mix].reverse() as m (m.category ?? "none")}<i style="--c:{cat(m.category)};height:{(m.ms / BAR_MS) * 48}px"></i>{/each}
+                {/if}
+              </span>
+              <b>{weekday(d.startMs)}</b>{d.activities ? hoursOnly(d.activityMs) : capOnly ? `${d.capturedHours}h` : "—"}
+            </button>
           {/if}
+        {/each}
+      </div>
+    </div>
+    {#if mix.length > 0 && !nothingWrittenWhy}
+      <div>
+        <div class="in-sec"><span class="mx-kicker">Day mix</span><span class="in-spacer"></span><span class="mx-label">activity time</span></div>
+        <div class="in-mixrows">
+          {#each mix as m, i (m.category ?? "none")}
+            <div class="in-mixrow">
+              <span class="in-sw" style="--c:{cat(m.category)}"></span><span>{catName(m.category)}</span>
+              <span class="in-cat__bar"><i style="--c:{cat(m.category)};--w:{(m.ms / mix[0].ms) * 100}%;--d:{i}"></i></span>
+              <span class="num">{humanizeMs(m.ms)}</span><span class="num">{Math.round((m.ms / mixTotal) * 100)}%</span>
+            </div>
+          {/each}
         </div>
       </div>
     {/if}
-
-    {#if isToday && !liveEdgeVisible}
-      <button type="button" class="jump-now" aria-label="Jump to now" onclick={jumpToNow}>
-        ↓ now
-      </button>
-    {/if}
-    <div class="live-edge" bind:this={sentinelEl} aria-hidden="true"></div>
-  </section>
-{:else}
-  <div class="empty">
-    <div class="glyph" aria-hidden="true">◇</div>
-    {#if empty.kind === "idle"}
-      {#if empty.paused}
-        <h4>Recording is paused</h4>
-        <p>Resume and today's journal fills in as you work. The first card usually lands within about 10 minutes.</p>
-        <button type="button" class="btn" disabled={captureControls.loadingPause} onclick={() => void resumeCapture()}
-          >Resume recording</button
-        >
-      {:else}
-        <h4>Mnema isn't recording</h4>
-        <p>Start recording and today's journal fills in as you work. The first card usually lands within about 10 minutes.</p>
-        <button type="button" class="btn" disabled={captureControls.loadingStart} onclick={() => void startCapture()}
-          >Start recording</button
-        >
-      {/if}
-    {:else if empty.kind === "retention"}
-      <h4>Nothing left from {dayLabel}</h4>
-      <p>Removed by your {empty.days}-day retention.</p>
-    {:else if empty.kind === "older"}
-      <h4>This day wasn't summarized</h4>
-      <p>
-        Older than the {empty.days} days Mnema summarizes on its own.{empty.footageKept
-          ? " The footage is still on the Timeline."
-          : ""}
-      </p>
-    {:else if empty.kind === "queued"}
-      <h4>Not summarized yet</h4>
-      <p>
-        Mnema is catching up on older history, newest first — past days fill in as it goes. The
-        footage is already on the Timeline.
-      </p>
-    {:else if empty.kind === "unsummarized"}
-      <h4>No cards for {dayLabel}</h4>
-      <p>Nothing in this day's capture was summarized into a card. The footage is on the Timeline.</p>
-    {:else}
-      <h4>Nothing captured on {dayLabel}</h4>
-      <p>There's no screen or audio capture on this day, so there's no journal to show.</p>
+    {#if apps.length > 0}
+      <div>
+        <div class="in-sec"><span class="mx-kicker">Apps</span><span class="in-spacer"></span><span class="mx-label">app time</span></div>
+        <dl class="mx-spec in-apps">
+          {#each apps as x, i (x.app)}
+            <div>
+              <dt>{x.app}</dt>
+              <dd><span class="in-cat__bar"><i style="--w:{(x.activeMs / apps[0].activeMs) * 100}%;--d:{i + 4}"></i></span></dd>
+              <dd class="mx-spec__note num">{humanizeMs(x.activeMs)}</dd>
+            </div>
+          {/each}
+        </dl>
+      </div>
     {/if}
   </div>
-{/if}
+</div>
 
 <style>
-  /* All colours are app tokens (`--app-*`, `--cat-*`, `--focus-*`); the mockup's
-     raw hex (docs/mockups/dayflow/01-day-journal.html) is only its self-contained
-     copy of these same tokens. */
-  .river {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    width: 100%;
-  }
-  .day-rule {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    /* Sticks to the scrollport top while its band scrolls; part of the old
-       margins became padding so the solid bg covers cards passing beneath. */
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--app-bg);
-    padding: 4px 0 6px;
-    margin: 2px 0 8px;
-  }
-  .day-rule:not(:first-child) {
-    margin-top: 14px;
-  }
-  .day-rule .rule {
-    flex: 1;
-    height: 1px;
-    background: var(--app-border);
-  }
-  .slot {
-    display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-  }
-  .slot + .slot,
-  .gap-note + .slot,
-  .slot + .gap-note {
-    margin-top: 12px;
-  }
-  .slot .when {
-    padding-top: 16px;
-    text-align: right;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-  .slot .when .dur {
-    display: block;
-    font-size: var(--text-xs);
-    color: var(--app-text-faint);
-  }
-  .spine {
-    position: relative;
-  }
-  .spine::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: -12px;
-    width: 1px;
-    background: var(--app-border);
-  }
-  /* Last slot can't rely on :last-child — the live-edge sentinel (and at times
-     the jump pill) now render after it. */
-  .river > .slot:not(:has(~ .slot, ~ .gap-note)) .spine::before {
-    bottom: 12px;
-  }
-  .spine .node {
-    position: absolute;
-    left: 50%;
-    top: 19px;
-    transform: translate(-50%, 0);
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid var(--app-bg);
-  }
-  .spine .node--pending {
-    background: var(--app-text-faint);
-  }
-  .spine .node--sk {
-    background: var(--app-border-strong);
-  }
-
-  .gap-note {
-    display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-    margin-top: 12px;
-  }
-  .gap-note .spine::before {
-    bottom: -12px;
-    border-left: 1px dashed var(--app-border);
-    background: transparent;
-    width: 0;
-  }
-  .gap-note--failed .txt {
-    color: var(--app-text-subtle);
-  }
-  .spine .node--hollow {
-    background: var(--app-bg);
-    border: 1.5px solid var(--app-text-faint);
-    top: 7px;
-  }
-  .card--failing {
-    border-color: var(--app-warn);
-  }
-  .card--pending .btn,
-  .empty .btn {
-    margin-top: 10px;
-    font: inherit;
-    font-size: var(--text-sm);
-    height: 28px;
-    padding: 0 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .card--pending .btn:hover,
-  .empty .btn:hover {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
-  .empty .btn:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
-  .gap-note .txt {
-    font-size: var(--text-sm);
-    color: var(--app-text-faint);
-    padding: 4px 0;
-    font-style: italic;
-  }
-
-  /* Compact row — activities under 5 minutes render as one quiet clickable
-     line (swatch + title) instead of a full card; the click opens the receipt.
-     Tighter paddings + node top keep the spine node centered on the single
-     text line (row lands ~32px tall). */
-  .slot--compact .when {
-    padding-top: 7px;
-  }
-  .slot--compact .node {
-    top: 9px;
-  }
-  .row-compact {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    min-width: 0;
-    text-align: left;
-    border: 0;
-    border-radius: 8px;
-    background: transparent;
-    padding: 7px 10px;
-    font: inherit;
-    color: inherit;
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-  .row-compact:hover {
-    background: var(--app-surface-hover);
-  }
-  .row-compact:hover .row-title {
-    color: var(--app-text-strong);
-  }
-  .row-compact:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .row-compact .swatch {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .row-compact .row-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-sm);
-    line-height: 1.35;
-    color: var(--app-text-muted);
-    transition: color 0.12s ease;
-  }
-
-  /* Card — a full-width button so the whole card opens the receipt (keyboard
-     reachable). Category rides a left edge bar (`--cat`) on a neutral body. */
-  .card {
-    position: relative;
-    display: block;
-    width: 100%;
-    text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    padding: 13px 16px 12px 19px;
-    font: inherit;
-    color: inherit;
-    cursor: pointer;
-    transition: border-color 0.12s ease;
-  }
-  .card::before {
-    content: "";
-    position: absolute;
-    left: -1px;
-    top: -1px;
-    bottom: -1px;
-    width: 3px;
-    border-radius: 10px 0 0 10px;
-    background: var(--cat, transparent);
-  }
-  .card:hover {
-    border-color: var(--app-border-hover);
-  }
-  .card:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .card:hover .receipt,
-  .card:focus-visible .receipt {
-    color: var(--app-accent);
-    border-bottom-color: var(--app-accent-border);
-  }
-  .card--sk {
-    cursor: default;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .card--sk::before {
-    display: none;
-  }
-  .card-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
-  }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-  .chip .swatch {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .focus {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-  .focus i {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .card h3 {
-    margin: 0 0 4px;
-    font-size: var(--text-md);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--app-text-strong);
-    line-height: 1.35;
-  }
-  .card p {
-    margin: 0;
-    font-size: var(--text-sm);
-    line-height: 1.65;
-    color: var(--app-text-muted);
-  }
-  .card-foot {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-top: 9px;
-    padding-top: 8px;
-    border-top: 1px dashed var(--app-border);
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    flex-wrap: wrap;
-  }
-  .receipt {
-    margin-left: auto;
-    color: var(--app-text-muted);
-    border-bottom: 1px dotted var(--app-border-strong);
-    line-height: 1.3;
-    white-space: nowrap;
-    transition:
-      color 0.12s ease,
-      border-bottom-color 0.12s ease;
-  }
-
-  /* ---- Pending slot at the live edge ---- */
-  .card--pending {
-    border-style: dashed;
-    background: transparent;
-    cursor: default;
-  }
-  .card--pending::before {
-    display: none;
-  }
-  .card--pending:hover {
-    border-color: var(--app-border);
-  }
-  .card--pending .pt {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-  }
-  .card--pending .pt .spin {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-accent-strong);
-    animation: journal-pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes journal-pulse {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .card--pending .pt .spin {
-      animation: none;
-    }
-  }
-  .card--pending .sub {
-    margin-top: 3px;
-    font-size: var(--text-xs);
-    color: var(--app-text-faint);
-  }
-
-  /* ---- Live edge: sentinel + "jump to now" pill ---- */
-  .live-edge {
-    height: 0;
-  }
-  /* Bottom-sticky: floats pinned at the scrollport bottom while its natural
-     spot (end of the river) is below the fold; unmounts at the live edge. */
-  .jump-now {
-    position: sticky;
-    bottom: 18px;
-    z-index: 2;
-    align-self: center;
-    margin-top: 14px;
-    padding: 5px 13px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: var(--text-xs);
-    letter-spacing: 0.08em;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .jump-now:hover {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-  .jump-now:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  /* ---- Empty-state panels ---- */
-  .empty {
-    text-align: center;
-    padding: 44px 24px 40px;
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-    background: var(--app-surface-subtle);
-  }
-  .empty .glyph {
-    font-size: 20px;
-    color: var(--app-text-faint);
-    margin-bottom: 10px;
-  }
-  .empty h4 {
-    margin: 0 0 6px;
-    font-size: var(--text-md);
-    font-weight: 600;
-    color: var(--app-text-strong);
-  }
-  .empty p {
-    margin: 0 auto;
-    max-width: 380px;
-    font-size: var(--text-sm);
-    line-height: 1.7;
-    color: var(--app-text-muted);
-  }
+  /* insights.html `.in-feed` / `.in-act` / `.in-side` (kit tokens only). */
+  .in-feed { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+  .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
+  .in-spacer { flex: 1; }
+  .in-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
+  .in-act { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: var(--s-4); padding: var(--s-4) var(--s-3); margin: 0 calc(var(--s-3) * -1); border-top: 1px solid var(--mx-hairline); border-radius: var(--r-sm); transition: background-color var(--t-fast) var(--ease-quart); scroll-margin-top: 80px; }
+  .in-act:hover, .in-act[data-hot] { background: color-mix(in srgb, var(--app-fg) 2.5%, transparent); }
+  .in-act__t { display: grid; gap: 5px; align-content: start; padding-top: 2px; }
+  .in-act__t time { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
+  .in-act__t span { font-size: var(--text-xs); color: var(--app-text-subtle); }
+  .in-act h4 { display: flex; align-items: center; gap: 9px; margin: 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
+  .in-act h4 .in-sw { width: 9px; height: 9px; }
+  .in-act p { margin: 6px 0 10px; color: var(--app-text-muted); font-size: var(--text-md); line-height: 1.5; max-width: 66ch; }
+  .in-act__meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 10px; }
+  .in-act p + .in-act__meta { margin-top: 0; }
+  .in-act__meta .mx-btn { margin-left: auto; }
+  .in-focus { color: var(--app-text); border-color: color-mix(in srgb, var(--c) 35%, var(--app-border)); background: color-mix(in srgb, var(--c) 10%, var(--app-surface)); }
+  .in-focus::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+  .in-gap { display: flex; align-items: center; gap: var(--s-3); padding: 10px 0 10px 92px; border-top: 1px solid var(--mx-hairline); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+  .in-gap::after { content: ""; flex: 1; border-top: 1px dashed var(--app-border); }
+  .in-pending { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: var(--s-4); padding: var(--s-4) 0; }
+  .in-pending > div { display: grid; gap: 8px; justify-items: start; }
+  .in-pending > div > .mx-skel { justify-self: stretch; }
+  .in-pending time { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-accent); padding-top: 2px; }
+  .in-feed .mx-empty--compact { max-width: none; padding-inline: var(--s-3); }
+  .in-side { display: grid; gap: var(--s-6); align-content: start; }
+  .in-wk { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-top: var(--s-3); }
+  .in-wk button { display: grid; gap: 6px; justify-items: center; padding: 8px 0 7px; border: 1px solid transparent; border-radius: var(--r-md); background: none; cursor: pointer; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); transition: background-color var(--t-fast) var(--ease-quart); }
+  .in-wk button:hover:not(:disabled) { background: var(--app-surface-hover); }
+  .in-wk button:focus-visible { outline: 0; box-shadow: var(--app-ring); }
+  .in-wk button[aria-pressed="true"] { border-color: var(--app-border-strong); background: var(--app-surface); color: var(--app-text-strong); }
+  .in-wk button:disabled { cursor: default; color: var(--app-text-faint); }
+  .in-wk__bar { width: 14px; height: 48px; display: flex; flex-direction: column-reverse; gap: 1px; }
+  .in-wk__bar i { display: block; flex: none; background: var(--c); transform-origin: bottom; animation: in-grow-y var(--t-slow) var(--ease-expo) both; }
+  .in-wk__bar i:last-child { border-radius: 2px 2px 0 0; }
+  .in-wk__bar:empty { height: 20px; margin-top: 28px; border: 1px dashed var(--app-border); border-radius: 2px; }
+  .in-wk b { font-weight: 500; color: inherit; }
+  .in-mixrows { display: grid; }
+  .in-mixrow { display: grid; grid-template-columns: 10px 104px 1fr 56px 36px; align-items: center; gap: var(--s-3); padding: 7px 0; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text); }
+  .in-mixrow .num { font-size: var(--text-sm); color: var(--app-text-strong); text-align: right; }
+  .in-mixrow .num + .num { color: var(--app-text-subtle); }
+  .in-cat__bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--app-fg) 6%, transparent); overflow: hidden; }
+  .in-cat__bar i { display: block; height: 100%; width: var(--w); background: var(--c); border-radius: 3px; transform-origin: left; animation: in-grow-x var(--t-slow) var(--ease-expo) both; animation-delay: calc(200ms + var(--d) * 40ms); }
+  .in-apps { grid-template-columns: 82px 1fr auto; }
+  .in-apps dt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .in-apps dd:not(.mx-spec__note) { display: flex; align-items: center; }
+  .in-apps .in-cat__bar { flex: 1; height: 4px; }
+  .in-apps .in-cat__bar i { background: var(--chart-grey-3); }
+  @keyframes in-grow-x { from { transform: scaleX(0); } }
+  @keyframes in-grow-y { from { transform: scaleY(0); } }
+  @container mx-window (max-width: 1180px) { .in-feed { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { .in-wk__bar i, .in-cat__bar i { animation: none; } }
 </style>

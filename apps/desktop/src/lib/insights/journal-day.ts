@@ -76,6 +76,9 @@ export interface JournalDayModel {
 	hasAnyCapture: boolean;
 	/** Audio in the day but no screen frames. */
 	audioOnly: boolean;
+	/** Capture (frames + audio) cut at gaps ≥ AWAY_GAP_MIN_MS, chronological —
+	 *  the spine's grey runs on a day nothing was written up, and its span. */
+	runs: Span[];
 }
 
 export interface JournalDayInput {
@@ -224,5 +227,22 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 		totalFrameCount,
 		hasAnyCapture,
 		audioOnly: totalFrameCount === 0 && dayAudio.length > 0,
+		runs: captureRuns(dayFrameTs, dayAudio),
 	};
+}
+
+/** Frames (points) + audio spans merged into runs, cut where nothing was
+ *  captured for at least AWAY_GAP_MIN_MS. Both inputs sorted ascending. */
+export function captureRuns(frameTs: number[], audio: Span[]): Span[] {
+	const pieces = [
+		...frameTs.map((ms) => ({ startMs: ms, endMs: ms })),
+		...audio,
+	].sort((a, b) => a.startMs - b.startMs);
+	const runs: Span[] = [];
+	for (const p of pieces) {
+		const last = runs[runs.length - 1];
+		if (last && p.startMs - last.endMs < AWAY_GAP_MIN_MS) last.endMs = Math.max(last.endMs, p.endMs);
+		else runs.push({ ...p });
+	}
+	return runs;
 }

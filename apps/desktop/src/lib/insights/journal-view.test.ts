@@ -2,63 +2,99 @@
 // tsconfig, so skip static checking here (same as journal-day.test.ts).
 import { describe, expect, it } from "bun:test";
 import {
-  SHORT_ACTIVITY_MAX_MS,
+  awayLabel,
   buildRiver,
-  bandOf,
-  bandRiver,
-  isShortActivity,
+  capturedHoursByDay,
+  categoryMix,
   pendingReasonCopy,
   riverRowKey,
+  spineAxis,
+  stackLanes,
+  weekDays,
 } from "./journal-view";
 
 const DAY = new Date(2026, 6, 3, 0, 0, 0, 0).getTime();
 const at = (h, m = 0) => new Date(2026, 6, 3, h, m, 0, 0).getTime();
 
-const slot = (startMs) => ({
-  activity: { id: 1, startedAtMs: startMs, endedAtMs: startMs + 60_000 },
+const slot = (startMs, endMs = startMs + 60_000) => ({
+  activity: { id: 1, startedAtMs: startMs, endedAtMs: endMs },
   frameCount: 1,
   expired: false,
 });
 const gap = (startMs, endMs) => ({ startMs, endMs });
+const act = (id, startMs, endMs, category = null) => ({ id, startedAtMs: startMs, endedAtMs: endMs, category });
 
 describe("buildRiver", () => {
-  it("interleaves slots and gaps chronologically by start", () => {
+  it("is newest first, gaps interleaved by start", () => {
     const rows = buildRiver([slot(at(9)), slot(at(13))], [gap(at(11), at(12))]);
     expect(rows.map((r) => r.kind)).toEqual(["card", "gap", "card"]);
-    expect(rows.map((r) => r.atMs)).toEqual([at(9), at(11), at(13)]);
+    expect(rows.map((r) => r.atMs)).toEqual([at(13), at(11), at(9)]);
+  });
+
+  it("puts the shorter of two same-start cards first", () => {
+    const rows = buildRiver([slot(at(9), at(11)), slot(at(9), at(9, 20))], []);
+    expect(rows.map((r) => r.slot.activity.endedAtMs)).toEqual([at(9, 20), at(11)]);
   });
 });
 
-describe("isShortActivity", () => {
-  it("is short strictly below the threshold; exactly 5 minutes is not short", () => {
-    const start = at(9);
-    expect(isShortActivity({ startedAtMs: start, endedAtMs: start + SHORT_ACTIVITY_MAX_MS - 1 })).toBe(true);
-    expect(isShortActivity({ startedAtMs: start, endedAtMs: start + SHORT_ACTIVITY_MAX_MS })).toBe(false);
+describe("spineAxis", () => {
+  it("spans the real day, padded and rounded out to whole hours", () => {
+    const axis = spineAxis(at(8, 41), at(15, 20));
+    expect(axis.startMs).toBe(at(8));
+    expect(axis.endMs).toBe(at(16));
+    expect(axis.ticks).toEqual([at(8), at(10), at(12), at(14), at(16)]);
+  });
+
+  it("pads a start right on the hour back an hour and keeps at least an hour", () => {
+    const axis = spineAxis(at(10), at(10, 5));
+    expect(axis.startMs).toBe(at(9));
+    expect(axis.endMs).toBe(at(11));
+    expect(axis.ticks).toEqual([at(9), at(10), at(11)]);
   });
 });
 
-describe("bandOf", () => {
-  it("splits the day at noon and 5pm (local hours)", () => {
-    expect(bandOf(at(8))).toBe("Morning");
-    expect(bandOf(at(11, 59))).toBe("Morning");
-    expect(bandOf(at(12))).toBe("Afternoon");
-    expect(bandOf(at(16, 59))).toBe("Afternoon");
-    expect(bandOf(at(17))).toBe("Evening");
-    expect(bandOf(at(23))).toBe("Evening");
+describe("stackLanes", () => {
+  it("stacks overlaps into sub-lanes and reuses a lane once it frees", () => {
+    const { lane, lanes } = stackLanes([gap(at(9), at(11)), gap(at(10), at(10, 30)), gap(at(11), at(12))]);
+    expect(lane).toEqual([0, 1, 0]);
+    expect(lanes).toBe(2);
+  });
+
+  it("gives the longer of two same-start spans the top lane", () => {
+    expect(stackLanes([gap(at(9), at(9, 10)), gap(at(9), at(10))]).lane).toEqual([1, 0]);
   });
 });
 
-describe("bandRiver", () => {
-  it("groups consecutive rows into bands, one band per contiguous run", () => {
-    const rows = buildRiver(
-      [slot(at(8)), slot(at(9)), slot(at(13)), slot(at(18))],
-      [],
-    );
-    const bands = bandRiver(rows);
-    expect(bands.map((b) => b.label)).toEqual(["Morning", "Afternoon", "Evening"]);
-    expect(bands[0].rows).toHaveLength(2);
-    expect(bands[1].rows).toHaveLength(1);
-    expect(bands[2].rows).toHaveLength(1);
+describe("side column", () => {
+  it("tallies category time largest first", () => {
+    const mix = categoryMix([act(1, at(9), at(10), "research"), act(2, at(10), at(12), "creating"), act(3, at(13), at(13, 30), "research")]);
+    expect(mix).toEqual([
+      { category: "creating", ms: 2 * 3_600_000 },
+      { category: "research", ms: 1.5 * 3_600_000 },
+    ]);
+  });
+
+  it("builds the Mon–Sun week around the day, with captured hours as the fallback", () => {
+    // 2026-07-03 is a Friday → week starts Mon Jun 29.
+    const mon = new Date(2026, 5, 29).getTime();
+    const hours = capturedHoursByDay([
+      { bucketStartMs: mon + 9 * 3_600_000, intensityCount: 4 },
+      { bucketStartMs: mon + 10 * 3_600_000, intensityCount: 0 },
+      { bucketStartMs: mon + 11 * 3_600_000, intensityCount: 2 },
+    ]);
+    const week = weekDays(DAY, [act(1, at(9), at(10), "creating")], hours, at(12));
+    expect(week).toHaveLength(7);
+    expect(week[0].startMs).toBe(mon);
+    expect(week[0].capturedHours).toBe(2);
+    expect(week[4].activities).toBe(1);
+    expect(week[4].activityMs).toBe(3_600_000);
+    expect(week.map((d) => d.future)).toEqual([false, false, false, false, false, true, true]);
+  });
+});
+
+describe("awayLabel", () => {
+  it("names only the length", () => {
+    expect(awayLabel(gap(at(12), at(13, 10)))).toBe("Away · 1h 10m");
   });
 });
 
