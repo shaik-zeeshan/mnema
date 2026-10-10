@@ -11,8 +11,8 @@ use std::sync::Arc;
 use capture_types::{
     Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
     FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
-    UserContextDistillationSummary, UserContextStatus, UserContextSummarizingFailure,
-    UserContextTokenUsage,
+    UserContextDigestResult, UserContextDistillationSummary, UserContextStatus,
+    UserContextSummarizingFailure, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -500,8 +500,8 @@ fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
 /// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
 /// lede the Insights Overview shows for one local-calendar range. Lazy +
 /// fingerprint-cached: an unchanged range returns the stored narrative with no
-/// engine call. `Ok(None)` when User Context is off, the engine is not
-/// configured, or the range holds fewer than two Activities. `Err` for a failed
+/// engine call. Returns `{ digest }`, or `{ reason }` — `derivation_off` (User
+/// Context off), `engine_not_ready`, or `too_few` (under two Activities). `Err` for a failed
 /// generation or `digest::DIGEST_SENSITIVE_HOLD` — replayed from a 15-minute
 /// in-memory cooldown on an unchanged input set, so a failure doesn't re-bill
 /// the engine on every visit. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
@@ -514,7 +514,7 @@ pub async fn get_user_context_digest(
     range_kind: String,
     start_ms: i64,
     end_ms: i64,
-) -> Result<Option<UserContextDigest>, String> {
+) -> Result<UserContextDigestResult, String> {
     let settings = read_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
@@ -541,7 +541,7 @@ pub async fn regenerate_user_context_digest(
     range_kind: String,
     start_ms: i64,
     end_ms: i64,
-) -> Result<Option<UserContextDigest>, String> {
+) -> Result<UserContextDigestResult, String> {
     let settings = read_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,

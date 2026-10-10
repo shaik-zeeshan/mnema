@@ -262,6 +262,31 @@ pub struct UserContextDigest {
     pub generated_at_ms: i64,
 }
 
+/// Why `get_user_context_digest` served no digest. A failed generation and the
+/// sensitive hold are not here: they stay `Err` (the hold as the
+/// `digest_sensitive_hold` code).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DigestAbsentReason {
+    /// Fewer than two Activities in range.
+    TooFew,
+    /// User Context's own opt-in is off.
+    DerivationOff,
+    /// The Reasoning Engine is not configured / not reachable.
+    EngineNotReady,
+}
+
+/// `get_user_context_digest` / `regenerate_user_context_digest` result:
+/// exactly one of `digest` or `reason` is set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContextDigestResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<UserContextDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<DigestAbsentReason>,
+}
+
 /// A standing, user-authored Context statement (issue #107): something the user
 /// asserted about themselves ("I'm a designer", "I care about X"), stored
 /// verbatim. It is user-asserted rather than derived, so it carries no
@@ -648,6 +673,38 @@ mod tests {
         );
         let round_tripped: UserContextDigest = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, digest);
+
+        // The command result: `{ digest }` or `{ reason }`, never both keys.
+        for (result, wire) in [
+            (
+                UserContextDigestResult {
+                    digest: None,
+                    reason: Some(DigestAbsentReason::TooFew),
+                },
+                json!({ "reason": "too_few" }),
+            ),
+            (
+                UserContextDigestResult {
+                    digest: Some(digest.clone()),
+                    reason: None,
+                },
+                json!({ "digest": serde_json::to_value(&digest).unwrap() }),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&result).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<UserContextDigestResult>(wire).unwrap(),
+                result
+            );
+        }
+        assert_eq!(
+            serde_json::to_value(DigestAbsentReason::DerivationOff).unwrap(),
+            json!("derivation_off")
+        );
+        assert_eq!(
+            serde_json::to_value(DigestAbsentReason::EngineNotReady).unwrap(),
+            json!("engine_not_ready")
+        );
     }
 
     #[test]

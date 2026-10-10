@@ -854,12 +854,12 @@
     digestError = null;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<UserContextDigest | null>(
+      const next = await invoke<{ digest?: UserContextDigest }>(
         "get_user_context_digest",
         { rangeKind: rangeMode, startMs, endMs },
       );
       if (token !== digestRequestToken) return; // range moved on — stale
-      digest = next;
+      digest = next.digest ?? null;
     } catch (error) {
       // Keep the read we had; say why it didn't refresh (OV-06/07).
       if (token === digestRequestToken) digestError = String(error);
@@ -880,12 +880,12 @@
     digestError = null;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<UserContextDigest | null>(
+      const next = await invoke<{ digest?: UserContextDigest }>(
         "regenerate_user_context_digest",
         { rangeKind: rangeMode, startMs, endMs },
       );
       if (token !== digestRequestToken) return; // range moved on — stale
-      digest = next;
+      digest = next.digest ?? null;
     } catch (error) {
       if (token === digestRequestToken) digestError = String(error);
     } finally {

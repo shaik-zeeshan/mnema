@@ -282,12 +282,12 @@
     digestError = null;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<UserContextDigest | null>(
+      const next = await invoke<{ digest?: UserContextDigest }>(
         "get_user_context_digest",
         { rangeKind: "day", startMs, endMs },
       );
       if (token !== digestToken) return;
-      digest = next;
+      digest = next.digest ?? null;
     } catch (error) {
       // Keep the read we had; ReadCard says why it didn't refresh.
       if (token === digestToken) digestError = String(error);
@@ -312,12 +312,12 @@
     digestError = null;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<UserContextDigest | null>(
+      const next = await invoke<{ digest?: UserContextDigest }>(
         "regenerate_user_context_digest",
         { rangeKind: "day", startMs, endMs },
       );
       if (token !== digestToken) return;
-      digest = next;
+      digest = next.digest ?? null;
     } catch (error) {
       if (token === digestToken) digestError = String(error);
     } finally {

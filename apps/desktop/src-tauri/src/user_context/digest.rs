@@ -24,7 +24,10 @@
 //! the same input set) — so there is deliberately no in-flight lock here; the
 //! module has no established guard pattern to reuse either.
 
-use capture_types::{Activity, ActivityCategory, AiRuntimeSettings, FocusLevel, UserContextDigest};
+use capture_types::{
+    Activity, ActivityCategory, AiRuntimeSettings, DigestAbsentReason, FocusLevel,
+    UserContextDigest, UserContextDigestResult,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -46,9 +49,13 @@ plain prose addressed to the user in the second person — for example \"Most of
 the billing migration…\". Mention the dominant work, the shape it took across the days, and any \
 notable shift in focus or topic. Do NOT use markdown, lists, bullet points, headers, or quotes — \
 only sentences. Ground every claim in the listed Activities; do not invent work that is not shown. \
-Also write a short headline for the range: at most six words, sentence case, concrete and \
-grounded in the dominant work — for example \"A deep week in the editor\". No clickbait, no \
-terminal punctuation, no surrounding quotes. \
+Each Activity line carries its local clock times; cite them when they help (\"before the 11:00 \
+call\"). Also write a headline for the range: a full sentence (or two short ones) in sentence \
+case, concrete and grounded in the dominant work — for example \"A build week. The capture \
+pipeline ate your mornings\". Never put a dash in the headline. Optionally add a turn: a short \
+clause naming what changed the shape of the range, read as a continuation of the headline — for \
+example \"until Thursday's calls took the whole day back\". Leave the turn empty when nothing \
+turned. No clickbait, no terminal punctuation on the headline, no surrounding quotes. \
 Return the structured result.";
 
 /// The full Digest preamble the engine sees: the **soft** Sensitive Category
@@ -118,7 +125,7 @@ async fn range_has_correction_after(
 
 /// The `Err` a digest held back by the hard sensitive post-filter returns: a
 /// stable code the frontend recognises ("held back by the sensitive filter"),
-/// distinct from `Ok(None)` (not enough activity) and from a real failure.
+/// distinct from a `too_few` absence and from a real failure.
 pub const DIGEST_SENSITIVE_HOLD: &str = "digest_sensitive_hold";
 
 /// How long a failed (or sensitive-held) generation is replayed to the lazy
@@ -222,12 +229,17 @@ const ROLLUP_SAMPLE_TITLES: usize = 2;
 pub struct DigestNarrative {
     /// 2–4 sentences of second-person plain prose.
     pub narrative: String,
-    /// Short headline above the prose (≤ ~6 words). Defaulted (same stance as
-    /// `derivation.rs`'s optional fields) so an engine that omits it still
-    /// yields a narrative-only digest instead of an extraction failure;
-    /// [`normalize_headline`] turns empty/whitespace into `None`.
+    /// Full-sentence headline above the prose, with no dash in it. Defaulted
+    /// (same stance as `derivation.rs`'s optional fields) so an engine that
+    /// omits it still yields a narrative-only digest instead of an extraction
+    /// failure; [`joined_headline`] turns empty/whitespace into `None`.
     #[serde(default)]
     pub headline: String,
+    /// Optional clause continuing the headline ("until Thursday's calls took
+    /// the whole day back"); empty when nothing turned. Stored joined onto the
+    /// headline as `headline — turn` (no column of its own).
+    #[serde(default)]
+    pub turn: String,
 }
 
 /// snake_case label for a [`FocusLevel`] in the Digest prompt.
@@ -319,13 +331,30 @@ fn duration_label(started_at_ms: i64, ended_at_ms: i64) -> String {
     }
 }
 
+/// Local wall-clock `HH:MM` of `at_ms`, using the offset recovered from the
+/// range start.
+fn clock_label(at_ms: i64, local_offset_ms: i64) -> String {
+    let minutes = at_ms.saturating_add(local_offset_ms).rem_euclid(DAY_MS) / 60_000;
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// Local `HH:MM–HH:MM` span of one Activity.
+fn clock_span(activity: &Activity, local_offset_ms: i64) -> String {
+    format!(
+        "{}–{}",
+        clock_label(activity.started_at_ms, local_offset_ms),
+        clock_label(activity.ended_at_ms, local_offset_ms)
+    )
+}
+
 /// Render one Activity as a single compact prompt line:
-/// `- [Tue Jun 9 | 1h 30m | coding | deep] Title — summary`
+/// `- [Tue Jun 9 | 09:20–10:50 | 1h 30m | coding | deep] Title — summary`
 /// (category/focus segments are omitted when unset).
 fn format_activity_line(activity: &Activity, local_offset_ms: i64) -> String {
     let mut meta = format!(
-        "{} | {}",
+        "{} | {} | {}",
         day_label(activity.started_at_ms, local_offset_ms),
+        clock_span(activity, local_offset_ms),
         duration_label(activity.started_at_ms, activity.ended_at_ms)
     );
     if let Some(category) = activity.category {
@@ -346,13 +375,15 @@ fn format_activity_line(activity: &Activity, local_offset_ms: i64) -> String {
 }
 
 /// Render one Activity as the **compact** middle-tier line:
-/// `- [Tue Jun 9 | 1h 30m] Title` — day + duration + title only, dropping the
-/// summary, category, and focus the full [`format_activity_line`] carries. Used
-/// for earlier episodes once the full-detail prompt would blow the budget.
+/// `- [Tue Jun 9 | 09:20–10:50 | 1h 30m] Title` — day + clock span + duration +
+/// title only, dropping the summary, category, and focus the full
+/// [`format_activity_line`] carries. Used for earlier episodes once the
+/// full-detail prompt would blow the budget.
 fn format_activity_line_compact(activity: &Activity, local_offset_ms: i64) -> String {
     format!(
-        "- [{} | {}] {}\n",
+        "- [{} | {} | {}] {}\n",
         day_label(activity.started_at_ms, local_offset_ms),
+        clock_span(activity, local_offset_ms),
         duration_label(activity.started_at_ms, activity.ended_at_ms),
         activity.title.trim(),
     )
@@ -628,9 +659,10 @@ fn build_digest_prompt(
     let mut prompt = String::new();
     prompt.push_str(&format!(
         "Below are the user's Activity episodes for one {range_kind}, in chronological order \
-(oldest first). Each line carries the local day, the episode duration, optional category and \
-focus labels, the title, and a short summary. Write the 2-4 sentence second-person narrative \
-digest and the short headline described in the instructions and return DigestNarrative.\n\n"
+(oldest first). Each line carries the local day, the local start–end clock time, the episode \
+duration, optional category and focus labels, the title, and a short summary. Write the 2-4 \
+sentence second-person narrative digest, the headline, and the optional turn described in the \
+instructions and return DigestNarrative.\n\n"
     ));
     prompt.push_str(&format!(
         "Range: {range_kind} [{range_start_ms} .. {range_end_ms}) ms ({} Activities)\n",
@@ -672,9 +704,27 @@ fn normalize_narrative(raw: &str) -> Option<String> {
     }
 }
 
-/// Headline char cap. The preamble asks for ≤ ~6 words; an engine answer
-/// running past this is truncated rather than rejected.
-const HEADLINE_CHAR_CAP: usize = 80;
+/// Char cap on the stored `headline — turn` string. An engine answer running
+/// past this is truncated rather than rejected.
+const HEADLINE_CHAR_CAP: usize = 140;
+
+/// The separator the stored headline carries between headline and turn; the
+/// lede greys everything after its FIRST occurrence.
+const TURN_SEPARATOR: &str = " — ";
+
+/// Join the engine's headline and optional turn into the one stored string
+/// (`headline — turn`), clamped by [`normalize_headline`]. A dash the model put
+/// in the headline anyway becomes a comma so the first [`TURN_SEPARATOR`] is
+/// always the turn; a turn without a headline is dropped.
+fn joined_headline(headline: &str, turn: &str) -> Option<String> {
+    let headline = headline.trim().replace(TURN_SEPARATOR, ", ");
+    let turn = turn.trim().trim_start_matches(['—', '–', '-']).trim_start();
+    if turn.is_empty() || headline.is_empty() {
+        return normalize_headline(&headline);
+    }
+    let headline = headline.trim_end_matches('.');
+    normalize_headline(&format!("{headline}{TURN_SEPARATOR}{turn}"))
+}
 
 /// Trim + validate an engine-returned headline. Unlike [`normalize_narrative`],
 /// `None` is NOT a failure — a narrative-only digest stays valid. An over-long
@@ -717,6 +767,22 @@ fn digest_dto(
     }
 }
 
+/// A served digest.
+fn present(digest: UserContextDigest) -> UserContextDigestResult {
+    UserContextDigestResult {
+        digest: Some(digest),
+        reason: None,
+    }
+}
+
+/// No digest, and why (the non-error cases the Insights empty states tell apart).
+fn absent(reason: DigestAbsentReason) -> UserContextDigestResult {
+    UserContextDigestResult {
+        digest: None,
+        reason: Some(reason),
+    }
+}
+
 /// Stamp one `derivation_run` ledger row for a Digest engine call (kind
 /// `'digest'`). Token-usage bookkeeping deliberately reuses the existing run
 /// ledger — that is what feeds `token_usage_totals` and the settings tokens-used
@@ -755,9 +821,10 @@ async fn record_digest_run(
 /// Return the **User Context Digest** for one Insights Overview range,
 /// generating (and caching) it when the range's Activity set changed.
 ///
-/// `Ok(None)` is the silent-omission path (never an error): the User Context
-/// opt-in off, the engine not configured, or fewer than
-/// [`MIN_DIGEST_ACTIVITIES`] Activities in range. `Err` covers real failures (a
+/// A digest-less `Ok` carries its [`DigestAbsentReason`] (never an error): the
+/// User Context opt-in off (`derivation_off`), the engine not configured
+/// (`engine_not_ready`), or fewer than [`MIN_DIGEST_ACTIVITIES`] Activities in
+/// range (`too_few`). `Err` covers real failures (a
 /// malformed request, a store error, an engine that did not resolve live, an
 /// engine call that failed / returned an empty narrative) and the
 /// [`DIGEST_SENSITIVE_HOLD`] code. Engine failures and the hold are replayed to
@@ -783,7 +850,7 @@ pub async fn get_or_generate_digest(
     range_start_ms: i64,
     range_end_ms: i64,
     force: bool,
-) -> Result<Option<UserContextDigest>, String> {
+) -> Result<UserContextDigestResult, String> {
     // A bad range is a frontend bug, not a normal-off case.
     if !matches!(range_kind, "day" | "week" | "month") {
         return Err(format!("unknown digest range kind: {range_kind}"));
@@ -796,13 +863,13 @@ pub async fn get_or_generate_digest(
     //    two-layer gate as the other user-context commands: the opt-in, then the
     //    shared engine-configured prerequisite).
     if !user_context_enabled {
-        return Ok(None);
+        return Ok(absent(DigestAbsentReason::DerivationOff));
     }
     if let Err(reason) = crate::ai_runtime::engine_configured_prerequisite(ai_runtime).await {
         crate::native_capture::debug_log::log_info(format!(
             "digest: skipped {range_kind} (engine not ready: {reason})"
         ));
-        return Ok(None);
+        return Ok(absent(DigestAbsentReason::EngineNotReady));
     }
 
     // 2./3. The range's Activities; a narrative over fewer than two is silly.
@@ -831,7 +898,7 @@ pub async fn get_or_generate_digest(
             "digest: skipped {range_kind} (only {} activities, need {MIN_DIGEST_ACTIVITIES})",
             activities.len()
         ));
-        return Ok(None);
+        return Ok(absent(DigestAbsentReason::TooFew));
     }
 
     // 4. Cache hit (the common path): an unchanged input set never re-bills the
@@ -863,7 +930,7 @@ pub async fn get_or_generate_digest(
                 || (!corrected_since_generated
                     && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
             {
-                return Ok(Some(digest_dto(
+                return Ok(present(digest_dto(
                     &stored.range_kind,
                     stored.range_start_ms,
                     stored.range_end_ms,
@@ -940,7 +1007,7 @@ pub async fn get_or_generate_digest(
                 "digest: skipped {range_kind} (engine config did not resolve: {reason})"
             ));
             // Both paths surface it (and record it) exactly like the extraction
-            // failure below: an `Ok(None)` renders as "not enough activity",
+            // failure below: a `too_few` absence renders as "not enough activity",
             // blaming the user's data for an engine failure. The cooldown keeps
             // the lazy path from re-trying on every Insights visit — except a
             // sign-in failure: re-resolving it needs no network (a rejected login
@@ -999,7 +1066,9 @@ pub async fn get_or_generate_digest(
             return fail(message);
         }
     };
-    let output_tokens = estimate_tokens(&batch.narrative) + estimate_tokens(&batch.headline);
+    let output_tokens = estimate_tokens(&batch.narrative)
+        + estimate_tokens(&batch.headline)
+        + estimate_tokens(&batch.turn);
 
     let Some(narrative) = normalize_narrative(&batch.narrative) else {
         record_digest_run(
@@ -1014,7 +1083,7 @@ pub async fn get_or_generate_digest(
         return fail("The AI engine returned an empty read. Try again in a moment.".to_string());
     };
     // An unusable headline is NOT a failure — the narrative-only digest stands.
-    let headline = normalize_headline(&batch.headline);
+    let headline = joined_headline(&batch.headline, &batch.turn);
 
     // 5b. HARD sensitive post-filter (PR #112 #8). The digest narrative is the
     //     engine's FREE TEXT, gated until now only by the SOFT guardrail preamble
@@ -1062,7 +1131,7 @@ pub async fn get_or_generate_digest(
         headline.as_deref(),
     ));
 
-    Ok(Some(digest_dto(
+    Ok(present(digest_dto(
         range_kind,
         range_start_ms,
         range_end_ms,
@@ -1123,10 +1192,11 @@ mod tests {
         assert!(preamble.starts_with(guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION));
         assert!(preamble.contains("second person"));
         assert!(preamble.contains("Do NOT use markdown"));
-        // The headline ask rides the same preamble: short, grounded, unadorned.
-        assert!(preamble.contains("short headline"));
-        assert!(preamble.contains("at most six words"));
-        assert!(preamble.contains("no terminal punctuation, no surrounding quotes"));
+        // The headline ask rides the same preamble: a dash-free sentence + turn.
+        assert!(preamble.contains("headline for the range: a full sentence"));
+        assert!(preamble.contains("Never put a dash in the headline"));
+        assert!(preamble.contains("Optionally add a turn"));
+        assert!(preamble.contains("no surrounding quotes"));
     }
 
     #[test]
@@ -1183,6 +1253,14 @@ mod tests {
         );
         let line = format_activity_line(&labeled, 0);
         assert!(line.contains("Thu Jan 1"), "epoch day label: {line}");
+        assert!(
+            line.contains("| 00:00–01:30 | 1h 30m"),
+            "local clock span: {line}"
+        );
+        // The clock span is local: UTC+5:30 shifts it, the compact tier keeps it.
+        let ist = (5 * 60 + 30) * 60_000;
+        assert!(format_activity_line(&labeled, ist).contains("| 05:30–07:00 |"));
+        assert!(format_activity_line_compact(&labeled, ist).contains("| 05:30–07:00 |"));
         assert!(line.contains("1h 30m"));
         assert!(line.contains("| creating | deep]"));
         assert!(line.contains("Billing migration — Moved invoices"));
@@ -1207,7 +1285,7 @@ mod tests {
         assert!(prompt.contains("today is"));
         assert!(prompt.contains("Local calendar:"));
         assert!(prompt.contains("one week"));
-        assert!(prompt.contains("the short headline"), "prompt asks for the headline");
+        assert!(prompt.contains("the optional turn"), "prompt asks for headline + turn");
         let oldest = prompt.find("Oldest").expect("oldest line");
         let newest = prompt.find("Newest").expect("newest line");
         assert!(oldest < newest, "chronological: oldest first, newest last");
@@ -1581,26 +1659,52 @@ mod tests {
 
         // Over the cap: cut at the LAST word boundary inside the cap, with no
         // dangling whitespace and no mid-word fragment.
-        let long = format!("{} tail", "word ".repeat(20).trim_end()); // 104 chars
+        let long = format!("{} tail", "word ".repeat(30).trim_end()); // 154 chars
         let truncated = normalize_headline(&long).expect("headline");
         assert!(truncated.chars().count() <= HEADLINE_CHAR_CAP);
-        assert_eq!(truncated, "word ".repeat(16).trim_end());
+        assert_eq!(truncated, "word ".repeat(28).trim_end());
 
         // One unbroken cap-filling word: hard char cut, never `None`.
         let unbroken = "y".repeat(HEADLINE_CHAR_CAP + 20);
         assert_eq!(normalize_headline(&unbroken), Some("y".repeat(HEADLINE_CHAR_CAP)));
     }
 
+    /// `headline — turn` is one stored string: the lede splits on the FIRST
+    /// " — ", so a dash inside the headline must not move that split, and the
+    /// joined string clamps at [`HEADLINE_CHAR_CAP`].
+    #[test]
+    fn joined_headline_splits_on_the_first_dash_and_clamps_at_140() {
+        assert_eq!(HEADLINE_CHAR_CAP, 140);
+        let joined = joined_headline(
+            "A build week. The pipeline — not the UI — ate your mornings.",
+            "— until Thursday's calls took the whole day back.",
+        )
+        .expect("headline");
+        let (head, turn) = joined.split_once(TURN_SEPARATOR).expect("turn split");
+        assert_eq!(head, "A build week. The pipeline, not the UI, ate your mornings");
+        assert_eq!(turn, "until Thursday's calls took the whole day back.");
+
+        // No turn → the bare headline; a turn alone is dropped.
+        assert_eq!(joined_headline(" A quiet day ", "  ").as_deref(), Some("A quiet day"));
+        assert_eq!(joined_headline("", "until lunch"), None);
+
+        // Over-long joined text clamps on a word boundary, the split survives.
+        let long = joined_headline(&"word ".repeat(20), &"turn ".repeat(30)).expect("headline");
+        assert!(long.chars().count() <= HEADLINE_CHAR_CAP, "{long}");
+        let head = long.split_once(TURN_SEPARATOR).map(|(h, _)| h);
+        assert_eq!(head, Some("word ".repeat(20).trim_end()));
+    }
+
     /// A forced re-read that cannot resolve an engine must SAY so.
     ///
     /// `regenerate_user_context_digest` is the Overview's explicit re-read
-    /// button, and its contract is that `Ok(None)` means the range genuinely
+    /// button, and its contract is that a `too_few` absence means the range genuinely
     /// has nothing to read — the Overview renders exactly one sentence for it:
     /// "Not enough activity in this range to write a read."
     ///
     /// Since the engine resolve went LIVE (it now refreshes a ChatGPT OAuth
     /// token), this call can fail for a credential/connectivity reason on a
-    /// range that is full of Activities. Collapsing that into `Ok(None)` tells
+    /// range that is full of Activities. Collapsing that into `too_few` tells
     /// the user their data is thin when the truth is the engine never
     /// resolved — and records nothing in the derivation-run ledger either, so
     /// the failure is invisible on every surface.

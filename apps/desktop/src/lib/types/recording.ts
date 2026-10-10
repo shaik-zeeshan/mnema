@@ -415,8 +415,22 @@ export interface UserContextDigest {
 	rangeEndMs: number;
 	narrative: string;
 	generatedAtMs: number;
-	/** One-line generated headline above the narrative; absent on old cached digests. */
+	/**
+	 * Generated full-sentence headline, optionally followed by " — " and a turn
+	 * clause; the lede de-emphasizes everything after the FIRST " — ". ≤140 chars.
+	 */
 	headline?: string | null;
+}
+
+/** Why the digest commands served no digest. Failures stay a rejected invoke
+ * (`"digest_sensitive_hold"` for the sensitive hold). Mirrors `DigestAbsentReason`. */
+export type DigestAbsentReason = "too_few" | "derivation_off" | "engine_not_ready";
+
+/** `get_user_context_digest` / `regenerate_user_context_digest` result: exactly
+ * one key is present. Mirrors the Rust `UserContextDigestResult`. */
+export interface UserContextDigestResult {
+	digest?: UserContextDigest;
+	reason?: DigestAbsentReason;
 }
 
 export interface RecordingSettings {

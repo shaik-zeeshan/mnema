@@ -261,7 +261,7 @@ export function createFeaturesStore() {
 		const start = new Date();
 		start.setHours(0, 0, 0, 0);
 		try {
-			const digest = await invoke<UserContextDigest | null>("regenerate_user_context_digest", {
+			const { digest } = await invoke<{ digest?: UserContextDigest }>("regenerate_user_context_digest", {
 				rangeKind: "day",
 				startMs: start.getTime(),
 				endMs: start.getTime() + 24 * 60 * 60 * 1000,
