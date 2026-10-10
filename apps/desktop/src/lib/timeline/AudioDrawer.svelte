@@ -648,7 +648,7 @@
   .audio-drawer--expanded {
     /* Below the app titlebar, which is fixed and would otherwise cover the
        drawer's own header row (rerun / timestamps / collapse / close). */
-    top: calc(var(--app-titlebar-height) + 8px);
+    top: calc(var(--mx-titlebar-h) + 8px);
     max-height: none;
   }
 

@@ -1659,6 +1659,7 @@
 
   onMount(() => {
     void focusQuickRecall();
+    void search.takeSummonQuery();
     void loadAskAvailability();
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
@@ -1722,6 +1723,7 @@
             void hydrateAskFromStore(askConversationId);
           }
           void tick().then(() => focusQuickRecall());
+          void search.takeSummonQuery().then((taken) => { if (taken && mode === "ask") void backToSearch(); });
         }
       })
       .then((fn) => {

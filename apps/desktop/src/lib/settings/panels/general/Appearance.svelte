@@ -13,7 +13,7 @@
 <SettingGroup
   id="settings-section-appearance"
   title="Appearance"
-  hint="Theme switches immediately when saved and is also available from every titlebar."
+  hint="Theme switches immediately when saved."
 >
   <SettingRow
     label="Theme"

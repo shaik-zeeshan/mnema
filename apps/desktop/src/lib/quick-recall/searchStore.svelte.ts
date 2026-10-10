@@ -677,6 +677,18 @@ export class SearchStore {
     }
   }
 
+  // ↵ in the main window's titlebar recall field summons this window with its
+  // text (`summon_quick_recall_window_command { query }`). Rust parks it until
+  // read here — on mount and on every focus — so it survives a cold build.
+  // Returns true when a query was taken (the page then leaves Ask mode).
+  async takeSummonQuery(): Promise<boolean> {
+    const query = await invoke<string | null>("take_quick_recall_query").catch(() => null);
+    if (!query) return false;
+    this.query = query;
+    this.caretAtEnd = true;
+    return true;
+  }
+
   async openSemanticSearchSettings(): Promise<void> {
     await openSettings("semanticSearch");
   }

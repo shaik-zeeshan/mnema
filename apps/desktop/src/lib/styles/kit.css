@@ -6,9 +6,9 @@
    component — extend with component-prefixed ones.
 
    ponytail: CSS only. Behaviour (popover toggling, toasts, segmented thumb) stays
-   in Svelte. Controls (mx-seg, mx-choice, mx-switch, mx-input), the date input
-   and the window frame (titlebar, nav, cmd, statusbar) land with the slices
-   that build those components.
+   in Svelte. Controls (mx-seg, mx-choice, mx-switch, mx-input) and the date
+   input live here; the shell frame (titlebar, nav, cmd, statusbar) is in
+   shell.css (kept apart so neither file passes 800 lines).
    ========================================================================== */
 
 /* --- Fonts (self-hosted, OFL-1.1, latin subset, variable wght) ----------
