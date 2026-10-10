@@ -62,7 +62,7 @@
     {/snippet}
     {#snippet control()}
       <div class="privacy-disclosure">
-        <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
+        <p>While on, the default model runs over your redacted screen text and transcripts, plus the context statements you wrote in Insights (sent as written), as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
         <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
       </div>
     {/snippet}

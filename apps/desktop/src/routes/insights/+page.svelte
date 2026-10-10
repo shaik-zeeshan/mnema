@@ -264,7 +264,7 @@
         <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} />
       {/if}
     {:else}
-      <Context openDismissed={contextOpenDismissed} />
+      <Context openDismissed={contextOpenDismissed} onOpenSubject={openSubject} />
     {/if}
   </section>
 </div>

@@ -14,6 +14,7 @@
     sortConclusions,
     type ConclusionSort,
   } from "$lib/insights/subjectTimeline";
+  import { INITIAL_BASE, STRONGLY_HELD } from "$lib/insights/subjectsTiers";
 
   interface Props {
     conclusions: Conclusion[];
@@ -46,11 +47,11 @@
   type Trend = "up" | "steady" | "down";
   type Tier = "t-strong" | "t-moderate" | "t-weak" | "t-faded";
 
-  // Confidence tier drives dot/bar/pct/stmt intensity (mockup lines 163-183).
+  // Confidence tier drives dot/bar/pct/stmt intensity — the shared Subjects cuts.
   function tierFor(c: Conclusion): Tier {
     if (c.status === "faded") return "t-faded";
-    if (c.confidence >= 0.68) return "t-strong";
-    if (c.confidence >= 0.45) return "t-moderate";
+    if (c.confidence >= STRONGLY_HELD) return "t-strong";
+    if (c.confidence >= INITIAL_BASE) return "t-moderate";
     return "t-weak";
   }
 

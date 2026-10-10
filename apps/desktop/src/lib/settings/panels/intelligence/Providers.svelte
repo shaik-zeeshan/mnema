@@ -281,8 +281,9 @@
               <p>
                 With a cloud provider connected and AI features on, <em>redacted</em> OCR and
                 transcript text is sent to that provider over HTTPS, billed to your own key.
-                Your on-device data — frames, audio, and the assembled dossier — never leaves
-                this machine. The master switch above is your explicit opt-in, separate from
+                Frames and audio never leave this machine. Context statements you write in
+                Insights are sent as written each time Mnema forms conclusions. The master
+                switch above is your explicit opt-in, separate from
                 the per-feature toggles below.
               </p>
             </div>
