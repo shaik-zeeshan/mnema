@@ -5,7 +5,6 @@
   // (views move them there with `use:inBar`), plus a Subject drill-in. Engine
   // trouble is one `mx-notice` over the view — never a wall, never a steer.
   import { untrack } from "svelte";
-  import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openSettings } from "$lib/surface-windows";
@@ -247,7 +246,7 @@
     {#if view === "overview"}
       <Overview
         onOpenSubject={openSubject}
-        onOpenTab={(tab) => (tab === "chat" ? void goto("/chat") : openTab(tab))}
+        onOpenTab={openTab}
       />
     {:else if view === "journal"}
       <DayTimeline />
