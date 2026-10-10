@@ -634,23 +634,23 @@ export function drawerStatusPill(input: {
   distinctSpeakers: number;
 }): StatusPill {
   const systemAudio = input.source === "systemAudio";
-  if (input.speakerAnalysisRunning) return { tone: "work", label: "speakers", busy: true };
+  if (input.speakerAnalysisRunning) return { tone: "work", label: "finding speakers", busy: true };
   if (input.transcriptStatus === "loading") return { tone: "work", label: "loading", busy: true };
   if (input.transcriptStatus === "running") {
-    return { tone: "work", label: systemAudio ? "detecting speech" : "processing", busy: true };
+    return { tone: "work", label: systemAudio ? "detecting speech" : "transcribing", busy: true };
   }
   if (input.transcriptStatus === "error") {
-    return { tone: "bad", label: systemAudio ? "speech detection failed" : "error", busy: false };
+    return { tone: "bad", label: systemAudio ? "speech detection failed" : "failed", busy: false };
   }
   if (input.speakerAnalysisFailed) {
     return { tone: "bad", label: "speaker analysis failed", busy: false };
   }
   if (input.transcriptStatus === "empty") return { tone: "idle", label: "no speech", busy: false };
-  if (input.transcriptStatus === "missing") return { tone: "warn", label: "not run", busy: false };
+  if (input.transcriptStatus === "missing") return { tone: "warn", label: "not transcribed", busy: false };
   if (input.transcriptStatus === "success") {
     return {
       tone: "ok",
-      label: input.distinctSpeakers > 0 ? `${input.distinctSpeakers} speakers` : "completed",
+      label: `transcribed${input.distinctSpeakers > 0 ? ` · ${input.distinctSpeakers} speaker${input.distinctSpeakers === 1 ? "" : "s"}` : ""}`,
       busy: false,
     };
   }

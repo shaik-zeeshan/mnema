@@ -217,7 +217,6 @@
   /** Speaker-strip selection: dims every other voice; `onlySelected` hides them. */
   let selectedClusterId = $state<number | null>(null);
   let onlySelected = $state(false);
-  let closeEl = $state<HTMLButtonElement | null>(null);
   let repairEl = $state<HTMLElement | null>(null);
   let returnFocusEl: HTMLElement | null = null;
 
@@ -357,7 +356,9 @@
     let cancelled = false;
     void tick().then(() => {
       if (cancelled) return;
-      (closeEl ?? drawerEl)?.focus();
+      // The container, not the close button: a programmatic focus on a button
+      // can match :focus-visible and leave a ring on it the user never asked for.
+      drawerEl?.focus();
     });
     return () => {
       cancelled = true;
@@ -377,7 +378,8 @@
     let cancelled = false;
     void tick().then(() => {
       if (cancelled || repairIndex == null) return;
-      (getFocusableElements(repairEl)[0] ?? repairEl)?.focus({ preventScroll: true });
+      const target = repairEl?.querySelector<HTMLElement>(".mx-input") ?? getFocusableElements(repairEl)[0];
+      (target ?? repairEl)?.focus({ preventScroll: true });
     });
     return () => {
       cancelled = true;
@@ -387,7 +389,7 @@
       // until the user happens to click back inside.
       const active = document.activeElement as HTMLElement | null;
       if (!active || active === document.body || repairEl?.contains(active)) {
-        (closeEl ?? drawerEl)?.focus({ preventScroll: true });
+        drawerEl?.focus({ preventScroll: true });
       }
     };
   });
@@ -437,6 +439,7 @@
 <div
   class="audio-drawer"
   class:audio-drawer--expanded={expanded}
+  class:audio-drawer--repair={repairGroup}
   role="dialog"
   aria-modal="false"
   aria-label={`Audio segment player — ${sourceLabel} #${segment.segmentIndex}`}
@@ -464,7 +467,6 @@
     bind:onlySelected
     bind:showTimestamps
     bind:expanded
-    bind:closeEl
   />
 
   {#if mediaError}
@@ -514,7 +516,8 @@
         {currentMs}
         {activeGroupIndex}
         {showTimestamps}
-        {expanded}
+        segmentStartMs={segment.startUnixMs}
+        fixingIndex={repairIndex}
         selectedClusterId={selected}
         onlySelected={onlySelected && selected != null}
         speakerName={(group) =>
@@ -550,7 +553,7 @@
       {:else if speakerTurnsNotice}
         <p class="stage__note">{speakerTurnsNotice}</p>
       {/if}
-      {#if correctionError}
+      {#if correctionError && !repairGroup}
         <p class="stage__error" role="alert">{correctionError}</p>
       {/if}
     {:else}
@@ -578,6 +581,7 @@
         <SpeakerRepairPanel
           group={repairGroup}
           mark={marks.get(repairGroup.clusterId)}
+          {marks}
           {turns}
           {clusters}
           {profiles}
@@ -621,6 +625,8 @@
     {marks}
     selectedClusterId={selected}
     compact={!expanded}
+    showExpand={!expanded && panel === "reader"}
+    onExpand={() => (expanded = true)}
     onToggle={transport.togglePlayPause}
     onScrubInput={(event) => {
       transport.scrubbing = true;
@@ -631,32 +637,27 @@
       transport.seekToSeconds(Number((event.currentTarget as HTMLInputElement).value));
     }}
   />
-
-  {#if !expanded && panel === "reader"}
-    <button type="button" class="expand-cta" onclick={() => (expanded = true)}>
-      open reader ⤢
-    </button>
-  {/if}
 </div>
 
 <style>
   .audio-drawer {
     position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+    left: var(--s-4);
+    right: var(--s-4);
+    /* Clear of the 30px status bar. */
+    bottom: calc(30px + var(--s-3));
     z-index: 30;
     display: flex;
     flex-direction: column;
     max-height: 50vh;
     overflow: hidden;
-    background: var(--app-surface-raised);
+    background: color-mix(in srgb, var(--app-surface-raised) 94%, transparent);
     border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
-    animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+    border-radius: var(--r-lg);
+    -webkit-backdrop-filter: blur(24px) saturate(1.3);
+    backdrop-filter: blur(24px) saturate(1.3);
+    box-shadow: var(--app-shadow-popover);
+    animation: audio-drawer-rise var(--t-slow) var(--ease-expo) both;
     outline: none;
   }
 
@@ -666,40 +667,19 @@
   .audio-drawer--expanded {
     /* Below the app titlebar, which is fixed and would otherwise cover the
        drawer's own header row (rerun / timestamps / collapse / close). */
-    top: calc(var(--mx-titlebar-h) + 8px);
+    top: calc(var(--mx-titlebar-h) + var(--s-3));
     max-height: none;
   }
 
-  .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  /* The dark lift is far too heavy on paper. */
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-
-  :global([data-theme="light"]) .audio-drawer:focus-visible {
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      var(--app-ring);
+  /* Room for the repair slide-over's search + list without leaving the reader. */
+  .audio-drawer--repair {
+    max-height: 76vh;
   }
 
   @keyframes audio-drawer-rise {
     from {
-      transform: translateY(12px);
+      transform: translateY(16px);
       opacity: 0;
-    }
-    to {
-      transform: translateY(0);
-      opacity: 1;
     }
   }
 
@@ -735,30 +715,6 @@
     color: var(--app-danger-text, var(--app-danger));
     font-family: var(--app-font-mono);
     word-break: break-word;
-  }
-
-  /* AUDIT 4 — neutral, so the accent stays reserved for the playhead + word. */
-  .expand-cta {
-    position: absolute;
-    right: 14px;
-    bottom: 52px;
-    padding: 4px 10px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-surface-raised);
-    box-shadow: var(--app-shadow-popover);
-    color: var(--app-text-strong);
-    font: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    cursor: pointer;
-  }
-
-  .expand-cta:hover,
-  .expand-cta:focus-visible {
-    background: var(--app-surface-hover);
-    outline: none;
   }
 
   .drawer-error {

@@ -32,8 +32,7 @@
   interface Props {
     group: SpeakerTranscriptGroup;
     mark: SpeakerMark | undefined;
-    /** The drawer's cluster → mark map, for the move-line list. Optional until
-     *  AudioDrawer passes it (`{marks}`); without it those rows have no glyph. */
+    /** The drawer's cluster → mark map, for the move-line list's glyphs. */
     marks?: Map<number, SpeakerMark>;
     turns: SpeakerTurnDto[];
     clusters: SpeakerClusterDto[];
