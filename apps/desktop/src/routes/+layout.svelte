@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "$lib/styles/kit.css";
   import { tip } from "$lib/components/tooltip";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
@@ -1679,11 +1680,10 @@
        in both modes because the accent fill it sits on is bright in both. */
     --app-accent-contrast: #07120c;
 
-    /* Brand monospace face. Referenced by 20+ rules across the app via
-       `var(--app-font-mono, ...)`; defining it here makes the brand face
-       resolve everywhere instead of silently falling back. Mode-independent. */
-    --app-font-mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
-      monospace;
+    /* Legacy alias of the kit's record face (`--font-mono`, lib/styles/kit.css)
+       so the rules still reading `var(--app-font-mono)` keep working until each
+       surface moves its sentences to sans. Mode-independent. */
+    --app-font-mono: var(--font-mono);
 
     /* Shared focus-visible rings (mode-independent; the accent-glow they key
        off is per-mode, so the ring adapts to the active theme automatically). */
@@ -1972,7 +1972,7 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
+    font-family: var(--font-sans);
     font-size: var(--text-md);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
@@ -2075,47 +2075,6 @@
   :global(::-webkit-scrollbar-thumb:active) {
     background-color: var(--app-accent-strong);
     background-clip: padding-box;
-  }
-
-  /* Custom tooltip — portaled to <body> by the `tip` action
-     ($lib/components/tooltip.ts), styled here so it reads the same tokens as
-     the app instead of the OS's native `title` bubble. The accent left edge is
-     the terminal "prompt" signature. */
-  :global(.app-tooltip) {
-    position: fixed;
-    top: 0;
-    left: 0;
-    z-index: 9999;
-    max-width: 260px;
-    padding: 5px 8px 6px;
-    font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
-    line-height: 1.45;
-    letter-spacing: 0.01em;
-    color: var(--app-text-strong);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-left: 2px solid var(--app-accent);
-    border-radius: 5px;
-    box-shadow: var(--app-shadow-popover);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateY(2px);
-    transition:
-      opacity 90ms ease,
-      transform 90ms ease;
-  }
-  :global(.app-tooltip[data-show="true"]) {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(.app-tooltip) {
-      transition: none;
-      transform: none;
-    }
   }
 
   .app-shell {
