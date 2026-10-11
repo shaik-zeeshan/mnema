@@ -884,8 +884,8 @@ pub async fn user_context_delete_authored(
 ///    **Conclusion** data AND **Dismissal State** and the derivation-run ledger
 ///    (`wipe_all`). Raw captures and other settings are untouched.
 /// 3. Clear all persistent Quick Recall / Chat conversations (issue #102), the
-///    single shared store, so the same control erases every derived/recalled
-///    surface. Both data wipes run even if the first one errors, so a single
+///    single shared store, and Quick Recall's recent queries, so the same control
+///    erases every derived/recalled surface. All data wipes run even if one errors, so a single
 ///    failure cannot strand the other store half-cleared with no retry; the first
 ///    error is surfaced afterwards.
 /// 4. Emit `user_context_changed` so the now-empty surface refreshes.
@@ -917,8 +917,11 @@ pub async fn wipe_user_context(
     //    error after attempting both.
     let wipe_context = infra.user_context().wipe_all().await;
     let wipe_conversations = infra.conversation().wipe_all().await;
+    // Quick Recall's recent queries share the conversations' contract.
+    let wipe_recent_queries = ::app_infra::delete_recent_queries(infra.write_pool()).await;
     wipe_context.map_err(|e| e.to_string())?;
     wipe_conversations.map_err(|e| e.to_string())?;
+    wipe_recent_queries.map_err(|e| e.to_string())?;
 
     // 4. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());

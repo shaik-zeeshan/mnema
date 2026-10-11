@@ -5060,7 +5060,11 @@ pub async fn search_capture(
     for frame in &mut response.frames {
         frame.match_boxes = infra
             .search()
-            .frame_match_boxes(frame.representative_frame.id, &query, frame.found_by_meaning)
+            .frame_match_boxes(
+                frame.representative_frame.id,
+                &query,
+                frame.found_by_meaning,
+            )
             .await
             .unwrap_or_default();
     }
@@ -5771,6 +5775,16 @@ mod tests {
             .execute(pool)
             .await
             .expect("retained frame should insert");
+            // Typed text is never named by Delete Recent Capture (conversations'
+            // contract): a query run inside the deleted window survives it.
+            let recent_query = ::app_infra::RecentQuery {
+                text: "pricing page".to_string(),
+                ask: false,
+                at: 1_779_184_805_000, // 2026-05-19T10:00:05Z
+            };
+            ::app_infra::store_recent_queries(pool, vec![recent_query.clone()])
+                .await
+                .expect("recent query should store");
 
             let deletion =
                 delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
@@ -5782,6 +5796,10 @@ mod tests {
             assert_eq!(
                 deletion.capture_segment_media_paths,
                 vec![deleted_media_path]
+            );
+            assert_eq!(
+                ::app_infra::load_recent_queries(pool).await.expect("load"),
+                vec![recent_query]
             );
             let deleted_snapshot_count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM frame_metadata_snapshots WHERE id = ?1")

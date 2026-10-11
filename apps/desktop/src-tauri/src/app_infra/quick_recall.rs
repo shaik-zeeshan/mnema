@@ -29,3 +29,26 @@ pub async fn get_frame_match_boxes(
         .await
         .map_err(|error| format!("failed to read match boxes: {error}"))
 }
+
+/// Quick Recall's recent queries, newest first (`app_settings`
+/// `quick_recall.recent_queries`; never localStorage).
+#[tauri::command]
+pub async fn get_quick_recall_recent_queries(
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<::app_infra::RecentQuery>, String> {
+    ::app_infra::load_recent_queries(state.read_pool())
+        .await
+        .map_err(|error| format!("failed to read recent queries: {error}"))
+}
+
+/// Replace the recent queries (add, re-run, ⌫-remove all go through here).
+/// Returns what was kept: newest first, at most 8.
+#[tauri::command]
+pub async fn set_quick_recall_recent_queries(
+    queries: Vec<::app_infra::RecentQuery>,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<::app_infra::RecentQuery>, String> {
+    ::app_infra::store_recent_queries(state.write_pool(), queries)
+        .await
+        .map_err(|error| format!("failed to save recent queries: {error}"))
+}

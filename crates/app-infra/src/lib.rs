@@ -21,6 +21,7 @@ mod machine_id;
 mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
+mod recent_queries;
 pub mod retry_policy;
 mod search;
 mod secret_vault;
@@ -123,6 +124,10 @@ pub use processing::{
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
     HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
+};
+pub use recent_queries::{
+    delete_recent_queries, load_recent_queries, prune_recent_queries_older_than,
+    store_recent_queries, RecentQuery, MAX_RECENT_QUERIES,
 };
 pub use search::{
     semantic_search_residual_query, AudioSearchResult, FrameSearchResult, MatchBox, MatchBoxKind,
@@ -499,6 +504,10 @@ impl AppInfra {
 
     pub fn read_pool(&self) -> &SqlitePool {
         self.database.read_pool()
+    }
+
+    pub fn write_pool(&self) -> &SqlitePool {
+        self.database.write_pool()
     }
 
     /// Begin a write transaction with `BEGIN IMMEDIATE` on the Writer Pool

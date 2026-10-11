@@ -1238,6 +1238,10 @@ fn apply_domain_patch_to_settings(
                 settings.access.ask_ai_web_fetch_enabled = value;
                 touched = true;
             }
+            if let Some(value) = request.quick_recall_auto_answer {
+                settings.access.quick_recall_auto_answer = value;
+                touched = true;
+            }
             if let Some(value) = request.ask_ai_max_tool_calls {
                 settings.access.ask_ai_max_tool_calls = value;
                 touched = true;
@@ -1883,10 +1887,15 @@ mod tests {
                 ask_ai_max_tool_calls: Some(0),
                 ask_ai_web_fetch_enabled: Some(true),
                 ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
+                quick_recall_auto_answer: Some(capture_types::QuickRecallAutoAnswer::Never),
             }),
         )
         .expect("access patch should validate");
 
+        assert_eq!(
+            updated.access.quick_recall_auto_answer,
+            capture_types::QuickRecallAutoAnswer::Never
+        );
         assert!(updated.access.ask_ai_enabled);
         assert!(updated.access.ask_ai_web_fetch_enabled);
         assert_eq!(updated.access.ask_ai_max_tool_calls, 0);

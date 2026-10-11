@@ -33,7 +33,16 @@ export interface AccessSettings {
 	 * is now a bare model id.)
 	 */
 	askAiModel?: string | null;
+	/** "Answer questions automatically" (Settings → Ask AI). Default `localOnly`. */
+	quickRecallAutoAnswer: QuickRecallAutoAnswer;
 }
+
+/**
+ * Whether Quick Recall answers a detected question on its own after a pause.
+ * `localOnly` = only when the resolved model's provider is local (Ollama,
+ * Llamafile); `never` = the user presses Tab to ask.
+ */
+export type QuickRecallAutoAnswer = "always" | "localOnly" | "never";
 
 export interface ExcludedAppEntry {
 	id: string;
@@ -561,6 +570,8 @@ export interface UpdateAccessSettingsRequest {
 	 * engine default.
 	 */
 	askAiModel: string;
+	/** Omitted = unchanged. */
+	quickRecallAutoAnswer?: QuickRecallAutoAnswer;
 }
 
 /** One model discovered from a connected provider's models route

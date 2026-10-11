@@ -498,6 +498,9 @@ impl CaptureRetentionStore {
         if let Some(cutoff_ms) = rfc3339_to_ms(&cutoff) {
             summary.deleted_conversations =
                 delete_conversations_older_than(self.db.write(), cutoff_ms).await?;
+            // Quick Recall's recent queries take the conversations' contract.
+            crate::recent_queries::prune_recent_queries_older_than(self.db.write(), cutoff_ms)
+                .await?;
         }
 
         if summary.eligible_capture_segments == 0
@@ -1840,6 +1843,11 @@ mod tests {
                 updated_at_ms INTEGER NOT NULL,
                 UNIQUE (conversation_row_id, turn_index)
             )",
+            "CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
         ] {
             sqlx::query(statement)
                 .execute(pool)
@@ -2619,6 +2627,17 @@ mod tests {
             .execute(&pool)
             .await
             .expect("turn should insert");
+            let recent = |text: &str, at| crate::RecentQuery {
+                text: text.to_string(),
+                ask: true,
+                at,
+            };
+            crate::store_recent_queries(
+                &pool,
+                vec![recent("old", old_ms), recent("new", recent_ms)],
+            )
+            .await
+            .expect("recent queries should store");
             sqlx::query("PRAGMA foreign_keys = ON")
                 .execute(&pool)
                 .await
@@ -2644,6 +2663,11 @@ mod tests {
                     .map(|row| row.get::<String, _>("conversation_id"))
                     .collect();
             assert_eq!(remaining, vec!["recent".to_string()], "recent conversation survives");
+            assert_eq!(
+                crate::load_recent_queries(&pool).await.expect("load"),
+                vec![recent("new", recent_ms)],
+                "recent queries age out with the conversations"
+            );
         });
     }
 

@@ -726,6 +726,23 @@ mod tests {
     }
 
     #[test]
+    fn quick_recall_auto_answer_defaults_local_only_and_round_trips() {
+        let legacy: AccessSettings = serde_json::from_str("{}").expect("legacy access");
+        assert_eq!(
+            legacy.quick_recall_auto_answer,
+            QuickRecallAutoAnswer::LocalOnly
+        );
+        let json = serde_json::to_value(AccessSettings::default()).expect("serialize");
+        assert_eq!(json["quickRecallAutoAnswer"], "localOnly");
+        let request: UpdateAccessSettingsRequest =
+            serde_json::from_str(r#"{ "quickRecallAutoAnswer": "always" }"#).expect("request");
+        assert_eq!(
+            request.quick_recall_auto_answer,
+            Some(QuickRecallAutoAnswer::Always)
+        );
+    }
+
+    #[test]
     fn recording_settings_domain_response_serializes_domain_as_snake_case() {
         let response = RecordingSettingsDomainUpdateResponse {
             domain: SettingsOwnershipDomain::AppPrivacyExclusion,

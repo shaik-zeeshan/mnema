@@ -532,6 +532,24 @@ pub struct AccessSettings {
     /// historically a PI `provider:modelId` pair; it is now a bare model id.
     #[serde(default)]
     pub ask_ai_model: Option<String>,
+    /// Whether Quick Recall answers a detected question on its own when the user
+    /// pauses. Auto-answer spends a model call per question; the default keeps
+    /// cloud calls (money and an upload) explicit.
+    #[serde(default)]
+    pub quick_recall_auto_answer: QuickRecallAutoAnswer,
+}
+
+/// "Answer questions automatically" in Settings → Ask AI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum QuickRecallAutoAnswer {
+    /// Every question, whatever the model.
+    Always,
+    /// Only when the resolved model's provider `is_local()` (Ollama, Llamafile).
+    #[default]
+    LocalOnly,
+    /// Never — the user presses Tab to ask.
+    Never,
 }
 
 impl Default for AccessSettings {
@@ -541,6 +559,7 @@ impl Default for AccessSettings {
             ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
             ask_ai_web_fetch_enabled: false,
             ask_ai_model: None,
+            quick_recall_auto_answer: QuickRecallAutoAnswer::default(),
         }
     }
 }
@@ -1342,6 +1361,8 @@ pub struct UpdateAccessSettingsRequest {
     /// unchanged; an empty string clears the selection back to the engine's
     /// default model.
     pub ask_ai_model: Option<String>,
+    /// New "Answer questions automatically" choice. `None` leaves it unchanged.
+    pub quick_recall_auto_answer: Option<QuickRecallAutoAnswer>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

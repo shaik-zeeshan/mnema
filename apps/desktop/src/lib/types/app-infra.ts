@@ -213,6 +213,18 @@ export interface SearchHoursRefinement {
 	endHour: number;
 }
 
+/**
+ * One Quick Recall recent query (`get_quick_recall_recent_queries` /
+ * `set_quick_recall_recent_queries`, newest first, at most 8). `at` = unix ms.
+ * Kept in the encrypted DB; pruned by Retention, cleared by Wipe User Context,
+ * untouched by Delete Recent Capture.
+ */
+export interface RecentQuery {
+	text: string;
+	ask: boolean;
+	at: number;
+}
+
 export interface SearchDateRangeRefinement {
 	startAt: string;
 	endAt: string;
