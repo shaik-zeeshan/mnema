@@ -92,7 +92,7 @@ button, input, select, textarea { font-family: inherit; }
 .mx-h1, .mx-title { font: 600 28px/1.12 var(--font-sans); letter-spacing: -0.026em; color: var(--app-text-strong); margin: 0; text-wrap: balance; }
 .mx-h2, .mx-heading { font: 600 var(--text-xl)/1.25 var(--font-sans); letter-spacing: -0.018em; color: var(--app-text-strong); margin: 0; }
 .mx-h3, .mx-subheading { font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); margin: 0; }
-.mx-prose { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); max-width: 64ch; margin: 0; text-wrap: pretty; }
+.mx-prose { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); margin: 0; text-wrap: pretty; }
 .mx-body-sm { font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text-muted); }
 .mx-label { font: 500 var(--text-base)/1.35 var(--font-sans); color: var(--app-text-subtle); }
 /* data voice: always tabular. `.num` = inline numbers inside sans text. */
@@ -723,7 +723,7 @@ mark, .mx-match { background: var(--app-accent-bg); color: var(--app-accent); bo
   padding: var(--s-3) var(--s-4); max-width: none; }
 .mx-empty--compact .mx-empty__glyph { grid-row: span 2; width: 28px; height: 28px; border-radius: var(--r-sm); }
 .mx-empty--compact .mx-empty__title { font-size: var(--text-md); grid-column: 2; }
-.mx-empty--compact .mx-empty__text { margin: 0; font-size: var(--text-base); grid-column: 2; }
+.mx-empty--compact .mx-empty__text { margin: 0; font-size: var(--text-base); grid-column: 2; max-width: none; }
 .mx-empty--compact .mx-empty__acts { grid-column: 3; grid-row: 1 / span 2; margin: 0; }
 
 /* --- Skeletons: the shape of what's coming, never a spinner in a big area ---

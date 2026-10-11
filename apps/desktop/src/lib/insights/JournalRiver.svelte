@@ -224,7 +224,7 @@
   .in-act__t span { font-size: var(--text-xs); color: var(--app-text-subtle); }
   .in-act h4 { display: flex; align-items: center; gap: 9px; margin: 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
   .in-act h4 .in-sw { width: 9px; height: 9px; }
-  .in-act p { margin: 6px 0 10px; color: var(--app-text-muted); font-size: var(--text-md); line-height: 1.5; max-width: 66ch; }
+  .in-act p { margin: 6px 0 10px; color: var(--app-text-muted); font-size: var(--text-md); line-height: 1.5; }
   .in-act__meta { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 10px; }
   .in-act p + .in-act__meta { margin-top: 0; }
   .in-act__meta .mx-btn { margin-left: auto; }

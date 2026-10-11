@@ -237,12 +237,10 @@
     margin: 6px 0 0;
     padding-left: 12px;
     border-left: 1px solid var(--app-border);
-    max-width: 68ch;
     font: 400 var(--text-base)/1.55 var(--font-sans);
     color: var(--app-text-subtle);
     white-space: pre-wrap;
   }
-  .ch-answer :global(.answer-prose) { max-width: 68ch; }
   .ch-block { padding: var(--s-4) var(--s-5); margin: 0 0 var(--s-4); }
   .ch-block__h { display: flex; align-items: baseline; gap: var(--s-3); margin-bottom: var(--s-3); }
   .ch-block__h h5 { margin: 0; font: 600 var(--text-md)/1.3 var(--font-sans); color: var(--app-text-strong); }

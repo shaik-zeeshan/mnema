@@ -323,7 +323,6 @@
 
   .about-hero__tagline {
     margin: 0;
-    max-width: 52ch;
     font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-muted);

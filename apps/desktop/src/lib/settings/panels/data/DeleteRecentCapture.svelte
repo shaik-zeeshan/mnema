@@ -100,7 +100,6 @@
     font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
-    max-width: 52ch;
   }
   .st-danger .mx-inline {
     display: flex;
