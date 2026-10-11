@@ -214,10 +214,17 @@ fn sqlite_contains_like_pattern(value: &str) -> String {
 /// The dimension gate itself lives in the store seam (`knn_in_scope_anchors`),
 /// which returns a clean empty candidate set on a mismatch — so a mismatch never
 /// reaches this wrapper as an `Err`; only a real DB failure does.
-pub(super) fn degrade_to_keyword_only<T>(kind: &str, result: Result<Vec<T>>) -> Vec<T> {
+pub(super) fn degrade_to_keyword_only<T>(
+    kind: &str,
+    result: Result<Vec<T>>,
+    degraded: &mut bool,
+) -> Vec<T> {
     match result {
         Ok(hits) => hits,
         Err(error) => {
+            // Reported on the response (`semantic_degraded`) so the page can say
+            // "keyword only" instead of silently returning fewer results.
+            *degraded = true;
             // Route the degrade through `debug_log!` — the same packaged-app log
             // target the companion query-embed failure path uses on the desktop
             // side — rather than bare stderr, so a persistent semantic-tier
@@ -493,6 +500,7 @@ pub(super) async fn fetch_grouped_frame_hits(
     limit: u32,
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
+    semantic_degraded: &mut bool,
 ) -> Result<Vec<FrameSearchResult>> {
     // **Hybrid Search**: when a query vector is present, fetch the meaning-tier
     // candidates once (a bounded top-k `vec0` KNN) and RRF-fuse them into the
@@ -506,6 +514,7 @@ pub(super) async fn fetch_grouped_frame_hits(
         Some(embedding) => degrade_to_keyword_only(
             "frame",
             fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await,
+            semantic_degraded,
         ),
         None => Vec::new(),
     };
@@ -615,6 +624,7 @@ pub(super) async fn fetch_grouped_audio_hits(
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
+    semantic_degraded: &mut bool,
 ) -> Result<Vec<AudioSearchResult>> {
     // See `fetch_grouped_frame_hits`: the tier is the query's, not this list's.
     let hybrid = query_embedding.is_some();
@@ -622,6 +632,7 @@ pub(super) async fn fetch_grouped_audio_hits(
         Some(embedding) => degrade_to_keyword_only(
             "audio",
             fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await,
+            semantic_degraded,
         ),
         None => Vec::new(),
     };

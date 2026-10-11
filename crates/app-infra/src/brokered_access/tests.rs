@@ -1050,6 +1050,9 @@ fn two_frame_one_audio_response() -> SearchCaptureResponse {
         },
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     }
 }
 
@@ -1237,6 +1240,9 @@ fn frame_search_response_with_browser_url(
         applied_refinements: SearchCaptureRefinements::default(),
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     }
 }
 
@@ -1344,6 +1350,9 @@ fn broker_search_audio_result_has_no_context_or_url() {
         applied_refinements: SearchCaptureRefinements::default(),
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     };
 
     let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());

@@ -565,6 +565,10 @@ pub struct SearchCaptureResponseDto {
     pub applied_refinements: ::app_infra::SearchCaptureRefinements,
     pub residual_query: String,
     pub parse_errors: Vec<::app_infra::SearchParseError>,
+    /// Why results may be partial (see `::app_infra::SearchCaptureResponse`).
+    pub index_empty: bool,
+    pub semantic_degraded: bool,
+    pub untranscribed_segments_in_range: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -970,6 +974,9 @@ impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
             applied_refinements: response.applied_refinements,
             residual_query: response.residual_query,
             parse_errors: response.parse_errors,
+            index_empty: response.index_empty,
+            semantic_degraded: response.semantic_degraded,
+            untranscribed_segments_in_range: response.untranscribed_segments_in_range,
         }
     }
 }

@@ -260,6 +260,59 @@ export interface SearchCaptureResponse {
 	appliedRefinements: SearchCaptureRefinements;
 	residualQuery: string;
 	parseErrors: SearchParseError[];
+	/** Nothing is indexed at all — "nothing captured yet", not "no match". */
+	indexEmpty: boolean;
+	/** The meaning tier failed; this page is keyword-only. */
+	semanticDegraded: boolean;
+	/**
+	 * Audio segments in the searched range still queued or being transcribed
+	 * (audio is searchable only once transcribed). 0 when the audio pass was
+	 * skipped by an app / window-title / `source:screen` filter.
+	 */
+	untranscribedSegmentsInRange: number;
+}
+
+/**
+ * `count_search_facet` — which pill's refinement to swap out. Buckets: `app`
+ * → bundle id (or name) with the display name as `label`, frames only; `source`
+ * → "screen" | "microphone" | "system_audio"; `day` → local "YYYY-MM-DD";
+ * `partOfDay` → "morning" 5–12 | "afternoon" 12–18 | "evening" 18–24 | "night" 0–5.
+ */
+export type SearchFacet = "app" | "source" | "day" | "partOfDay";
+
+export interface CountSearchFacetRequest {
+	/** The same query `search_capture` ran, operators included. */
+	query: string;
+	refinements?: SearchCaptureRefinements;
+	facet: SearchFacet;
+}
+
+export interface SearchFacetBucket {
+	key: string;
+	label: string;
+	count: number;
+}
+
+export interface SearchFacetCounts {
+	facet: SearchFacet;
+	/** Every result with the facet's refinement removed ("Any app 9"). */
+	total: number;
+	/** A kind hit the 50-result cap: counts are lower bounds ("50+"). */
+	capped: boolean;
+	/** Most results first. */
+	buckets: SearchFacetBucket[];
+}
+
+/** `get_quick_recall_index_status` — what the partial / no-results states say. */
+export interface QuickRecallIndexStatus {
+	/** Frames captured but not yet read (OCR queued or running). */
+	queuedFrames: number;
+	/** Capture time of the oldest unread frame, unix ms. */
+	oldestQueuedMs: number | null;
+	/** Meaning search is on but still embedding history. */
+	semanticBuilding: boolean;
+	/** 0–100; null when meaning search is off (no model) = "keyword only". */
+	semanticIndexedPercent: number | null;
 }
 
 /**

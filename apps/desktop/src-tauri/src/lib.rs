@@ -714,6 +714,8 @@ pub fn run() {
             app_infra::quick_recall::get_frame_match_boxes,
             app_infra::quick_recall::get_quick_recall_recent_queries,
             app_infra::quick_recall::set_quick_recall_recent_queries,
+            app_infra::quick_recall::count_search_facet,
+            app_infra::quick_recall::get_quick_recall_index_status,
             app_infra::frame_preview::get_frame_preview,
             app_infra::frame_preview::get_frame_scrub_previews,
             app_infra::frame_preview::get_scrub_preview_availability,

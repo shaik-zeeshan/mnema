@@ -219,6 +219,19 @@ pub struct SearchCaptureResponse {
     pub residual_query: String,
     /// Strict validation problems found while interpreting query syntax.
     pub parse_errors: Vec<SearchParseError>,
+    /// Nothing is indexed at all — "nothing captured yet", not "no match".
+    #[serde(default)]
+    pub index_empty: bool,
+    /// The meaning tier failed and this page is keyword-only (it used to fall
+    /// back silently). A model mid-switch is NOT this — that is a clean empty
+    /// meaning list; the indexing status reports the build instead.
+    #[serde(default)]
+    pub semantic_degraded: bool,
+    /// Audio segments in the searched range still queued or being transcribed —
+    /// audio is searchable only once transcribed. 0 when the audio pass was
+    /// skipped (an app, window-title or `source:screen` filter).
+    #[serde(default)]
+    pub untranscribed_segments_in_range: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

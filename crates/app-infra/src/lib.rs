@@ -130,10 +130,11 @@ pub use recent_queries::{
     store_recent_queries, RecentQuery, MAX_RECENT_QUERIES,
 };
 pub use search::{
-    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, MatchBox, MatchBoxKind,
-    SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest,
-    SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement, SearchHoursRefinement,
-    SearchParseError, SearchSpeakerRefinement, SearchStore, SearchableApp,
+    semantic_search_residual_query, AudioSearchResult, FrameReadingBacklog, FrameSearchResult,
+    MatchBox, MatchBoxKind, SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements,
+    SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement,
+    SearchFacet, SearchFacetBucket, SearchFacetCounts, SearchHoursRefinement, SearchParseError,
+    SearchSpeakerRefinement, SearchStore, SearchableApp,
 };
 pub use semantic_search::{vectors_index_epoch, AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;
