@@ -1,7 +1,7 @@
 <script lang="ts">
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { homeDir } from "@tauri-apps/api/path";
   import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
@@ -10,53 +10,66 @@
   import type { RetentionPolicy } from "$lib/types";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconFolder from "~icons/lucide/folder";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
   import StorageMeter from "./StorageMeter.svelte";
   import DeleteRecentCapture from "./DeleteRecentCapture.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
 
-  const retentionCleanupSummary = $derived(c.retentionCleanupSummary);
-  const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
-  const retentionCleanupError = $derived(c.retentionCleanupError);
+  const cleanup = $derived(c.retentionCleanupSummary);
+  const cleanupRunning = $derived(c.retentionCleanupRunning);
+  const cleanupError = $derived(c.retentionCleanupError);
+  const runCleanup = () => c.runRetentionCleanupNow();
 
-
-  const runRetentionCleanupNow = () => c.runRetentionCleanupNow();
+  const count = (n: number, one: string) => `${n.toLocaleString()} ${one}${n === 1 ? "" : "s"}`;
 
   // The resolved on-disk storage root, fetched from the backend so it reflects
   // the env-honoring resolution (MNEMA_SAVE_DIRECTORY, else ~/.mnema) rather
   // than whatever raw string happens to be persisted. Display-only; the folder
   // is changed through the Browse picker, which writes `save_directory`.
+  // "" = still resolving (skeleton chip).
   let storageLocation = $state("");
   let storageLocationError = $state<string | null>(null);
   let browsing = $state(false);
+  let home = $state("");
 
   // The storage root currently IN EFFECT (resolved at launch). The backend only
   // re-resolves it on the next launch, so a freshly-picked directory updates the
   // display but not this — the gap drives the "restart to apply" notice below.
   let appliedLocation = $state("");
 
-  const displayPath = $derived(storageLocation || rec.draftSaveDirectory);
-
   // A picked directory differs from the one the running app resolved at launch,
   // so the change is saved but won't take effect until Mnema restarts.
   const pendingRestart = $derived(
-    appliedLocation.length > 0 &&
-      displayPath.length > 0 &&
-      displayPath !== appliedLocation,
+    appliedLocation.length > 0 && storageLocation.length > 0 && storageLocation !== appliedLocation,
+  );
+
+  // Home shown as `~` (display only; Browse and the saved value keep the full path).
+  const shownPath = $derived(
+    home && (storageLocation === home || storageLocation.startsWith(`${home}/`))
+      ? `~${storageLocation.slice(home.length)}`
+      : storageLocation,
   );
 
   async function loadStorageLocation() {
+    storageLocationError = null;
     try {
       storageLocation = await invoke<string>("get_storage_location");
       appliedLocation = storageLocation;
-      storageLocationError = null;
     } catch (err) {
       storageLocationError = humanizeError(err);
     }
   }
 
-  onMount(loadStorageLocation);
+  onMount(() => {
+    void loadStorageLocation();
+    homeDir()
+      .then((h) => (home = (h ?? "").replace(/\/+$/, "")))
+      .catch(() => {});
+  });
 
   // Apply a pending save-directory change by relaunching. The backend
   // (`request_app_relaunch`) finalizes any in-flight recording before
@@ -89,7 +102,7 @@
         directory: true,
         multiple: false,
         title: "Choose where Mnema stores captures",
-        defaultPath: displayPath || undefined,
+        defaultPath: storageLocation || rec.draftSaveDirectory || undefined,
       });
       if (typeof picked === "string" && picked.trim().length > 0) {
         rec.draftSaveDirectory = picked;
@@ -98,7 +111,6 @@
       }
     } catch (err) {
       // The folder picker can reject (dialog plugin error / cancelled-by-error).
-      // Surface it instead of swallowing — the error-text block below renders it.
       storageLocationError = humanizeError(err);
     } finally {
       browsing = false;
@@ -106,59 +118,44 @@
   }
 </script>
 
-<SettingGroup
-  id="settings-section-storage"
-  title="Storage"
-  hint="Where capture files live on disk and how long they are kept."
->
+<SettingGroup id="settings-section-storage" title="Storage">
+  {#if pendingRestart}
+    <div class="mx-notice storage-notice" data-tone="warn" role="status">
+      <span class="mx-notice__icon"><IconFolder width="15" height="15" /></span>
+      <b class="mx-notice__title">Saved — takes effect after a restart</b>
+      <p class="mx-notice__text">Captures already on disk stay where they are. Any recording in progress is saved first.</p>
+      <div class="mx-notice__acts">
+        <button type="button" class="mx-btn mx-btn--sm" onclick={restartNow} disabled={restarting} aria-busy={restarting}>
+          {#if restarting}<span class="mx-spin mx-spin--sm"></span>Restarting…{:else}Restart Mnema{/if}
+        </button>
+      </div>
+    </div>
+  {/if}
   <StorageMeter />
-  <SettingRow
-    label="Save Directory"
-    description="Where captures, the database, and model caches live on disk."
-    full
-  >
+  <SettingRow label="Save directory" description="Where captures, the database, and model caches live on disk.">
     {#snippet control()}
-      <div class="storage-control">
-        <div class="path-field">
-          <input
-            type="text"
-            class="text-input"
-            class:text-input--empty={!displayPath}
-            value={displayPath}
-            readonly
-            placeholder={storageLocationError ? "Couldn't resolve storage location" : "Resolving storage location…"}
-            aria-label="Storage location"
-          />
-          <button
-            type="button"
-            class="mx-btn"
-            onclick={browseSaveDirectory}
-            disabled={browsing}
-            aria-busy={browsing}
-          >
-            {#if browsing}<ButtonSpinner />Browsing…{:else}Browse{/if}
+      <div class="storage-ctl">
+        <div class="storage-ctl__line">
+          {#if storageLocation}
+            <span class="storage-path" title={storageLocation}>{shownPath}</span>
+          {:else if storageLocationError}
+            <span class="storage-path storage-path--muted">—</span>
+          {:else}
+            <span class="storage-path storage-path--muted" aria-busy="true">
+              <span class="mx-sr">Resolving storage location…</span><span class="mx-skel mx-skel--line"></span>
+            </span>
+          {/if}
+          <button type="button" class="mx-btn" onclick={browseSaveDirectory} disabled={browsing} aria-busy={browsing}>
+            {#if browsing}<span class="mx-spin mx-spin--sm"></span>{:else}<IconFolder width="14" height="14" />{/if}Browse…
           </button>
         </div>
         {#if storageLocationError}
-          <p class="error-text">{storageLocationError}</p>
-        {/if}
-        {#if pendingRestart}
-          <div class="restart-notice" role="status">
-            <p class="group-hint group-hint--warn">
-              Saved — but this takes effect after you restart Mnema. Captures already on disk stay where they are.
-            </p>
-            <div class="row-actions">
-              <button
-                type="button"
-                class="mx-btn mx-btn--sm"
-                onclick={restartNow}
-                disabled={restarting}
-                aria-busy={restarting}
-              >
-                {#if restarting}<ButtonSpinner />Restarting…{:else}Restart Mnema{/if}
-              </button>
-            </div>
-          </div>
+          <span class="mx-inline" data-tone="danger" role="alert">
+            <IconAlert width="13" height="13" />{storageLocation ? storageLocationError : "Couldn’t resolve storage location."}
+            {#if !storageLocation}
+              <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={loadStorageLocation}>Retry</button>
+            {/if}
+          </span>
         {/if}
       </div>
     {/snippet}
@@ -166,13 +163,11 @@
 
   <SettingRow
     label="Retention"
-    description="Automatically delete captured data after the chosen window."
-    full
-    divider={false}
+    description="Automatically delete captured data after the chosen window. Shortening it shows what will go first. Your User Context is kept."
   >
     {#snippet control()}
-      <div class="retention-control">
-        <div class="row-actions">
+      <div class="storage-ctl">
+        <div class="storage-ctl__line">
           <Segmented
             md
             value={rec.draftRetentionPolicy}
@@ -180,27 +175,20 @@
             options={retentionPresets()}
             ariaLabel="Retention duration"
           />
-          <button
-            type="button"
-            class="mx-btn mx-btn--ghost"
-            onclick={runRetentionCleanupNow}
-            disabled={retentionCleanupRunning}
-            aria-busy={retentionCleanupRunning}
-          >
-            {#if retentionCleanupRunning}<ButtonSpinner />Running…{:else}Run cleanup now{/if}
+          <button type="button" class="mx-btn mx-btn--ghost" onclick={runCleanup} disabled={cleanupRunning} aria-busy={cleanupRunning}>
+            {#if cleanupRunning}<span class="mx-spin mx-spin--sm"></span>Running…{:else}Run cleanup now{/if}
           </button>
         </div>
-        {#if retentionCleanupSummary}
-          <div class="cleanup-result" aria-live="polite">
-            <strong>Latest cleanup</strong>
-            <p>
-              {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
-              frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
-            </p>
-          </div>
-        {/if}
-        {#if retentionCleanupError}
-          <p class="error-text">{retentionCleanupError}</p>
+        {#if cleanupError}
+          <span class="mx-inline" data-tone="danger" role="alert">
+            <IconAlert width="13" height="13" />Cleanup failed: {cleanupError}
+            <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={runCleanup} disabled={cleanupRunning}>Retry</button>
+          </span>
+        {:else if cleanup}
+          <span class="mx-inline" data-tone="ok" aria-live="polite">
+            <IconCheck width="13" height="13" /><b>Latest cleanup</b>
+            {count(cleanup.deletedCaptureSegments, "segment")}, {count(cleanup.deletedFrames, "frame")}, {count(cleanup.deletedAudioSegments, "audio segment")}.
+          </span>
         {/if}
       </div>
     {/snippet}
@@ -209,61 +197,56 @@
 <DeleteRecentCapture />
 
 <style>
-  /* Save-directory control: a read-only path that mirrors the resolved storage
-     root, paired with a Browse button that opens a folder picker. */
-  .storage-control {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    width: 100%;
+  /* Mockup `.st-section > .mx-notice`. */
+  .storage-notice {
+    margin-bottom: var(--s-3);
   }
 
-  .path-field {
+  /* Control column: the controls on one line, a result/failure inline under
+     them (SettingRow has no slot under the description). */
+  .storage-ctl {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .storage-ctl__line {
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: 100%;
+    gap: var(--s-2);
   }
 
-  .path-field .text-input {
-    flex: 1 1 auto;
-    min-width: 0;
-    /* Read-only display: de-chrome the editable recess into a flat path/code
-       chip so the field doesn't invite typing. */
-    cursor: default;
-    box-shadow: none;
+  .storage-ctl .mx-inline {
+    justify-content: flex-end;
+    text-align: right;
+  }
+
+  /* Mockup `.st-path`: a read-only mono path chip. */
+  .storage-path {
+    display: inline-block;
+    height: var(--h-md);
+    box-sizing: border-box;
+    max-width: 320px;
+    padding: 0 var(--s-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 400 var(--text-base) / calc(var(--h-md) - 2px) var(--font-mono);
+    color: var(--app-text);
+    border-radius: var(--r-md);
     background: var(--app-surface-subtle);
-    font-family: var(--app-font-mono);
+    border: 1px solid var(--app-border);
   }
 
-  .path-field .mx-btn {
-    flex-shrink: 0;
+  .storage-path--muted {
+    color: var(--app-text-subtle);
   }
 
-  /* The retention control stacks its picker, the run-now action, and any
-     summary/error hint. The shared row primitive already gives a full-width
-     column; this just spaces the parts. */
-  .retention-control {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-  }
-
-  .retention-control .row-actions {
-    justify-content: flex-start;
-  }
-
-  /* The pending-restart notice stacks its warning copy above an inline
-     "Restart Mnema" action, left-aligned under the path field. */
-  .restart-notice {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .restart-notice .row-actions {
-    display: flex;
-    justify-content: flex-start;
+  .storage-path .mx-skel {
+    display: inline-block;
+    vertical-align: middle;
+    width: 90px;
   }
 </style>
