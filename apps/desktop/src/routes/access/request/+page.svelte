@@ -1,176 +1,138 @@
 <script lang="ts">
+  // CLI Access consent window (`AppWindow::CliAccessRequest`, 520×600, no native
+  // chrome). Look: docs/mockups/redesign/access.html. Behaviour: ADR 0059 —
+  // focus starts on Deny, Enter is never bound, Esc denies, options below the
+  // request's minimum are disabled, and Allow carries no green fill.
   import { tip } from "$lib/components/tooltip";
   import { invoke } from "@tauri-apps/api/core";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
-  import Segmented from "$lib/components/Segmented.svelte";
-
-  type PendingCliAccessRequest = {
-    requestId: string;
-    client: {
-      label: string;
-      source: string;
-    };
-    command: string;
-    minimumScope: Scope;
-    preferredScope: Scope;
-    /// What this tool's standing permission already carries, absent when it holds
-    /// none. An approval SETS the row's scope, so a selection below this one takes
-    /// access away — see narrowsExistingAccess.
-    currentScope: Scope | null;
-    createdAt: string;
-  };
-
-  type Scope = "lastDay" | "last7Days" | "allRetained";
+  import Choice from "$lib/components/Choice.svelte";
+  import IconTerminal from "~icons/lucide/square-terminal";
+  import IconLock from "~icons/lucide/lock";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconOctagon from "~icons/lucide/octagon-alert";
+  import IconClock from "~icons/lucide/clock";
+  import IconCheck from "~icons/lucide/check";
+  import IconBan from "~icons/lucide/ban";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconRefresh from "~icons/lucide/rotate-cw";
+  import {
+    allowLabel,
+    identitySource,
+    isWiden,
+    requestAge,
+    SCOPE_DESC,
+    SCOPE_LABEL,
+    SCOPE_PROSE,
+    SCOPE_RANK,
+    SCOPES,
+    scopeDisabled,
+    scopeHint,
+    scopeTag,
+    splitCommand,
+    type PendingCliAccessRequest,
+    type Scope,
+  } from "$lib/access/request-view";
 
   let selectedScope = $state<Scope>("lastDay");
   let pendingRequest = $state<PendingCliAccessRequest | null>(null);
-  // Action errors (approve/deny) surface inline at the foot of the dialog.
+  // Action errors (approve/deny/block) sit above the footer and keep the form.
   let error = $state<string | null>(null);
-  // Load errors are kept separate so the body can show a Retry state instead
-  // of the contradictory "nothing pending" empty copy.
+  // `gone`: the error says the rendered request can no longer be answered (the
+  // tool stopped waiting, or it was blocked in Settings meanwhile) — only Close
+  // is left to press.
+  let gone = $state(false);
+  // Load errors are kept separate so the body can show Retry instead of the
+  // contradictory "nothing pending" copy.
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let approving = $state(false);
   let cancelling = $state(false);
-  // A resolved Ok from the backend approve means the grant really landed. We
-  // capture the consent terms so the body can show a brief positive receipt
-  // (naming tool + scope) before/while the backend tears the window down — and
-  // so a delayed teardown is never misreported as a failure.
-  // `broad` rides along so the receipt keeps the weight the dialog escalated to
-  // before the click — a full-history grant must not land the same green tick a
-  // last-24-hours one does.
-  let granted = $state<{ tool: string; scopeProse: string; broad: boolean } | null>(null);
+  let blocking = $state(false);
+  const acting = $derived(approving || cancelling || blocking);
+  // A resolved Ok from approve/block means the write really landed. The terms are
+  // snapshotted so the receipt keeps naming them while the backend tears the
+  // window down — and a delayed teardown is never misreported as a failure.
+  // `broad` keeps a full-history grant on the danger ramp after the click.
+  let receipt = $state<{
+    kind: "granted" | "blocked";
+    tool: string;
+    scope: Scope;
+    current: Scope | null;
+    widen: boolean;
+  } | null>(null);
   // Ticks so the request-age label stays honest while the dialog sits open.
   let now = $state(Date.now());
-
-  // Watchdog so a grant/deny never hangs forever on the spinner if the backend
-  // window teardown is delayed or never arrives.
   let actionWatchdog: ReturnType<typeof setTimeout> | null = null;
 
-  // Bound to the dialog container and the Deny button so focus can land on a
-  // SAFE anchor on open, and Tab is contained inside the consent dialog.
+  // Focus lands on a SAFE anchor (Deny / Close) on open, and Tab stays inside.
   let dialogEl = $state<HTMLDivElement | null>(null);
   let denyButton = $state<HTMLButtonElement | null>(null);
-  // Bound to the granted-receipt Close button so focus follows into the receipt
-  // when the grant lands (the Deny anchor it replaced is gone by then).
-  let grantedCloseButton = $state<HTMLButtonElement | null>(null);
+  let receiptCloseButton = $state<HTMLButtonElement | null>(null);
+  let bodyEl = $state<HTMLElement | null>(null);
 
-  const scopeOptions = [
-    {
-      value: "lastDay",
-      label: "Last day",
-      hint: "Reads only text captured in the last 24 hours.",
-    },
-    {
-      value: "last7Days",
-      label: "Last 7 days",
-      hint: "Reads text captured in the last 7 days.",
-    },
-    {
-      value: "allRetained",
-      label: "All retained",
-      hint: "Reads your entire retained capture history.",
-    },
-  ] as const;
-
-  // Narrow → wide. Anything below the request's stated minimum is disabled.
-  const scopeRank: Record<Scope, number> = {
-    lastDay: 0,
-    last7Days: 1,
-    allRetained: 2,
-  };
-
-  // Noun-phrase scope wording for prose sentences (the receipt), where the bare
-  // Segmented label ("Last day") would read as "your Last day text".
-  const scopeProse = {
-    lastDay: "your last 24 hours",
-    last7Days: "your last 7 days",
-    allRetained: "your entire retained history",
-  } as const;
-
-  const scopeMeta = $derived(
-    scopeOptions.find((option) => option.value === selectedScope) ?? scopeOptions[0],
-  );
+  const source = $derived(pendingRequest ? identitySource(pendingRequest.client.source) : null);
+  const widen = $derived(pendingRequest ? isWiden(pendingRequest) : false);
+  const cmd = $derived(pendingRequest ? splitCommand(pendingRequest.command) : null);
+  const age = $derived(pendingRequest ? requestAge(pendingRequest.createdAt, now) : null);
   const isBroadScope = $derived(selectedScope === "allRetained");
-
-  // Plain option arrays for the shared Segmented control (its Option type is
-  // {value,label}); the hint copy stays on scopeOptions.
-  const scopeSegments = scopeOptions.map((option) => ({
-    value: option.value,
-    label: option.label,
-  }));
-
+  const hint = $derived(pendingRequest ? scopeHint(pendingRequest, selectedScope) : "");
+  const scopeOptions = $derived(
+    SCOPES.map((value) => ({
+      value,
+      label: SCOPE_LABEL[value],
+      description: SCOPE_DESC[value],
+      tag: pendingRequest ? scopeTag(pendingRequest, value) : "",
+    })),
+  );
   const scopeDisabledValues = $derived(
-    scopeOptions.filter((option) => scopeDisabled(option.value)).map((option) => option.value),
-  );
-
-  // "Why is this greyed out" signifier for the disabled choices.
-  const minScopeProse = $derived(
-    pendingRequest ? scopeProse[pendingRequest.minimumScope] : null,
-  );
-  const scopeLocked = $derived(scopeDisabledValues.length > 0);
-
-  // The tool's `preferredScope` no longer drives the selection, so name it when
-  // it is wider than the minimum — the user still gets to see what was asked for
-  // without the dialog having conceded it in advance. It drops away once the
-  // current selection already covers the ask: at that point it is restating the
-  // segment the user just picked, and this body has no vertical room to spare.
-  const askedForProse = $derived(
-    pendingRequest &&
-      scopeRank[pendingRequest.preferredScope] > scopeRank[pendingRequest.minimumScope] &&
-      scopeRank[selectedScope] < scopeRank[pendingRequest.preferredScope]
-      ? scopeProse[pendingRequest.preferredScope]
-      : null,
+    pendingRequest ? SCOPES.filter((s) => scopeDisabled(pendingRequest!, s)) : [],
   );
 
   // Allow must never quietly take access away. Approving SETS the permission's
-  // scope — it is not a widen — and this window pre-selects the request's minimum,
-  // which on some doors sits BELOW what the tool already holds: `mnema access
-  // request --scope last-day` against a full-history permission, or a request whose
-  // needed scope cannot be derived from its arguments. The CLI's widen door asks
-  // for at least what its call needs, so it cannot land here; this covers the rest
-  // by naming the loss before the click, rather than making the permission file
-  // monotonic (which would silently ignore a deliberate narrowing instead).
+  // scope, and this window pre-selects the minimum, which on some doors sits
+  // BELOW what the tool already holds (`mnema access request --scope last-day`
+  // against a full-history permission). Name the loss before the click.
   const narrowsExistingAccess = $derived(
     pendingRequest?.currentScope &&
-      scopeRank[pendingRequest.currentScope] > scopeRank[selectedScope]
-      ? scopeProse[pendingRequest.currentScope]
+      SCOPE_RANK[pendingRequest.currentScope] > SCOPE_RANK[selectedScope]
+      ? SCOPE_PROSE[pendingRequest.currentScope]
       : null,
   );
 
-  // How long this request has been waiting. The hard timeout is CLI-side (~120s),
-  // so this is an honesty cue, not a countdown — if the tool stops waiting the
-  // approve/deny call surfaces a specific "no longer valid" message instead.
-  const requestAgeLabel = $derived.by(() => {
-    if (!pendingRequest) return null;
-    const createdMs = new Date(pendingRequest.createdAt).getTime();
-    if (Number.isNaN(createdMs)) return null;
-    const ageSeconds = Math.max(0, Math.round((now - createdMs) / 1000));
-    if (ageSeconds < 5) return "Requested just now";
-    if (ageSeconds < 60) return `Requested ${ageSeconds}s ago`;
-    const minutes = Math.round(ageSeconds / 60);
-    return `Requested ${minutes} min ago`;
+  // The form is taller than the 600 px the window opens at, and the body's
+  // scroll is invisible under macOS overlay scrollbars — a clipped standing-terms
+  // line is the whole statement of what access means. Grow the window to fit
+  // (never shrink, so the buttons move only when content grows).
+  $effect(() => {
+    void [pendingRequest, selectedScope, error, gone, bodyEl];
+    void tick().then(async () => {
+      if (!bodyEl) return;
+      const overflow = bodyEl.scrollHeight - bodyEl.clientHeight;
+      if (overflow < 2) return;
+      const target = Math.min(window.screen.availHeight - 48, window.innerHeight + overflow);
+      if (target <= window.innerHeight) return;
+      try {
+        await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, Math.round(target)));
+      } catch {
+        // Not in a Tauri window (dev render).
+      }
+    });
   });
 
   onMount(() => {
     void loadPendingRequest();
-    // Land focus on a SAFE anchor — never Allow — so a reflexive keypress can't
-    // grant access. Prefer Deny once it renders; fall back to the dialog itself.
-    void tick().then(() => {
-      (denyButton ?? dialogEl)?.focus();
-    });
+    // Never Allow: a reflexive keypress must not grant access.
+    void tick().then(() => (denyButton ?? dialogEl)?.focus());
     const ageTimer = setInterval(() => (now = Date.now()), 15000);
-    // This window is REUSED. `open_or_focus_window` focuses an existing window
-    // with this label instead of building a new one, so a second request can be
-    // shown by the same page instance — and reading the pending request only in
-    // onMount would leave it displaying the PREVIOUS request's tool, command and
-    // scope while the new caller waits. Re-read whenever the window is brought
-    // forward; a granted receipt is left alone so a slow backend teardown cannot
-    // wipe the user's confirmation out from under them.
+    // This window is REUSED (`open_or_focus_window` focuses an existing label),
+    // so a second request can arrive on this same page instance. Re-read whenever
+    // the window comes forward; a receipt is left alone so a slow teardown can't
+    // wipe the user's confirmation.
     const onWindowFocus = () => {
-      if (granted || approving || cancelling) return;
+      if (receipt || acting) return;
       void loadPendingRequest();
     };
     window.addEventListener("focus", onWindowFocus);
@@ -183,32 +145,25 @@
 
   async function loadPendingRequest() {
     error = null;
+    gone = false;
     loadError = null;
     loading = true;
     try {
       const previousRequestId = pendingRequest?.requestId;
       pendingRequest = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
-      // Only (re)set the selection for a request this page has not shown before.
-      // This runs on every window focus, and a user who widened the scope and then
-      // clicked another app would otherwise come back to find their choice
-      // silently reverted to the minimum — mid-decision, with no indication.
+      // Only (re)set the selection for a request not shown before — this runs on
+      // every focus, and a user who widened then clicked away must not come back
+      // to a silently reverted choice. Pre-select the NARROWEST scope that works,
+      // never `preferredScope`: the widen is left to a deliberate click.
       if (pendingRequest && pendingRequest.requestId !== previousRequestId) {
-        // Pre-select the NARROWEST scope the tool can actually work with — never
-        // its `preferredScope`. `--scope all-retained` would otherwise open this
-        // window with full history already selected and its danger callout
-        // already on screen, which reads as chrome rather than as a warning the
-        // user's own choice raised. What the tool asked for is stated as a hint
-        // instead (see askedForProse), leaving the widen to a deliberate click.
         selectedScope = pendingRequest.minimumScope;
       }
     } catch (err) {
       loadError = friendlyError(err);
     } finally {
       loading = false;
-      // The skeleton→content swap drops the mount-time focus anchor onto <body>.
-      // Re-anchor on Deny — focus landing on a SAFE control is the anti-reflex
-      // guarantee of this window, not a nicety. Skipped when focus is already
-      // inside the dialog, so a user who tabbed during load isn't yanked back.
+      // The skeleton→content swap drops focus onto <body>. Re-anchor on Deny
+      // (the anti-reflex guarantee) unless the user already tabbed inside.
       void tick().then(() =>
         requestAnimationFrame(() => {
           if (dialogEl?.contains(document.activeElement)) return;
@@ -218,35 +173,31 @@
     }
   }
 
-  // A refused approve means the slot no longer holds what this window rendered.
-  // Swap to the successor if one is waiting; leave the inline "no longer valid"
-  // error standing when nothing is, rather than replacing it with the
-  // contradictory "nothing pending" empty body.
+  // A refused click means the slot no longer holds what this window rendered.
+  // Swap to the successor if one is waiting; otherwise the request is gone and
+  // the "no longer valid" error stands with only Close left.
   async function showSuccessorIfAnyIsWaiting() {
     let successor: PendingCliAccessRequest | null = null;
     try {
       successor = await invoke<PendingCliAccessRequest | null>("get_pending_cli_access_request");
     } catch {
-      // The read failing changes nothing: the inline error already tells the
-      // user this request is done and the window can be closed.
       return;
     }
     if (!successor || successor.requestId === pendingRequest?.requestId) return;
     pendingRequest = successor;
     selectedScope = successor.minimumScope;
     error = null;
+    gone = false;
     void tick().then(() => denyButton?.focus());
   }
 
   // On success the backend tears this window down; if that never arrives the
-  // watchdog re-enables the action and explains, so it can never hang forever.
+  // watchdog re-enables the action and explains, so it never hangs.
   function startActionWatchdog(reset: () => void) {
     clearActionWatchdog();
     actionWatchdog = setTimeout(() => {
       actionWatchdog = null;
-      // A grant that already resolved Ok is a success even if the window
-      // teardown is slow — never overwrite the receipt with a failure.
-      if (granted) return;
+      if (receipt) return;
       reset();
       error = "Couldn't finish — the request didn't complete. Please try again.";
     }, 6000);
@@ -259,18 +210,13 @@
     }
   }
 
-  // Granted-state dismiss. The grant has already landed, so there is no pending
-  // request to cancel — closing the window directly (not via
-  // cancel_pending_cli_access_request, which would reject with "no pending
-  // request") backs the receipt's "Close" affordance in the rare case the
-  // backend teardown is delayed or never arrives. If the backend already closed
-  // the window first, this button never renders long enough to be pressed.
-  async function closeGrantedWindow() {
+  // Receipt dismiss: nothing is pending any more, so close the window directly
+  // (cancel_pending_cli_access_request would reject with "no pending request").
+  async function closeReceiptWindow() {
     try {
       await getCurrentWindow().close();
     } catch {
-      // If the window is already being torn down by the backend, the close is a
-      // harmless no-op — nothing more to do here.
+      // Already being torn down by the backend.
     }
   }
 
@@ -287,95 +233,76 @@
     }
   }
 
+  async function settle(err: unknown, reset: () => void) {
+    clearActionWatchdog();
+    error = mapActionError(err);
+    reset();
+    const message = friendlyError(err);
+    if (/blocked in Settings/i.test(message)) gone = true;
+    // The requester stopped waiting, OR a different tool's request took the
+    // slot since we rendered — re-read and swap to it if so.
+    if (/no pending CLI Access request/i.test(message)) {
+      gone = true;
+      await showSuccessorIfAnyIsWaiting();
+    }
+    // The clicked button went disabled mid-flight and dropped focus to <body>;
+    // land it back on the safe anchor.
+    void tick().then(() => denyButton?.focus());
+  }
+
+  function landReceipt(kind: "granted" | "blocked", terms: NonNullable<typeof receipt>) {
+    clearActionWatchdog();
+    approving = false;
+    blocking = false;
+    error = null;
+    receipt = { ...terms, kind };
+    // The Deny anchor is gone; follow focus into the receipt's Close.
+    void tick().then(() => receiptCloseButton?.focus());
+  }
+
+  function snapshotTerms(request: PendingCliAccessRequest) {
+    return {
+      kind: "granted" as const,
+      tool: request.client.label,
+      scope: selectedScope,
+      current: request.currentScope,
+      widen,
+    };
+  }
+
   async function approveAccess() {
-    if (!pendingRequest || approving) return;
+    if (!pendingRequest || acting || gone) return;
     error = null;
     approving = true;
-    // Snapshot the consent terms now: the receipt must keep naming them even as
-    // the backend clears the pending request and tears the window down.
-    const receipt = {
-      tool: pendingRequest.client.label,
-      scopeProse: scopeProse[selectedScope],
-      broad: isBroadScope,
-    };
+    const terms = snapshotTerms(pendingRequest);
     startActionWatchdog(() => (approving = false));
     try {
       await invoke("approve_pending_cli_access_request", {
         // requestId binds this click to the request this page RENDERED: the
-        // pending slot can be refilled by a different tool between render and
-        // click, and the backend refuses an approval for anything else.
+        // slot can be refilled by another tool between render and click.
         approval: { requestId: pendingRequest.requestId, scope: selectedScope },
       });
-      // The backend resolves Ok only on a real grant. Show the positive receipt
-      // and stand the watchdog down so a slow teardown can't report failure.
-      // Clear any prior action error before flipping to granted so a stale/
-      // watchdog-set error can never render over the success receipt.
-      clearActionWatchdog();
-      approving = false;
-      error = null;
-      granted = receipt;
-      // The Deny anchor that held focus is gone; follow focus into the receipt's
-      // Close button so keyboard users aren't dropped onto <body>.
-      void tick().then(() => grantedCloseButton?.focus());
+      // Ok only on a real grant.
+      landReceipt("granted", terms);
     } catch (err) {
-      clearActionWatchdog();
-      error = mapActionError(err);
-      approving = false;
-      // A refused click means this window was not showing what is pending: the
-      // requester stopped waiting, OR a DIFFERENT tool's request has taken the
-      // slot since we rendered. Only the second case has anything left to
-      // consent to, so re-read and swap to it — nothing was granted, and the
-      // "no longer valid" copy would be wrong for a successor that is still
-      // waiting. A vanished request keeps that copy.
-      if (/no pending CLI Access request/i.test(friendlyError(err))) {
-        await showSuccessorIfAnyIsWaiting();
-      }
+      await settle(err, () => (approving = false));
     }
   }
 
-  function scopeDisabled(scope: Scope) {
-    const minimum = pendingRequest?.minimumScope;
-    return minimum ? scopeRank[scope] < scopeRank[minimum] : false;
-  }
-
-  // One-word chip token. The chip is a qualifier on the tool name, not a peer of
-  // it — a full sentence in a nowrap pill eats half the row and squeezes the
-  // load-bearing "who is asking" line into a four-line wrap. The sentence lives
-  // in the tooltip / screen-reader text (identitySourceDetail) instead.
-  function identitySourceLabel(source: string) {
-    switch (source) {
-      case "explicit":
-        return "Declared";
-      case "env":
-        return "From env";
-      case "inferred":
-        return "Inferred";
-      default:
-        return "Unnamed";
+  // A standing rejection: persisted even for a never-granted tool, and the CLI
+  // is answered `blocked`. No confirmation — Settings can lift it.
+  async function blockClient() {
+    if (!pendingRequest || acting || gone) return;
+    error = null;
+    blocking = true;
+    const terms = snapshotTerms(pendingRequest);
+    startActionWatchdog(() => (blocking = false));
+    try {
+      await invoke("block_pending_cli_access_request", { requestId: pendingRequest.requestId });
+      landReceipt("blocked", terms);
+    } catch (err) {
+      await settle(err, () => (blocking = false));
     }
-  }
-
-  function identitySourceDetail(source: string) {
-    switch (source) {
-      case "explicit":
-        return "Identity declared by the tool";
-      case "env":
-        return "Identity from an environment variable";
-      case "inferred":
-        return "Identity inferred from the process";
-      default:
-        return "No identity provided";
-    }
-  }
-
-  // Weaker provenances (inferred / none) carry less trust than an explicitly
-  // declared identity, so their chip is warn-tinted rather than neutral — the
-  // chip then reads its trust at a glance, not just by its text. "explicit"
-  // stays neutral (never greened — the identity is still unverifiable).
-  function identitySourceWarn(source: string) {
-    // Inferred, plus every source that falls through to "No identity provided"
-    // (none / unknown). "explicit" and "env" stay neutral.
-    return source !== "explicit" && source !== "env";
   }
 
   function friendlyError(err: unknown) {
@@ -384,10 +311,8 @@
     return "Something went wrong. Please try again.";
   }
 
-  // The pending request is cleared once the requesting tool stops waiting (its
-  // client-side timeout is ~120s) — approve/deny then rejects with the backend's
-  // "no pending CLI Access request". Map that to a specific, non-alarming reason
-  // instead of leaking the raw string as a generic action failure.
+  // The pending request clears once the tool stops waiting (~120 s client-side);
+  // the backend then answers "no pending CLI Access request".
   function mapActionError(err: unknown) {
     const message = friendlyError(err);
     if (/no pending CLI Access request/i.test(message)) {
@@ -396,15 +321,13 @@
     return message;
   }
 
-  // Esc denies the request; Enter is intentionally not bound to approve, so
-  // a reflexive keypress can never grant access on a consent screen.
+  // Esc denies; Enter is intentionally not bound to Allow.
   function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !approving && !cancelling) {
+    if (event.key === "Escape" && !acting) {
       event.preventDefault();
       void closeWindow();
       return;
     }
-    // Keep Tab focus contained within the consent dialog.
     trapTabKey(event, dialogEl);
   }
 </script>
@@ -415,952 +338,330 @@
   <title>mnema · CLI Access</title>
 </svelte:head>
 
-<main class="access-request">
+<main class="ac">
   <div
-    class="access-dialog"
+    class="ac-dlg"
     bind:this={dialogEl}
     role="dialog"
     aria-modal="true"
-    aria-labelledby="access-dialog-title"
-    aria-describedby="access-dialog-lede"
+    aria-label="CLI Access request"
     aria-busy={loading}
     tabindex="-1"
   >
-    <header class="access-dialog__header">
-      <span class="access-dialog__icon" aria-hidden="true">
-        <!-- Neutral padlock (permission) glyph — NOT a green check-shield, which
-             would read as "verified/safe" on a request whose identity can't be
-             independently verified. -->
-        <svg viewBox="0 0 24 24">
-          <rect x="5" y="11" width="14" height="9" rx="2" />
-          <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-        </svg>
-      </span>
-      <div class="access-dialog__title">
-        <p class="eyebrow">CLI Access</p>
-        <!-- The header must agree with the body: once the grant lands, leaving
-             "is requesting" above an "Access granted" receipt reads as a dialog
-             that is still asking. -->
-        <h1 id="access-dialog-title">
-          {granted ? "Access granted" : "Review command-line tool access"}
-        </h1>
-        <p id="access-dialog-lede" class="lede">
-          {granted
-            ? "A command-line tool now has standing access to your searchable Mnema text."
-            : "A command-line tool is requesting standing access to your searchable Mnema text."}
-        </p>
+    {#if receipt}
+      {@const broad = receipt.kind === "granted" && receipt.scope === "allRetained"}
+      <div
+        class="ac-receipt"
+        data-tone={receipt.kind === "blocked" || broad ? "danger" : "ok"}
+        role="status"
+        aria-live="polite"
+      >
+        <span class="ac-receipt__icon" aria-hidden="true">
+          {#if receipt.kind === "blocked"}<IconBan width="18" height="18" />
+          {:else if broad}<IconOctagon width="18" height="18" />
+          {:else}<IconCheck width="18" height="18" />{/if}
+        </span>
+        {#if receipt.kind === "blocked"}
+          <h1 class="mx-h2">{receipt.tool} is blocked</h1>
+          <p class="mx-prose">
+            Its requests are refused right away — this window won’t open for it again.{#if receipt.current}
+              Its {SCOPE_LABEL[receipt.current]} access stops too.{/if} Unblock it any time.
+          </p>
+        {:else if receipt.widen}
+          <h1 class="mx-h2">{receipt.tool} can now read {SCOPE_PROSE[receipt.scope]}</h1>
+          <p class="mx-prose">Same permission, widened in place. Results it already has keep working.</p>
+        {:else}
+          <h1 class="mx-h2">Access granted</h1>
+          <p class="mx-prose">
+            <b>{receipt.tool}</b> can read <b>{SCOPE_PROSE[receipt.scope]}</b> until you block it. Unused for
+            <span class="num">30</span> days, it lapses.
+          </p>
+        {/if}
+        <p class="mx-body-sm">Manage it in Settings → Data → CLI Access.</p>
       </div>
-    </header>
-
-    <div class="access-dialog__body">
-      {#if granted}
-        <div class="receipt" class:receipt--broad={granted.broad} role="status" aria-live="polite">
-          <span class="receipt__icon" aria-hidden="true">
-            {#if granted.broad}
-              <!-- A full-history grant does not get the same reassuring tick a
-                   last-24-hours one gets: the escalation the dialog made before
-                   the click has to survive it. -->
-              <svg viewBox="0 0 24 24">
-                <path d="M8.7 3h6.6l4.7 4.7v6.6L15.3 21H8.7L4 16.3V9.7Z" />
-                <path d="M12 8v4" />
-                <path d="M12 16h.01" />
-              </svg>
-            {:else}
-              <svg viewBox="0 0 24 24">
-                <path d="M20 6 9 17l-5-5" />
-              </svg>
-            {/if}
-          </span>
-          <p class="receipt__body">
-            <strong>{granted.tool}</strong> can read
-            <strong class="receipt__scope">{granted.scopeProse}</strong>
-            until you block it in Settings.
-          </p>
-          <p class="receipt__hint">
-            Manage it in Settings → Data → Access. Unused access lapses after 30 days.
-          </p>
-        </div>
-      {:else if loading}
-        <span class="sr-only" role="status" aria-live="polite">Loading access request…</span>
-        <div class="skeleton" aria-hidden="true">
-          <div class="skeleton__line skeleton__line--lg"></div>
-          <div class="skeleton__line"></div>
-          <div class="skeleton__line skeleton__line--sm"></div>
-        </div>
-      {:else if loadError}
-        <div class="load-error" role="alert">
-          <span class="load-error__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-            </svg>
-          </span>
-          <p class="load-error__title">Couldn't load the request</p>
-          <p class="load-error__body">{loadError}</p>
-          <button
-            class="btn btn--ghost load-error__retry"
-            type="button"
-            tabindex="0"
-            onclick={() => loadPendingRequest()}
-          >
-            Retry
-          </button>
-        </div>
-      {:else if !pendingRequest}
-        <div class="empty">
-          <span class="empty__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7v5l3 2" />
-            </svg>
-          </span>
-          <p class="empty__title">No request waiting</p>
-          <p class="empty__body">
-            There is no pending CLI Access request right now. You can close this window.
-          </p>
-        </div>
-      {:else}
-        <section class="requester" aria-label="Requesting tool">
-          <div class="requester__head">
-            <span class="requester__label" use:tip={pendingRequest.client.label}
-              >{pendingRequest.client.label}</span
-            >
-            <span
-              class="requester__source"
-              class:requester__source--warn={identitySourceWarn(pendingRequest.client.source)}
-              use:tip={identitySourceDetail(pendingRequest.client.source)}
-            >
-              <span aria-hidden="true">{identitySourceLabel(pendingRequest.client.source)}</span>
-              <span class="sr-only">{identitySourceDetail(pendingRequest.client.source)}</span>
-            </span>
+    {:else if loading}
+      <div class="ac-body" aria-busy="true">
+        <span class="mx-sr" role="status">Loading access request…</span>
+        <div class="mx-skel mx-skel--title"></div>
+        <div class="mx-panel mx-panel--inset ac-who">
+          <div class="mx-skel-row">
+            <div class="mx-skel mx-skel--circle"></div>
+            <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div>
+            <div class="mx-skel"></div>
           </div>
-          <p class="trust-note">
-            <span class="trust-note__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-                <path d="M12 9v4" />
-                <path d="M12 17h.01" />
-              </svg>
-            </span>
-            <span>This identity is reported by the requesting process and cannot be independently verified.</span>
+        </div>
+        <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div>
+      </div>
+    {:else if loadError}
+      <div class="ac-fill">
+        <div class="mx-empty" data-tone="danger" role="alert">
+          <span class="mx-empty__glyph"><IconAlert width="18" height="18" /></span>
+          <h1 class="mx-empty__title">Couldn’t load the request</h1>
+          <p class="mx-empty__text" use:tip={loadError}>
+            The access service didn’t answer. The tool is still waiting — try again.
           </p>
-          <p class="requester__trigger">
-            Requested via <code>mnema {pendingRequest.command}</code>
+          <div class="mx-empty__acts">
+            <button class="mx-btn mx-btn--sm" type="button" onclick={() => loadPendingRequest()}>
+              <IconRefresh width="12" height="12" />Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    {:else if !pendingRequest}
+      <div class="ac-fill">
+        <div class="mx-empty">
+          <span class="mx-empty__glyph"><IconClock width="18" height="18" /></span>
+          <h1 class="mx-empty__title">No request waiting</h1>
+          <p class="mx-empty__text">There’s no pending CLI Access request right now. You can close this window.</p>
+        </div>
+      </div>
+    {:else}
+      {@const r = pendingRequest}
+      <div class="ac-body" bind:this={bodyEl}>
+        <header class="ac-head">
+          <span class="mx-kicker">{widen ? "More history needed" : "Access request"}</span>
+          <h1 class="mx-h2">
+            {widen ? `${r.client.label} needs more of your history` : `${r.client.label} wants to read your Mnema history`}
+          </h1>
+          <p class="mx-body-sm">
+            {#if widen && r.currentScope}
+              Its command reaches back further than {SCOPE_PROSE[r.currentScope]}. Allowing updates the permission it
+              already has — results it’s holding keep working.
+            {:else}
+              A command-line tool is asking for standing access to your searchable Mnema text.
+            {/if}
           </p>
-          {#if requestAgeLabel}
-            <p class="requester__age">{requestAgeLabel}</p>
+        </header>
+
+        <section class="mx-panel mx-panel--inset ac-who" aria-label="Requesting tool">
+          <div class="ac-who__top">
+            <span class="ac-glyph" aria-hidden="true"><IconTerminal width="16" height="16" /></span>
+            <div class="ac-who__name">
+              <span class="mx-h3">{r.client.label}</span>
+              {#if source}
+                <span class="mx-chip" class:mx-chip--warn={source.warn} use:tip={source.detail}>
+                  <span aria-hidden="true">{source.chip}</span><span class="mx-sr">{source.detail}</span>
+                </span>
+              {/if}
+            </div>
+            {#if age}
+              <time class="ac-who__age" use:tip={"Waiting — the tool gives up after 2 min"}>{age}</time>
+            {/if}
+          </div>
+          {#if cmd}
+            <code class="ac-cmd"><b>{cmd.head}</b>{cmd.rest ? ` ${cmd.rest}` : ""}</code>
           {/if}
+          <div class="mx-notice" data-tone="warn">
+            <span class="mx-notice__icon"><IconAlert width="13" height="13" /></span>
+            <p class="mx-notice__text">
+              This name is reported by the tool and can’t be verified. Any program that can run <b>mnema</b> can use it.
+            </p>
+          </div>
         </section>
 
-        <fieldset class="request-section">
-          <legend class="group-label">What it can read</legend>
-          <Segmented
-            options={scopeSegments}
+        <fieldset class="ac-scope">
+          <legend class="mx-label">What it can read</legend>
+          {#if widen && r.currentScope}
+            <div class="ac-was">
+              Already allowed <span class="mx-chip">{SCOPE_LABEL[r.currentScope]}</span>
+              <IconArrow width="13" height="13" aria-hidden="true" />
+              now asks for <span class="mx-chip mx-chip--accent">{SCOPE_LABEL[r.preferredScope]}</span>
+            </div>
+          {/if}
+          <Choice
+            list
+            options={scopeOptions}
             value={selectedScope}
             disabledValues={scopeDisabledValues}
-            disabled={approving || cancelling}
+            disabled={acting || gone}
             ariaLabel="What it can read"
             onValueChange={(v) => (selectedScope = v as Scope)}
           />
-          {#if scopeLocked && minScopeProse}
-            <p class="choice-hint">
-              <span>This tool requires access to at least {minScopeProse}.</span>
-            </p>
-          {/if}
-          {#if askedForProse}
-            <p class="choice-hint">
-              <span>This tool asked for {askedForProse}.</span>
-            </p>
-          {/if}
           {#if narrowsExistingAccess}
-            <!-- Weighted like the full-history callout, because it is the same
-                 kind of fact: what this click does that the user did not ask for.
-                 Allowing REPLACES the permission's scope, so a selection under
-                 what the tool already holds is a revocation wearing an Allow
-                 button. -->
-            <p class="choice-hint choice-hint--danger">
-              <span class="choice-hint__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-                  <path d="M12 9v4" />
-                  <path d="M12 17h.01" />
-                </svg>
-              </span>
-              <span>
-                <strong>This reduces access it already has.</strong>
-                {pendingRequest.client.label} can currently read {narrowsExistingAccess}; allowing
-                at this setting cuts it back to {scopeProse[selectedScope]}.
-              </span>
-            </p>
+            <!-- Allowing REPLACES the scope, so a selection under what the tool
+                 already holds is a revocation wearing an Allow button. -->
+            <div class="mx-notice" data-tone="danger">
+              <span class="mx-notice__icon"><IconAlert width="13" height="13" /></span>
+              <p class="mx-notice__text">
+                <b>This reduces access it already has.</b>
+                {r.client.label} can currently read {narrowsExistingAccess}; allowing at this setting cuts it back to
+                {SCOPE_PROSE[selectedScope]}.
+              </p>
+            </div>
           {/if}
           {#if isBroadScope}
-            <!-- Danger ramp, not the amber the always-on identity caveat uses: a
-                 permanent read of the whole recorded history is irreversible,
-                 and two identical amber boxes stacked read as one. -->
-            <p class="choice-hint choice-hint--danger">
-              <span class="choice-hint__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M8.7 3h6.6l4.7 4.7v6.6L15.3 21H8.7L4 16.3V9.7Z" />
-                  <path d="M12 8v4" />
-                  <path d="M12 16h.01" />
-                </svg>
-              </span>
-              <span>
-                <strong>Reads your entire history.</strong> Everything Mnema has retained — every
-                app, every window, every transcript.
-              </span>
-            </p>
-          {:else}
-            <p class="choice-hint">
-              <span>{scopeMeta.hint}</span>
-            </p>
+            <div class="mx-notice" data-tone="danger">
+              <span class="mx-notice__icon"><IconOctagon width="13" height="13" /></span>
+              <p class="mx-notice__text">
+                <b>Reads your entire history.</b> Everything Mnema has retained — every app, every window, every transcript.
+              </p>
+            </div>
+          {:else if hint}
+            <p class="ac-hint">{hint}</p>
           {/if}
-          <!-- "It never expires" is the whole of what this grant is, so it gets
-               its own container instead of being the third identical muted hint
-               in a stack. Neutral, not warn — it is a fact, not an alarm. -->
-          <p class="terms-note">
-            <strong>This access does not expire.</strong> It stays until you block it in Settings,
-            and lapses on its own after 30 days unused.
-          </p>
         </fieldset>
-      {/if}
 
-      {#if error && !granted}
-        <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z" />
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-            </svg>
-          </span>
-          <span class="inline-error__msg">{error}</span>
+        <div class="mx-notice">
+          <span class="mx-notice__icon"><IconClock width="13" height="13" /></span>
+          <p class="mx-notice__text">
+            <b>Standing until idle.</b> {r.client.label} keeps this until you block it. If it goes unused for
+            <span class="num">30</span> days, the permission lapses and the next request asks again.
+          </p>
         </div>
-      {/if}
-    </div>
-
-    {#if granted}
-      <!-- The backend closes this window on a real grant, so this footer is
-           normally torn down before it can be used. It exists for the rare
-           lingering case (delayed/failed teardown) so the granted state is never
-           left with zero in-app affordance backing the "Close" copy. -->
-      <footer class="access-dialog__actions">
-        <button
-          class="btn btn--ghost"
-          bind:this={grantedCloseButton}
-          type="button"
-          tabindex="0"
-          onclick={closeGrantedWindow}
-        >
-          Close
-        </button>
-      </footer>
-    {:else}
-      <footer class="access-dialog__actions">
-        <button
-          class="btn btn--ghost"
-          bind:this={denyButton}
-          type="button"
-          tabindex="0"
-          disabled={approving || cancelling}
-          onclick={closeWindow}
-        >
-          {#if cancelling}
-            <span class="btn__spinner" aria-hidden="true"></span>
-            {pendingRequest ? "Denying…" : "Closing…"}
-          {:else}
-            {pendingRequest ? "Deny" : "Close"}
-          {/if}
-        </button>
-        {#if pendingRequest}
-          <button
-            class="btn btn--allow"
-            type="button"
-            tabindex="0"
-            disabled={loading || approving || cancelling}
-            onclick={approveAccess}
-          >
-            {#if approving}
-              <span class="btn__spinner" aria-hidden="true"></span>
-              Allowing…
-            {:else if isBroadScope}
-              <!-- Escalate the affirmative label to match the broad-scope warning
-                   above: the button names the heavier consent it grants. -->
-              Allow full-history access
-            {:else}
-              Allow access
-            {/if}
-          </button>
-        {/if}
-      </footer>
+      </div>
     {/if}
+
+    {#if error && !receipt}
+      <div class="ac-err" role="alert">
+        <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{error}</span>
+      </div>
+    {/if}
+
+    <footer class="ac-foot">
+      {#if receipt}
+        <span class="mx-spacer"></span>
+        <button class="mx-btn" bind:this={receiptCloseButton} type="button" onclick={closeReceiptWindow}>Close</button>
+      {:else if pendingRequest && !loading && !loadError}
+        <button
+          class="mx-btn mx-btn--ghost mx-btn--danger"
+          type="button"
+          disabled={acting || gone}
+          aria-busy={blocking}
+          use:tip={"Refuse this tool now and every time — no window, no asking"}
+          onclick={blockClient}
+        >
+          {#if blocking}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>Blocking…
+          {:else}<IconBan width="14" height="14" />Block{/if}
+        </button>
+        <span class="mx-spacer"></span>
+        <button class="mx-btn" bind:this={denyButton} type="button" disabled={acting} onclick={closeWindow}>
+          {#if cancelling}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>{gone ? "Closing…" : "Denying…"}
+          {:else if gone}Close
+          {:else}Deny<kbd>Esc</kbd>{/if}
+        </button>
+        <!-- Deliberately NOT --primary: a consent click gets no green pull. -->
+        <button class="mx-btn" type="button" disabled={acting || gone} aria-busy={approving} onclick={approveAccess}>
+          {#if approving}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>Allowing…
+          {:else}<IconLock class="mx-btn__accent" width="14" height="14" />{allowLabel(pendingRequest, selectedScope)}{/if}
+        </button>
+      {:else}
+        <span class="mx-spacer"></span>
+        <button class="mx-btn" bind:this={denyButton} type="button" disabled={acting} onclick={closeWindow}>
+          {#if cancelling}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>Closing…{:else}Close{/if}
+        </button>
+      {/if}
+    </footer>
   </div>
 </main>
 
-<!-- The Tauri window is already the dialog frame, so this route avoids a nested card. -->
 <style>
-  .access-request {
+  /* flex:1 1 auto, never height:100% — WKWebView collapses the latter. */
+  .ac {
     flex: 1 1 auto;
     min-height: 0;
-    height: 100%;
     display: flex;
     overflow: hidden;
     background: var(--app-surface);
     color: var(--app-text);
   }
-
-  .access-dialog {
+  .ac-dlg {
     flex: 1 1 auto;
     min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    background: transparent;
+    outline: none;
   }
 
-  .access-dialog__header {
-    display: grid;
-    grid-template-columns: 30px minmax(0, 1fr);
-    gap: 10px;
-    padding: 16px 20px 12px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
-  }
-
-  /* Neutral treatment — green is reserved for an actual granted state, not for
-     decorating an as-yet-unverified, ungranted request. */
-  .access-dialog__icon {
-    display: grid;
-    width: 30px;
-    height: 30px;
-    place-items: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-  }
-
-  .access-dialog__icon svg {
-    width: 15px;
-    height: 15px;
-    display: block;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .access-dialog__title {
-    min-width: 0;
-  }
-
-  .access-dialog__body {
+  .ac-body {
     flex: 1 1 auto;
-    display: flex;
     min-height: 0;
-    flex-direction: column;
-    gap: 12px;
-    padding: 14px 20px;
     overflow-y: auto;
-  }
-
-  .access-dialog__actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 12px 20px 16px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
-  }
-
-  .eyebrow {
-    margin: 0 0 4px;
-    color: var(--app-text-subtle);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    line-height: 1.2;
-  }
-
-  h1 {
-    margin: 0;
-    color: var(--app-text-strong);
-    font-size: var(--text-lg);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    line-height: 1.2;
-  }
-
-  .lede {
-    margin: 4px 0 0;
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.45;
-  }
-
-  /* Requester is the focal point: who is asking, and what they get. */
-  .requester {
     display: grid;
-    gap: 6px;
-    padding: 12px 14px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    align-content: start;
+    gap: var(--s-4);
+    padding: var(--s-5) var(--s-5) var(--s-4);
+  }
+  .ac-fill { flex: 1 1 auto; min-height: 0; }
+  .ac-fill .mx-empty { padding: var(--s-6) var(--s-5); }
+  .ac-head { display: grid; gap: 6px; }
+  .ac-head .mx-h2 { text-wrap: balance; overflow-wrap: anywhere; }
+  .ac-head .mx-body-sm { margin: 0; }
+
+  /* Who is asking: the focal block. Neutral — never green for an unverified identity. */
+  .ac-who { display: grid; gap: var(--s-3); padding: 14px var(--s-4); }
+  .ac-who .mx-skel-row { padding: 0; }
+  .ac-who__top { display: flex; align-items: center; gap: var(--s-3); }
+  .ac-glyph {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-md);
+    background: var(--mx-wash);
+    color: var(--app-text-muted);
+    box-shadow: inset 0 0 0 1px var(--mx-hairline);
+  }
+  /* The "who is asking" line is load-bearing — wrap, never clip. */
+  .ac-who__name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .ac-who__name .mx-h3 { overflow-wrap: anywhere; }
+  .ac-who__age { margin-left: auto; font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; }
+  .ac-cmd {
+    display: block;
+    padding: 7px 10px;
+    border-radius: var(--r-sm);
     background: var(--app-surface-subtle);
-  }
-
-  .requester__head {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    justify-content: space-between;
-  }
-
-  /* The requester identity is the load-bearing "who is asking" line on a consent
-     screen — never silently clip it. Wrap a long name across lines (and keep the
-     full string in title=) rather than ellipsizing it away. */
-  .requester__label {
-    min-width: 0;
-    color: var(--app-text-strong);
-    font-size: var(--text-md);
-    font-weight: 700;
-    letter-spacing: 0.01em;
-    line-height: 1.25;
+    border: 1px solid var(--mx-hairline);
+    font: 450 var(--text-sm)/1.45 var(--font-mono);
+    color: var(--app-text);
     overflow-wrap: anywhere;
   }
+  .ac-cmd b { font-weight: 500; color: var(--app-text-strong); }
 
-  .requester__source {
-    flex-shrink: 0;
-    padding: 2px 8px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
-    color: var(--app-text-muted);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
+  .ac-body .mx-notice { padding: 8px 10px; grid-template-columns: auto 1fr; }
+  .ac-body .mx-notice__icon { width: 24px; height: 24px; }
+  .ac-body .mx-notice__text b { color: var(--app-text-strong); font-weight: 600; }
 
-  /* Lower-trust provenances (inferred / none) are warn-tinted so the chip
-     signals its weaker identity at a glance, not by text alone. "explicit" /
-     "env" keep the neutral treatment — never greened, since even a declared
-     identity stays unverifiable. */
-  .requester__source--warn {
-    border-color: var(--app-warn-border);
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-  }
+  .ac-scope { display: grid; gap: var(--s-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+  .ac-scope legend { padding: 0; margin-bottom: var(--s-2); color: var(--app-text-muted); }
+  .ac-scope :global(.mx-choice__opt) { padding-top: 9px; padding-bottom: 9px; }
+  .ac-scope :global(.mx-choice__desc) { font-size: var(--text-sm); }
+  .ac-was { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-muted); }
+  .ac-was { margin-bottom: var(--s-2); }
+  .ac-scope .mx-notice { margin-top: var(--s-2); }
+  .ac-hint { margin: var(--s-2) 0 0; font-size: var(--text-sm); color: var(--app-text-subtle); }
 
-  .requester__trigger {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.55;
-  }
+  .ac-err { flex: none; padding: 0 var(--s-5) var(--s-3); }
+  .ac-err .mx-inline { flex-wrap: nowrap; align-items: flex-start; }
+  .ac-err .mx-inline :global(svg) { margin-top: 3px; }
 
-  .requester__age {
-    margin: 0;
-    color: var(--app-text-subtle);
-    font-size: var(--text-xs);
-    letter-spacing: 0.04em;
-  }
-
-  .requester code {
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
-  }
-
-  /* Verification caveat sits directly under the identity it qualifies, in a
-     warn-tinted container — it must visibly outrank a benign hint, not read as
-     the faintest line on the screen. */
-  .trust-note {
+  .ac-foot {
+    flex: none;
+    margin-top: auto;
     display: flex;
-    gap: 7px;
-    align-items: flex-start;
-    margin: 0;
-    padding: 7px 9px;
-    border: 1px solid var(--app-warn-border);
-    border-radius: 6px;
-    background: var(--app-warn-bg);
-  }
-
-  .trust-note > span:last-child {
-    color: var(--app-warn);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    line-height: 1.45;
-  }
-
-  .trust-note__icon {
-    display: grid;
-    place-items: center;
-    flex-shrink: 0;
-    margin-top: 1px;
-    color: var(--app-warn);
-  }
-
-  .trust-note__icon svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .request-section {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    padding: 0;
-    border: 0;
-  }
-
-  .group-label {
-    padding: 0;
-    /* Load-bearing scope legend on a consent screen — must clear the contrast
-       floor, so use the legible muted token, not faint subtle. */
-    color: var(--app-text-muted);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .choice-hint {
-    display: flex;
-    gap: 6px;
-    align-items: flex-start;
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.4;
-  }
-
-  /* Broad scope sits one ramp ABOVE the always-on identity caveat (.trust-note,
-     amber): that one fires on every request and is a caution, this one is the
-     irreversible choice the user is about to make. Same ramp = same weight =
-     both become wallpaper. `--app-danger-strong` on `--app-danger-bg` clears
-     4.5:1 in both themes (measured 5.2 dark / 5.4 light); plain `--app-danger`
-     does not on the light ramp. */
-  .choice-hint--danger {
-    gap: 8px;
     align-items: center;
-    padding: 8px 10px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 6px;
-    background: var(--app-danger-bg);
-    color: var(--app-danger-strong);
-    font-size: var(--text-base);
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-5) var(--s-4);
+    border-top: 1px solid var(--mx-hairline);
   }
 
-  .choice-hint--danger strong {
-    color: var(--app-danger-strong);
-    font-weight: 800;
-  }
-
-  .choice-hint__icon {
+  /* Receipt after the click. A full-history grant and a block stay on the danger ramp. */
+  .ac-receipt { flex: 1 1 auto; display: grid; align-content: start; justify-items: start; gap: var(--s-2); padding: var(--s-6) var(--s-5) var(--s-5); }
+  .ac-receipt .mx-h2 { overflow-wrap: anywhere; }
+  .ac-receipt .mx-body-sm { margin: 0; }
+  .ac-receipt__icon {
+    width: 36px;
+    height: 36px;
     display: grid;
     place-items: center;
-    flex-shrink: 0;
-    color: currentColor;
-  }
-
-  .choice-hint__icon svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  /* The one line that states what this PR changed. Neutral container (this is a
-     fact about the grant, not a third alarm) but a container all the same, so
-     "never expires" does not carry the same weight as "last 24 hours". */
-  .terms-note {
-    margin: 0;
-    padding: 8px 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.45;
-  }
-
-  .terms-note strong {
-    color: var(--app-text-strong);
-    font-weight: 700;
-  }
-
-  .skeleton {
-    display: grid;
-    gap: 12px;
-    padding: 4px 0;
-  }
-
-  .skeleton__line {
-    height: 12px;
-    border-radius: 5px;
-    background: var(--app-surface-hover);
-    animation: skeleton-pulse 1.4s ease-in-out infinite;
-  }
-
-  .skeleton__line--lg {
-    height: 18px;
-    width: 62%;
-  }
-
-  .skeleton__line--sm {
-    width: 42%;
-  }
-
-  @keyframes skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 0.8;
-    }
-  }
-
-  .empty {
-    display: grid;
-    gap: 8px;
-    justify-items: center;
-    margin: auto 0;
-    padding: 24px 16px;
-    text-align: center;
-  }
-
-  .empty__icon {
-    display: grid;
-    place-items: center;
-    width: 38px;
-    height: 38px;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    color: var(--app-text-subtle);
-  }
-
-  .empty__icon svg {
-    width: 18px;
-    height: 18px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .empty__title {
-    margin: 0;
-    color: var(--app-text);
-    font-size: var(--text-md);
-    font-weight: 700;
-  }
-
-  .empty__body {
-    margin: 0;
-    max-width: 34ch;
-    color: var(--app-text-muted);
-    font-size: var(--text-sm);
-    line-height: 1.45;
-  }
-
-  /* Positive granted receipt — this is the one moment green is earned (an actual
-     grant just landed), so it uses the accent rather than the neutral padlock. */
-  .receipt {
-    display: grid;
-    gap: 8px;
-    justify-items: center;
-    margin: auto 0;
-    padding: 24px 16px;
-    text-align: center;
-  }
-
-  .receipt__icon {
-    display: grid;
-    place-items: center;
-    width: 40px;
-    height: 40px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-  }
-
-  .receipt__icon svg {
-    width: 20px;
-    height: 20px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2.2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  /* A full-history grant keeps the danger ramp the dialog escalated to before
-     the click — the same green tick a last-24-hours grant gets would throw the
-     whole escalation away at the moment it becomes permanent. */
-  .receipt--broad .receipt__icon {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-    color: var(--app-danger-strong);
-  }
-
-  .receipt--broad .receipt__scope {
-    color: var(--app-danger-strong);
-  }
-
-  .receipt__body {
-    margin: 0;
-    max-width: 38ch;
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.5;
-  }
-
-  .receipt__body strong {
-    color: var(--app-text);
-    font-weight: 700;
-  }
-
-  .receipt__hint {
-    margin: 0;
-    max-width: 36ch;
-    color: var(--app-text-subtle);
-    font-size: var(--text-sm);
-    line-height: 1.45;
-  }
-
-  /* Visible only to assistive tech (announces the loading state). */
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  /* Load failure gets its own recoverable state (Retry) instead of the
-     contradictory "nothing pending" empty copy. */
-  .load-error {
-    display: grid;
-    gap: 8px;
-    justify-items: center;
-    margin: auto 0;
-    padding: 24px 16px;
-    text-align: center;
-  }
-
-  .load-error__icon {
-    display: grid;
-    place-items: center;
-    color: var(--app-danger);
-  }
-
-  .load-error__icon svg {
-    width: 22px;
-    height: 22px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .load-error__title {
-    margin: 0;
-    color: var(--app-text);
-    font-size: var(--text-md);
-    font-weight: 700;
-  }
-
-  .load-error__body {
-    margin: 0;
-    max-width: 34ch;
-    color: var(--app-text-muted);
-    font-size: var(--text-sm);
-    line-height: 1.45;
-    word-break: break-word;
-  }
-
-  .load-error__retry {
-    margin-top: 4px;
-  }
-
-  .inline-error {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 10px 12px;
-    background: var(--app-danger-bg-soft);
-    border: 1px solid var(--app-danger-border);
-    border-radius: 6px;
-  }
-
-  .inline-error__icon {
-    display: grid;
-    place-items: center;
-    color: var(--app-danger);
-    flex-shrink: 0;
-    margin-top: 1px;
-  }
-
-  .inline-error__icon svg {
-    width: 14px;
-    height: 14px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .inline-error__msg {
-    flex: 1;
-    color: var(--app-danger-text);
-    font-size: var(--text-sm);
-    line-height: 1.5;
-    word-break: break-word;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    min-height: 30px;
-    padding: 7px 12px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-base);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s, transform 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  /* One focus-ring treatment for BOTH footer buttons (accent border + glow) so
-     keyboard focus reads identically as the user tabs Deny ↔ Allow. */
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:active:not(:disabled) {
-    transform: translateY(0.5px);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  /* Allow GRANTS irreversible access, so it does NOT get a go-green fill — not
-     even the soft accent-bg one, which still gave the affirmative more pull than
-     Deny's plain ghost. Both buttons rest as outlines; Allow carries the accent
-     on border + text only, so the eye is not led to the grant. */
-  .btn--allow {
-    background: transparent;
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-
-  /* Multi-property hover (subtle bg lift + brighter border) so the affirmative
-     action gives the same depth of feedback as Deny, while the resting state
-     stays a restrained outline (no go-green solid fill). */
-  .btn--allow:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-  }
-
-  /* In-flight spinner reuses the file's keyframes vocabulary (see @keyframes spin). */
-  .btn__spinner {
-    width: 12px;
-    height: 12px;
-    flex-shrink: 0;
     border-radius: 50%;
-    border: 2px solid currentColor;
-    border-top-color: transparent;
-    opacity: 0.85;
-    animation: spin 0.7s linear infinite;
+    margin-bottom: var(--s-1);
+    color: var(--tone);
+    background: var(--tone-bg);
+    box-shadow: inset 0 0 0 1px var(--tone-bd);
   }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  /* Respect the OS "reduce motion" preference: hold the skeleton at a static
-     opacity and slow the in-flight spinner to a near-still crawl. */
-  @media (prefers-reduced-motion: reduce) {
-    .skeleton__line {
-      animation: none;
-      opacity: 0.6;
-    }
-
-    .btn__spinner {
-      animation-duration: 2.4s;
-    }
-
-    .btn:active:not(:disabled) {
-      transform: none;
-    }
-  }
-
-  @media (max-width: 480px) {
-    .access-request {
-      overflow: hidden;
-    }
-
-    .access-dialog {
-      width: 100%;
-    }
-
-    .access-dialog__actions {
-      justify-content: stretch;
-    }
-
-    .btn {
-      flex: 1 1 100%;
-    }
-  }
+  .ac-receipt[data-tone="danger"] .ac-receipt__icon { color: var(--app-danger-strong); }
+  .ac-receipt .mx-prose { font-size: var(--text-md); }
+  .ac-receipt .mx-prose b { color: var(--app-text-strong); font-weight: 600; }
 </style>
