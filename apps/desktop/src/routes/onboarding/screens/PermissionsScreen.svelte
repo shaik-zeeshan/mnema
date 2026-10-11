@@ -11,7 +11,7 @@
                     permissionAction/Label/Tone(value)  display helpers (onboarding-attention.ts)
                     requestPermission(key) / refreshPermissions()
                     geckoInstalled, geckoTrusted, geckoInstalledNames,
-                    requestGeckoAccess(), openGeckoAccessSettings(), recheckGeckoAccess()
+                    requestGeckoAccess(), recheckGeckoAccess()
       onContinue  () => void — advance to Capture & Storage. The shell RE-RUNS THE
                   RESOLVER on this transition, so a grant made here reaches the
                   settings. Nothing else needs to be signalled.

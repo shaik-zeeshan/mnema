@@ -183,7 +183,6 @@ export class OnboardingController {
   get permissionTone() { return this.permsStore.permissionTone; }
   get loadGeckoUrlAccess() { return this.permsStore.loadGeckoUrlAccess; }
   get requestGeckoAccess() { return this.permsStore.requestGeckoAccess; }
-  get openGeckoAccessSettings() { return this.permsStore.openGeckoAccessSettings; }
   get recheckGeckoAccess() { return this.permsStore.recheckGeckoAccess; }
 
   // ── Lifecycle flags ──────────────────────────────────────────────────────

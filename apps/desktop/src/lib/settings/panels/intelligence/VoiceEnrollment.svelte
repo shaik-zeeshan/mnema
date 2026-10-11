@@ -260,7 +260,7 @@
 
   .voice-meter__count {
     flex-shrink: 0;
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--app-text-muted);
   }

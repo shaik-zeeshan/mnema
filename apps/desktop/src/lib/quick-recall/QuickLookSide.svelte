@@ -329,13 +329,6 @@
     flex: 1;
     min-width: 0;
   }
-  mark {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-radius: 2px;
-    padding: 0 2px;
-    box-shadow: inset 0 -1px 0 var(--app-accent-border);
-  }
   .rc-look__side {
     animation: mx-rise var(--t-slow) var(--ease-expo) 120ms both;
   }

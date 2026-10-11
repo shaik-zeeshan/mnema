@@ -191,6 +191,6 @@
   }
 
   .mdr-mono {
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
   }
 </style>

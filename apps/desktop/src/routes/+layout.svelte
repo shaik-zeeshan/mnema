@@ -1,5 +1,6 @@
 <script lang="ts">
   import "$lib/styles/kit.css";
+  import "$lib/styles/kit-extra.css";
   import "$lib/styles/shell.css";
   import { tip } from "$lib/components/tooltip";
   import { page } from "$app/stores";
@@ -503,7 +504,7 @@
     --app-icon-border-active: #2a2a3a;
 
     /* Surface / control tokens shared by the dashboard, settings, and the
-       shared bits-ui-backed controls (Switch, Select, RadioGroup, Slider).
+       shared kit controls (Switch, Select, Choice, Slider).
        Keeping these centralized means each component declares the dark
        palette once via these tokens and the light theme below flips them
        in one place — no per-component palette duplication. */
@@ -534,11 +535,6 @@
     /* Dark ink for text placed ON the bright-green accent fill — stays dark
        in both modes because the accent fill it sits on is bright in both. */
     --app-accent-contrast: #07120c;
-
-    /* Legacy alias of the kit's record face (`--font-mono`, lib/styles/kit.css)
-       so the rules still reading `var(--app-font-mono)` keep working until each
-       surface moves its sentences to sans. Mode-independent. */
-    --app-font-mono: var(--font-mono);
 
     /* Shared focus-visible rings (mode-independent; the accent-glow they key
        off is per-mode, so the ring adapts to the active theme automatically). */

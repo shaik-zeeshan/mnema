@@ -179,7 +179,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-family: var(--font-mono);
   }
 
   .settings-shell .debug-log-status__dot {

@@ -53,7 +53,7 @@
   border-radius: 999px;
   background: var(--app-surface);
   color: var(--app-text-muted);
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.04em;
   line-height: 1.5;
@@ -87,7 +87,7 @@
   border: 1px solid var(--app-border);
   border-radius: 6px;
   background: var(--app-surface);
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--app-text);
   outline: none;
@@ -113,7 +113,7 @@
 }
 
 .debug-shell .log-meta__path {
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -145,7 +145,7 @@
 }
 
 .debug-shell .log-line {
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.65;
   color: var(--app-text-muted);

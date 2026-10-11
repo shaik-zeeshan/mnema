@@ -38,32 +38,6 @@ export function entryLabel(entry: ExcludedAppEntry): string {
 }
 
 /**
- * "A" · "A or B" · "A, B, or C" — the separator that goes BEFORE the name at
- * `index`. Split out from the names because each name is a button, so the list
- * cannot be joined into one string. If this stops reading like English the whole
- * premise of the control is gone.
- */
-export function separatorBefore(index: number, count: number): string {
-  if (index === 0) return "";
-  if (index === count - 1) return count === 2 ? " or " : ", or ";
-  return ", ";
-}
-
-/** The words around the names: what comes before the first and after the last. */
-export function excludedSentence(entries: ExcludedAppEntry[]): { lead: string; tail: string } {
-  if (entries.length === 0) {
-    return { lead: "Mnema records everything on your screen.", tail: "" };
-  }
-  if (entries.some((entry) => entry.enabled)) {
-    return { lead: "Mnema never records ", tail: "." };
-  }
-  return {
-    lead: "Mnema records everything on your screen. ",
-    tail: entries.length === 1 ? " is back on." : " are back on.",
-  };
-}
-
-/**
  * The one explanatory line under the sentence. `hint` is the faint half.
  *
  * The audio claim is only made when something is ACTUALLY being filtered —

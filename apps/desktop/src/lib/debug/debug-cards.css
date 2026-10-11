@@ -35,7 +35,7 @@
 }
 
 .debug-shell .setting-group .setting-group__title {
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: 700;
   line-height: normal;
@@ -167,7 +167,7 @@
 
 /* Mono is for machine strings (model ids, paths, providers) inside a desc. */
 .debug-shell .row__desc--mono {
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
 }
 
 /* `white-space: nowrap` keeps a badge pair on one line; `flex-wrap` lets it

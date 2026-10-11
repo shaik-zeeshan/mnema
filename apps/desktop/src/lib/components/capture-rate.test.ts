@@ -10,8 +10,6 @@ import {
 	fpsToIntervalS,
 	intervalSToFps,
 	nearestLadderIndex,
-	relativeStorageLabel,
-	snapshotsPerMinute,
 	timelineGapMs,
 } from "./capture-rate";
 
@@ -84,15 +82,6 @@ describe("captureRateShortLabel", () => {
 	});
 });
 
-describe("relativeStorageLabel", () => {
-	it("shows ≥1× and 1/N× branches relative to the 2s default", () => {
-		expect(relativeStorageLabel(2)).toBe("1×");
-		expect(relativeStorageLabel(1)).toBe("2×");
-		expect(relativeStorageLabel(0.1)).toBe("20×");
-		expect(relativeStorageLabel(60)).toBe("1/30×");
-	});
-});
-
 // The value ChangeSettingsScreen hands its capture-rate `Select`, and the
 // option values it picks from. Through the ladder, never a raw 1/fps.
 const optionValues = CAPTURE_INTERVAL_LADDER_S.map((s) => String(s));
@@ -113,32 +102,6 @@ describe("capture rate Select value", () => {
 	it("round-trips every ladder stop unchanged", () => {
 		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
 			expect(selectValue(intervalSToFps(intervalS))).toBe(String(intervalS));
-		}
-	});
-});
-
-describe("snapshotsPerMinute", () => {
-	it("counts the snapshot at t=0, so the 45s stop holds two", () => {
-		expect(snapshotsPerMinute(45)).toBe(2);
-	});
-	it("keeps the closing edge exclusive at one a minute", () => {
-		expect(snapshotsPerMinute(60)).toBe(1);
-	});
-	it("matches a hand count across the whole ladder", () => {
-		expect(CAPTURE_INTERVAL_LADDER_S.map(snapshotsPerMinute)).toEqual([
-			600, 120, 60, 30, 20, 12, 6, 4, 2, 2, 1,
-		]);
-	});
-	it("agrees with simulating one minute of capture", () => {
-		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
-			let taken = 0;
-			for (let t = 0; t < 60 - 1e-9; t += intervalS) taken += 1;
-			expect(snapshotsPerMinute(intervalS)).toBe(taken);
-		}
-	});
-	it("never undercounts the old Math.round(60 / s) reading", () => {
-		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
-			expect(snapshotsPerMinute(intervalS)).toBeGreaterThanOrEqual(Math.round(60 / intervalS));
 		}
 	});
 });

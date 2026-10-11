@@ -174,7 +174,7 @@ export class SettingsController {
   // A failed recording-domain save leaves the domain dirty, so the autosave
   // engine's re-tick (on the `savingRecDomains` flag flipping back to false)
   // would re-fire the save every ~450ms forever — a silent hammer. These track
-  // the failed domain (so the rail footer can offer a targeted Retry/Dismiss),
+  // the failed domain (so the header save status can offer a targeted Retry/Dismiss),
   // the consecutive-failure count, and the per-domain "don't retry before"
   // timestamp that throttles the loop with capped exponential backoff.
   lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
@@ -188,7 +188,7 @@ export class SettingsController {
     ReturnType<typeof setTimeout>
   >();
   // The domain whose save most recently succeeded — drives a near-the-control
-  // "Saved" micro-affordance (the rail footer status is remote from the edit).
+  // "Saved" micro-affordance (the header save status is remote from the edit).
   recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
 
   // Ask AI / AI model picker open state.
@@ -645,7 +645,7 @@ export class SettingsController {
   }
 
   // Record a failed recording-domain save: surface the message, remember the
-  // domain (so the rail footer can target Retry/Dismiss), and arm capped
+  // domain (so the header save status can target Retry/Dismiss), and arm capped
   // exponential backoff with a single one-shot re-tick so the retry resumes
   // once — not as a tight ~450ms hammer — when the window elapses.
   private noteSaveFailure(domain: AutosaveRecordingDomain, message: string) {

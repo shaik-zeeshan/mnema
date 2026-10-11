@@ -42,7 +42,7 @@
   background: none;
   color: var(--app-text-subtle);
   font: inherit;
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   cursor: pointer;
   transition: color 0.12s;
 }
@@ -203,7 +203,7 @@
   border: 1px solid var(--app-border);
   border-radius: 6px;
   background: var(--app-surface);
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--app-text);
   outline: none;
@@ -265,7 +265,7 @@
 }
 
 .debug-shell .debug-detail__insp-title {
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -299,7 +299,7 @@
   border: 1px solid var(--app-border);
   border-radius: 6px;
   background: var(--app-surface-subtle, var(--app-surface));
-  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.55;
   color: var(--app-text-muted);

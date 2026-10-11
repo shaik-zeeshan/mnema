@@ -197,7 +197,7 @@
 }
 
 .debug-shell .kv-val--mono {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--app-text);
 }
@@ -304,7 +304,7 @@
 .debug-shell .debug-err {
   font-size: 10px;
   color: var(--app-danger);
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
 }
 
 /* Page-bottom error card (the shell's `lastError` sink). */
@@ -356,7 +356,7 @@
   border: 1px solid var(--app-danger-border);
   color: var(--app-danger);
   font-size: 11px;
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
 }
 
 .debug-shell .lifecycle-error__tag {
@@ -381,7 +381,7 @@
   border: 1px solid var(--app-warn-border);
   color: var(--app-warn);
   font-size: 10px;
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   letter-spacing: 0.02em;
 }
 
@@ -464,7 +464,7 @@
 }
 
 .debug-shell .mono-cell {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   max-width: 180px;
   overflow-wrap: anywhere;
 }
@@ -558,7 +558,7 @@
 }
 
 .debug-shell .job-row__id {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 9px;
   color: var(--app-text-subtle);
   min-width: 28px;
@@ -575,7 +575,7 @@
 }
 
 .debug-shell .job-row__ts {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 9px;
   color: var(--app-text-faint);
   flex-shrink: 0;
@@ -583,7 +583,7 @@
 }
 
 .debug-shell .job-detail-text {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--app-neutral-text);
   white-space: pre-wrap;

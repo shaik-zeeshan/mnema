@@ -104,7 +104,7 @@
   border-radius: 4px;
   background: var(--app-surface-raised);
   color: var(--app-text-muted);
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -278,7 +278,7 @@
 }
 
 .debug-shell .rs-row__val--mono {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--app-text-muted);
   /* Sample/activity readouts: show full text, allow wrapping. */
@@ -308,7 +308,7 @@
 }
 
 .debug-shell .rs-path__val {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--app-text-muted);
   overflow: hidden;
@@ -413,7 +413,7 @@
 }
 
 .debug-shell .detector-card__metric-value {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
   color: var(--app-source-screen);
@@ -424,7 +424,7 @@
 .debug-shell .detector-card--sysaudio .detector-card__metric-value { color: var(--app-source-sysaudio); }
 
 .debug-shell .detector-card__metric-source {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 9px;
   color: var(--app-text-muted);
 }
@@ -449,14 +449,14 @@
 }
 
 .debug-shell .effective-idle-summary__value {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
   color: var(--app-text);
 }
 
 .debug-shell .effective-idle-summary__source {
-  font-family: var(--app-font-mono);
+  font-family: var(--font-mono);
   font-size: 9px;
   color: var(--app-text-muted);
 }

@@ -714,7 +714,7 @@
 
   .stage__error {
     color: var(--app-danger-text, var(--app-danger));
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     word-break: break-word;
   }
 
@@ -742,7 +742,7 @@
 
   .drawer-error__msg {
     flex: 1 1 auto;
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     line-height: 1.4;
     word-break: break-word;
   }

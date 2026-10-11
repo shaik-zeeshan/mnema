@@ -138,15 +138,6 @@
     flex: none;
   }
 
-  /* Snippet matches, kit `mark` (the app kit has no global rule yet). */
-  .quick-recall__results :global(mark) {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-radius: 2px;
-    padding: 0 2px;
-    box-shadow: inset 0 -1px 0 var(--app-accent-border);
-  }
-
   /* Refetch-in-flight: prior results stay on screen but dim slightly so the
      keystroke-driven refresh reads as "updating" without the surface flashing
      empty between every keystroke. */

@@ -20,7 +20,6 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppearanceSetting,
   RecordingSettings,
-  RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
 
 export type ResolvedTheme = "light" | "dark";
@@ -96,14 +95,6 @@ export function setAppearance(appearance: AppearanceSetting): void {
   _state.appearance = appearance;
   _state.loaded = true;
   recompute();
-}
-
-export async function persistAppearance(appearance: AppearanceSetting): Promise<RecordingSettings> {
-  const updated = await invoke<RecordingSettingsDomainUpdateResponse>("update_display_settings", {
-    request: { appearance },
-  });
-  setAppearance(updated.settings.appearance ?? DEFAULT_APPEARANCE);
-  return updated.settings;
 }
 
 /**

@@ -80,7 +80,7 @@
   }
 
   .notice__mono {
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
     color: var(--app-text-subtle);

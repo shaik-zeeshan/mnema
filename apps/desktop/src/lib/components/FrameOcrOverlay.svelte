@@ -156,7 +156,7 @@
     background: var(--app-ocr-chip-bg);
     color: var(--app-ocr-chip-text);
     text-shadow: var(--app-ocr-chip-text-shadow);
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     font-size: var(--ocr-font-size, 11px);
     line-height: 1;
     letter-spacing: -0.01em;
@@ -185,7 +185,6 @@
     background: var(--app-ocr-chip-bg);
     color: var(--app-ocr-chip-text);
     border: 1px solid var(--app-ocr-chip-border);
-    font-family: var(--app-font-mono);
     font-size: 10px;
     letter-spacing: 0.02em;
     line-height: 1.2;
@@ -233,7 +232,7 @@
   .frame-ocr-status-msg {
     text-transform: none;
     letter-spacing: 0;
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     word-break: break-word;
     max-width: 320px;
   }
