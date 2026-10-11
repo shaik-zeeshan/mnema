@@ -1,7 +1,8 @@
 <!--
   DateInput — the kit's scrubbable date capsule + calendar popover (SHELL.md › Date input).
   mode "day": one day · "period": one whole day | week | month with a D·W·M switch
-  (Insights Overview) · "range": presets + drag-select (Chat scope only).
+  (Insights Overview) · "range": presets + drag-select (Chat scope only); with
+  `onalltime` it also offers "All time", and an empty `value` then means all time.
   Step: drag the capsule (right = earlier), wheel, ←/→, Home/End = latest; click/Enter = popover.
   `value` is an ISO day (`2026-10-09`; any day inside the period) or `start..end` for range.
   `density` maps ISO day → 0..3 captured (see `densityFromHeatmap`); missing = nothing captured.
@@ -30,10 +31,12 @@
     align?: "start" | "end";
     density?: Record<string, number>;
     onchange?: (range: DateRange) => void;
+    /** Range mode: adds an "All time" preset (empty `value` = all time). */
+    onalltime?: () => void;
   }
   let {
     mode = "day", unit: unitProp = "week", value, min: minProp, max: maxProp, today: todayProp,
-    align = "start", density, onchange,
+    align = "start", density, onchange, onalltime,
   }: Props = $props();
 
   const UNITS: PeriodUnit[] = ["day", "week", "month"];
@@ -45,9 +48,10 @@
   const max = $derived(maxProp ? parseIso(maxProp) : today);
   const period = $derived(mode === "period");
   const range = $derived(mode === "range");
+  const unbounded = $derived(range && !!onalltime && !value);
 
   function seed(): [Date, Date, Unit] {
-    const [s, e = s] = (value ?? toIso(today)).split("..").map(parseIso);
+    const [s, e = s] = (value || toIso(today)).split("..").map(parseIso);
     if (mode === "period") return [...periodOf(s, unitProp), unitProp];
     return mode === "range" ? [s, e, unitOf(s, e)] : [s, s, "day"];
   }
@@ -81,6 +85,7 @@
   });
   const ticks = $derived(starts.map((s) => (period ? periodHeat(s, tickUnit) : heat(s))));
   const sel = $derived.by(() => {
+    if (unbounded) return [0, starts.length - 1];
     if (!period) return [daysBetween(min, a), daysBetween(min, b)];
     const k = starts.findIndex((s) => +s === +a);
     return [k, k];
@@ -88,8 +93,8 @@
   let rulerW = $state(84);
   const tapeX = $derived((rulerW || 84) / 2 - (((sel[0] + sel[1]) / 2) * PITCH + 1));
 
-  const label = $derived(capsuleLabel(mode, unit, a, b, today));
-  const rel = $derived(relativeLabel(mode, unit, a, b, today));
+  const label = $derived(unbounded ? "All time" : capsuleLabel(mode, unit, a, b, today));
+  const rel = $derived(unbounded ? "no limit" : relativeLabel(mode, unit, a, b, today));
   const atNow = $derived(period && periodsAgo(a, unit, today) === 0);
 
   // ── stepping
@@ -176,6 +181,13 @@
     apply([na, nb], u);
     btn.focus();
   }
+  function allTime() {
+    anchor = null;
+    selecting = false;
+    open = false;
+    onalltime?.();
+    btn.focus();
+  }
   function nav(k: number) {
     view = months ? new Date(view.getFullYear() + k, view.getMonth(), 1, 12) : monthOf(view, k)[0];
   }
@@ -203,7 +215,8 @@
     "data-out": d.getMonth() !== view.getMonth() || undefined,
     "data-today": +d === +today || undefined,
   });
-  const inPending = (d: Date) => range && +d >= +pending[0] && +d <= +pending[1];
+  const marking = $derived(range && (!!anchor || !unbounded)); // all time marks no days
+  const inPending = (d: Date) => marking && +d >= +pending[0] && +d <= +pending[1];
 </script>
 
 <svelte:window onpointerdown={onWindowPointerDown} onpointerup={onWindowPointerUp} onkeydown={onWindowKey} />
@@ -233,8 +246,11 @@
   <div class="mx-pop mx-date__pop" bind:this={pop} data-open={open || undefined} inert={!open} role="dialog" aria-label="Choose {range ? 'a range' : period ? 'a period' : 'a day'}">
     {#if range}
       <div class="mx-date__presets">
+        {#if onalltime}
+          <button type="button" aria-pressed={unbounded} onclick={allTime}><span>All time</span><small>no limit</small></button>
+        {/if}
         {#each presets(today) as [l, s, e, u] (l)}
-          <button type="button" aria-pressed={+s === +a && +e === +b} onclick={() => commit(s, e, u)}><span>{l}</span><small>{spanLabel(s, e)}</small></button>
+          <button type="button" aria-pressed={!unbounded && +s === +a && +e === +b} onclick={() => commit(s, e, u)}><span>{l}</span><small>{spanLabel(s, e)}</small></button>
         {/each}
       </div>
     {/if}
@@ -289,7 +305,7 @@
               <button
                 type="button" class="mx-cal__day" {...dayAttrs(d)} disabled={h < 0}
                 data-sel={(!range && +d === +a) || undefined} data-in={inPending(d) || undefined}
-                data-start={(range && +d === +pending[0]) || undefined} data-end={(range && +d === +pending[1]) || undefined}
+                data-start={(marking && +d === +pending[0]) || undefined} data-end={(marking && +d === +pending[1]) || undefined}
                 aria-label={fmt(d, { weekday: "long", month: "long", day: "numeric" })}
                 onclick={() => !range && commit(d, d, "day")}
                 onpointerdown={() => range && h >= 0 && rangeDown(d)}

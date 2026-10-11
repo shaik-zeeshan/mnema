@@ -244,14 +244,17 @@ pub enum TurnUpdate {
 /// A Chat turn's scope (CH3): the captured-history window its data tools may
 /// read, and whether `recall_context` (Mnema's notes about the user) is offered.
 /// Sent with every `ask_ai_start` / `ask_ai_followup` from Chat and never
-/// persisted; absent = unscoped (Quick Recall).
+/// persisted; absent = unscoped (Quick Recall). No bounds = all time (Chat's
+/// default); a missing bound leaves that side open.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAiScope {
     /// Inclusive window start, unix ms (UTC).
-    pub from_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_ms: Option<i64>,
     /// Inclusive window end, unix ms (UTC).
-    pub to_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_ms: Option<i64>,
     pub about_you: bool,
 }
 
@@ -263,13 +266,26 @@ mod tests {
     #[test]
     fn ask_ai_scope_round_trips_camel_case() {
         let scope = AskAiScope {
-            from_ms: 1,
-            to_ms: 2,
+            from_ms: Some(1),
+            to_ms: Some(2),
             about_you: false,
         };
         let value = serde_json::to_value(scope).unwrap();
         assert_eq!(value, json!({ "fromMs": 1, "toMs": 2, "aboutYou": false }));
         assert_eq!(serde_json::from_value::<AskAiScope>(value).unwrap(), scope);
+
+        // All time: no bounds on the wire.
+        let all_time = AskAiScope {
+            from_ms: None,
+            to_ms: None,
+            about_you: false,
+        };
+        let value = serde_json::to_value(all_time).unwrap();
+        assert_eq!(value, json!({ "aboutYou": false }));
+        assert_eq!(
+            serde_json::from_value::<AskAiScope>(value).unwrap(),
+            all_time
+        );
     }
 
     #[test]

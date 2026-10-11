@@ -63,11 +63,12 @@ export interface Conversation {
 export type ConversationOrigin = "chat" | "quick_recall";
 
 /** A Chat turn's scope (CH3, `AskAiScope`): the window the data tools may read
- *  (inclusive unix ms) and whether Mnema's notes about the user are offered.
- *  Resent on every Chat turn, never persisted; Quick Recall sends none. */
+ *  (inclusive unix ms; both absent = all time) and whether Mnema's notes about
+ *  the user are offered. Resent on every Chat turn, never persisted; Quick
+ *  Recall sends none. */
 export interface AskAiScope {
-  fromMs: number;
-  toMs: number;
+  fromMs?: number;
+  toMs?: number;
   aboutYou: boolean;
 }
 

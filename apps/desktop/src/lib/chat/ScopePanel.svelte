@@ -36,7 +36,12 @@
 <dl class="ch-ctx" class:ch-ctx--up={up} aria-label="Context sent to the model">
   <dt>Scope</dt>
   <dd>
-    <DateInput mode="range" value="{scope.start}..{scope.end}" onchange={(r) => (scope = { ...scope, start: r.start, end: r.end })} />
+    <DateInput
+      mode="range"
+      value={scope.start && scope.end ? `${scope.start}..${scope.end}` : ""}
+      onchange={(r) => (scope = { ...scope, start: r.start, end: r.end })}
+      onalltime={() => (scope = { ...scope, start: null, end: null })}
+    />
   </dd>
   <dt>Include</dt>
   <dd>

@@ -6,10 +6,15 @@ import { defaultScope, scopeFromParams, scopeLabel, toWireScope } from "./scope"
 const FRI = new Date(2026, 9, 9, 15); // Fri Oct 9 2026
 
 describe("chat scope", () => {
-  test("defaults to this week with About you on", () => {
-    const s = defaultScope(FRI);
-    expect(s).toEqual({ start: "2026-10-05", end: "2026-10-11", aboutYou: true });
-    expect(scopeLabel(s, FRI)).toBe("this week");
+  test("defaults to all time with About you on", () => {
+    const s = defaultScope();
+    expect(s).toEqual({ start: null, end: null, aboutYou: true });
+    expect(scopeLabel(s, FRI)).toBe("all time");
+    expect(toWireScope(s)).toEqual({ aboutYou: true });
+  });
+
+  test("labels this week", () => {
+    expect(scopeLabel({ start: "2026-10-05", end: "2026-10-11", aboutYou: true }, FRI)).toBe("this week");
   });
 
   test("labels presets in lower case, other spans by date", () => {

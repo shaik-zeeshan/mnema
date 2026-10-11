@@ -3871,8 +3871,8 @@ model believes the narrower contract: {}",
         assert_eq!(
             request.scope,
             Some(AskAiScope {
-                from_ms: 1,
-                to_ms: 2,
+                from_ms: Some(1),
+                to_ms: Some(2),
                 about_you: false
             })
         );

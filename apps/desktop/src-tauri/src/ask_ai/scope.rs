@@ -13,8 +13,9 @@ use time::OffsetDateTime;
 
 /// Clamp one tool call's window into `scope`: a missing bound is filled with the
 /// scope's (`search` / `recall_context` take optional bounds), a bound past the
-/// scope is narrowed (`timeline` / `activities` require theirs). `Ok(None)` for
-/// a tool the scope doesn't govern; `Err` (shown to the model) when the call
+/// scope is narrowed (`timeline` / `activities` require theirs). A side the scope
+/// leaves open is left as the call sent it. `Ok(None)` for a tool the scope
+/// doesn't govern or an all-time scope; `Err` (shown to the model) when the call
 /// asks for a window entirely outside the scope, or for `recall_context` with
 /// About you off.
 pub(super) fn clamp_tool_range(
@@ -22,7 +23,7 @@ pub(super) fn clamp_tool_range(
     tool: &str,
     from: Option<i64>,
     to: Option<i64>,
-) -> Result<Option<(i64, i64)>, String> {
+) -> Result<Option<(Option<i64>, Option<i64>)>, String> {
     match tool {
         "recall_context" if !scope.about_you => {
             return Err(
@@ -33,14 +34,24 @@ pub(super) fn clamp_tool_range(
         "search" | "recall_context" | "timeline" | "activities" => {}
         _ => return Ok(None),
     }
-    let from = from.map_or(scope.from_ms, |from| from.max(scope.from_ms));
-    let to = to.map_or(scope.to_ms, |to| to.min(scope.to_ms));
-    if from > to {
-        return Err(format!(
-            "That window is outside this chat's scope ({} – {} UTC); only captures inside it can be read.",
-            rfc3339(scope.from_ms),
-            rfc3339(scope.to_ms),
-        ));
+    if scope.from_ms.is_none() && scope.to_ms.is_none() {
+        return Ok(None);
+    }
+    let from = scope
+        .from_ms
+        .map_or(from, |lo| Some(from.map_or(lo, |from| from.max(lo))));
+    let to = scope
+        .to_ms
+        .map_or(to, |hi| Some(to.map_or(hi, |to| to.min(hi))));
+    if let (Some(lo), Some(hi)) = (from, to) {
+        if lo > hi {
+            let side = |ms: Option<i64>| ms.map_or_else(|| "…".to_string(), rfc3339);
+            return Err(format!(
+                "That window is outside this chat's scope ({} – {} UTC); only captures inside it can be read.",
+                side(scope.from_ms),
+                side(scope.to_ms),
+            ));
+        }
     }
     Ok(Some((from, to)))
 }
@@ -67,13 +78,17 @@ pub(super) fn scope_tool_params(
         clamp_tool_range(scope, tool, from, to)?,
         params.as_object_mut(),
     ) {
-        object.insert("from".to_string(), Value::String(rfc3339(from)));
-        object.insert("to".to_string(), Value::String(rfc3339(to)));
+        for (key, ms) in [("from", from), ("to", to)] {
+            if let Some(ms) = ms {
+                object.insert(key.to_string(), Value::String(rfc3339(ms)));
+            }
+        }
     }
     Ok(params)
 }
 
-/// The one prompt line naming the scope (local wall clock when known).
+/// The one prompt line naming the scope (local wall clock when known). An
+/// all-time scope names no range: only the About-you-off sentence, if any.
 pub(super) fn scope_prompt_line(scope: &AskAiScope, utc_offset_minutes: Option<i32>) -> String {
     let local = |ms: i64| {
         let offset = i64::from(utc_offset_minutes.unwrap_or(0));
@@ -89,12 +104,21 @@ pub(super) fn scope_prompt_line(scope: &AskAiScope, utc_offset_minutes: Option<i
     } else {
         " About you is off: you have no `recall_context` and no notes about the user."
     };
+    if scope.from_ms.is_none() && scope.to_ms.is_none() {
+        return if scope.about_you {
+            String::new()
+        } else {
+            format!("Scope:{about}\n\n")
+        };
+    }
     format!(
         "Scope: the user limited this chat to captures from {} to {} ({zone}); every \
 `search`/`timeline`/`activities`/`recall_context` window is clamped to it, so say so when the \
 question needs other dates.{about}\n\n",
-        local(scope.from_ms),
-        local(scope.to_ms),
+        scope
+            .from_ms
+            .map_or_else(|| "the first capture".to_string(), local),
+        scope.to_ms.map_or_else(|| "now".to_string(), local),
     )
 }
 
@@ -113,8 +137,13 @@ mod tests {
     use serde_json::json;
 
     const SCOPE: AskAiScope = AskAiScope {
-        from_ms: 1_000,
-        to_ms: 2_000,
+        from_ms: Some(1_000),
+        to_ms: Some(2_000),
+        about_you: true,
+    };
+    const ALL_TIME: AskAiScope = AskAiScope {
+        from_ms: None,
+        to_ms: None,
         about_you: true,
     };
 
@@ -123,16 +152,16 @@ mod tests {
         // Omitted bounds are filled (search / recall_context).
         assert_eq!(
             clamp_tool_range(&SCOPE, "search", None, None),
-            Ok(Some((1_000, 2_000)))
+            Ok(Some((Some(1_000), Some(2_000))))
         );
         // Wider bounds are narrowed; inner ones kept (timeline / activities).
         assert_eq!(
             clamp_tool_range(&SCOPE, "timeline", Some(0), Some(9_000)),
-            Ok(Some((1_000, 2_000)))
+            Ok(Some((Some(1_000), Some(2_000))))
         );
         assert_eq!(
             clamp_tool_range(&SCOPE, "activities", Some(1_200), Some(1_500)),
-            Ok(Some((1_200, 1_500)))
+            Ok(Some((Some(1_200), Some(1_500))))
         );
         // A window entirely outside the scope is refused, not inverted.
         assert!(clamp_tool_range(&SCOPE, "activities", Some(3_000), Some(4_000)).is_err());
@@ -147,10 +176,59 @@ mod tests {
     }
 
     #[test]
+    fn all_time_clamps_nothing_and_half_range_fills_its_side() {
+        assert_eq!(
+            clamp_tool_range(&ALL_TIME, "timeline", Some(0), Some(9_000)),
+            Ok(None)
+        );
+        let off = AskAiScope {
+            about_you: false,
+            ..ALL_TIME
+        };
+        assert!(clamp_tool_range(&off, "recall_context", None, None).is_err());
+        // All time: params pass through untouched.
+        let params = json!({ "from": "2020-01-01T00:00:00Z", "to": "nonsense" });
+        assert_eq!(
+            scope_tool_params(Some(&ALL_TIME), "timeline", params.clone()).unwrap(),
+            params
+        );
+        // Half range: only the given side is filled / narrowed.
+        let since = AskAiScope {
+            to_ms: None,
+            ..SCOPE
+        };
+        assert_eq!(
+            clamp_tool_range(&since, "search", None, None),
+            Ok(Some((Some(1_000), None)))
+        );
+        assert_eq!(
+            clamp_tool_range(&since, "timeline", Some(0), Some(9_000)),
+            Ok(Some((Some(1_000), Some(9_000))))
+        );
+        assert!(clamp_tool_range(&since, "timeline", Some(0), Some(500)).is_err());
+    }
+
+    #[test]
+    fn prompt_line_names_a_range_only_when_bounded() {
+        assert_eq!(scope_prompt_line(&ALL_TIME, None), "");
+        let off = AskAiScope {
+            about_you: false,
+            ..ALL_TIME
+        };
+        assert_eq!(
+            scope_prompt_line(&off, None),
+            "Scope: About you is off: you have no `recall_context` and no notes about the user.\n\n"
+        );
+        let line = scope_prompt_line(&SCOPE, None);
+        assert!(line.starts_with("Scope: the user limited this chat to captures from "));
+        assert!(line.ends_with("other dates.\n\n"));
+    }
+
+    #[test]
     fn scope_tool_params_rewrites_rfc3339_bounds() {
         let scope = AskAiScope {
-            from_ms: 1_791_158_400_000, // 2026-10-05T00:00:00Z
-            to_ms: 1_791_763_199_999,   // 2026-10-11T23:59:59.999Z
+            from_ms: Some(1_791_158_400_000), // 2026-10-05T00:00:00Z
+            to_ms: Some(1_791_763_199_999),   // 2026-10-11T23:59:59.999Z
             about_you: true,
         };
         let params = json!({ "from": "2026-01-01T00:00:00Z", "to": "2026-10-06T00:00:00Z" });
