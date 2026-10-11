@@ -21,6 +21,12 @@
     const f = search.filters;
     if (f.popoverOpen) return [["↑↓", "pick"], ["↵", "apply"], ["esc", "close"]];
     if (f.pillIndex !== null) return [["↵", "change"], ["⌫", "remove"], ["esc", "back"]];
+    const st = search.states;
+    if (st.showRecent) {
+      return [["↑↓", "pick"], ["↵", "use"], ...(st.recentIndex < st.recent.length ? [["⌫", "remove"] as [string, string]] : [])];
+    }
+    if (st.emptyState === "none") return [["↵", "apply"], ["esc", "clear"]];
+    if (st.emptyState === "error") return [["↵", "retry"], ["esc", "clear"]];
     const ghost: [string, string][] = f.hasGhost ? [["→", "complete"]] : [];
     if (search.resultCount > 0 && !search.loading) {
       return [
@@ -185,6 +191,10 @@
     <span><kbd>⇥</kbd>search</span>
   {:else if search.loading}
     <span><span class="mx-spin mx-spin--sm"></span>searching…</span>
+  {:else if search.states.showRecent}
+    <span><kbd>esc</kbd>close</span>
+  {:else if !search.operatorQuery}
+    <span><kbd>↓</kbd>recent</span>
   {:else}
     {#if search.totalResultCount > 0}
       <span

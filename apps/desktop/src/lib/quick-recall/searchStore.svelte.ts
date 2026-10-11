@@ -14,7 +14,6 @@ import { FramePreviewUrlMap } from "$lib/frame-preview";
 import { openCapturedUrl } from "$lib/open-captured-url";
 import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
 import { humanizeError } from "$lib/format-error";
-import type { SemanticSearchModelStatusResponse } from "$lib/types";
 import type {
   SearchCaptureResponse,
   SearchCaptureRefinements,
@@ -40,6 +39,8 @@ import {
   type RankedResult,
 } from "./result-sections";
 import { FilterSurfaces } from "./filterSurfaces.svelte";
+import { RecallStates } from "./states.svelte";
+import type { CountLabel } from "./recall-states";
 import { appIcons } from "./app-icons.svelte";
 
 export const MIN_QUERY_LENGTH = 2;
@@ -112,10 +113,6 @@ export class SearchStore {
   // rather than a full caret position. Updated on every input/keyup/click/select.
   caretAtEnd = $state(true);
 
-  // In-search discoverability hint (issue #125): when no Semantic Search Model
-  // is installed, search is keyword-only; a hint points the user to Settings.
-  semanticSearchModelInstalled = $state<boolean | null>(null);
-
   // In-flight latch for the captured-page open: one selected result (and one
   // answer-source chip) opens at a time, so a single boolean is enough to keep
   // the ⌃O key or a chip double-click from stacking opens / feedback dialogs.
@@ -130,8 +127,8 @@ export class SearchStore {
 
   // Option counts for the pill popover, keyed by the option's operators
   // (`PillOption.op`; "" = the "Any …" row). Null until facet counts exist
-  // (QR-B2): the popover then lists options without counts.
-  facetCounts = $state<Record<string, number> | null>(null);
+  // (QR-B2): the popover then lists options without counts. `states` fills it.
+  facetCounts = $state<Record<string, CountLabel> | null>(null);
 
   // Captured-app names (deduped by name, most recent first): the vocabulary for
   // "in Arc", the ghost, and the app pill's popover.
@@ -230,6 +227,7 @@ export class SearchStore {
       this.appliedRefinements = null;
       this.residualQuery = "";
       this.parseErrors = [];
+      this.states.take(null);
       return;
     }
 
@@ -246,6 +244,7 @@ export class SearchStore {
     const generation = this.searchGeneration;
     this.loading = true;
     this.errorMessage = null;
+    void this.states.loadIndexStatus();
 
     try {
       // Narrow the per-section limits to the active scope so a
@@ -292,6 +291,7 @@ export class SearchStore {
       this.appliedRefinements = response.appliedRefinements;
       this.residualQuery = response.residualQuery;
       this.parseErrors = response.parseErrors;
+      this.states.take(response);
       this.loading = false;
       // Auto-highlight the top hit so a hurried Enter opens it (spotlight-style).
       this.selectedIndex =
@@ -314,6 +314,8 @@ export class SearchStore {
       this.appliedRefinements = null;
       this.residualQuery = "";
       this.parseErrors = [];
+      this.states.take(null);
+      // Never shown raw: `states.emptyState` says it in plain words.
       this.errorMessage = humanizeError(error);
     }
   }
@@ -506,6 +508,8 @@ export class SearchStore {
 
   moveSelection(delta: number): void {
     if (this.resultCount === 0) {
+      // ↓ on the empty bar opens Recent + Try.
+      if (delta > 0 && this.operatorQuery === "") void this.states.openRecent();
       return;
     }
     // Wrap around the ends; a first ArrowDown from -1 lands on the top result.
@@ -620,29 +624,9 @@ export class SearchStore {
       this.parseErrorMessage !== null,
   );
 
-  // Show the hint once results have run and no model is installed — the hint is
-  // most useful exactly when keyword-only search underwhelms.
-  showSemanticSearchHint = $derived(
-    this.semanticSearchModelInstalled === false &&
-      !this.belowMinimum &&
-      !this.loading &&
-      this.parseErrorMessage === null &&
-      this.resultsQuery.length > 0,
-  );
-
-  async loadSemanticSearchModelInstalled(): Promise<void> {
-    try {
-      const status = await invoke<SemanticSearchModelStatusResponse>(
-        "get_semantic_search_model_status",
-      );
-      this.semanticSearchModelInstalled = status.models.some(
-        (model) => model.available,
-      );
-    } catch {
-      // Best-effort: a failure just suppresses the hint (never blocks search).
-      this.semanticSearchModelInstalled = null;
-    }
-  }
+  // ponytail: superseded by `states`' notice line (keyword only / building);
+  // ResultsList's old hint goes with its QR3 rebuild.
+  readonly showSemanticSearchHint = false;
 
   // ↵ in the main window's titlebar recall field summons this window with its
   // text (`summon_quick_recall_window_command { query }`). Rust parks it until
@@ -681,11 +665,14 @@ export class SearchStore {
     this.appliedRefinements = null;
     this.residualQuery = "";
     this.parseErrors = [];
+    this.states.take(null);
+    this.states.recentOpen = false;
   }
 
   // The ghost + pill surfaces, composed last so every store
   // field above is initialized before the sub-surface captures the reference.
   filters = new FilterSurfaces(this);
+  states = new RecallStates(this);
 }
 
 export const quickRecallSearch = new SearchStore();

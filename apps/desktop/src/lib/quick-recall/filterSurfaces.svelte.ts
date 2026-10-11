@@ -93,6 +93,7 @@ export class FilterSurfaces {
       pillOptions(pill, this.#store.appNames).findIndex((o) => o.op === current),
     );
     this.popoverOpen = true;
+    void this.#store.states.loadFacetCounts(index);
     if (pill.kind === "app") void this.#store.ensureSearchableAppsLoaded();
   }
 

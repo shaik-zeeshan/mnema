@@ -42,6 +42,8 @@
   import BarShell from "$lib/quick-recall/BarShell.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import Field, { fieldFoot } from "$lib/quick-recall/Field.svelte";
+  import EmptyStates, { noticeLine } from "$lib/quick-recall/EmptyStates.svelte";
+  import RecentRows from "$lib/quick-recall/RecentRows.svelte";
   import IconCalendar from "~icons/lucide/calendar";
 
   // Search-mode extraction (slice 1): all search-mode state — query text,
@@ -234,7 +236,7 @@
   let mode = $state<"search" | "ask">("search");
   // Idle = the bare 60px bar: no body until there is a query to search, a
   // filter surface open, or an Ask thread.
-  const showBody = $derived(mode === "ask" || !search.belowMinimum || filters.popoverOpen);
+  const showBody = $derived(mode === "ask" || !search.belowMinimum || filters.popoverOpen || search.states.showRecent);
 
   // Tab (or the mode chip) flips search ⇄ ask.
   function toggleMode(): void {
@@ -1104,6 +1106,7 @@
     mode = "ask";
 
     if (question.length > 0) {
+      void search.states.rememberQuery(true);
       // Carried a question over: submit it immediately and focus the transcript
       // region (no text input renders) so Escape/scroll keys are caught.
       askInput = "";
@@ -1476,7 +1479,7 @@
       return "Searching…";
     }
     if (search.errorMessage) {
-      return search.errorMessage;
+      return "Search failed.";
     }
     if (search.resultsPaused) {
       return "Results paused — fix the filter above to search.";
@@ -1574,7 +1577,7 @@
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
     void invoke("mcp_warm_connectors").catch(() => {});
-    void search.loadSemanticSearchModelInstalled();
+    void search.states.loadIndexStatus();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first
     // open — the source/date lists are static, so only App needs the head start.
@@ -1607,11 +1610,8 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
-          // Same staleness applies to the "turn on meaning search" hint: a model
-          // can be installed/removed in Settings while this (reused) window stays
-          // hidden, so re-probe model status on focus too — otherwise the hint
-          // keeps showing keyword-only long after a model is installed.
-          void search.loadSemanticSearchModelInstalled();
+          // Re-read the indexing / meaning / recording state behind the notice line.
+          void search.states.loadIndexStatus();
           // The captured-app set grows as new apps are seen after launch, but the
           // session cache pins the launch-time set — so apps first captured this
           // session never show in `app:` completion. Invalidate on focus; the lazy
@@ -1626,7 +1626,7 @@
           }
           void tick().then(() => focusQuickRecall());
           void search.takeSummonQuery().then((taken) => { if (taken && mode === "ask") void backToSearch(); });
-        }
+        } else if (mode === "search") void search.states.rememberQuery();
       })
       .then((fn) => {
         if (destroyed) fn();
@@ -1669,40 +1669,27 @@
       else unlistenDismiss = fn;
     });
 
-    // Settings saved in the Settings window broadcast
-    // `recording_settings_domain_changed` ({ domain, settings }). The Semantic
-    // Search toggle + model selection live in the `semantic_search` domain, so a
-    // model selection/toggle made while this (reused) window stays focused must
-    // re-probe model status — otherwise the "turn on meaning search" hint goes
-    // stale exactly as the onFocusChanged re-probe of Ask AI availability would
-    // (focus never changes in this in-place case). The focus re-probe above
-    // covers the download-then-refocus case; this covers the focus-stays case.
+    // A meaning-search toggle / model pick saved in Settings while this window
+    // stays focused: re-read the status so "keyword only" doesn't go stale.
     listen<RecordingSettingsDomainUpdateResponse>(
       "recording_settings_domain_changed",
       (event) => {
         if (event.payload.domain !== "semantic_search") return;
-        void search.loadSemanticSearchModelInstalled();
+        void search.states.loadIndexStatus();
       },
     ).then((fn) => {
       if (destroyed) fn();
       else unlistenSettings = fn;
     });
 
-    // A model download started in Settings emits progress here as it runs. The
-    // settings-domain listener above only fires on a settings save, not when a
-    // background download FINISHES — so if a download completes while this
-    // (reused) window stays focused, the "turn on meaning search" hint would keep
-    // showing "download"/keyword-only until the next focus change. Re-probe model
-    // status when the download reaches a terminal state (completed/failed/
-    // cancelled) so the hint reflects the now-installed model live. Mirrors the
-    // settings page handler (`handleSemanticSearchDownloadProgress`).
+    // …and when a model download started there finishes (no settings save).
     listen<SemanticSearchModelDownloadProgress>(
       "semantic_search_model_download_progress",
       (event) => {
         if (
           ["completed", "failed", "cancelled"].includes(event.payload.status)
         ) {
-          void search.loadSemanticSearchModelInstalled();
+          void search.states.loadIndexStatus();
         }
       },
     ).then((fn) => {
@@ -1855,15 +1842,17 @@
     <!-- The results, with the pressed pill's popover laid over them (same
          grid cell, so the bar still grows to fit it). The selected-result
          preview (DetailPane) returns as Quick Look (QR4). -->
+    {@render noticeLine()}
     <div class="quick-recall__body">
       {#if filters.popoverOpen}
         <FilterPicker />
       {/if}
-      {#if !search.resultsPaused}
-        <ResultsList
-          {askAvailable}
-          onAskAi={() => void activateAskAi()}
-        />
+      {#if search.states.showRecent}
+        <RecentRows />
+      {:else if search.states.emptyState}
+        <EmptyStates {askAvailable} onAskAi={() => void activateAskAi()} />
+      {:else if !search.resultsPaused}
+        <ResultsList {askAvailable} onAskAi={() => void activateAskAi()} />
       {/if}
     </div>
   {:else}
