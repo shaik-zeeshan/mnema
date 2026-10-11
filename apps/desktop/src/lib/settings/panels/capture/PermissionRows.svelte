@@ -87,7 +87,7 @@
               <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{error.text}</span>
             {/if}
             {#if st === "granted"}
-              <span class="perm-ok">allowed</span>
+              <span class="settings-state settings-state--ok">allowed</span>
             {:else}
               <button type="button" class="mx-btn" onclick={() => request(row.kind)} disabled={busy !== null} aria-busy={busy === row.kind}>
                 {#if busy === row.kind}<span class="mx-spin mx-spin--sm"></span>{/if}Grant access
@@ -105,22 +105,6 @@
     display: flex;
     align-items: center;
     gap: var(--s-2);
-  }
-  /* Mockup `.st-prov__state--ok`: accent dot + word. */
-  .perm-ok {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: 500 var(--text-base)/1 var(--font-sans);
-    color: var(--app-accent);
-  }
-  .perm-ok::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
   .mx-notice {
     width: 100%;

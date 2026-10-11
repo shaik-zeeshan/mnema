@@ -11,6 +11,7 @@
   import IconLock from "~icons/lucide/lock";
   import IconInfo from "~icons/lucide/info";
   import IconExternal from "~icons/lucide/external-link";
+  import IconAlert from "~icons/lucide/triangle-alert";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -46,66 +47,133 @@
       .map((s) => ({ value: String(s), label: idleLabel(s) })),
   );
 
+
+  const SYS_AUDIO_DESC = "Capture Mac system audio (macOS 15+) — meetings, videos, and app sound.";
+
+  // One-line level read for the sensitivity sliders (same bands as before).
+  const LEVELS = {
+    mic: [
+      "Very low — only very loud audio triggers activity.",
+      "Low — only louder audio keeps capture active.",
+      "Medium — normal speech triggers activity. Recommended.",
+      "High — quiet speech counts as activity.",
+      "Very high — whispers and background noise keep capture active.",
+    ],
+    sysaudio: [
+      "Very low — only very loud system audio triggers activity.",
+      "Low — only louder system audio keeps capture active.",
+      "Medium — typical media playback triggers activity. Recommended.",
+      "High — moderate system audio counts as activity.",
+      "Very high — quiet system sounds keep capture active.",
+    ],
+  };
+  const sensitivityLevel = (kind: "mic" | "sysaudio", v: number) =>
+    LEVELS[kind][Math.min(4, Math.max(0, Math.floor(v / 20)))];
 </script>
+
+<!-- Inactivity sensitivity: slider right, its level as the description; a
+     source that is off adds a warn line under the copy (so the slider moves
+     to `aside`). -->
+{#snippet sensitivity(kind: "mic" | "sysaudio")}
+  {@const mic = kind === "mic"}
+  {@const on = mic ? rec.draftCaptureMicrophone : rec.draftCaptureSystemAudio}
+  {@const value = mic ? rec.draftMicrophoneActivitySensitivity : rec.draftSystemAudioActivitySensitivity}
+  {@const label = mic ? "Microphone activity sensitivity" : "System audio activity sensitivity"}
+  {#snippet slider()}
+    <div class="cap-range">
+      <Slider
+        {value}
+        onValueChange={(v) => (mic ? (rec.draftMicrophoneActivitySensitivity = v) : (rec.draftSystemAudioActivitySensitivity = v))}
+        min={0}
+        max={100}
+        step={1}
+        ariaLabel={label}
+        disabled={!on}
+      />
+      <span class="num cap-range__v">{value}%</span>
+    </div>
+  {/snippet}
+  {#if on}
+    <SettingRow {label} description={sensitivityLevel(kind, value)} source={kind} control={slider} />
+  {:else}
+    <SettingRow {label} description={sensitivityLevel(kind, value)} source={kind} full aside={slider}>
+      {#snippet control()}
+        <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{mic ? "Microphone" : "System audio"} capture is off — this has no effect until you turn it on.</span>
+      {/snippet}
+    </SettingRow>
+  {/if}
+{/snippet}
+
+{#snippet sysAudioSwitch()}
+  <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
+{/snippet}
 
 <SettingGroup
   id="settings-section-capture"
   title="Sources"
-  hint="What gets recorded and how often segments roll over."
+  hint="Three independent families — any can run alone."
   loading={rec.loadingRecSettings}
 >
   {#snippet actions()}
     <ReloadButton onclick={loadRecordingSettings} busy={rec.loadingRecSettings} label="Reload capture settings" />
   {/snippet}
 
-  <SettingRow label="Screen" description="Capture the display">
+  {#if recValidationErrors.length > 0}
+    <div class="mx-notice cap-top" data-tone="danger" role="alert">
+      <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+      <b class="mx-notice__title">Unsaved changes blocked</b>
+      {#each recValidationErrors as err}
+        <p class="mx-notice__text">{err}</p>
+      {/each}
+    </div>
+  {/if}
+
+  <SettingRow label="Screen" description="Capture the display." source="screen">
     {#snippet control()}
       <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Microphone" description="Capture audio from microphone">
+  <SettingRow label="Microphone" description="Capture audio from microphone." source="mic">
     {#snippet control()}
       <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
     {/snippet}
   </SettingRow>
 
   <!-- System audio is its own capture family on a Core Audio process tap
-       (ADR 0052): no screen dependency, so no `disabled` coupling to Screen. -->
-  <SettingRow
-    label="System Audio"
-    description="Capture Mac system audio (macOS 15+) — meetings, videos, and app sound."
-  >
-    {#snippet control()}
-      <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
-    {/snippet}
-  </SettingRow>
-
-  <!-- Inferred, never known: a denied tap records silence and says nothing, so
-       this is the only signal the user gets (ADR 0052). -->
-  {#if sysAudio.mayBeBlocked}
-    <div class="cap-notice">
-      <div class="mx-notice" data-tone="info" role="status">
-        <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
-        <b class="mx-notice__title">No system sound yet</b>
-        <p class="mx-notice__text">
-          System audio is on, but no recording has captured a sound yet. If you denied the macOS
-          prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If
-          your Mac has simply been quiet, ignore this.
-        </p>
-        <div class="mx-notice__acts">
-          <button class="mx-btn mx-btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
-            Open System Settings<IconExternal width="12" height="12" />
-          </button>
-          <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
-            Dismiss
-          </button>
+       (ADR 0052): no screen dependency, so no `disabled` coupling to Screen.
+       "May be blocked" is inferred, never known: a denied tap records silence
+       and says nothing, so this is the only signal the user gets. -->
+  {#if sysAudio.mayBeBlocked && rec.draftCaptureSystemAudio}
+    <SettingRow label="System Audio" description={SYS_AUDIO_DESC} source="sysaudio" full aside={sysAudioSwitch}>
+      {#snippet labelExtra()}<span class="mx-chip mx-chip--info">may be blocked</span>{/snippet}
+      {#snippet control()}
+        <div class="cap-stack">
+          <div class="mx-notice" data-tone="info" role="status">
+            <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+            <b class="mx-notice__title">No system sound yet</b>
+            <p class="mx-notice__text">
+              System audio is on, but no recording has captured a sound yet. If you denied the macOS
+              prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If
+              your Mac has simply been quiet, ignore this.
+            </p>
+            <div class="mx-notice__acts">
+              <button class="mx-btn mx-btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
+                Open System Settings<IconExternal width="12" height="12" />
+              </button>
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+          {#if sysAudio.error}
+            <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{sysAudio.error}</span>
+          {/if}
         </div>
-      </div>
-      {#if sysAudio.error}
-        <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{sysAudio.error}</span>
-      {/if}
-    </div>
+      {/snippet}
+    </SettingRow>
+  {:else}
+    <SettingRow label="System Audio" description={SYS_AUDIO_DESC} source="sysaudio" control={sysAudioSwitch} />
   {/if}
 
   <PermissionRows />
@@ -113,7 +181,6 @@
   <SettingRow
     label="Segment Duration"
     description="How long each recording segment is before a new one starts."
-    divider={false}
   >
     {#snippet control()}
       <Segmented
@@ -129,7 +196,7 @@
 </SettingGroup>
 
 {#if !rec.loadingRecSettings}
-  <SettingGroup title="Inactivity" hint="Pause &amp; resume rules when you step away.">
+  <SettingGroup title="Inactivity" hint="Pause and resume rules when you step away.">
     <SettingRow
       label="Pause capture when idle"
       description="Pause after the whole Mac has been idle (no mouse, keyboard or other input), and resume when activity is detected."
@@ -192,82 +259,15 @@
             />
             {#if !rec.draftCaptureMicrophone}
               <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Microphone capture is disabled — voice detection has no effect until enabled.</span>
-            {:else if rec.draftMicrophoneVadAdapter === "off"}
-              <p class="group-hint">Microphone inactivity uses the legacy peak-level detector.</p>
-            {:else}
-              <p class="group-hint">Microphone inactivity uses local speech detection. Raw peak levels remain visible in debug output.</p>
             {/if}
             </div>
           {/snippet}
         </SettingRow>
 
         {#if rec.draftMicrophoneVadAdapter === "off"}
-          <SettingRow label="Microphone Activity Sensitivity" full>
-            {#snippet control()}
-              <div class="control-stack">
-              <Slider
-                bind:value={rec.draftMicrophoneActivitySensitivity}
-                min={0}
-                max={100}
-                step={1}
-                label="Mic sensitivity"
-                unit="%"
-                disabled={!rec.draftCaptureMicrophone}
-              />
-              {#if !rec.draftCaptureMicrophone}
-                <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Microphone capture is disabled — this setting has no effect until enabled.</span>
-              {:else}
-                <p class="group-hint">
-                  {#if rec.draftMicrophoneActivitySensitivity >= 80}
-                    <strong>Very high</strong> — whispers and background noise keep capture active.
-                  {:else if rec.draftMicrophoneActivitySensitivity >= 60}
-                    <strong>High</strong> — quiet speech counts as activity.
-                  {:else if rec.draftMicrophoneActivitySensitivity >= 40}
-                    <strong>Medium</strong> — normal speech triggers activity. Recommended.
-                  {:else if rec.draftMicrophoneActivitySensitivity >= 20}
-                    <strong>Low</strong> — only louder audio keeps capture active.
-                  {:else}
-                    <strong>Very low</strong> — only very loud audio triggers activity.
-                  {/if}
-                </p>
-              {/if}
-              </div>
-            {/snippet}
-          </SettingRow>
+          {@render sensitivity("mic")}
         {/if}
-
-        <SettingRow label="System Audio Activity Sensitivity" full>
-          {#snippet control()}
-            <div class="control-stack">
-            <Slider
-              bind:value={rec.draftSystemAudioActivitySensitivity}
-              min={0}
-              max={100}
-              step={1}
-              label="System audio sensitivity"
-              unit="%"
-              disabled={!rec.draftCaptureSystemAudio}
-            />
-            {#if !rec.draftCaptureSystemAudio}
-              <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />System audio capture is disabled — this setting has no effect until enabled.</span>
-            {:else}
-              <p class="group-hint">
-                {#if rec.draftSystemAudioActivitySensitivity >= 80}
-                  <strong>Very high</strong> — quiet system sounds keep capture active.
-                {:else if rec.draftSystemAudioActivitySensitivity >= 60}
-                  <strong>High</strong> — moderate system audio counts as activity.
-                {:else if rec.draftSystemAudioActivitySensitivity >= 40}
-                  <strong>Medium</strong> — typical media playback triggers activity. Recommended.
-                {:else if rec.draftSystemAudioActivitySensitivity >= 20}
-                  <strong>Low</strong> — only louder system audio keeps capture active.
-                {:else}
-                  <strong>Very low</strong> — only very loud system audio triggers activity.
-                {/if}
-              </p>
-            {/if}
-            </div>
-          {/snippet}
-        </SettingRow>
+        {@render sensitivity("sysaudio")}
 
         <div class="cap-notice">
           <span class="mx-inline"><IconInfo width="13" height="13" /><span>
@@ -286,22 +286,6 @@
     {/if}
   </SettingGroup>
 
-  {#if recValidationErrors.length > 0}
-    <SettingGroup title="Unsaved changes blocked" hint="Resolve these before recording settings can save.">
-      <SettingRow label="Validation" full divider={false}>
-        {#snippet control()}
-          <div class="inline-validation">
-            {#each recValidationErrors as err}
-              <p class="inline-validation__item">
-                <span class="inline-validation__icon">⚠</span>
-                {err}
-              </p>
-            {/each}
-          </div>
-        {/snippet}
-      </SettingRow>
-    </SettingGroup>
-  {/if}
 {/if}
 
 <style>
@@ -311,6 +295,32 @@
     flex-direction: column;
     gap: var(--s-2);
     padding: var(--s-3) 0;
+  }
+
+  .cap-top {
+    margin: var(--s-3) 0;
+  }
+
+  .cap-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    width: 100%;
+  }
+
+  /* Mockup `.st-range` + `.st-range__v`. */
+  .cap-range {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 220px;
+  }
+
+  .cap-range__v {
+    min-width: 34px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    text-align: right;
   }
 
   .cap-ctl {
@@ -327,11 +337,6 @@
     gap: 4px;
     width: 100%;
     min-width: 0;
-  }
-
-  .control-stack :global(.group-hint) {
-    margin: 0;
-    text-align: left;
   }
 
 </style>
