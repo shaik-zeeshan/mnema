@@ -7917,3 +7917,70 @@ fn the_clamp_marker_names_the_narrowest_scope_that_serves_the_window_not_the_one
         "past the slack the marker is back to the band that contains the bound"
     );
 }
+
+fn explicit(label: &str) -> BrokerClientIdentity {
+    BrokerClientIdentity::new(label, BrokerClientIdentitySource::Explicit).unwrap()
+}
+
+/// Block on a tool's FIRST request must persist: Deny is an in-memory reply, so
+/// without a row the tool re-opens the window on every command.
+#[test]
+fn blocking_an_unseen_tool_creates_a_blocked_never_granted_row() {
+    let config_dir = temp_config_dir("block-unseen");
+    let grant = block_identity(&config_dir, explicit("Claude Code")).expect("block stores");
+
+    assert_eq!(stored_grants(&config_dir), vec![grant.clone()]);
+    assert!(grant.blocked && grant.blocked_at_unix_ms.is_some());
+    assert_eq!(grant.last_used_at_unix_ms, 0, "never granted");
+    assert_eq!(grant.scope, BrokerGrantScope::LAST_DAY);
+    assert!(!grant_is_active(&grant, now_unix_ms()));
+
+    // The prune keeps it, and a stale window's approval can't clear it.
+    let upsert = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_7_DAYS)
+        .expect("the stale approval still resolves");
+    assert!(upsert.blocked);
+    assert_eq!(stored_grants(&config_dir).len(), 1);
+}
+
+/// Blocking a tool that already holds a row flips the block and nothing else:
+/// its scope and id survive, so Enable restores exactly what it had.
+#[test]
+fn blocking_a_granted_tool_keeps_its_scope_and_id() {
+    let config_dir = temp_config_dir("block-seen");
+    let original = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_7_DAYS)
+        .expect("approval stores");
+
+    let blocked = block_identity(&config_dir, explicit("claude-code")).expect("block stores");
+    assert_eq!(blocked.id, original.id);
+    assert_eq!(blocked.scope, BrokerGrantScope::LAST_7_DAYS);
+    assert_eq!(blocked.last_used_at_unix_ms, original.last_used_at_unix_ms);
+    assert_eq!(blocked.label, original.label);
+    assert!(blocked.blocked);
+    assert_eq!(stored_grants(&config_dir), vec![blocked.clone()]);
+
+    // Re-blocking is a no-op that keeps the original block time.
+    let again = block_identity(&config_dir, explicit("Claude Code")).expect("re-block");
+    assert_eq!(again, blocked);
+
+    // Enable on a once-granted row restores it; it is NOT deleted.
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock"));
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, original.id);
+    assert!(grant_is_active(&stored[0], now_unix_ms()));
+}
+
+/// Enable on a row blocked before it was ever granted deletes it, so the next
+/// request opens the consent window instead of silently holding `lastDay`.
+#[test]
+fn unblocking_a_never_granted_row_deletes_it() {
+    let config_dir = temp_config_dir("unblock-never-granted");
+    block_identity(&config_dir, explicit("Claude Code")).expect("block stores");
+    create_grant(&config_dir, "Codex", BrokerGrantScope::LAST_DAY).expect("other tool");
+
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock"));
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1, "only the other tool's row: {stored:?}");
+    assert_eq!(stored[0].normalized_label, "codex");
+    assert!(!unblock_client(&config_dir, "Claude Code").expect("nothing left"));
+}

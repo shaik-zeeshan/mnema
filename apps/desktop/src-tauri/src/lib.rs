@@ -658,6 +658,7 @@ pub fn run() {
             ask_ai::mcp::node_check::mcp_check_node,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
+            broker_authorization_channel::block_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
             app_infra::delete_recent_capture,
             one_time_prompts::get_one_time_prompt_state,

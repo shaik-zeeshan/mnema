@@ -1114,6 +1114,12 @@ impl BrokeredCaptureAccess {
         block_client(&self.config_dir, client_label)
     }
 
+    /// Block from the approval window, creating the standing-rejection row when
+    /// the tool was never granted. See [`block_identity`].
+    pub fn block_identity(&self, identity: BrokerClientIdentity) -> Result<BrokerGrant> {
+        block_identity(&self.config_dir, identity)
+    }
+
     pub fn unblock_client(&self, client_label: &str) -> Result<bool> {
         unblock_client(&self.config_dir, client_label)
     }
@@ -2091,7 +2097,9 @@ fn random_grant_id() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The one way a CLI Access permission is written.
+/// The one way a CLI Access permission is GRANTED: the only writer that changes a
+/// scope or clears `blocked`. One of two writers that create rows — the other,
+/// [`block_identity`], creates standing rejections only.
 ///
 /// UPSERT, never append: at most one row per normalized identity. An existing row
 /// is mutated IN PLACE and **keeps its id** — opaque result ids are MAC-signed
@@ -2207,13 +2215,69 @@ fn unblock_client(config_dir: &Path, client_label: &str) -> Result<bool> {
     set_client_blocked(config_dir, client_label, false)
 }
 
+/// Block from the approval window — the second row-creating writer, for
+/// standing rejections only. An existing row only flips `blocked` (+
+/// `blocked_at_unix_ms`); its `scope` and `id` are never touched. No row → a
+/// blocked one with `last_used_at_unix_ms = 0`, the never-granted mark that
+/// [`set_client_blocked`] reads on Enable. A blocked row never issues opaque
+/// ids, so minting its id here can't strand one (the reason the upsert keeps
+/// ids).
+fn block_identity(config_dir: &Path, identity: BrokerClientIdentity) -> Result<BrokerGrant> {
+    with_grants_lock(config_dir, |grants| {
+        let now = now_unix_ms();
+        let existing = grants.grants.iter_mut().find(|grant| {
+            grant
+                .normalized_label
+                .eq_ignore_ascii_case(&identity.normalized_label)
+        });
+        let grant = match existing {
+            Some(grant) if grant.blocked => return Ok(grant.clone()),
+            Some(grant) => {
+                grant.blocked = true;
+                grant.blocked_at_unix_ms = Some(now);
+                grant.clone()
+            }
+            None => {
+                let grant = BrokerGrant {
+                    id: random_grant_id(),
+                    label: identity.label,
+                    normalized_label: identity.normalized_label,
+                    identity_source: identity.source,
+                    created_at_unix_ms: now,
+                    last_used_at_unix_ms: 0,
+                    scope: BrokerGrantScope::LAST_DAY,
+                    blocked: true,
+                    blocked_at_unix_ms: Some(now),
+                };
+                grants.grants.push(grant.clone());
+                grant
+            }
+        };
+        save_grants_locked(config_dir, grants)?;
+        Ok(grant)
+    })
+}
+
 fn set_client_blocked(config_dir: &Path, client_label: &str, blocked: bool) -> Result<bool> {
     let Some(normalized_label) = normalize_client_label(client_label) else {
         return Ok(false);
     };
     with_grants_lock(config_dir, |grants| {
         let now = now_unix_ms();
-        let mut changed = false;
+        let before = grants.grants.len();
+        // Enable on a row blocked before it was ever granted (`block_identity`'s
+        // `last_used = 0`) deletes it, so the tool's next request asks again
+        // instead of silently holding last-day access nobody granted.
+        if !blocked {
+            grants.grants.retain(|grant| {
+                !(grant.blocked
+                    && grant.last_used_at_unix_ms == 0
+                    && grant
+                        .normalized_label
+                        .eq_ignore_ascii_case(&normalized_label))
+            });
+        }
+        let mut changed = grants.grants.len() != before;
         for grant in grants.grants.iter_mut().filter(|grant| {
             grant.blocked != blocked
                 && grant

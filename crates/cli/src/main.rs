@@ -591,7 +591,7 @@ async fn execute_data_request(
     if response_requires_authorization(&response) || response_scope_clamped(&response) {
         if !allow_prompt {
             if response_requires_authorization(&response) {
-                return Err(auth_required_error());
+                return Err(no_prompt_authorization_error(&access, identity));
             }
             // A clamped page is real data. Hand it back with its marker rather
             // than throwing it away — the caller asked not to be prompted, not to
@@ -698,7 +698,7 @@ async fn run_access_command(
         }
         AccessCommand::Request { scope } => {
             if no_prompt {
-                return Err(auth_required_error());
+                return Err(no_prompt_authorization_error(&access, identity));
             }
             // A human pre-authorizing keeps the choice: `minimum` is the floor the
             // window enforces, so sending the REQUESTED scope there would grey out
@@ -1461,6 +1461,28 @@ fn map_broker_response_error(error: BrokerErrorResponse) -> CliError {
         return auth_required_error();
     }
     broker_failure(error.message)
+}
+
+/// `--no-prompt` can't ask, but a standing block is already the user's answer:
+/// report `access_blocked` (exit 15, not retryable) rather than "approval
+/// required, retryable". An unreadable grants file falls back to the latter.
+fn no_prompt_authorization_error(
+    access: &BrokeredCaptureAccess,
+    identity: &BrokerClientIdentity,
+) -> CliError {
+    let blocked = access.list_grants().is_ok_and(|grants| {
+        grants.grants.iter().any(|grant| {
+            grant.blocked
+                && grant
+                    .normalized_label
+                    .eq_ignore_ascii_case(&identity.normalized_label)
+        })
+    });
+    if blocked {
+        authorization_response_error("blocked", Some("blocked"))
+    } else {
+        auth_required_error()
+    }
 }
 
 fn auth_required_error() -> CliError {
@@ -3612,5 +3634,36 @@ mod tests {
         .await
         .expect("a prompting access request is approved");
         assert_eq!(window.lock().expect("approval log").len(), 1);
+    }
+
+    /// A tool blocked on its first request has no grant, so the broker answers
+    /// "authorization required" — but under `--no-prompt` that read as
+    /// "approval required, retryable" for a decision the user already made.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_prompt_reports_a_standing_block_as_blocked() {
+        let _fixture = broker_fixture().await;
+        let identity =
+            BrokerClientIdentity::new("Blocked Tool", BrokerClientIdentitySource::Explicit)
+                .expect("identity");
+        BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER)
+            .expect("access")
+            .block_identity(identity.clone())
+            .expect("block stores");
+
+        let error = execute_data_request(
+            "speakers",
+            &identity,
+            BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
+                name: None,
+                limit: None,
+            }),
+            false,
+        )
+        .await
+        .expect_err("a blocked tool gets nothing");
+        assert_eq!(error.code, "access_blocked");
+        assert_eq!(error.exit, 15);
+        assert!(!error.retryable);
     }
 }
