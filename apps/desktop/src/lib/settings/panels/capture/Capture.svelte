@@ -50,7 +50,7 @@
 
 <SettingGroup
   id="settings-section-capture"
-  title="Capture"
+  title="Sources"
   hint="What gets recorded and how often segments roll over."
 >
   {#snippet actions()}

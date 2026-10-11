@@ -30,7 +30,7 @@
 
 </script>
 
-<SettingGroup id="settings-section-video" title="Video Output">
+<SettingGroup id="settings-section-video" title="Video">
   <SettingRow
     label="Screen Capture Rate"
     description="How often a snapshot of your screen is captured. More frequent snapshots produce larger files."

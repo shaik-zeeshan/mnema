@@ -19,7 +19,7 @@
 
 </script>
 
-<SettingGroup id="settings-section-audio" title="Microphone Controller">
+<SettingGroup id="settings-section-audio" title="Microphone">
   {#snippet actions()}
     <ReloadButton onclick={loadMicState} busy={loadingMicState} label="Reload microphone state" />
   {/snippet}

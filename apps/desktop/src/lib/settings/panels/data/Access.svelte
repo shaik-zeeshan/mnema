@@ -97,10 +97,10 @@
 
 <SettingGroup
   id="settings-section-access"
-  title="Access"
+  title="CLI Access"
   hint="Let local command-line tools read your Mnema history, one standing permission per tool."
 >
-  <SettingRow label="CLI Access" full divider={false}>
+  <SettingRow label="mnema command" full divider={false}>
     {#snippet control()}
       <!-- The agent-access section is the `?focus=cliAccess` deeplink target: it
            must be focusable (the shell calls `.focus({ preventScroll: true })`).

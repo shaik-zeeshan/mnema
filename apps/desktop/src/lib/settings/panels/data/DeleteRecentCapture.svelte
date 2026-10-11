@@ -75,12 +75,14 @@
 </div>
 
 <style>
-  /* Mockup `.st-danger` (settings.html › Storage): one danger-tinted box. */
+  /* Mockup `.st-danger` (settings.html › Storage): one danger-tinted box. It
+     stands beside the Storage card, so it takes the card's radius and the
+     SettingRow 20px inset to keep text on one left edge. */
   .st-danger {
     border: 1px solid var(--app-danger-border);
-    border-radius: var(--r-md);
+    border-radius: var(--r-lg);
     background: var(--app-danger-bg-soft);
-    padding: 0 var(--s-4);
+    padding: 0 20px;
   }
   .st-danger__row {
     display: grid;
