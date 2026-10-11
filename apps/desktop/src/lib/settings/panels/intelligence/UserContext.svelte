@@ -4,39 +4,38 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { formatLastDerived, distillationWithheldLine } from "$lib/settings/state/user-context.svelte";
   import type { DerivationBudgetTier } from "$lib/types";
+  import IconCheck from "~icons/lucide/check";
+  import IconInfo from "~icons/lucide/info";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const rec = c.rec;
-  const aiRuntime = c.aiRuntime;
   const userContext = c.userContext;
 
-  // Store-read aliases.
-  const userContextStatus = $derived(userContext.userContextStatus);
-  const userContextStatusError = $derived(userContext.userContextStatusError);
-  const userContextRunNowRunning = $derived(userContext.userContextRunNowRunning);
-  const userContextRunNowMessage = $derived(userContext.userContextRunNowMessage);
-  const userContextWiping = $derived(userContext.userContextWiping);
-
-  // Controller derived selectors.
-  const userContextCloudDefault = $derived(c.userContextCloudDefault);
-  const userContextLocalDefault = $derived(c.userContextLocalDefault);
-
-  // Store action methods.
-  const aiRuntimeReasonLabel = (reason: string | null | undefined) =>
-    aiRuntime.aiRuntimeReasonLabel(reason);
-  const runUserContextDerivationNow = () => userContext.runUserContextDerivationNow();
-  const wipeUserContext = () => userContext.wipeUserContext();
+  const st = $derived(userContext.userContextStatus);
+  const running = $derived(userContext.userContextRunNowRunning);
+  const withheld = $derived(distillationWithheldLine(st?.lastDistillation));
+  const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+  const counts = $derived(
+    st
+      ? `${st.activityCount} ${st.activityCount === 1 ? "activity" : "activities"} · ${st.conclusionCount} ${
+          st.conclusionCount === 1 ? "conclusion" : "conclusions"
+        } · last run ${formatLastDerived(st.lastDerivedAtMs)} · ≈ ${compact.format(st.tokenUsage.totalTokens)} tokens so far (estimated)`
+      : "Loading…",
+  );
+  const paused = $derived(!!st && !st.engineAvailable && !st.backfilling);
+  const upToDate = $derived(!!st && st.engineAvailable && !st.backfilling && st.activityCount > 0);
+  const hasLines = $derived(
+    paused || upToDate || !!withheld || !!userContext.userContextStatusError || !!userContext.userContextRunNowMessage,
+  );
 
   // The store's `refreshUserContext()` is a bare status reload with no in-flight
-  // flag, so the ReloadButton would otherwise stay enabled and be double-fireable.
-  // Track a local flag and feed it to the button's `busy` prop (which both spins
-  // and disables) so rapid double-clicks are hard-prevented, not just debounced.
+  // flag, so feed a local one to the button's `busy` (spins AND disables).
   let refreshing = $state(false);
-  async function refreshUserContext() {
+  async function refresh() {
     if (refreshing) return;
     refreshing = true;
     try {
@@ -45,212 +44,156 @@
       refreshing = false;
     }
   }
+
+  const budgetGate = $derived(
+    c.userContextCloudDefault ? null : c.userContextLocalDefault ? "Local models use fixed pacing." : "Choose a cloud default model first.",
+  );
 </script>
 
-<SettingGroup
-  id="settings-section-userContext"
-  title="User Context"
-  hint="A private, on-device understanding of your activity, derived continuously from your capture history by the default model. High-consent and off by default."
->
+{#snippet runActions()}
+ <div class="uc-ctl">
+  <ReloadButton onclick={refresh} busy={refreshing} title="Refresh" label="Refresh derivation status" />
+  <button
+    class="mx-btn"
+    type="button"
+    disabled={running || !st?.engineAvailable}
+    aria-busy={running}
+    onclick={() => userContext.runUserContextDerivationNow()}
+  >
+    {#if running}<span class="mx-spin mx-spin--sm"></span>Deriving…{:else}Run derivation now{/if}
+  </button>
+ </div>
+{/snippet}
+
+{#snippet statusLines()}
+  <div class="uc-lines" aria-live="polite">
+    {#if paused}
+      <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />{c.aiRuntime.aiRuntimeReasonLabel(st?.reason)}</span>
+    {:else if upToDate}
+      <span class="mx-inline" data-tone="ok"><IconCheck width="13" height="13" aria-hidden="true" />Up to date for the covered window.</span>
+    {/if}
+    {#if withheld}<span class="mx-inline">{withheld}</span>{/if}
+    {#if userContext.userContextRunNowMessage}<span class="mx-inline">{userContext.userContextRunNowMessage}</span>{/if}
+    {#if userContext.userContextStatusError}
+      <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{userContext.userContextStatusError}</span>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet budget()}
+ <div class="uc-ctl">
+  <Segmented
+    md
+    value={rec.draftUserContextBudgetTier}
+    onValueChange={(value) => (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
+    disabled={!c.userContextCloudDefault}
+    ariaLabel="Derivation budget intensity"
+    options={[
+      { value: "light", label: "Light" },
+      { value: "balanced", label: "Balanced" },
+      { value: "thorough", label: "Thorough" },
+    ]}
+  />
+ </div>
+{/snippet}
+
+{#snippet budgetGateLine()}
+  <div class="uc-lines"><span class="mx-inline"><IconInfo width="13" height="13" aria-hidden="true" />{budgetGate}</span></div>
+{/snippet}
+
+<SettingGroup id="settings-section-userContext" title="User Context">
   <SettingRow
     label="Derive context continuously"
-    description="Let Mnema build a private, on-device understanding of your activity by deriving from your capture history in the background, 24/7. Distinct from Ask AI — this is the high-consent continuous worker, off by default. Needs a provider and default model configured above."
-    full
+    description="Builds a quiet picture of your projects and people from captured activity."
   >
-    {#snippet aside()}
+    {#snippet control()}
       <Switch bind:checked={rec.draftUserContextEnabled} ariaLabel="Derive context continuously" />
     {/snippet}
-    {#snippet control()}
-      <div class="privacy-disclosure">
-        <p>While on, the default model runs over your redacted screen text and transcripts, plus the context statements you wrote in Insights (sent as written), as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
-        <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
-      </div>
-    {/snippet}
   </SettingRow>
 
-  <SettingRow label="Derivation status" full>
-    {#snippet control()}
-      <div class="uc-stack">
-        <div
-          class="model-status"
-          class:model-status--available={userContextStatus?.engineAvailable}
-        >
-          <div>
-            <div class="model-status__title">
-              {userContextStatus?.engineAvailable ? "Deriving Activities" : "Derivation paused"}
-            </div>
-            <div class="model-status__meta">
-              {#if userContextStatus}
-                {userContextStatus.activityCount}
-                {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} ·
-                {userContextStatus.conclusionCount}
-                {userContextStatus.conclusionCount === 1 ? "Conclusion" : "Conclusions"} ·
-                last run {formatLastDerived(userContextStatus.lastDerivedAtMs)}
-                {#if !userContextStatus.engineAvailable}
-                  · {aiRuntimeReasonLabel(userContextStatus.reason)}
-                {/if}
-              {:else}
-                Loading…
-              {/if}
-            </div>
-          </div>
-          <span
-            class="model-status__pill"
-            class:model-status__pill--ok={userContextStatus?.engineAvailable}
-          >
-            {userContextStatus?.engineAvailable ? "active" : "paused"}
-          </span>
+  {#if st?.backfilling}
+    <SettingRow
+      label="Deriving activities"
+      description="Building your understanding — deriving from your history in the background, newest first."
+      full
+    >
+      {#snippet aside()}{@render runActions()}{/snippet}
+      {#snippet control()}
+        <div class="uc-progress">
+          <div class="mx-progress__meta"><b>Backfilling</b><span>{st.activityCount} activities so far</span></div>
+          <div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Backfilling"><i></i></div>
         </div>
-
-        {#if userContextStatus?.backfilling}
-          <p class="group-hint" aria-live="polite">
-            Building your understanding… deriving from your history in the background.
-          </p>
-        {:else if userContextStatus && userContextStatus.activityCount > 0}
-          <p class="group-hint">
-            Your understanding is up to date for the covered window.
-          </p>
-        {/if}
-
-        {#if userContextStatus}
-          <p class="group-hint">
-            ≈ {userContextStatus.tokenUsage.totalTokens.toLocaleString()} tokens used,
-            cumulative across {userContextStatus.tokenUsage.runCount}
-            derivation {userContextStatus.tokenUsage.runCount === 1 ? "pass" : "passes"}
-            (estimated from text length, not a billed count).
-          </p>
-        {/if}
-
-        {#if distillationWithheldLine(userContextStatus?.lastDistillation)}
-          <p class="group-hint">
-            {distillationWithheldLine(userContextStatus?.lastDistillation)}
-          </p>
-        {/if}
-
-        {#if userContextStatusError}
-          <p class="error-text">{userContextStatusError}</p>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
+      {/snippet}
+    </SettingRow>
+  {:else}
+    <SettingRow
+      label={paused ? "Derivation paused" : "Deriving activities"}
+      description={counts}
+      full={hasLines}
+      aside={hasLines ? runActions : undefined}
+      control={hasLines ? statusLines : runActions}
+    />
+  {/if}
 
   <SettingRow
     label="Derivation Budget"
-    description="Paces background work over time so tokens are spent as a trickle, never a one-time bill. A higher tier covers more of your history per pass."
-    full
+    description="Paces background work so tokens are spent as a trickle, never a one-time bill. Applies to a cloud default model."
+    full={!!budgetGate}
+    aside={budgetGate ? budget : undefined}
+    control={budgetGate ? budgetGateLine : budget}
+  />
+
+  <SettingRow
+    label="Derive all of history"
+    description="Reaches back about {rec.draftUserContextBackfillWindowDays} {rec.draftUserContextBackfillWindowDays === 1 ? 'day' : 'days'}."
   >
     {#snippet control()}
-      <div class="uc-stack">
-        <Segmented
-          md
-          value={rec.draftUserContextBudgetTier}
-          onValueChange={(value) =>
-            (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
-          disabled={!userContextCloudDefault}
-          ariaLabel="Derivation budget intensity"
-          options={[
-            { value: "light", label: "Light" },
-            { value: "balanced", label: "Balanced" },
-            { value: "thorough", label: "Thorough" },
-          ]}
-        />
-        {#if userContextCloudDefault}
-          <p class="group-hint">
-            Light — slowest pacing, fewest tokens; understanding fills in gradually.
-            Balanced — moderate pacing and token spend, a sensible default.
-            Thorough — fastest pacing, most tokens; covers your history sooner.
-          </p>
-        {/if}
-        {#if userContextLocalDefault}
-          <p class="group-hint">
-            Budget tiers apply to a cloud default model. A local default uses fixed
-            background pacing — no token spend, so there is no intensity to choose.
-          </p>
-        {:else if !userContextCloudDefault}
-          <p class="group-hint">
-            Set a default model above to choose an intensity. Budget tiers pace
-            token spend for a cloud default — until a default model is configured
-            there is nothing to pace.
-          </p>
-        {/if}
-      </div>
+      <Switch bind:checked={rec.draftUserContextBackfillGoDeeper} ariaLabel="Go deeper — derive all of history" />
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="History Backfill" full>
+  <SettingRow
+    label="Wipe User Context"
+    description="Permanently clears everything derived about you — it outlives capture retention. Captures are untouched. Asks first."
+  >
     {#snippet control()}
-      <div class="uc-stack">
-        <p class="group-hint">
-          Newest history is derived first. By default Mnema reaches back about
-          {rec.draftUserContextBackfillWindowDays}
-          {rec.draftUserContextBackfillWindowDays === 1 ? "day" : "days"}; recent activity
-          drives your current understanding.
-        </p>
-        <Switch
-          bind:checked={rec.draftUserContextBackfillGoDeeper}
-          label="Go deeper — derive all of history"
-          description="Extend backfill past the recent window to your entire history. Increases token spend over time (still a background trickle, not a one-time bill)."
-        />
-      </div>
-    {/snippet}
-  </SettingRow>
-
-  <SettingRow label="Run derivation" full divider={false}>
-    {#snippet control()}
-      <div class="uc-stack">
-        <div class="row-actions">
-          <button
-            class="mx-btn mx-btn--sm"
-            type="button"
-            disabled={userContextRunNowRunning || !userContextStatus?.engineAvailable}
-            aria-busy={userContextRunNowRunning}
-            onclick={runUserContextDerivationNow}
-          >
-            {#if userContextRunNowRunning}<ButtonSpinner />Deriving…{:else}Run derivation now{/if}
-          </button>
-          <ReloadButton
-            onclick={refreshUserContext}
-            busy={refreshing}
-            title="Refresh"
-            label="Refresh derivation status"
-          />
-        </div>
-
-        {#if userContextRunNowMessage}
-          <p class="group-hint" aria-live="polite">{userContextRunNowMessage}</p>
-        {/if}
-
-        <div class="user-context-wipe">
-          <p class="group-hint">
-            This derived understanding deliberately outlives your raw-capture
-            Retention Policy window — Mnema can keep what it learned about you
-            long after the recordings it learned from have aged out. Wipe User
-            Context is the only control that clears it.
-          </p>
-          <div class="row-actions">
-            <button
-              class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm"
-              type="button"
-              disabled={userContextWiping}
-              aria-busy={userContextWiping}
-              onclick={wipeUserContext}
-            >
-              {#if userContextWiping}<ButtonSpinner />Wiping…{:else}Wipe User Context{/if}
-            </button>
-          </div>
-        </div>
-      </div>
+      <button
+        class="mx-btn mx-btn--danger"
+        type="button"
+        disabled={userContext.userContextWiping}
+        aria-busy={userContext.userContextWiping}
+        onclick={() => userContext.wipeUserContext()}
+      >
+        {#if userContext.userContextWiping}<span class="mx-spin mx-spin--sm"></span>Wiping…{:else}Wipe…{/if}
+      </button>
     {/snippet}
   </SettingRow>
 </SettingGroup>
 
 <style>
-  /* Full-width rows stack a control over its disclosures, status, and action
-     sub-blocks; the primitives only gap whole rows. */
-  .uc-stack {
+  /* Beside a stacked row's copy, centre the controls on the label + first
+     hint line (mockup) without letting them push that line down. */
+  .uc-ctl {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    white-space: nowrap;
+  }
+
+  :global(.setting-row__aside > .uc-ctl) {
+    height: 20px;
+    margin: 11px 0 -11px;
+  }
+  /* Inline lines read as the row's second description line. */
+  .uc-lines {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: -8px;
+  }
+
+  .uc-progress {
     width: 100%;
   }
 </style>

@@ -12,7 +12,9 @@
     type McpRowBadge,
   } from "$lib/settings/state/mcp-connector-row";
   import type { McpServerConfig } from "$lib/types";
-  import IconCheck from "~icons/lucide/check";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconPlus from "~icons/lucide/plus";
+  import IconPlug from "~icons/lucide/plug";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -98,6 +100,16 @@
     }
   };
 
+  // The row's description line when no OAuth state sub-line applies.
+  const hintFor = (badge: McpRowBadge, server: McpServerConfig): string =>
+    badge === "secret"
+      ? "Secret in keychain"
+      : badge === "authorized"
+        ? "Authorized"
+        : server.transport === "stdio"
+          ? "Runs on this Mac"
+          : "No secret saved";
+
   // Node probe for stdio rows: one probe per settings visit, cached here.
   // undefined = not probed (or still in flight), string = found version,
   // null = Node missing → warn badge on every stdio row.
@@ -157,127 +169,112 @@
   };
 </script>
 
-<SettingGroup
-  title="MCP connectors"
-  hint="Connect Model Context Protocol servers so chat can use their tools (GitHub, Notion, a filesystem, …). A connector works only when it's both enabled AND authorized — two separate things. Some servers sign in with OAuth (click Connect, approve in your browser); others take a pasted token. Either way the secret lives only in the macOS keychain — never in Mnema's settings."
->
-  <SettingRow label="Connectors" full divider={false}>
-    {#snippet control()}
-      <div class="mcp-stack">
-        {#if rec.draftMcpServers.length === 0}
-          <p class="group-hint">No connectors yet. Add one, then Connect (OAuth) or enable it.</p>
-        {:else}
-          <ul class="mcp-list">
-            {#each rec.draftMcpServers as server (server.id)}
-              {@const view = deriveMcpConnectorRow({
-                authMode: server.authMode,
-                enabled: server.enabled,
-                hasSecret: mcpSecretSavedById[server.id],
-                oauthState: mcpOAuthStateById[server.id],
-              })}
-              {@const oauthError = mcpOAuthErrors[server.id]}
-              {@const stateSub = subLine(view.badge, server.enabled)}
-              <li
-                class="mcp-row"
-                class:mcp-row--off={view.dimmed}
-                class:mcp-row--new={flashId === server.id}
-                onanimationend={(e) => {
-                  // Child animations (saved-badge-in) bubble too — only the
-                  // row's own flash ending should clear the one-shot state.
-                  if (e.target === e.currentTarget && flashId === server.id) flashId = null;
-                }}
-              >
-                <div class="mcp-row__body">
-                  <div class="mcp-row__title">
-                    <span class="mcp-row__name">{server.label.trim() || server.id}</span>
-                    <span class="mcp-row__tag">{rowTag(server)}</span>
-                    {#if server.transport === "stdio" && nodeVersion === null}
-                      <span class="badge badge--warn badge--sm">needs Node — install from nodejs.org</span>
-                    {/if}
-                    {#if view.badge === "secret"}
-                      <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span>
-                    {:else if view.badge === "authorized"}
-                      <span class="badge badge--ok">✓ authorized</span>
-                    {:else if view.badge === "authorized-muted"}
-                      <span class="badge badge--muted">authorized</span>
-                    {:else if view.badge === "not-connected"}
-                      <span class="badge badge--warn">not connected</span>
-                    {:else if view.badge === "authorizing"}
-                      <span class="badge"><span class="mcp-spinner" aria-hidden="true"></span>authorizing…</span>
-                    {:else if view.badge === "reconnect"}
-                      <span class="badge badge--warn">needs reconnect</span>
-                    {/if}
-                  </div>
-                  <div class="mcp-row__sub">
-                    {#if stateSub}
-                      <span class:mcp-row__note={view.badge === "reconnect"}>{stateSub}</span>
-                    {/if}
-                    {#if showToolCount(view.badge)}
-                      <button
-                        class="mcp-row__count"
-                        type="button"
-                        disabled={!server.enabled}
-                        title={server.enabled ? "See and curate this connector's tools" : "Enable this connector to list its tools."}
-                        onclick={() => { toolModalServerId = server.id; }}
-                      >
-                        {#if toolCounts[server.id] !== undefined}
-                          {toolCounts[server.id]} tools · {activeToolCount(toolCounts[server.id], server.enabledTools)} active
-                        {:else if server.enabledTools}
-                          {server.enabledTools.length} active
-                        {:else}
-                          see tools
-                        {/if}
-                      </button>
-                    {/if}
-                  </div>
-                  {#if oauthError}
-                    <p class="error-text" role="alert">{oauthError}</p>
-                  {/if}
-                </div>
-                <div class="mcp-row__meta">
-                  {#if view.actions.connect}
-                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => openConnect(server.id, "connect")}>
-                      Connect
-                    </button>
-                  {/if}
-                  {#if view.actions.reconnect}
-                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => openConnect(server.id, "reconnect")}>
-                      Reconnect
-                    </button>
-                  {/if}
-                  {#if view.actions.disconnect}
-                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => disconnectOAuth(server.id)}>
-                      Disconnect
-                    </button>
-                  {/if}
-                  {#if view.actions.configure}
-                    <button
-                      class="mx-btn mx-btn--sm"
-                      type="button"
-                      onclick={() => openConfigure(server.id)}
-                    >
-                      Configure
-                    </button>
-                  {/if}
-                  <Switch
-                    bind:checked={server.enabled}
-                    ariaLabel="Enable {server.label.trim() || server.id}"
-                  />
-                </div>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-
-        <div class="row-actions">
-          <button class="mx-btn mx-btn--sm" type="button" onclick={openPicker}>
-            + Add connector
-          </button>
+<SettingGroup title="MCP connectors" hint="Tools chat can use. A connector works only when it’s enabled and authorized.">
+  {#if rec.draftMcpServers.length === 0}
+    <div class="mcp-empty">
+      <div class="mx-empty mx-empty--compact">
+        <span class="mx-empty__glyph"><IconPlug width="14" height="14" /></span>
+        <b class="mx-empty__title">No connectors yet</b>
+        <p class="mx-empty__text">Add one — GitHub, Notion, a folder on this Mac — then Connect or enable it.</p>
+        <div class="mx-empty__acts">
+          <button class="mx-btn mx-btn--sm" type="button" onclick={openPicker}><IconPlus width="13" height="13" aria-hidden="true" />Add connector…</button>
         </div>
-        <p class="group-hint">Secrets are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. Removing a connector deletes its secret right away.</p>
       </div>
-    {/snippet}
-  </SettingRow>
+    </div>
+  {:else}
+    {#each rec.draftMcpServers as server (server.id)}
+      {@const view = deriveMcpConnectorRow({
+        authMode: server.authMode,
+        enabled: server.enabled,
+        hasSecret: mcpSecretSavedById[server.id],
+        oauthState: mcpOAuthStateById[server.id],
+      })}
+      {@const oauthError = mcpOAuthErrors[server.id]}
+      {@const stateSub = subLine(view.badge, server.enabled)}
+      {@const name = server.label.trim() || server.id}
+      {@const needsNode = server.transport === "stdio" && nodeVersion === null}
+      <div
+        class="mcp-row"
+        class:mcp-row--off={view.dimmed}
+        class:mcp-row--new={flashId === server.id}
+        onanimationend={(e) => {
+          // Child animations bubble too — only the row's own flash ending
+          // should clear the one-shot state.
+          if (e.target === e.currentTarget && flashId === server.id) flashId = null;
+        }}
+      >
+        <SettingRow label={name} full>
+          {#snippet labelExtra()}
+            <span class="mx-chip">{rowTag(server)}</span>
+            {#if needsNode}<span class="mx-chip mx-chip--warn">needs Node</span>{/if}
+          {/snippet}
+          {#snippet aside()}
+           <div class="mcp-ctl">
+            {#if view.badge === "authorizing"}
+              <span class="settings-state"><span class="mx-spin mx-spin--sm"></span>authorizing…</span>
+            {:else if view.badge === "reconnect"}
+              <span class="settings-state settings-state--warn">needs reconnect</span>
+            {:else if view.badge === "not-connected"}
+              <span class="settings-state">not connected</span>
+            {/if}
+            {#if view.actions.connect}
+              <button class="mx-btn" type="button" onclick={() => openConnect(server.id, "connect")}>Connect</button>
+            {/if}
+            {#if view.actions.reconnect}
+              <button class="mx-btn" type="button" onclick={() => openConnect(server.id, "reconnect")}>Reconnect</button>
+            {/if}
+            {#if view.actions.disconnect}
+              <button class="mx-btn mx-btn--ghost" type="button" onclick={() => disconnectOAuth(server.id)}>Disconnect</button>
+            {/if}
+            {#if view.actions.configure}
+              <button class="mx-btn mx-btn--ghost" type="button" onclick={() => openConfigure(server.id)}>Configure</button>
+            {/if}
+            <Switch bind:checked={server.enabled} ariaLabel="Enable {name}" />
+           </div>
+          {/snippet}
+          {#snippet control()}
+            <div class="mcp-sub">
+              <span class="mx-inline mcp-hint">
+                {#if needsNode}
+                  Runs on this Mac and needs Node, which wasn’t found. Install it from nodejs.org.
+                {:else if stateSub}
+                  {stateSub}
+                {:else}
+                  {hintFor(view.badge, server)}
+                {/if}
+                {#if showToolCount(view.badge)}
+                  ·
+                  <button
+                    class="mcp-count"
+                    type="button"
+                    disabled={!server.enabled}
+                    title={server.enabled ? "See and curate this connector's tools" : "Enable this connector to list its tools."}
+                    onclick={() => { toolModalServerId = server.id; }}
+                  >
+                    {#if toolCounts[server.id] !== undefined}
+                      {toolCounts[server.id]} tools · {activeToolCount(toolCounts[server.id], server.enabledTools)} active
+                    {:else if server.enabledTools}
+                      {server.enabledTools.length} active
+                    {:else}
+                      see tools
+                    {/if}
+                  </button>
+                {/if}
+              </span>
+              {#if oauthError}
+                <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{oauthError}</span>
+              {/if}
+            </div>
+          {/snippet}
+        </SettingRow>
+      </div>
+    {/each}
+    <SettingRow label="Add a connector" description="Secrets live only in the macOS keychain; removing a connector deletes its secret.">
+      {#snippet control()}
+        <button class="mx-btn" type="button" onclick={openPicker}><IconPlus width="13" height="13" aria-hidden="true" />Add connector…</button>
+      {/snippet}
+    </SettingRow>
+  {/if}
 </SettingGroup>
 
 <McpToolListModal
@@ -299,28 +296,26 @@
 />
 
 <style>
-  .mcp-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 100%;
-  }
-  .mcp-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .mcp-row {
+  /* Beside a stacked row's copy, centre the controls on the label + first
+     hint line (mockup) without letting them push that line down. */
+  .mcp-ctl {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--settings-border, rgba(255, 255, 255, 0.1));
-    border-radius: 8px;
+    gap: var(--s-2);
+    white-space: nowrap;
+  }
+
+  :global(.setting-row__aside > .mcp-ctl) {
+    height: 20px;
+    margin: 11px 0 -11px;
+  }
+  .mcp-empty {
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+  .mcp-empty .mx-empty {
+    max-width: none;
+    padding: 0;
   }
   /* Just-added row flash (mockup row-flash), cleared on animationend. */
   .mcp-row--new {
@@ -339,91 +334,34 @@
       animation: none;
     }
   }
-  /* mockup is-off: a static/authorized connector switched off dims its content
-     (title + sub) but keeps its actions/toggle fully usable. */
-  .mcp-row--off .mcp-row__body {
+  /* mockup is-off: a static/authorized connector switched off dims its copy
+     but keeps its actions and switch fully usable. */
+  .mcp-row--off :global(.setting-row__text),
+  .mcp-row--off .mcp-hint {
     opacity: 0.5;
   }
-  .mcp-row__body {
+  /* The hint reads as the row's description line, tight under the label. */
+  .mcp-sub {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    min-width: 0;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: -8px;
   }
-  .mcp-row__title {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    min-width: 0;
-  }
-  .mcp-row__sub {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    line-height: 1.4;
-  }
-  .mcp-row__note {
-    color: var(--app-warn);
-  }
-  .mcp-row__name {
-    font-weight: 600;
-  }
-  .mcp-row__tag {
-    font-size: var(--text-xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    padding: 2px 6px;
-  }
-  .mcp-row__count {
+  .mcp-count {
     padding: 0;
     border: 0;
     background: transparent;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
+    font: inherit;
+    color: inherit;
     font-variant-numeric: tabular-nums;
     cursor: pointer;
   }
-  .mcp-row__count:hover:not(:disabled) {
+  .mcp-count:hover:not(:disabled) {
     color: var(--app-text-strong);
     text-decoration: underline;
   }
-  .mcp-row__count:disabled {
+  .mcp-count:disabled {
     cursor: default;
-    opacity: 0.5;
-  }
-  .mcp-row__meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
-  }
-  /* Pending badge spinner (mockup `.spinner`). */
-  .mcp-spinner {
-    display: inline-block;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 1.5px solid var(--app-border-hover);
-    border-top-color: var(--app-accent);
-    animation: mcp-spin 0.7s linear infinite;
-  }
-  @keyframes mcp-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .mcp-spinner {
-      animation: none;
-    }
   }
 </style>
