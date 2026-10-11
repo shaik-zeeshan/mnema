@@ -9,17 +9,29 @@
   // Status is backend-owned: this page renders `AppUpdateStatus` and streams
   // changes off `app_update_status_changed`, so installing from the tray (or
   // Settings → About) updates it live instead of leaving it stale.
+  //
+  // Layout follows docs/mockups/redesign/update.html: three bands — identity,
+  // notes, controls — and only the middle one flexes, so the buttons never move
+  // as the state advances (a shifting primary here is a mis-click into a restart).
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onDestroy, onMount, tick } from "svelte";
   import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
+  import IconCloudOff from "~icons/lucide/cloud-off";
+  import IconExternal from "~icons/lucide/external-link";
+  import IconPower from "~icons/lucide/power";
+  import IconRefresh from "~icons/lucide/rotate-cw";
+  import IconShield from "~icons/lucide/shield-check";
   import { closeCurrentWindow } from "$lib/surface-windows";
   import { isOpenableHref, renderMarkdown } from "$lib/markdown";
+  import { RENEWAL_CHECKOUT_URL } from "$lib/licensing";
+  import { licenseStatus, refreshLicenseNow } from "$lib/licensing-store.svelte";
   import {
     appUpdateProgressPercent,
     appUpdateProgressText,
-    appUpdateStatusMessage,
     formatUpdateDate,
   } from "$lib/settings/state/about.svelte";
   import {
@@ -27,9 +39,13 @@
     canInstallUpdate,
     canRestartUpdate,
     fitUpdateWindowHeight,
-    isUpdateBusy,
+    formatCheckedClock,
+    outOfWindowLicense,
+    UPDATE_KICKER,
     updateChannelLine,
-    updateWindowError,
+    updateViewKey,
+    updateWindowLines,
+    updateWindowMessage,
   } from "$lib/update-window";
   import type { AppUpdateStatus } from "$lib/types";
 
@@ -41,32 +57,39 @@
   // specs/update-window.test.ts — a Svelte `$derived` is unreachable from the
   // frontend suite, and this window's whole job is deciding what to say and
   // which button to arm.
-  const updateState = $derived(status?.state ?? "idle");
+  const key = $derived(updateViewKey(status));
   const version = $derived(status?.update?.version ?? null);
   const currentVersion = $derived(status?.app.version ?? null);
   const releaseDate = $derived(formatUpdateDate(status?.update?.date));
-  const busy = $derived(isUpdateBusy(status));
   const canInstall = $derived(canInstallUpdate(status, acting));
   const canRestart = $derived(canRestartUpdate(status, acting));
-
-  // The channel line stays OUT of the window while Stable is the only channel a
-  // user would realistically be on — labelling it "Stable channel" answers a
-  // question nobody asked. Anyone actually on Preview needs to know their
-  // updates come from a different feed, so that case still renders.
-  const channelLabel = $derived(updateChannelLine(status));
   const heading = $derived(appUpdateHeading(status));
-
-  // `install_app_update` is declared `-> AppUpdateStatus`, not `Result`, so a
-  // failed install RESOLVES and `catch` never fires. Without this fallback to
-  // `status.error` the spinner just stopped and the window returned to its
-  // pre-click state with no error anywhere.
-  const shownError = $derived(updateWindowError(actionError, status));
+  const message = $derived(updateWindowMessage(key));
+  const lines = $derived(updateWindowLines(status));
+  // The channel stays out of the window on Stable (it answers a question nobody
+  // asked); anyone on Preview needs to know their updates come from another feed.
+  const channelLabel = $derived(updateChannelLine(status));
+  const license = $derived(outOfWindowLicense(licenseStatus.value));
+  const busyLabel = $derived(
+    key === "installing" ? "Installing…" : key === "downloading" || acting ? "Downloading…" : null,
+  );
+  const progressKnown = $derived(!!status?.progress?.contentLengthBytes);
 
   // Release notes are Markdown in the feed. `renderMarkdown` escapes raw HTML
   // (`html: false`), which is what makes the {@html} below safe.
   const notesHtml = $derived(
     status?.update?.notes?.trim() ? renderMarkdown(status.update.notes) : null,
   );
+  // Out of window, the notes sit behind "What's in <version>" so the band leads
+  // with what the lapse means; every other state with a version shows them.
+  let notesOpen = $state(false);
+  const showNotes = $derived(
+    !!notesHtml && key !== "checking" && key !== "uptodate" && key !== "check-failed" && key !== "incompatible" && (key !== "expired" || notesOpen),
+  );
+
+  // Out-of-window feedback under the buttons: Refresh license, then Renew.
+  let refreshing = $state(false);
+  let renewNote = $state<"checked" | "checkout" | null>(null);
 
   // Release notes carry real links (GitHub's generated notes end in a "Full
   // Changelog" URL). A plain anchor click NAVIGATES this webview to github.com,
@@ -148,27 +171,24 @@
     if (copyRevertTimer !== null) clearTimeout(copyRevertTimer);
   });
 
-
-
   // Element handles for the content-fit pass below.
+  let bodyEl = $state<HTMLElement | null>(null);
+  let bandEl = $state<HTMLElement | null>(null);
   let notesEl = $state<HTMLElement | null>(null);
-  let notesInnerEl = $state<HTMLElement | null>(null);
 
-  // Grow/shrink the window to what the notes actually need. A fixed height
-  // leaves a dead void under a two-line changelog and clips a long one; the
-  // notes region is the only flexible band, so the delta between the content's
-  // natural height and the height it's been given IS the window's error.
-  // Clamped so a huge changelog can't grow past a sensible panel.
-  // Width follows whatever the window currently is, so a user who widened it
-  // keeps that width instead of being snapped back to the opening 480.
+  // Grow/shrink the window to what the middle band actually needs. A fixed
+  // height leaves a dead void under a two-line changelog and clips a long one.
+  // The band sits at its natural height inside the flexible body (only the notes
+  // shrink and scroll), so its natural height — plus whatever the notes hide —
+  // minus the room the body offers IS the window's error. Clamped so a huge
+  // changelog can't grow past a sensible panel. Width follows the window, so a
+  // user who widened it keeps that width.
   async function fitWindowToContent() {
-    if (!notesEl || !notesInnerEl) return;
-    // `clientHeight` counts the scroller's bottom padding, so the content's
-    // requirement has to count it too — otherwise the fit lands the last line
-    // inside the bottom fade and it reads as clipped.
-    const padBottom = parseFloat(getComputedStyle(notesEl).paddingBottom) || 0;
-    const overflow = notesInnerEl.offsetHeight + padBottom - notesEl.clientHeight;
-    const target = fitUpdateWindowHeight(window.innerHeight, overflow);
+    if (!bodyEl || !bandEl) return;
+    const hidden = notesEl ? notesEl.scrollHeight - notesEl.clientHeight : 0;
+    const pad = getComputedStyle(bodyEl);
+    const room = bodyEl.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+    const target = fitUpdateWindowHeight(window.innerHeight, bandEl.offsetHeight + hidden - room);
     if (target === null) return;
     try {
       await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, target));
@@ -177,10 +197,15 @@
     }
   }
 
-  // Re-fit whenever the rendered notes change (cold load, and a status event
-  // that swaps the payload).
+  // Re-fit only when the BAND changes (notes arrive, notes open, notes ↔
+  // message ↔ out-of-window). Never on a plain state step: available →
+  // downloading → ready keeps the same notes, so the window — and the buttons —
+  // stay exactly where they are.
+  const bandKind = $derived(showNotes ? "notes" : key === "expired" ? "lapsed" : "message");
   $effect(() => {
     notesHtml;
+    bandKind;
+    notesOpen;
     void tick().then(fitWindowToContent);
   });
 
@@ -223,6 +248,47 @@
     // spinner would flash an idle window during the graceful stop.
   }
 
+  // The existing Manual Receipt Refresh. A renewal that lands republishes the
+  // license and re-runs the update check, which walks this window to Available;
+  // until then the line says what the check found.
+  async function refreshLicense() {
+    refreshing = true;
+    actionError = null;
+    try {
+      await refreshLicenseNow();
+      renewNote = "checked";
+    } catch (err) {
+      actionError = describe(err);
+    }
+    refreshing = false;
+  }
+
+  async function renew() {
+    actionError = null;
+    try {
+      await openUrl(RENEWAL_CHECKOUT_URL);
+      renewNote = "checkout";
+    } catch (err) {
+      actionError = describe(err);
+    }
+  }
+
+  function primary() {
+    if (key === "ready") void restart();
+    else if (key === "expired") void renew();
+    else void install();
+  }
+
+  const renewLine = $derived(
+    renewNote === "checkout"
+      ? "Checkout opened in your browser. Come back here when you’re done."
+      : renewNote === "checked"
+        ? licenseStatus.value?.kind === "licensed" && licenseStatus.value.inWindow
+          ? "Renewal found — checking for the update now."
+          : `Checked just now — your window still ends ${license?.windowEnd ?? "as before"}.`
+        : null,
+  );
+
   onMount(() => {
     void (async () => {
       try {
@@ -239,124 +305,178 @@
 </script>
 
 <svelte:head>
-  <title>mnema · Update</title>
+  <title>Mnema · Update</title>
 </svelte:head>
 
-<main class="update">
-  <header class="head">
+<main class="up" data-state={key}>
+  <!-- 1 · identity -->
+  <header class="up-head">
     <!-- The real bundle icon (static/app-icon.png is a copy of
-         src-tauri/icons/128x128@2x.png). A hand-drawn SVG approximation of the
-         mark is not the app's identity. -->
-    <img class="mark" src="/app-icon.png" alt="" width="44" height="44" />
-    <div class="head__text">
-      {#if channelLabel}<p class="head__channel">{channelLabel}</p>{/if}
-      <h1>{heading}</h1>
-      <p class="head__meta">
-        {#if version && currentVersion}
-          <span class="from">{currentVersion}</span>
-          <span class="arrow" aria-hidden="true">→</span>
-          <span class="to">{version}</span>
-          {#if releaseDate}<span class="dot" aria-hidden="true">·</span>{releaseDate}{/if}
-        {:else}
-          {appUpdateStatusMessage(status)}
+         src-tauri/icons/128x128@2x.png): a drawn approximation of the mark is
+         not the app's identity. It carries its own tile, so no plate behind it. -->
+    <img class="up-mark" src="/app-icon.png" alt="" width="44" height="44" />
+    <div class="up-head__text">
+      <span class="mx-kicker">{UPDATE_KICKER[key]}{#if channelLabel}&ensp;·&ensp;{channelLabel}{/if}</span>
+      <h1 class="mx-h2">{heading}</h1>
+      <div class="up-ver">
+        {#if version && currentVersion && key !== "expired"}
+          <span>{currentVersion}</span><i aria-hidden="true">→</i><b>{version}</b>
+          {#if releaseDate}<i aria-hidden="true">·</i><span>{releaseDate}</span>{/if}
+        {:else if currentVersion}
+          <span class="up-ver__words">
+            You have <b class="num">{currentVersion}</b>
+            {#if key === "expired" && license}· updates covered through <span class="num">{license.windowEnd}</span>
+            {:else if key === "uptodate" && formatCheckedClock(status?.lastCheckedAtUnixMs, Date.now())}· checked {formatCheckedClock(status?.lastCheckedAtUnixMs, Date.now())}
+            {:else if key === "check-failed" && formatCheckedClock(status?.lastCheckedAtUnixMs, Date.now())}· last checked {formatCheckedClock(status?.lastCheckedAtUnixMs, Date.now())}
+            {/if}
+          </span>
         {/if}
-      </p>
+      </div>
     </div>
   </header>
 
-  <div class="body">
-    {#if notesHtml}
-      <!-- No "What's new" label above the notes: GitHub-generated notes open
-           with their own `## What's Changed` heading, and two headings stacked
-           read as a mistake. The notes carry their own structure. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <section
-        class="notes"
-        aria-label="Release notes"
-        bind:this={notesEl}
-        onclick={handleNotesClick}
-        onauxclick={handleNotesAuxClick}
-      >
-        <div bind:this={notesInnerEl}>{@html notesHtml}</div>
-      </section>
-    {:else}
-      <div class="body__empty">
-        <p>{appUpdateStatusMessage(status)}</p>
-        {#if version}
-          <p class="body__empty-note">No release notes were published for this version.</p>
+  <!-- 2 · notes / message / out-of-window explainer — the only flexible band -->
+  <div class="up-body" bind:this={bodyEl}>
+    <div class="up-band" bind:this={bandEl}>
+      {#if key === "expired"}
+        <div class="mx-notice" data-tone="ok">
+          <span class="mx-notice__icon"><IconShield width="14" height="14" /></span>
+          <p class="mx-notice__text">
+            <b>Nothing stops working.</b> Mnema <span class="num">{currentVersion}</span> is yours to keep —
+            capture, search, Ask AI and every recording stay as they are. Renewing only brings newer builds.
+          </p>
+        </div>
+        {#if license}
+          <dl class="mx-spec mx-panel mx-panel--inset up-lapsed">
+            <div><dt>Licensed to</dt><dd>{license.licensee}</dd></div>
+            <div><dt>Update window</dt><dd>ended <span class="num">{license.windowEnd}</span></dd></div>
+            <div><dt>Renewal</dt><dd>another year of updates, same key</dd></div>
+          </dl>
         {/if}
-      </div>
-    {/if}
+        {#if notesHtml && version}
+          <button
+            type="button"
+            class="mx-btn mx-btn--ghost mx-btn--sm up-seenotes"
+            aria-expanded={notesOpen}
+            onclick={() => (notesOpen = !notesOpen)}
+          >What’s in {version}</button>
+        {/if}
+      {:else if message}
+        <p class="mx-prose">{message}</p>
+      {/if}
+      {#if showNotes}
+        <!-- No "What's new" label: GitHub-generated notes open with their own
+             `## What's Changed` heading, and two stacked headings read as a mistake. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <section
+          class="mx-panel mx-panel--inset up-notes"
+          aria-label="Release notes"
+          bind:this={notesEl}
+          onclick={handleNotesClick}
+          onauxclick={handleNotesAuxClick}
+        >
+          {@html notesHtml}
+        </section>
+      {/if}
+    </div>
   </div>
 
-  <footer class="foot">
-    {#if status?.progress}
-      <div class="progress" aria-live="polite">
-        <div class="progress__meta">
-          <span>{appUpdateProgressText(status)}</span>
-          <span class="progress__pct">{Math.round(appUpdateProgressPercent(status))}%</span>
+  <!-- 3 · controls — fixed position across states -->
+  <footer class="up-foot">
+    {#if key === "downloading"}
+      <div aria-live="polite">
+        <div class="mx-progress__meta">
+          <b>Downloading</b>
+          <span>{appUpdateProgressText(status)}{#if progressKnown}&nbsp;· {Math.round(appUpdateProgressPercent(status))}%{/if}</span>
         </div>
-        <div class="progress__bar">
-          <span style={`width: ${appUpdateProgressPercent(status)}%`}></span>
-        </div>
+        <div
+          class="mx-progress"
+          class:mx-progress--indeterminate={!progressKnown}
+          role="progressbar"
+          aria-label="Downloading"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressKnown ? Math.round(appUpdateProgressPercent(status)) : undefined}
+          style:--v={progressKnown ? appUpdateProgressPercent(status) / 100 : 1}
+        ><i></i></div>
       </div>
-    {:else if canInstall}
-      <p class="consequence">
-        <svg class="consequence__icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true">
-          <path d="M8 2.2 V7.6" />
-          <path d="M4.4 4.3a5 5 0 1 0 7.2 0" />
-        </svg>
-        Installing stops recording and relaunches mnema.
-      </p>
+    {:else if key === "installing"}
+      <div aria-live="polite">
+        <div class="mx-progress__meta"><b>Installing</b><span>keep Mnema open</span></div>
+        <div class="mx-progress mx-progress--indeterminate" role="progressbar" aria-label="Installing"><i></i></div>
+      </div>
     {/if}
 
-    {#if shownError}
-      <p class="foot__error" role="alert">{shownError}</p>
+    <!-- `install_app_update` resolves (never rejects) on a failed install, so
+         `status.error` — folded into these lines — is the only report of it;
+         `actionError` is what a rejected invoke or a refused open adds. -->
+    {#each lines as line, i (i)}
+      <span class="mx-inline" data-tone={line.tone} role={line.tone === "danger" || line.tone === "warn" ? "alert" : undefined}>
+        {#if line.icon === "power"}<IconPower width="14" height="14" />
+        {:else if line.icon === "check"}<IconCheck width="14" height="14" />
+        {:else if line.icon === "spin"}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>
+        {:else if line.icon === "cloud-off"}<IconCloudOff width="14" height="14" />
+        {:else if line.icon === "alert"}<IconAlert width="14" height="14" />{/if}
+        {key === "expired" && renewLine ? renewLine : line.text}
+      </span>
+    {/each}
+    {#if actionError}
+      <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="14" height="14" />{actionError}</span>
     {/if}
 
-    <div class="actions">
-      <!-- Enabled while DOWNLOADING: the backend owns the download, the tray
-           keeps showing "Updating…", and the shared dedicated-surface titlebar
-           renders an always-enabled Close chip calling this same function — so
-           disabling it advertised a constraint that did not exist.
-           Disabled while INSTALLING, which is a different thing entirely: the
-           restart is chained here in the page, so closing the window destroys
-           the webview, the pending `invoke` never resolves, and the app is left
-           with capture stopped and the bundle swapped but never relaunched. -->
+    <div class="up-actions">
+      {#if key === "expired"}
+        <button
+          type="button"
+          class="mx-btn mx-btn--ghost mx-btn--sm"
+          aria-busy={refreshing}
+          disabled={refreshing}
+          onclick={() => void refreshLicense()}
+        ><IconRefresh width="13" height="13" />Refresh license</button>
+      {/if}
+      <span class="up-spacer"></span>
+      <!-- Enabled while DOWNLOADING: the backend owns the download and the tray
+           keeps showing "Updating…". Disabled while INSTALLING: the restart is
+           chained here in the page, so closing the window destroys the webview,
+           the pending `invoke` never resolves, and the app is left with capture
+           stopped and the bundle swapped but never relaunched. -->
       <button
         type="button"
-        class="btn"
+        class="mx-btn mx-btn--ghost"
         onclick={() => void closeCurrentWindow()}
-        disabled={updateState === "installing"}
+        disabled={key === "installing"}
       >
-        {updateState === "downloading" ? "Continue in background" : "Later"}
+        {#if key === "downloading"}Continue in background
+        {:else if key === "expired"}Not now
+        {:else if message}Close
+        {:else}Later{/if}
       </button>
-      {#if updateState === "restartRequired"}
-        <button type="button" class="btn btn--primary" onclick={() => void restart()} disabled={!canRestart}>
-          {#if acting}<span class="btn__spinner" aria-hidden="true"></span>Restarting{:else}Restart now{/if}
-        </button>
-      {:else}
-        <button type="button" class="btn btn--primary" onclick={() => void install()} disabled={!canInstall}>
-          {#if acting || busy}
-            <span class="btn__spinner" aria-hidden="true"></span>
-            {updateState === "installing" ? "Installing" : "Downloading"}
-          {:else}
-            {canInstall && updateState === "failed" ? "Try again" : "Install and restart"}
-          {/if}
-        </button>
-      {/if}
+      <button
+        type="button"
+        class="mx-btn mx-btn--primary"
+        onclick={primary}
+        aria-busy={!!busyLabel || (key === "ready" && acting)}
+        disabled={key === "ready" ? !canRestart : key === "expired" ? false : !canInstall}
+      >
+        {#if key === "ready"}
+          {#if acting}<span class="mx-spin mx-spin--sm" aria-hidden="true"></span>Restarting…{:else}Restart now{/if}
+        {:else if key === "expired"}
+          Renew for a year · $29<IconExternal width="13" height="13" />
+        {:else if busyLabel}
+          <span class="mx-spin mx-spin--sm" aria-hidden="true"></span>{busyLabel}
+        {:else}
+          {key === "download-failed" || key === "install-failed" ? "Try again" : "Install and restart"}
+        {/if}
+      </button>
     </div>
   </footer>
 </main>
 
 <style>
-  /* Three bands — identity / notes / controls — with only the middle one
-     flexible, so the buttons never move as the state advances (this is the one
-     window where a shifting primary means a mis-click into an app restart).
-     flex:1 1 auto, never height:100% — WKWebView collapses the latter. */
-  .update {
+  /* flex:1 1 auto, never height:100% — WKWebView collapses the latter. */
+  .up {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
@@ -366,415 +486,148 @@
     color: var(--app-text);
   }
 
-  .head {
+  /* Identity band */
+  .up-head {
     display: grid;
     grid-template-columns: 44px minmax(0, 1fr);
     gap: 14px;
     align-items: center;
-    padding: 16px 20px 18px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
+    padding: var(--s-5) var(--s-5) var(--s-4);
   }
-
-  /* The bundle icon already carries its own rounded tile and background, so it
-     needs no border or plate behind it — one would read as a second tile. */
-  .mark {
-    display: block;
-    width: 44px;
-    height: 44px;
-  }
-
-  .head__text {
-    min-width: 0;
-  }
-
-  .head__channel {
-    margin: 0 0 3px;
-    color: var(--app-text-subtle);
-    font-size: var(--text-sm);
-  }
-
-  .head h1 {
-    margin: 0;
-    font-size: var(--text-lg);
-    font-weight: 650;
-    line-height: 1.25;
-    letter-spacing: -0.015em;
-    color: var(--app-text-strong);
-  }
-
-  .head__meta {
-    margin: 6px 0 0;
-    color: var(--app-text-subtle);
-    font-size: var(--text-base);
-    line-height: 1.5;
-  }
-
-  .head__meta .from {
-    color: var(--app-text-muted);
-  }
-
-  .head__meta .to {
-    color: var(--app-text);
-    font-weight: 650;
-  }
-
-  .head__meta .arrow,
-  .head__meta .dot {
-    margin: 0 5px;
-    /* Not --app-text-faint: that token is documented "decorative ONLY
-       (intentionally sub-AA). Never use for text a user must read", and the
-       arrow is what says 0.1.20 BECOMES 0.1.21. */
+  .up-mark { display: block; width: 44px; height: 44px; }
+  .up-head__text { display: grid; gap: 6px; min-width: 0; }
+  .up-ver {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+    font: 450 var(--text-base)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
   }
+  .up-ver b { font-weight: 500; color: var(--app-text-strong); }
+  .up-ver i { font-style: normal; color: var(--app-text-faint); }
+  .up-ver__words { font: 400 var(--text-base)/1.3 var(--font-sans); }
 
-  .body {
+  /* Middle band: the body takes the slack; the band inside it sits at its
+     natural height and only the notes shrink and scroll. */
+  .up-body {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    padding: 16px 20px 0;
+    padding: 0 var(--s-5);
   }
-
-  .notes {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    /* Must exceed the 24px mask fade below, or the last line renders half-faded
-       and reads as clipped even when nothing is scrolled away. */
-    padding-bottom: 26px;
-    font-size: var(--text-md);
-    line-height: 1.65;
-    color: var(--app-text);
-    /* Fade the last line into the control band so a long changelog reads as
-       continuing rather than clipped. */
-    mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
-  }
-
-  .body__empty {
-    flex: 1 1 auto;
+  .up-band {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    font-size: var(--text-md);
-    line-height: 1.6;
+    gap: var(--s-3);
+    min-height: 0;
+    max-height: 100%;
   }
+  .up-band > * { flex: none; }
+  .up-band > .up-notes { flex: 0 1 auto; }
+  .up-lapsed { grid-template-columns: max-content 1fr; padding: 2px var(--s-4); }
+  .up-lapsed dd { font-size: var(--text-base); }
+  .up-band .mx-notice { grid-template-columns: auto 1fr; align-items: start; }
+  .up-band .mx-notice__text b { color: var(--app-text-strong); font-weight: 600; }
+  .up-seenotes { align-self: flex-start; }
 
-  .body__empty p {
-    margin: 0;
+  .up-notes {
+    min-height: 0;
+    overflow: auto;
+    padding: var(--s-3) var(--s-4) var(--s-4);
   }
-
-  .body__empty-note {
-    color: var(--app-text-subtle);
-  }
-
-  .notes :global(h1),
-  .notes :global(h2),
-  .notes :global(h3) {
-    margin: 16px 0 6px;
-    font-size: var(--text-md);
-    font-weight: 650;
-    letter-spacing: -0.01em;
+  .up-notes :global(h1),
+  .up-notes :global(h2),
+  .up-notes :global(h3) {
+    margin: 4px 0 6px;
+    font: 600 var(--text-md)/1.3 var(--font-sans);
     color: var(--app-text-strong);
   }
-
-  .notes :global(h1:first-child),
-  .notes :global(h2:first-child),
-  .notes :global(h3:first-child) {
-    margin-top: 0;
-  }
-
-  .notes :global(p) {
-    margin: 0 0 9px;
-  }
-
-  .notes :global(ul),
-  .notes :global(ol) {
-    margin: 0 0 9px;
-    padding-left: 16px;
-    list-style: none;
-  }
-
-  /* The marker is absolutely positioned, NOT a grid/flex item: making the `li`
-     a grid container blockifies every inline child, so `<strong>` and `<a>`
-     each become their own row and the bullet shatters one word per line. */
-  .notes :global(li) {
-    position: relative;
-    margin: 4px 0;
-  }
-
-  /* `list-style: none` above kills the native marker, so this dash is the ONLY
-     one — it has to clear AA, which --app-text-faint deliberately does not. */
-  .notes :global(ul > li)::before {
-    content: "–";
-    position: absolute;
-    left: -16px;
+  .up-notes :global(p) {
+    margin: var(--s-2) 0 0;
+    font: 400 var(--text-sm)/1.4 var(--font-sans);
     color: var(--app-text-subtle);
   }
-
-  .notes :global(strong) {
-    font-weight: 650;
-    color: var(--app-text-strong);
-  }
-
-  /* Blue, not accent green: GitHub-generated notes are half URL by volume, and
-     greening them floods the window with the app's one loud color. */
-  .notes :global(a) {
+  .up-notes :global(ul),
+  .up-notes :global(ol) { margin: 0 0 var(--s-2); padding-left: 18px; display: grid; gap: 5px; }
+  .up-notes :global(li) { font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text-muted); }
+  .up-notes :global(li::marker) { color: var(--app-text-faint); }
+  .up-notes :global(strong) { font-weight: 600; color: var(--app-text-strong); }
+  /* GitHub's closing "**Full Changelog**: url" is the meta line, not a heading. */
+  .up-notes :global(p strong) { font-weight: inherit; color: inherit; }
+  .up-notes :global(a) {
     overflow-wrap: anywhere;
-    color: var(--app-info);
+    color: var(--app-text);
     text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--app-info) 45%, transparent);
+    text-decoration-color: var(--app-border-hover);
     text-underline-offset: 2px;
   }
-
-  .notes :global(a:hover) {
-    text-decoration-color: var(--app-info);
+  /* Not the code inside a fenced `.answer-code` block — without the :not() the
+     chip styling boxes every line of a code block (same exclusion as AnswerProse). */
+  .up-notes :global(code:not(.answer-code code)) {
+    font: 450 var(--text-sm)/1 var(--font-mono);
+    padding: 1px 4px;
+    border-radius: var(--r-xs);
+    background: var(--mx-wash);
+    color: var(--app-text);
   }
-
-  /* Explicitly NOT the code inside a fenced `.answer-code` block — without the
-     :not() this chip styling boxes every line of a code block. Same exclusion
-     AnswerProse uses for the same renderer output. */
-  .notes :global(code:not(.answer-code code)) {
-    padding: 1px 5px;
+  .up-notes :global(.answer-code) {
+    margin: 0 0 var(--s-2);
     border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface-subtle);
-    font-size: var(--text-base);
-  }
-
-  .notes :global(.answer-code) {
-    margin: 0 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     overflow: hidden;
-    background: var(--app-surface-subtle);
   }
-
-  .notes :global(.answer-code__header) {
+  .up-notes :global(.answer-code__header) {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: var(--s-2);
     padding: 4px 8px;
     border-bottom: 1px solid var(--app-border);
+    font: 450 var(--text-xs)/1 var(--font-mono);
     color: var(--app-text-subtle);
-    font-size: var(--text-xs, 11px);
   }
-
-  /* Bordered, not bare: it shares a row with the language label in the same
-     token, so without a border it reads as a second label rather than a
-     control. Mirrors AnswerProse, plus the app's standard focus ring — the
-     button is keyboard-reachable and had no focus state at all. */
-  .notes :global(.answer-code__copy) {
+  .up-notes :global(.answer-code__copy) {
     padding: 2px 8px;
     border: 1px solid var(--app-border);
-    border-radius: 5px;
+    border-radius: var(--r-xs);
     background: transparent;
     color: var(--app-text-muted);
     font: inherit;
-    font-size: var(--text-xs, 11px);
     cursor: pointer;
-    transition: color 0.12s ease, border-color 0.12s ease;
   }
-
-  .notes :global(.answer-code__copy:hover) {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-strong);
-  }
-
-  .notes :global(.answer-code__copy:active) {
-    color: var(--app-accent);
-  }
-
-  .notes :global(.answer-code__copy:focus-visible) {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .notes :global(.answer-code__pre) {
+  .up-notes :global(.answer-code__copy:hover) { color: var(--app-text-strong); border-color: var(--app-border-strong); }
+  .up-notes :global(.answer-code__copy:focus-visible) { outline: 2px solid var(--app-accent); }
+  /* Wrap rather than scroll: Copy copies `textContent`, so a line scrolled off
+     a 480px window would put content on the clipboard the user never saw. */
+  .up-notes :global(.answer-code__pre) {
     margin: 0;
     padding: 8px;
-    /* Wrap rather than scroll: the Copy button copies `textContent`, so a line
-       that scrolls off a 480px window would put content on the clipboard that
-       the user never saw. Release notes are not signature-covered, so copied
-       must equal visible. `overflow-x` stays as the backstop for an unbreakable
-       token. */
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     overflow-x: auto;
-    font-size: var(--text-base);
-    line-height: 1.5;
+    font: 450 var(--text-sm)/1.5 var(--font-mono);
   }
+  .up-notes :global(.answer-code__pre code) { padding: 0; background: transparent; color: var(--app-text); }
 
-  /* The hljs token palette is scoped to `.answer-prose`, so highlighted output
-     arrives here monochrome — give it at least the right family and weight. */
-  .notes :global(.answer-code__pre code) {
-    padding: 0;
-    border: 0;
-    background: transparent;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    color: var(--app-text);
+  /* Controls band */
+  .up-foot {
+    display: grid;
+    gap: var(--s-3);
+    padding: var(--s-4) var(--s-5) var(--s-5);
+    margin-top: var(--s-4);
+    border-top: 1px solid var(--mx-hairline);
   }
-
-  .foot {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    padding: 14px 20px 16px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
-  }
-
-  /* Installing kills an active recording. That belongs in the resting layout
-     above the button, not in a dialog discovered after clicking. */
-  .consequence {
-    display: flex;
+  .up-foot > .mx-inline {
+    min-height: 18px;
+    flex-wrap: nowrap;
     align-items: flex-start;
-    gap: 8px;
-    margin: 0;
-    color: var(--app-text-subtle);
-    font-size: var(--text-base);
-    line-height: 1.5;
+    color: var(--tone, var(--app-text-subtle));
   }
-
-  .consequence__icon {
-    width: 13px;
-    height: 13px;
-    flex-shrink: 0;
-    /* Optical alignment to the first line's cap height, not its box top. */
-    margin-top: 2px;
-  }
-
-  .progress__meta {
-    display: flex;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 7px;
-    color: var(--app-text-subtle);
-    font-size: var(--text-base);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .progress__pct {
-    color: var(--app-accent);
-    font-weight: 650;
-  }
-
-  /* Decile ticks across trough and fill alike, so the bar reads as a scale
-     rather than a blob. */
-  .progress__bar {
-    height: 6px;
-    border-radius: 2px;
-    overflow: hidden;
-    background: var(--app-surface-subtle);
-    box-shadow: inset 0 0 0 1px var(--app-border);
-  }
-
-  .progress__bar span {
-    display: block;
-    height: 100%;
-    background:
-      repeating-linear-gradient(
-        to right,
-        transparent 0 calc(10% - 1px),
-        var(--app-surface-raised) calc(10% - 1px) 10%
-      ),
-      var(--app-accent);
-    transition: width 160ms ease-out;
-  }
-
-  .foot__error {
-    margin: 0;
-    color: var(--app-danger-text);
-    font-size: var(--text-base);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  /* Sentence case on purpose: `.btn` elsewhere in the app is uppercase+tracked,
-     which flattens a window that is mostly prose. Weight and fill carry the
-     hierarchy here instead of letterforms. */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    min-height: 32px;
-    padding: 7px 14px;
-    border-radius: 6px;
-    font-family: inherit;
-    font-size: var(--text-md);
-    font-weight: 600;
-    letter-spacing: -0.005em;
-    cursor: pointer;
-    border: 1px solid var(--app-border-strong);
-    background: transparent;
-    color: var(--app-text-muted);
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-
-  .btn:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn--primary {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-
-  .btn--primary:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-accent-bg));
-    border-color: var(--app-accent);
-  }
-
-  /* Busy, not unavailable — the in-flight primary dims less than a disabled one. */
-  .btn--primary:disabled {
-    opacity: var(--app-busy-opacity);
-  }
-
-  .btn__spinner {
-    width: 12px;
-    height: 12px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    border: 2px solid currentColor;
-    border-top-color: transparent;
-    opacity: 0.85;
-    animation: spin 0.7s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn__spinner {
-      animation-duration: 2.4s;
-    }
-
-    .progress__bar span {
-      transition: none;
-    }
-  }
+  .up-foot > .mx-inline :global(svg),
+  .up-foot > .mx-inline .mx-spin { margin-top: 2px; }
+  .up-actions { display: flex; align-items: center; gap: var(--s-2); }
+  .up-spacer { flex: 1; }
 </style>
