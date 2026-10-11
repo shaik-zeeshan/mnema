@@ -20,15 +20,9 @@
   let {
     askAvailable,
     onAskAi,
-    split = false,
   }: {
     askAvailable: boolean;
     onAskAi: () => void;
-    // True when the page shows the list/detail two-pane split (skeleton or
-    // results branches): the list becomes the fixed-width left column with
-    // the mockup's divider + subtle background. False for the full-width
-    // states (orientation, error, paused, no matches).
-    split?: boolean;
   } = $props();
 </script>
 
@@ -51,26 +45,13 @@
   id="quick-recall-results-list"
   class="quick-recall__results"
   class:quick-recall__results--refetching={search.loading && search.hasResults}
-  class:quick-recall__results--split={split}
   role="listbox"
   aria-label="Search results"
   aria-busy={search.loading}
 >
-  {#if search.belowMinimum}
-    <!-- Feature-teaching orientation view for the pristine / short-query
-         state (mockup state A): centered glyph / lead / sub / faint stack.
-         No clickable canned queries — calm cues only. -->
-    <div class="quick-recall__state-center">
-      <span class="quick-recall__state-glyph" aria-hidden="true">⌕</span>
-      <p class="quick-recall__state-lead">Search everything you've captured</p>
-      <p class="quick-recall__state-sub">Screen · Audio · Ask AI</p>
-      <p class="quick-recall__state-faint">
-        Type to find a moment{askAvailable ? ", or press " : "."}{#if askAvailable}<kbd
-            >⌃↵</kbd
-          > to ask AI.{/if}
-      </p>
-    </div>
-  {:else if search.loading && !search.hasResults}
+  <!-- No orientation branch: below the minimum query the page shows the
+       bare idle bar and does not mount this list. -->
+  {#if search.loading && !search.hasResults}
     <!-- Skeleton rows mirroring the redesigned row anatomy (mockup state B):
          a section-label bar, then rows with the 150×94 thumb block and two
          shimmer lines. Only the FIRST search (no prior results) shows the
@@ -266,16 +247,6 @@
     gap: 16px;
   }
 
-  /* Left column of the list/detail split (mockup `.result-list`): fixed
-     ~700px at the 1120 design width, hairline divider against the detail
-     pane, subtle background so the pane split reads. */
-  .quick-recall__results--split {
-    flex: 0 0 700px;
-    min-width: 0;
-    border-right: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-
   /* Refetch-in-flight: prior results stay on screen but dim slightly so the
      keystroke-driven refresh reads as "updating" without the surface flashing
      empty between every keystroke. */
@@ -346,8 +317,8 @@
   }
 
   /* Shared centered state pattern (mockup `.sp-center`): glyph / lead / sub /
-     faint stack with an optional actions row, used by orientation, error,
-     results-paused, and no-matches. */
+     faint stack with an optional actions row, used by error, results-paused,
+     and no-matches. */
   .quick-recall__state-center {
     flex: 1;
     min-height: 0;

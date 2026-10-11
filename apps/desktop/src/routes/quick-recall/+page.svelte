@@ -1,7 +1,6 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import { onMount, onDestroy, tick } from "svelte";
-  import { fade } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -44,7 +43,7 @@
     handleLauncherCaptureKeydown as captureKeydown,
   } from "$lib/quick-recall/search-keys";
   import ResultsList from "$lib/quick-recall/ResultsList.svelte";
-  import DetailPane from "$lib/quick-recall/DetailPane.svelte";
+  import BarShell from "$lib/quick-recall/BarShell.svelte";
   import TimelineStrip from "$lib/quick-recall/TimelineStrip.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import SyntaxHelp from "$lib/quick-recall/SyntaxHelp.svelte";
@@ -54,23 +53,9 @@
   // chips, picker/ghost/value-list surfaces, syntax-help open state, and the
   // loading/error/parse-error/semantic-hint states — lives in the shared
   // `quickRecallSearch` store singleton (lib/quick-recall/searchStore.svelte.ts).
-  // This page keeps the window shell, the mode cross-fade, the whole Ask AI
+  // This page keeps the window shell, the whole Ask AI
   // mode, root/window keydown routing, focus management, and the idle-clear.
   const filters = search.filters;
-
-  // Slice 2 (list + detail split): the two-pane body shows for the skeleton
-  // and results branches of the results region; the full-width states
-  // (orientation, error, results-paused, no-matches) keep the whole width,
-  // mirroring the mockup's states gallery. The branch order below mirrors
-  // ResultsList's own state branches exactly.
-  const searchSplitVisible = $derived.by(() => {
-    if (search.belowMinimum) return false;
-    if (search.loading && !search.hasResults) return true; // first-search skeleton
-    if (search.errorMessage) return false;
-    if (search.resultsPaused) return false;
-    if (search.showEmpty) return false;
-    return true; // results branch
-  });
 
   // The window is reused across summons (hidden, not destroyed), so its state
   // persists while it's closed. Re-summoning within 5s resumes where you left
@@ -84,7 +69,7 @@
   // transition (CSS animations/transitions are gated separately in the style block). Kept
   // live so a system preference flip mid-session is honored.
   let prefersReducedMotion = $state(false);
-  // Duration of the hero mode-switch cross-fade; 0 when reduced motion is on.
+  // Duration of the syntax-help fade; 0 when reduced motion is on.
   let modeFadeMs = $derived(prefersReducedMotion ? 0 : 140);
 
   // Opening a cited source closes the Quick Recall window. By the time the user
@@ -302,6 +287,14 @@
   type AskAiPhase = "thinking" | "streaming" | "done" | "error";
 
   let mode = $state<"search" | "ask">("search");
+  // Idle = the bare 60px bar: no body until there is a query to search, a
+  // filter surface open, or an Ask thread.
+  const showBody = $derived(
+    mode === "ask" ||
+      !search.belowMinimum ||
+      filters.pickerOpen ||
+      filters.valueListActive,
+  );
 
   // Availability is resolved on mount. Until it resolves the affordance is
   // treated as unavailable so we never render a dead button that errors.
@@ -1688,7 +1681,7 @@
       capture: true,
     });
 
-    // Track the reduced-motion preference for the JS-driven mode-switch fade.
+    // Track the reduced-motion preference for the JS-driven syntax-help fade.
     const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
     prefersReducedMotion = motionQuery.matches;
     const onMotionChange = (e: MediaQueryListEvent) => {
@@ -1868,671 +1861,657 @@
 {/snippet}
 
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="quick-recall" onkeydown={handleRootKeydown}>
-  <!-- The search↔Ask AI swap is the one hero transition: a brief cross-fade
-       between the two mode subtrees, gated to instant when reduced-motion is on
-       (modeFadeMs → 0). Each panel fills the mode area so they overlap cleanly
-       during the fade without reflowing the fixed frame. -->
-  <div class="quick-recall__mode">
-    {#if mode === "search"}
-      <div
-        class="quick-recall__panel"
-        in:fade={{ duration: modeFadeMs }}
-        out:fade={{ duration: modeFadeMs }}
-      >
-        <!-- Polite live region announcing result-count / loading / no-matches /
-             error transitions to AT, which the aria-activedescendant results
-             listbox cannot convey on its own. Visually hidden. -->
-        <span class="quick-recall__sr-status" role="status" aria-live="polite"
-          >{searchStatusAnnouncement}</span
-        >
-        <div class="quick-recall__field">
-          <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
-          <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
-               target; the absolutely-positioned mirror behind it renders the
-               typed text invisibly then the dimmed ghost suffix, matching the
-               input's font metrics/padding so the ghost aligns under the caret.
-               The mirror is aria-hidden and pointer-events:none so it never
-               steals interaction or screen-reader attention. -->
-          <div class="quick-recall__input-wrap">
-            {#if filters.hasGhost}
-              <div class="quick-recall__ghost" aria-hidden="true">
-                <span class="quick-recall__ghost-typed">{search.query}</span><span
-                  class="quick-recall__ghost-suffix">{filters.ghostCompletion}</span
-                >
-              </div>
-            {/if}
-            <input
-              bind:this={search.inputEl}
-              bind:value={search.query}
-              class="quick-recall__input"
-              type="text"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Search your captures…"
-              aria-label="Search your captures"
-              role="combobox"
-              aria-expanded={filters.pickerOpen ||
-                filters.valueListActive ||
-                search.resultCount > 0}
-              aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
-              aria-controls={filters.pickerOpen
-                ? "quick-recall-picker"
-                : filters.valueListActive
-                  ? "quick-recall-value-list"
-                  : "quick-recall-results-list"}
-              aria-activedescendant={filters.pickerOpen
-                ? filters.pickerActiveOptionId
-                : filters.valueListActive
-                  ? filters.valueListActiveOptionId
-                  : search.activeOptionId}
-              onkeydown={handleSearchKeydown}
-              oninput={() => search.updateCaretAtEnd()}
-              onkeyup={() => search.updateCaretAtEnd()}
-              onclick={() => search.updateCaretAtEnd()}
-              onselect={() => search.updateCaretAtEnd()}
-              onfocus={() => {
-                search.updateCaretAtEnd();
-                void search.ensureSearchableAppsLoaded();
-              }}
-            />
+<!-- The window is the bar (BarShell): the field row, then — once there is
+     something to show — the body and the key row. Each mode fills the same
+     three slots, so switching mode resizes the bar instead of cross-fading
+     two fixed-height panels. -->
+{#snippet barRow()}
+  {#if mode === "search"}
+    <!-- Polite live region announcing result-count / loading / no-matches /
+         error transitions to AT, which the aria-activedescendant results
+         listbox cannot convey on its own. Visually hidden. -->
+    <span class="quick-recall__sr-status" role="status" aria-live="polite"
+      >{searchStatusAnnouncement}</span
+    >
+    <div class="quick-recall__field">
+      <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
+      <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
+           target; the absolutely-positioned mirror behind it renders the
+           typed text invisibly then the dimmed ghost suffix, matching the
+           input's font metrics/padding so the ghost aligns under the caret.
+           The mirror is aria-hidden and pointer-events:none so it never
+           steals interaction or screen-reader attention. -->
+      <div class="quick-recall__input-wrap">
+        {#if filters.hasGhost}
+          <div class="quick-recall__ghost" aria-hidden="true">
+            <span class="quick-recall__ghost-typed">{search.query}</span><span
+              class="quick-recall__ghost-suffix">{filters.ghostCompletion}</span
+            >
           </div>
-          <!-- Visible Filter Picker trigger: the picker was previously reachable
-               only via ⌘F / `/`, advertised nowhere — a funnel in the field row
-               gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
-               its title). Click opens the same category picker as the key path; DOM
-               focus stays on the search input (openPicker refocuses it), so the
-               picker's aria-activedescendant navigation keeps working. -->
+        {/if}
+        <input
+          bind:this={search.inputEl}
+          bind:value={search.query}
+          class="quick-recall__input"
+          type="text"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Search your captures…"
+          aria-label="Search your captures"
+          role="combobox"
+          aria-expanded={filters.pickerOpen ||
+            filters.valueListActive ||
+            search.resultCount > 0}
+          aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
+          aria-controls={filters.pickerOpen
+            ? "quick-recall-picker"
+            : filters.valueListActive
+              ? "quick-recall-value-list"
+              : "quick-recall-results-list"}
+          aria-activedescendant={filters.pickerOpen
+            ? filters.pickerActiveOptionId
+            : filters.valueListActive
+              ? filters.valueListActiveOptionId
+              : search.activeOptionId}
+          onkeydown={handleSearchKeydown}
+          oninput={() => search.updateCaretAtEnd()}
+          onkeyup={() => search.updateCaretAtEnd()}
+          onclick={() => search.updateCaretAtEnd()}
+          onselect={() => search.updateCaretAtEnd()}
+          onfocus={() => {
+            search.updateCaretAtEnd();
+            void search.ensureSearchableAppsLoaded();
+          }}
+        />
+      </div>
+      <!-- Visible Filter Picker trigger: the picker was previously reachable
+           only via ⌘F / `/`, advertised nowhere — a funnel in the field row
+           gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
+           its title). Click opens the same category picker as the key path; DOM
+           focus stays on the search input (openPicker refocuses it), so the
+           picker's aria-activedescendant navigation keeps working. -->
+      <button
+        type="button"
+        class="quick-recall__filter-trigger"
+        class:quick-recall__filter-trigger--active={filters.pickerOpen}
+        class:quick-recall__filter-trigger--filtered={search
+          .activeFilterChips.length > 0}
+        onclick={() =>
+          filters.pickerOpen ? filters.closePicker() : filters.openPicker()}
+        aria-label="Filter results"
+        use:tip={"Filter results (⌘F)"}
+        aria-expanded={filters.pickerOpen}
+        aria-controls={filters.pickerOpen ? "quick-recall-picker" : undefined}
+        aria-keyshortcuts="Control+F"
+      >
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.2"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" />
+        </svg>
+        Filter <kbd aria-hidden="true">⌘F</kbd>
+      </button>
+      <!-- Syntax-help affordance (`?` trigger + static popover), extracted
+           to a component; its open state lives on the search store so the
+           keydown routing can close it. -->
+      <SyntaxHelp fadeMs={modeFadeMs} />
+      {#if askAvailable}
+        <button
+          type="button"
+          class="quick-recall__ask-button"
+          onclick={() => void activateAskAi()}
+          aria-label="Ask AI"
+          aria-keyshortcuts="Control+Enter"
+        >
+          Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="quick-recall__ask-button quick-recall__ask-button--disabled"
+          disabled
+          aria-label={askUnavailableHint ?? "Ask AI unavailable"}
+          aria-describedby={ASK_UNAVAILABLE_HINT_ID}
+          use:tip={askUnavailableHint ?? "Ask AI unavailable"}
+        >
+          Ask AI
+        </button>
+      {/if}
+    </div>
+  {:else}
+    <div class="quick-recall__field quick-recall__field--ask">
+      <button
+        type="button"
+        class="quick-recall__back"
+        onclick={() => void backToSearch()}
+        aria-label="Back to search"
+        aria-keyshortcuts="Escape"
+      >
+        ← Back
+      </button>
+      {#if askSubmitted}
+        <!-- Once the thread exists the header is just the Back affordance —
+             each turn's question renders as its own header in the transcript. -->
+        <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
+        {#if askStreaming}
+          <!-- Interrupt a streaming answer in place (keeps the partial answer
+               visible) instead of forcing Escape, which abandons the surface. -->
           <button
             type="button"
-            class="quick-recall__filter-trigger"
-            class:quick-recall__filter-trigger--active={filters.pickerOpen}
-            class:quick-recall__filter-trigger--filtered={search
-              .activeFilterChips.length > 0}
-            onclick={() =>
-              filters.pickerOpen ? filters.closePicker() : filters.openPicker()}
-            aria-label="Filter results"
-            use:tip={"Filter results (⌘F)"}
-            aria-expanded={filters.pickerOpen}
-            aria-controls={filters.pickerOpen ? "quick-recall-picker" : undefined}
-            aria-keyshortcuts="Control+F"
+            class="quick-recall__stop"
+            onclick={() => void stopActiveAsk()}
+            aria-label="Stop generating"
+            use:tip={"Stop generating"}
           >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 12 12"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" />
-            </svg>
-            Filter <kbd aria-hidden="true">⌘F</kbd>
+            <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+            Stop
           </button>
-          <!-- Syntax-help affordance (`?` trigger + static popover), extracted
-               to a component; its open state lives on the search store so the
-               keydown routing can close it. -->
-          <SyntaxHelp fadeMs={modeFadeMs} />
-          {#if askAvailable}
-            <button
-              type="button"
-              class="quick-recall__ask-button"
-              onclick={() => void activateAskAi()}
-              aria-label="Ask AI"
-              aria-keyshortcuts="Control+Enter"
-            >
-              Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="quick-recall__ask-button quick-recall__ask-button--disabled"
-              disabled
-              aria-label={askUnavailableHint ?? "Ask AI unavailable"}
-              aria-describedby={ASK_UNAVAILABLE_HINT_ID}
-              use:tip={askUnavailableHint ?? "Ask AI unavailable"}
-            >
-              Ask AI
-            </button>
-          {/if}
-        </div>
+        {/if}
+      {:else}
+        <textarea
+          bind:this={askInputEl}
+          bind:value={askInput}
+          class="quick-recall__ask-input"
+          rows="1"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="Ask anything about your captures…"
+          aria-label="Ask AI a question"
+          aria-keyshortcuts="Enter Escape"
+          onkeydown={handleAskInputKeydown}
+        ></textarea>
+      {/if}
+    </div>
+  {/if}
+{/snippet}
 
-        <!-- Slice 2: active filter chip band. A thin row under the search input
-             rendering each applied refinement (from the backend desugar) as a
-             plain-language pill with an × that strips its operator token(s) from
-             the query. This band shares its vertical slot with the inline parse
-             error line (added in slice 3); a chip and a live error never apply to
-             the same token, so they can coexist here. Only rendered when at least
-             one chip is active. -->
-        {#if search.activeFilterChips.length > 0}
-          <div class="quick-recall__chips" role="list" aria-label="Active filters">
-            {#each search.activeFilterChips as chip (chip.id)}
-              <span class="quick-recall__chip" role="listitem">
-                <span class="quick-recall__chip-label">{chip.label}</span>
+{#snippet bodyRegion()}
+  {#if mode === "search"}
+    <!-- Slice 2: active filter chip band. A thin row under the search input
+         rendering each applied refinement (from the backend desugar) as a
+         plain-language pill with an × that strips its operator token(s) from
+         the query. This band shares its vertical slot with the inline parse
+         error line (added in slice 3); a chip and a live error never apply to
+         the same token, so they can coexist here. Only rendered when at least
+         one chip is active. -->
+    {#if search.activeFilterChips.length > 0}
+      <div class="quick-recall__chips" role="list" aria-label="Active filters">
+        {#each search.activeFilterChips as chip (chip.id)}
+          <span class="quick-recall__chip" role="listitem">
+            <span class="quick-recall__chip-label">{chip.label}</span>
+            <button
+              type="button"
+              class="quick-recall__chip-remove"
+              onclick={() => search.removeChip(chip)}
+              aria-label={`Remove ${chip.label} filter`}
+              use:tip={`Remove ${chip.label} filter`}
+            >
+              ×
+            </button>
+          </span>
+        {/each}
+        <span class="quick-recall__chip-hint" aria-hidden="true"
+          >typed filters become chips · ? for syntax</span
+        >
+      </div>
+    {/if}
+
+    <!-- Slice 3: inline parse-error line. When the backend reports a
+         malformed operator it ALSO suppresses results (paused), so we surface
+         ONE friendly line here — in the same band slot as the chips above (a
+         chip and a live error never apply to the same token, so they coexist
+         cleanly). Only the first error is shown. The Ask AI pivot stays
+         reachable: a malformed filter never blocks a natural-language ask. -->
+    {#if search.parseErrorMessage !== null}
+      <p class="quick-recall__parse-error" role="alert">{search.parseErrorMessage}</p>
+    {/if}
+
+    <!-- Always-present describedby target for the disabled Ask AI button, so
+         keyboard/AT users get the reason the native `title` tooltip can't
+         surface. Rendered whenever Ask AI is unavailable (mirroring the
+         disabled button's condition) with a fallback so the reference never
+         dangles before the availability probe resolves. -->
+    {#if !askAvailable}
+      <button
+        type="button"
+        id={ASK_UNAVAILABLE_HINT_ID}
+        class="quick-recall__ask-hint"
+        onclick={() => void openAskAiSettings()}
+      >
+        {askUnavailableHint ?? "Ask AI unavailable"} — open Settings →
+      </button>
+    {/if}
+
+    <!-- The search body: the Filter Picker while a filter surface is open,
+         else the results list. The selected-result preview (DetailPane)
+         returns as Quick Look (QR4). -->
+    <div class="quick-recall__body">
+      {#if filters.pickerOpen || filters.valueListActive}
+        <!-- Filter Picker / Filter Value List: replaces the results region
+             while a filter sub-surface owns it. Extracted component; the
+             picker branch wins while open (the two are mutually exclusive
+             by construction), preserving the original branch order. -->
+        <FilterPicker />
+      {:else}
+        <!-- The search results region with all its state branches
+             (skeleton / error+Retry / results-paused /
+             no-matches recovery / semantic hint / Screen+Audio sections),
+             extracted to a component rendering off the search store. -->
+        <ResultsList
+          {askAvailable}
+          onAskAi={() => void activateAskAi()}
+        />
+      {/if}
+    </div>
+
+    <!-- Slice 6: thin 8-day timeline strip between the body and the footer
+         (mockup `.timeline` + `.tl-preview`): one dot per fetched result at
+         its true time, hover previews, click selects (auto-expanding a
+         collapsed section). Rendered whenever results exist, staying put
+         under the Filter Picker like the mockup's always-present strip. -->
+    {#if search.hasResults}
+      <TimelineStrip />
+    {/if}
+  {:else}
+    <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
+         transitions to AT. The transcript below is intentionally NOT a live
+         region (token-by-token deltas flooded screen readers); this mirrors
+         the search door's `searchStatusAnnouncement` pattern. -->
+    <span class="quick-recall__sr-status" role="status" aria-live="polite"
+      >{askPhaseAnnouncement}</span
+    >
+
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions -->
+    <div
+      bind:this={askAreaEl}
+      class="quick-recall__results quick-recall__answer-area"
+      aria-busy={askStreaming}
+      tabindex="-1"
+      onkeydown={handleAnswerAreaKeydown}
+    >
+      {#if !askSubmitted}
+        <p class="quick-recall__state">Type a question and press Enter to ask.</p>
+      {:else}
+        <!-- The transcript: a vertical list of self-contained turns. Each
+             renders its own question header, answer, sources, tool-activity
+             summary, and copy/error affordances. Stream events feed the LAST
+             turn (the live one). Keyed by index — turns are append-only. -->
+        {#each askTurns as turn, ti (ti)}
+          <div class="quick-recall__turn">
+            <p class="quick-recall__turn-question" use:tip={turn.question}>
+              {turn.question}
+            </p>
+
+            {#if turn.phase === "error"}
+              <p class="quick-recall__state quick-recall__state--error">
+                {turn.errorMessage ?? "Ask AI failed."}
+              </p>
+              <!-- Turn 1 rebuilds the thread; a follow-up retries in place. -->
+              <div class="quick-recall__retry-row">
                 <button
                   type="button"
-                  class="quick-recall__chip-remove"
-                  onclick={() => search.removeChip(chip)}
-                  aria-label={`Remove ${chip.label} filter`}
-                  use:tip={`Remove ${chip.label} filter`}
+                  class="quick-recall__retry"
+                  disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
+                  onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
                 >
-                  ×
+                  Retry
                 </button>
-              </span>
-            {/each}
-            <span class="quick-recall__chip-hint" aria-hidden="true"
-              >typed filters become chips · ? for syntax</span
-            >
-          </div>
-        {/if}
-
-        <!-- Slice 3: inline parse-error line. When the backend reports a
-             malformed operator it ALSO suppresses results (paused), so we surface
-             ONE friendly line here — in the same band slot as the chips above (a
-             chip and a live error never apply to the same token, so they coexist
-             cleanly). Only the first error is shown. The Ask AI pivot stays
-             reachable: a malformed filter never blocks a natural-language ask. -->
-        {#if search.parseErrorMessage !== null}
-          <p class="quick-recall__parse-error" role="alert">{search.parseErrorMessage}</p>
-        {/if}
-
-        <!-- Always-present describedby target for the disabled Ask AI button, so
-             keyboard/AT users get the reason the native `title` tooltip can't
-             surface. Rendered whenever Ask AI is unavailable (mirroring the
-             disabled button's condition) with a fallback so the reference never
-             dangles before the availability probe resolves. -->
-        {#if !askAvailable}
-          <button
-            type="button"
-            id={ASK_UNAVAILABLE_HINT_ID}
-            class="quick-recall__ask-hint"
-            onclick={() => void openAskAiSettings()}
-          >
-            {askUnavailableHint ?? "Ask AI unavailable"} — open Settings →
-          </button>
-        {/if}
-
-        <!-- Slice 2: two-pane body (mockup `.qr-body`). The results list is
-             the fixed-width left column and the detail pane fills the right
-             whenever the list shows rows (or the first-search skeleton); the
-             full-width states and the Filter Picker span the whole body. -->
-        <div class="quick-recall__body">
-          {#if filters.pickerOpen || filters.valueListActive}
-            <!-- Filter Picker / Filter Value List: replaces the results region
-                 while a filter sub-surface owns it. Extracted component; the
-                 picker branch wins while open (the two are mutually exclusive
-                 by construction), preserving the original branch order. -->
-            <FilterPicker />
-          {:else}
-            <!-- The search results region with all its state branches
-                 (orientation / skeleton / error+Retry / results-paused /
-                 no-matches recovery / semantic hint / Screen+Audio sections),
-                 extracted to a component rendering off the search store. -->
-            <ResultsList
-              {askAvailable}
-              onAskAi={() => void activateAskAi()}
-              split={searchSplitVisible}
-            />
-            {#if searchSplitVisible}
-              <DetailPane dim={search.loading && !search.hasResults} />
-            {/if}
-          {/if}
-        </div>
-
-        <!-- Slice 6: thin 8-day timeline strip between the body and the footer
-             (mockup `.timeline` + `.tl-preview`): one dot per fetched result at
-             its true time, hover previews, click selects (auto-expanding a
-             collapsed section). Rendered whenever results exist, staying put
-             under the Filter Picker like the mockup's always-present strip. -->
-        {#if search.hasResults}
-          <TimelineStrip />
-        {/if}
-      </div>
-    {:else}
-      <div
-        class="quick-recall__panel"
-        in:fade={{ duration: modeFadeMs }}
-        out:fade={{ duration: modeFadeMs }}
-      >
-        <div class="quick-recall__field quick-recall__field--ask">
-          <button
-            type="button"
-            class="quick-recall__back"
-            onclick={() => void backToSearch()}
-            aria-label="Back to search"
-            aria-keyshortcuts="Escape"
-          >
-            ← Back
-          </button>
-          {#if askSubmitted}
-            <!-- Once the thread exists the header is just the Back affordance —
-                 each turn's question renders as its own header in the transcript. -->
-            <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
-            {#if askStreaming}
-              <!-- Interrupt a streaming answer in place (keeps the partial answer
-                   visible) instead of forcing Escape, which abandons the surface. -->
-              <button
-                type="button"
-                class="quick-recall__stop"
-                onclick={() => void stopActiveAsk()}
-                aria-label="Stop generating"
-                use:tip={"Stop generating"}
-              >
-                <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
-                Stop
-              </button>
-            {/if}
-          {:else}
-            <textarea
-              bind:this={askInputEl}
-              bind:value={askInput}
-              class="quick-recall__ask-input"
-              rows="1"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Ask anything about your captures…"
-              aria-label="Ask AI a question"
-              aria-keyshortcuts="Enter Escape"
-              onkeydown={handleAskInputKeydown}
-            ></textarea>
-          {/if}
-        </div>
-
-        <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
-             transitions to AT. The transcript below is intentionally NOT a live
-             region (token-by-token deltas flooded screen readers); this mirrors
-             the search door's `searchStatusAnnouncement` pattern. -->
-        <span class="quick-recall__sr-status" role="status" aria-live="polite"
-          >{askPhaseAnnouncement}</span
-        >
-
-        <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-        <div
-          bind:this={askAreaEl}
-          class="quick-recall__results quick-recall__answer-area"
-          aria-busy={askStreaming}
-          tabindex="-1"
-          onkeydown={handleAnswerAreaKeydown}
-        >
-          {#if !askSubmitted}
-            <p class="quick-recall__state">Type a question and press Enter to ask.</p>
-          {:else}
-            <!-- The transcript: a vertical list of self-contained turns. Each
-                 renders its own question header, answer, sources, tool-activity
-                 summary, and copy/error affordances. Stream events feed the LAST
-                 turn (the live one). Keyed by index — turns are append-only. -->
-            {#each askTurns as turn, ti (ti)}
-              <div class="quick-recall__turn">
-                <p class="quick-recall__turn-question" use:tip={turn.question}>
-                  {turn.question}
-                </p>
-
-                {#if turn.phase === "error"}
-                  <p class="quick-recall__state quick-recall__state--error">
-                    {turn.errorMessage ?? "Ask AI failed."}
-                  </p>
-                  <!-- Turn 1 rebuilds the thread; a follow-up retries in place. -->
-                  <div class="quick-recall__retry-row">
-                    <button
-                      type="button"
-                      class="quick-recall__retry"
-                      disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
-                      onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
-                    >
-                      Retry
-                    </button>
-                  </div>
-                {:else}
-                  <!-- Thinking disclosure: the model's reasoning, ABOVE the
-                       answer body. Rendered only when reasoning text arrived.
-                       While reasoning streams but the answer hasn't started
-                       (and the turn isn't terminal) it's a LIVE expanded panel;
-                       otherwise it settles into a collapsed "Thought process"
-                       chip. Reasoning is PLAIN TEXT (Svelte-escaped), never
-                       routed through AnswerProse, so it reads as distinct. -->
-                  {#if hasReasoning(turn)}
-                    {#if reasoningIsLive(turn)}
-                      <div class="quick-recall__thinking quick-recall__thinking--live">
-                        <p class="quick-recall__state quick-recall__state--working">
-                          <span class="quick-recall__dot" aria-hidden="true"></span>
-                          Thinking…
-                        </p>
-                        <div class="quick-recall__thinking-text">{turn.reasoning}</div>
-                      </div>
-                    {:else}
-                      <div class="quick-recall__thinking">
-                        <button
-                          type="button"
-                          class="quick-recall__activity-chip"
-                          aria-expanded={turn.reasoningExpanded}
-                          onclick={() => toggleTurnReasoning(turn)}
-                        >
-                          <span
-                            class="quick-recall__activity-caret"
-                            class:quick-recall__activity-caret--open={turn.reasoningExpanded}
-                            aria-hidden="true">▸</span
-                          >
-                          <span class="quick-recall__activity-summary">Thought process</span>
-                        </button>
-                        {#if turn.reasoningExpanded}
-                          <div class="quick-recall__thinking-text">{turn.reasoning}</div>
-                        {/if}
-                      </div>
-                    {/if}
-                  {/if}
-
-                  {#if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
+              </div>
+            {:else}
+              <!-- Thinking disclosure: the model's reasoning, ABOVE the
+                   answer body. Rendered only when reasoning text arrived.
+                   While reasoning streams but the answer hasn't started
+                   (and the turn isn't terminal) it's a LIVE expanded panel;
+                   otherwise it settles into a collapsed "Thought process"
+                   chip. Reasoning is PLAIN TEXT (Svelte-escaped), never
+                   routed through AnswerProse, so it reads as distinct. -->
+              {#if hasReasoning(turn)}
+                {#if reasoningIsLive(turn)}
+                  <div class="quick-recall__thinking quick-recall__thinking--live">
                     <p class="quick-recall__state quick-recall__state--working">
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Thinking…
                     </p>
-                  {:else}
-                    {#if turn.phase === "streaming" || turn.phase === "done"}
-                      <!-- Per-turn copy: only on done, never while streaming. -->
-                      {#if turn.phase === "done" && turnAnswerText(turn).length > 0}
-                        <button
-                          type="button"
-                          class="quick-recall__copy"
-                          class:quick-recall__copy--copied={turn.copied}
-                          class:quick-recall__copy--failed={turn.copyFailed}
-                          onclick={() => void copyTurnAnswer(ti)}
-                          aria-label={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
-                          use:tip={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                    <div class="quick-recall__thinking-text">{turn.reasoning}</div>
+                  </div>
+                {:else}
+                  <div class="quick-recall__thinking">
+                    <button
+                      type="button"
+                      class="quick-recall__activity-chip"
+                      aria-expanded={turn.reasoningExpanded}
+                      onclick={() => toggleTurnReasoning(turn)}
+                    >
+                      <span
+                        class="quick-recall__activity-caret"
+                        class:quick-recall__activity-caret--open={turn.reasoningExpanded}
+                        aria-hidden="true">▸</span
+                      >
+                      <span class="quick-recall__activity-summary">Thought process</span>
+                    </button>
+                    {#if turn.reasoningExpanded}
+                      <div class="quick-recall__thinking-text">{turn.reasoning}</div>
+                    {/if}
+                  </div>
+                {/if}
+              {/if}
+
+              {#if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
+                <p class="quick-recall__state quick-recall__state--working">
+                  <span class="quick-recall__dot" aria-hidden="true"></span>
+                  Thinking…
+                </p>
+              {:else}
+                {#if turn.phase === "streaming" || turn.phase === "done"}
+                  <!-- Per-turn copy: only on done, never while streaming. -->
+                  {#if turn.phase === "done" && turnAnswerText(turn).length > 0}
+                    <button
+                      type="button"
+                      class="quick-recall__copy"
+                      class:quick-recall__copy--copied={turn.copied}
+                      class:quick-recall__copy--failed={turn.copyFailed}
+                      onclick={() => void copyTurnAnswer(ti)}
+                      aria-label={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                      use:tip={turn.copyFailed ? "Couldn't copy answer" : "Copy answer"}
+                    >
+                      {#if turn.copyFailed}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 14 14"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
                         >
-                          {#if turn.copyFailed}
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 14 14"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.4"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
-                            </svg>
-                          {:else if turn.copied}
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 14 14"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.4"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path d="M2.5 7.5 6 11l5.5-7" />
-                            </svg>
-                          {:else}
-                            <svg
-                              width="14"
-                              height="14"
-                              viewBox="0 0 14 14"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <rect x="4.5" y="4.5" width="7" height="7" rx="1.4" />
-                              <path
-                                d="M9.5 4.5V3a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1H4"
-                              />
-                            </svg>
-                          {/if}
-                        </button>
+                          <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
+                        </svg>
+                      {:else if turn.copied}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 14 14"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.4"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M2.5 7.5 6 11l5.5-7" />
+                        </svg>
+                      {:else}
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 14 14"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.2"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <rect x="4.5" y="4.5" width="7" height="7" rx="1.4" />
+                          <path
+                            d="M9.5 4.5V3a1 1 0 0 0-1-1h-5a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1H4"
+                          />
+                        </svg>
                       {/if}
+                    </button>
+                  {/if}
 
-                      <!-- Per-turn collapsed, expandable activity summary chip. -->
-                      {#if activitySummaryFor(turn.toolActivities) !== null}
-                        <div class="quick-recall__activity">
-                          <button
-                            type="button"
-                            class="quick-recall__activity-chip"
-                            aria-expanded={turn.summaryExpanded}
-                            onclick={() => toggleTurnSummary(turn)}
-                          >
-                            <span
-                              class="quick-recall__activity-caret"
-                              class:quick-recall__activity-caret--open={turn.summaryExpanded}
-                              aria-hidden="true">▸</span
-                            >
-                            <span class="quick-recall__activity-summary"
-                              >{activitySummaryFor(turn.toolActivities)}</span
-                            >
-                          </button>
-                          {#if turn.summaryExpanded}
-                            <ul class="quick-recall__activity-list">
-                              {#each turn.toolActivities as activity, ai (ai)}
-                                <li class="quick-recall__activity-item">
-                                  {activity.label}
-                                  {#if activity.app}
-                                    in {@render toolAppChip(activity)}
-                                  {/if}
-                                </li>
-                              {/each}
-                            </ul>
-                          {/if}
-                        </div>
-                      {/if}
-
-                      <!-- The answer body: render-ready blocks streamed from the
-                           backend, switched on `kind`. Prose carries raw markdown
-                           (AnswerProse renders + hardens it, owns the code-block
-                           copy buttons, external-link delegation through
-                           openAnswerLink, and the streaming caret); the graphical
-                           blocks carry already-parsed data. The streaming caret
-                           rides only the LAST prose block, and only until the turn
-                           settles. -->
-                      <div class="quick-recall__answer">
-                        {#each turn.blocks as block, bi (bi)}
-                          {#if block.kind === "prose"}
-                            <AnswerProse
-                              source={block.markdown}
-                              isStreaming={turn.phase !== "done" &&
-                                bi === turn.blocks.length - 1}
-                              onOpenLink={openAnswerLink}
-                            />
-                          {:else if block.kind === "bars"}
-                            <figure class="quick-recall__graphic">
-                              {#if block.title}
-                                <figcaption class="quick-recall__graphic-title">
-                                  {block.title}
-                                </figcaption>
+                  <!-- Per-turn collapsed, expandable activity summary chip. -->
+                  {#if activitySummaryFor(turn.toolActivities) !== null}
+                    <div class="quick-recall__activity">
+                      <button
+                        type="button"
+                        class="quick-recall__activity-chip"
+                        aria-expanded={turn.summaryExpanded}
+                        onclick={() => toggleTurnSummary(turn)}
+                      >
+                        <span
+                          class="quick-recall__activity-caret"
+                          class:quick-recall__activity-caret--open={turn.summaryExpanded}
+                          aria-hidden="true">▸</span
+                        >
+                        <span class="quick-recall__activity-summary"
+                          >{activitySummaryFor(turn.toolActivities)}</span
+                        >
+                      </button>
+                      {#if turn.summaryExpanded}
+                        <ul class="quick-recall__activity-list">
+                          {#each turn.toolActivities as activity, ai (ai)}
+                            <li class="quick-recall__activity-item">
+                              {activity.label}
+                              {#if activity.app}
+                                in {@render toolAppChip(activity)}
                               {/if}
-                              <MiniBars items={block.items} />
-                            </figure>
-                          {:else if block.kind === "dossier"}
-                            <div
-                              class="quick-recall__graphic quick-recall__graphic--dossier"
-                            >
-                              {#each block.items as item, di (di)}
-                                <div class="quick-recall__dossier-card">
-                                  <p class="quick-recall__dossier-statement">
-                                    {item.statement}
-                                  </p>
-                                  <div class="quick-recall__dossier-foot">
-                                    {#if item.subject}
-                                      <span class="quick-recall__subject-chip">
-                                        {item.subject}
-                                      </span>
-                                    {/if}
-                                    <span class="quick-recall__conf-wrap">
-                                      <ConfidenceBar confidence={item.confidence} />
-                                    </span>
-                                  </div>
-                                </div>
-                              {/each}
-                            </div>
-                          {:else if block.kind === "timeline"}
-                            <!-- Timeline owns its own caption, so the .graphic
-                                 wrapper here doesn't repeat it as a figcaption. -->
-                            <figure class="quick-recall__graphic">
-                              <Timeline title={block.title} intervals={block.items} />
-                            </figure>
-                          {/if}
-                        {/each}
-                      </div>
-
-                      <!-- Per-turn answer sources: the captures this turn drew on,
-                           surfaced only once the turn is done. -->
-                      {#if turn.phase === "done" && turn.sources.length > 0}
-                        <div class="quick-recall__sources">
-                          <span class="quick-recall__sources-heading">Sources</span>
-                          {#if turnFrameSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Screen</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="frame"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    thumbnailUrl={s.frameId != null
-                                      ? (search.thumbnailCache.get(s.frameId) ?? null)
-                                      : null}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s, turn.question)}
-                                    onopenurl={() => openSourceUrl(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-
-                          {#if turnAudioSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Audio</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="audio"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    sourceKind={s.sourceKind}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s, turn.question)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
+                            </li>
+                          {/each}
+                        </ul>
                       {/if}
+                    </div>
+                  {/if}
 
-                      <!-- Empty-answer fallback: no blocks or sources came back;
-                           a calm line plus the error branch's retry. -->
-                      {#if turn.phase === "done" && turn.blocks.length === 0 && turn.sources.length === 0}
-                        <p class="quick-recall__state">
-                          No answer came back. Try asking again.
-                        </p>
-                        <div class="quick-recall__retry-row">
-                          <button
-                            type="button"
-                            class="quick-recall__retry"
-                            disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
-                            onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      {/if}
-                    {/if}
-                    {#if turn.liveActivity !== null}
-                      <!-- Live animated working line: the real tool filter string. -->
-                      <p class="quick-recall__state quick-recall__state--working">
-                        <span class="quick-recall__dot" aria-hidden="true"></span>
-                        <span class="quick-recall__working-label"
-                          >{turn.liveActivity.label}</span
+                  <!-- The answer body: render-ready blocks streamed from the
+                       backend, switched on `kind`. Prose carries raw markdown
+                       (AnswerProse renders + hardens it, owns the code-block
+                       copy buttons, external-link delegation through
+                       openAnswerLink, and the streaming caret); the graphical
+                       blocks carry already-parsed data. The streaming caret
+                       rides only the LAST prose block, and only until the turn
+                       settles. -->
+                  <div class="quick-recall__answer">
+                    {#each turn.blocks as block, bi (bi)}
+                      {#if block.kind === "prose"}
+                        <AnswerProse
+                          source={block.markdown}
+                          isStreaming={turn.phase !== "done" &&
+                            bi === turn.blocks.length - 1}
+                          onOpenLink={openAnswerLink}
+                        />
+                      {:else if block.kind === "bars"}
+                        <figure class="quick-recall__graphic">
+                          {#if block.title}
+                            <figcaption class="quick-recall__graphic-title">
+                              {block.title}
+                            </figcaption>
+                          {/if}
+                          <MiniBars items={block.items} />
+                        </figure>
+                      {:else if block.kind === "dossier"}
+                        <div
+                          class="quick-recall__graphic quick-recall__graphic--dossier"
                         >
-                        {#if turn.liveActivity.app}
-                          in
-                          {@render toolAppChip(turn.liveActivity)}
-                        {/if}
-                      </p>
-                    {:else if turn.phase === "streaming"}
-                      <!-- Answer text is arriving: label the phase so the caret
-                           in AnswerProse reads as the insertion point. -->
-                      <p class="quick-recall__state quick-recall__state--working">
-                        <span class="quick-recall__dot" aria-hidden="true"></span>
-                        Writing…
-                      </p>
-                    {/if}
+                          {#each block.items as item, di (di)}
+                            <div class="quick-recall__dossier-card">
+                              <p class="quick-recall__dossier-statement">
+                                {item.statement}
+                              </p>
+                              <div class="quick-recall__dossier-foot">
+                                {#if item.subject}
+                                  <span class="quick-recall__subject-chip">
+                                    {item.subject}
+                                  </span>
+                                {/if}
+                                <span class="quick-recall__conf-wrap">
+                                  <ConfidenceBar confidence={item.confidence} />
+                                </span>
+                              </div>
+                            </div>
+                          {/each}
+                        </div>
+                      {:else if block.kind === "timeline"}
+                        <!-- Timeline owns its own caption, so the .graphic
+                             wrapper here doesn't repeat it as a figcaption. -->
+                        <figure class="quick-recall__graphic">
+                          <Timeline title={block.title} intervals={block.items} />
+                        </figure>
+                      {/if}
+                    {/each}
+                  </div>
+
+                  <!-- Per-turn answer sources: the captures this turn drew on,
+                       surfaced only once the turn is done. -->
+                  {#if turn.phase === "done" && turn.sources.length > 0}
+                    <div class="quick-recall__sources">
+                      <span class="quick-recall__sources-heading">Sources</span>
+                      {#if turnFrameSources(turn).length > 0}
+                        <div class="quick-recall__section" role="presentation">
+                          <span class="quick-recall__section-label">Screen</span>
+                          <div class="quick-recall__source-row" role="presentation">
+                            {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                              <AnswerSourceCard
+                                kind="frame"
+                                appName={s.appName}
+                                windowTitle={s.windowTitle}
+                                startedAt={s.startedAt}
+                                endedAt={s.endedAt}
+                                thumbnailUrl={s.frameId != null
+                                  ? (search.thumbnailCache.get(s.frameId) ?? null)
+                                  : null}
+                                url={s.url}
+                                onselect={() => void selectSource(s, turn.question)}
+                                onopenurl={() => openSourceUrl(s)}
+                              />
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if turnAudioSources(turn).length > 0}
+                        <div class="quick-recall__section" role="presentation">
+                          <span class="quick-recall__section-label">Audio</span>
+                          <div class="quick-recall__source-row" role="presentation">
+                            {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                              <AnswerSourceCard
+                                kind="audio"
+                                appName={s.appName}
+                                windowTitle={s.windowTitle}
+                                startedAt={s.startedAt}
+                                endedAt={s.endedAt}
+                                sourceKind={s.sourceKind}
+                                url={s.url}
+                                onselect={() => void selectSource(s, turn.question)}
+                              />
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+
+                  <!-- Empty-answer fallback: no blocks or sources came back;
+                       a calm line plus the error branch's retry. -->
+                  {#if turn.phase === "done" && turn.blocks.length === 0 && turn.sources.length === 0}
+                    <p class="quick-recall__state">
+                      No answer came back. Try asking again.
+                    </p>
+                    <div class="quick-recall__retry-row">
+                      <button
+                        type="button"
+                        class="quick-recall__retry"
+                        disabled={askStreaming || (ti > 0 && regeneratePlan(turn, askTurns.length, false) === null)}
+                        onclick={() => void (ti === 0 ? retryAsk() : retryFollowupTurn(turn))}
+                      >
+                        Retry
+                      </button>
+                    </div>
                   {/if}
                 {/if}
-                {#if turn.stoppedEarly}
-                  <!-- This turn was cut off by Stop; the partial below is kept
-                       and is still continuable (composer / "Continue in Chat"). -->
-                  <p class="quick-recall__stopped-tag" role="status">
-                    Stopped early
+                {#if turn.liveActivity !== null}
+                  <!-- Live animated working line: the real tool filter string. -->
+                  <p class="quick-recall__state quick-recall__state--working">
+                    <span class="quick-recall__dot" aria-hidden="true"></span>
+                    <span class="quick-recall__working-label"
+                      >{turn.liveActivity.label}</span
+                    >
+                    {#if turn.liveActivity.app}
+                      in
+                      {@render toolAppChip(turn.liveActivity)}
+                    {/if}
+                  </p>
+                {:else if turn.phase === "streaming"}
+                  <!-- Answer text is arriving: label the phase so the caret
+                       in AnswerProse reads as the insertion point. -->
+                  <p class="quick-recall__state quick-recall__state--working">
+                    <span class="quick-recall__dot" aria-hidden="true"></span>
+                    Writing…
                   </p>
                 {/if}
-              </div>
-            {/each}
-          {/if}
-        </div>
-
-        <!-- "Open in Chat" / Go deep (issue #111, ADR 0031): promote this thread
-             into the Chat surface. The thread is already
-             persisted under the same conversation id, so Chat continues it
-             seamlessly. Shown once at least one turn has completed. -->
-        {#if askCanOpenInChat}
-          <div class="quick-recall__handoff-row">
-            <button
-              type="button"
-              class="quick-recall__handoff"
-              onclick={() => void openInChat()}
-              use:tip={"Continue this thread in Chat"}
-            >
-              Continue in Chat
-              <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>
-            </button>
+              {/if}
+            {/if}
+            {#if turn.stoppedEarly}
+              <!-- This turn was cut off by Stop; the partial below is kept
+                   and is still continuable (composer / "Continue in Chat"). -->
+              <p class="quick-recall__stopped-tag" role="status">
+                Stopped early
+              </p>
+            {/if}
           </div>
-        {/if}
+        {/each}
+      {/if}
+    </div>
 
-        <!-- Follow-up composer: pinned beneath the transcript, present once the
-             first answer completes. Disabled while any turn streams. Enter sends,
-             Shift+Enter inserts a newline. Submitting appends a new turn and
-             routes the raw question through ask_ai_followup; the backend reloads
-             history server-side, so a follow-up always works. -->
-        {#if askComposerVisible}
-          <div class="quick-recall__composer">
-            <textarea
-              bind:this={followupInputEl}
-              bind:value={followupInput}
-              class="quick-recall__composer-input"
-              rows="1"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder={askStreaming
-                ? "Answering…"
-                : "Ask a follow-up…"}
-              aria-label="Ask a follow-up question"
-              disabled={askStreaming}
-              onkeydown={handleFollowupKeydown}
-            ></textarea>
-          </div>
-        {/if}
+    <!-- "Open in Chat" / Go deep (issue #111, ADR 0031): promote this thread
+         into the Chat surface. The thread is already
+         persisted under the same conversation id, so Chat continues it
+         seamlessly. Shown once at least one turn has completed. -->
+    {#if askCanOpenInChat}
+      <div class="quick-recall__handoff-row">
+        <button
+          type="button"
+          class="quick-recall__handoff"
+          onclick={() => void openInChat()}
+          use:tip={"Continue this thread in Chat"}
+        >
+          Continue in Chat
+          <span class="quick-recall__handoff-arrow" aria-hidden="true">↗</span>
+        </button>
       </div>
     {/if}
-  </div>
 
-  <div class="quick-recall__footer" aria-hidden="true">
+    <!-- Follow-up composer: pinned beneath the transcript, present once the
+         first answer completes. Disabled while any turn streams. Enter sends,
+         Shift+Enter inserts a newline. Submitting appends a new turn and
+         routes the raw question through ask_ai_followup; the backend reloads
+         history server-side, so a follow-up always works. -->
+    {#if askComposerVisible}
+      <div class="quick-recall__composer">
+        <textarea
+          bind:this={followupInputEl}
+          bind:value={followupInput}
+          class="quick-recall__composer-input"
+          rows="1"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder={askStreaming
+            ? "Answering…"
+            : "Ask a follow-up…"}
+          aria-label="Ask a follow-up question"
+          disabled={askStreaming}
+          onkeydown={handleFollowupKeydown}
+        ></textarea>
+      </div>
+    {/if}
+  {/if}
+{/snippet}
+
+{#snippet footKeys()}
+  <span class="quick-recall__hints" aria-hidden="true">
     {#if mode === "search"}
       {#if filters.pickerOpen}
         <!-- While the picker owns the keys, the footer reflects its own
@@ -2570,56 +2549,27 @@
       {/if}
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {/if}
-  </div>
+  </span>
+{/snippet}
+
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="quick-recall" onkeydown={handleRootKeydown}>
+  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} />
 </div>
 
 <style>
+  /* Takes the bar's height from BarShell — never the viewport's: the
+     viewport is the window the shell is sizing. */
   .quick-recall {
-    height: 100vh;
-    height: 100dvh;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-    overflow: hidden;
-    color: var(--app-text);
     font-family: inherit;
   }
 
-  /* Mode area: positioning context for the cross-fading panels. flex-1 so it
-     fills the space between the (absent) header and the footer. */
-  .quick-recall__mode {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-  }
-
-  /* Each mode subtree fills the mode area absolutely so that, during the hero
-     cross-fade, the incoming and outgoing panels overlap perfectly without
-     reflowing the fixed frame. The mode area has a concrete height (flex-1 in
-     the fixed 420px frame), so absolute fill is well-defined. */
-  .quick-recall__panel {
-    position: absolute;
-    inset: 0;
-    min-height: 0;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* Slice 2: the search-mode body row hosting the list column + detail pane
-     (mockup `.qr-body`). Fills the panel between the field/chip rows and the
-     footer via flex (NOT height:100% — WebKit collapses that against a
-     flex-stretched parent). */
+  /* The results list's column; the list itself is the body's scroller. */
   .quick-recall__body {
     flex: 1 1 auto;
     min-height: 0;
-    min-width: 0;
     display: flex;
+    flex-direction: column;
   }
 
   /* Visually-hidden polite live region for AT-only result-status announcements. */
@@ -2635,17 +2585,14 @@
     border: 0;
   }
 
+  /* Fills BarShell's 58px bar row, which owns the padding and the hairline. */
   .quick-recall__field {
+    flex: 1;
+    min-width: 0;
+    align-self: stretch;
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 56px;
-    padding: 8px 16px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    /* Mockup `.searchbar`: the chrome rows (search bar, footer) sit on the
-       subtle surface so the detail pane's plain surface reads as the stage. */
-    background: var(--app-surface-subtle);
   }
 
   /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
@@ -2734,14 +2681,10 @@
     color: var(--app-text-muted);
   }
 
-  .quick-recall__footer {
-    flex-shrink: 0;
+  .quick-recall__hints {
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
   }
 
   .quick-recall__hint-item {
@@ -2754,7 +2697,7 @@
     white-space: nowrap;
   }
 
-  .quick-recall__footer kbd {
+  .quick-recall__hints kbd {
     font-family: inherit;
     font-size: var(--text-xs);
     line-height: 1;
@@ -3074,15 +3017,6 @@
 
   .quick-recall__field--ask {
     gap: 12px;
-  }
-
-  /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
-     the bar it sits in, mirroring the follow-up composer. Scoped to the input
-     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
-     buttons — which carry their own focus chrome — take focus. */
-  .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
   }
 
   .quick-recall__back {
@@ -3705,8 +3639,8 @@
   }
 
   /* Slice 7: reduced-motion gating for the whole surface. Every animation and
-     transition in this file collapses to an instant/static fallback. The hero
-     mode-switch cross-fade is JS-driven (modeFadeMs → 0 in the script) and so is
+     transition in this file collapses to an instant/static fallback. The
+     syntax-help fade is JS-driven (modeFadeMs → 0 in the script) and so is
      handled there; everything else is gated here. */
   @media (prefers-reduced-motion: reduce) {
     .quick-recall__dot {

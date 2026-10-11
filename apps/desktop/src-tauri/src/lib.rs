@@ -841,6 +841,7 @@ pub fn run() {
             windows::close_current_window,
             windows::permission_helper::show_permission_helper,
             windows::focus_quick_recall_window,
+            windows::quick_recall_frame::set_quick_recall_frame,
             windows::quick_recall_suppress_blur_dismiss,
             windows::summon_quick_recall_window_command,
             windows::take_quick_recall_query,

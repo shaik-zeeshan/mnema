@@ -13,6 +13,7 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, W
 use crate::native_capture;
 
 pub mod permission_helper;
+pub mod quick_recall_frame;
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -289,14 +290,14 @@ impl AppWindow {
                 label: "quick-recall",
                 path: "quick-recall",
                 title: "mnema · Quick Recall",
-                inner_size: (1120.0, 720.0),
-                min_inner_size: (960.0, 600.0),
+                inner_size: (quick_recall_frame::WIDTH, quick_recall_frame::IDLE_HEIGHT),
+                min_inner_size: (quick_recall_frame::WIDTH, quick_recall_frame::IDLE_HEIGHT),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
                 transparent: true,
                 shadow: true,
-                macos_corner_radius: Some(12.0),
+                macos_corner_radius: Some(16.0),
             },
             // A HUD, not a dialog: one card, sized to the kit's `mx-helper`
             // (460 wide). Built by `permission_helper.rs`, not
@@ -954,7 +955,7 @@ fn summon_quick_recall_window(window: &WebviewWindow) {
     if let Ok(mut last) = LAST_QUICK_RECALL_SUMMON.lock() {
         *last = Some(Instant::now());
     }
-    let _ = window.center();
+    quick_recall_frame::anchor_quick_recall(window, None);
     let _ = window.show();
     #[cfg(target_os = "macos")]
     make_quick_recall_panel_key(window);

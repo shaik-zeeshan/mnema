@@ -1,5 +1,5 @@
-<!-- Quick Recall detail pane (right side of the search-mode split, mockup
-     `.detail`, `#sel=N` states). Renders the SELECTED result as a preview:
+<!-- Quick Recall detail pane (mockup `.detail`, `#sel=N` states; not mounted
+     until Quick Look, QR4, gives it a door). Renders the SELECTED result as a preview:
      screen → hero frame (1280px preview), id row, badges, clickable captured
      URL, times, scrollable OCR context with residual-term highlights;
      audio → source identity, badges, times, waveform with the REAL
@@ -386,9 +386,11 @@
 </section>
 
 <style>
+  /* One full-width stage, no longer the right column of a list/detail split.
+     Fixed height so scrubbing never resizes the window: Quick Look (QR4)
+     mounts it in the bar's body with `cap` ≈ 570. */
   .quick-recall__detail {
-    flex: 1 1 auto;
-    min-width: 0;
+    height: 456px;
     min-height: 0;
     display: flex;
     flex-direction: column;
