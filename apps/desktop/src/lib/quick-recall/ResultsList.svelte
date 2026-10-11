@@ -19,11 +19,14 @@
     askAvailable,
     onAskAi,
     onlook,
+    rowsOnly = false,
   }: {
     askAvailable: boolean;
     onAskAi: () => void;
     // Quick Look on the visible result at `index` (QR4 wires it).
     onlook?: (index: number) => void;
+    // Under the ask slot's gate / notice: plain "Moments" rows, no best moment.
+    rowsOnly?: boolean;
   } = $props();
 
   const best = $derived(search.visibleResults[0]);
@@ -169,7 +172,8 @@
     <!-- Clicking a row SELECTS it; Enter is the open action. The show-more
          row reveals the already-fetched remainder; it is click-only and NOT
          part of the arrow-key order. -->
-    {#if best}
+    {@const first = rowsOnly ? 0 : 1}
+    {#if best && !rowsOnly}
       <BestMoment
         result={best}
         thumbnailUrl={best.kind === "frame"
@@ -181,19 +185,20 @@
         onlook={onlook && (() => onlook(0))}
       />
     {/if}
-    {#if search.visibleResults.length > 1}
+    {#if search.visibleResults.length > first}
       <div class="quick-recall__sec" role="presentation">
-        More moments<span class="mono">{search.totalResultCount - 1}</span><span
-          class="mono">{breakdown}</span
-        >
+        {#if rowsOnly}Moments<span class="mono">{search.totalResultCount}</span
+          >{:else}More moments<span class="mono">{search.totalResultCount - 1}</span><span
+            class="mono">{breakdown}</span
+          >{/if}
       </div>
-      {#each search.visibleResults.slice(1) as result, k (result.kind === "frame" ? result.frame.groupKey : result.audio.groupKey)}
+      {#each search.visibleResults.slice(first) as result, k (result.kind === "frame" ? result.frame.groupKey : result.audio.groupKey)}
         <SearchResultCard
           {result}
-          id={`${OPTION_ID_PREFIX}${k + 1}`}
-          selected={search.selectedIndex === k + 1}
-          onselect={() => search.selectResultAt(k + 1)}
-          onlook={onlook && (() => onlook(k + 1))}
+          id={`${OPTION_ID_PREFIX}${k + first}`}
+          selected={search.selectedIndex === k + first}
+          onselect={() => search.selectResultAt(k + first)}
+          onlook={onlook && (() => onlook(k + first))}
         />
       {/each}
     {/if}

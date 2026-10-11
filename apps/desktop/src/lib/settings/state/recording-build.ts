@@ -44,6 +44,7 @@ import type {
   RetentionPolicy,
   VideoBitrateMode,
   VideoBitratePreset,
+  QuickRecallAutoAnswer,
 } from "$lib/types";
 import type {
   AutosaveRecordingDomain,
@@ -173,6 +174,7 @@ export interface RecordingDraftState {
   draftAskAiEnabled: boolean;
   draftAskAiWebFetchEnabled: boolean;
   draftAskAiModel: string;
+  draftQuickRecallAutoAnswer: QuickRecallAutoAnswer;
   // The effective persisted tool-call cap (0 = no cap), derived from the
   // limit toggle + numeric value.
   effectiveAskAiMaxToolCalls: number;
@@ -379,6 +381,7 @@ export function buildRecDomainRequest(
         askAiWebFetchEnabled: rec.draftAskAiWebFetchEnabled,
         askAiMaxToolCalls: rec.effectiveAskAiMaxToolCalls,
         askAiModel: rec.draftAskAiModel,
+        quickRecallAutoAnswer: rec.draftQuickRecallAutoAnswer,
       };
     case "ai_runtime":
       // `defaultModel` is tri-state on the wire; the card always sends the
@@ -527,6 +530,7 @@ export function buildRecDomainRequestFromSettings(
           s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
         ),
         askAiModel: s.access?.askAiModel ?? "",
+        quickRecallAutoAnswer: s.access?.quickRecallAutoAnswer ?? "localOnly",
       };
     case "ai_runtime":
       return {

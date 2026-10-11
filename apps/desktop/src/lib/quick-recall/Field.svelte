@@ -3,7 +3,7 @@
      text — recognised phrases tinted in place by a mirror under a transparent
      input — and the right-hand status. Fills BarShell's `bar` slot; the
      module-level `fieldFoot` snippet fills its `foot` slot with the real
-     operator query and the keys that work right now. Keys: search-keys.ts. -->
+     operator query and the keys that work right now (Ask passes its own keys). Keys: search-keys.ts. -->
 <script module lang="ts">
   import IconCode from "~icons/lucide/code";
   import { quickRecallSearch as search } from "./searchStore.svelte";
@@ -81,7 +81,7 @@
   }
 </script>
 
-{#snippet fieldFoot()}
+{#snippet fieldFoot(keys?: [string, string][])}
   {@const bad = badToken()}
   <span class="rc-foot__q">
     {#if search.operatorQuery}
@@ -98,7 +98,7 @@
     {/if}
   </span>
   <span class="rc-foot__k">
-    {#each searchKeys() as [key, label] (key)}
+    {#each keys ?? searchKeys() as [key, label] (key)}
       <span><kbd>{key}</kbd>{label}</span>
     {/each}
   </span>

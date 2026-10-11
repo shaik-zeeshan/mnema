@@ -189,6 +189,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftAskAiEnabled: s.access.askAiEnabled,
     draftAskAiWebFetchEnabled: s.access.askAiWebFetchEnabled,
     draftAskAiModel: s.access.askAiModel ?? "",
+    draftQuickRecallAutoAnswer: s.access.quickRecallAutoAnswer ?? "localOnly",
     effectiveAskAiMaxToolCalls: cap,
 
     draftAiEnabled: s.aiRuntime.enabled,

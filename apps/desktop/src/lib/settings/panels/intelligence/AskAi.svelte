@@ -3,6 +3,8 @@
   import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import type { QuickRecallAutoAnswer } from "$lib/types";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import {
@@ -12,6 +14,9 @@
   import IconCheck from "~icons/lucide/check";
   import IconInfo from "~icons/lucide/info";
   import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCloud from "~icons/lucide/cloud";
+  import IconChip from "~icons/lucide/cpu";
+  import IconOff from "~icons/lucide/ban";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -21,6 +26,14 @@
   const checked = $derived(rec.draftAskAiEnabled && !askAi.askAiAvailabilityLoading && askAi.askAiAvailability !== null);
   const unavailable = $derived(checked && !askAi.askAiAvailable);
   const enableLine = $derived((checked && askAi.askAiAvailable) || !!askAi.askAiAvailabilityError);
+
+  // Quick Recall answering a detected question on its own (QR5): each answer
+  // is a model call, so the default keeps cloud calls explicit.
+  const autoAnswerChoices = [
+    { value: "always", label: "Always", icon: IconCloud, description: "Any model, cloud included. Every pause on a question spends a call and sends results to the provider." },
+    { value: "localOnly", label: "Only with local models", tag: "default", icon: IconChip, description: "Answers on its own when the model runs on this Mac. With a cloud model, press Tab to ask." },
+    { value: "never", label: "Never", icon: IconOff, description: "Quick Recall only searches until you press Tab to ask." },
+  ];
 
   const goToProviders = () =>
     document.getElementById("settings-section-intelligence")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -110,6 +123,22 @@
     control={enableSwitch}
     below={enableLine ? enableStatus : undefined}
   />
+
+  <SettingRow
+    label="Answer questions automatically"
+    description="When you pause on a question in Quick Recall, start answering without a keypress. Each answer is one model call."
+    full
+  >
+    {#snippet control()}
+      <Choice
+        value={rec.draftQuickRecallAutoAnswer}
+        onValueChange={(v) => (rec.draftQuickRecallAutoAnswer = v as QuickRecallAutoAnswer)}
+        disabled={!rec.draftAskAiEnabled}
+        ariaLabel="Answer questions automatically"
+        options={autoAnswerChoices}
+      />
+    {/snippet}
+  </SettingRow>
 
   <SettingRow
     label="Model override"
