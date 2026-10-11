@@ -22,7 +22,11 @@
   const max = $derived(unit === "day" ? Math.max(1, Math.ceil(peak * 4) / 4) : Math.max(8, Math.ceil(peak / 2) * 2));
   const ticks = $derived([max, max * 0.75, max / 2, max / 4, 0]);
   const tick = (v: number) => (unit === "day" ? `${Math.round(v * 60)}m` : `${Math.round(v)}h`);
-  const gap = $derived(month ? "4px" : "var(--s-3)");
+  // ponytail: past 12 hourly columns a day gets the mockup's month treatment
+  // (tight gap, no captions) — the captions' min-content overflows the panel
+  // near 20 columns. The hour's minutes stay in each bar's tooltip.
+  const dense = $derived(month || columns.length > 12);
+  const gap = $derived(dense ? "4px" : "var(--s-3)");
 </script>
 
 <div class="plot" style="--n:{columns.length || 1};--_g:{gap}" class:dim={highlight != null}>
@@ -63,7 +67,7 @@
   {#each columns as c (c.startMs)}
     {@const weekend = month && [0, 6].includes(new Date(c.startMs).getDay())}
     <span class:faint={weekend}
-      ><b>{c.label}</b>{#if !month}{c.totalMs > 0
+      ><b>{c.label}</b>{#if !dense}{c.totalMs > 0
           ? fmtDuration(c.totalMs) + (c.live && unit === "day" ? " so far" : "")
           : "—"}{/if}</span
     >
