@@ -10,6 +10,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { humanizeError } from "$lib/format-error";
+  import { openPermissionHelper } from "$lib/shell/permission-helper";
   import type { GetPermissionsResponse, PermissionsMap } from "$lib/types";
   import IconLock from "~icons/lucide/lock";
   import IconExternal from "~icons/lucide/external-link";
@@ -50,7 +51,7 @@
 
   // The one hook the permission helper window (ON3) replaces.
   const openSettings = (kind: PermissionKind) =>
-    run(kind, () => invoke<void>("open_capture_privacy_settings", { kind }));
+    run(kind, () => openPermissionHelper(kind));
 </script>
 
 <svelte:window onfocus={load} />
