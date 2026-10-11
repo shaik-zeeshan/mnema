@@ -53,7 +53,7 @@
 
   <SettingRow
     label="Excluded Apps"
-    description="Apps whose visible content is never recorded. Browsers, including private windows, are recorded unless the browser itself is excluded."
+    description="Apps whose visible content is never recorded. Browsers, including private windows, are recorded unless the browser itself is excluded. Mnema does not detect password pages or password fields."
     full
   >
     {#snippet control()}
