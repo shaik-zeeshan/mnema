@@ -10,6 +10,7 @@
      The page routes keys here first (`handleKey`) and renders Field's
      `fieldFoot` with `footKeys()` in BarShell's foot. -->
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   import { quickRecallSearch as search } from "./searchStore.svelte";
   import { onMount, onDestroy, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -390,7 +391,7 @@
   });
 
   function when(iso: string): string {
-    return new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false });
+    return new Date(iso).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() });
   }
 
   const fromLine = $derived.by(() => {

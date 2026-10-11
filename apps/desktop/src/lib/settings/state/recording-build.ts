@@ -29,6 +29,7 @@ import type {
   AiEngineRef,
   McpServerConfig,
   AppearanceSetting,
+  TimeFormatSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -190,6 +191,7 @@ export interface RecordingDraftState {
   draftUserContextBackfillGoDeeper: boolean;
 
   draftAppearance: AppearanceSetting;
+  draftTimeFormat: TimeFormatSetting;
 
   draftOcrEnabled: boolean;
   draftOcrProvider: OcrProvider;
@@ -351,6 +353,7 @@ export function buildRecDomainRequest(
     case "display":
       return {
         appearance: rec.draftAppearance,
+        timeFormat: rec.draftTimeFormat,
         followTimelineLive: rec.draftFollowTimelineLive,
       };
     case "metadata":
@@ -444,6 +447,7 @@ export function buildRecDomainRequestFromSettings(
     case "display":
       return {
         appearance: s.appearance ?? "system",
+        timeFormat: s.timeFormat ?? "system",
         followTimelineLive: s.followTimelineLive ?? false,
       };
     case "metadata":

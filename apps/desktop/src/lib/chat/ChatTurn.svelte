@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // One chat turn (chat.html › thread): the question bubble, a steps disclosure
   // (live label while working, "N steps · 3.4s" when done), the reasoning
   // disclosure, the answer blocks, sources, and an actions row with the model
@@ -55,7 +56,7 @@
   let stepsOpen = $state(false);
   let reasonOpen = $state(false);
   const askedAt = $derived(
-    turn.atMs === null ? "" : new Date(turn.atMs).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }),
+    turn.atMs === null ? "" : new Date(turn.atMs).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() }),
   );
 
   let copied = $state(false);

@@ -168,6 +168,17 @@ pub fn default_appearance() -> AppearanceSetting {
     AppearanceSetting::System
 }
 
+/// Clock style for every wall-clock time the UI shows. `System` follows the
+/// Mac's own "24-hour time" setting (resolved natively at launch).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeFormatSetting {
+    #[default]
+    System,
+    H12,
+    H24,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrProvider {
@@ -1130,6 +1141,8 @@ pub struct RecordingSettings {
     pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
+    #[serde(default)]
+    pub time_format: TimeFormatSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
@@ -1228,6 +1241,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
+    #[serde(default)]
+    pub time_format: TimeFormatSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
@@ -1319,6 +1334,7 @@ pub struct UpdateStorageSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateDisplaySettingsRequest {
     pub appearance: Option<AppearanceSetting>,
+    pub time_format: Option<TimeFormatSetting>,
     pub follow_timeline_live: Option<bool>,
 }
 

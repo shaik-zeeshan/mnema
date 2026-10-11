@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   import { join, appConfigDir } from "@tauri-apps/api/path";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -113,7 +114,7 @@
         <div class="ac-tool__name"><span class="ac-tool__label" use:tip={g.label}>{g.label}</span>{@render sourceChip(g)}</div>
         <div class="ac-tool__meta">
           {#if neverGranted(g)}Never allowed{:else}Remembers <span class="mx-chip">{formatScopeChip(g.scope)}</span>{/if}
-          {#if g.blockedAtUnixMs}<i>·</i> <span use:tip={new Date(g.blockedAtUnixMs).toLocaleString()}>blocked {day(g.blockedAtUnixMs)}</span>{/if}
+          {#if g.blockedAtUnixMs}<i>·</i> <span use:tip={new Date(g.blockedAtUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>blocked {day(g.blockedAtUnixMs)}</span>{/if}
           {#if neverGranted(g)}<i>·</i> will ask again if unblocked{/if}
         </div>
       </div>
@@ -131,7 +132,7 @@
         <div class="ac-tool__name"><span class="ac-tool__label" use:tip={g.label}>{g.label}</span>{@render sourceChip(g)}</div>
         <div class="ac-tool__meta">
           <span class="mx-chip">{formatScopeChip(g.scope)}</span>
-          <i>·</i> <span use:tip={new Date(g.lastUsedAtUnixMs).toLocaleString()}>used {formatGrantTime(g.lastUsedAtUnixMs, now)}</span>
+          <i>·</i> <span use:tip={new Date(g.lastUsedAtUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>used {formatGrantTime(g.lastUsedAtUnixMs, now)}</span>
           {#if cmd}<i>·</i> last ran <code>{cmd}</code>{/if}
         </div>
       </div>
@@ -254,7 +255,7 @@
               <b use:tip={event.toolIdentity}>{event.toolIdentity}</b>
               <code>{formatCommand(event.commandType)}</code>
               <span class:is-refused={!!formatOutcome(event.outcome)}>{formatActivityDetail(event)}</span>
-              <span class="num" use:tip={new Date(event.timestampUnixMs).toLocaleString()}>{formatGrantTime(event.timestampUnixMs, now)}</span>
+              <span class="num" use:tip={new Date(event.timestampUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>{formatGrantTime(event.timestampUnixMs, now)}</span>
             </li>
           {/each}
         </ul>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   // Overview's feed (insights.html `.in-feed`): "What changed" in the dossier
   // this period — conclusions formed, strengthened or started fading — beside
   // "Needs attention", the uncategorized activities one tap can tag. Standing
@@ -70,7 +71,7 @@
   const day = (ms: number) =>
     new Date(ms).toLocaleDateString("en-US", unit === "month" ? { month: "short", day: "numeric" } : { weekday: "short" });
   const when = (a: Activity) =>
-    `${new Date(a.startedAtMs).toLocaleDateString("en-US", { weekday: "short" })} ${new Date(a.startedAtMs).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} · ${fmtDuration(a.endedAtMs - a.startedAtMs)}`;
+    `${new Date(a.startedAtMs).toLocaleDateString("en-US", { weekday: "short" })} ${formatClock(a.startedAtMs)} · ${fmtDuration(a.endedAtMs - a.startedAtMs)}`;
   const HEAD = $derived<Record<Kind, string>>({ formed: `Formed this ${unit}`, strengthened: "Strengthened", fading: "Started fading" });
 </script>
 

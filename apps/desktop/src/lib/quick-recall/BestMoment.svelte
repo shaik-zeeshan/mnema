@@ -6,6 +6,7 @@
      and Open in Timeline (the one primary while selected), Quick Look, Open
      page. -->
 <script lang="ts">
+  import { formatClock, formatClockRange } from "$lib/time-format";
   import IconTimeline from "~icons/lucide/chart-no-axes-gantt";
   import IconEye from "~icons/lucide/eye";
   import IconExternal from "~icons/lucide/external-link";
@@ -36,7 +37,6 @@
   const frame = $derived(result.kind === "frame" ? result.frame : null);
   const audio = $derived(result.kind === "audio" ? result.audio : null);
 
-  const hm = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   // m:ss, or h:mm:ss past the hour.
   function clock(ms: number): string {
     const t = Math.max(0, Math.round(ms / 1000));
@@ -164,7 +164,7 @@
           {/if}
         </div>
       {/if}
-      <time>{hm(start)}</time>
+      <time>{formatClock(start)}</time>
     {:else if audio && audioWindow}
       <div class="rc-acrop" data-src={audio.sourceKind === "microphone" ? "mic" : "sys"}>
         <header>
@@ -189,7 +189,7 @@
     </div>
     <h2 class="rc-hero__t">{@render resultTile(result)}<span>{title}</span></h2>
     <div class="rc-meta">
-      <span><b>{day}</b> · {hm(start)}{hm(end) === hm(start) ? "" : `–${hm(end)}`}</span>
+      <span><b>{day}</b> · {formatClock(end) === formatClock(start) ? formatClock(start) : formatClockRange(start, end)}</span>
       <span>{formatRelativeTime(startIso)}</span>
       {#if where}<span>{where}</span>{/if}
     </div>

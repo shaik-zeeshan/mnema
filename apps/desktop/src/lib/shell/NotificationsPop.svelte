@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // Titlebar bell + notifications popover (SHELL.md › Notifications). Moved out
   // of +layout.svelte; the store, actions, ages, focus return and live regions
   // are unchanged — only the skin is the kit's `mx-pop mx-notifs`.
@@ -89,7 +90,7 @@
 
   function stamp(createdAtUnixMs: number): string {
     try {
-      return new Date(createdAtUnixMs).toLocaleString();
+      return new Date(createdAtUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() });
     } catch {
       return "";
     }

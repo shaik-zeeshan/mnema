@@ -91,7 +91,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "appearance",
         anchor: "settings-section-appearance",
         label: "Appearance",
-        keywords: ["theme", "dark", "light", "follow live recording"],
+        keywords: ["theme", "dark", "light", "time format", "24-hour", "12-hour", "clock", "follow live recording"],
       },
       {
         id: "startup",

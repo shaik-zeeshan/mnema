@@ -750,6 +750,7 @@ mod tests {
             follow_timeline_live: false,
             retention_policy: capture_types::default_retention_policy(),
             appearance: default_appearance(),
+            time_format: Default::default(),
             ocr: capture_types::default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: capture_types::default_speaker_analysis_settings(),

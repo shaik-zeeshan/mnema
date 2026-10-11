@@ -42,7 +42,7 @@
   } from "$lib/insights/receipt-audio";
   import { activeKeyAt, defaultSelectedKey, nextClipTurn, turnAtMs } from "$lib/insights/receipt-lane";
   import { ReceiptAudioLoader } from "$lib/insights/receipt-audio-loader";
-  import { hhmm } from "$lib/insights/journal-view";
+  import { formatClock, formatClockRange } from "$lib/time-format";
   import { retentionVerdict } from "$lib/insights/retention";
   import { captureControls } from "$lib/capture-controls.svelte";
   import type { Activity } from "$lib/types/recording";
@@ -51,8 +51,6 @@
   let { activity }: { activity: Activity } = $props();
 
   type StripFrame = { id: number; ms: number };
-  const hhmmss = (ms: number) =>
-    new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 
   // ── Reactive playback state ──────────────────────────────────────────
   let strip = $state<StripFrame[]>([]); // frames over the span, ascending
@@ -391,7 +389,7 @@
         style="--c: var({turn.colorVar})"
         onclick={() => onSelect(turn)}
       >
-        <time class="num">{hhmm(turn.startMs)}</time>
+        <time class="num">{formatClock(turn.startMs)}</time>
         <span><b>{turn.speaker}</b>{turn.text || "—"}</span>
       </button>
     {/each}
@@ -434,7 +432,7 @@
     {#if !isAudioOnly}
       <Segmented options={speedOptions} value={String(speed)} onValueChange={onSpeedChange} ariaLabel="Playback speed" mono compact />
     {/if}
-    <span class="num">{headMs != null ? hhmmss(headMs) : ""}</span>
+    <span class="num">{headMs != null ? formatClock(headMs, { seconds: true }) : ""}</span>
   </div>
 {/snippet}
 
@@ -487,7 +485,7 @@
         {#if selectedTurn}
           <b style="--c: var({selectedTurn.colorVar})"><i></i>{selectedTurn.speaker}
             {#if selectedTurn.sourceMeta}<span class="mx-label">via {selectedTurn.sourceMeta}</span>{/if}</b>
-          <span class="mx-label num">spoken segment · {hhmm(selectedTurn.startMs)}–{hhmm(selectedTurn.endMs)} · captured as audio</span>
+          <span class="mx-label num">spoken segment · {formatClockRange(selectedTurn.startMs, selectedTurn.endMs)} · captured as audio</span>
         {:else if turnsPending}
           <span class="mx-label">Loading spoken evidence…</span>
         {:else if transcribing}

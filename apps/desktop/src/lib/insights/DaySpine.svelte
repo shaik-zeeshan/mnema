@@ -8,7 +8,8 @@
   import type { ActivityFocus } from "$lib/types/recording";
   import type { JournalCardSlot, Span } from "$lib/insights/journal-day";
   import { CATEGORY_COLOR, UNCATEGORIZED_COLOR, categoryLabel, humanizeMs } from "$lib/insights/activity-helpers";
-  import { awayLabel, hhmm, spineAxis, stackLanes } from "$lib/insights/journal-view";
+  import { awayLabel, spineAxis, stackLanes } from "$lib/insights/journal-view";
+  import { formatClock, formatClockRange } from "$lib/time-format";
   import { tip } from "$lib/components/tooltip";
 
   interface Props {
@@ -55,7 +56,7 @@
 <div class="mx-panel in-spine">
   <div class="in-sec">
     <span class="mx-kicker">Day spine</span>
-    <span class="mx-label num">{hhmm(first)} – {nowMs != null ? "now" : hhmm(last)} captured</span>
+    <span class="mx-label num">{nowMs != null ? `${formatClock(first)} – now` : formatClockRange(first, last, { sep: " – " })} captured</span>
     <span class="in-spacer"></span>
     <span class="in-sp__legend">
       {#if runs}
@@ -71,14 +72,14 @@
   </div>
   <div class="in-sp" class:in-sp--hot={hot != null}>
     <div class="in-sp__grid" aria-hidden="true">
-      {#each axis.ticks as t (t)}<span style="left:{pct(t)}%"><b>{hhmm(t)}</b></span>{/each}
+      {#each axis.ticks as t (t)}<span style="left:{pct(t)}%"><b>{formatClock(t)}</b></span>{/each}
     </div>
     <div class="in-sp__lane" class:in-sp__lane--multi={stack.lanes > 1} style="--lanes:{runs ? 1 : stack.lanes}">
       {#each awayGaps as g (g.startMs)}
         <span
           class="in-sp__gap"
           style="left:{pct(g.startMs)}%;width:{w(g)}%"
-          use:tip={`${awayLabel(g)} · ${hhmm(g.startMs)}–${hhmm(g.endMs)} · no capture`}>{w(g) > 4 ? "away" : ""}</span
+          use:tip={`${awayLabel(g)} · ${formatClockRange(g.startMs, g.endMs)} · no capture`}>{w(g) > 4 ? "away" : ""}</span
         >
       {/each}
       {#if runs}
@@ -86,7 +87,7 @@
           <span
             class="in-sp__run"
             style="left:{pct(r.span.startMs)}%;width:calc({w(r.span)}% - 2px);--d:{i}"
-            use:tip={`Captured · ${humanizeMs(r.span.endMs - r.span.startMs)} · ${hhmm(r.span.startMs)}–${hhmm(r.span.endMs)}${r.apps.length ? ` · ${r.apps.join(", ")}` : ""}`}
+            use:tip={`Captured · ${humanizeMs(r.span.endMs - r.span.startMs)} · ${formatClockRange(r.span.startMs, r.span.endMs)}${r.apps.length ? ` · ${r.apps.join(", ")}` : ""}`}
           >
             {#if w(r.span) > 6}<b>{r.apps.join(" · ") || "Captured"}</b><small>{humanizeMs(r.span.endMs - r.span.startMs)} captured</small>{/if}
           </span>
@@ -99,7 +100,7 @@
             class="in-sp__a"
             data-hot={hot === a.id ? "" : undefined}
             style="left:{pct(a.startedAtMs)}%;width:calc({w(spans[i])}% - 2px);--l:{stack.lane[i]};--c:{cat(a.category)};--d:{i}"
-            use:tip={`${a.title} · ${hhmm(a.startedAtMs)}–${hhmm(a.endedAtMs)} · ${humanizeMs(a.endedAtMs - a.startedAtMs)}${a.category ? ` · ${categoryLabel(a.category)}` : ""}`}
+            use:tip={`${a.title} · ${formatClockRange(a.startedAtMs, a.endedAtMs)} · ${humanizeMs(a.endedAtMs - a.startedAtMs)}${a.category ? ` · ${categoryLabel(a.category)}` : ""}`}
             onmouseenter={() => onHot?.(a.id)}
             onmouseleave={() => onHot?.(null)}
             onclick={() => onPick?.(a.id)}
@@ -113,7 +114,7 @@
         <span
           class="in-sp__pend"
           style="left:{pct(pending.sinceMs)}%;width:{pw}%"
-          use:tip={`${pending.paused ? "Paused" : "Writing up"} · ${hhmm(pending.sinceMs)} → now`}
+          use:tip={`${pending.paused ? "Paused" : "Writing up"} · ${formatClock(pending.sinceMs)} → now`}
         >{pw > 6 ? (pending.paused ? "paused" : "writing up") : ""}</span>
       {/if}
     </div>
@@ -122,7 +123,7 @@
         {#each slots as s, i (s.activity.id)}
           {#if s.activity.focus}
             {@const f = FOCUS[s.activity.focus]}
-            <i style="left:{pct(s.activity.startedAtMs)}%;width:calc({w(spans[i])}% - 2px);--c:var({f[0]})" use:tip={`${f[1]} · ${hhmm(s.activity.startedAtMs)}–${hhmm(s.activity.endedAtMs)}`}></i>
+            <i style="left:{pct(s.activity.startedAtMs)}%;width:calc({w(spans[i])}% - 2px);--c:var({f[0]})" use:tip={`${f[1]} · ${formatClockRange(s.activity.startedAtMs, s.activity.endedAtMs)}`}></i>
           {/if}
         {/each}
       </div>

@@ -140,6 +140,7 @@ mod tests {
         );
         assert_eq!(settings.retention_policy, default_retention_policy());
         assert_eq!(settings.appearance, default_appearance());
+        assert_eq!(settings.time_format, TimeFormatSetting::System);
         assert_eq!(settings.ocr, default_ocr_settings());
         assert_eq!(
             settings.inactivity_activity_mode,
@@ -167,6 +168,7 @@ mod tests {
             follow_timeline_live: false,
             retention_policy: default_retention_policy(),
             appearance: default_appearance(),
+            time_format: Default::default(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),
@@ -743,6 +745,21 @@ mod tests {
     }
 
     #[test]
+    fn time_format_setting_round_trips_on_the_wire() {
+        for (value, wire) in [
+            (TimeFormatSetting::System, "\"system\""),
+            (TimeFormatSetting::H12, "\"h12\""),
+            (TimeFormatSetting::H24, "\"h24\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<TimeFormatSetting>(wire).unwrap(),
+                value
+            );
+        }
+    }
+
+    #[test]
     fn recording_settings_domain_response_serializes_domain_as_snake_case() {
         let response = RecordingSettingsDomainUpdateResponse {
             domain: SettingsOwnershipDomain::AppPrivacyExclusion,
@@ -764,6 +781,7 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: default_retention_policy(),
                 appearance: default_appearance(),
+                time_format: Default::default(),
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
@@ -787,5 +805,6 @@ mod tests {
 
         assert_eq!(json["domain"], "app_privacy_exclusion");
         assert!(json["settings"].is_object());
+        assert_eq!(json["settings"]["timeFormat"], "system");
     }
 }

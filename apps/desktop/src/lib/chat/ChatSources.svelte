@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // One answer's sources row (chat.html › sources): compact frame chips with a
   // thumbnail, audio chips, and a host chip for a frame with a captured page.
   // A frame peeks in place (FrameDetailModal), an audio clip plays in an
@@ -44,7 +45,7 @@
 
   const when = (iso: string) => {
     const d = parseCapturedAt(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+    return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() });
   };
 
   let peek = $state<AskAiSource | null>(null);

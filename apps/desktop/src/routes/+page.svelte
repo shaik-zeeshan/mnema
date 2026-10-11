@@ -23,6 +23,7 @@
   import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
   import { openSettings } from "$lib/surface-windows";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
+  import { formatClock, hourCycle } from "$lib/time-format";
   import { humanizeError } from "$lib/format-error";
   import {
     audioDrawerPointerDownAction,
@@ -2810,7 +2811,7 @@
   function formatCapturedAt(ts: string): string {
     const d = parseCapturedAt(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString();
+    return d.toLocaleString(undefined, { hourCycle: hourCycle() });
   }
 
   // Delegates to the shared compact formatter (identical behavior to the
@@ -2823,7 +2824,7 @@
   function formatUnixMs(ms: number): string {
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "unknown";
-    return d.toLocaleString();
+    return d.toLocaleString(undefined, { hourCycle: hourCycle() });
   }
 
   /** Time-of-day for the rail readout, where the date is shown alongside it.
@@ -2832,7 +2833,7 @@
   function formatCapturedTimeOnly(ts: string): string {
     const d = parseCapturedAt(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleTimeString();
+    return formatClock(d, { seconds: true });
   }
 
   function formatCapturedDateOnly(ts: string): string {
@@ -2845,12 +2846,12 @@
     });
   }
 
-  /** Compact `HH:MM:SS` (locale-aware) for the player panel header where the
+  /** Clock time with seconds (Time format setting) for the player panel header where the
    *  date is implicit from the surrounding timeline context. */
   function formatTimeOfDay(ms: number): string {
     const d = new Date(ms);
     if (isNaN(d.getTime())) return "—";
-    return d.toLocaleTimeString();
+    return formatClock(d, { seconds: true });
   }
 
   function formatDurationSeconds(seconds: number): string {

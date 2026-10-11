@@ -4,6 +4,8 @@ export type ActivityMode =
 	| "system_input_or_screen_or_audio";
 
 export type AppearanceSetting = "system" | "light" | "dark";
+/** Clock style for wall-clock times; `system` follows the Mac's 24-hour setting. */
+export type TimeFormatSetting = "system" | "h12" | "h24";
 export type AudioSpeechDetector = "silero" | "webrtc" | "off";
 export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
@@ -488,6 +490,7 @@ export interface RecordingSettings {
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
 	appearance: AppearanceSetting;
+	timeFormat: TimeFormatSetting;
 	ocr: OcrSettings;
 	transcription: AudioTranscriptionSettings;
 	speakerAnalysis: SpeakerAnalysisSettings;
@@ -536,7 +539,7 @@ export type UpdateStorageSettingsRequest = Partial<
 >;
 
 export type UpdateDisplaySettingsRequest = Partial<
-	Pick<RecordingSettings, "appearance" | "followTimelineLive">
+	Pick<RecordingSettings, "appearance" | "timeFormat" | "followTimelineLive">
 >;
 
 export type UpdateMetadataSettingsRequest = Partial<MetadataSettings>;

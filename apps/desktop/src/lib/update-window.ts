@@ -8,6 +8,7 @@
 
 import type { LicenseStatus } from "$lib/licensing";
 import type { AppUpdateStatus } from "$lib/types";
+import { hourCycle } from "$lib/time-format";
 
 /** The backend is mid-flight and owns the outcome; nothing here can cancel it. */
 export function isUpdateBusy(status: AppUpdateStatus | null): boolean {
@@ -232,8 +233,8 @@ export function formatCheckedClock(atMs: number | null | undefined, nowMs: numbe
   return at.toLocaleString(
     undefined,
     sameDay
-      ? { hour: "numeric", minute: "2-digit" }
-      : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
+      ? { hour: "numeric", minute: "2-digit", hourCycle: hourCycle() }
+      : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() },
   );
 }
 

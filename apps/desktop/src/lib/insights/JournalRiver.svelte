@@ -6,7 +6,8 @@
   // the rows (journal-view.ts) and owns all loading.
   import type { ActivityFocus, ActivityMeta, UserContextSummarizingFailure } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
-  import { hhmm, pendingReasonCopy, riverRowKey, type RiverRow, type WeekDay } from "$lib/insights/journal-view";
+  import { pendingReasonCopy, riverRowKey, type RiverRow, type WeekDay } from "$lib/insights/journal-view";
+  import { formatClock, formatClockRange } from "$lib/time-format";
   import { CATEGORY_COLOR, UNCATEGORIZED_COLOR, categoryLabel, humanizeMs } from "$lib/insights/activity-helpers";
   import { openSettings } from "$lib/surface-windows";
   import { tip } from "$lib/components/tooltip";
@@ -72,7 +73,7 @@
       </div>
     {:else}
       {#if pending.active && pending.reason && pending.sinceMs !== null}
-        {@const since = hhmm(pending.sinceMs)}
+        {@const since = formatClock(pending.sinceMs)}
         <div class="in-pending">
           <time class="num">{since}</time>
           <div>
@@ -102,9 +103,9 @@
       {/if}
       {#each rows as row (riverRowKey(row))}
         {#if row.kind === "gap"}
-          <div class="in-gap">Away · {humanizeMs(row.gap.endMs - row.gap.startMs)} · {hhmm(row.gap.startMs)}–{hhmm(row.gap.endMs)}{row.gap.audio ? " · audio only" : ""}</div>
+          <div class="in-gap">Away · {humanizeMs(row.gap.endMs - row.gap.startMs)} · {formatClockRange(row.gap.startMs, row.gap.endMs)}{row.gap.audio ? " · audio only" : ""}</div>
         {:else if row.kind === "failed"}
-          <div class="in-gap">Captured, but summarizing it failed · {hhmm(row.span.startMs)}–{hhmm(row.span.endMs)}</div>
+          <div class="in-gap">Captured, but summarizing it failed · {formatClockRange(row.span.startMs, row.span.endMs)}</div>
         {:else}
           {@const a = row.slot.activity}
           {@const open = openId === a.id}
@@ -115,7 +116,7 @@
             onmouseenter={() => onHot(a.id)}
             onmouseleave={() => onHot(null)}
           >
-            <div class="in-act__t"><time>{hhmm(a.startedAtMs)}</time><span class="num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span></div>
+            <div class="in-act__t"><time>{formatClock(a.startedAtMs)}</time><span class="num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span></div>
             <div>
               <h4><span class="in-sw" style="--c:{cat(a.category ?? null)}"></span>{a.title}</h4>
               {#if a.summary}<p>{a.summary}</p>{/if}

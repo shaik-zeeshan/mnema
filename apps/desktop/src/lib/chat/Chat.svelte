@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // Chat — the conversation pane of the Chat surface (`/chat`). ADR 0031/0033: conversations
   // persist in the shared store and are answered by the Ask AI engine, which
   // reaches capture data only through brokered tools. The backend owns every
@@ -531,7 +532,7 @@
   {#if mode === "chat"}
     <header class="ch-head">
       <h1>{displayTitle}</h1>
-      {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${new Date(headStarted).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>{/if}
+      {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${new Date(headStarted).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() })}` : ""}</span>{/if}
       <div class="ch-head__acts">
         <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed={activeSummary?.pinned ?? false} aria-label={activeSummary?.pinned ? "Unpin chat" : "Pin chat"} use:tip={activeSummary?.pinned ? "Unpin" : "Pin"} disabled={!activeSummary} onclick={() => activeSummary && void store.togglePin(activeSummary.conversationId)}>
           <IconPin width="15" height="15" aria-hidden="true" />

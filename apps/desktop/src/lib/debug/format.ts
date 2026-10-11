@@ -4,6 +4,7 @@
 // routes/debug/+page.svelte <script> block, re-homed so several section
 // components can share them. Behaviour is unchanged.
 
+import { formatClock, formatClockRange } from "$lib/time-format";
 import type {
 	BackgroundJobStatus,
 	DebugSeverity,
@@ -54,7 +55,7 @@ export function formatOptionalMs(ms: number | null | undefined): string {
 
 export function formatDebugTime(value: string): string {
 	const parsed = Date.parse(value);
-	return Number.isNaN(parsed) ? value : new Date(parsed).toLocaleTimeString();
+	return Number.isNaN(parsed) ? value : formatClock(parsed, { seconds: true });
 }
 
 export function truncateDebugText(value: string | null | undefined, max = 80): string {
@@ -63,7 +64,7 @@ export function truncateDebugText(value: string | null | undefined, max = 80): s
 }
 
 export function formatTimestamp(ms: number): string {
-	return new Date(ms).toLocaleTimeString();
+	return formatClock(ms, { seconds: true });
 }
 
 export function formatSourceStartedAt(ms: number | null | undefined): string {
@@ -245,13 +246,13 @@ export function severityLabel(severity: DebugSeverity | null): string {
 
 /** A wall-clock time from epoch ms, or an em-dash when absent. */
 export function formatOptionalTime(ms: number | null | undefined): string {
-	return ms == null ? "—" : new Date(ms).toLocaleTimeString();
+	return ms == null ? "—" : formatClock(ms, { seconds: true });
 }
 
 /** `12:00–14:00` for a derivation run's window, or an em-dash when open-ended. */
 export function formatWindow(startMs: number | null, endMs: number | null): string {
 	if (startMs == null || endMs == null) return "—";
-	return `${new Date(startMs).toLocaleTimeString()}–${new Date(endMs).toLocaleTimeString()}`;
+	return formatClockRange(startMs, endMs, { seconds: true });
 }
 
 /** Human-readable byte size (`4.2 GB`), or an em-dash when absent. */
@@ -298,7 +299,7 @@ function normalizeJobTsForDate(ts: string): string {
 export function formatJobTs(ts: string | null | undefined): string {
 	if (!ts) return "—";
 	const d = new Date(normalizeJobTsForDate(ts));
-	return isNaN(d.getTime()) ? ts : d.toLocaleTimeString();
+	return isNaN(d.getTime()) ? ts : formatClock(d, { seconds: true });
 }
 
 /**

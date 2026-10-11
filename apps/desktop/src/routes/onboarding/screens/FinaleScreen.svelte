@@ -24,6 +24,7 @@
   to ask for capture (`startRecording`), then reads what happened.
 -->
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { fpsToIntervalS } from "$lib/components/capture-rate";
@@ -293,7 +294,7 @@
         {/if}
         {#if frame}
           <p class="ob-fine num">
-            Captured {new Date(frame.capturedAt).toLocaleTimeString("en-GB")} · {secondsAgo}
+            Captured {formatClock(new Date(frame.capturedAt), { seconds: true })} · {secondsAgo}
             {secondsAgo === 1 ? "second" : "seconds"} ago
           </p>
         {/if}

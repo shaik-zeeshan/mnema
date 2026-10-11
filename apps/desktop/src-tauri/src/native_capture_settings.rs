@@ -118,6 +118,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         follow_timeline_live: default_follow_timeline_live(),
         retention_policy: RetentionPolicy::Never,
         appearance: default_appearance(),
+        time_format: Default::default(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
@@ -784,6 +785,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         follow_timeline_live: request.follow_timeline_live,
         retention_policy: request.retention_policy,
         appearance: request.appearance,
+        time_format: request.time_format,
         ocr,
         transcription,
         speaker_analysis,
@@ -891,6 +893,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             follow_timeline_live: parsed.follow_timeline_live,
             retention_policy: parsed.retention_policy,
             appearance: parsed.appearance,
+            time_format: parsed.time_format,
             ocr: parsed.ocr,
             transcription: parsed.transcription,
             speaker_analysis: parsed.speaker_analysis,
@@ -1094,6 +1097,7 @@ fn recording_settings_request_from_settings(
         follow_timeline_live: settings.follow_timeline_live,
         retention_policy: settings.retention_policy,
         appearance: settings.appearance,
+        time_format: settings.time_format,
         ocr: settings.ocr,
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
@@ -1172,6 +1176,10 @@ fn apply_domain_patch_to_settings(
         RecordingSettingsDomainPatch::Display(request) => {
             if let Some(value) = request.appearance {
                 settings.appearance = value;
+                touched = true;
+            }
+            if let Some(value) = request.time_format {
+                settings.time_format = value;
                 touched = true;
             }
             if let Some(value) = request.follow_timeline_live {
@@ -1739,6 +1747,24 @@ mod tests {
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
+    }
+
+    #[test]
+    fn display_update_sets_time_format_and_preserves_appearance() {
+        let mut base = default_recording_settings();
+        base.appearance = capture_types::AppearanceSetting::Dark;
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::Display(capture_types::UpdateDisplaySettingsRequest {
+                time_format: Some(capture_types::TimeFormatSetting::H24),
+                ..Default::default()
+            }),
+        )
+        .expect("display patch should validate");
+
+        assert_eq!(updated.time_format, capture_types::TimeFormatSetting::H24);
+        assert_eq!(updated.appearance, base.appearance);
     }
 
     #[test]
@@ -2408,6 +2434,7 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
+                time_format: Default::default(),
                 ocr: default_ocr_settings(),
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
@@ -2470,6 +2497,7 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
+                time_format: Default::default(),
                 ocr,
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
@@ -2546,6 +2574,7 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
+                time_format: Default::default(),
                 ocr: ocr_settings,
                 transcription: default_audio_transcription_settings(),
                 speaker_analysis: default_speaker_analysis_settings(),
@@ -2596,6 +2625,7 @@ mod tests {
                 follow_timeline_live: false,
                 retention_policy: RetentionPolicy::Never,
                 appearance: default_appearance(),
+                time_format: Default::default(),
                 ocr: default_ocr_settings(),
                 transcription,
                 speaker_analysis: default_speaker_analysis_settings(),
@@ -2724,6 +2754,7 @@ mod tests {
             follow_timeline_live: false,
             retention_policy: RetentionPolicy::Never,
             appearance: default_appearance(),
+            time_format: Default::default(),
             ocr: default_ocr_settings(),
             transcription: default_audio_transcription_settings(),
             speaker_analysis: default_speaker_analysis_settings(),

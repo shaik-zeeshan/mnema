@@ -59,6 +59,7 @@
 </script>
 
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   // The Overview lede (insights.html `.in-read`): kicker · mx-display headline ·
   // prose · foot on the left, four derived stats on the right. Every state of
   // the read is one honest sentence in the headline's place.
@@ -106,7 +107,7 @@
   const written = $derived.by(() => {
     if (!e.digest) return "";
     const d = new Date(e.digest.generatedAtMs);
-    const t = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const t = formatClock(d);
     return d.toDateString() === new Date().toDateString()
       ? t
       : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${t}`;

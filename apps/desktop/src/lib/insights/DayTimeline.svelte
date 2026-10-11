@@ -19,7 +19,8 @@
   import { categoryLabel, humanizeMs, windowFor } from "$lib/insights/activity-helpers";
   import { computeLedeStats } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
-  import { buildRiver, capturedHoursByDay, categoryMix, hhmm, weekDays } from "$lib/insights/journal-view";
+  import { buildRiver, capturedHoursByDay, categoryMix, weekDays } from "$lib/insights/journal-view";
+  import { formatClock } from "$lib/time-format";
   import { densityFromHeatmap, toIso } from "$lib/components/date-input";
   import { captureControls, resumeCapture, startCapture } from "$lib/capture-controls.svelte";
   import { openSettings } from "$lib/surface-windows";
@@ -520,7 +521,7 @@
             <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}{" "}<em>— {headline.slice(1).join(" — ")}</em>{/if}</h1>
             <p class="mx-prose">{digest.narrative}</p>
             <div class="in-read__foot">
-              <span class="mx-label num">written {hhmm(digest.generatedAtMs)}{atLatest && ctxStatus?.coveredUntilMs ? ` · covers through ${hhmm(ctxStatus.coveredUntilMs)}` : ""}</span>
+              <span class="mx-label num">written {formatClock(digest.generatedAtMs)}{atLatest && ctxStatus?.coveredUntilMs ? ` · covers through ${formatClock(ctxStatus.coveredUntilMs)}` : ""}</span>
               {#if engineOn}
                 <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" aria-busy={digestRegenerating} disabled={digestRegenerating} onclick={regenerateDigest}>
                   {#if digestRegenerating}<span class="mx-spin mx-spin--sm"></span>Re-reading…{:else}<IconRetry width="13" height="13" aria-hidden="true" />Re-read{/if}
@@ -548,7 +549,7 @@
         {#if model.audioOnly}
           {@render stat("Tracked · app time", "—", "app time · screen off")}
         {:else if usageLoaded}
-          {@render stat("Tracked · app time", tracked, atLatest ? `through ${hhmm(nowMs)}` : "app active time")}
+          {@render stat("Tracked · app time", tracked, atLatest ? `through ${formatClock(nowMs)}` : "app active time")}
         {/if}
         {#if captureRun}
           {@render stat("Activities", "—", "none · needs AI")}

@@ -41,11 +41,6 @@ export function riverRowKey(row: RiverRow): string {
   return row.kind === "card" ? `card${row.slot.activity.id}` : `${row.kind}${row.atMs}`;
 }
 
-/** 24-hour wall clock, "14:05" (the Journal's time column and spine axis). */
-export function hhmm(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
 /** "Away · 1h 10m" — gaps carry no label, only their length. */
 export function awayLabel(span: Span): string {
   return `Away · ${humanizeMs(span.endMs - span.startMs)}`;

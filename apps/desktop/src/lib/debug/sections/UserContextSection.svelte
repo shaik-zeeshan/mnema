@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // User Context — distillation runs, the window gate, digest freshness, and
   // the tail of the derivation-run ledger (mockup A).
   //
@@ -82,7 +83,7 @@
     if (!digest) return "no daily digest generated yet";
     const at = digestFresh
       ? `today ${formatOptionalTime(digest.generatedAtMs)}`
-      : new Date(digest.generatedAtMs).toLocaleString();
+      : new Date(digest.generatedAtMs).toLocaleString(undefined, { hourCycle: hourCycle() });
     const offset = status?.localOffsetMinutes;
     return `last generated ${at}${offset != null ? ` · local offset ${formatOffset(offset)}` : ""}`;
   });

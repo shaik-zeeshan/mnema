@@ -102,6 +102,7 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   followTimelineLive: false,
   retentionPolicy: "never",
   appearance: "system",
+  timeFormat: "h24",
   ocr: {
     enabled: true,
     provider: "apple_vision",
@@ -210,6 +211,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftUserContextBackfillGoDeeper: s.userContext.backfillGoDeeper,
 
     draftAppearance: s.appearance,
+    draftTimeFormat: s.timeFormat,
 
     draftOcrEnabled: s.ocr.enabled,
     draftOcrProvider: s.ocr.provider,

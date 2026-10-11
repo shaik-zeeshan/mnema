@@ -2,6 +2,7 @@
 // list (best moment + rows) built from the frame and audio lists that one
 // `search_capture` call returns. Plain TS so it's bun-testable without Svelte.
 import type { AudioSearchResultDto, FrameSearchResultDto } from "../types/app-infra";
+import { formatClock } from "$lib/time-format";
 
 // Per-call fetch limits (fetch once, expand client-side; anything the backend
 // reports beyond these via hasMoreFrames/Audio is deliberately ignored).
@@ -51,10 +52,10 @@ export function moreRowLabel(total: number, expanded: boolean): string | null {
   return expanded ? "↑ show less" : `↓ show ${total - VISIBLE_CAP} more`;
 }
 
-// A row's time (mockup `short`): "14:12" today, "Wed 17:10" within the week,
+// A row's time (mockup `short`): "14:12" / "2:12 PM" today, "Wed 17:10" within the week,
 // "Oct 6" before that.
 export function momentTime(at: Date, now: Date = new Date()): string {
-  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const time = formatClock(at);
   const days = Math.round(
     (new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86_400_000,
   );

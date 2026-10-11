@@ -1,11 +1,12 @@
 // ── Timeline Jumper — time-list pure helpers ─────────────────────────────────
 // Rune-free logic for the jump picker's hourly time list, extracted out of
-// `TimelineJumper.svelte` so the AM/PM label formatting, the per-hour bucket
+// `TimelineJumper.svelte` so the hour label formatting, the per-hour bucket
 // build (today caps at the current local hour; loaded-but-empty hours render
 // disabled), and the local→Date commit ranges can be unit-tested under
 // `bun test`. The component keeps only the reactive `$derived` plumbing that
 // feeds these.
 import { parseCapturedAt } from "$lib/format-time";
+import { formatClock } from "$lib/time-format";
 import type { FrameSummaryDto } from "$lib/types/app-infra";
 import type { CalendarFields } from "./jumper-cache-core";
 
@@ -16,11 +17,9 @@ export type HourBucket = {
   count: number;
 };
 
-/** "1:00 AM" … "12:00 PM" … "11:00 PM". 12-hour clock, noon/midnight = 12. */
+/** "1:00 AM" … "11:00 PM", or "01:00" … "23:00" — per the Time format setting. */
 export function formatHourLabel(hour: number): string {
-  const period = hour < 12 ? "AM" : "PM";
-  const display = hour % 12 === 0 ? 12 : hour % 12;
-  return `${display}:00 ${period}`;
+  return formatClock(new Date(2000, 0, 1, hour));
 }
 
 /**

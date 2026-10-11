@@ -6,6 +6,7 @@ mod audio_transcription_models;
 mod broker_authorization_channel;
 mod chatgpt_auth;
 mod cli_access;
+mod clock_format;
 mod conversation;
 mod crl_refresh;
 mod debug_health;
@@ -762,6 +763,7 @@ pub fn run() {
             native_capture::check_browser_url_support,
             native_capture::get_capture_privacy_debug,
             native_capture::get_recording_settings,
+            clock_format::system_uses_24_hour_time,
             native_capture::update_recording_settings,
             native_capture::update_capture_source_settings,
             native_capture::update_capture_timing_settings,

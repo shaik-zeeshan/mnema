@@ -2,6 +2,7 @@
 // the per-answer readouts). Pure, so they're tested beside this file.
 import type { AiProviderConfig } from "$lib/types/recording";
 import type { ConversationSummary } from "$lib/insights/conversation";
+import { formatClock } from "$lib/time-format";
 
 const DAY_MS = 86_400_000;
 
@@ -37,7 +38,7 @@ export function chatWhen(ms: number, now: number = Date.now()): string {
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
   const start = today.getTime();
-  if (ms >= start - DAY_MS) return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (ms >= start - DAY_MS) return formatClock(d);
   if (ms >= start - 6 * DAY_MS) return d.toLocaleDateString(undefined, { weekday: "short" });
   return d.toLocaleDateString(undefined, {
     month: "short",

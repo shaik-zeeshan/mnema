@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   // The reading surface: one padded row per speaker turn — a left speaker column
   // (mark · name, the turn's clock time under it) beside a ~78ch prose measure. Slices 1, 3, 4, 7 and 8 of the
   // redesign live here — typography, the dual-encoded marker, the timestamps
@@ -259,7 +260,7 @@
               >
             </span>
           {/if}
-          <span class="ts">{new Date(segmentStartMs + group.startMs).toLocaleTimeString()}</span>
+          <span class="ts">{formatClock(segmentStartMs + group.startMs, { seconds: true })}</span>
         </div>
 
         {#if karaoke[index]}

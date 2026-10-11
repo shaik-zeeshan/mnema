@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClockRange, formatHour } from "$lib/time-format";
   // Heatmap — the focus heat (insights.html `.in-heat`): rows are captured days
   // (day / week) or ISO weeks (month), twelve 2-hour cells across the local day.
   // Hue = the cell's focus band, depth = how much activity it held.
@@ -9,19 +10,20 @@
   let { rows }: { rows: HeatRow[] } = $props();
 
   const VAR = { deep: "--focus-deep", mixed: "--focus-mid", distracted: "--focus-distracted" } as const;
-  const hh = (i: number) => String(i * 2).padStart(2, "0");
+  // Cell i covers [2i, 2i+2) local hours.
+  const at = (i: number) => new Date(2000, 0, 1, i * 2);
 </script>
 
 <div class="heat">
   <span></span>
-  {#each Array.from({ length: 12 }) as _, i (i)}<span class="h">{i % 3 === 0 ? hh(i) : ""}</span>{/each}
+  {#each Array.from({ length: 12 }) as _, i (i)}<span class="h">{i % 3 === 0 ? formatHour(i * 2) : ""}</span>{/each}
   {#each rows as r, ri (ri)}
     <span>{r.label}</span>
     {#each r.cells as c, i (i)}
       {#if c}
         <i
           style="--c:color-mix(in srgb, var({VAR[c.band]}) {c.minutes >= 60 ? 88 : 42}%, var(--app-surface));--d:{ri * 12 + i}"
-          use:tip={`${focusHint(c.band)} · ${fmtDuration(c.minutes * 60000)} · ${r.tip} ${hh(i)}:00–${hh(i + 1)}:00`}
+          use:tip={`${focusHint(c.band)} · ${fmtDuration(c.minutes * 60000)} · ${r.tip} ${formatClockRange(at(i), at(i + 1))}`}
         ></i>
       {:else}
         <i style="--d:{ri * 12 + i}"></i>

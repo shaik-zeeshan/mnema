@@ -19,6 +19,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
+import { setTimeFormat } from "$lib/time-format";
 import type {
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
@@ -27,6 +28,7 @@ import type {
   AiEngineRef,
   McpServerConfig,
   AppearanceSetting,
+  TimeFormatSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -197,6 +199,7 @@ export class RecordingStore {
   draftMetadataEnabled = $state(true);
   draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   draftAppearance = $state<AppearanceSetting>("system");
+  draftTimeFormat = $state<TimeFormatSetting>("system");
 
   // Privacy-exclusion drafts (committed through the dedicated controller).
   draftExcludedApps = $state<ExcludedAppEntry[]>([]);
@@ -353,6 +356,7 @@ export class RecordingStore {
   syncDisplayDrafts(s: RecordingSettings): void {
     this.draftFollowTimelineLive = s.followTimelineLive ?? false;
     this.draftAppearance = s.appearance ?? "system";
+    this.draftTimeFormat = s.timeFormat ?? "system";
   }
 
   syncMetadataDrafts(s: RecordingSettings): void {
@@ -591,6 +595,7 @@ export class RecordingStore {
 
     if (draftDomain === "display" && applyDrafts) {
       this.#deps.setAppearance(s.appearance ?? "system");
+      setTimeFormat(s.timeFormat);
     }
     if (draftDomain === "developer" && applyDrafts) {
       this.#deps.setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);

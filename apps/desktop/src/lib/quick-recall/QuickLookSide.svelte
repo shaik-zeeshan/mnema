@@ -9,6 +9,7 @@
 </script>
 
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import IconTimeline from "~icons/lucide/chart-no-axes-gantt";
   import IconCopy from "~icons/lucide/copy";
   import IconExternal from "~icons/lucide/external-link";
@@ -41,9 +42,6 @@
   });
   const nHit = $derived(lines.reduce((n, segs) => n + segs.filter((s) => s.marked).length, 0));
 
-  const hms = (d: Date) =>
-    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-  const hm = (d: Date) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
   const day = (d: Date) => d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
   // Keep the scrubbed transcript line in view.
@@ -65,7 +63,7 @@
     </div>
     <h3 class="rc-side__t">{frame.windowTitle ?? frame.appName ?? "Untitled"}</h3>
     <div class="rc-side__when">
-      <span>{day(new Date(frameMs))} · {hms(new Date(frameMs))}</span>
+      <span>{day(new Date(frameMs))} · {formatClock(frameMs, { seconds: true })}</span>
       <small>{frame.url ?? `${Math.max(1, Math.round((parseCapturedAt(frame.groupEndAt).getTime() - parseCapturedAt(frame.groupStartAt).getTime()) / 60_000))} min on screen`}</small>
     </div>
     <div class="rc-why">
@@ -123,7 +121,7 @@
       {@const af = audio.alignedFrame}
       <button type="button" class="rc-side__also" onclick={() => void look.openAligned()}>
         <i>{#if look.thumbs[af.id]}<img src={look.thumbs[af.id]} alt="" />{/if}</i><b>On screen then</b><small
-          >{af.appName ?? "Screen"} · {hm(parseCapturedAt(af.capturedAt))}</small
+          >{af.appName ?? "Screen"} · {formatClock(parseCapturedAt(af.capturedAt))}</small
         >
       </button>
     {:else}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   // CategoryDetailModal — the per-category activity-thread breakdown lifted out
   // of the Overview feed (Insights redesign, Phase 2). Opened from the
   // "Categories" glance tile; renders the same "what you worked on" thread list
@@ -70,6 +71,7 @@
       day: "numeric",
       hour: "numeric",
       minute: "2-digit",
+      hourCycle: hourCycle(),
     });
   }
 

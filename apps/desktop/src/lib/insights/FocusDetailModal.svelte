@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   // FocusDetailModal — "Focus detail" behind Overview's focus column, in the
   // insights.html `.in-modal` chrome: the Deep/Mixed/Scattered split (by
   // activity count), the focus heat at modal width, and the longest sessions.
@@ -23,9 +24,9 @@
 
   let { open, activities, focusRows, rangeLabel, onClose }: Props = $props();
 
-  // "Tue 09:30" — the Insights clock voice.
+  // "Tue 09:30" / "Tue 9:30 AM".
   const clockTime = (ms: number): string =>
-    `${new Date(ms).toLocaleDateString("en-US", { weekday: "short" })} ${new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+    `${new Date(ms).toLocaleDateString("en-US", { weekday: "short" })} ${formatClock(ms)}`;
 
   type FocusLevel = "deep" | "mixed" | "distracted";
   const VAR: Record<FocusLevel, string> = { deep: "--focus-deep", mixed: "--focus-mid", distracted: "--focus-distracted" };

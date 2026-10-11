@@ -14,6 +14,7 @@
   frame back" is the actual default rate.
 -->
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import { fpsToIntervalS } from "$lib/components/capture-rate";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
   import IconArrow from "~icons/lucide/arrow-right";
@@ -54,11 +55,7 @@
   const timecode = $derived(
     end === 0
       ? "--:--:--"
-      : new Date(anchor - (8 - Math.round((end - x) / PITCH)) * intervalMs).toLocaleTimeString("en-GB", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }),
+      : formatClock(anchor - (8 - Math.round((end - x) / PITCH)) * intervalMs, { seconds: true }),
   );
 
   $effect(() => {

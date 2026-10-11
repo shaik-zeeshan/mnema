@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   // Health — the summary scroll's first card, and mockup A's Health card:
   // a diagnosis strip over a 4-stat grid, with the session controls in the
   // card's action foot.
@@ -180,7 +181,7 @@
       label: "Recording",
       value: "ON",
       tone: "ok",
-      sub: recordingSince == null ? null : `since ${new Date(recordingSince).toLocaleTimeString()}`,
+      sub: recordingSince == null ? null : `since ${formatClock(recordingSince, { seconds: true })}`,
     };
   });
 

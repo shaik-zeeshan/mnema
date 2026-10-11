@@ -10,6 +10,7 @@
 </script>
 
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import IconMissing from "~icons/lucide/image-off";
   import { FramePreviewUrlHolder } from "$lib/frame-preview";
   import { invoke } from "@tauri-apps/api/core";
@@ -33,8 +34,6 @@
     if (search.resultsQuery !== openedFor) look.close();
   });
 
-  const hms = (d: Date) =>
-    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 
   // ── Screen stage: one full-size preview alive at a time ─────────────────
   const holder = new FramePreviewUrlHolder();
@@ -112,7 +111,7 @@
       {#if frame}
         <span class="rc-look__tag"
           >{#if look.k === 0}<i></i><b>matched frame</b>{:else}<b>{signedClock(offsetMs)}</b
-            >{offsetMs >= 0 ? "after" : "before"} the match{/if}<span>· {hms(new Date(frameMs))}</span></span
+            >{offsetMs >= 0 ? "after" : "before"} the match{/if}<span>· {formatClock(frameMs, { seconds: true })}</span></span
         >
         <span class="rc-look__legend"
           >{#if boxes.some((b) => b.kind === "keyword")}<span class="kw">keyword</span>{/if}{#if meaning}<span

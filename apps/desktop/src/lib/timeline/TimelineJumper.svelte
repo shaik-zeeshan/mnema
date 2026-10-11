@@ -31,6 +31,7 @@
   } from "@internationalized/date";
   import { invoke } from "@tauri-apps/api/core";
   import { parseCapturedAt } from "$lib/format-time";
+  import { formatClock } from "$lib/time-format";
   import { humanizeError } from "$lib/format-error";
   import IconCalendar from "~icons/lucide/calendar";
   import IconLatest from "~icons/lucide/arrow-right-to-line";
@@ -116,7 +117,7 @@
       (timelineBusy ? "Loading…" : "No frames"),
   );
   const triggerTime = $derived(
-    committedMoment?.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" }) ?? "",
+    (committedMoment ? formatClock(committedMoment, { seconds: true }) : ""),
   );
   const triggerTip = $derived.by(() => {
     if (!committedMoment) return "Jump to date and time  J";

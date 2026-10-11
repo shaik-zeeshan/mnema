@@ -2,6 +2,7 @@
 // turn the match sits in, and the clocks around it. No Svelte, no tauri.
 
 import { parseCapturedAt } from "$lib/format-time";
+import { formatClock } from "$lib/time-format";
 
 // Index of the turn the match span starts inside, else the turn whose
 // [startMs, endMs] interval is nearest to the span start (transcription and
@@ -39,7 +40,7 @@ export function segmentDurationMs(segment: {
     : 0;
 }
 
-// Wall-clock stamp for a transcript turn ("15:03:41"), from the segment's
+// Wall-clock stamp for a transcript turn ("15:03:41" / "3:03:41 PM"), from the segment's
 // absolute start plus the turn's in-segment offset.
 export function formatTurnClock(
   segmentStartedAt: string,
@@ -47,10 +48,5 @@ export function formatTurnClock(
 ): string {
   const base = parseCapturedAt(segmentStartedAt);
   if (isNaN(base.getTime())) return "";
-  return new Date(base.getTime() + offsetMs).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
+  return formatClock(base.getTime() + offsetMs, { seconds: true });
 }
