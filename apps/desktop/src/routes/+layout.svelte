@@ -300,7 +300,8 @@
 
   function closeDedicatedWindowOnEscape(event: KeyboardEvent): boolean {
     // Keyed on the WINDOW, not the route, so it cannot drift again: a window
-    // that gets the dedicated titlebar's Close chip should honour Escape too.
+    // with a close control (Debug's Close chip, Update's close light) should
+    // honour Escape too.
     // The update window is the one surface the app opens unsolicited, and it
     // shipped as the only dismissible window Escape could not close (⌘W is
     // inert as well — `decorations: false` strips NSWindowStyleMask::Closable).
@@ -391,7 +392,7 @@
     <Titlebar platform={windowPlatform} {devEnabled} />
   {/if}
 
-  {#if showDedicatedTitlebar && currentWindowLabel() !== "onboarding"}<!-- onboarding's strip owns its chrome -->
+  {#if showDedicatedTitlebar && currentWindowLabel() === "debug"}<!-- onboarding, CLI Access and Update draw their own strip -->
   <header class="surface-titlebar">
     <div class="surface-titlebar__drag" data-tauri-drag-region></div>
     <div class="surface-titlebar__actions">

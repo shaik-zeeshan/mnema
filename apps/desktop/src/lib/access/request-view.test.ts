@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   allowLabel,
+  fitAccessWindowHeight,
   identitySource,
   isWiden,
   requestAge,
@@ -71,5 +72,20 @@ describe("CLI Access request view", () => {
     expect(requestAge("2026-10-10T10:00:00Z", t + 30_000)).toBe("Requested 30s ago");
     expect(requestAge("2026-10-10T10:00:00Z", t + 120_000)).toBe("Requested 2 min ago");
     expect(requestAge("nope", t)).toBeNull();
+  });
+});
+
+describe("fitAccessWindowHeight", () => {
+  it("fits a new view exactly, shrinking a short one", () => {
+    expect(fitAccessWindowHeight(600, 280, false, 900)).toBe(280);
+    expect(fitAccessWindowHeight(280, 640, false, 900)).toBe(640);
+  });
+  it("only grows within one view", () => {
+    expect(fitAccessWindowHeight(640, 600, true, 900)).toBeNull();
+    expect(fitAccessWindowHeight(600, 672, true, 900)).toBe(672);
+  });
+  it("caps at the screen and ignores sub-pixel noise", () => {
+    expect(fitAccessWindowHeight(600, 1400, false, 900)).toBe(900);
+    expect(fitAccessWindowHeight(600, 601, false, 900)).toBeNull();
   });
 });

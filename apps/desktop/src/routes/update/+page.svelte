@@ -18,6 +18,7 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { onDestroy, onMount, tick } from "svelte";
   import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+  import WindowStrip from "$lib/components/WindowStrip.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconCheck from "~icons/lucide/check";
   import IconCloudOff from "~icons/lucide/cloud-off";
@@ -309,6 +310,7 @@
 </svelte:head>
 
 <main class="up" data-state={key}>
+  <WindowStrip title="Software Update" />
   <!-- 1 · identity -->
   <header class="up-head">
     <!-- The real bundle icon (static/app-icon.png is a copy of

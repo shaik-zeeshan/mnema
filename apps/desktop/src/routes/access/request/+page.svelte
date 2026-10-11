@@ -9,6 +9,7 @@
   import { onMount, tick } from "svelte";
   import { trapTabKey } from "$lib/keyboard";
   import Choice from "$lib/components/Choice.svelte";
+  import WindowStrip from "$lib/components/WindowStrip.svelte";
   import IconTerminal from "~icons/lucide/square-terminal";
   import IconLock from "~icons/lucide/lock";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -28,6 +29,7 @@
     SCOPE_PROSE,
     SCOPE_RANK,
     SCOPES,
+    fitAccessWindowHeight,
     scopeDisabled,
     scopeHint,
     scopeTag,
@@ -102,20 +104,26 @@
       : null,
   );
 
-  // The form is taller than the 600 px the window opens at, and the body's
-  // scroll is invisible under macOS overlay scrollbars — a clipped standing-terms
-  // line is the whole statement of what access means. Grow the window to fit
-  // (never shrink, so the buttons move only when content grows).
+  // The window sizes to its content: short views (loading, load failed, none
+  // waiting, receipts) don't sit in a tall empty box, and the body's scroll is
+  // invisible under macOS overlay scrollbars — a clipped standing-terms line is
+  // the whole statement of what access means. The dialog is content-sized (see
+  // `.ac`), so its height plus whatever the body still hides is the natural
+  // height. Within one request the window only grows (`fitAccessWindowHeight`).
+  let fittedView = "";
   $effect(() => {
-    void [pendingRequest, selectedScope, error, gone, bodyEl];
+    void [pendingRequest, selectedScope, error, gone, bodyEl, receipt, loading, loadError];
+    const view = receipt ? `receipt:${receipt.kind}` : loading ? "loading" : loadError ? "error"
+      : pendingRequest ? `request:${pendingRequest.requestId}` : "none";
     void tick().then(async () => {
-      if (!bodyEl) return;
-      const overflow = bodyEl.scrollHeight - bodyEl.clientHeight;
-      if (overflow < 2) return;
-      const target = Math.min(window.screen.availHeight - 48, window.innerHeight + overflow);
-      if (target <= window.innerHeight) return;
+      if (!dialogEl) return;
+      const hidden = bodyEl ? bodyEl.scrollHeight - bodyEl.clientHeight : 0;
+      const natural = dialogEl.getBoundingClientRect().bottom + hidden;
+      const target = fitAccessWindowHeight(window.innerHeight, natural, view === fittedView, window.screen.availHeight - 48);
+      fittedView = view;
+      if (target === null) return;
       try {
-        await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, Math.round(target)));
+        await getCurrentWindow().setSize(new LogicalSize(window.innerWidth, target));
       } catch {
         // Not in a Tauri window (dev render).
       }
@@ -348,6 +356,7 @@
     aria-busy={loading}
     tabindex="-1"
   >
+    <WindowStrip title="CLI Access" onclose={() => { if (!acting) void closeWindow(); }} />
     {#if receipt}
       {@const broad = receipt.kind === "granted" && receipt.scope === "allRetained"}
       <div
@@ -560,21 +569,24 @@
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
+    align-items: flex-start;
     overflow: hidden;
     background: var(--app-surface);
     color: var(--app-text);
   }
+  /* Content-sized (never stretched to the window) so its height is what the
+     window fits to; capped at the viewport, where the body scrolls. */
   .ac-dlg {
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 0;
+    max-height: 100vh;
     display: flex;
     flex-direction: column;
     outline: none;
   }
 
   .ac-body {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-height: 0;
     overflow-y: auto;
     display: grid;
@@ -582,7 +594,7 @@
     gap: var(--s-4);
     padding: var(--s-5) var(--s-5) var(--s-4);
   }
-  .ac-fill { flex: 1 1 auto; min-height: 0; }
+  .ac-fill { flex: none; }
   .ac-fill .mx-empty { padding: var(--s-6) var(--s-5); }
   .ac-head { display: grid; gap: 6px; }
   .ac-head .mx-h2 { text-wrap: balance; overflow-wrap: anywhere; }

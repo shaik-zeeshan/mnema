@@ -256,7 +256,7 @@ export function outOfWindowLicense(
   };
 }
 
-export const UPDATE_WINDOW_MIN_HEIGHT = 360;
+export const UPDATE_WINDOW_MIN_HEIGHT = 260;
 export const UPDATE_WINDOW_MAX_HEIGHT = 640;
 
 /**

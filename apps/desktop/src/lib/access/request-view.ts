@@ -114,3 +114,17 @@ export function requestAge(createdAt: string, now: number): string | null {
   if (ageSeconds < 60) return `Requested ${ageSeconds}s ago`;
   return `Requested ${Math.round(ageSeconds / 60)} min ago`;
 }
+
+/// The window height that fits the dialog's natural height, or `null` to leave
+/// it. A new view (loading → request, request → receipt…) fits exactly, short
+/// views included; within one view it only grows, so Allow/Deny never move up
+/// under the pointer when a note collapses.
+export function fitAccessWindowHeight(
+  current: number,
+  natural: number,
+  sameView: boolean,
+  max: number,
+): number | null {
+  const target = Math.round(Math.min(max, sameView ? Math.max(current, natural) : natural));
+  return Math.abs(target - current) < 2 ? null : target;
+}

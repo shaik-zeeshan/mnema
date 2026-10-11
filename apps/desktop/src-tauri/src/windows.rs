@@ -234,16 +234,16 @@ impl AppWindow {
                 label: "cli-access-request",
                 path: "access/request",
                 title: "mnema · CLI Access",
-                // Sized for the TALLEST state, not the average one: `allRetained`
-                // with its warn callout needs 372 px of body at 520 wide, and the
-                // body's `overflow-y: auto` is invisible under macOS overlay
-                // scrollbars — a short window silently truncates the standing-terms
-                // sentence, which since ADR 0059 is the whole statement of what
-                // access means. Measured, not guessed. Min is pinned to the same
-                // box: this is a fixed-content dialog, and narrowing to 460 rewraps
-                // the callout into a clip again.
+                // The opening size, not the final one: the page sizes the window
+                // to its content (`fitAccessWindowHeight`) — short views (loading,
+                // none waiting, receipts) shrink, and a request grows until the
+                // standing-terms sentence is visible (the body's scroll is
+                // invisible under macOS overlay scrollbars, and since ADR 0059
+                // that sentence is the whole statement of what access means).
+                // So the min height only has to stay under the shortest view.
+                // Width stays pinned: narrowing to 460 rewraps the callout.
                 inner_size: (520.0, 600.0),
-                min_inner_size: (520.0, 600.0),
+                min_inner_size: (520.0, 200.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -275,10 +275,10 @@ impl AppWindow {
                 // The page measures its rendered release notes and resizes the
                 // window to fit (`fitWindowToContent`), so this is the opening
                 // size, not the final one — and `min_inner_size` must stay under
-                // the page's own 360px floor or a short changelog can't shrink
-                // out of its dead space.
+                // the page's own floor (`UPDATE_WINDOW_MIN_HEIGHT`) or a short
+                // changelog can't shrink out of its dead space.
                 inner_size: (480.0, 520.0),
-                min_inner_size: (420.0, 340.0),
+                min_inner_size: (420.0, 240.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
