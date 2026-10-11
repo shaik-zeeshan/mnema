@@ -1,7 +1,7 @@
 // @ts-nocheck — run under `bun test`; bun:test types aren't in the svelte-check
 // tsconfig, so skip static checking here (same as chat-format.test.ts).
 import { describe, expect, test } from "bun:test";
-import { defaultScope, scopeFromParams, scopeLabel, toWireScope } from "./scope";
+import { defaultScope, scopeFromParams, presetScope, scopeLabel, toWireScope } from "./scope";
 
 const FRI = new Date(2026, 9, 9, 15); // Fri Oct 9 2026
 
@@ -34,5 +34,10 @@ describe("chat scope", () => {
     expect(scopeFromParams("2026-10-05", null, true)).toEqual({ start: "2026-10-05", end: "2026-10-05", aboutYou: true });
     expect(scopeFromParams("2026-10-11", "2026-10-05", true)).toBeNull();
     expect(scopeFromParams("oct 5", null, true)).toBeNull();
+  });
+  test("a suggestion's preset becomes the scope, keeping About you", () => {
+    expect(presetScope("Yesterday", false, FRI)).toEqual({ start: "2026-10-08", end: "2026-10-08", aboutYou: false });
+    expect(presetScope("This week", true, FRI)).toEqual({ start: "2026-10-05", end: "2026-10-11", aboutYou: true });
+    expect(presetScope("Nope", true, FRI)).toEqual({ start: null, end: null, aboutYou: true });
   });
 });

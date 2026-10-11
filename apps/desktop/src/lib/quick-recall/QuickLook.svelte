@@ -90,7 +90,9 @@
     const cur = look.turn;
     if (!audio || !cur || !turnCells.length) return null;
     const from = Math.max(0, turns[turnCells[0]].startMs - 20_000);
-    const to = Math.max(from + 1, turns[turnCells[turnCells.length - 1]].endMs + 20_000);
+    const end = turns[turnCells[turnCells.length - 1]].endMs + 20_000;
+    // Never run the axis past the recording's own end ("1:20" of a 1:00 segment).
+    const to = Math.max(from + 1, segmentMs > 0 ? Math.min(segmentMs, end) : end);
     let s = 0;
     for (const ch of audio.groupKey) s = (s * 31 + ch.charCodeAt(0)) >>> 0;
     s = (s % 2147483646) + 1;

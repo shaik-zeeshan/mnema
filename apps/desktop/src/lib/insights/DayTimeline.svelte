@@ -517,7 +517,7 @@
             <h1 class="mx-display">{n ? `Too little captured on ${dayLabel} to write a digest.` : "Your day is being written."}</h1>
             <p class="mx-prose">{n === 1 ? "A digest needs at least two activities; this day has one. It's below, as captured." : n ? "A digest needs at least two activities it can use. They're below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>
           {:else if digest}
-            <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}<em> — {headline.slice(1).join(" — ")}</em>{/if}</h1>
+            <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}{" "}<em>— {headline.slice(1).join(" — ")}</em>{/if}</h1>
             <p class="mx-prose">{digest.narrative}</p>
             <div class="in-read__foot">
               <span class="mx-label num">written {hhmm(digest.generatedAtMs)}{atLatest && ctxStatus?.coveredUntilMs ? ` · covers through ${hhmm(ctxStatus.coveredUntilMs)}` : ""}</span>

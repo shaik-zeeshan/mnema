@@ -56,7 +56,13 @@
     return out;
   });
 
-  const midMonth = $derived(new Date((fromMs + toMs) / 2).toLocaleDateString(undefined, { month: "short" }));
+  // Mid-axis tick: the month on a long span, the date on a short one, nothing
+  // when the span is a day or two (it would repeat its neighbours).
+  const midMonth = $derived.by(() => {
+    const days = (toMs - fromMs) / 86_400_000;
+    const mid = (fromMs + toMs) / 2;
+    return days >= 60 ? new Date(mid).toLocaleDateString(undefined, { month: "short" }) : days >= 3 ? day(mid) : "";
+  });
   const TICKS = [100, pct(STRONGLY_HELD), pct(INITIAL_BASE), pct(DISPLAY_FLOOR), 0];
   const GRID = [pct(INITIAL_BASE), pct(STRONGLY_HELD), 100];
   const y = (v: number) => H - (v / 100) * H;

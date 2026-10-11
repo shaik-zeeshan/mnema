@@ -54,3 +54,10 @@ export function toWireScope(scope: ChatScope): AskAiScope {
   };
   return { fromMs: day(scope.start, 0), toMs: day(scope.end, 1) - 1, aboutYou: scope.aboutYou };
 }
+
+/** A "Try asking" suggestion's preset ("Today" · "Yesterday" · "This week") as
+ *  the chat scope, keeping About you. */
+export function presetScope(name: string, aboutYou: boolean, today: Date = new Date()): ChatScope {
+  const hit = presets(parseIso(toIso(today))).find(([label]) => label === name);
+  return hit ? { start: toIso(hit[1]), end: toIso(hit[2]), aboutYou } : { start: null, end: null, aboutYou };
+}

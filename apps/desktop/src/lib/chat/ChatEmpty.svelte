@@ -13,20 +13,22 @@
   interface Props {
     /** Show the suggestions (only when there's a composer to fill). */
     suggest: boolean;
-    onpick: (text: string) => void;
+    /** Fills the composer and sets the suggestion's scope preset — never sends. */
+    onpick: (text: string, preset: string) => void;
     children: Snippet;
   }
   let { suggest, onpick, children }: Props = $props();
 
   const hello = greeting(new Date().getHours());
-  const SUGGESTIONS: [string, Component, string][] = [
-    ["What did I work on yesterday?", IconMonitor, "var(--app-source-screen)"],
-    ["Summarize my calls this week", IconMic, "var(--app-source-mic)"],
-    ["Find the PR link I saw Tuesday", IconSearch, "var(--app-source-screen)"],
-    ["What was I reading before lunch?", IconMonitor, "var(--app-source-screen)"],
-    ["Who did I talk to most this week?", IconSpeaker, "var(--app-source-sysaudio)"],
-    ["Draft my standup from today", IconNote, "var(--app-info)"],
+  const SUGGESTIONS: [string, Component, string, string][] = [
+    ["What did I work on yesterday?", IconMonitor, "var(--app-source-screen)", "Yesterday"],
+    ["Summarize my calls this week", IconMic, "var(--app-source-mic)", "This week"],
+    ["Find the PR link I saw Tuesday", IconSearch, "var(--app-source-screen)", "This week"],
+    ["What was I reading before lunch?", IconMonitor, "var(--app-source-screen)", "Today"],
+    ["Who did I talk to most this week?", IconSpeaker, "var(--app-source-sysaudio)", "This week"],
+    ["Draft my standup from today", IconNote, "var(--app-info)", "Today"],
   ];
+  const HINT: Record<string, string> = { Today: "today", Yesterday: "yday", "This week": "week" };
 </script>
 
 <div class="ch-new">
@@ -40,9 +42,9 @@
     <div class="ch-try mx-reveal" style="--i:2">
       <span class="mx-label">Try asking</span>
       <div class="ch-sugs">
-        {#each SUGGESTIONS as [text, Icon, tint] (text)}
-          <button type="button" class="mx-btn mx-btn--sm ch-sug" style="--c:{tint}" onclick={() => onpick(text)}>
-            <Icon width="13" height="13" aria-hidden="true" />{text}
+        {#each SUGGESTIONS as [text, Icon, tint, preset] (text)}
+          <button type="button" class="mx-btn mx-btn--sm ch-sug" style="--c:{tint}" onclick={() => onpick(text, preset)}>
+            <Icon width="13" height="13" aria-hidden="true" />{text}<small>{HINT[preset]}</small>
           </button>
         {/each}
       </div>
@@ -60,4 +62,5 @@
   .ch-try .mx-label { display: block; margin-bottom: var(--s-2); }
   .ch-sugs { display: flex; flex-wrap: wrap; gap: var(--s-2); }
   .ch-sug :global(svg) { color: var(--c); }
+  .ch-sug small { font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
 </style>

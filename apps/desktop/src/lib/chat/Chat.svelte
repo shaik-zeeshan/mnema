@@ -34,8 +34,8 @@
   import ChatTurnView from "./ChatTurn.svelte";
   import ChatComposer from "./ChatComposer.svelte";
   import ChatEmpty from "./ChatEmpty.svelte";
-  import { chatWhen, providerVia, providerWhere } from "./chat-format";
-  import { defaultScope, scopeLabel, toWireScope, type ChatScope } from "./scope";
+  import { providerVia, providerWhere } from "./chat-format";
+  import { defaultScope, presetScope, scopeLabel, toWireScope, type ChatScope } from "./scope";
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
   import IconPin from "~icons/lucide/pin";
   import { regeneratePlan } from "./regenerate";
@@ -531,7 +531,7 @@
   {#if mode === "chat"}
     <header class="ch-head">
       <h1>{displayTitle}</h1>
-      {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${chatWhen(headStarted)}` : ""}</span>{/if}
+      {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${new Date(headStarted).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : ""}</span>{/if}
       <div class="ch-head__acts">
         <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed={activeSummary?.pinned ?? false} aria-label={activeSummary?.pinned ? "Unpin chat" : "Pin chat"} use:tip={activeSummary?.pinned ? "Unpin" : "Pin"} disabled={!activeSummary} onclick={() => activeSummary && void store.togglePin(activeSummary.conversationId)}>
           <IconPin width="15" height="15" aria-hidden="true" />
@@ -548,7 +548,7 @@
 
   <div class="ch-scroll" bind:this={transcriptEl} onscroll={onTranscriptScroll} aria-live="polite">
     {#if mode === "new"}
-      <ChatEmpty suggest={askAvailable} onpick={(text) => { composerInput = text; composer?.focus(); }}>
+      <ChatEmpty suggest={askAvailable} onpick={(text, preset) => { composerInput = text; scope = presetScope(preset, scope.aboutYou); composer?.focus(); }}>
         {@render composerSlot(false)}
       </ChatEmpty>
     {:else if mode === "missing"}

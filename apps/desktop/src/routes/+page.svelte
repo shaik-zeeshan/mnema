@@ -6677,7 +6677,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--microphone"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`Microphone #${seg.segmentIndex} · ${formatTimeOfDay(seg.startUnixMs)} – ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}
@@ -6695,7 +6695,7 @@
                       class="timeline-rail__audio-bar timeline-rail__audio-bar--systemAudio"
                       class:timeline-rail__audio-bar--selected={seg.id === selectedAudioSegmentId}
                       style="right: {seg.rightPx}px; width: {seg.widthPx}px"
-                      use:tip={`${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} · ${seg.fileName} · ${formatUnixMs(seg.startUnixMs)} – ${formatUnixMs(seg.endUnixMs)}`}
+                      use:tip={`System audio #${seg.segmentIndex} · ${formatTimeOfDay(seg.startUnixMs)} – ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-label={`Play ${audioSourceLabel(seg.source)} segment ${seg.segmentIndex} from ${formatTimeOfDay(seg.startUnixMs)} to ${formatTimeOfDay(seg.endUnixMs)}`}
                       aria-pressed={seg.id === selectedAudioSegmentId}
                       onclick={(e) => onAudioSegmentBarClick(e, seg.id)}

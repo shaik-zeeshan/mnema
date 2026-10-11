@@ -1,5 +1,6 @@
 <script lang="ts" module>
   import type { UserContextSummarizingFailure } from "$lib/types/recording";
+  import { hhmm } from "$lib/insights/journal-view";
 
   export type OverviewState =
     /** 2a: nothing captured in the current range and not recording. */
@@ -9,12 +10,10 @@
     /** 4a: history backfill still running. */
     | { kind: "catching-up" };
 
-  /** "2:40 pm" today, "Oct 3, 2:40 pm" otherwise. */
+  /** "14:40" today, "Oct 3, 14:40" otherwise. */
   export function clockLabel(ms: number): string {
     const d = new Date(ms);
-    const time = d
-      .toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-      .toLowerCase();
+    const time = hhmm(ms); // Insights' one clock: 24h, like the Journal and the "written" stamp.
     if (d.toDateString() === new Date().toDateString()) return time;
     return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${time}`;
   }

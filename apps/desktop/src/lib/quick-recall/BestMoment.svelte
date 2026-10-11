@@ -69,9 +69,8 @@
         ? "Microphone"
         : "System audio",
   );
-  const where = $derived(
-    frame ? (frame.url?.split("/")[0] ?? frame.appName ?? "") : title,
-  );
+  // Audio has no app or site; its source is already the title.
+  const where = $derived(frame ? (frame.url?.split("/")[0] ?? frame.appName ?? "") : "");
   const meaning = $derived(frame ? frame.foundByMeaning : audio!.foundByMeaning);
   // The marked words, for the keyword chip's "“pricing page” on screen".
   const terms = $derived([
@@ -190,7 +189,7 @@
     </div>
     <h2 class="rc-hero__t">{@render resultTile(result)}<span>{title}</span></h2>
     <div class="rc-meta">
-      <span><b>{day}</b> · {hm(start)}–{hm(end)}</span>
+      <span><b>{day}</b> · {hm(start)}{hm(end) === hm(start) ? "" : `–${hm(end)}`}</span>
       <span>{formatRelativeTime(startIso)}</span>
       {#if where}<span>{where}</span>{/if}
     </div>
