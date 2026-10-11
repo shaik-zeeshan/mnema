@@ -729,7 +729,8 @@ fn joined_headline(headline: &str, turn: &str) -> Option<String> {
 /// Trim + validate an engine-returned headline. Unlike [`normalize_narrative`],
 /// `None` is NOT a failure — a narrative-only digest stays valid. An over-long
 /// headline is cut at the last word boundary within [`HEADLINE_CHAR_CAP`]
-/// chars (a hard char cut when one headline-sized word fills the cap);
+/// chars (a hard char cut when one headline-sized word fills the cap) and ends
+/// in "…" so the cut reads as one, not as a sentence that stopped;
 /// `truncate_chars` is not reused because its mid-word ellipsis reads wrong in
 /// the large display type the headline is set in.
 fn normalize_headline(raw: &str) -> Option<String> {
@@ -740,12 +741,12 @@ fn normalize_headline(raw: &str) -> Option<String> {
     if headline.chars().count() <= HEADLINE_CHAR_CAP {
         return Some(headline.to_string());
     }
-    let capped: String = headline.chars().take(HEADLINE_CHAR_CAP).collect();
+    let capped: String = headline.chars().take(HEADLINE_CHAR_CAP - 1).collect();
     let cut = match capped.rfind(char::is_whitespace) {
         Some(at) if at > 0 => capped[..at].trim_end(),
         _ => capped.as_str(),
     };
-    Some(cut.to_string())
+    Some(format!("{cut}…"))
 }
 
 /// Map a [`app_infra::StoredDigest`]-shaped row onto the wire DTO.
@@ -1662,11 +1663,14 @@ mod tests {
         let long = format!("{} tail", "word ".repeat(30).trim_end()); // 154 chars
         let truncated = normalize_headline(&long).expect("headline");
         assert!(truncated.chars().count() <= HEADLINE_CHAR_CAP);
-        assert_eq!(truncated, "word ".repeat(28).trim_end());
+        assert_eq!(truncated, format!("{}…", "word ".repeat(27).trim_end()));
 
         // One unbroken cap-filling word: hard char cut, never `None`.
         let unbroken = "y".repeat(HEADLINE_CHAR_CAP + 20);
-        assert_eq!(normalize_headline(&unbroken), Some("y".repeat(HEADLINE_CHAR_CAP)));
+        assert_eq!(
+            normalize_headline(&unbroken),
+            Some(format!("{}…", "y".repeat(HEADLINE_CHAR_CAP - 1)))
+        );
     }
 
     /// `headline — turn` is one stored string: the lede splits on the FIRST
