@@ -94,6 +94,7 @@
           ariaLabel="Helper timeout"
           disabled={!rec.draftSpeakerSeparateSpeakers}
         />
+        <span class="num spk-v">{rec.draftSpeakerTimeoutMinutes}m</span>
       </div>
     {/snippet}
   </SettingRow>
@@ -175,5 +176,19 @@
   /* Right-aligned controls keep a readable width (.st-select). */
   .spk-ctl {
     width: 240px;
+  }
+
+  /* The slider's value, as Capture's sensitivity rows show it. */
+  .spk-ctl:has(.spk-v) {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+
+  .spk-v {
+    min-width: 34px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    text-align: right;
   }
 </style>

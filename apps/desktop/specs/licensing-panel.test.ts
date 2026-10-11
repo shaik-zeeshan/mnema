@@ -87,6 +87,12 @@ describe("statusHintFor / statusInlineFor (Settings Status row)", () => {
     expect(statusInlineFor(licensed())).toBeNull();
   });
 
+  test("no update expiry (i64::MAX sentinel) never prints Invalid Date", () => {
+    expect(statusHintFor(licensed({ updateThroughMs: 9223372036854775807 }), null)).toBe(
+      "Licensed to Ada Lovelace · updates included.",
+    );
+  });
+
   test("out of window: drops the update clause, warns inline", () => {
     const status = licensed({ inWindow: false });
     expect(statusHintFor(status, { used: 1, cap: 3 })).toBe("Licensed to Ada Lovelace · 1 of 3 devices activated.");

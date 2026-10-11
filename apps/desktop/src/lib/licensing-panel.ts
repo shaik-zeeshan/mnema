@@ -78,7 +78,9 @@ export function statusHintFor(
       }
       if (act.state !== "activated") return null;
       const parts = [`Licensed to ${who}`];
-      if (status.inWindow) parts.push(`updates included through ${fmtLicenseDate(status.updateThroughMs)}`);
+      // A key with no update expiry carries i64::MAX — past JS Date's range.
+      const open = Number.isNaN(new Date(status.updateThroughMs).getTime());
+      if (status.inWindow) parts.push(open ? "updates included" : `updates included through ${fmtLicenseDate(status.updateThroughMs)}`);
       // A count only, never a list: no device names are sent or stored.
       if (devices) parts.push(`${devices.used} of ${devices.cap} devices activated`);
       return `${parts.join(" · ")}.`;

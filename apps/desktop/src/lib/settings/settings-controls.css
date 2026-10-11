@@ -155,7 +155,7 @@
   }
 
   .settings-shell .update-status-panel__meta, .settings-shell .update-status-panel__date {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     font-size: 10px;
     line-height: 1.4;
   }
