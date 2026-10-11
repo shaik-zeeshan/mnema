@@ -1086,79 +1086,6 @@ impl UserContextStore {
         Ok(rows.into_iter().map(|r| (r.get("s"), r.get("e"))).collect())
     }
 
-    /// The earliest captured-at across all raw captures, in unix millis — the
-    /// true history floor that **go-deeper** backfill walks toward. Takes the
-    /// MIN of `frames.captured_at` and `audio_segments.started_at` (both legacy
-    /// RFC3339 TEXT), converting at the boundary exactly as `read_capture_window`
-    /// does. `None` when there are no captures at all.
-    pub async fn earliest_capture_at_ms(&self) -> Result<Option<i64>> {
-        // RFC3339 TEXT sorts lexicographically in captured order for a fixed
-        // zone/format, but we never rely on that across the two tables: read the
-        // MIN TEXT from each table independently, parse each to millis, and take
-        // the smaller. Parse failures fall through to the other source.
-        let frame_min: Option<String> = sqlx::query("SELECT MIN(captured_at) AS m FROM frames")
-            .fetch_one(self.db.read())
-            .await?
-            .get::<Option<String>, _>("m");
-        let audio_min: Option<String> =
-            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments")
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-
-        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
-        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
-
-        Ok(match (frame_ms, audio_ms) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        })
-    }
-
-    /// The earliest RAW capture timestamp **at or after** `after_ms`, in unix
-    /// millis — the MIN of `frames.captured_at` and `audio_segments.started_at`
-    /// (both legacy RFC3339 TEXT) constrained to `>= after_ms`. `None` when no
-    /// capture exists at or after that instant.
-    ///
-    /// The forward derivation worker uses this to O(1)-jump its cursor across an
-    /// empty (no-capture) gap in one step instead of crawling 30-minute windows.
-    /// This is deliberately RAW capture *existence* — it is NOT filtered on OCR
-    /// / transcription completeness — so the worker never jumps its cursor past
-    /// frames whose OCR is still pending.
-    pub async fn next_raw_capture_at_ms(&self, after_ms: i64) -> Result<Option<i64>> {
-        // Convert the lower bound at the boundary exactly as `read_capture_window`
-        // does, so the lexicographic TEXT `>=` compare matches that hot path's own
-        // `captured_at >= start_rfc3339` filter. Read the MIN TEXT from each table
-        // independently, parse each to millis, and take the smaller; parse
-        // failures fall through to the other source.
-        let after_rfc3339 = super::capture_source::ms_to_rfc3339(after_ms);
-
-        let frame_min: Option<String> =
-            sqlx::query("SELECT MIN(captured_at) AS m FROM frames WHERE captured_at >= ?1")
-                .bind(&after_rfc3339)
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-        let audio_min: Option<String> =
-            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments WHERE started_at >= ?1")
-                .bind(&after_rfc3339)
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-
-        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
-        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
-
-        Ok(match (frame_ms, audio_ms) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        })
-    }
-
     // --- Token-usage / last-derived readouts ------------------------------
 
     /// Aggregated (estimated) token usage across every derivation run.
@@ -2912,7 +2839,7 @@ pub(crate) fn now_ms() -> i64 {
 /// `audio_segments.started_at`) to unix milliseconds; `None` on a parse
 /// failure. Mirrors `capture_source.rs`'s boundary conversion so
 /// `earliest_capture_at_ms` and `read_capture_window` agree on the floor.
-fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
+pub(super) fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
     use time::format_description::well_known::Rfc3339;
     OffsetDateTime::parse(value, &Rfc3339)
         .ok()
@@ -5197,6 +5124,12 @@ mod tests {
             None,
             "no capture at-or-after a cursor past the last frame"
         );
+
+        // The backfill twin is strictly-before: the latest capture under a cursor.
+        let prev = |at| store.prev_raw_capture_before_ms(at);
+        assert_eq!(prev(after_all_ms).await.expect("prev"), Some(late_ms));
+        assert_eq!(prev(late_ms).await.expect("prev"), Some(early_ms), "strict at the boundary");
+        assert_eq!(prev(early_ms).await.expect("prev"), None, "nothing before the first capture");
         });
     }
 

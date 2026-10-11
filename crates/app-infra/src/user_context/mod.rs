@@ -12,6 +12,7 @@
 //! Guardrail (the soft instruction text + the hard `is_sensitive` post-filter).
 
 mod activity_meta;
+mod capture_bounds;
 pub mod capture_source;
 pub mod confidence;
 pub mod guardrail;
