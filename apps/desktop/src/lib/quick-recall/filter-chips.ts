@@ -12,11 +12,12 @@ import type {
   AudioSegmentSourceKind,
 } from "$lib/types/app-infra";
 import {
-  tokenizeQuery,
+  appOperatorToken,
   parseToolDate,
   isSameCalendarDay,
   shortDate,
 } from "./query-tokens";
+import { PART_HOURS, type Pill } from "./natural-tokens";
 
 // One normalized active filter chip. `kind` groups by operator family; `data`
 // is the discriminated source payload used to rebuild syntax
@@ -131,85 +132,6 @@ export function deriveActiveFilterChips(
   return chips;
 }
 
-// The operator prefixes a chip of each kind owns. A token (whitespace-delimited
-// run) is stripped when its lowercased form starts with any of these.
-export function operatorPrefixesForChip(chip: ActiveFilterChip): string[] {
-  switch (chip.kind) {
-    case "date":
-      return ["date:", "after:", "before:"];
-    case "app":
-      return ["app:"];
-    case "source":
-      return ["source:"];
-  }
-}
-
-// The operator values (lowercased, unquoted) that identify THIS chip's token,
-// or null for a date chip — which owns the whole `date:`/`after:`/`before:`
-// range and so removes its family wholesale. Source chips accept their short
-// and long spellings so a `source:mic` token still matches a microphone chip.
-export function chipTokenValues(chip: ActiveFilterChip): string[] | null {
-  switch (chip.kind) {
-    case "app":
-      return [chip.data.value.toLowerCase()];
-    case "source":
-      if (chip.data.source === "screen") return ["screen"];
-      return chip.data.source === "microphone"
-        ? ["microphone", "mic"]
-        : ["system", "system_audio"];
-    case "date":
-      return null;
-  }
-}
-
-// Whether `token` is an operator token of one of `prefixes` whose unquoted,
-// lowercased value is one of `values`.
-export function tokenMatchesChipValue(
-  token: string,
-  prefixes: string[],
-  values: string[],
-): boolean {
-  const lower = token.toLowerCase();
-  const prefix = prefixes.find((p) => lower.startsWith(p));
-  if (prefix === undefined) {
-    return false;
-  }
-  const unquoted = token.slice(prefix.length).replace(/^"(.*)"$/, "$1").toLowerCase();
-  return values.includes(unquoted);
-}
-
-// Remove a single chip's operator token(s) from `raw`, quote-aware. Prefers a
-// TARGETED removal — drop only the token whose value matches this chip, so
-// removing one `app:`/`source:` chip leaves any sibling chips of the same kind
-// intact. The query may carry the user's own spelling, which can differ from
-// the backend's desugared value, so when no token matches we fall back to
-// dropping every token of that operator family (the original defensive
-// behavior) rather than leaving the chip un-removable. Either path is
-// quote-aware, so `app:"Google Chrome"` is removed cleanly instead of leaving
-// a dangling `Chrome"`. Pure: used by the store's removeChip.
-export function stripChipTokens(raw: string, chip: ActiveFilterChip): string {
-  const tokens = tokenizeQuery(raw);
-  const prefixes = operatorPrefixesForChip(chip);
-
-  const values = chipTokenValues(chip);
-  if (values !== null) {
-    const index = tokens.findIndex((token) =>
-      tokenMatchesChipValue(token, prefixes, values),
-    );
-    if (index >= 0) {
-      tokens.splice(index, 1);
-      return tokens.join(" ").trim();
-    }
-  }
-
-  // Fallback: drop every token of this operator family (spelling-tolerant).
-  const kept = tokens.filter((token) => {
-    const lower = token.toLowerCase();
-    return !prefixes.some((prefix) => lower.startsWith(prefix));
-  });
-  return kept.join(" ").trim();
-}
-
 // ---------------------------------------------------------------------------
 // Ask AI pivot scope inheritance (pure builders)
 //
@@ -308,4 +230,71 @@ export function friendlyParseError(err: SearchParseError): string {
       // Unknown backend kind: surface its message rather than render blank.
       return err.message;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Field pills (natural-tokens.ts) → the real operator query
+// ---------------------------------------------------------------------------
+
+const SOURCE_PILL: Record<string, [label: string, text: string]> = {
+  mic: ["On a call", "on a call"],
+  system: ["System audio", "in a video"],
+  screen: ["Screen", "on screen"],
+};
+
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// The operators one pill stands for, e.g. `app:Arc`, `date:yesterday hours:12-18`.
+export function pillOperators(pill: Pill): string {
+  switch (pill.kind) {
+    case "app":
+      return appOperatorToken(pill.app);
+    case "source":
+      return `source:${pill.source}`;
+    case "date":
+      return [
+        pill.value && `date:${pill.value}`,
+        pill.part && `hours:${PART_HOURS[pill.part].join("-")}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+  }
+}
+
+// What the pill reads as: `Arc`, `Yesterday · afternoon`, `Afternoon`, `On a call`.
+export function pillLabel(pill: Pill): string {
+  switch (pill.kind) {
+    case "app":
+      return pill.app;
+    case "source":
+      return SOURCE_PILL[pill.source][0];
+    case "date":
+      if (pill.value === null) return capitalize(pill.part ?? "");
+      return pill.part ? `${pill.label} · ${pill.part}` : pill.label;
+  }
+}
+
+// "Edit as text": the phrase the pill came from, typed back into the field.
+export function pillEditText(pill: Pill): string {
+  switch (pill.kind) {
+    case "app":
+      return `in ${pill.app}`;
+    case "source":
+      return SOURCE_PILL[pill.source][1];
+    case "date": {
+      const day =
+        pill.value === null
+          ? null
+          : /^\d/.test(pill.value)
+            ? `date:${pill.value}`
+            : pill.value.replace("-", " ");
+      return [day, pill.part].filter(Boolean).join(" ");
+    }
+  }
+}
+
+// The query the backend runs and the footer shows: free text, then each
+// pill's operators (`pricing page app:Arc date:yesterday`).
+export function operatorQuery(text: string, pills: readonly Pill[]): string {
+  return [text.trim(), ...pills.map(pillOperators)].filter(Boolean).join(" ");
 }

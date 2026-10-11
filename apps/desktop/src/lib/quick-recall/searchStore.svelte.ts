@@ -1,13 +1,13 @@
 // Quick Recall SEARCH-mode store — the single frontend owner of the launcher's
-// search state (query text, debounce/scheduling, results, thumbnails,
-// selection, filter chips, picker/ghost/value-list via `filters`, syntax-help
-// open state, loading/error/parse-error states, semantic-hint state).
+// search state (query text + pills, the operator query they make,
+// debounce/scheduling, results, thumbnails, selection, ghost + pill popover via
+// `filters`, loading/error/parse-error states, semantic-hint state).
 // Extracted from the quick-recall +page.svelte in the search-mode extraction
 // slice — NO behavior change. Mirrors the repo's `.svelte.ts` store idiom
 // (a class with `$state`/`$derived` class fields + a module-level singleton),
 // like `conversationStore`. The page keeps the window shell, mode cross-fade,
 // the whole Ask AI mode, and the page-level listeners/effects; components
-// (ResultsList / FilterPicker / SyntaxHelp) render off this singleton.
+// (Field / ResultsList / FilterPicker) render off this singleton.
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { FramePreviewUrlMap } from "$lib/frame-preview";
@@ -27,10 +27,11 @@ import type {
 import {
   deriveActiveFilterChips,
   friendlyParseError,
-  stripChipTokens,
+  operatorQuery,
   type ActiveFilterChip,
 } from "./filter-chips";
-import { isTrailingOperatorPartial } from "./query-tokens";
+import { isTrailingOperatorPartial, trailingToken } from "./query-tokens";
+import { mergePills, parseNatural, type Pill } from "./natural-tokens";
 import {
   AUDIO_FETCH_LIMIT,
   AUDIO_VISIBLE_CAP,
@@ -44,6 +45,8 @@ import { appIcons } from "./app-icons.svelte";
 
 export const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
+// Recognised phrases turn into pills once typing pauses this long.
+export const COMMIT_MS = 700;
 
 export const OPTION_ID_PREFIX = "qr-opt-";
 
@@ -54,7 +57,10 @@ export type SelectedSearchResult =
   | { kind: "audio"; audio: AudioSearchResultDto };
 
 export class SearchStore {
+  // The typed text. Recognised phrases in it are tinted live (`naturalParse`)
+  // and lifted into `pills` after a COMMIT_MS pause.
   query = $state("");
+  pills = $state<Pill[]>([]);
   inputEl = $state<HTMLInputElement | null>(null);
 
   frames = $state<FrameSearchResultDto[]>([]);
@@ -100,11 +106,6 @@ export class SearchStore {
   framesExpanded = $state(false);
   audioExpanded = $state(false);
 
-  // Syntax-help popover open state + the wrapper element (bound by the
-  // SyntaxHelp component; the page-level outside-click effect reads it).
-  syntaxHelpOpen = $state(false);
-  syntaxHelpEl = $state<HTMLDivElement | null>(null);
-
   // Lazily-loaded distinct captured apps, cached for the session. A transient
   // failure leaves this null so the next partial retries (ghost/value list just
   // won't complete app values until it loads).
@@ -130,6 +131,68 @@ export class SearchStore {
   // Generation token so stale (out-of-order) responses are discarded.
   searchGeneration = 0;
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  #commitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Option counts for the pill popover, keyed by the option's operators
+  // (`PillOption.op`; "" = the "Any …" row). Null until facet counts exist
+  // (QR-B2): the popover then lists options without counts.
+  facetCounts = $state<Record<string, number> | null>(null);
+
+  // Captured-app names (deduped by name, most recent first): the vocabulary for
+  // "in Arc", the ghost, and the app pill's popover.
+  appNames = $derived.by<string[]>(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const app of this.searchableApps ?? []) {
+      const name = (app.name ?? "").trim();
+      if (name && !seen.has(name.toLowerCase())) {
+        seen.add(name.toLowerCase());
+        names.push(name);
+      }
+    }
+    return names;
+  });
+
+  naturalParse = $derived(parseNatural(this.query, new Date(), this.appNames));
+  // Pills plus the phrases still tinted in the text.
+  effectivePills = $derived(
+    mergePills(this.pills, this.naturalParse.spans.map((span) => span.pill)),
+  );
+  // The real query: what the backend runs and the footer shows.
+  operatorQuery = $derived(operatorQuery(this.naturalParse.residual, this.effectivePills));
+
+  // Lift the recognised phrases out of the text into pills.
+  commitPills(): void {
+    this.clearCommit();
+    const { spans, residual } = this.naturalParse;
+    if (spans.length === 0) return;
+    this.pills = this.effectivePills;
+    this.query = residual && !/\?$/.test(residual) ? `${residual} ` : residual;
+    this.caretAtEnd = true;
+    const el = this.inputEl;
+    // The bound value lands on the next flush; park the caret after it.
+    requestAnimationFrame(() => el?.setSelectionRange(el.value.length, el.value.length));
+  }
+
+  scheduleCommit(): void {
+    this.clearCommit();
+    this.#commitTimer = setTimeout(() => this.commitPills(), COMMIT_MS);
+  }
+
+  clearCommit(): void {
+    if (this.#commitTimer !== null) {
+      clearTimeout(this.#commitTimer);
+      this.#commitTimer = null;
+    }
+  }
+
+  // Esc's middle step: drop the text and the pills.
+  clearQuery(): void {
+    this.clearCommit();
+    this.query = "";
+    this.pills = [];
+    this.filters.selectPill(null);
+  }
 
   clearDebounce(): void {
     if (this.#debounceTimer !== null) {
@@ -138,14 +201,13 @@ export class SearchStore {
     }
   }
 
+  // `raw` is the operator query; the typed text decides the pacing.
   scheduleSearch(raw: string): void {
     this.clearDebounce();
 
-    // While the caret sits in an un-committed field-operator value, the Filter
-    // Value List owns the results region; the partial operator must NOT reach
-    // the backend (a half-typed value would otherwise read as empty results).
-    // Cancel any in-flight search and leave the current results state intact.
-    if (isTrailingOperatorPartial(raw)) {
+    // A bare operator name (`app:`) has nothing to search yet: cancel any
+    // in-flight search and leave the current results state intact.
+    if (/^(app|source|date|after|before|hours):$/i.test(trailingToken(this.query))) {
       this.searchGeneration += 1;
       // Clear any in-flight loading state: the invalidated response will be
       // dropped by the generation guard and never reach `loading = false`, so
@@ -177,9 +239,12 @@ export class SearchStore {
       return;
     }
 
+    // A half-typed operator value waits for the same pause that commits pills,
+    // so a value still being typed isn't reported as a bad filter.
+    const delay = isTrailingOperatorPartial(this.query) ? COMMIT_MS : DEBOUNCE_MS;
     this.#debounceTimer = setTimeout(() => {
       void this.runSearch(trimmed);
-    }, DEBOUNCE_MS);
+    }, delay);
   }
 
   async runSearch(trimmed: string): Promise<void> {
@@ -561,33 +626,6 @@ export class SearchStore {
     deriveActiveFilterChips(this.appliedRefinements),
   );
 
-  // Drop a chip's operator token(s) from the query and let the reactive effect
-  // rerun the search (which re-derives chips and restores sections via
-  // sectionLimits). Refocus the input so removal keeps keyboard flow.
-  removeChip(chip: ActiveFilterChip): void {
-    this.query = stripChipTokens(this.query, chip);
-    this.inputEl?.focus();
-  }
-
-  // ── Syntax help (static popover; the only state is open/closed) ───────────
-
-  toggleSyntaxHelp(): void {
-    this.syntaxHelpOpen = !this.syntaxHelpOpen;
-    // Keep typing flow on the search input — the help is an occasional-use
-    // affordance, so it's toggled by click but never becomes the focus target.
-    if (!this.syntaxHelpOpen) {
-      this.inputEl?.focus();
-    }
-  }
-
-  closeSyntaxHelp(): void {
-    if (!this.syntaxHelpOpen) {
-      return;
-    }
-    this.syntaxHelpOpen = false;
-    this.inputEl?.focus();
-  }
-
   // ── Result-state derivations ───────────────────────────────────────────────
 
   // The first parse error (or null). One inline error line renders from this;
@@ -617,7 +655,7 @@ export class SearchStore {
     return { frameLimit: FRAME_FETCH_LIMIT, audioLimit: AUDIO_FETCH_LIMIT };
   });
 
-  trimmedQuery = $derived(this.query.trim());
+  trimmedQuery = $derived(this.operatorQuery);
   belowMinimum = $derived(this.trimmedQuery.length < MIN_QUERY_LENGTH);
   hasResults = $derived(this.frames.length > 0 || this.audio.length > 0);
 
@@ -687,7 +725,9 @@ export class SearchStore {
     const query = await invoke<string | null>("take_quick_recall_query").catch(() => null);
     if (!query) return false;
     this.query = query;
+    this.pills = [];
     this.caretAtEnd = true;
+    this.scheduleCommit();
     return true;
   }
 
@@ -701,7 +741,7 @@ export class SearchStore {
     this.clearDebounce();
     // Invalidate any in-flight search so a late response can't repopulate.
     this.searchGeneration += 1;
-    this.query = "";
+    this.clearQuery();
     this.frames = [];
     this.audio = [];
     this.resultsQuery = "";
@@ -715,12 +755,9 @@ export class SearchStore {
     this.appliedRefinements = null;
     this.residualQuery = "";
     this.parseErrors = [];
-    // A fresh summon starts with the Filter Picker closed.
-    this.filters.pickerOpen = false;
-    this.filters.pickerIndex = 0;
   }
 
-  // The picker / ghost / value-list surfaces, composed last so every store
+  // The ghost + pill surfaces, composed last so every store
   // field above is initialized before the sub-surface captures the reference.
   filters = new FilterSurfaces(this);
 }
