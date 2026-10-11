@@ -51,19 +51,18 @@
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
   const isChatRoute = $derived(normalizedPathname.startsWith("/chat"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
-  // Settings renders inside the Main window as the `/settings` route. The Main
-  // titlebar stays visible on Settings too — it is the Main window's persistent
-  // top nav — and Settings renders its own sidebar shell below it. Native
-  // traffic lights stay (overlay titlebar), reserved for by the titlebar's inset.
+  // Settings renders inside the Main window as the `/settings` route, in a
+  // full-window focus mode: no titlebar, no status bar. Its own rail runs full
+  // height and reserves the native overlay traffic lights with a drag strip.
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isUpdateWindow = currentWindowLabel() === "update";
   const isPanelSurface = isQuickRecallWindow();
   // The Main window hosts the top-level Surfaces — Timeline (`/`) and Insights
   // (`/insights`) — under the shared titlebar, with the recording status bar
-  // at the bottom. Settings keeps the titlebar but has no status bar.
+  // at the bottom. Settings shows neither.
   const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute || isChatRoute);
-  const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
+  const showMainTitlebar = $derived(isMainSurfaceRoute && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
   const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
@@ -1053,14 +1052,11 @@
     background: transparent;
   }
 
-  /* Settings rendered inside the Main window, below the persistent top nav (the
-     Main titlebar). The titlebar already reserves space for the native overlay
-     traffic lights, so no top inset is needed here — just a small gap under the
-     bar. Full-bleed otherwise (the settings shell owns its own scroll region). */
+  /* Settings is full-window (no titlebar): its rail reserves the traffic lights
+     and the shell owns its own scroll region. */
   .app-content--settings {
     background: var(--app-bg);
     overflow: hidden;
-    padding: 8px 20px 0;
   }
 
   .app-shell--dedicated {

@@ -10,7 +10,7 @@
 // the surrounding 16px / stroke-1.7 family.
 import type { Component } from "svelte";
 import type { SvelteHTMLElements } from "svelte/elements";
-import type { IconName } from "./groups";
+import type { IconName, SettingsGroupId } from "./groups";
 
 import IconAppearance from "~icons/lucide/palette";
 import IconStartup from "~icons/lucide/power";
@@ -32,6 +32,8 @@ import IconAccess from "~icons/lucide/key-round";
 import IconAbout from "~icons/lucide/info";
 import IconDeveloper from "~icons/lucide/code-xml";
 import IconLock from "~icons/lucide/lock";
+import IconGeneral from "~icons/lucide/sliders-horizontal";
+import IconSparkles from "~icons/lucide/sparkles";
 
 /** A Lucide icon as produced by unplugin-icons (`~icons/lucide/*`). */
 export type IconComponent = Component<SvelteHTMLElements["svg"]>;
@@ -57,4 +59,13 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   about: IconAbout,
   developer: IconDeveloper,
   lock: IconLock,
+};
+
+// Rail group tiles (settings.html `.st-tile`).
+export const GROUP_ICONS: Record<SettingsGroupId, IconComponent> = {
+  general: IconGeneral,
+  capture: IconCapture,
+  intelligence: IconSparkles,
+  data: IconStorage,
+  about: IconAbout,
 };

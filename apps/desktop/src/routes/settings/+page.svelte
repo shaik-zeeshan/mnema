@@ -29,6 +29,7 @@
     setSettingsController,
   } from "$lib/settings/state/controller.svelte";
   import {
+    SETTINGS_GROUPS,
     groupForSection,
     resolveTabDeeplink,
     resolveFocusDeeplink,
@@ -54,6 +55,9 @@
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
   import SettingsRail from "$lib/settings/SettingsRail.svelte";
+  import SettingsBar from "$lib/settings/SettingsBar.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconRetry from "~icons/lucide/rotate-cw";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
@@ -113,6 +117,40 @@
   // Defaults to the first section of the default group.
   let activeSection = $state<SettingsSectionId>(DEFAULT_SETTINGS_SECTION);
   let scrollRegion = $state<HTMLDivElement | null>(null);
+  // The header gains a hairline once the column scrolls under it.
+  let scrolled = $state(false);
+  const activeGroupInfo = $derived(SETTINGS_GROUPS.find((g) => g.id === activeGroup)!);
+
+  // Autosave failures, one notice each (see the markup).
+  type SaveError = { title: string; message: string; retry: (() => void) | null; dismiss: () => void };
+  const saveErrors = $derived.by<SaveError[]>(() => {
+    const out: SaveError[] = [];
+    if (c.rec.recError) {
+      out.push({
+        title: "Couldn’t save recording settings",
+        message: `${c.rec.recError.replace(/\.$/, "")}. Retrying on its own — or dismiss to put the last saved value back.`,
+        retry: c.lastFailedSaveDomain ? () => c.retryFailedSave() : null,
+        dismiss: () => c.dismissRecError(),
+      });
+    }
+    if (c.keyboard.keyboardBindingsError) {
+      out.push({
+        title: "Couldn’t load or save shortcuts",
+        message: c.keyboard.keyboardBindingsError,
+        retry: null,
+        dismiss: () => (c.keyboard.keyboardBindingsError = null),
+      });
+    }
+    if (c.audio.micError) {
+      out.push({
+        title: "Microphone settings hit an error",
+        message: c.audio.micError,
+        retry: null,
+        dismiss: () => (c.audio.micError = null),
+      });
+    }
+    return out;
+  });
   let scrollRegionScrolling = $state(false);
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -169,10 +207,12 @@
   function setSpyTarget(el: HTMLElement) {
     if (!scrollRegion) return;
     const maxTop = scrollRegion.scrollHeight - scrollRegion.clientHeight;
-    spySuppressTarget = Math.max(0, Math.min(el.offsetTop, maxTop));
+    const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
+    spySuppressTarget = Math.max(0, Math.min(el.offsetTop - margin, maxTop));
   }
 
   function handleScrollRegionScroll() {
+    scrolled = (scrollRegion?.scrollTop ?? 0) > 4;
     scrollRegionScrolling = true;
     if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
     scrollRegionScrollTimer = setTimeout(() => {
@@ -215,6 +255,12 @@
   // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
+      // A group's first section lands at the top, so the page head shows.
+      if (SETTINGS_GROUPS.some((g) => g.sections[0].id === section)) {
+        scrollRegion?.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
+        spySuppressTarget = 0;
+        return;
+      }
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
       if (el) setSpyTarget(el);
@@ -589,26 +635,18 @@
 </script>
 
 <!-- ── Settings shell ──────────────────────────────────────────────────────
-     A fixed left rail lists the 5 groups; only the right-hand content pane
-     scrolls. One group panel is mounted at a time, so the rail and window
-     chrome stay pinned. -->
+     Full-window focus mode (settings.html): a full-height rail on the left; on
+     the right a 52px drag header (crumb + save status) over the one scrolling
+     column. One group panel is mounted at a time. -->
 <div class="settings-shell">
-  <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
-       <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the rail's grouped sections. -->
-  <h1 class="settings-page-title">Settings</h1>
   <SettingsRail
     {activeGroup}
     {activeSection}
     onNavigate={(section) => focusSettingsSection(section)}
   />
 
-  <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
-    <AppPrivacyExclusionPrompt
-      controller={c.appPrivacyExclusion}
-      onReview={() => focusSettingsSection("privacy")}
-    />
+    <SettingsBar {activeGroup} {activeSection} scrolled={scrolled} />
 
     <div
       class="settings-scroll"
@@ -616,45 +654,72 @@
       bind:this={scrollRegion}
       onscroll={handleScrollRegionScroll}
     >
-      {#if activeGroup === "general"}
-        <GeneralPanel />
-      {:else if activeGroup === "capture"}
-        <CapturePanel />
-      {:else if activeGroup === "intelligence"}
-        <IntelligencePanel />
-      {:else if activeGroup === "data"}
-        <DataPanel />
-      {:else if activeGroup === "about"}
-        <AboutPanel />
-      {/if}
+      <div class="settings-page">
+        <header class="settings-page__head">
+          <h1 class="mx-h1">{activeGroupInfo.label}</h1>
+          <p class="mx-prose">{activeGroupInfo.description}</p>
+        </header>
+
+        <!-- Autosave failures: the header shows one line; the message and its
+             actions live here. Recording gets Retry (re-runs the failed domain
+             save) + Dismiss (puts the last saved value back); shortcuts and the
+             microphone re-attempt on their own, so they only offer Dismiss. -->
+        {#each saveErrors as err (err.title)}
+          <div class="mx-notice settings-page__notice" data-tone="danger" role="alert">
+            <span class="mx-notice__icon"><IconAlert width="15" height="15" aria-hidden="true" /></span>
+            <b class="mx-notice__title">{err.title}</b>
+            <p class="mx-notice__text">{err.message}</p>
+            <div class="mx-notice__acts">
+              {#if err.retry}
+                <button class="mx-btn mx-btn--sm" type="button" onclick={err.retry}>
+                  <IconRetry width="12" height="12" aria-hidden="true" />Retry
+                </button>
+              {/if}
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={err.dismiss}>Dismiss</button>
+            </div>
+          </div>
+        {/each}
+
+        <AppPrivacyExclusionPrompt
+          controller={c.appPrivacyExclusion}
+          onReview={() => focusSettingsSection("privacy")}
+        />
+
+        {#if activeGroup === "general"}
+          <GeneralPanel />
+        {:else if activeGroup === "capture"}
+          <CapturePanel />
+        {:else if activeGroup === "intelligence"}
+          <IntelligencePanel />
+        {:else if activeGroup === "data"}
+          <DataPanel />
+        {:else if activeGroup === "about"}
+          <AboutPanel />
+        {/if}
+      </div>
     </div>
   </div>
 </div>
 
 <style>
-  /* The shell root rule lives here (its element is in this template); all other
-     settings CSS is the shared, `.settings-shell`-namespaced
-     lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
+  /* The shell root rule lives here (its element is in this template); the
+     content + scroll rules are in lib/settings/settings-layout.css. */
   .settings-shell {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    gap: 18px;
   }
 
-  /* Visually-hidden page heading — present in the AT accessibility tree as the
-     route's <h1> landmark, but removed from the visual layout (the flex shell's
-     two columns are unaffected). */
-  .settings-page-title {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
+  .settings-page {
+    max-width: 760px;
+    padding-bottom: var(--s-8);
+  }
+  .settings-page__head {
+    display: grid;
+    gap: var(--s-2);
+    margin-bottom: var(--s-6);
+  }
+  .settings-page__notice {
+    margin-bottom: var(--s-5);
   }
 </style>

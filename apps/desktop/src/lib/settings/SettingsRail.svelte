@@ -1,26 +1,25 @@
 <script lang="ts">
-  import { tip } from "$lib/components/tooltip";
-  // Settings left rail — Codex-style (Slice 3).
+  // Settings rail — the full-height 252px sidebar of the full-window Settings
+  // mode (settings.html `.st-side`): a 52px drag strip that reserves the native
+  // traffic lights, "Back to app" (Esc), a search field (`/`), the five groups
+  // as tinted-tile buttons with the active group's sections nested beneath, and
+  // a REC + lanes + version footer. Save status lives in the content header
+  // (SettingsBar.svelte), not here.
   //
-  // Renders the 5 navigation groups from `groups.ts` (the source of truth) as
-  // category headers (`.nav-cat`) each followed by their sub-sections as bare
-  // `.nav-item`s. The nav is a NAVIGATION landmark (a `role="list"` of grouped
-  // section buttons), NOT a tablist: settings is a single scrolling panel with
-  // scroll-spy, so the items behave like in-page links — the active one carries
-  // `aria-current="page"`. A roving tabindex + arrow/Home/End keyboard nav keeps
-  // the whole list reachable with one Tab stop; the active sub-section is driven
-  // by the shell via `activeSection`, and clicks / keyboard activation call
-  // `onNavigate(section)`.
-  //
-  // The rail is always expanded (the collapse-to-icons feature was dropped).
-  // A fixed top zone holds the "← Back to app" link + a search field; a pinned
-  // footer shows the live auto-save status, styled per the mockup.
+  // The nav is a NAVIGATION landmark, not a tablist: settings is one scrolling
+  // panel with scroll-spy, so items behave like in-page links and the active one
+  // carries `aria-current`. Sub-section items keep a roving tabindex with
+  // arrow/Home/End stepping across every visible section (stepping into a closed
+  // group opens it). Search narrows the rail (`rail-filter.ts`); while a query is
+  // active every surviving group is open and shows its match count.
 
   import { goto } from "$app/navigation";
-  import IconBack from "~icons/lucide/chevron-left";
+  import { tick } from "svelte";
+  import { tip } from "$lib/components/tooltip";
+  import IconBack from "~icons/lucide/arrow-left";
   import IconSearch from "~icons/lucide/search";
-  import IconClear from "~icons/lucide/x";
-  import { SECTION_ICONS } from "./section-icons";
+  import IconChev from "~icons/lucide/chevron-right";
+  import { GROUP_ICONS } from "./section-icons";
   import {
     SETTINGS_GROUPS,
     type SettingsGroupId,
@@ -30,92 +29,51 @@
   import { filterGroups, flattenSections } from "./rail-filter";
   import { getSettingsController } from "./state/controller.svelte";
   import { getLastMainSurface } from "$lib/surface-windows";
+  import { captureControls, sourceSelection, subscribeRuntimeSources } from "$lib/capture-controls.svelte";
+  import { captureSession } from "$lib/session.svelte";
+  import { renderIdle } from "$lib/render-idle.svelte";
+  import { LANES, formatClock, liveLanes, recView, type StatusInput } from "$lib/shell/status-bar";
 
   interface Props {
     /** The active group (the one group panel currently mounted). */
     activeGroup: SettingsGroupId;
     /** The active sub-section — drives the rail's active item. */
     activeSection: SettingsSectionId;
-    /** Called on click / keyboard activation of a sub-section item. */
+    /** Called on click / keyboard activation of a group or sub-section. */
     onNavigate: (section: SettingsSectionId) => void;
   }
 
   let { activeGroup, activeSection, onNavigate }: Props = $props();
 
   const c = getSettingsController();
-  const rec = c.rec;
-  const keyboard = c.keyboard;
-  const audio = c.audio;
 
-  // The single auto-save status that drives the footer dot + label. Hoisted to a
-  // derived so the footer element can carry a matching status modifier class
-  // (raising salience on a change instead of leaning on the 6px dot alone).
-  const footStatus = $derived<"error" | "blocked" | "saving" | "ok" | "idle">(
-    rec.recError || keyboard.keyboardBindingsError || audio.micError
-      ? "error"
-      : c.recSaveBlocked || audio.micApplyBlocked
-        ? "blocked"
-        : c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings
-          ? "saving"
-          : rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved
-            ? "ok"
-            : "idle",
-  );
+  // Tile tint per group (settings.html `.st-tile --t`).
+  const TINT: Record<SettingsGroupId, string> = {
+    general: "var(--chart-grey-4)",
+    capture: "var(--app-source-screen)",
+    intelligence: "var(--cat-learning)",
+    data: "var(--cat-organizing)",
+    about: "var(--cat-research)",
+  };
 
-  // Slice 4: the search field narrows the nav as you type. The (pure) filter
-  // helper lives in `rail-filter.ts`; here we only bind state + render.
   let searchQuery = $state("");
   let searchInput = $state<HTMLInputElement | null>(null);
-
-  // The visible (filtered) groups — what the nav actually renders. An empty or
-  // whitespace query is a pass-through (all groups). A no-match query yields [].
+  const filtering = $derived(searchQuery.trim() !== "");
   const visibleGroups = $derived(filterGroups(SETTINGS_GROUPS, searchQuery));
-
-  // The flattened sub-section order (rail order) — the keyboard roving model.
-  // Derived from the VISIBLE groups so Arrow/Home/End only traverse the items
-  // currently shown (if the active section is filtered out, nav still works over
-  // whatever is visible, and is a no-op on an empty list).
   const flatItems = $derived<SettingsSection[]>(flattenSections(visibleGroups));
-
-  // The single roving-tabindex target: the one visible tab that gets `tabindex=0`
-  // (so the tablist is reachable by Tab). It's `activeSection` while that section
-  // is still visible; once a search query filters the active section OUT of
-  // `flatItems`, fall back to the first visible item so the list never becomes
-  // entirely `tabindex=-1` (which would make it unreachable by keyboard).
+  // The one item with tabindex=0: the active section while visible, else the
+  // first visible one so the list never becomes unreachable by Tab.
   const rovingTarget = $derived<SettingsSectionId | undefined>(
-    flatItems.some((s) => s.id === activeSection)
-      ? activeSection
-      : flatItems[0]?.id,
+    flatItems.some((s) => s.id === activeSection) ? activeSection : flatItems[0]?.id,
   );
 
-  // Clearing the query on blur must NOT eat a click on a nav item: a click that
-  // moves focus out of the input fires `blur` BEFORE the item's `click`. If we
-  // cleared synchronously here, the item would unmount before its click landed.
-  // Defer the clear to a macrotask so the pending click + navigation fire first.
-  function clearSearch() {
-    searchQuery = "";
-  }
-  // The in-field clear button and the empty-state "Clear search" CTA both wipe
-  // the query and return focus to the input so the user can keep typing without
-  // a second click — distinct from `clearSearch` (the deferred blur path).
-  function clearSearchAndFocus() {
-    searchQuery = "";
-    searchInput?.focus();
-  }
+  // A click that moves focus out of the field fires `blur` before the item's
+  // `click`; clearing synchronously would unmount the item first. Defer it, and
+  // don't clear at all when focus stays inside the rail (Tab into results).
   function onSearchBlur(event: FocusEvent) {
-    // Only clear when focus actually leaves the rail. A keyboard user who Tabs
-    // from the search field into the filtered results stays inside the rail —
-    // clearing then would re-render the full list and drop the survivor they
-    // were reaching for. `relatedTarget` is the element gaining focus (null for
-    // a plain click into empty space, which the deferred clear still handles).
     const next = event.relatedTarget;
-    if (
-      next instanceof HTMLElement &&
-      next.closest("#settings-sidebar")
-    ) {
-      return;
-    }
-    setTimeout(clearSearch, 0);
+    if (next instanceof HTMLElement && next.closest("#settings-sidebar")) return;
+    setTimeout(() => (searchQuery = ""), 0);
   }
   function onSearchKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
@@ -126,308 +84,399 @@
     }
   }
 
-  // "← Back to app" — Settings is the `/settings` route inside the Main window,
-  // so leaving it is a plain in-window navigation back to the last main surface
-  // the user was on (Timeline or Insights), falling back to `/`.
+  // Settings is the `/settings` route inside the Main window: leaving it is an
+  // in-window navigation back to the last main surface (Timeline / Insights).
   function backToApp() {
     void goto(getLastMainSurface());
   }
 
-  // ─── Flattened nav keyboard nav (roving tabindex) ─────────────────────────
-  // The rail is a NAVIGATION landmark (a single scrolling panel with scroll-spy
-  // highlighting), not a tablist — but it keeps the roving-tabindex + arrow/
-  // Home/End stepping so the whole list is reachable with one Tab stop.
-  function handleNavKeydown(event: KeyboardEvent) {
-    const focusedTab = event.target instanceof Element
-      ? event.target.closest<HTMLElement>(".nav-item")
-      : null;
-    const focusedSection = focusedTab?.dataset.section as SettingsSectionId | undefined;
-    const focusedIndex = focusedSection
-      ? flatItems.findIndex((s) => s.id === focusedSection)
-      : -1;
-    // Anchor nav on the focused tab; else the active section if it's still
-    // visible; else the first survivor (a query may have filtered the active
-    // section out, but the visible survivors must still be steppable). Bail only
-    // when there's genuinely nothing to navigate.
-    const activeIndex = flatItems.findIndex((s) => s.id === activeSection);
-    const currentIndex = focusedIndex >= 0
-      ? focusedIndex
-      : activeIndex >= 0
-        ? activeIndex
-        : flatItems.length > 0
-          ? 0
-          : -1;
-    if (currentIndex === -1) return;
-
-    let nextIndex: number | null = null;
-    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-      nextIndex = (currentIndex + 1) % flatItems.length;
-    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-      nextIndex = (currentIndex - 1 + flatItems.length) % flatItems.length;
-    } else if (event.key === "Home") {
-      nextIndex = 0;
-    } else if (event.key === "End") {
-      nextIndex = flatItems.length - 1;
+  // `/` focuses search; Esc goes back to the app — unless the key belongs to a
+  // field, an open listbox/menu/modal, or a handler that already claimed it
+  // (shortcut rebinding captures keys and prevents default).
+  function onWindowKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented || event.isComposing) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"], [role="combobox"]')) return;
+    if (document.querySelector('[role="listbox"], [role="menu"], [aria-modal="true"]')) return;
+    if (event.key === "/") {
+      event.preventDefault();
+      searchInput?.focus();
+    } else if (event.key === "Escape" && !event.shiftKey) {
+      event.preventDefault();
+      backToApp();
     }
-    if (nextIndex === null) return;
+  }
+
+  function handleNavKeydown(event: KeyboardEvent) {
+    const focused = event.target instanceof Element ? event.target.closest<HTMLElement>(".st-subnav__item") : null;
+    const focusedIndex = flatItems.findIndex((s) => s.id === focused?.dataset.section);
+    const activeIndex = flatItems.findIndex((s) => s.id === activeSection);
+    const current = focusedIndex >= 0 ? focusedIndex : activeIndex >= 0 ? activeIndex : flatItems.length ? 0 : -1;
+    if (current === -1) return;
+
+    let next: number | null = null;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % flatItems.length;
+    else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current - 1 + flatItems.length) % flatItems.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = flatItems.length - 1;
+    if (next === null) return;
 
     event.preventDefault();
     event.stopPropagation();
-    const next = flatItems[nextIndex];
-    // Moving the roving focus activates the item (focus + navigate).
-    onNavigate(next.id);
-    document.getElementById(`settings-tab-${next.id}`)?.focus();
+    const id = flatItems[next].id;
+    onNavigate(id);
+    // Stepping into a closed group opens it on the next render.
+    void tick().then(() => document.getElementById(`settings-tab-${id}`)?.focus());
   }
+
+  // ── Footer: recording state + lanes (display only) + version ─────────────
+  const recInput = $derived<StatusInput>({
+    running: captureControls.running,
+    loadingStart: captureControls.loadingStart,
+    userPaused: captureControls.isUserPaused,
+    inactivityPaused: captureControls.isInactivityPaused,
+    lowDisk: captureControls.isLowDiskSuspended,
+    runtime: captureControls.runtimeSources,
+    selected: {
+      screen: sourceSelection.screen,
+      microphone: sourceSelection.microphone,
+      systemAudio: sourceSelection.systemAudio,
+    },
+    permissions: null,
+    startError: null,
+    readOnly: false,
+    // ponytail: the status bar's "STOPPED · disk full" needs the notification
+    // history; Settings shows plain NOT RECORDING. Pass it if the footer needs it.
+    stoppedReason: null,
+  });
+  const rec = $derived(recView(recInput));
+  const lanes = $derived(liveLanes(recInput, rec));
+  const sessionStartMs = $derived.by<number | null>(() => {
+    const s = captureSession.value?.sourceSessions;
+    const starts = [s?.screen, s?.microphone, s?.systemAudio].flatMap((m) => (m ? [m.startedAtUnixMs] : []));
+    return starts.length ? Math.min(...starts) : null;
+  });
+  let now = $state(Date.now());
+  $effect(() => {
+    if (rec.clock !== "elapsed") return;
+    now = Date.now();
+    const handle = setInterval(() => {
+      if (!renderIdle()) now = Date.now();
+    }, 1000);
+    return () => clearInterval(handle);
+  });
+  $effect(() => {
+    if (!captureControls.running) return;
+    return subscribeRuntimeSources();
+  });
+  const LANE_TIP: Record<string, string> = { screen: "screen", mic: "mic", sysaudio: "system audio" };
+  const version = $derived(c.about.appUpdateStatus?.app.version ?? null);
 </script>
 
-<aside id="settings-sidebar" class="settings-sidebar settings-rail">
-  <!-- Fixed top zone: back link + search -->
-  <div class="rail-top">
-    <button class="rail-back" type="button" onclick={backToApp}>
-      <IconBack aria-hidden="true" />
-      Back to app
-    </button>
+<svelte:window onkeydown={onWindowKeydown} />
 
-    <div class="rail-search">
-      <IconSearch aria-hidden="true" />
+<aside id="settings-sidebar" class="st-side" aria-label="Settings sections">
+  <div class="st-side__top" data-tauri-drag-region></div>
+
+  <div class="st-side__head">
+    <button class="mx-btn mx-btn--ghost mx-btn--sm st-back" type="button" onclick={backToApp}>
+      <IconBack width="14" height="14" aria-hidden="true" />Back to app<kbd>Esc</kbd>
+    </button>
+    <label class="mx-search">
+      <IconSearch width="13" height="13" aria-hidden="true" />
       <input
         bind:this={searchInput}
         type="text"
-        placeholder="Search settings…"
+        placeholder="Search settings"
         aria-label="Search settings"
         bind:value={searchQuery}
         onkeydown={onSearchKeydown}
         onblur={onSearchBlur}
       />
-      {#if searchQuery}
-        <button
-          class="rail-search__clear"
-          type="button"
-          aria-label="Clear search"
-          use:tip={"Clear search"}
-          onclick={clearSearchAndFocus}
-        >
-          <IconClear aria-hidden="true" />
-        </button>
-      {/if}
-    </div>
+      <kbd>/</kbd>
+    </label>
   </div>
 
-  <!-- Scrolling nav: a NAVIGATION landmark whose items are buttons that scroll
-       the single settings panel to a section (scroll-spy drives the active one).
-       Modeled as a list of groups rather than a tablist — every "tab" would have
-       pointed at the one mounted panel id, and most targets are unmounted, which
-       a real tablist mustn't do. The active section carries aria-current="page".
-       The roving-tabindex keyboard stepping (arrow/Home/End) lives on the
-       .nav-item buttons themselves — keeping the keydown on the interactive
-       elements, not the non-interactive role="list" container. -->
-  <nav class="settings-nav rail-nav" aria-label="Settings sections">
-    <div class="rail-nav__list" role="list">
-      {#each visibleGroups as group (group.id)}
-        <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
-          <h2 class="nav-cat" id="settings-cat-{group.id}">{group.label}</h2>
-          {#each group.sections as section (section.id)}
-            {@const SectionIcon = SECTION_ICONS[section.id]}
-            <button
-              class="nav-item"
-              class:nav-item--active={activeSection === section.id}
-              type="button"
-              id="settings-tab-{section.id}"
-              data-section={section.id}
-              aria-current={activeSection === section.id ? "page" : undefined}
-              tabindex={rovingTarget === section.id ? 0 : -1}
-              onclick={() => onNavigate(section.id)}
-              onkeydown={handleNavKeydown}
-            >
-              <SectionIcon aria-hidden="true" />
-              <span>{section.label}</span>
-            </button>
-          {/each}
-        </div>
-      {/each}
-      {#if visibleGroups.length === 0}
-        <div class="rail-empty" role="status">
-          <p class="rail-empty__msg">No settings match “{searchQuery.trim()}”.</p>
-          <button class="btn btn--ghost btn--sm" type="button" onclick={clearSearchAndFocus}>
-            Clear search
-          </button>
-        </div>
-      {/if}
-    </div>
+  <nav class="st-nav" aria-label="Settings sections">
+    {#each visibleGroups as group (group.id)}
+      {@const GroupIcon = GROUP_ICONS[group.id]}
+      {@const open = filtering || group.id === activeGroup}
+      {@const current = !filtering && group.id === activeGroup}
+      <div class="st-group" class:is-open={open} role="group" aria-labelledby="settings-cat-{group.id}">
+        <button
+          class="st-group__btn"
+          type="button"
+          id="settings-cat-{group.id}"
+          aria-current={current ? "true" : undefined}
+          tabindex="-1"
+          onclick={() => onNavigate(group.sections[0].id)}
+        >
+          <span class="st-tile" style="--t:{TINT[group.id]}"><GroupIcon width="13" height="13" aria-hidden="true" /></span>
+          {group.label}
+          {#if filtering}
+            <span class="st-group__count">{group.sections.length}</span>
+          {:else}
+            <IconChev class="st-group__chev" width="12" height="12" aria-hidden="true" />
+          {/if}
+        </button>
+        {#if open}
+          <div class="st-subnav">
+            {#each group.sections as section (section.id)}
+              <button
+                class="st-subnav__item"
+                type="button"
+                id="settings-tab-{section.id}"
+                data-section={section.id}
+                aria-current={activeSection === section.id ? "page" : undefined}
+                tabindex={rovingTarget === section.id ? 0 : -1}
+                onclick={() => onNavigate(section.id)}
+                onkeydown={handleNavKeydown}
+              >{section.label}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/each}
+    {#if visibleGroups.length === 0}
+      <div class="mx-empty st-nav__empty" role="status">
+        <p class="mx-empty__text">No settings match “{searchQuery.trim()}”.</p>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => { searchQuery = ""; searchInput?.focus(); }}>
+          Clear search
+        </button>
+      </div>
+    {/if}
   </nav>
 
-  <!-- Pinned footer: live auto-save status (relocated from the old rail head). -->
-  <div
-    class="rail-foot"
-    class:rail-foot--error={footStatus === "error"}
-    class:rail-foot--blocked={footStatus === "blocked"}
-    class:rail-foot--saving={footStatus === "saving"}
-    class:rail-foot--ok={footStatus === "ok"}
-    aria-live="polite"
-  >
-    {#if footStatus === "error"}
-      <span class="rail-foot__dot rail-foot__dot--error"></span>
-      <span class="rail-foot__label">save failed</span>
-    {:else if footStatus === "blocked"}
-      <span class="rail-foot__dot rail-foot__dot--blocked"></span>
-      <span class="rail-foot__label">resolve issues</span>
-    {:else if footStatus === "saving"}
-      <span class="rail-foot__dot rail-foot__dot--saving"></span>
-      <span class="rail-foot__label">saving</span>
-    {:else if footStatus === "ok"}
-      <span class="rail-foot__dot rail-foot__dot--ok"></span>
-      <span class="rail-foot__label">saved</span>
-    {:else}
-      <span class="rail-foot__dot"></span>
-      <span class="rail-foot__label">auto-save on</span>
-    {/if}
+  <div class="st-side__foot">
+    <div class="st-foot__rec">
+      <span class="mx-rec{rec.mod ? ` mx-rec--${rec.mod}` : ''}" use:tip={captureControls.running ? "Recording continues while you're in Settings" : null}>
+        {#if rec.mod === "starting"}<span class="mx-spin mx-spin--sm"></span>{:else}<span class="mx-rec__dot"></span>{/if}
+        {rec.label}{#if rec.clock === "elapsed" && sessionStartMs !== null} <span class="num">{formatClock(now - sessionStartMs, true)}</span>{/if}
+      </span>
+      <span class="st-foot__lanes">
+        {#each lanes as lane, i (lane.key)}
+          {@const meta = LANES[i]}
+          <!-- Stopped: show the selection for the next recording, as the status bar's toggles do. -->
+          {@const mod = captureControls.running || captureControls.loadingStart ? lane.mod : sourceSelection.isSelected(lane.key) ? "on" : "off"}
+          <span class="mx-lane mx-lane--{meta.mod} mx-lane--{mod}" use:tip={LANE_TIP[meta.mod]}>{meta.label}</span>
+        {/each}
+      </span>
+    </div>
+    <div class="st-foot__meta">Mnema{#if version} <span class="num">{version}</span>{/if}</div>
   </div>
-
-  <!-- Autosave failure detail: the bare "save failed" dot above discards the
-       message, so surface the actual error here. Each of the three error sources
-       that light the footer dot (recording, keyboard, microphone) gets its own
-       detail line so none is left as just an unexplained dot. role="alert" so the
-       failure is announced, not just shown.
-
-       The recording path has a targeted Retry (re-runs the failed domain save,
-       bypassing the backoff window) + a Dismiss that reconciles the control back
-       to the last-saved value. The keyboard + microphone domains have no
-       equivalent manual-retry surface (their autosave engine re-attempts a dirty
-       save on its own), so they show the message text + a Dismiss that clears the
-       error — consistent with the recError treatment. -->
-  {#if rec.recError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{rec.recError}</p>
-      <div class="rail-foot-error__actions">
-        {#if c.lastFailedSaveDomain}
-          <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.retryFailedSave()}>
-            Retry
-          </button>
-        {/if}
-        <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.dismissRecError()}>
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  {#if keyboard.keyboardBindingsError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{keyboard.keyboardBindingsError}</p>
-      <div class="rail-foot-error__actions">
-        <button
-          class="btn btn--ghost btn--sm"
-          type="button"
-          onclick={() => (keyboard.keyboardBindingsError = null)}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  {#if audio.micError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{audio.micError}</p>
-      <div class="rail-foot-error__actions">
-        <button
-          class="btn btn--ghost btn--sm"
-          type="button"
-          onclick={() => (audio.micError = null)}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
 </aside>
 
 <style>
-  /* Slice 4: quiet empty state when the search query matches no sections.
-     Namespaced with the rail's `rail-`/`nav-` family; tokens-only (muted text
-     to match `.nav-cat`). Component-scoped so it never touches the shared
-     `.settings-shell` cascade in settings-layout.css. */
-  .rail-empty {
+  .st-side {
+    flex: none;
+    width: 252px;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-    margin: 4px 8px;
-    padding: 6px 10px;
-    font-size: 12px;
-    line-height: 1.4;
+    background: color-mix(in srgb, var(--app-surface) 62%, var(--app-bg));
+    border-right: 1px solid var(--mx-hairline);
+  }
+  :global([data-theme="light"]) .st-side {
+    background: color-mix(in srgb, var(--app-fg) 3.5%, var(--app-bg));
+  }
+  .st-side__top {
+    flex: none;
+    height: 52px;
+  }
+
+  .st-side__head {
+    display: grid;
+    gap: var(--s-3);
+    padding: 0 var(--s-3) var(--s-3);
+  }
+  .st-back {
+    justify-self: start;
+    margin-left: -6px;
+  }
+  .st-back :global(svg) {
     color: var(--app-text-subtle);
+    transition: transform var(--t-med) var(--ease-expo);
+  }
+  .st-back:hover :global(svg) {
+    transform: translateX(-2px);
+    color: var(--app-text);
+  }
+  .st-side .mx-search {
+    padding-left: 10px;
+    background: color-mix(in srgb, var(--app-fg) 4%, transparent);
+    border-color: var(--mx-hairline);
+    box-shadow: none;
+  }
+  .st-side .mx-search input {
+    font-size: var(--text-base);
+  }
+  .st-side .mx-search kbd {
+    height: 17px;
+    border-bottom-width: 1px;
+    background: transparent;
+    border-color: var(--mx-hairline);
   }
 
-  .rail-empty__msg {
-    margin: 0;
-    word-break: break-word;
+  .st-nav {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    padding: var(--s-1) var(--s-3) var(--s-4);
   }
-
-  /* In-field clear (X) for the search input. Sits at the right edge of the
-     recessed search field, mirroring the leading search glyph; tokens-only and
-     namespaced under the rail's search family. */
-  .rail-search__clear {
-    position: absolute;
-    right: 6px;
-    display: inline-flex;
+  .st-group {
+    display: grid;
+  }
+  .st-group__btn {
+    display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    height: 32px;
+    padding: 0 var(--s-2) 0 5px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    font: 500 var(--text-md)/1 var(--font-sans);
+    color: var(--app-text);
+    transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
+  }
+  .st-group__btn:hover {
+    background: color-mix(in srgb, var(--app-fg) 5%, transparent);
+    color: var(--app-text-strong);
+  }
+  .st-group__btn[aria-current="true"] {
+    background: var(--mx-selected);
+    color: var(--app-text-strong);
+  }
+  .st-tile {
+    flex: none;
     width: 22px;
     height: 22px;
-    padding: 0;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.15s, background 0.15s;
-  }
-  .rail-search__clear:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-  }
-  .rail-search__clear:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .rail-search__clear :global(svg) {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  /* Autosave failure banner pinned under the footer status line. Keeps the real
-     error message visible (it scrolls if long) with the Retry/Dismiss actions
-     directly beneath it. Tokens-only, namespaced under the rail. */
-  .rail-foot-error {
-    margin: 0 8px 8px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    border: 1px solid var(--app-danger-border);
+    display: grid;
+    place-items: center;
     border-radius: 6px;
-    background: var(--app-danger-bg);
+    color: var(--t);
+    background: color-mix(in srgb, var(--t) 13%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t) 22%, transparent);
+    transition: background-color var(--t-med) var(--ease-quart), color var(--t-med) var(--ease-quart);
+  }
+  .st-group__btn[aria-current="true"] .st-tile {
+    color: var(--app-bg);
+    background: var(--t);
+    box-shadow: none;
+  }
+  :global([data-theme="light"]) .st-group__btn[aria-current="true"] .st-tile {
+    color: var(--app-surface);
+  }
+  .st-group__btn :global(.st-group__chev) {
+    margin-left: auto;
+    color: var(--app-text-faint);
+    transition: transform var(--t-med) var(--ease-expo);
+  }
+  .st-group.is-open :global(.st-group__chev) {
+    transform: rotate(90deg);
+    color: var(--app-text-subtle);
+  }
+  .st-group__count {
+    margin-left: auto;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 5px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: var(--r-pill);
+    font: 500 var(--text-xs)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
   }
 
-  .rail-foot-error__msg {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--app-danger-text);
-    max-height: 6.4em;
-    overflow-y: auto;
-    word-break: break-word;
+  /* Nested sections: indented under the label with a hairline guide; the one
+     in view gets the --mx-selected fill. */
+  .st-subnav {
+    position: relative;
+    display: grid;
+    gap: 1px;
+    margin: 2px 0 6px 16px;
+    padding-left: 13px;
+  }
+  .st-subnav::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 1px;
+    background: var(--mx-hairline);
+  }
+  .st-subnav__item {
+    display: block;
+    width: 100%;
+    padding: 5px var(--s-2);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    font: 400 var(--text-base)/1.25 var(--font-sans);
+    color: var(--app-text-subtle);
+    transition: color var(--t-fast) var(--ease-quart), background-color var(--t-fast) var(--ease-quart);
+  }
+  .st-subnav__item:hover {
+    color: var(--app-text-strong);
+    background: color-mix(in srgb, var(--app-fg) 4%, transparent);
+  }
+  .st-subnav__item[aria-current="page"] {
+    color: var(--app-text-strong);
+    font-weight: 500;
+    background: var(--mx-selected);
+  }
+  .st-nav__empty {
+    padding: var(--s-2);
   }
 
-  .rail-foot-error__actions {
+  .st-side__foot {
+    flex: none;
+    display: grid;
+    gap: 8px;
+    padding: var(--s-3) var(--s-4) var(--s-4);
+    border-top: 1px solid var(--mx-hairline);
+  }
+  .st-foot__rec {
     display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  .st-foot__rec .mx-rec {
+    height: 18px;
+    padding: 0 7px 0 6px;
     gap: 6px;
+  }
+  .st-foot__lanes {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+  }
+  .st-foot__lanes .mx-lane {
+    font-size: 0;
+    gap: 0;
+    text-decoration: none;
+  }
+  .st-foot__lanes .mx-lane::before {
+    width: 6px;
+    height: 6px;
+  }
+  .st-foot__meta {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font: 400 var(--text-sm)/1 var(--font-sans);
+    color: var(--app-text-subtle);
   }
 </style>
