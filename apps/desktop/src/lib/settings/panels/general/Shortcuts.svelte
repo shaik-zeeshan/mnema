@@ -85,6 +85,7 @@
   id="settings-section-shortcuts"
   title="Keyboard Shortcuts"
   hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears. Changes save automatically."
+  loading={keyboardBindingsSettings === null}
 >
   {#snippet actions()}
     <ReloadButton
@@ -104,31 +105,27 @@
     </button>
   {/snippet}
 
-  {#if keyboardBindingsSettings === null}
-    <p class="loading-text">Loading shortcuts…</p>
-  {:else}
-    <SettingRow
-      label="Global shortcuts"
-      description="Use system-wide shortcuts for recording and showing Mnema while it is in the background. Background shortcuts require Command/Control or Alt; foreground shortcuts are ignored while typing in text fields."
-    >
-      {#snippet control()}
-        <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
-      {/snippet}
-    </SettingRow>
+  <SettingRow
+    label="Global shortcuts"
+    description="Use system-wide shortcuts for recording and showing Mnema while it is in the background. Background shortcuts require Command/Control or Alt; foreground shortcuts are ignored while typing in text fields."
+  >
+    {#snippet control()}
+      <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
+    {/snippet}
+  </SettingRow>
 
-    {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
-      <div class="shortcuts-error-row">
-        <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
-          <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
-          {#if firstConflictActionId !== null}
-            <button type="button" class="mx-btn mx-btn--sm shortcuts-jump" onclick={jumpToConflict}>
-              Jump to conflict
-            </button>
-          {/if}
-        </div>
+  {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
+    <div class="shortcuts-error-row">
+      <div class="inline-error" role="alert">
+        <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
+        <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
+        {#if firstConflictActionId !== null}
+          <button type="button" class="mx-btn mx-btn--sm shortcuts-jump" onclick={jumpToConflict}>
+            Jump to conflict
+          </button>
+        {/if}
       </div>
-    {/if}
+    </div>
   {/if}
 </SettingGroup>
 

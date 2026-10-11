@@ -59,7 +59,7 @@
   .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: var(--s-7);
     width: 100%;
   }
 

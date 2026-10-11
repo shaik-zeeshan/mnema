@@ -8,21 +8,24 @@
     control: Snippet;
     /**
      * Optional compact control (e.g. a Switch) pinned beside the label/
-     * description in the header. Use this — not `control` — for the primary
-     * toggle when `control` carries wide, full-width content below (a
-     * disclosure callout, status card, conditional fields). The toggle then
-     * bounds the description's measure instead of stranding on its own line.
+     * description. Use this — not `control` — for the primary toggle when
+     * `control` carries wide, full-width content below (a disclosure callout,
+     * status card, conditional fields).
      */
     aside?: Snippet;
+    /** Leading capture-family dot before the label (mockup `.st-src`). */
+    source?: "screen" | "mic" | "sysaudio";
+    /** Inline content right after the label, on its line (e.g. an `mx-chip`). */
+    labelExtra?: Snippet;
     /** Optional anchor id for deeplink scroll-to. */
     id?: string;
-    /** Tint the row for an attention/warning state. */
+    /** Tint the label for an attention/warning state. */
     warn?: boolean;
     /** Dim + block interaction without removing the row. */
     disabled?: boolean;
     /** Render the control full-width beneath the label (for wide controls). */
     full?: boolean;
-    /** Show the inset divider above this row. Defaults true; pass false to suppress. */
+    /** Show the hairline above this row. Defaults true; pass false to suppress. */
     divider?: boolean;
   }
 
@@ -31,6 +34,8 @@
     description,
     control,
     aside,
+    source,
+    labelExtra,
     id,
     warn = false,
     disabled = false,
@@ -39,8 +44,11 @@
   }: Props = $props();
 </script>
 
+<!-- Obsidian-style row (mockup `.st-row`): copy left, control right, a
+     hairline below. `full` = `.st-row--stack`: the control drops to its own
+     full-width line. -->
 <div
-  class="setting-row"
+  class="setting-row {source ? `setting-row--src-${source}` : ''}"
   class:setting-row--full={full}
   class:setting-row--warn={warn}
   class:setting-row--disabled={disabled}
@@ -49,7 +57,11 @@
 >
   <div class="setting-row__main">
     <div class="setting-row__text">
-      <span class="setting-row__label">{label}</span>
+      <span class="setting-row__label">
+        {#if source}<span class="setting-row__src" aria-hidden="true"></span>{/if}
+        {label}
+        {#if labelExtra}{@render labelExtra()}{/if}
+      </span>
       {#if description}
         <span class="setting-row__description">{description}</span>
       {/if}
@@ -64,126 +76,106 @@
 </div>
 
 <style>
-  /* Rows are direct children of the card and sit flush; the card's padding
-     comes from these rows. */
   .setting-row {
-    position: relative;
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 16px 20px;
+    gap: var(--s-6);
+    padding: 14px 0;
+    border-bottom: 1px solid var(--mx-hairline);
     min-width: 0;
   }
 
-  /* Inset divider between consecutive rows — a 1px line at the top of each
-     non-first row, inset L/R so it doesn't touch the card edges.
-     `:global` on the sibling pair is required: each row is a separate
-     <SettingRow> instance, so Svelte's scoper can't see them as adjacent and
-     would prune (and strip) a purely-scoped `+` selector. The `.setting-row`
-     class is unique to this component, so the global match is safe. */
-  :global(.setting-row + .setting-row)::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 20px;
-    right: 20px;
-    height: 1px;
-    background: var(--app-border);
-    pointer-events: none;
-  }
-
-  /* `divider={false}` suppresses the divider that would otherwise sit above
-     this row. */
-  :global(.setting-row--no-divider)::before {
-    display: none;
+  /* `divider={false}` drops the hairline between this row and the row above
+     it — which, rows owning the line BELOW them, lives on that row. */
+  :global(.setting-row:has(+ .setting-row--no-divider)) {
+    border-bottom-color: transparent;
   }
 
   .setting-row--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
-  /* Header line: label/description column on the left, optional compact
-     `aside` control (a Switch) on the right. In a `full` row this is the row's
-     top line and the wide `control` content drops below it; in a normal row it
-     sits opposite the `control` and is the only thing left of it. Either way
-     the `flex: 1 1 auto` text + `flex-shrink: 0` aside split bounds the
-     description against the control beside it. */
+  /* Copy column + the optional compact `aside` control beside it. */
   .setting-row__main {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 16px;
+    gap: var(--s-6);
     min-width: 0;
-    flex: 1 1 auto;
   }
 
   .setting-row__text {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
-    flex: 1 1 auto;
   }
 
   .setting-row__aside {
     display: flex;
     align-items: center;
-    flex-shrink: 0;
+    gap: var(--s-2);
   }
 
   .setting-row__label {
-    font-size: var(--text-md);
-    font-weight: 550;
-    letter-spacing: 0.01em;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font: 500 var(--text-md)/1.35 var(--font-sans);
     color: var(--app-text-strong);
-    line-height: 1.3;
   }
 
   .setting-row--warn .setting-row__label {
     color: var(--app-warn);
   }
 
+  /* `source`: the family's colour on the leading dot AND on a checked switch
+     in the row (mockup `.st-src` + `.st-switch--*`). */
+  .setting-row--src-screen { --src: var(--app-source-screen); }
+  .setting-row--src-mic { --src: var(--app-source-mic); }
+  .setting-row--src-sysaudio { --src: var(--app-source-sysaudio); }
+
+  .setting-row__src {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--src);
+  }
+
+  .setting-row[class*="setting-row--src-"] :global(.mx-switch:checked) {
+    background: var(--src);
+  }
+
   .setting-row__description {
-    font-size: 11px;
+    font-size: var(--text-base);
+    line-height: 1.5;
     color: var(--app-text-muted);
-    letter-spacing: 0.01em;
-    line-height: 1.45;
-    /* Fill the text column. The flex split (`.setting-row__text` is
-       `flex: 1 1 auto`, `.setting-row__control` is `flex-shrink: 0`) already
-       reserves room for a beside control, so 100% wraps against the toggle —
-       not the card edge — when the toggle sits inline. */
-    max-width: 100%;
+    max-width: 52ch;
   }
 
   .setting-row__control {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 8px;
-    flex-shrink: 0;
+    gap: var(--s-2);
     min-width: 0;
-    max-width: 100%;
   }
 
-  /* Wide controls (mockup `.row.stack`): drop the control onto its own
-     full-width line below the label. */
+  /* `.st-row--stack`: one column, the control on its own full-width line. A
+     tall copy block pins its aside control to the label line. */
   .setting-row--full {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-3);
   }
 
-  /* In a `full` row the header can be tall (multi-line description), so pin the
-     aside control to the top — aligned with the label, not floating against the
-     middle of the paragraph. */
   .setting-row--full .setting-row__main {
-    align-items: flex-start;
+    align-items: start;
   }
 
   .setting-row--full .setting-row__control {
     justify-content: stretch;
-    flex-shrink: 1;
-    width: 100%;
   }
 </style>

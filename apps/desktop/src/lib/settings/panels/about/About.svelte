@@ -285,25 +285,24 @@
 
 <style>
   /* Identity hero: a dedicated block (not a SettingRow) so the product name can
-     anchor the panel. Rows supply the card's own padding, so the hero replicates
-     it (16px 20px) and draws the same inset hairline beneath itself that a
-     following `.setting-row` would have drawn above. */
+     anchor the panel. It sits on the rows' left edge and draws the hairline
+     beneath itself that a `.setting-row` would. */
   .about-hero {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 18px 20px;
+    padding: 18px 0;
   }
 
   .about-hero::after {
     content: "";
     position: absolute;
-    left: 20px;
-    right: 20px;
+    left: 0;
+    right: 0;
     bottom: 0;
     height: 1px;
-    background: var(--app-border);
+    background: var(--mx-hairline);
     pointer-events: none;
   }
 

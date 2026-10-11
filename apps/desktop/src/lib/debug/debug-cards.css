@@ -7,9 +7,9 @@
  * app's own design tokens (--app-*, --text-*), so it IS the app's design
  * language — it wins on visual vocabulary, and nothing here is a fork of it.
  *
- * The card shell itself stays <SettingGroup> (its `.setting-group__card` is
- * already the mockup's `.card`, accent hairline and all); the only shell thing
- * missing was the severity-tinted hairline, hence `--warn` / `--danger` below.
+ * The card shell is <SettingGroup>, whose own look is Settings' flat section;
+ * the card chrome (and its severity-tinted `--warn` / `--danger` hairline)
+ * is applied below.
  *
  *   .row / .row__label / .row__desc / .row__value  — the two-line config row
  *   .bar / .bar__fill / .bar-caption               — a coverage/progress bar
@@ -19,11 +19,62 @@
  *
  * Every selector stays namespaced under `.debug-shell`. */
 
+/* ── Card shell ─────────────────────────────────────────────────────────
+   SettingGroup renders Settings' flat section (title + hint, hairline rows);
+   Debug dresses that same markup as mockup A's card: a mono uppercase
+   eyebrow over a raised, bordered body with an accent top hairline. The
+   extra `.setting-group` keeps these above SettingGroup's scoped rules
+   regardless of stylesheet order. */
+.debug-shell .setting-group {
+  gap: 12px;
+}
+
+.debug-shell .setting-group .setting-group__header {
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.debug-shell .setting-group .setting-group__title {
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: normal;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.debug-shell .setting-group .setting-group__hint {
+  font-size: var(--text-sm);
+  color: var(--app-text-muted);
+  letter-spacing: 0.01em;
+}
+
+.debug-shell .setting-group .setting-group__card {
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+}
+
+.debug-shell .setting-group__card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
+    color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
+    transparent
+  );
+  pointer-events: none;
+}
+
 /* ── Card severity ──────────────────────────────────────────────────────
-   SettingGroup paints the neutral accent hairline in its own (Svelte-scoped)
-   `::before`. These re-tint it for a card whose feature is degraded/failing.
-   The doubled class is deliberate: it outranks the scoped rule regardless of
-   which stylesheet the bundler emits last. */
+   Re-tint the accent hairline above for a card whose feature is
+   degraded/failing. */
 .debug-shell .setting-group__card.setting-group__card--warn::before {
   background: linear-gradient(
     90deg,

@@ -5,7 +5,6 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconClear from "~icons/lucide/x";
 
@@ -19,18 +18,12 @@
 
 </script>
 
-<SettingGroup id="settings-section-audio" title="Microphone">
+<SettingGroup id="settings-section-audio" title="Microphone" loading={loadingMicState}>
   {#snippet actions()}
     <ReloadButton onclick={loadMicState} busy={loadingMicState} label="Reload microphone state" />
   {/snippet}
 
-  {#if loadingMicState}
-    <SettingRow label="Microphone" description="Microphone state is loading." divider={false}>
-      {#snippet control()}
-        <p class="loading-text"><ButtonSpinner />Loading microphone state…</p>
-      {/snippet}
-    </SettingRow>
-  {:else if micState}
+  {#if micState}
     <SettingRow label="Active Device" description="The microphone currently in use." full>
       {#snippet control()}
         <div class="control-stack">

@@ -52,87 +52,80 @@
   id="settings-section-capture"
   title="Sources"
   hint="What gets recorded and how often segments roll over."
+  loading={rec.loadingRecSettings}
 >
   {#snippet actions()}
     <ReloadButton onclick={loadRecordingSettings} busy={rec.loadingRecSettings} label="Reload capture settings" />
   {/snippet}
 
-  {#if rec.loadingRecSettings}
-    <SettingRow label="Capture" description="Recording settings are loading." divider={false}>
-      {#snippet control()}
-        <p class="loading-text">Loading settings…</p>
-      {/snippet}
-    </SettingRow>
-  {:else}
-    <SettingRow label="Screen" description="Capture the display">
-      {#snippet control()}
-        <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
-      {/snippet}
-    </SettingRow>
+  <SettingRow label="Screen" description="Capture the display">
+    {#snippet control()}
+      <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
+    {/snippet}
+  </SettingRow>
 
-    <SettingRow label="Microphone" description="Capture audio from microphone">
-      {#snippet control()}
-        <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
-      {/snippet}
-    </SettingRow>
+  <SettingRow label="Microphone" description="Capture audio from microphone">
+    {#snippet control()}
+      <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
+    {/snippet}
+  </SettingRow>
 
-    <!-- System audio is its own capture family on a Core Audio process tap
-         (ADR 0052): no screen dependency, so no `disabled` coupling to Screen. -->
-    <SettingRow
-      label="System Audio"
-      description="Capture Mac system audio (macOS 15+) — meetings, videos, and app sound."
-    >
-      {#snippet control()}
-        <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
-      {/snippet}
-    </SettingRow>
+  <!-- System audio is its own capture family on a Core Audio process tap
+       (ADR 0052): no screen dependency, so no `disabled` coupling to Screen. -->
+  <SettingRow
+    label="System Audio"
+    description="Capture Mac system audio (macOS 15+) — meetings, videos, and app sound."
+  >
+    {#snippet control()}
+      <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
+    {/snippet}
+  </SettingRow>
 
-    <!-- Inferred, never known: a denied tap records silence and says nothing, so
-         this is the only signal the user gets (ADR 0052). -->
-    {#if sysAudio.mayBeBlocked}
-      <div class="cap-notice">
-        <div class="mx-notice" data-tone="info" role="status">
-          <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
-          <b class="mx-notice__title">No system sound yet</b>
-          <p class="mx-notice__text">
-            System audio is on, but no recording has captured a sound yet. If you denied the macOS
-            prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If
-            your Mac has simply been quiet, ignore this.
-          </p>
-          <div class="mx-notice__acts">
-            <button class="mx-btn mx-btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
-              Open System Settings<IconExternal width="12" height="12" />
-            </button>
-            <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
-              Dismiss
-            </button>
-          </div>
+  <!-- Inferred, never known: a denied tap records silence and says nothing, so
+       this is the only signal the user gets (ADR 0052). -->
+  {#if sysAudio.mayBeBlocked}
+    <div class="cap-notice">
+      <div class="mx-notice" data-tone="info" role="status">
+        <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+        <b class="mx-notice__title">No system sound yet</b>
+        <p class="mx-notice__text">
+          System audio is on, but no recording has captured a sound yet. If you denied the macOS
+          prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If
+          your Mac has simply been quiet, ignore this.
+        </p>
+        <div class="mx-notice__acts">
+          <button class="mx-btn mx-btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
+            Open System Settings<IconExternal width="12" height="12" />
+          </button>
+          <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
+            Dismiss
+          </button>
         </div>
-        {#if sysAudio.error}
-          <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{sysAudio.error}</span>
-        {/if}
       </div>
-    {/if}
-
-    <PermissionRows />
-
-    <SettingRow
-      label="Segment Duration"
-      description="How long each recording segment is before a new one starts."
-      divider={false}
-    >
-      {#snippet control()}
-        <Segmented
-          md
-          mono
-          value={String(rec.draftSegmentDuration)}
-          onValueChange={(v) => (rec.draftSegmentDuration = Number(v))}
-          options={segmentOptions}
-          ariaLabel="Segment duration"
-        />
-      {/snippet}
-    </SettingRow>
+      {#if sysAudio.error}
+        <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{sysAudio.error}</span>
+      {/if}
+    </div>
   {/if}
+
+  <PermissionRows />
+
+  <SettingRow
+    label="Segment Duration"
+    description="How long each recording segment is before a new one starts."
+    divider={false}
+  >
+    {#snippet control()}
+      <Segmented
+        md
+        mono
+        value={String(rec.draftSegmentDuration)}
+        onValueChange={(v) => (rec.draftSegmentDuration = Number(v))}
+        options={segmentOptions}
+        ariaLabel="Segment duration"
+      />
+    {/snippet}
+  </SettingRow>
 </SettingGroup>
 
 {#if !rec.loadingRecSettings}
@@ -312,12 +305,12 @@
 {/if}
 
 <style>
-  /* A full-width notice between rows, on the row's own gutters. */
+  /* A full-width notice between rows, on the rows' left edge. */
   .cap-notice {
     display: flex;
     flex-direction: column;
     gap: var(--s-2);
-    padding: 12px 20px;
+    padding: var(--s-3) 0;
   }
 
   .cap-ctl {

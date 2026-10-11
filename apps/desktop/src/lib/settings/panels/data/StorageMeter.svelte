@@ -85,22 +85,22 @@
 </div>
 
 <style>
-  /* Sits in the Storage card above the first SettingRow, so it takes the
-     row's inset (16px 20px) and its inset divider rather than a full-bleed rule. */
+  /* Sits above the first SettingRow, so it takes the row's rhythm and
+     hairline. */
   .st-meter {
     position: relative;
     display: grid;
     gap: var(--s-3);
-    padding: 16px 20px;
+    padding: 16px 0;
   }
   .st-meter::after {
     content: "";
     position: absolute;
     bottom: 0;
-    left: 20px;
-    right: 20px;
+    left: 0;
+    right: 0;
     height: 1px;
-    background: var(--app-border);
+    background: var(--mx-hairline);
   }
   .st-meter__top {
     display: flex;

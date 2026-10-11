@@ -1,6 +1,6 @@
 /* Shared controls & notices (part 1) — acknowledgements/notices viewer, update
  * channel/status, speaker hero, model status, permission callout, download
- * progress, cleanup/delete confirmations. (Text input, buttons, badges, device
+ * progress, cleanup/delete confirmations, status word + dot. (Text input, buttons, badges, device
  * list, inline error/validation live in settings-controls-fields.css.)
  *
  * Part of the shared Settings stylesheet (split for the 800-line cap; the
@@ -244,12 +244,10 @@
     font-weight: 600;
   }
 
+  /* The kit's `.mx-label`, not an uppercase eyebrow. */
   .settings-shell .field-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    font: 500 var(--text-base)/1.35 var(--font-sans);
+    color: var(--app-text-subtle);
   }
 
   .settings-shell .model-status {
@@ -391,5 +389,31 @@
     word-break: break-word;
     max-height: 160px;
     overflow: auto;
+  }
+
+  /* ── Status word + dot (mockup `.st-prov__state`) ──────────────
+     `<span class="settings-state settings-state--ok">reachable</span>` beside
+     a provider/model control. Bare = subtle word, no dot; --idle adds a
+     subtle dot; --ok accent with glow; --warn / --danger tinted. */
+  .settings-shell .settings-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 500 var(--text-base)/1 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+  .settings-shell .settings-state--ok { color: var(--app-accent); }
+  .settings-shell .settings-state--warn { color: var(--app-warn); }
+  .settings-shell .settings-state--danger { color: var(--app-danger-text); }
+  .settings-shell .settings-state:is(.settings-state--ok, .settings-state--warn, .settings-state--danger, .settings-state--idle)::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .settings-shell .settings-state--ok::before {
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
