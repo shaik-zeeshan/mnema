@@ -142,6 +142,7 @@
     {#snippet control()}
       <div class="uc-stack">
         <Segmented
+          md
           value={rec.draftUserContextBudgetTier}
           onValueChange={(value) =>
             (rec.draftUserContextBudgetTier = value as DerivationBudgetTier)}
@@ -199,7 +200,7 @@
       <div class="uc-stack">
         <div class="row-actions">
           <button
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--sm"
             type="button"
             disabled={userContextRunNowRunning || !userContextStatus?.engineAvailable}
             aria-busy={userContextRunNowRunning}
@@ -228,7 +229,7 @@
           </p>
           <div class="row-actions">
             <button
-              class="btn btn--danger btn--sm user-context-wipe__btn"
+              class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm"
               type="button"
               disabled={userContextWiping}
               aria-busy={userContextWiping}

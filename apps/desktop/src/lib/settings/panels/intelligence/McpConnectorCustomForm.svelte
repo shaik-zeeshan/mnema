@@ -72,7 +72,7 @@
       <div class="inline-row">
         <input class="text-input" autocomplete="off" placeholder="argument" aria-label="Argument {i + 1}" bind:value={model.args[i]} />
         <button
-          class="btn btn--ghost btn--sm"
+          class="mx-btn mx-btn--sm"
           type="button"
           aria-label="Remove argument {i + 1}"
           onclick={() => { model.args = model.args.filter((_, idx) => idx !== i); }}
@@ -81,7 +81,7 @@
     {/each}
     <div class="row-actions">
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         type="button"
         onclick={() => { model.args = [...model.args, ""]; }}
       >+ Argument</button>
@@ -96,7 +96,7 @@
         <input class="text-input" autocomplete="off" placeholder="NAME" aria-label="Env var {i + 1} name" bind:value={model.env[i].name} />
         <input class="text-input" autocomplete="off" placeholder="value" aria-label="Env var {i + 1} value" bind:value={model.env[i].value} />
         <button
-          class="btn btn--ghost btn--sm"
+          class="mx-btn mx-btn--sm"
           type="button"
           aria-label="Remove env var {i + 1}"
           onclick={() => { model.env = model.env.filter((_, idx) => idx !== i); }}
@@ -105,7 +105,7 @@
     {/each}
     <div class="row-actions">
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         type="button"
         onclick={() => { model.env = [...model.env, { name: "", value: "" }]; }}
       >+ Variable</button>

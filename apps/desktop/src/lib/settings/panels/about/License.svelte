@@ -223,7 +223,7 @@
             <div class="row-actions">
               <button
                 type="button"
-                class="btn btn--primary btn--sm"
+                class="mx-btn mx-btn--sm"
                 disabled={resetting}
                 aria-busy={resetting}
                 onclick={() => void submitReset()}
@@ -232,7 +232,7 @@
               </button>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--sm"
                 onclick={() => openExternal(act.buyUrl)}
               >
                 Buy another license
@@ -240,7 +240,7 @@
               </button>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--sm"
                 onclick={() => openExternal(act.resetUrl)}
               >
                 Help
@@ -293,7 +293,7 @@
         {/if}
         <button
           type="button"
-          class="btn btn--ghost btn--sm"
+          class="mx-btn mx-btn--sm"
           disabled={refreshing}
           aria-busy={refreshing}
           onclick={() => void submitRefresh()}
@@ -314,7 +314,7 @@
     >
       {#snippet control()}
         <div class="row-actions">
-          <button type="button" class="btn btn--primary btn--sm" onclick={openCheckout}>
+          <button type="button" class="mx-btn mx-btn--sm" onclick={openCheckout}>
             {licensedOutOfWindow ? "Renew ($29)" : "Buy ($69)"}
             <span aria-hidden="true"><IconArrowUpRight /></span>
           </button>
@@ -353,7 +353,7 @@
         <div class="row-actions">
           <button
             type="button"
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--sm"
             disabled={!canActivate}
             aria-busy={activating}
             onclick={() => void submitActivate()}

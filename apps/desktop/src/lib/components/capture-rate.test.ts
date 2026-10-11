@@ -3,6 +3,8 @@
 import { describe, expect, it } from "bun:test";
 import {
 	CAPTURE_INTERVAL_LADDER_S,
+	CAPTURE_RATE_STOPS_S,
+	captureRateOptions,
 	captureIntervalPhrase,
 	captureRateShortLabel,
 	fpsToIntervalS,
@@ -148,5 +150,19 @@ describe("timelineGapMs", () => {
 		expect(timelineGapMs(10)).toBe(10_000); // 3×100ms floored
 		expect(timelineGapMs(0.5)).toBe(10_000); // default 2s → 6000, floored
 		expect(timelineGapMs(1 / 60)).toBe(180_000); // 3×60s exceeds floor
+	});
+});
+
+describe("captureRateOptions", () => {
+	it("lists the stops fastest-first with short mono labels", () => {
+		expect(captureRateOptions(2).map((o) => o.label)).toEqual(["10/s", "1/s", "2s", "5s", "15s", "1/min"]);
+	});
+	it("adds an off-stop persisted interval as its own segment", () => {
+		const opts = captureRateOptions(30);
+		expect(opts.map((o) => o.value)).toEqual(["0.1", "1", "2", "5", "15", "30", "60"]);
+		expect(opts[5].label).toBe("30s");
+	});
+	it("every stop is on the ladder", () => {
+		for (const s of CAPTURE_RATE_STOPS_S) expect(CAPTURE_INTERVAL_LADDER_S).toContain(s);
 	});
 });

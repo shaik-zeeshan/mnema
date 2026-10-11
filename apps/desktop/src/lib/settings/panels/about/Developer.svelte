@@ -83,7 +83,7 @@
             <div class="debug-log-actions">
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--sm"
                 onclick={openDebugLog}
                 disabled={openingDebugLog}
                 aria-busy={openingDebugLog}
@@ -99,7 +99,7 @@
               {#if debugLogStatus.exists}
                 <button
                   type="button"
-                  class="btn btn--danger btn--sm"
+                  class="mx-btn mx-btn--danger mx-btn--sm"
                   onclick={deleteDebugLog}
                   disabled={deletingDebugLog}
                   aria-busy={deletingDebugLog}
@@ -150,7 +150,7 @@
           <div class="debug-log-actions">
             <button
               type="button"
-              class="btn btn--ghost btn--sm"
+              class="mx-btn mx-btn--sm"
               onclick={openGeneralLog}
               disabled={openingGeneralLog}
               aria-busy={openingGeneralLog}
@@ -166,7 +166,7 @@
             {#if generalLogStatus.exists}
               <button
                 type="button"
-                class="btn btn--danger btn--sm"
+                class="mx-btn mx-btn--danger mx-btn--sm"
                 onclick={deleteGeneralLog}
                 disabled={deletingGeneralLog}
                 aria-busy={deletingGeneralLog}

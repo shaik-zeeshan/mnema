@@ -303,49 +303,6 @@
     color: var(--app-accent);
   }
 
-  .settings-shell .permission-callout {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 12px;
-    border: 1px dashed var(--app-warn-border);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--app-warn) 6%, transparent);
-  }
-
-  .settings-shell .permission-callout--ok {
-    border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
-    background: color-mix(in srgb, var(--app-accent) 6%, transparent);
-  }
-
-  .settings-shell .permission-callout__copy {
-    display: flex;
-    min-width: 0;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .settings-shell .permission-callout__eyebrow {
-    font-size: var(--text-xs);
-    font-weight: 800;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .settings-shell .permission-callout strong {
-    font-size: 12px;
-    color: var(--app-text);
-  }
-
-  .settings-shell .permission-callout p {
-    margin: 0;
-    font-size: var(--text-sm);
-    line-height: 1.45;
-    color: var(--app-text-muted);
-  }
-
   .settings-shell .download-progress {
     display: flex;
     flex-direction: column;

@@ -12,7 +12,7 @@
     appUpdateProgressText,
     appUpdateProgressPercent,
   } from "$lib/settings/state/about.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -105,7 +105,7 @@
     {#snippet control()}
       <button
         type="button"
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         onclick={copyAboutDetails}
         aria-label="Copy version and build details to the clipboard"
       >
@@ -123,14 +123,15 @@
   {#if showUpdateChannelPicker}
     <SettingRow label="Update channel" description={switchingAppUpdateChannel ? "Saving channel and checking for updates." : `Current channel: ${updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.`} full>
       {#snippet control()}
-        <RadioGroup
+        <Segmented
+          md
           value={appUpdateStatus?.channel === "preview" ? "preview" : "stable"}
           onValueChange={(v) => chooseAppUpdateChannel(v as AppUpdateChannel)}
           disabled={switchingAppUpdateChannel || installingAppUpdate}
-          label="Update channel"
+          ariaLabel="Update channel"
           options={[
-            { value: "stable", label: "Stable", description: "Published releases" },
-            { value: "preview", label: "Preview", description: "Opt-in prereleases" },
+            { value: "stable", label: "Stable" },
+            { value: "preview", label: "Preview" },
           ]}
         />
       {/snippet}
@@ -141,10 +142,10 @@
         {#snippet control()}
           <div class="preview-warning" role="alert">
             <div class="row-actions">
-              <button class="btn btn--primary btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
+              <button class="mx-btn mx-btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
                 Use Preview Updates
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
                 Keep Stable
               </button>
             </div>
@@ -159,7 +160,7 @@
       <div class="about-update">
         <div class="about-update__head">
           <span class="badge badge--neutral badge--sm">{appUpdateStateLabel(appUpdateStatus)}</span>
-          <button type="button" class="btn btn--primary btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
+          <button type="button" class="mx-btn mx-btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
             {#if checkingAppUpdate || appUpdateStatus?.state === "checking"}<ButtonSpinner />Checking{:else}Check for Updates{/if}
           </button>
         </div>
@@ -200,11 +201,11 @@
 
         <div class="row-actions">
           {#if appUpdateStatus?.state === "restartRequired"}
-            <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
+            <button class="mx-btn" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
               {#if restartingAfterUpdate}<ButtonSpinner />Restarting{:else}Restart to Update{/if}
             </button>
           {:else}
-            <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
+            <button class="mx-btn" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
               {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}<ButtonSpinner />Installing{:else}Install Update{/if}
             </button>
           {/if}
@@ -229,7 +230,7 @@
         <div class="about-notices__head">
           <button
             type="button"
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--sm"
             onclick={copyThirdPartyNotices}
             disabled={!thirdPartyNotices || loadingThirdPartyNotices}
             aria-label="Copy the full third-party notices to the clipboard"

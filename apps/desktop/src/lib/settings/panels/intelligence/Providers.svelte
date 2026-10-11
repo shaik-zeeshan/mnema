@@ -151,7 +151,7 @@
                     <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />{provider.kind === "chatgpt" ? "connected" : "key in keychain"}</span>
                   {/if}
                   <button
-                    class="btn btn--danger btn--sm provider-row__remove"
+                    class="mx-btn mx-btn--danger mx-btn--sm provider-row__remove"
                     type="button"
                     disabled={aiProviderKeySavingProvider !== null || c.aiProviderRemoving}
                     onclick={() => removeAiProvider(provider.id)}
@@ -224,7 +224,7 @@
                   />
                   <div class="row-actions">
                     <button
-                      class="btn btn--ghost btn--sm"
+                      class="mx-btn mx-btn--sm"
                       type="button"
                       disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.id] ?? "").trim().length === 0}
                       aria-busy={aiProviderKeySavingProvider === provider.id}
@@ -233,7 +233,7 @@
                       {#if aiProviderKeySavingProvider === provider.id}<ButtonSpinner />Saving{:else}Save key{/if}
                     </button>
                     <button
-                      class="btn btn--ghost btn--sm"
+                      class="mx-btn mx-btn--sm"
                       type="button"
                       disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.id]}
                       onclick={() => clearAiProviderKey(provider.id)}
@@ -259,7 +259,7 @@
         <div class="row-actions">
           {#each AI_PROVIDER_KINDS as kind (kind)}
             <button
-              class="btn btn--ghost btn--sm"
+              class="mx-btn mx-btn--sm"
               type="button"
               disabled={c.aiProviderRemoving}
               use:tip={aiProviderKindDescription(kind)}
@@ -369,7 +369,7 @@
         {/if}
         <div class="row-actions">
           <button
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--sm"
             type="button"
             disabled={aiRuntimeTestRunning || rec.draftAiDefaultModel === null}
             aria-busy={aiRuntimeTestRunning}

@@ -154,16 +154,16 @@
                   {#if selectedSpeakerDownloadPercent !== null} · {selectedSpeakerDownloadPercent}%{/if}
                   {#if selectedSpeakerDownloadProgress?.message} · {selectedSpeakerDownloadProgress.message}{/if}
                 </p>
-                <button type="button" class="btn btn--ghost" onclick={cancelSelectedSpeakerModelDownload} disabled={cancellingSpeakerDownload} aria-busy={cancellingSpeakerDownload}>
+                <button type="button" class="mx-btn" onclick={cancelSelectedSpeakerModelDownload} disabled={cancellingSpeakerDownload} aria-busy={cancellingSpeakerDownload}>
                   {#if cancellingSpeakerDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                 </button>
               </div>
             {:else}
               <div class="debug-log-actions">
-                <button type="button" class="btn btn--primary" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available} aria-busy={startingSpeakerDownload}>
+                <button type="button" class="mx-btn" onclick={startSelectedSpeakerModelDownload} disabled={startingSpeakerDownload || selectedSpeakerModel.available} aria-busy={startingSpeakerDownload}>
                   {#if startingSpeakerDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedSpeakerModel.download.byteSize)}){/if}
                 </button>
-                <button type="button" class="btn btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available} aria-busy={deletingSpeakerModel}>
+                <button type="button" class="mx-btn mx-btn--danger" onclick={deleteSelectedSpeakerModel} disabled={deletingSpeakerModel || selectedSpeakerDownloadRunning || !selectedSpeakerModel.available} aria-busy={deletingSpeakerModel}>
                   {#if deletingSpeakerModel}<ButtonSpinner />Deleting{:else}Delete speaker model{/if}
                 </button>
               </div>

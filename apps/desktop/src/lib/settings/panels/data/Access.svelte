@@ -122,7 +122,7 @@
             {/if}
           {/if}
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
+            <button class="mx-btn mx-btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
               {#if mnemaCliInstalling}<ButtonSpinner />Installing…{:else}{mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
             </button>
             <ReloadButton
@@ -177,7 +177,7 @@
                          Deliberately not a filled primary — the confirm dialog in
                          `enableGrant` is the real gate. -->
                     <button
-                      class="btn btn--ghost btn--sm grant-row__enable"
+                      class="mx-btn mx-btn--sm"
                       type="button"
                       disabled={saving}
                       aria-busy={saving}
@@ -190,7 +190,7 @@
                          safe, reversible direction and must not be the loudest
                          control in the list. -->
                     <button
-                      class="btn btn--ghost btn--sm user-context-wipe__btn"
+                      class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm"
                       type="button"
                       disabled={saving}
                       aria-busy={saving}
@@ -211,7 +211,7 @@
           <div class="group-label access-subhead access-subhead--split">
             <span>Recent activity</span>
             {#if brokerHistory.length > 0 || brokerHistoryError}
-              <button class="btn btn--ghost btn--sm" type="button" onclick={revealAuditFile}>Reveal log in Finder</button>
+              <button class="mx-btn mx-btn--sm" type="button" onclick={revealAuditFile}>Reveal log in Finder</button>
             {/if}
           </div>
           {#if brokerHistoryError}

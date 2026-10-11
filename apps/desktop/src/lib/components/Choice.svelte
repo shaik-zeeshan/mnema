@@ -35,6 +35,21 @@
   }: Props = $props();
 
   const name = `choice-${Math.random().toString(36).slice(2, 9)}`;
+
+  // With `onValueChange` the parent owns the value and may refuse it (a confirm
+  // dialog the user cancels). The browser has already moved the native check, so
+  // snap the DOM back to `value`; an accepted change flows back through the prop.
+  // Without it, the click simply writes the bindable `value`.
+  function pick(next: string) {
+    if (!onValueChange) {
+      value = next;
+      return;
+    }
+    for (const input of document.getElementsByName(name)) {
+      (input as HTMLInputElement).checked = (input as HTMLInputElement).value === value;
+    }
+    onValueChange(next);
+  }
 </script>
 
 <div class="mx-choice" class:mx-choice--list={list} role="radiogroup" aria-label={ariaLabel}>
@@ -44,9 +59,9 @@
         type="radio"
         {name}
         value={option.value}
-        bind:group={value}
+        checked={value === option.value}
         disabled={disabled || disabledValues.includes(option.value)}
-        onchange={() => onValueChange?.(option.value)}
+        onchange={() => pick(option.value)}
       />
       {#if option.icon}
         <span class="mx-choice__icon" aria-hidden="true"><option.icon /></span>
@@ -61,3 +76,12 @@
     </label>
   {/each}
 </div>
+
+<style>
+  /* Look lives in kit.css (.mx-choice). As a flex item (a settings control
+     slot) the grid must still take the full row, or auto-fit wraps early. */
+  .mx-choice {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+</style>

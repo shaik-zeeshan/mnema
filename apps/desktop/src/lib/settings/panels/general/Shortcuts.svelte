@@ -122,7 +122,7 @@
           <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
           <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
           {#if firstConflictActionId !== null}
-            <button type="button" class="btn btn--ghost btn--sm shortcuts-jump" onclick={jumpToConflict}>
+            <button type="button" class="mx-btn mx-btn--sm shortcuts-jump" onclick={jumpToConflict}>
               Jump to conflict
             </button>
           {/if}

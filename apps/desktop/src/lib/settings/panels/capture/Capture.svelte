@@ -2,7 +2,15 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import SelectMenu from "$lib/components/Select.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import IconWave from "~icons/lucide/audio-waveform";
+  import IconFeather from "~icons/lucide/feather";
+  import IconOff from "~icons/lucide/ban";
+  import IconLock from "~icons/lucide/lock";
+  import IconInfo from "~icons/lucide/info";
+  import IconExternal from "~icons/lucide/external-link";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -17,6 +25,26 @@
   const recValidationErrors = $derived(c.recValidationErrors);
 
   const loadRecordingSettings = () => rec.loadRecordingSettings();
+
+  // Kit `mx-seg--mono` stops (backend caps segments at 5 min). A persisted value
+  // off the ladder (e.g. 90 s from the old slider) shows as its own stop.
+  const SEGMENT_STOPS = [60, 120, 300];
+  const segmentLabel = (s: number) => (s % 60 === 0 ? `${s / 60}m` : `${s}s`);
+  const segmentOptions = $derived(
+    [...new Set([...SEGMENT_STOPS, rec.draftSegmentDuration])]
+      .sort((a, b) => a - b)
+      .map((s) => ({ value: String(s), label: segmentLabel(s) })),
+  );
+
+  // Idle timeout select (mockup stops); an off-list persisted value stays listed.
+  const IDLE_STOPS = [30, 60, 120, 300];
+  const idleLabel = (s: number) =>
+    s % 60 === 0 ? `${s / 60} minute${s === 60 ? "" : "s"}` : `${s} seconds`;
+  const idleOptions = $derived(
+    [...new Set([...IDLE_STOPS, rec.draftIdleTimeoutSeconds])]
+      .sort((a, b) => a - b)
+      .map((s) => ({ value: String(s), label: idleLabel(s) })),
+  );
 
 </script>
 
@@ -60,37 +88,30 @@
     </SettingRow>
 
     <!-- Inferred, never known: a denied tap records silence and says nothing, so
-         this is the only signal the user gets (ADR 0052). Same
-         `.permission-callout` shape Privacy.svelte uses for Accessibility. -->
+         this is the only signal the user gets (ADR 0052). -->
     {#if sysAudio.mayBeBlocked}
-      <SettingRow label="System audio access" full warn>
-        {#snippet control()}
-          <div class="permission-cell">
-            <div class="permission-callout">
-              <div class="permission-callout__copy">
-                <span class="permission-callout__eyebrow">Screen &amp; System Audio Recording</span>
-                <strong>System audio · May be blocked</strong>
-                <p>
-                  System audio is on, but no recording has captured a sound yet. If you denied the
-                  macOS prompt, enable Mnema under Privacy &amp; Security → Screen &amp; System Audio
-                  Recording. If your Mac has simply been quiet, you can ignore this.
-                </p>
-              </div>
-            </div>
-            <div class="row-actions">
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
-                Open System Settings
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
-                Dismiss
-              </button>
-            </div>
-            {#if sysAudio.error}
-              <p class="group-hint group-hint--warn">{sysAudio.error}</p>
-            {/if}
+      <div class="cap-notice">
+        <div class="mx-notice" data-tone="info" role="status">
+          <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+          <b class="mx-notice__title">No system sound yet</b>
+          <p class="mx-notice__text">
+            System audio is on, but no recording has captured a sound yet. If you denied the macOS
+            prompt, allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording. If
+            your Mac has simply been quiet, ignore this.
+          </p>
+          <div class="mx-notice__acts">
+            <button class="mx-btn mx-btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
+              Open System Settings<IconExternal width="12" height="12" />
+            </button>
+            <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
+              Dismiss
+            </button>
           </div>
-        {/snippet}
-      </SettingRow>
+        </div>
+        {#if sysAudio.error}
+          <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{sysAudio.error}</span>
+        {/if}
+      </div>
     {/if}
 
     <PermissionRows />
@@ -98,18 +119,16 @@
     <SettingRow
       label="Segment Duration"
       description="How long each recording segment is before a new one starts."
-      full
       divider={false}
     >
       {#snippet control()}
-        <Slider
-          bind:value={rec.draftSegmentDuration}
-          min={10}
-          max={300}
-          step={10}
-          label="Duration"
-          unit="s"
-          formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60}s` : `${v}s`}
+        <Segmented
+          md
+          mono
+          value={String(rec.draftSegmentDuration)}
+          onValueChange={(v) => (rec.draftSegmentDuration = Number(v))}
+          options={segmentOptions}
+          ariaLabel="Segment duration"
         />
       {/snippet}
     </SettingRow>
@@ -120,74 +139,66 @@
   <SettingGroup title="Inactivity" hint="Pause &amp; resume rules when you step away.">
     <SettingRow
       label="Pause capture when idle"
-      description="Automatically pause recording after the system has been idle, and resume when system activity is detected"
-      divider={rec.draftPauseCaptureOnInactivity}
+      description="Pause after the whole Mac has been idle (no mouse, keyboard or other input), and resume when activity is detected."
     >
       {#snippet control()}
-        <Switch bind:checked={rec.draftPauseCaptureOnInactivity} ariaLabel="Pause capture when idle" />
+        <div class="cap-ctl">
+          {#if rec.draftPauseCaptureOnInactivity}
+            <SelectMenu
+              value={String(rec.draftIdleTimeoutSeconds)}
+              onValueChange={(v) => (rec.draftIdleTimeoutSeconds = Number(v))}
+              options={idleOptions}
+              ariaLabel="Idle timeout"
+            />
+          {/if}
+          <Switch bind:checked={rec.draftPauseCaptureOnInactivity} ariaLabel="Pause capture when idle" />
+        </div>
       {/snippet}
     </SettingRow>
 
     {#if rec.draftPauseCaptureOnInactivity}
-      <SettingRow label="Idle timeout" full>
-        {#snippet control()}
-          <div class="control-stack">
-          <Slider
-            bind:value={rec.draftIdleTimeoutSeconds}
-            min={5}
-            max={300}
-            step={5}
-            label="Idle timeout"
-            unit="s"
-            formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m${v%60 > 0 ? ` ${v%60}s` : ""}` : `${v}s`}
-          />
-          <p class="group-hint">
-            Capture pauses after <strong>{rec.draftIdleTimeoutSeconds}s</strong> of system-wide inactivity (no mouse, keyboard,
-            or other input anywhere on the Mac). It resumes automatically when system activity is detected again.
+      <div class="cap-notice">
+        <div class="mx-notice">
+          <span class="mx-notice__icon"><IconWave width="15" height="15" /></span>
+          <b class="mx-notice__title">Activity sources</b>
+          <p class="mx-notice__text">
+            Keyboard and mouse input, on-screen changes, and source-specific audio. The microphone
+            counts speech when voice detection is on; system audio uses its level threshold below.
           </p>
-          </div>
-        {/snippet}
-      </SettingRow>
+        </div>
+      </div>
 
-      <SettingRow label="Activity sources" full>
-        {#snippet control()}
-          <div class="audio-activity-notice">
-            <span class="audio-activity-notice__icon">♪</span>
-            <span class="audio-activity-notice__text">
-              Activity is detected from keyboard/mouse input, on-screen changes, <em>and</em>
-              source-specific audio. Microphone activity is speech-first when voice detection is
-              enabled, while system audio uses the configured level threshold.
-            </span>
-          </div>
-        {/snippet}
-      </SettingRow>
-
-      <SettingRow label="Microphone Voice Detection" full>
+      <SettingRow label="Microphone Voice Detection" description="Decides when the microphone counts as active." full>
           {#snippet control()}
             <div class="control-stack">
-            <RadioGroup
+            <Choice
               bind:value={rec.draftMicrophoneVadAdapter}
+              ariaLabel="Microphone voice detection"
               options={[
                 {
                   value: "silero",
                   label: "Silero",
-                  description: "Default speech detector. Falls back to WebRTC when unavailable.",
+                  tag: "default",
+                  icon: IconWave,
+                  description: "Neural speech detector. Falls back to WebRTC when unavailable.",
                 },
                 {
                   value: "webrtc",
                   label: "WebRTC",
+                  icon: IconFeather,
                   description: "Lightweight local speech detector.",
                 },
                 {
                   value: "off",
                   label: "Off",
-                  description: "Use legacy microphone peak-level activity.",
+                  icon: IconOff,
+                  description: "Use the microphone peak level only.",
                 },
               ]}
               disabled={!rec.draftCaptureMicrophone}
             />
             {#if !rec.draftCaptureMicrophone}
-              <p class="group-hint group-hint--warn">Microphone capture is disabled — voice detection has no effect until enabled.</p>
+              <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Microphone capture is disabled — voice detection has no effect until enabled.</span>
             {:else if rec.draftMicrophoneVadAdapter === "off"}
               <p class="group-hint">Microphone inactivity uses the legacy peak-level detector.</p>
             {:else}
@@ -211,7 +222,7 @@
                 disabled={!rec.draftCaptureMicrophone}
               />
               {#if !rec.draftCaptureMicrophone}
-                <p class="group-hint group-hint--warn">Microphone capture is disabled — this setting has no effect until enabled.</p>
+                <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Microphone capture is disabled — this setting has no effect until enabled.</span>
               {:else}
                 <p class="group-hint">
                   {#if rec.draftMicrophoneActivitySensitivity >= 80}
@@ -245,7 +256,7 @@
               disabled={!rec.draftCaptureSystemAudio}
             />
             {#if !rec.draftCaptureSystemAudio}
-              <p class="group-hint group-hint--warn">System audio capture is disabled — this setting has no effect until enabled.</p>
+              <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />System audio capture is disabled — this setting has no effect until enabled.</span>
             {:else}
               <p class="group-hint">
                 {#if rec.draftSystemAudioActivitySensitivity >= 80}
@@ -265,25 +276,20 @@
           {/snippet}
         </SettingRow>
 
-        <SettingRow label="Audio Activity Monitoring" full divider={false}>
-          {#snippet control()}
-            <div class="audio-activity-notice">
-              <span class="audio-activity-notice__icon">♪</span>
-              <span class="audio-activity-notice__text">
-                {#if !rec.draftCaptureMicrophone && !rec.draftCaptureSystemAudio}
-                  Neither microphone nor system audio capture is enabled — audio activity detection
-                  will not function. Enable at least one source in <strong>Capture Sources</strong> above.
-                {:else if !rec.draftCaptureMicrophone}
-                  Microphone capture is disabled — only system audio is monitored for activity.
-                {:else if !rec.draftCaptureSystemAudio}
-                  System audio capture is disabled — only microphone audio is monitored for activity.
-                {:else}
-                  Both microphone and system audio are monitored independently for activity.
-                {/if}
-              </span>
-            </div>
-          {/snippet}
-        </SettingRow>
+        <div class="cap-notice">
+          <span class="mx-inline"><IconInfo width="13" height="13" /><span>
+            {#if !rec.draftCaptureMicrophone && !rec.draftCaptureSystemAudio}
+              Neither microphone nor system audio capture is enabled — audio activity detection
+              will not function. Enable at least one source in <strong>Capture Sources</strong> above.
+            {:else if !rec.draftCaptureMicrophone}
+              Microphone capture is disabled — only system audio is monitored for activity.
+            {:else if !rec.draftCaptureSystemAudio}
+              System audio capture is disabled — only microphone audio is monitored for activity.
+            {:else}
+              Both microphone and system audio are monitored independently for activity.
+            {/if}
+          </span></span>
+        </div>
     {/if}
   </SettingGroup>
 
@@ -306,6 +312,20 @@
 {/if}
 
 <style>
+  /* A full-width notice between rows, on the row's own gutters. */
+  .cap-notice {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: 12px 20px;
+  }
+
+  .cap-ctl {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+  }
+
   /* SettingRow's full-mode control slot is a flex row; stack the wide control
      above its contextual hint instead of laying them out side by side. */
   .control-stack {
@@ -321,13 +341,4 @@
     text-align: left;
   }
 
-  /* Stack the system-audio callout, its actions, and any error vertically in the
-     full-width control cell (mirrors Privacy.svelte's `.gecko-access`). */
-  .permission-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-    min-width: 0;
-  }
 </style>

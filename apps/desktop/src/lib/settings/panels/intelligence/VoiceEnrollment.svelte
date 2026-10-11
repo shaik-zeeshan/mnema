@@ -133,7 +133,7 @@
             ></audio>
             <button
               type="button"
-              class="btn btn--ghost"
+              class="mx-btn"
               onclick={togglePlayback}
               disabled={playbackFailed}
             >
@@ -156,12 +156,12 @@
 
         <div class="voice-actions">
           {#if voice.stage === "review"}
-            <button type="button" class="btn btn--primary" onclick={enroll}>Use this take</button>
-            <button type="button" class="btn btn--ghost" onclick={() => voice.discard()}>Discard</button>
+            <button type="button" class="mx-btn" onclick={enroll}>Use this take</button>
+            <button type="button" class="mx-btn mx-btn--ghost" onclick={() => voice.discard()}>Discard</button>
           {:else}
             <button
               type="button"
-              class="btn btn--primary"
+              class="mx-btn"
               onclick={startTake}
               disabled={voice.stage !== "idle"}
               aria-busy={voice.stage !== "idle"}
@@ -179,7 +179,7 @@
             {#if enrolled}
               <button
                 type="button"
-                class="btn btn--danger"
+                class="mx-btn mx-btn--danger"
                 onclick={removeVoiceprint}
                 disabled={voice.deleting || voice.stage !== "idle"}
                 aria-busy={voice.deleting}

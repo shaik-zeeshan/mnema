@@ -2,7 +2,6 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -72,15 +71,17 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full>
+  <SettingRow label="Provider" description="Existing OCR results stay visible after switching.">
     {#snippet control()}
-      <RadioGroup
+      <Segmented
+        md
         value={rec.draftOcrProvider}
         onValueChange={chooseOcrProvider}
         disabled={!rec.draftOcrEnabled}
+        ariaLabel="OCR provider"
         options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
-          { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
-          { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
+          { value: "apple_vision", label: "Apple Vision" },
+          { value: "tesseract", label: "Tesseract" },
         ]}
       />
     {/snippet}
@@ -115,9 +116,10 @@
   {/if}
 
   {#if rec.draftOcrProvider === "apple_vision"}
-    <SettingRow label="Recognition mode" full>
+    <SettingRow label="Recognition mode">
       {#snippet control()}
         <Segmented
+          md
           bind:value={rec.draftOcrRecognitionMode}
           disabled={!rec.draftOcrEnabled}
           ariaLabel="Recognition mode"
@@ -140,7 +142,6 @@
     <SettingRow
       label="Page segmentation"
       description="Use Auto for mixed layouts, Single block for paragraph regions, Single line for titles/labels, Single word for isolated tokens, and Sparse text for screenshots with scattered text."
-      full
     >
       {#snippet control()}
         <SelectMenu
@@ -160,10 +161,10 @@
     <SettingRow
       label="Image preprocessing"
       description="Grayscale usually works best for clean UI text. Thresholded black/white can help when edges are muddy or contrast is weak."
-      full
     >
       {#snippet control()}
         <Segmented
+          md
           value={rec.draftOcrTesseractPreprocessMode}
           onValueChange={(value) => { rec.draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
           disabled={!rec.draftOcrEnabled}
@@ -178,13 +179,14 @@
     <SettingRow
       label="Upscale before OCR"
       description="Tesseract works best around 300 DPI. For tiny screenshots, 2× upscaling is a good first step before trying 3× or 4×."
-      full
     >
       {#snippet control()}
         <Segmented
+          md
           value={String(rec.draftOcrTesseractUpscaleFactor)}
           onValueChange={(value) => { rec.draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
           disabled={!rec.draftOcrEnabled}
+          mono
           ariaLabel="Upscale before OCR"
           options={[
             { value: "1", label: "1×" },
@@ -269,12 +271,12 @@
                     {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
                     {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
                   </p>
-                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
+                  <button type="button" class="mx-btn" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
                     {#if cancellingOcrDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button type="button" class="btn btn--primary" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
+                <button type="button" class="mx-btn" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
                   {#if startingOcrDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
                 </button>
               {/if}
@@ -294,7 +296,7 @@
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
+            <button type="button" class="mx-btn mx-btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
               {#if deletingUnusedOcrModels}<ButtonSpinner />Deleting…{:else}Delete unused OCR models{/if}
             </button>
           </div>

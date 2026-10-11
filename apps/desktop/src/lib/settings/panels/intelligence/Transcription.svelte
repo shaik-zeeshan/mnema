@@ -3,7 +3,11 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import IconChip from "~icons/lucide/cpu";
+  import IconCloud from "~icons/lucide/cloud";
+  import IconSpeech from "~icons/lucide/audio-lines";
+  import IconLock from "~icons/lucide/lock";
   import Segmented from "$lib/components/Segmented.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
@@ -53,6 +57,26 @@
   // Controller / store action methods.
   const loadTranscriptionModelStatus = () => c.loadTranscriptionModelStatus();
   const chooseTranscriptionProvider = (provider: string) => c.chooseTranscriptionProvider(provider);
+
+  // Kit `mx-choice--list` rows: what each provider IS (icon, where it runs,
+  // one line of copy). Model availability lives on the Model row below.
+  const PROVIDER_META: Record<string, { icon: typeof IconChip; tag: string; description: string }> = {
+    parakeet: { icon: IconChip, tag: "on-device", description: "Fast, English-first transcription on the Neural Engine." },
+    local_whisper: { icon: IconChip, tag: "on-device", description: "Many languages; slower and heavier on memory." },
+    apple_speech_on_device: { icon: IconSpeech, tag: "on-device", description: "Built into macOS; needs Speech Recognition permission." },
+    deepgram: { icon: IconCloud, tag: "cloud", description: "Uploads mic and system audio to your own Deepgram account. Needs an API key and your consent." },
+  };
+  const providerChoices = $derived(
+    (transcriptionProviderOptions.length > 0
+      ? transcriptionProviderOptions
+      : [
+          { value: "parakeet", label: "Parakeet" },
+          { value: "local_whisper", label: "Local Whisper" },
+          { value: "apple_speech_on_device", label: "Apple Speech" },
+          { value: "deepgram", label: "Deepgram" },
+        ]
+    ).map((o) => ({ value: o.value, label: o.label, ...PROVIDER_META[o.value] })),
+  );
   const chooseTranscriptionModel = (value: string) => c.chooseTranscriptionModel(value);
   const requestAppleSpeechPermission = () => c.requestAppleSpeechPermission();
   const openAppleSpeechPrivacySettings = () => c.openAppleSpeechPrivacySettings();
@@ -199,17 +223,14 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full>
+  <SettingRow label="Provider" description="Switching to Deepgram asks for consent first — it uploads mic and system audio." full>
     {#snippet control()}
-      <RadioGroup
+      <Choice
+        list
         value={rec.draftTranscriptionProvider}
         onValueChange={chooseTranscriptionProvider}
-        options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
-          { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-          { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
-          { value: "deepgram", label: "Deepgram (cloud)", description: "Cloud transcription — requires an API key" },
-        ]}
+        ariaLabel="Transcription provider"
+        options={providerChoices}
       />
     {/snippet}
   </SettingRow>
@@ -258,7 +279,7 @@
           />
           <div class="row-actions">
             <button
-              class="btn btn--ghost btn--sm"
+              class="mx-btn mx-btn--sm"
               type="button"
               disabled={deepgramSaving || deepgramKeyInput.trim().length === 0}
               aria-busy={deepgramSaving}
@@ -268,7 +289,7 @@
             </button>
             {#if deepgramKeyPresent}
               <button
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--sm"
                 type="button"
                 disabled={deepgramSaving || deepgramChecking}
                 aria-busy={deepgramChecking}
@@ -276,7 +297,7 @@
               >
                 {#if deepgramChecking}<ButtonSpinner />Checking{:else}Check connection{/if}
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" disabled={deepgramSaving} onclick={removeDeepgramKey}>
+              <button class="mx-btn mx-btn--sm" type="button" disabled={deepgramSaving} onclick={removeDeepgramKey}>
                 Remove key
               </button>
             {/if}
@@ -299,9 +320,10 @@
   {/if}
 
   {#if rec.draftTranscriptionProvider === "parakeet"}
-    <SettingRow label="Parakeet memory mode" full>
+    <SettingRow label="Parakeet memory mode">
       {#snippet control()}
         <Segmented
+          md
           value={rec.draftTranscriptionMemoryMode}
           onValueChange={(value) => rec.draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
           ariaLabel="Parakeet memory mode"
@@ -371,28 +393,28 @@
           </div>
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}
-            <div class="permission-callout" class:permission-callout--ok={selectedAppleSpeechPermissionStatus === "available"}>
-              <div class="permission-callout__copy">
-                <span class="permission-callout__eyebrow">Apple Speech status</span>
-                <strong>{appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</strong>
-                <p>{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
-              </div>
+            <div class="mx-notice" data-tone={selectedAppleSpeechPermissionStatus === "available" ? undefined : "warn"}>
+              <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+              <b class="mx-notice__title">Apple Speech · {appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</b>
+              <p class="mx-notice__text">{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
               {#if selectedAppleSpeechNeedsPermission}
-                {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
-                  <button
-                    type="button"
-                    class="btn btn--ghost"
-                    onclick={requestAppleSpeechPermission}
-                    disabled={requestingAppleSpeechPermission}
-                    aria-busy={requestingAppleSpeechPermission}
-                  >
-                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
-                  </button>
-                {:else}
-                  <button type="button" class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
-                    Open System Settings
-                  </button>
-                {/if}
+                <div class="mx-notice__acts">
+                  {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
+                    <button
+                      type="button"
+                      class="mx-btn mx-btn--sm"
+                      onclick={requestAppleSpeechPermission}
+                      disabled={requestingAppleSpeechPermission}
+                      aria-busy={requestingAppleSpeechPermission}
+                    >
+                      {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
+                    </button>
+                  {:else}
+                    <button type="button" class="mx-btn mx-btn--sm" onclick={openAppleSpeechPrivacySettings}>
+                      Open System Settings
+                    </button>
+                  {/if}
+                </div>
               {/if}
             </div>
             {#if appleSpeechPermissionError}
@@ -424,12 +446,12 @@
                     {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
                     {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
                   </p>
-                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
+                  <button type="button" class="mx-btn" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
                     {#if cancellingTranscriptionDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
+                <button type="button" class="mx-btn" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
                   {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
                 </button>
               {/if}
@@ -448,7 +470,7 @@
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
+            <button type="button" class="mx-btn mx-btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
               {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused transcription models{/if}
             </button>
           </div>

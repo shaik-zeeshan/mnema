@@ -1,7 +1,12 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import IconOff from "~icons/lucide/ban";
+  import IconShield from "~icons/lucide/shield";
+  import IconLink from "~icons/lucide/link";
+  import IconLock from "~icons/lucide/lock";
+  import IconInfo from "~icons/lucide/info";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -27,19 +32,20 @@
 
   <SettingRow
     label="Browser URL mode"
-    description="How much of a captured browser URL is stored with the frame."
+    description="How much of a captured browser URL is stored with the frame. Full asks first."
     disabled={!rec.draftMetadataEnabled}
     full
   >
     {#snippet control()}
-      <RadioGroup
+      <Choice
         value={rec.draftBrowserUrlMode}
         onValueChange={setBrowserUrlMode}
         disabled={!rec.draftMetadataEnabled}
+        ariaLabel="Browser URL mode"
         options={[
-          { value: "off", label: "Off", description: "Don't store browser URLs with captured frames." },
-          { value: "sanitized", label: "Sanitized", description: "Keep scheme, host, port, and path; drop query strings and fragments." },
-          { value: "full", label: "Full", description: "Store the complete URL, including query strings and fragments." },
+          { value: "off", label: "Off", icon: IconOff, description: "Don't store browser URLs with captured frames." },
+          { value: "sanitized", label: "Sanitized", tag: "default", icon: IconShield, description: "Keep scheme, host, port and path; drop query strings and fragments." },
+          { value: "full", label: "Full", icon: IconLink, description: "The complete URL, including query strings and fragments." },
         ]}
       />
     {/snippet}
@@ -54,33 +60,29 @@
     >
       {#snippet control()}
         <div class="gecko-access">
-          <div class="permission-callout" class:permission-callout--ok={gecko.trusted}>
-            <div class="permission-callout__copy">
-              <span class="permission-callout__eyebrow">Accessibility</span>
-              <strong>
-                {gecko.installedNames.length > 0 ? gecko.installedNames.join(" / ") : "Firefox / Zen"}
-                · {gecko.trusted ? "Granted" : "Not granted"}
-              </strong>
-              <p>Lets Mnema capture the page address for Firefox and Zen. Enable Mnema under Privacy &amp; Security → Accessibility.</p>
-            </div>
+          <div class="mx-notice" data-tone={gecko.trusted ? undefined : "warn"}>
+            <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+            <b class="mx-notice__title">
+              {gecko.installedNames.length > 0 ? gecko.installedNames.join(" / ") : "Firefox / Zen"}
+              · Accessibility {gecko.trusted ? "granted" : "not granted"}
+            </b>
+            <p class="mx-notice__text">Allow Mnema under Privacy &amp; Security → Accessibility to capture the page address for Firefox and Zen.</p>
             {#if !gecko.trusted}
-              <button type="button" class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting} aria-busy={gecko.requesting}>
-                {#if gecko.requesting}<ButtonSpinner />Requesting…{:else}Grant access{/if}
-              </button>
+              <div class="mx-notice__acts">
+                <button type="button" class="mx-btn mx-btn--sm" onclick={() => gecko.request()} disabled={gecko.requesting} aria-busy={gecko.requesting}>
+                  {#if gecko.requesting}<ButtonSpinner />Requesting…{:else}Grant access{/if}
+                </button>
+                <button class="mx-btn mx-btn--sm" type="button" onclick={() => gecko.openSettings()}>
+                  Open System Settings
+                </button>
+                <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking} aria-busy={gecko.rechecking}>
+                  {#if gecko.rechecking}<ButtonSpinner />Checking…{:else}Recheck{/if}
+                </button>
+              </div>
             {/if}
           </div>
-          {#if !gecko.trusted}
-            <div class="row-actions">
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.openSettings()}>
-                Open System Settings
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking} aria-busy={gecko.rechecking}>
-                {#if gecko.rechecking}<ButtonSpinner />Checking…{:else}Recheck{/if}
-              </button>
-            </div>
-          {/if}
           {#if gecko.error}
-            <p class="group-hint group-hint--warn">Browser URL access request failed: {gecko.error}</p>
+            <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Browser URL access request failed: {gecko.error}</span>
           {/if}
         </div>
       {/snippet}

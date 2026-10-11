@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import CaptureRateControl from "$lib/components/CaptureRateControl.svelte";
-  import { captureRateShortLabel } from "$lib/components/capture-rate";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import { captureRateOptions, captureRateShortLabel, nearestLadderIndex, CAPTURE_INTERVAL_LADDER_S, intervalSToFps } from "$lib/components/capture-rate";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -23,16 +23,27 @@
   const customResolutionErrors = $derived(c.customResolutionErrors);
   const customBitrateErrors = $derived(c.customBitrateErrors);
 
+  // Kit `mx-seg--mono` over the capture ladder; the value is the snapped
+  // interval, writes go back as exact ladder fps.
+  const rateIntervalS = $derived(CAPTURE_INTERVAL_LADDER_S[nearestLadderIndex(rec.draftFrameRate)]!);
+  const rateOptions = $derived(captureRateOptions(rateIntervalS));
+
 </script>
 
 <SettingGroup id="settings-section-video" title="Video Output">
   <SettingRow
     label="Screen Capture Rate"
     description="How often a snapshot of your screen is captured. More frequent snapshots produce larger files."
-    full
   >
     {#snippet control()}
-      <CaptureRateControl bind:value={rec.draftFrameRate} />
+      <Segmented
+        md
+        mono
+        value={String(rateIntervalS)}
+        onValueChange={(v) => (rec.draftFrameRate = intervalSToFps(Number(v)))}
+        options={rateOptions}
+        ariaLabel="Screen capture rate"
+      />
     {/snippet}
   </SettingRow>
 
@@ -113,12 +124,8 @@
   <SettingRow label="Bitrate" full divider={false}>
     {#snippet control()}
       <div class="control-stack">
-        <!-- Mode selector: presets (low/medium/high) + custom as one segmented
-             control. The shared VideoBitrateControl owns the segmented + the
-             Mbps stepper (and its accessible label); this panel keeps the
-             richer preset/custom descriptions and the compat notice. customMbps
-             is intentionally omitted so the component's terse custom line stays
-             hidden in favour of the detailed hint below. -->
+        <!-- VideoBitrateControl owns the select + Mbps stepper; this panel keeps
+             the preset/custom descriptions. -->
         <VideoBitrateControl
           bind:mode={rec.draftBitrateMode}
           bind:preset={rec.draftBitratePreset}

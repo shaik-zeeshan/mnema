@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import SelectMenu from "$lib/components/Select.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -78,9 +78,10 @@
       {/snippet}
     </SettingRow>
 
-    <SettingRow label="Preference" description="Which microphone capture should use." full>
+    <SettingRow label="Preference" description="Which microphone capture should use.">
       {#snippet control()}
         <Segmented
+          md
           bind:value={audio.draftPreferenceMode}
           ariaLabel="Microphone preference"
           options={[
@@ -92,20 +93,22 @@
     </SettingRow>
 
     {#if audio.draftPreferenceMode === "specific_device"}
-      <SettingRow label="Device" description="Pick the microphone to lock to." full>
+      <SettingRow label="Device" description="Pick the microphone to lock to.">
         {#snippet control()}
-          <div class="control-stack">
+          <div class="device-ctl">
             {#if micDeviceOptions.length > 0}
-              <RadioGroup
-                value={audio.draftDeviceId ?? ""}
+              <SelectMenu
+                value={audio.draftDeviceId}
                 onValueChange={(v) => (audio.draftDeviceId = v)}
                 options={micDeviceOptions}
+                placeholder="Choose a microphone"
+                ariaLabel="Device"
               />
             {:else}
               <p class="empty-state">No microphone devices to choose from.</p>
             {/if}
             {#if !audio.draftDeviceId}
-              <p class="group-hint group-hint--warn">Select a device before saving Specific Device mode.</p>
+              <span class="mx-inline" data-tone="warn"><IconAlert width="13" height="13" />Select a device before saving Specific Device mode.</span>
             {/if}
           </div>
         {/snippet}
@@ -116,11 +119,11 @@
       <SettingRow
         label="On Disconnect"
         description="What to do when the chosen microphone disconnects."
-        full
         divider={!!audio.micError}
       >
         {#snippet control()}
           <Segmented
+            md
             bind:value={audio.draftDisconnectPolicy}
             ariaLabel="On disconnect policy"
             options={[
@@ -148,7 +151,7 @@
       {#snippet control()}
         <div class="control-stack">
           <p class="empty-state">Failed to load microphone state.</p>
-          <button type="button" class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={loadMicState}>Retry</button>
         </div>
       {/snippet}
     </SettingRow>
@@ -156,6 +159,14 @@
 </SettingGroup>
 
 <style>
+  .device-ctl {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--s-2);
+    min-width: 220px;
+  }
+
   /* SettingRow's full-mode control slot is a flex row; stack the device banner,
      list, select + hint, and error block vertically. */
   .control-stack {

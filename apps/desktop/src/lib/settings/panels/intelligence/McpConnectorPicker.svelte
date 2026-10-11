@@ -571,7 +571,7 @@
             <div class="connect__footer">
               {#if edit}
                 <button
-                  class="btn btn--danger btn--sm"
+                  class="mx-btn mx-btn--danger mx-btn--sm"
                   type="button"
                   disabled={connecting || removing}
                   onclick={() => void removeEdit()}
@@ -580,7 +580,7 @@
                 </button>
               {:else}
                 <button
-                  class="btn btn--ghost btn--sm"
+                  class="mx-btn mx-btn--sm"
                   type="button"
                   disabled={connecting}
                   onclick={backToCatalog}
@@ -589,7 +589,7 @@
                 </button>
               {/if}
               <button
-                class="btn btn--primary"
+                class="mx-btn"
                 type="button"
                 disabled={addDisabled}
                 aria-busy={connecting}

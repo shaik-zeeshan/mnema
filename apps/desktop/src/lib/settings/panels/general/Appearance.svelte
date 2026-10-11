@@ -1,7 +1,8 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import type { AppearanceSetting } from "$lib/types";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
 
@@ -18,10 +19,19 @@
   <SettingRow
     label="Theme"
     description="System follows your OS setting; pick Light or Dark to override it."
-    full
   >
     {#snippet control()}
-      <ThemeModeControl bind:value={rec.draftAppearance} />
+      <Segmented
+        md
+        value={rec.draftAppearance}
+        onValueChange={(v) => (rec.draftAppearance = v as AppearanceSetting)}
+        ariaLabel="Theme"
+        options={[
+          { value: "system", label: "System" },
+          { value: "light", label: "Light" },
+          { value: "dark", label: "Dark" },
+        ]}
+      />
     {/snippet}
   </SettingRow>
 

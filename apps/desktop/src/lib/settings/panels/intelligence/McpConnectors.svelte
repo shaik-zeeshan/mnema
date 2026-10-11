@@ -236,23 +236,23 @@
                 </div>
                 <div class="mcp-row__meta">
                   {#if view.actions.connect}
-                    <button class="btn btn--primary btn--sm" type="button" onclick={() => openConnect(server.id, "connect")}>
+                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => openConnect(server.id, "connect")}>
                       Connect
                     </button>
                   {/if}
                   {#if view.actions.reconnect}
-                    <button class="btn btn--primary btn--sm" type="button" onclick={() => openConnect(server.id, "reconnect")}>
+                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => openConnect(server.id, "reconnect")}>
                       Reconnect
                     </button>
                   {/if}
                   {#if view.actions.disconnect}
-                    <button class="btn btn--ghost btn--sm" type="button" onclick={() => disconnectOAuth(server.id)}>
+                    <button class="mx-btn mx-btn--sm" type="button" onclick={() => disconnectOAuth(server.id)}>
                       Disconnect
                     </button>
                   {/if}
                   {#if view.actions.configure}
                     <button
-                      class="btn btn--ghost btn--sm"
+                      class="mx-btn mx-btn--sm"
                       type="button"
                       onclick={() => openConfigure(server.id)}
                     >
@@ -270,7 +270,7 @@
         {/if}
 
         <div class="row-actions">
-          <button class="btn btn--ghost btn--sm" type="button" onclick={openPicker}>
+          <button class="mx-btn mx-btn--sm" type="button" onclick={openPicker}>
             + Add connector
           </button>
         </div>

@@ -167,7 +167,7 @@
                   {#if downloading}
                     <button
                       type="button"
-                      class="btn btn--ghost btn--sm"
+                      class="mx-btn mx-btn--sm"
                       onclick={() => void cancelSemanticSearchModelDownload()}
                       disabled={cancellingSemanticSearchDownload}
                       aria-busy={cancellingSemanticSearchDownload}
@@ -178,7 +178,7 @@
                     <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
                     <button
                       type="button"
-                      class="btn btn--primary btn--sm"
+                      class="mx-btn mx-btn--sm"
                       onclick={() => void startSemanticSearchPickedDownload(picked)}
                       disabled={!picked.provider || startingSemanticSearchDownload}
                       aria-busy={startingSemanticSearchDownload}
@@ -195,7 +195,7 @@
                     <!-- Step 2: use (installed, not yet active). -->
                     <button
                       type="button"
-                      class="btn btn--primary btn--sm"
+                      class="mx-btn mx-btn--sm"
                       onclick={() => void chooseSemanticSearchPickedModel(picked)}
                       disabled={semanticSearchReindexing}
                       aria-busy={semanticSearchReindexing}
@@ -205,7 +205,7 @@
                     <!-- Installed but not active = unused: allow reclaiming its disk. -->
                     <button
                       type="button"
-                      class="btn btn--ghost btn--sm"
+                      class="mx-btn mx-btn--sm"
                       onclick={() => void deleteSemanticSearchPickedModel(picked)}
                       disabled={deletingSemanticSearchModel}
                       aria-busy={deletingSemanticSearchModel}

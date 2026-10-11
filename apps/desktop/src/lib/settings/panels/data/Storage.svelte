@@ -5,7 +5,9 @@
   import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import RetentionPicker from "$lib/components/RetentionPicker.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import { retentionPresets } from "$lib/components/retention";
+  import type { RetentionPolicy } from "$lib/types";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import StorageMeter from "./StorageMeter.svelte";
@@ -129,7 +131,7 @@
           />
           <button
             type="button"
-            class="btn btn--ghost"
+            class="mx-btn"
             onclick={browseSaveDirectory}
             disabled={browsing}
             aria-busy={browsing}
@@ -148,7 +150,7 @@
             <div class="row-actions">
               <button
                 type="button"
-                class="btn btn--primary btn--sm"
+                class="mx-btn mx-btn--sm"
                 onclick={restartNow}
                 disabled={restarting}
                 aria-busy={restarting}
@@ -170,11 +172,17 @@
   >
     {#snippet control()}
       <div class="retention-control">
-        <RetentionPicker bind:value={rec.draftRetentionPolicy} />
         <div class="row-actions">
+          <Segmented
+            md
+            value={rec.draftRetentionPolicy}
+            onValueChange={(v) => (rec.draftRetentionPolicy = v as RetentionPolicy)}
+            options={retentionPresets()}
+            ariaLabel="Retention duration"
+          />
           <button
             type="button"
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--ghost"
             onclick={runRetentionCleanupNow}
             disabled={retentionCleanupRunning}
             aria-busy={retentionCleanupRunning}
@@ -228,7 +236,7 @@
     font-family: var(--app-font-mono);
   }
 
-  .path-field .btn {
+  .path-field .mx-btn {
     flex-shrink: 0;
   }
 

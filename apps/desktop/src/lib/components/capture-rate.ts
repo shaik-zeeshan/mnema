@@ -76,3 +76,21 @@ export function timelineGapMs(fps: number | undefined): number {
 	const intervalMs = fps && fps > 0 ? 1000 / fps : DEFAULT_CAPTURE_INTERVAL_S * 1000;
 	return Math.max(10_000, 3 * intervalMs);
 }
+
+// Settings' capture-rate `mx-seg--mono` stops: the mockup's five plus the 2s
+// default (the mockup drew no default stop). A persisted rate off these stops
+// shows as its own segment so the selection is never blank.
+export const CAPTURE_RATE_STOPS_S = [0.1, 1, 2, 5, 15, 60] as const;
+
+export function captureRateSegLabel(intervalS: number): string {
+	if (intervalS < 1) return `${Math.round(1 / intervalS)}/s`;
+	if (intervalS === 1) return "1/s";
+	if (intervalS === 60) return "1/min";
+	return `${intervalS}s`;
+}
+
+export function captureRateOptions(currentIntervalS: number): { value: string; label: string }[] {
+	return [...new Set<number>([...CAPTURE_RATE_STOPS_S, currentIntervalS])]
+		.sort((a, b) => a - b)
+		.map((s) => ({ value: String(s), label: captureRateSegLabel(s) }));
+}
