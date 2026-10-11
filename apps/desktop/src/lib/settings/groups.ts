@@ -224,7 +224,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "storage",
         anchor: "settings-section-storage",
         label: "Storage",
-        keywords: ["retention", "save directory", "storage location", "disk"],
+        keywords: ["retention", "save directory", "storage location", "disk", "delete recent capture"],
       },
       {
         id: "access",

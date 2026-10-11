@@ -9,7 +9,7 @@
   `onchange({start, end, unit})` fires on every step / commit / unit switch.
 -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { tip } from "./tooltip";
   import {
     addDays, cap, capsuleLabel, daysBetween, fmt, isoWeek, latestSpan, monday, monthOf, parseIso,
@@ -140,8 +140,16 @@
   function endDrag() { drag = null; dragging = false; }
   function onCapsuleClick() {
     if (dragged) { dragged = false; return; } // a drag is not a click
-    if (!open) { view = monthOf(a)[0]; anchor = null; }
+    if (!open) { view = monthOf(a)[0]; anchor = null; void tick().then(placePop); }
     open = !open;
+  }
+  // Open upward when the popover doesn't fit below and there's more room above
+  // (e.g. a range picker in a composer near the window's bottom edge).
+  let up = $state(false);
+  function placePop() {
+    const r = host.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom;
+    up = below < pop.offsetHeight + 8 && r.top > below;
   }
   let wheelAcc = 0;
   function onWheel(e: WheelEvent) {
@@ -243,7 +251,7 @@
     </span>
   {/if}
 
-  <div class="mx-pop mx-date__pop" bind:this={pop} data-open={open || undefined} inert={!open} role="dialog" aria-label="Choose {range ? 'a range' : period ? 'a period' : 'a day'}">
+  <div class="mx-pop mx-date__pop" class:mx-pop--up={up} bind:this={pop} data-open={open || undefined} inert={!open} role="dialog" aria-label="Choose {range ? 'a range' : period ? 'a period' : 'a day'}">
     {#if range}
       <div class="mx-date__presets">
         {#if onalltime}

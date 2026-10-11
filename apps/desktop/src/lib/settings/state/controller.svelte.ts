@@ -752,7 +752,8 @@ export class SettingsController {
   );
 
   // The header's save status. A shortcut issue blocks (an in-progress key
-  // capture does not); mic LOAD failures live in `micLoadError`, not here.
+  // capture does not); LOAD failures (`recLoadError`, `keyboardLoadError`,
+  // `micLoadError`) show in their sections, not here.
   saveStatus = $derived(
     deriveSaveStatus({
       saveFailed: !!(this.rec.recError || this.keyboard.keyboardBindingsError || this.audio.micError),

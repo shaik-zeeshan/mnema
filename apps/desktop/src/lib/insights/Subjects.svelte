@@ -42,8 +42,11 @@
     onOpenSubject: (subject: string) => void;
     // "View dismissed": the shell switches to Context with Dismissed open.
     onViewDismissed?: () => void;
+    // Typing in the bar's filter (it stays on the bar over a subject's page)
+    // returns to the index, as in the mockup.
+    onFilter?: () => void;
   }
-  let { onOpenSubject, onViewDismissed }: Props = $props();
+  let { onOpenSubject, onViewDismissed, onFilter }: Props = $props();
 
   // Spark lines encode magnitude, not identity: the lead conclusion strong, the
   // rest one neutral grey (insights.html multiSpark).
@@ -347,7 +350,7 @@
           autocomplete="off"
           spellcheck="false"
           bind:value={searchQuery}
-          oninput={() => applySearch(searchQuery)}
+          oninput={() => { applySearch(searchQuery); onFilter?.(); }}
         />
       </label>
       <Segmented md options={AXIS_OPTIONS} value={axis} onValueChange={(v) => (axis = v as Axis)} ariaLabel="Group by" />

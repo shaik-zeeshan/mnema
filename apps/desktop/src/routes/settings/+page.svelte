@@ -121,7 +121,8 @@
   let scrolled = $state(false);
   const activeGroupInfo = $derived(SETTINGS_GROUPS.find((g) => g.id === activeGroup)!);
 
-  // Autosave failures, one notice each (see the markup).
+  // Autosave failures (and the recording-settings load failure, which spans
+  // many sections), one notice each (see the markup).
   type SaveError = { title: string; message: string; retry: (() => void) | null; dismiss: () => void };
   const saveErrors = $derived.by<SaveError[]>(() => {
     const out: SaveError[] = [];
@@ -133,9 +134,17 @@
         dismiss: () => c.dismissRecError(),
       });
     }
+    if (c.rec.recLoadError) {
+      out.push({
+        title: "Couldn’t load recording settings",
+        message: `${c.rec.recLoadError.replace(/\.$/, "")}. Capture, privacy and storage show their defaults until it loads.`,
+        retry: () => void c.rec.loadRecordingSettings(),
+        dismiss: () => (c.rec.recLoadError = null),
+      });
+    }
     if (c.keyboard.keyboardBindingsError) {
       out.push({
-        title: "Couldn’t load or save shortcuts",
+        title: "Couldn’t save shortcuts",
         message: c.keyboard.keyboardBindingsError,
         retry: null,
         dismiss: () => (c.keyboard.keyboardBindingsError = null),
@@ -295,6 +304,7 @@
     const section = resolveTabDeeplink(requestedTab);
     if (section) {
       focusSettingsSection(section, false);
+      if (!untrack(() => c.rec.recordingSettingsLoaded)) deeplinkAwaitingLoad = section;
     }
     const focus = resolveFocusDeeplink($page.url.searchParams.get("focus"));
     if (focus) {
@@ -308,6 +318,19 @@
         if (c.agentAccessSection) setSpyTarget(c.agentAccessSection);
       });
     }
+  });
+
+  // A deeplink to a lower section scrolls before recording settings arrive; the
+  // sections above it then grow and push it down. Re-scroll once they've loaded
+  // — unless the user has already scrolled elsewhere (scroll-spy moved on).
+  let deeplinkAwaitingLoad: SettingsSectionId | null = null;
+  $effect(() => {
+    if (!c.rec.recordingSettingsLoaded) return;
+    untrack(() => {
+      const section = deeplinkAwaitingLoad;
+      deeplinkAwaitingLoad = null;
+      if (section && activeSection === section) focusSettingsSection(section, false);
+    });
   });
 
   // Reset scroll to top when the active group changes (matches legacy tabbed

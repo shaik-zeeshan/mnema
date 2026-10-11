@@ -261,9 +261,12 @@
           }}
           askDisabled={engine.kind === "pitch" || engine.kind === "off"}
         />
-      {:else}
-        <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} />
       {/if}
+      <!-- The index stays mounted under a subject's page so its filter and
+           Conviction/Movement controls keep their place on the bar (mockup). -->
+      <div style:display={selectedSubject ? "none" : "contents"}>
+        <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} onFilter={() => (selectedSubject = null)} />
+      </div>
     {:else}
       <Context openDismissed={contextOpenDismissed} onOpenSubject={openSubject} />
     {/if}

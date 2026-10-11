@@ -88,7 +88,7 @@
   id="settings-section-shortcuts"
   title="Keyboard Shortcuts"
   hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears."
-  loading={keyboardBindingsSettings === null}
+  loading={keyboardBindingsSettings === null && !keyboard.keyboardLoadError}
 >
   {#snippet actions()}
     <ReloadButton
@@ -97,6 +97,17 @@
       label="Reload shortcuts from saved settings"
     />
   {/snippet}
+
+  {#if keyboard.keyboardLoadError}
+    <div class="mx-notice kb-notice" data-tone="danger" role="alert">
+      <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+      <b class="mx-notice__title">Couldn’t load shortcuts</b>
+      <p class="mx-notice__text">{keyboard.keyboardLoadError}</p>
+      <div class="mx-notice__acts">
+        <button type="button" class="mx-btn mx-btn--sm" onclick={() => keyboard.loadKeyboardBindingsSettings()}>Retry</button>
+      </div>
+    </div>
+  {/if}
 
   {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
     <div class="mx-notice kb-notice" data-tone="danger" role="alert">

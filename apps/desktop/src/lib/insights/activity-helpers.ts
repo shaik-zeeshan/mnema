@@ -17,16 +17,16 @@ export const CATEGORY_COLOR: Record<ActivityCategory, string> = {
   personal: "--cat-personal",
   entertainment: "--cat-entertainment",
 };
-// Stable legend ordering.
+// Stable legend + stack ordering — insights.html's `CAT` order.
 export const CATEGORY_ORDER: ActivityCategory[] = [
   "creating",
-  "communication",
   "meetings",
   "research",
+  "communication",
   "learning",
+  "entertainment",
   "organizing",
   "personal",
-  "entertainment",
 ];
 export const UNCATEGORIZED_COLOR = "--chart-grey-3";
 

@@ -25,10 +25,10 @@
 <script lang="ts">
   import { tick, untrack, type Snippet } from "svelte";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
+  import AiModelPicker from "./AiModelPicker.svelte";
+  import AiScanList from "./AiScanList.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconCheck from "~icons/lucide/check";
-  import IconChevron from "~icons/lucide/chevron-down";
-  import IconSearch from "~icons/lucide/search";
   import {
     AI_LOCAL_DEFAULT_ENDPOINTS,
     aiProviderKindLabel,
@@ -110,7 +110,6 @@
   let status = $state("");
   let statusKind = $state<"" | "ok" | "err">("");
   let editing = $state<string | null>(null);
-  let pickerOpen = $state(false);
   let keyField = $state<HTMLInputElement | null>(null);
   let editKeyField = $state<HTMLInputElement | null>(null);
   let editUrlField = $state<HTMLInputElement | null>(null);
@@ -148,7 +147,6 @@
       return total + (verification?.status === "live" ? verification.models.length : 0);
     }, 0),
   );
-  const scanFound = $derived((scan ?? []).filter((row) => row.models !== null));
 
   function verificationOf(id: string): AiVerification | undefined {
     return ai.aiVerifications[id];
@@ -156,11 +154,6 @@
   function modelsOf(id: string): string[] {
     const verification = verificationOf(id);
     return verification?.status === "live" ? verification.models : [];
-  }
-  /** Why a provider's group in the readout is empty. */
-  function emptyPoolReason(id: string): string {
-    const verification = verificationOf(id);
-    return verification?.status === "error" ? verification.reason : "no models listed yet";
   }
   function isDefault(providerId: string, model?: string): boolean {
     const ref = ai.draftAiDefaultModel;
@@ -316,7 +309,6 @@
 
   function pick(providerId: string | null, model: string | null): void {
     ai.draftAiDefaultModel = providerId && model ? { provider: providerId, model } : null;
-    pickerOpen = false;
   }
 
   function chooseLater(): void {
@@ -495,45 +487,7 @@
     </div>
 
     {#if local && scan}
-      <div class="ob-scan">
-        {#each scan as row (row.port)}
-          <div class:dead={row.state === "dead"}>
-            <span class="ob-lamp" class:live={row.state === "live"}></span>
-            <span>localhost:{row.port} · {row.name}</span>
-            <span>{#if row.models}<span class="mx-chip" class:mx-chip--accent={row.models.length > 0}
-                  class:mx-chip--warn={row.models.length === 0}>{plural(row.models.length, "model")}</span
-                >{/if}</span>
-            <span>
-              {row.latencyMs != null ? `${row.latencyMs} ms` : row.state === "trying" ? "…" : "no answer"}
-            </span>
-            <span>
-              {#if row.models}
-                {#if alreadyConnected(row.port)}
-                  <span class="mx-chip">connected</span>
-                {:else}
-                  <button
-                    class="mx-btn mx-btn--sm"
-                    type="button"
-                    onclick={() => void connectLocal(row.kind, `http://localhost:${row.port}`)}
-                  >
-                    Use this
-                  </button>
-                {/if}
-              {/if}
-            </span>
-          </div>
-        {/each}
-      </div>
-      {#if !scanning && scanFound.length === 0}
-        <div class="mx-empty mx-empty--compact" data-tone="warn">
-          <span class="mx-empty__glyph"><IconSearch width="14" height="14" /></span>
-          <b class="mx-empty__title">Nothing is listening on the usual ports</b>
-          <p class="mx-empty__text">
-            That is an answer, not an error. Start Ollama and scan again, point at an engine on your
-            network below, or pick a cloud account above.
-          </p>
-        </div>
-      {/if}
+      <AiScanList rows={scan} {scanning} connected={alreadyConnected} onUse={(k, url) => void connectLocal(k, url)} />
     {/if}
 
     {#if local}
@@ -671,40 +625,7 @@
             : "Only models a connected engine listed just now."}
         </div>
       </div>
-      <div class="mx-pop-anchor">
-        <button
-          class="mx-btn"
-          type="button"
-          aria-haspopup="listbox"
-          aria-expanded={pickerOpen}
-          disabled={providers.length === 0}
-          onclick={() => (pickerOpen = !pickerOpen)}
-        >
-          {ai.draftAiDefaultModel?.model ?? "Choose a default model"}<IconChevron width="13" height="13" />
-        </button>
-        <div class="mx-pop" data-open={pickerOpen || undefined} role="listbox" aria-label="Default model">
-          <ul class="mx-menu">
-            <li role="option" aria-selected={ai.draftAiDefaultModel === null} onclick={() => pick(null, null)}
-              onkeydown={(e) => e.key === "Enter" && pick(null, null)} tabindex="0">
-              No default model<span class="mx-menu__meta">AI stays off</span>
-            </li>
-            {#each providers as provider (provider.id)}
-              <li class="grp" aria-hidden="true">
-                {ai.aiProviderInstanceLabel(provider)}<span class="mx-menu__meta">{aiVerificationWord(verificationOf(provider.id))}</span>
-              </li>
-              {#each modelsOf(provider.id) as model (model)}
-                <li role="option" aria-selected={isDefault(provider.id, model)} tabindex="0"
-                  onclick={() => pick(provider.id, model)}
-                  onkeydown={(e) => e.key === "Enter" && pick(provider.id, model)}>
-                  {model}
-                </li>
-              {:else}
-                <li class="grp empty" aria-hidden="true">{emptyPoolReason(provider.id)}</li>
-              {/each}
-            {/each}
-          </ul>
-        </div>
-      </div>
+      <AiModelPicker {ai} {providers} />
     </div>
 
     <!-- Only where a key was actually typed. ChatGPT signs in in the browser. -->
@@ -800,31 +721,6 @@
   .ob-wire.out {
     color: var(--app-warn);
   }
-  .ob-scan {
-    display: grid;
-    border: 1px solid var(--app-border);
-    border-radius: var(--r-md);
-    background: var(--app-surface);
-  }
-  .ob-scan > div {
-    display: grid;
-    grid-template-columns: 8px minmax(0, 1fr) auto 80px 96px;
-    align-items: center;
-    gap: var(--s-3);
-    height: 40px;
-    padding: 0 var(--s-3);
-    font: 400 var(--text-base) / 1 var(--font-mono);
-    color: var(--app-text);
-  }
-  .ob-scan > div + div {
-    border-top: 1px solid var(--mx-hairline);
-  }
-  .ob-scan > div.dead {
-    color: var(--app-text-subtle);
-  }
-  .ob-scan > div > span:last-child {
-    justify-self: end;
-  }
   .ob-lamp {
     width: 7px;
     height: 7px;
@@ -854,26 +750,5 @@
     font: 500 var(--text-md) / 1.2 var(--font-sans);
     color: var(--app-text-strong);
     margin-right: var(--s-2);
-  }
-  .mx-pop {
-    min-width: 280px;
-    max-height: 320px;
-    overflow: auto;
-  }
-  .mx-menu li[aria-selected="true"] {
-    background: var(--mx-selected);
-    color: var(--app-text-strong);
-  }
-  .mx-menu li.grp {
-    cursor: default;
-    font: 500 var(--text-xs) / 1 var(--font-mono);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    background: none;
-  }
-  .mx-menu li.grp.empty {
-    text-transform: none;
-    letter-spacing: 0;
   }
 </style>

@@ -138,6 +138,8 @@ export class RecordingStore {
   recordingSettings = $state<RecordingSettings | null>(null);
   loadingRecSettings = $state(false);
   recError = $state<string | null>(null);
+  // LOAD failures, kept apart from `recError` so they never read as "Couldn't save".
+  recLoadError = $state<string | null>(null);
   // True only once loadRecordingSettings() has resolved at least once, so the
   // persisted semantic-search selection is known (the page's chooser gates on it).
   recordingSettingsLoaded = $state(false);
@@ -622,7 +624,7 @@ export class RecordingStore {
   // ─── Load ─────────────────────────────────────────────────────────────────
   async loadRecordingSettings(): Promise<void> {
     this.loadingRecSettings = true;
-    this.recError = null;
+    this.recLoadError = null;
     try {
       const s = await invoke<RecordingSettings>("get_recording_settings");
       this.recordingSettings = s;
@@ -631,7 +633,7 @@ export class RecordingStore {
       this.recordingSettingsLoaded = true;
       this.#deps.onRecordingSettingsLoaded?.();
     } catch (err) {
-      this.recError = humanizeError(err);
+      this.recLoadError = humanizeError(err);
     } finally {
       this.loadingRecSettings = false;
     }
@@ -644,6 +646,7 @@ export class RecordingStore {
     this.recordingSettings = payload;
     this.resyncRecordingDraftsFromCanonical(payload);
     this.recError = null;
+    this.recLoadError = null;
   }
 
   onRecordingSettingsDomainChanged(payload: RecordingSettingsDomainUpdateResponse): void {

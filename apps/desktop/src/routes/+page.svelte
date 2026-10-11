@@ -7427,17 +7427,16 @@
     height: 36px;
     flex: 0 0 36px;
     box-sizing: border-box;
-    /* Slot 0 (newest) is anchored to the right edge of the track via
-       `right: i * SLOT_WIDTH` on each slot, with symmetric viewport-sized
-       margins (`50cqi - 4px`) so the first/last slot can sit under the
-       static cursor caret at the rail's center. To advance toward older
-       frames the user scrolls leftward (scrollLeft decreases from
-       `maxScrollLeft`). The rail stays in normal LTR direction so all
-       scrollLeft math is straightforward and browser-portable. */
+    /* Slot 0 (newest) sits at the track's right edge (`right: i * SLOT_WIDTH`),
+       with `50cqi - 4px` margins so either end can reach the centre caret;
+       older frames are leftward (scrollLeft below `maxScrollLeft`), plain LTR. */
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: var(--r-md);
     padding: 0;
+    /* Edge fade (timeline.html .tl-rail): history runs off both ends. */
+    -webkit-mask-image: linear-gradient(90deg, transparent, var(--app-fg) 5%, var(--app-fg) 95%, transparent);
+    mask-image: linear-gradient(90deg, transparent, var(--app-fg) 5%, var(--app-fg) 95%, transparent);
     scrollbar-width: none;
     /* Establish a containment context so the track's spacer margins can be
        sized in `cqi` (rail's visible inline size) rather than the track's
@@ -7730,7 +7729,7 @@
   }
 
   .timeline-rail__slot--major .timeline-rail__tick {
-    height: 14px;
+    height: 16px;
     background: var(--app-text-subtle);
   }
 
