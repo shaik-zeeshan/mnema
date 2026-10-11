@@ -6,6 +6,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import PermissionRows from "./PermissionRows.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -91,6 +92,8 @@
         {/snippet}
       </SettingRow>
     {/if}
+
+    <PermissionRows />
 
     <SettingRow
       label="Segment Duration"

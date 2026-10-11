@@ -3,6 +3,7 @@ import {
   rejectionMessage,
   recognitionReadout,
   ENROLLMENT_CLIP_MS,
+  voiceErrorMessage,
 } from "../src/lib/voice-enrollment";
 
 describe("enrollment rejections are rendered, never re-judged", () => {
@@ -61,4 +62,21 @@ describe("recognition read-out", () => {
 
 test("the clip is the 15 s the surface promises", () => {
   expect(ENROLLMENT_CLIP_MS).toBe(15_000);
+});
+
+describe("command failures get copy for the known cases, raw text otherwise", () => {
+  test("mic busy, mic unavailable and no-build each say what to do", () => {
+    expect(voiceErrorMessage({ code: "microphone_clip_already_recording", message: "A bounded microphone recording is already in progress" }))
+      .toBe("A take is already recording. Wait for it to finish, then try again.");
+    expect(voiceErrorMessage({ code: "microphone_input_unavailable", message: "Failed to add microphone input" }))
+      .toContain("the microphone is unavailable");
+    expect(voiceErrorMessage("voice enrollment is not compiled into this build"))
+      .toBe("Voice enrollment isn’t available in this build of Mnema.");
+  });
+
+  test("anything else is the backend's own words", () => {
+    expect(voiceErrorMessage("voice enrollment failed: disk full")).toBe("Voice enrollment failed: disk full");
+    expect(voiceErrorMessage({ code: "microphone_clip_task_failed", message: "Bounded microphone recording task failed: x" }))
+      .toBe("Bounded microphone recording task failed: x");
+  });
 });

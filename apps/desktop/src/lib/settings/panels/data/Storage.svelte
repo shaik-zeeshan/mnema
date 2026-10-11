@@ -9,6 +9,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import StorageMeter from "./StorageMeter.svelte";
+  import DeleteRecentCapture from "./DeleteRecentCapture.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -197,6 +198,7 @@
     {/snippet}
   </SettingRow>
 </SettingGroup>
+<DeleteRecentCapture />
 
 <style>
   /* Save-directory control: a read-only path that mirrors the resolved storage
