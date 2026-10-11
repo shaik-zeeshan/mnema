@@ -2,7 +2,7 @@
   // The 30px status bar (SHELL.md › Status bar): recording state, its controls,
   // the three source lanes (toggles while stopped, display while recording), at
   // most one flag, the engine pill only when unhealthy, today's tracked time,
-  // "local only" and the shortcuts ?. What to show is `status-bar.ts`; the
+  // storage used, "local only" and the shortcuts ?. What to show is `status-bar.ts`; the
   // actions are the existing capture-controls seam, moved out of the titlebar.
   import { invoke } from "@tauri-apps/api/core";
   import { tip } from "$lib/components/tooltip";
@@ -25,6 +25,9 @@
   import { getEffectiveGlobalShortcut, type GlobalShortcutId } from "$lib/global-shortcuts";
   import { formatShortcut, type KeyboardPlatform } from "$lib/keyboard";
   import type { AiRuntimeStatus } from "$lib/types/recording";
+  import type { StorageUsage } from "$lib/types/app-infra";
+  import { formatBytes } from "$lib/settings/state/format";
+  import { storageTotal } from "$lib/settings/panels/data/storage-meter";
   import ShortcutsPop from "./ShortcutsPop.svelte";
   import {
     LANES,
@@ -128,21 +131,25 @@
   // ── Engine pill + today's tracked time + permissions, refreshed on focus ─
   let aiStatus = $state<AiRuntimeStatus | null>(null);
   let trackedMs = $state<number | null>(null);
+  let storageBytes = $state<number | null>(null);
   const engine = $derived(engineFlag(aiStatus, captureControls.recordingSettings?.aiRuntime ?? null));
   const localOnly = $derived(isLocalOnly(captureControls.recordingSettings));
 
   async function refresh(): Promise<void> {
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    const [status, usage] = await Promise.all([
+    const [status, usage, storage] = await Promise.all([
       invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
       invoke<{ timePerApp: { activeMs: number }[] }>("get_usage_charts", {
         startMs: start.getTime(),
         endMs: Date.now(),
       }).catch(() => null),
+      // Cached backend side (5 min); Settings › Storage forces a fresh walk.
+      invoke<StorageUsage>("get_storage_usage").catch(() => null),
     ]);
     aiStatus = status;
     trackedMs = usage ? usage.timePerApp.reduce((sum, a) => sum + a.activeMs, 0) : null;
+    storageBytes = storage ? storageTotal(storage) : null;
   }
   $effect(() => {
     void refresh();
@@ -357,8 +364,12 @@
   {#if trackedMs !== null}
     <span>today <span class="num">{formatTracked(trackedMs)}</span></span>
   {/if}
-  {#if localOnly}
+  {#if storageBytes}
     {#if trackedMs !== null}<span class="mx-sep"></span>{/if}
+    <span class="num">{formatBytes(storageBytes)}</span>
+  {/if}
+  {#if localOnly}
+    {#if trackedMs !== null || storageBytes}<span class="mx-sep"></span>{/if}
     <span>local only</span>
   {/if}
   <ShortcutsPop

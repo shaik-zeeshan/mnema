@@ -847,6 +847,7 @@ pub fn run() {
             windows::get_onboarding_state,
             windows::complete_onboarding,
             managed_storage_layout::probe_storage_path,
+            managed_storage_layout::get_storage_usage,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,

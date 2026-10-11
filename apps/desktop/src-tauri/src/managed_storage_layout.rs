@@ -50,6 +50,72 @@ pub fn probe_storage_path(path: Option<String>) -> StorageProbe {
     }
 }
 
+/// Settings › Storage meter + status bar size: the cached disk walk plus a
+/// fresh free-space read of the volume.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageUsageDto {
+    #[serde(flatten)]
+    pub usage: ::app_infra::StorageUsage,
+    pub free_bytes: Option<u64>,
+}
+
+// ponytail: one process-wide cache; the lock is held across the walk so
+// concurrent callers wait for one walk instead of starting their own.
+static STORAGE_USAGE_CACHE: std::sync::Mutex<
+    Option<(std::time::Instant, ::app_infra::StorageUsage)>,
+> = std::sync::Mutex::new(None);
+const STORAGE_USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `refresh` forces a new walk (Settings › Storage opening, after a cleanup);
+/// otherwise a walk younger than five minutes is reused. Measures the storage
+/// root IN EFFECT (the running infra's), not a just-picked pending one.
+/// `(async)`: walks the disk off the main thread (see `probe_storage_path`).
+#[tauri::command(async)]
+pub fn get_storage_usage(app_handle: tauri::AppHandle, refresh: Option<bool>) -> StorageUsageDto {
+    use tauri::Manager;
+    let base_dir = app_handle
+        .try_state::<crate::app_infra::AppInfraState>()
+        .map(|infra| infra.base_dir().to_path_buf())
+        .unwrap_or_else(|| {
+            PathBuf::from(
+                crate::native_capture::settings::load_recording_settings_or_default(&app_handle)
+                    .save_directory,
+            )
+        });
+    let mut cache = STORAGE_USAGE_CACHE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let usage = match *cache {
+        Some((at, usage)) if !refresh.unwrap_or(false) && at.elapsed() < STORAGE_USAGE_TTL => usage,
+        _ => {
+            let model_dirs = app_handle
+                .path()
+                .app_data_dir()
+                .map(|data| {
+                    vec![
+                        audio_transcription::audio_transcription_models_dir(&data),
+                        speaker_analysis::speaker_analysis_models_dir(&data),
+                        semantic_search::semantic_search_models_dir(&data),
+                        ocr::ocr_models_dir(&data),
+                    ]
+                })
+                .unwrap_or_default();
+            let usage = ::app_infra::measure_storage_usage(&base_dir, &model_dirs);
+            *cache = Some((std::time::Instant::now(), usage));
+            usage
+        }
+    };
+    drop(cache);
+    StorageUsageDto {
+        usage,
+        free_bytes: crate::native_capture::disk_space::measure_free_space(
+            &base_dir,
+            crate::native_capture::disk_space::default_free_space_probe,
+        ),
+    }
+}
+
 /// Writability is PROVEN, not inferred: mode bits say nothing about ACLs or a
 /// read-only mount, so write a probe file and remove it.
 /// The name is per-call and the open is `create_new` (`O_CREAT|O_EXCL`) so the

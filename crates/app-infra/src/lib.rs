@@ -25,6 +25,7 @@ pub mod retry_policy;
 mod search;
 mod secret_vault;
 mod secret_vault_handle;
+mod storage_usage;
 mod semantic_search;
 pub mod status;
 pub mod system_audio_evidence;
@@ -50,6 +51,7 @@ pub use secret_vault::{
     SECRET_VAULT_FILE_NAME,
 };
 pub use secret_vault_handle::{install_process_secret_vault, SecretVaultHandle};
+pub use storage_usage::{measure_storage_usage, StorageUsage};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };

@@ -605,3 +605,16 @@ export interface AppJobDto {
 	startedAt: string | null;
 	finishedAt: string | null;
 }
+
+/** `get_storage_usage` (`managed_storage_layout.rs` ↔ app-infra `StorageUsage`). */
+export interface StorageUsage {
+	screenBytes: number;
+	microphoneBytes: number;
+	systemAudioBytes: number;
+	indexBytes: number;
+	modelsBytes: number;
+	/** Distinct recording days on disk — the per-day rate's denominator. */
+	captureDays: number;
+	/** Null when the volume could not be read. */
+	freeBytes: number | null;
+}

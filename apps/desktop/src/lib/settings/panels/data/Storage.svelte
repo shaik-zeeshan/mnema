@@ -8,6 +8,7 @@
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StorageMeter from "./StorageMeter.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -107,6 +108,7 @@
   title="Storage"
   hint="Where capture files live on disk and how long they are kept."
 >
+  <StorageMeter />
   <SettingRow
     label="Save Directory"
     description="Where captures, the database, and model caches live on disk."
