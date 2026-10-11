@@ -91,6 +91,23 @@ pub(super) fn push_search_refinement_predicates(
         query.push_bind(range.end_at.clone());
         query.push(")");
     }
+    if let Some(window) = refinements.hours {
+        // ponytail: SQLite's `localtime` reads the process timezone — the zone
+        // chrono::Local resolves for `date:` (dates.rs) — per instant, so DST is
+        // right. A hit is placed by the hour it STARTS in.
+        const LOCAL_HOUR: &str =
+            "CAST(strftime('%H', search_documents.absolute_start_at, 'localtime') AS INTEGER)";
+        query.push(format!(" AND ({LOCAL_HOUR} >= "));
+        query.push_bind(i64::from(window.start_hour));
+        query.push(if window.start_hour < window.end_hour {
+            " AND "
+        } else {
+            " OR "
+        });
+        query.push(format!("{LOCAL_HOUR} < "));
+        query.push_bind(i64::from(window.end_hour));
+        query.push(")");
+    }
     if !refinements.apps.is_empty() {
         // Multiple `app:` operators accumulate with OR semantics: a frame
         // matches when its retained identity matches any of the apps.
@@ -902,6 +919,7 @@ mod tests {
                     audio_sources: Vec::new(),
                     screen_source: false,
                     speaker: None,
+                    hours: None,
                 };
                 async move {
                     infra
@@ -1958,6 +1976,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     // Query vector exactly on every out-of-scope anchor's vector, so
                     // a post-filter's top-`k` is all out-of-scope rows.

@@ -125,10 +125,10 @@ pub use processing::{
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
 pub use search::{
-    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,
-    SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse,
-    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement,
-    SearchStore, SearchableApp,
+    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, MatchBox, MatchBoxKind,
+    SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest,
+    SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement, SearchHoursRefinement,
+    SearchParseError, SearchSpeakerRefinement, SearchStore, SearchableApp,
 };
 pub use semantic_search::{vectors_index_epoch, AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;
@@ -571,6 +571,10 @@ impl AppInfra {
     /// needs.
     pub fn semantic_search(&self) -> &SemanticSearchStore {
         &self.semantic_search
+    }
+
+    pub fn search(&self) -> &SearchStore {
+        &self.search
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {

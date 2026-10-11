@@ -15,7 +15,7 @@ use super::dates::{
 use super::types::{
     normalize_app_name_for_search, NormalizedAppRefinement, NormalizedDateRange,
     NormalizedSearchRefinements, SearchAppRefinement, SearchAppRefinementKind,
-    SearchCaptureRefinements, SearchDateRangeRefinement, SearchParseError,
+    SearchCaptureRefinements, SearchDateRangeRefinement, SearchHoursRefinement, SearchParseError,
 };
 
 /// Outcome of normalizing refinements: either the normalized form, or a set of
@@ -41,7 +41,17 @@ pub(super) fn normalize_search_refinements(
     let refinements = refinements.unwrap_or_default();
     let screen_source = refinements.screen_source;
     let speaker = refinements.speaker;
+    let hours = refinements.hours;
     let mut errors: Vec<SearchParseError> = Vec::new();
+
+    if let Some(window) = hours {
+        if !hours_window_is_valid(window) {
+            errors.push(whole_query_parse_error(
+                "bad_hours",
+                "hours must be two different hours between 0 and 24",
+            ));
+        }
+    }
 
     if !refinements.apps.is_empty() && !refinements.audio_sources.is_empty() {
         errors.push(whole_query_parse_error(
@@ -180,6 +190,7 @@ pub(super) fn normalize_search_refinements(
         // Carried through untouched: the handle was already decoded (and its
         // conflicts refused) at the broker boundary, the only thing that mints one.
         speaker: speaker.clone(),
+        hours,
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
             apps: applied_apps,
@@ -189,8 +200,23 @@ pub(super) fn normalize_search_refinements(
             audio_sources,
             screen_source,
             speaker,
+            hours,
         },
     }))
+}
+
+fn hours_window_is_valid(window: SearchHoursRefinement) -> bool {
+    window.start_hour <= 24 && window.end_hour <= 24 && window.start_hour != window.end_hour
+}
+
+/// `H-H` → a local time-of-day window (`12-18`, or `22-6` across midnight).
+fn parse_hours_window(value: &str) -> Option<SearchHoursRefinement> {
+    let (start, end) = value.split_once('-')?;
+    let window = SearchHoursRefinement {
+        start_hour: start.trim().parse().ok()?,
+        end_hour: end.trim().parse().ok()?,
+    };
+    hours_window_is_valid(window).then_some(window)
 }
 
 fn normalize_date_range_refinement(
@@ -320,7 +346,7 @@ fn fts_quote_phrase_term(term: &str) -> String {
 
 /// The known field operator keys. Any other `key:value` token stays literal
 /// body text so URL, code, and `error:404`-style searches keep working.
-const FIELD_OPERATOR_KEYS: &[&str] = &["app", "source", "after", "before", "date"];
+const FIELD_OPERATOR_KEYS: &[&str] = &["app", "source", "after", "before", "date", "hours"];
 
 /// Result of parsing a raw search query into refinements + residual body FTS.
 #[derive(Debug, Clone, Default)]
@@ -335,6 +361,8 @@ pub(crate) struct ParsedQuery {
     pub(crate) screen_source: bool,
     /// `after:`/`before:`/`date:` operators resolved to a single date range.
     pub(crate) date_range: Option<SearchDateRangeRefinement>,
+    /// `hours:H-H` resolved to a local time-of-day window (last write wins).
+    pub(crate) hours: Option<SearchHoursRefinement>,
     /// The plain residual body text (operators stripped) for display and FTS.
     pub(crate) residual_query: String,
     /// Strict validation problems found during parsing.
@@ -623,6 +651,14 @@ fn apply_field_operator(
                 "date: needs a day or period (today, yesterday, last-week, this-week, last-month, this-month, or YYYY-MM-DD)",
             )),
         },
+        "hours" => match parse_hours_window(trimmed) {
+            Some(window) => parsed.hours = Some(window),
+            None => parsed.errors.push(token_parse_error(
+                token,
+                "bad_hours",
+                "hours: needs a local time-of-day window like 12-18 (or 22-6 across midnight)",
+            )),
+        },
         _ => {}
     }
 }
@@ -885,6 +921,9 @@ pub(super) fn merge_parsed_field_operators(
     if let Some(date_range) = &parsed.date_range {
         refinements.date_range = Some(date_range.clone());
     }
+    if parsed.hours.is_some() {
+        refinements.hours = parsed.hours;
+    }
 
     refinements
 }
@@ -912,6 +951,7 @@ mod tests {
             audio_sources: Vec::new(),
             screen_source: false,
             speaker: None,
+            hours: None,
         }))
         .expect("refinements should not error")
         .expect("refinements should normalize");
@@ -1227,6 +1267,7 @@ mod tests {
             audio_sources: vec![AudioSegmentSourceKind::Microphone],
             screen_source: false,
             speaker: None,
+            hours: None,
         }))
         .expect("conflict should not throw")
         .expect_err("incompatible refinements should surface in-band parse errors");
@@ -1286,6 +1327,7 @@ mod tests {
             audio_sources: Vec::new(),
             screen_source: false,
             speaker: None,
+            hours: None,
         };
 
         let normalized = normalize_search_refinements(Some(refinements(
@@ -1444,6 +1486,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     query_embedding: None,
                 })
@@ -1511,6 +1554,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     query_embedding: None,
                 })
@@ -1538,6 +1582,7 @@ mod tests {
                         audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     query_embedding: None,
                 })
@@ -1611,6 +1656,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     query_embedding: None,
                 })
@@ -1711,6 +1757,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     query_embedding: None,
                 })

@@ -34,6 +34,7 @@ pub type BackgroundWorkersState = BackgroundWorkersControl;
 pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
 pub mod frame_preview;
+pub mod quick_recall;
 pub(crate) use frame_preview::{
     run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
 };
@@ -569,6 +570,9 @@ pub struct SearchCaptureResponseDto {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameSearchResultDto {
+    /// Lower is better; the frontend merges frames and audio by it (ADR 0036:
+    /// no calibration — see `::app_infra::FrameSearchResult::rank`).
+    pub rank: f64,
     pub group_key: String,
     pub representative_frame: FrameDto,
     pub group_start_at: String,
@@ -590,11 +594,16 @@ pub struct FrameSearchResultDto {
     /// A meaning-only **Semantic Search** hit: the snippet is a leading
     /// `body_text` excerpt the frontend tags "found by meaning".
     pub found_by_meaning: bool,
+    /// Where the query's words sit on `representative_frame` (normalised,
+    /// top-left origin). Filled by `search_capture`, never by the `From`.
+    pub match_boxes: Vec<::app_infra::MatchBox>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSearchResultDto {
+    /// Lower is better (see [`FrameSearchResultDto::rank`]).
+    pub rank: f64,
     pub group_key: String,
     pub audio_segment: AudioSegmentDto,
     pub source_kind: ::app_infra::AudioSegmentSourceKind,
@@ -894,6 +903,7 @@ impl From<::app_infra::FocusedFrameWindow> for FocusedFrameWindowDto {
 impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
     fn from(result: ::app_infra::FrameSearchResult) -> Self {
         Self {
+            rank: result.rank,
             group_key: result.group_key,
             representative_frame: FrameDto::from(result.representative_frame),
             group_start_at: result.group_start_at,
@@ -914,6 +924,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
             found_by_meaning: result.found_by_meaning,
+            match_boxes: Vec::new(),
         }
     }
 }
@@ -921,6 +932,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
 impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
     fn from(result: ::app_infra::AudioSearchResult) -> Self {
         Self {
+            rank: result.rank,
             group_key: result.group_key,
             audio_segment: AudioSegmentDto::from(result.audio_segment),
             source_kind: result.source_kind,
@@ -5028,7 +5040,8 @@ pub async fn search_capture(
         crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
             .await;
 
-    infra
+    let query = request.query.clone();
+    let mut response = infra
         .search_capture(::app_infra::SearchCaptureRequest {
             query: request.query,
             frame_limit: request.frame_limit,
@@ -5041,7 +5054,17 @@ pub async fn search_capture(
         })
         .await
         .map(SearchCaptureResponseDto::from)
-        .map_err(|error| format!("failed to search captured content: {error}"))
+        .map_err(|error| format!("failed to search captured content: {error}"))?;
+    // ponytail: one indexed lookup per frame on the page (≤ 24); batch if it shows.
+    // A missing outline never fails the search.
+    for frame in &mut response.frames {
+        frame.match_boxes = infra
+            .search()
+            .frame_match_boxes(frame.representative_frame.id, &query, frame.found_by_meaning)
+            .await
+            .unwrap_or_default();
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -6277,6 +6300,19 @@ mod tests {
         assert_eq!(
             value.get("appBundleId").and_then(|value| value.as_str()),
             Some("com.example.Search")
+        );
+        assert_eq!(value["rank"], serde_json::json!(-1.0));
+        assert_eq!(value["matchBoxes"], serde_json::json!([]));
+        let match_box = ::app_infra::MatchBox {
+            x: 0.1,
+            y: 0.2,
+            w: 0.3,
+            h: 0.05,
+            kind: ::app_infra::MatchBoxKind::Meaning,
+        };
+        assert_eq!(
+            serde_json::to_value(match_box).unwrap(),
+            serde_json::json!({"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.05, "kind": "meaning"})
         );
     }
 

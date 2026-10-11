@@ -1046,6 +1046,7 @@ fn two_frame_one_audio_response() -> SearchCaptureResponse {
             audio_sources: Vec::new(),
             screen_source: false,
             speaker: None,
+            hours: None,
         },
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),

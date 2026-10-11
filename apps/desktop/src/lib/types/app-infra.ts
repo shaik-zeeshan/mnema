@@ -200,6 +200,17 @@ export interface SearchCaptureRefinements {
 	// `source:screen` — restricts results to captured frames (screen), the
 	// frame-side counterpart of audioSources. Mutually exclusive with them.
 	screenSource?: boolean;
+	/** `hours:H-H` — local time-of-day window; see {@link SearchHoursRefinement}. */
+	hours?: SearchHoursRefinement;
+}
+
+/**
+ * Local time of day, `startHour <= hour < endHour` (0–24). Wraps past midnight
+ * when `startHour > endHour` (`hours:22-6`). A hit is placed by its start.
+ */
+export interface SearchHoursRefinement {
+	startHour: number;
+	endHour: number;
 }
 
 export interface SearchDateRangeRefinement {
@@ -239,7 +250,33 @@ export interface SearchCaptureResponse {
 	parseErrors: SearchParseError[];
 }
 
+/**
+ * One matched OCR line on a frame, normalised 0–1 with a TOP-LEFT origin.
+ * `keyword` = contains a query word (outline solid); `meaning` = a meaning-only
+ * hit's word-stem match (dashed). Empty list = no geometry or no match: show the
+ * whole frame.
+ */
+export interface MatchBox {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+	kind: "keyword" | "meaning";
+}
+
+/** `get_frame_match_boxes` — boxes for any frame (Quick Look neighbours). */
+export interface GetFrameMatchBoxesRequest {
+	frameId: number;
+	query: string;
+	byMeaning?: boolean;
+}
+
 export interface FrameSearchResultDto {
+	/**
+	 * Relevance, LOWER is better. Comparable with {@link AudioSearchResultDto.rank}
+	 * for a two-pointer merge (tie → newer, then frame). Never calibrated (ADR 0036).
+	 */
+	rank: number;
 	groupKey: string;
 	representativeFrame: FrameDto;
 	groupStartAt: string;
@@ -267,9 +304,13 @@ export interface FrameSearchResultDto {
 	 * highlighted keyword snippet.
 	 */
 	foundByMeaning: boolean;
+	/** Where the query's words sit on `representativeFrame`, at most 6. */
+	matchBoxes: MatchBox[];
 }
 
 export interface AudioSearchResultDto {
+	/** Relevance, LOWER is better (see {@link FrameSearchResultDto.rank}). */
+	rank: number;
 	groupKey: string;
 	audioSegment: AudioSegmentDto;
 	sourceKind: AudioSegmentSourceKind;

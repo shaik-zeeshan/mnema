@@ -1914,6 +1914,7 @@ fn broker_search_refinements(
             audio_sources: Vec::new(),
             screen_source: false,
             speaker,
+            hours: None,
         },
         range.clamped_to_scope,
     ))

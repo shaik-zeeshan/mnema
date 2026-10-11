@@ -40,7 +40,8 @@ mod types;
 pub use types::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement, SearchableApp,
+    SearchDateRangeRefinement, SearchHoursRefinement, SearchParseError, SearchSpeakerRefinement,
+    SearchableApp,
 };
 use types::{
     normalize_app_bundle_id_for_search, normalize_app_name_for_search, EquivalentReuseText,
@@ -48,6 +49,7 @@ use types::{
 
 mod query;
 
+pub use match_boxes::{MatchBox, MatchBoxKind};
 pub use query::semantic_search_residual_query;
 use query::{
     merge_parsed_field_operators, normalize_query, normalize_search_refinements, parse_search_query,
@@ -56,6 +58,9 @@ use query::{
 
 mod equivalent_reuse;
 mod grouping;
+#[cfg(test)]
+mod hours_filter_check;
+mod match_boxes;
 mod projection;
 mod retrieval;
 #[cfg(test)]
