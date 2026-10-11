@@ -28,7 +28,8 @@
        On-frame outlines: solid = keyword, dashed = meaning.
        Growth animates clip-path + transforms only (no layout animation):
        the panel is --max tall, clipped to the measured --h; --cap is how tall
-       this state may get (420 list, 640 Quick Look).
+       this state may get (420 list, 640 Quick Look here; the app caps Quick Look at ~570 —
+       `src-tauri/src/windows/quick_recall_frame.rs`).
        Hooks: ?q=  ?state=<name> (see RC_STATES + the "Mockup state" picker bottom-left; each state
               carries its own default ?q/?look/?tab)  ?sel=N  ?look=1  ?cite=N  ?tab=1  ?pill=app|date|src
               ?auto=always|local|never (default local)  ?local=1 (local model)  ?keys=down,space  ?theme=light

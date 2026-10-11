@@ -11,7 +11,7 @@
        ?state= available | checking | uptodate | check-failed | downloading | download-failed | installing | install-failed |
        ready | incompatible | expired  (also #…; on-page switcher). ?theme=light for renders.
        Real seam: routes/update/+page.svelte + lib/update-window.ts (AppWindow::Update, 480 wide,
-       height fits the notes 360–640). State = AppUpdateState: available · downloading/installing ·
+       height fits the notes 260–640). State = AppUpdateState: available · downloading/installing ·
        restartRequired · availableOutOfWindow. Three bands; only the notes flex, so the buttons never move. */
     .up-desk { position: relative; min-height: 100vh; display: grid; place-items: center; padding: 64px var(--s-6) var(--s-6); }
     .up-switch { position: absolute; top: 14px; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: var(--s-3);

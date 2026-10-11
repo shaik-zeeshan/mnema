@@ -1,5 +1,7 @@
 # Redesign → real app: what is NEW, what is OLD
 
+> **Built (2026-10-11).** Every slice below has landed on `t3/redesign-insights-timeline-mockups`. The `file:line` references are from the 2026-10-10 tree and have moved since (e.g. `+layout.svelte` is ~1,100 lines, the titlebar/status bar live in `lib/shell/*`, Chat in `lib/chat/*`); treat them as pointers to grep, not addresses.
+
 A map, not a plan. It compares the mockups in this folder with `apps/desktop/src`, `apps/desktop/src-tauri/src`, `crates/capture-types` and `crates/app-infra`. App paths are relative to `apps/desktop/src/` unless they start with `src-tauri/` or `crates/`.
 
 Tags: **[UI]** frontend only · **[DERIVED]** new data computed from the existing DB, no LLM · **[PROMPT]** LLM prompt or schema change · **[MIGRATION]** new DB column or table · **[BACKEND]** new Rust command or logic · **[NEW FEATURE]** a capability the app lacks · **[DECISION]** needs a founder ruling.
@@ -241,7 +243,7 @@ Tags: **[UI]** frontend only · **[DERIVED]** new data computed from the existin
   - Confirm through `@tauri-apps/plugin-dialog`.
 - **Labels / mockup gaps**: the mockup renames Capture→Sources, Audio→Microphone, Access→CLI Access, About→Updates [UI].
   - It omits sections the app has: MCP connectors, Voice enrollment, OCR preprocessing/upscale, mic/system sensitivity, activity sources, system-audio access warning. Keep them, restyled.
-  - Its storage meter with per-source breakdown is [DERIVED] — and confirmed missing: no storage-usage number is returned anywhere (`Storage.svelte` shows only the location).
+  - Its storage meter with per-source breakdown is [DERIVED] — built by ST4: `get_storage_usage` (screen / mic / system audio / index / models, 5-min cache) feeds `StorageMeter.svelte` and the status-bar size.
 - **State gaps** (from `settings.html` states):
   - [UI] No screen / mic permission rows in Settings, and voice enrollment shows raw errors (`VoiceEnrollment.svelte:153-155`). `get_capture_permissions` already exists.
   - [BACKEND] Ollama "not running" vs "not installed" vs "running, 0 models" all collapse to `local_endpoint_unreachable` (`state/ai-runtime.svelte.ts:69-102`).
@@ -250,6 +252,8 @@ Tags: **[UI]** frontend only · **[DERIVED]** new data computed from the existin
   - No license deactivate command or UI (only `reset_license_devices`); not drawn, so no work unless wanted.
 
 ## 7. Becomes dead after the redesign
+
+**Done (DC1, 2026-10-11):** every item below is deleted (grep-verified), the `--app-font-mono` alias is gone (rules read `--font-mono`), and no `inset 0 1px 0` bevel or left-bar selection remains — the left borders left in `src/` are hairline dividers, the answer blockquote, the voice-enrollment quote and the transcript's overlapping-speech warn bar.
 
 - `lib/insights/InsightsRail.svelte`, `RailHistory.svelte` (content moves to the chat list), `RailFooter.svelte`, `RailResizer.svelte`.
 - `lib/insights/JournalDateStepper.svelte`; Overview `.date-stepper` + D/W/M `Segmented` + `.ask-entry`; `bandRiver` bands and follow-to-bottom / "↓ now" in `journal-view.ts` / `JournalRiver.svelte`.
