@@ -6,7 +6,7 @@
 
   Skin of record: `docs/mockups/redesign/onboarding.html` (Change settings →
   Models): `mx-seg` groups, a three-cell spec strip, and a read-only budget
-  (total, stacked bar, legend) as the section footer.
+  (total, stacked bar with the free-space marker, legend) as the section footer.
 
   Three things it changes about the shipping surface:
    · The two `<Select>`s become a second `Segmented`. A toggle group over quality
@@ -27,6 +27,8 @@
   import type { Snippet } from "svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import { formatBytes } from "$lib/settings/state/format";
+  import { RESERVE_FLOOR_BYTES } from "$lib/onboarding/gates";
+  import { estimateDailyStorageMb } from "$lib/onboarding/disk-estimate";
   import IconDisk from "~icons/lucide/hard-drive";
   import {
     FAMILY_NOTES,
@@ -199,7 +201,30 @@
     dismissed = false;
   });
 
-  const pct = (bytes: number): number => (budget.bytes > 0 ? (bytes / budget.bytes) * 100 : 0);
+  /** What is left for downloads once the reserve and a day of capture are set
+   *  aside — the same arithmetic the Capture & Storage gate applies. */
+  const roomForDownloads = $derived(
+    freeBytes === null
+      ? null
+      : Math.max(
+          0,
+          freeBytes -
+            RESERVE_FLOOR_BYTES -
+            estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6,
+        ),
+  );
+  // One axis for bytes AND room, so "it doesn't fit" is a picture. 6% headroom
+  // keeps the marker off the right edge when it fits.
+  const axis = $derived(
+    Math.max(budget.bytes, roomForDownloads ?? 0, 1) * 1.06,
+  );
+  const pct = (bytes: number): number => (bytes / axis) * 100;
+  const roomPct = $derived(
+    roomForDownloads === null ? 0 : Math.min(100, pct(roomForDownloads)),
+  );
+  // The label is centred on the marker, except near either end, where centring
+  // would push it off the track and clip it.
+  const labelShift = $derived(roomPct > 78 ? -100 : roomPct < 12 ? 0 : -50);
 
   function sizeCell(model: PickerModel | null, prefix = ""): string {
     if (!model) return "none";
@@ -280,10 +305,23 @@
       <b class:over={verdict && !dismissed}>{totalLabel(budget.bytes, budget.approx)}</b>
       <span class="ob-fine">to download before any of this works</span>
     </div>
-    <div class="ob-bar-stack" aria-hidden="true">
-      {#if budget.speakerBytes > 0}<i style:--c="var(--app-source-mic)" style:width="{pct(budget.speakerBytes)}%"></i>{/if}
-      {#if budget.transcriptionBytes > 0}<i style:--c="var(--chart-grey-4)" style:width="{pct(budget.transcriptionBytes)}%"></i>{/if}
-      {#if budget.semanticBytes > 0}<i style:--c="var(--app-info)" style:width="{pct(budget.semanticBytes)}%"></i>{/if}
+    <div aria-hidden="true">
+      <div class="ob-bar-stack">
+        {#if budget.speakerBytes > 0}<i style:--c="var(--app-source-mic)" style:width="{pct(budget.speakerBytes)}%"></i>{/if}
+        {#if budget.transcriptionBytes > 0}<i style:--c="var(--chart-grey-4)" style:width="{pct(budget.transcriptionBytes)}%"></i>{/if}
+        {#if budget.semanticBytes > 0}<i style:--c="var(--app-info)" style:width="{pct(budget.semanticBytes)}%"></i>{/if}
+        {#if verdict}<span class="ob-budget-hatch" style:left="{roomPct}%"></span>{/if}
+      </div>
+      {#if roomForDownloads !== null}
+        <div class="ob-room">
+          <i style:left="{roomPct}%"></i>
+          <span style:left="{roomPct}%" style:transform="translateX({labelShift}%)">
+            {roomForDownloads > 0
+              ? `${formatBytes(roomForDownloads)} left for downloads`
+              : "no room left for downloads"}
+          </span>
+        </div>
+      {/if}
     </div>
     <ul class="ob-legend">
       <li style:--c="var(--app-source-mic)">
@@ -396,6 +434,7 @@
     color: var(--app-danger-text);
   }
   .ob-bar-stack {
+    position: relative;
     display: flex;
     gap: 2px;
     height: 6px;
@@ -407,6 +446,38 @@
     display: block;
     height: 100%;
     background: var(--c);
+  }
+  /* Past the marker the downloads do not fit: that stretch is hatched. */
+  .ob-budget-hatch {
+    position: absolute;
+    inset: 0 0 0 auto;
+    background: repeating-linear-gradient(
+      135deg,
+      var(--app-danger-border) 0 3px,
+      transparent 3px 6px
+    );
+  }
+  /* The free-space marker crosses the bar; its label sits under it. */
+  .ob-room {
+    position: relative;
+    height: 14px;
+    margin-top: 6px;
+    font: 400 var(--text-sm) / 14px var(--font-mono);
+    color: var(--app-text-subtle);
+  }
+  .ob-room i {
+    position: absolute;
+    top: -16px;
+    width: 2px;
+    height: 16px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--app-text-muted);
+  }
+  .ob-room span {
+    position: absolute;
+    top: 2px;
+    white-space: nowrap;
   }
   .ob-legend {
     display: flex;

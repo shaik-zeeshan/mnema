@@ -15,7 +15,7 @@
      one an empty track.
    · Deepgram is never selectable here (ADR 0047): cloud transcription is
      Settings-only behind a consent gate, filtered out of the list this gets;
-     the screen footer says so.
+     a quiet disclosure under the tiles and the screen footer say so.
 
   Motion: none.
 -->
@@ -107,6 +107,15 @@
       </button>
     {/if}
   </div>
+
+  <details class="cloud">
+    <summary>Where's the cloud option?</summary>
+    <p>
+      <b>Deepgram is real, and it is left out of setup on purpose.</b> Choosing it uploads your
+      microphone <i>and</i> system-audio recordings to your own Deepgram account — so it is
+      switched on in Settings → Transcription, behind a consent step, and never here.
+    </p>
+  </details>
 </div>
 
 <style>
@@ -156,5 +165,29 @@
   }
   .ob-fine.up {
     color: var(--app-warn);
+  }
+  .cloud {
+    font: 400 var(--text-sm) / 1.5 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+  .cloud summary {
+    width: fit-content;
+    cursor: pointer;
+  }
+  .cloud summary:hover {
+    color: var(--app-text);
+  }
+  .cloud summary:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: var(--r-sm);
+  }
+  .cloud p {
+    margin: var(--s-2) 0 0;
+    max-width: 62ch;
+  }
+  .cloud b {
+    font-weight: 600;
+    color: var(--app-text);
   }
 </style>
