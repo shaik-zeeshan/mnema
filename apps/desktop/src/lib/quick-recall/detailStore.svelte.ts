@@ -25,7 +25,7 @@ import type {
 import { quickRecallSearch as search } from "./searchStore.svelte";
 import type { RankedResult } from "./result-sections";
 import { matchTurnIndex } from "./detail-view";
-import { pickStrip, RANGE, STEP_MS, type StripFrame } from "./quick-look";
+import { pickStrip, RANGE, STEP_MS, stepCited, type StripFrame } from "./quick-look";
 
 export type LookTurn = Pick<SpeakerTurnDto, "startMs" | "endMs" | "speakerLabel"> & {
   text: string;
@@ -67,9 +67,17 @@ export class QuickLookStore {
   frame = $derived(this.strip[this.k + RANGE] ?? null);
   previewId = $derived(this.frame ? this.pixelId(this.frame) : null);
   turn = $derived(this.turns?.[this.k] ?? null);
-  // Where the selection sits in the visible list (↑/↓, "N of M").
+  // Opened from an answer: ↑/↓ walk its citations (null = one Quick Look
+  // can't show) instead of the search results; `cited` = the one showing.
+  cites = $state.raw<readonly (RankedResult | null)[] | null>(null);
+  cited = $state(-1);
+  // Where the selection sits in what ↑/↓ walk ("N of M").
   index = $derived(
-    this.result ? search.visibleResults.findIndex((r) => keyOf(r) === keyOf(this.result!)) : -1,
+    !this.result
+      ? -1
+      : this.cites
+        ? this.cited
+        : search.visibleResults.findIndex((r) => keyOf(r) === keyOf(this.result!)),
   );
 
   // The frame whose pixels to paint for a strip frame.
@@ -78,9 +86,20 @@ export class QuickLookStore {
     return hit && f.id === hit.representativeFrame.id ? hit.thumbnailFrameId : f.id;
   }
 
-  // Open on `result`. `onClose` runs when it closes (QR5: restore the citation).
+  // Open on `result`. `onClose` runs when it closes.
   show(result: RankedResult, onClose?: () => void): void {
+    this.cites = null;
     this.#onClose = onClose;
+    this.#load(result);
+  }
+
+  // Open on citation `at`; `onClose` gets the citation showing when it closes.
+  showCited(cites: readonly (RankedResult | null)[], at: number, onClose: (at: number) => void): void {
+    const result = cites[at];
+    if (!result) return;
+    this.cites = cites;
+    this.cited = at;
+    this.#onClose = () => onClose(this.cited);
     this.#load(result);
   }
 
@@ -106,8 +125,16 @@ export class QuickLookStore {
     if (this.isScreen && this.frame) void this.#loadFrame(this.frame.id, this.#gen);
   }
 
-  // ↑/↓: the neighbouring result in the list, selected as you go.
+  // ↑/↓: the neighbouring result in the list, selected as you go — or the
+  // neighbouring citation, skipping ones it can't show.
   step(delta: number): void {
+    if (this.cites) {
+      const j = stepCited(this.cites, this.cited, delta);
+      if (j < 0) return;
+      this.cited = j;
+      this.#load(this.cites[j]!);
+      return;
+    }
     const j = this.index + delta;
     const next = search.visibleResults[j];
     if (this.index < 0 || !next) return;

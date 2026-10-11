@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from "svelte";
+  import { onMount, onDestroy, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -37,7 +37,7 @@
   // Search-mode extraction (slice 1): all search-mode state — query text,
   // debounce/scheduling, results, thumbnails cache, roving selection, filter
   // chips, pills + ghost + pill popover, and the
-  // loading/error/parse-error/semantic-hint states — lives in the shared
+  // loading/error/parse-error states — lives in the shared
   // `quickRecallSearch` store singleton (lib/quick-recall/searchStore.svelte.ts).
   // The ask slot — question → answer in place — is AskPane (QR5). This page
   // keeps the window shell, search ⇄ ask, key routing, focus and the idle-clear.
@@ -148,6 +148,15 @@
     search.scheduleSearch(search.operatorQuery);
   });
 
+  // Under the gate or an ask notice no moment is highlighted (recall.html):
+  // ↓ moves into the rows. Each search, and a return to search, highlights
+  // the top hit again so a hurried ↵ opens it.
+  $effect(() => {
+    void search.ranked;
+    const top = askView === null && untrack(() => search.resultCount) > 0;
+    search.selectedIndex = top ? 0 : -1;
+  });
+
   // Keep the highlighted result within the scroll viewport as it moves.
   $effect(() => {
     if (mode !== "search" || search.selectedIndex < 0) {
@@ -250,11 +259,11 @@
     captureKeydown(search, event, moments ? quickLook : undefined);
   }
 
-  // Space / the eye on a cited source: Quick Look on it (its search hit when
-  // it is one, else a result built from the citation).
-  function lookAtSource(source: AskAiSource, onClose: () => void): void {
-    const result = sourceResult(source, search.ranked);
-    if (result) quickLook.show(result, onClose);
+  // Space / the eye on cited source `at`: Quick Look on it (its search hit
+  // when it is one, else a result built from the citation); ↑/↓ walk the
+  // citations.
+  function lookAtSource(sources: AskAiSource[], at: number, onClose: (at: number) => void): void {
+    quickLook.showCited(sources.map((s) => sourceResult(s, search.ranked)), at, onClose);
   }
 
   onMount(() => {
@@ -431,7 +440,7 @@
         {:else if search.states.emptyState}
           <EmptyStates {askAvailable} onAskAi={askNow} />
         {:else if !search.resultsPaused}
-          <ResultsList {askAvailable} onAskAi={askNow} rowsOnly={askView !== null}
+          <ResultsList rowsOnly={askView !== null}
             onlook={(i) => quickLook.show(search.visibleResults[i])} />
         {/if}
       </div>
@@ -448,7 +457,7 @@
 {/snippet}
 
 <div class="quick-recall">
-  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : 420} />
+  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : filters.popoverOpen ? 440 : 420} />
 </div>
 
 <style>

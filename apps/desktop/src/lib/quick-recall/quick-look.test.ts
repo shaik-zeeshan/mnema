@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { pickStrip, RANGE, sourceResult, stripWindow, signedClock } from "./quick-look";
+import { pickStrip, RANGE, sourceResult, stepCited, stripWindow, signedClock } from "./quick-look";
 
 describe("pickStrip", () => {
   const match = { id: 100, ms: 1_000_000 };
@@ -42,6 +42,17 @@ describe("stripWindow", () => {
 test("signedClock", () => {
   expect(signedClock(15_000)).toBe("+0:15");
   expect(signedClock(-45_000)).toBe("−0:45");
+});
+
+describe("stepCited", () => {
+  test("walks the citations, skipping ones Quick Look can't show, stopping at the ends", () => {
+    const cites = ["a", null, "c", "d"];
+    expect(stepCited(cites, 0, 1)).toBe(2);
+    expect(stepCited(cites, 2, -1)).toBe(0);
+    expect(stepCited(cites, 3, 1)).toBe(-1);
+    expect(stepCited(cites, 0, -1)).toBe(-1);
+    expect(stepCited([null, "b"], 1, -1)).toBe(-1);
+  });
 });
 
 describe("sourceResult", () => {

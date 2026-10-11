@@ -192,10 +192,12 @@
 </div>
 
 <span class="rc-right">
-  {#if mode === "ask"}
+  {#if quickLook.result && quickLook.index >= 0}
+    <span><b>{quickLook.index + 1}</b> of {quickLook.cites?.length ?? search.resultCount}</span><span
+      ><kbd>esc</kbd>back</span
+    >
+  {:else if mode === "ask"}
     <span><kbd>⇥</kbd>search</span>
-  {:else if quickLook.result}
-    <span><b>{quickLook.index + 1}</b> of {search.resultCount}</span><span><kbd>esc</kbd>back</span>
   {:else if search.loading}
     <span><span class="mx-spin mx-spin--sm"></span>searching…</span>
   {:else if search.states.showRecent}

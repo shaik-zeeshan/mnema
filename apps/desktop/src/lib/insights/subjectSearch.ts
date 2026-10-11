@@ -11,7 +11,7 @@
 
 // Trivial words dropped from the query so they don't dominate the overlap.
 // Mirrors RECALL_STOPWORDS in brokered_access.rs.
-const STOPWORDS = new Set<string>([
+export const STOPWORDS = new Set<string>([
   "the", "and", "for", "are", "was", "were", "that", "this", "with", "what",
   "when", "where", "who", "why", "how", "did", "does", "have", "has", "had",
   "you", "your", "they", "them", "from", "about", "into", "over", "been",

@@ -2,8 +2,7 @@
 // quick-recall +page.svelte in the search-mode extraction slice — no behavior
 // change). Chips are RENDERED from the backend desugar (appliedRefinements),
 // but the operator TEXT lives in the raw `query` string; these helpers derive
-// the chip model, strip a chip's operator token(s) back out of the query, and
-// rebuild plain-language forms for the Ask AI pivot.
+// the chip model and strip a chip's operator token(s) back out of the query.
 import type {
   SearchAppRefinement,
   SearchDateRangeRefinement,
@@ -130,66 +129,6 @@ export function deriveActiveFilterChips(
   }
 
   return chips;
-}
-
-// ---------------------------------------------------------------------------
-// Ask AI pivot scope inheritance (pure builders)
-//
-// Pivoting search → ask carries the active chip scope into the ask in natural
-// language, via the QUESTION. The question's free-text base is the residual
-// (operators stripped) plus a spoken scope suffix ("in Safari from May 1 to
-// May 30") so the scope is legible to user and agent alike; the agent's own
-// tool calls do the gathering.
-// ---------------------------------------------------------------------------
-
-// The plain-language scope suffix for one chip: `in Safari`,
-// `in microphone audio` / `in system audio`, `in screen captures`, or a date
-// window phrased like the existing labels (`from May 1 to May 30`, `on May 1`).
-export function scopeSuffixForChip(chip: ActiveFilterChip): string {
-  switch (chip.kind) {
-    case "app":
-      return `in ${chip.data.displayName}`;
-    case "source":
-      if (chip.data.source === "screen") return "in screen captures";
-      return chip.data.source === "microphone"
-        ? "in microphone audio"
-        : "in system audio";
-    case "date": {
-      const start = parseRefinementDate(chip.data.startAt);
-      const end = parseRefinementDate(chip.data.endAt);
-      if (start && end) {
-        if (isSameCalendarDay(start, end)) {
-          return `on ${shortDate(start)}`;
-        }
-        return `from ${shortDate(start)} to ${shortDate(end)}`;
-      }
-      if (start) return `since ${shortDate(start)}`;
-      if (end) return `until ${shortDate(end)}`;
-      // Unparseable bounds: fall back to the chip's already-formatted label.
-      return chip.label;
-    }
-  }
-}
-
-// Build the natural-language question from the residual free text + chips, e.g.
-// residual `deploy error` + chips `{app:Safari, date 5/1–5/30}` →
-// `deploy error in Safari from May 1 to May 30`. When the residual is empty
-// (the query was only operators) we lead with a neutral "Show me everything"
-// so the suffix reads as a sentence ("Show me everything in Safari") rather
-// than a bare fragment. With no chips this is just the residual (unchanged).
-export function buildScopedQuestion(
-  residual: string,
-  chips: ActiveFilterChip[],
-): string {
-  const suffixes = chips
-    .map((chip) => scopeSuffixForChip(chip))
-    .filter((suffix) => suffix.length > 0);
-  const residualText = residual.trim();
-  if (suffixes.length === 0) {
-    return residualText;
-  }
-  const base = residualText.length > 0 ? residualText : "Show me everything";
-  return [base, ...suffixes].join(" ").trim();
 }
 
 // ---------------------------------------------------------------------------

@@ -79,6 +79,14 @@ export function missingCopy(reason: ScrubPreviewMissingReason): { title: string;
   }
 }
 
+// ↑/↓ in Quick Look opened from an answer: the citation `delta` away from
+// `at`, skipping ones it can't show (null); −1 at either end.
+export function stepCited(cites: readonly unknown[], at: number, delta: number): number {
+  let j = at + delta;
+  while (j >= 0 && j < cites.length && !cites[j]) j += delta;
+  return j >= 0 && j < cites.length ? j : -1;
+}
+
 // A cited source as a Quick Look result: its own search hit when the list has
 // it (same frame / same recording, nearest span), else one built from the
 // citation — no snippet or match boxes, so the stage shows the bare frame.

@@ -1,7 +1,7 @@
 // Quick Recall SEARCH-mode store — the single frontend owner of the launcher's
 // search state (query text + pills, the operator query they make,
 // debounce/scheduling, results, thumbnails, selection, ghost + pill popover via
-// `filters`, loading/error/parse-error states, semantic-hint state).
+// `filters`, loading/error/parse-error states, `states`).
 // Extracted from the quick-recall +page.svelte in the search-mode extraction
 // slice — NO behavior change. Mirrors the repo's `.svelte.ts` store idiom
 // (a class with `$state`/`$derived` class fields + a module-level singleton),
@@ -623,10 +623,6 @@ export class SearchStore {
       !this.errorMessage &&
       this.parseErrorMessage !== null,
   );
-
-  // ponytail: superseded by `states`' notice line (keyword only / building);
-  // ResultsList's old hint goes with its QR3 rebuild.
-  readonly showSemanticSearchHint = false;
 
   // ↵ in the main window's titlebar recall field summons this window with its
   // text (`summon_quick_recall_window_command { query }`). Rust parks it until

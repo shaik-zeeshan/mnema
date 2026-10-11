@@ -68,7 +68,7 @@
     focused: boolean;
     onAsk: () => void;
     /** Quick Look on a cited item; `onClose` brings the selected row back. Absent → no eye/Space. */
-    onLook?: (source: AskAiSource, onClose: () => void) => void;
+    onLook?: (sources: AskAiSource[], at: number, onClose: (at: number) => void) => void;
     /** A turn is in flight (suspends the page's idle-clear). */
     streaming?: boolean;
     /** Something the idle-clear must not wipe: an unseen or in-flight answer, or a source hand-off. */
@@ -274,12 +274,15 @@
     }
   }
 
-  // After Quick Look closes, scroll the selected / lit row back into view.
-  function look(s: AskAiSource): void {
-    const row = sel || cite;
-    onLook?.(s, () =>
-      requestAnimationFrame(() => document.querySelector(`[data-ask-row="${row}"]`)?.scrollIntoView({ block: "nearest" })),
-    );
+  // Quick Look on source `i` (↑/↓ there walk the sources). When it closes,
+  // the source it ended on is selected — or lit, when it opened from the
+  // answer's citations — and scrolled into view.
+  function look(i: number, fromCite: boolean): void {
+    onLook?.(sources, i, (at) => {
+      if (fromCite) cite = at + 1;
+      else [sel, cite] = [at + 1, 0];
+      requestAnimationFrame(() => document.querySelector(`[data-ask-row="${at + 1}"]`)?.scrollIntoView({ block: "nearest" }));
+    });
   }
 
   function noticeAction(): void {
@@ -318,9 +321,9 @@
         document.querySelector(`[data-ask-row="${cite}"]`)?.scrollIntoView({ block: "nearest" });
         return true;
       case " ": {
-        const s = sel > 0 ? sources[sel - 1] : sources[(cite || 1) - 1];
-        if (!nav || !onLook || !s) return false;
-        look(s);
+        const i = sel > 0 ? sel - 1 : (cite || 1) - 1;
+        if (!nav || !onLook || !sources[i]) return false;
+        look(i, sel === 0);
         return true;
       }
       case "Enter":
@@ -555,7 +558,7 @@
             aria-label="Quick Look"
             onclick={(event) => {
               event.stopPropagation();
-              look(s);
+              look(i, false);
             }}><IconEye width="14" height="14" /></button
           >
         {:else}

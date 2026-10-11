@@ -23,6 +23,10 @@ describe("residualTerms", () => {
     expect(residualTerms("web webhook")).toEqual(["webhook", "web"]);
   });
 
+  test("drops OR and exclusions, splits on non-alphanumerics (as match_boxes.rs)", () => {
+    expect(residualTerms("stripe OR handle_event -draft")).toEqual(["stripe", "handle", "event"]);
+  });
+
   test("empty residual query yields no terms", () => {
     expect(residualTerms("")).toEqual([]);
   });
@@ -43,12 +47,25 @@ describe("highlightSegments", () => {
     ]);
   });
 
-  test("marks inside words (mirrors backend snippet marks)", () => {
-    const segments = highlightSegments("StripeEvent", ["stripe"]);
+  test("marks whole words only, never inside one", () => {
+    const segments = highlightSegments("StripeEvent the stripe_event", ["stripe", "the"]);
     expect(segments).toEqual([
-      { text: "Stripe", marked: true },
-      { text: "Event", marked: false },
+      { text: "StripeEvent ", marked: false },
+      { text: "the", marked: true },
+      { text: " ", marked: false },
+      { text: "stripe", marked: true },
+      { text: "_event", marked: false },
     ]);
+  });
+
+  test("a question marks its query words, not stop-words or their insides", () => {
+    const terms = residualTerms("what did the team decide about whether?");
+    expect(terms).toEqual(["whether", "decide", "team"]);
+    const marked = highlightSegments("What the team said: whether to ship", terms)
+      .filter((s) => s.marked)
+      .map((s) => s.text);
+    expect(marked).toEqual(["team", "whether"]);
+    expect(residualTerms("what did Ana say")).toEqual(["ana", "say"]);
   });
 
   test("longer term wins where terms overlap", () => {

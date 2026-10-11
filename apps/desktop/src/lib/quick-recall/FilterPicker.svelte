@@ -115,8 +115,10 @@
     font: 400 var(--text-xs) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
+  /* Seven rows — every date option — without scrolling; a long app list
+     scrolls. The page grows the window while the popover is open to fit it. */
   .rc-pop .mx-menu {
-    max-height: 216px;
+    max-height: 252px;
     overflow-y: auto;
   }
   .rc-pop .mx-menu li {
