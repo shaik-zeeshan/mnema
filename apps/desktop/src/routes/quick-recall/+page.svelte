@@ -40,7 +40,6 @@
   import { handleLauncherCaptureKeydown as captureKeydown } from "$lib/quick-recall/search-keys";
   import ResultsList from "$lib/quick-recall/ResultsList.svelte";
   import BarShell from "$lib/quick-recall/BarShell.svelte";
-  import TimelineStrip from "$lib/quick-recall/TimelineStrip.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import Field, { fieldFoot } from "$lib/quick-recall/Field.svelte";
   import IconCalendar from "~icons/lucide/calendar";
@@ -1867,15 +1866,6 @@
         />
       {/if}
     </div>
-
-    <!-- Slice 6: thin 8-day timeline strip between the body and the footer
-         (mockup `.timeline` + `.tl-preview`): one dot per fetched result at
-         its true time, hover previews, click selects (auto-expanding a
-         collapsed section). Rendered whenever results exist, staying put
-         under the Filter Picker like the mockup's always-present strip. -->
-    {#if search.hasResults}
-      <TimelineStrip />
-    {/if}
   {:else}
     <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
          transitions to AT. The transcript below is intentionally NOT a live

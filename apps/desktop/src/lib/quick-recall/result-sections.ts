@@ -1,66 +1,66 @@
-// Pure section-slicing / show-more / selection-clamping logic for the Quick
-// Recall results list (Slice 4 of the search redesign). One `search_capture`
-// call fetches up to 24 frame / 12 audio results; each section initially
-// renders a capped slice with a "↓ show N more" row revealing the fetched
-// remainder client-side (mockup `.more-row`, a collapse/expand toggle).
-// Plain TS so it's bun-testable without Svelte.
+// Pure merge / show-more logic for the Quick Recall results list: one ranked
+// list (best moment + rows) built from the frame and audio lists that one
+// `search_capture` call returns. Plain TS so it's bun-testable without Svelte.
+import type { AudioSearchResultDto, FrameSearchResultDto } from "../types/app-infra";
 
-// Per-call fetch limits (PLAN.md: fetch once, expand client-side; anything the
-// backend reports beyond these via hasMoreFrames/Audio is deliberately ignored).
+// Per-call fetch limits (fetch once, expand client-side; anything the backend
+// reports beyond these via hasMoreFrames/Audio is deliberately ignored).
 export const FRAME_FETCH_LIMIT = 24;
 export const AUDIO_FETCH_LIMIT = 12;
 
-// Initial (collapsed) per-section render caps, per the mockup's CAPS.
-export const FRAME_VISIBLE_CAP = 8;
-export const AUDIO_VISIBLE_CAP = 3;
+// The one collapsed cap: the best moment + 7 rows, per the mockup.
+export const VISIBLE_CAP = 8;
 
-// How many rows of a section are rendered given its collapse state.
-export function visibleCount(total: number, cap: number, expanded: boolean): number {
-  return expanded ? total : Math.min(total, cap);
+export type RankedResult =
+  | { kind: "frame"; frame: FrameSearchResultDto }
+  | { kind: "audio"; audio: AudioSearchResultDto };
+
+// Two-pointer merge of the two rank-ordered lists — the broker's rule
+// (`frame_outranks_audio`, brokered_access.rs): LOWER rank first; on an exact
+// tie the newer start wins, and a frame wins a full tie.
+export function mergeByRank(
+  frames: FrameSearchResultDto[],
+  audio: AudioSearchResultDto[],
+): RankedResult[] {
+  const out: RankedResult[] = [];
+  let f = 0;
+  let a = 0;
+  while (f < frames.length || a < audio.length) {
+    const frame = frames[f];
+    const clip = audio[a];
+    const takeFrame =
+      clip === undefined ||
+      (frame !== undefined &&
+        (frame.rank !== clip.rank
+          ? frame.rank < clip.rank
+          : frame.groupStartAt >= clip.absoluteStartAt));
+    if (takeFrame) out.push({ kind: "frame", frame: frames[f++] });
+    else out.push({ kind: "audio", audio: audio[a++] });
+  }
+  return out;
 }
 
-// The show-more/show-less toggle row label, or null when the section fits its
-// cap (no row rendered). Wording is the mockup's exactly:
-//   "↓ show 16 more screen results" / "↑ show less".
-export function moreRowLabel(
-  total: number,
-  cap: number,
-  expanded: boolean,
-  noun: string,
-): string | null {
-  if (total <= cap) {
-    return null;
-  }
-  return expanded ? "↑ show less" : `↓ show ${total - cap} more ${noun} results`;
+// How many rows are rendered given the collapse state.
+export function visibleCount(total: number, expanded: boolean): number {
+  return expanded ? total : Math.min(total, VISIBLE_CAP);
 }
 
-// Selection lives in the flattened VISIBLE row space (visible frames first,
-// then visible audio). When a section's visible count changes (show-less
-// collapse, or any resize), remap the selected index so the SAME result stays
-// selected when it is still visible; when the collapse hid it, clamp to the
-// nearest visible row. -1 (nothing selected) is preserved; an empty next
-// state yields -1.
-export function remapSelection(
-  selected: number,
-  prev: { frames: number; audio: number },
-  next: { frames: number; audio: number },
-): number {
-  if (selected < 0) {
-    return -1;
+// The show-more/show-less toggle row label, or null when the list fits.
+export function moreRowLabel(total: number, expanded: boolean): string | null {
+  if (total <= VISIBLE_CAP) return null;
+  return expanded ? "↑ show less" : `↓ show ${total - VISIBLE_CAP} more`;
+}
+
+// A row's time (mockup `short`): "14:12" today, "Wed 17:10" within the week,
+// "Oct 6" before that.
+export function momentTime(at: Date, now: Date = new Date()): string {
+  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const days = Math.round(
+    (new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86_400_000,
+  );
+  if (days === 0) return time;
+  if (days > 0 && days < 7) {
+    return `${at.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
   }
-  const nextTotal = next.frames + next.audio;
-  if (nextTotal === 0) {
-    return -1;
-  }
-  if (selected < prev.frames) {
-    // A frame row: same position if still visible, else the nearest visible
-    // row (last visible frame, or row 0 when the frame section emptied).
-    return selected < next.frames ? selected : Math.max(next.frames - 1, 0);
-  }
-  const audioPos = Math.min(selected - prev.frames, prev.audio - 1);
-  if (audioPos >= 0 && audioPos < next.audio) {
-    return next.frames + audioPos;
-  }
-  // Hidden (or out-of-range) audio row: nearest visible is the last row.
-  return nextTotal - 1;
+  return at.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

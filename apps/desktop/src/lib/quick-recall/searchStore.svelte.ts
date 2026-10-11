@@ -34,11 +34,10 @@ import { isTrailingOperatorPartial, trailingToken } from "./query-tokens";
 import { mergePills, parseNatural, type Pill } from "./natural-tokens";
 import {
   AUDIO_FETCH_LIMIT,
-  AUDIO_VISIBLE_CAP,
   FRAME_FETCH_LIMIT,
-  FRAME_VISIBLE_CAP,
-  remapSelection,
+  mergeByRank,
   visibleCount,
+  type RankedResult,
 } from "./result-sections";
 import { FilterSurfaces } from "./filterSurfaces.svelte";
 import { appIcons } from "./app-icons.svelte";
@@ -50,11 +49,8 @@ export const COMMIT_MS = 700;
 
 export const OPTION_ID_PREFIX = "qr-opt-";
 
-// The selected result surfaced to the detail pane: the kind discriminant plus
-// the concrete DTO (frame xor audio).
-export type SelectedSearchResult =
-  | { kind: "frame"; frame: FrameSearchResultDto }
-  | { kind: "audio"; audio: AudioSearchResultDto };
+// The selected result: the kind discriminant plus the concrete DTO.
+export type SelectedSearchResult = RankedResult;
 
 export class SearchStore {
   // The typed text. Recognised phrases in it are tinted live (`naturalParse`)
@@ -93,18 +89,17 @@ export class SearchStore {
   residualQuery = $state("");
   parseErrors = $state<SearchParseError[]>([]);
 
-  // Roving selection over the flattened VISIBLE result list (visible frames
-  // first, then visible audio — collapsed show-more overflow is NOT in the
-  // index space). -1 means nothing highlighted. The search input keeps DOM
+  // Roving selection over the VISIBLE ranked list (`visibleResults`; index 0
+  // is the best moment, collapsed show-more overflow is NOT in the index
+  // space). -1 means nothing highlighted. The search input keeps DOM
   // focus the whole time; selection is surfaced via aria-activedescendant + a
   // `selected` class. Selecting PREVIEWS (the detail pane consumes
   // `selectedResult`); only Enter opens + closes the window.
   selectedIndex = $state(-1);
 
-  // Per-section show-more expansion (mockup `.more-row` toggle). Reset on a
-  // new search (query change), never carried across queries.
-  framesExpanded = $state(false);
-  audioExpanded = $state(false);
+  // Show-more expansion of the ranked list. Reset on a new search (query
+  // change), never carried across queries.
+  expanded = $state(false);
 
   // Lazily-loaded distinct captured apps, cached for the session. A transient
   // failure leaves this null so the next partial retries (ghost/value list just
@@ -229,8 +224,7 @@ export class SearchStore {
       this.errorMessage = null;
       this.resultsQuery = "";
       this.selectedIndex = -1;
-      this.framesExpanded = false;
-      this.audioExpanded = false;
+      this.expanded = false;
       // Drop any parsed scope so stale chips/parse errors don't linger once
       // the query falls back below the minimum length.
       this.appliedRefinements = null;
@@ -289,8 +283,7 @@ export class SearchStore {
       // Expansion state resets on a NEW search; a same-query re-run (retry /
       // scope-narrowed refetch) keeps whatever the user expanded.
       if (trimmed !== this.resultsQuery) {
-        this.framesExpanded = false;
-        this.audioExpanded = false;
+        this.expanded = false;
       }
       this.frames = response.frames;
       this.audio = response.audio;
@@ -315,8 +308,7 @@ export class SearchStore {
       this.resultsQuery = trimmed;
       this.loading = false;
       this.selectedIndex = -1;
-      this.framesExpanded = false;
-      this.audioExpanded = false;
+      this.expanded = false;
       // A transport/backend failure isn't a parse outcome — clear the parsed
       // scope so a prior query's chips/parse errors don't survive an error.
       this.appliedRefinements = null;
@@ -437,47 +429,29 @@ export class SearchStore {
     }
   }
 
-  // ── Keyboard navigation (flattened visible results list) ──────────────────
-  // Results render as a single flattened list (visible frames first, then
-  // visible audio) so the arrow keys can roam across both sections.
-  // `selectedIndex` indexes into that flattened VISIBLE order — rows hidden
-  // behind a collapsed show-more are not selectable; the helpers below
-  // translate it back to a concrete result.
+  // ── Keyboard navigation (one ranked list) ─────────────────────────────────
+  // Frames and audio merge by rank (`mergeByRank`); `selectedIndex` indexes
+  // the VISIBLE slice (0 = the best moment) — rows behind a collapsed
+  // show-more are not selectable.
 
-  visibleFrames = $derived(
-    this.frames.slice(
-      0,
-      visibleCount(this.frames.length, FRAME_VISIBLE_CAP, this.framesExpanded),
-    ),
+  ranked = $derived(mergeByRank(this.frames, this.audio));
+  visibleResults = $derived(
+    this.ranked.slice(0, visibleCount(this.ranked.length, this.expanded)),
   );
-  visibleAudio = $derived(
-    this.audio.slice(
-      0,
-      visibleCount(this.audio.length, AUDIO_VISIBLE_CAP, this.audioExpanded),
-    ),
-  );
-  // The selection space (visible rows only). The total fetched count lives in
-  // `totalResultCount` (section headers / SR announcement).
-  resultCount = $derived(this.visibleFrames.length + this.visibleAudio.length);
-  totalResultCount = $derived(this.frames.length + this.audio.length);
+  // The selection space (visible rows only); `totalResultCount` is everything
+  // fetched (the bar's "N moments", the SR announcement).
+  resultCount = $derived(this.visibleResults.length);
+  totalResultCount = $derived(this.ranked.length);
 
-  // The selected result (kind + DTO) — select = PREVIEW: this is what the
-  // detail pane renders from (Slice 5); nothing opens until Enter.
-  selectedResult = $derived.by<SelectedSearchResult | null>(() => {
-    const index = this.selectedIndex;
-    if (index < 0) {
-      return null;
-    }
-    if (index < this.visibleFrames.length) {
-      return { kind: "frame", frame: this.visibleFrames[index] };
-    }
-    const audio = this.visibleAudio[index - this.visibleFrames.length];
-    return audio !== undefined ? { kind: "audio", audio } : null;
-  });
+  // The selected result (kind + DTO) — select = PREVIEW; nothing opens until
+  // Enter.
+  selectedResult = $derived<SelectedSearchResult | null>(
+    this.visibleResults[this.selectedIndex] ?? null,
+  );
 
   // The currently-selected result is an openable frame carrying a captured
-  // page. Gates the ⌘O "open page" footer hint so it tracks the *selected*
-  // result — never advertising a no-op for an audio/url-less selection.
+  // page. Gates the ⌘↵ "page" footer hint so it tracks the *selected* result —
+  // never advertising a no-op for an audio/url-less selection.
   selectedResultIsOpenable = $derived(
     this.selectedResult?.kind === "frame" && this.selectedResult.frame.url != null,
   );
@@ -497,67 +471,20 @@ export class SearchStore {
     this.selectedIndex = index;
   }
 
-  // Timeline-strip click (Slice 6): select a FETCHED result by section +
-  // fetched-array index. Mirrors the mockup's select(): a dot can target a row
-  // hidden behind a collapsed show-more, so expand that section first, then
-  // set the visible-space index (post-expansion the fetched index IS the
-  // section-local visible index). Selecting only previews, like selectResultAt.
-  selectFetchedResult(kind: "frame" | "audio", index: number): void {
+  // Toggle show-more. A collapse that hides the selected row clamps it to the
+  // last visible row.
+  toggleExpanded(): void {
     this.inputEl?.focus();
-    if (kind === "frame") {
-      if (index < 0 || index >= this.frames.length) {
-        return;
-      }
-      if (index >= this.visibleFrames.length) {
-        this.framesExpanded = true;
-      }
-      this.selectedIndex = index;
-      return;
-    }
-    if (index < 0 || index >= this.audio.length) {
-      return;
-    }
-    if (index >= this.visibleAudio.length) {
-      this.audioExpanded = true;
-    }
-    this.selectedIndex = this.visibleFrames.length + index;
-  }
-
-  // Toggle a section's show-more expansion. If the collapse hides the selected
-  // row (or shifts the audio block), remap so the same result stays selected
-  // where possible, clamped to the nearest visible row otherwise.
-  toggleFramesExpanded(): void {
-    this.inputEl?.focus();
-    const prev = { frames: this.visibleFrames.length, audio: this.visibleAudio.length };
-    this.framesExpanded = !this.framesExpanded;
-    this.#clampSelection(prev);
-  }
-
-  toggleAudioExpanded(): void {
-    this.inputEl?.focus();
-    const prev = { frames: this.visibleFrames.length, audio: this.visibleAudio.length };
-    this.audioExpanded = !this.audioExpanded;
-    this.#clampSelection(prev);
-  }
-
-  #clampSelection(prev: { frames: number; audio: number }): void {
-    this.selectedIndex = remapSelection(this.selectedIndex, prev, {
-      frames: this.visibleFrames.length,
-      audio: this.visibleAudio.length,
-    });
+    this.expanded = !this.expanded;
+    this.selectedIndex = Math.min(this.selectedIndex, this.resultCount - 1);
   }
 
   // Enter's action: open the visible result at `index` in the main-window
   // timeline (frame or audio) and close Quick Recall.
   openResultAt(index: number): void {
-    if (index < 0 || index >= this.resultCount) {
-      return;
-    }
-    if (index < this.visibleFrames.length) {
-      void this.openFrameResult(this.visibleFrames[index]);
-    } else {
-      void this.openAudioResult(this.visibleAudio[index - this.visibleFrames.length]);
-    }
+    const result = this.visibleResults[index];
+    if (result?.kind === "frame") void this.openFrameResult(result.frame);
+    else if (result) void this.openAudioResult(result.audio);
   }
 
   // Open the captured page behind the currently-selected frame result in the
@@ -748,8 +675,7 @@ export class SearchStore {
     this.errorMessage = null;
     this.loading = false;
     this.selectedIndex = -1;
-    this.framesExpanded = false;
-    this.audioExpanded = false;
+    this.expanded = false;
     // Reset parsed scope to pristine so a re-summon starts with no chips /
     // parse errors / scope-narrowed limits.
     this.appliedRefinements = null;
