@@ -45,8 +45,8 @@ pub struct CaptureWindowItem {
     /// Search Context URL, if available (frames only, best-effort).
     pub url: Option<String>,
     /// Audio only — the capture source: `"microphone"` (the user's own voice) or
-    /// `"system_audio"` (the other party). `None` for frames. Lets the derivation
-    /// prompt tag speech `you` vs `other-side` so words spoken TO the user are not
+    /// `"system_audio"` (a call's other side, or media playing). `None` for frames. Lets
+    /// the derivation prompt tag speech `you` vs `computer` so words spoken TO the user are not
     /// misattributed as words the user said (ADR 0050).
     pub source_kind: Option<String>,
     /// Audio only — diarized speaker turns as `(cluster_id, transcript_text)`,
@@ -739,7 +739,7 @@ mod tests {
     /// The DB→item `source_kind` projection (ADR 0050). Every audio item must
     /// carry its segment's capture source — `microphone` (the user's own voice)
     /// vs `system_audio` (the other party) — so the derivation prompt can tag
-    /// speech `you` vs `other-side`; a frame item carries `None`. Drop the
+    /// speech `you` vs `computer`; a frame item carries `None`. Drop the
     /// `source_kind` column read in the audio SELECT (or bind `None`) and the
     /// source-kind asserts below fail — the teeth.
     #[test]

@@ -37,8 +37,8 @@ Do not emit one Activity per app or per time slice. For each Activity give a sho
 or two sentence summary of what the user was doing and how, and an optional category from this \
 fixed taxonomy or omit it when unsure: creating (producing anything — code, documents, designs, \
 slides, music), communication (asynchronous text — email, chat, messages), meetings (real-time \
-conversation — calls, video meetings), research (reading or searching in service of the current \
-task), learning (deliberate skill-building for its own sake — courses, tutorials), organizing \
+conversation the user takes part in — calls, video meetings; never a video, podcast or stream they \
+only watch), research (reading or searching in service of the current task), learning (deliberate skill-building for its own sake — courses, tutorials), organizing \
 (structuring work or time — calendar, task managers, planning, admin paperwork), personal (life \
 errands regardless of subject — shopping, banking, health, travel), entertainment (videos, games, \
 social feeds, browsing for fun). Category boundaries: synchronous conversation is meetings while \
@@ -141,17 +141,17 @@ fn item_tag(subject_type: &str, subject_id: i64) -> String {
 }
 
 /// Map an audio item's `source_kind` to the prompt tag telling the model WHO
-/// spoke: `you` = the user's own voice (microphone), `other-side` = the other
-/// party (system audio). `None` for frames or an unknown/absent source, so no
-/// tag is rendered. This is the ADR 0050 attribution signal — it keeps words
-/// spoken TO the user (system audio) from being read as words the user said.
+/// spoke: `you` = the user's own voice (microphone), `computer` = sound the Mac
+/// played (system audio: a call's other side OR a video/podcast). `None` for
+/// frames or an unknown/absent source. The ADR 0050 attribution signal; not
+/// `other-side`, which made the model read every video as a conversation.
 fn source_tag(subject_type: &str, source_kind: Option<&str>) -> Option<&'static str> {
     if subject_type != "audio_segment" {
         return None;
     }
     match source_kind {
         Some("microphone") => Some("you"),
-        Some("system_audio") => Some("other-side"),
+        Some("system_audio") => Some("computer"),
         _ => None,
     }
 }
@@ -307,9 +307,13 @@ fn build_prompt(window: &CaptureWindow) -> String {
 Each item is tagged with an id (f<id> = on-screen text frame, a<id> = audio transcript segment), \
 its capture time, and (when known) the app/URL it came from. All times are UTC. Audio (a<id>) \
 items also carry a speaker source tag: source=you means the user's OWN voice (microphone), \
-source=other-side means the OTHER party (system audio). Attribute speech by this tag — never \
-render another party's words as the user's own, and never render the user's words as someone \
-else's. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
+source=computer means sound the computer played (system audio) — the other side of a call, OR a \
+video, podcast, stream or music. Decide which from the frames around it: it is a conversation only \
+when a call or meeting app is on screen or the user's own voice answers it; otherwise it is media \
+the user is watching or listening to, and it belongs in the same Activity as the frames showing \
+that media. Attribute speech by this tag — never render computer audio as words the user said, \
+and never render the user's words as someone else's. The tags are for you: write \"watched a video \
+about X\", never \"computer audio\" or \"computer-played\", in a title or summary. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
 distinct anonymized voices within that one segment (the labels are local to that item only, not \
 identities). Segment these items into Activity episodes by intent shift and return \
 DerivedActivityBatch.\n\n",
@@ -1829,13 +1833,9 @@ mod tests {
     #[test]
     fn source_tag_maps_only_known_audio_sources() {
         assert_eq!(source_tag("audio_segment", Some("microphone")), Some("you"));
-        assert_eq!(
-            source_tag("audio_segment", Some("system_audio")),
-            Some("other-side")
-        );
+        assert_eq!(source_tag("audio_segment", Some("system_audio")), Some("computer"));
         // Unknown / absent source, and any non-audio subject, get no tag.
-        assert_eq!(source_tag("audio_segment", None), None);
-        assert_eq!(source_tag("audio_segment", Some("bogus")), None);
+        assert_eq!((source_tag("audio_segment", None), source_tag("audio_segment", Some("bogus"))), (None, None));
         assert_eq!(source_tag("frame", Some("microphone")), None);
     }
 
@@ -1862,16 +1862,16 @@ mod tests {
             ],
         };
         let prompt = build_prompt(&window);
-        // The mic item is tagged `you`; the system-audio item `other-side`.
+        // The mic item is tagged `you`; the system-audio item `computer`.
         assert!(prompt.contains("[a1] t="));
         assert!(prompt.contains("source=you"));
         assert!(prompt.contains("[a2] t="));
-        assert!(prompt.contains("source=other-side"));
+        assert!(prompt.contains("source=computer"));
         // The two distinct voices in the system-audio segment render as A/B.
         assert!(prompt.contains("Speaker A: sounds good"));
         assert!(prompt.contains("Speaker B: thanks"));
-        // The intro explains the attribution rule.
-        assert!(prompt.contains("never render another party's words as the user's own"));
+        // The intro explains the attribution rule, and that computer audio can be media.
+        assert!(prompt.contains("never render computer audio as words the user said") && prompt.contains("it is a conversation only"));
     }
 
     #[test]
