@@ -161,3 +161,94 @@ describe("pill popover keys (capture phase)", () => {
     ]);
   });
 });
+
+describe("Quick Look keys (capture phase)", () => {
+  function fakeLook() {
+    const calls = [];
+    return {
+      calls,
+      result: null,
+      nav: false,
+      show(r) {
+        this.result = r;
+        calls.push(`show:${r}`);
+      },
+      close() {
+        this.result = null;
+        calls.push("close");
+      },
+      scrub: (d) => calls.push(`scrub:${d}`),
+      step: (d) => calls.push(`step:${d}`),
+      openHere: () => calls.push("openHere"),
+      openPage: () => calls.push("openPage"),
+      copy: () => calls.push("copy"),
+      copyResult: (r) => calls.push(`copyResult:${r}`),
+    };
+  }
+  const key = (key, mods = {}) => ({
+    key,
+    isComposing: false,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...mods,
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    stopPropagation() {},
+  });
+
+  test("Space types a space until you arrow into the list; then it opens Quick Look", () => {
+    const store = { ...fakeStore({ query: "pricing" }), selectedResult: "hit" };
+    const look = fakeLook();
+    const first = key(" ");
+    handleLauncherCaptureKeydown(store, first, look);
+    expect(first.defaultPrevented).toBe(false);
+    expect(look.calls).toEqual([]);
+
+    handleLauncherCaptureKeydown(store, key("ArrowDown"), look);
+    expect(look.nav).toBe(true);
+    handleLauncherCaptureKeydown(store, key("a"), look); // typing returns to the field
+    expect(look.nav).toBe(false);
+    handleLauncherCaptureKeydown(store, key("ArrowDown"), look);
+    const space = key(" ");
+    handleLauncherCaptureKeydown(store, space, look);
+    expect(space.defaultPrevented).toBe(true);
+    expect(look.calls).toEqual(["show:hit"]);
+  });
+
+  test("open: ←/→ scrub, ↑/↓ step, ↵ opens the scrubbed frame, ⌘↵ page, ⌘C copy, Space back", () => {
+    const store = fakeStore({ query: "pricing" });
+    const look = fakeLook();
+    look.result = "hit";
+    const keys = [["ArrowLeft"], ["ArrowRight"], ["ArrowUp"], ["ArrowDown"], ["Enter"], ["Enter", { metaKey: true }], ["c", { metaKey: true }], [" "]];
+    for (const [k, mods] of keys) {
+      const e = key(k, mods);
+      handleLauncherCaptureKeydown(store, e, look);
+      expect(e.defaultPrevented).toBe(true);
+    }
+    expect(look.calls).toEqual(["scrub:-1", "scrub:1", "step:-1", "step:1", "openHere", "openPage", "copy", "close"]);
+  });
+
+  test("typing closes it and still types", () => {
+    const look = fakeLook();
+    look.result = "hit";
+    const e = key("x");
+    handleLauncherCaptureKeydown(fakeStore({ query: "pricing" }), e, look);
+    expect(look.calls).toEqual(["close"]);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  test("⌘C in the list copies the selected result unless text is selected", () => {
+    const look = fakeLook();
+    const store = { ...fakeStore({ query: "pricing" }), selectedResult: "hit" };
+    handleLauncherCaptureKeydown(store, key("c", { metaKey: true }), look);
+    store.inputEl = { selectionStart: 0, selectionEnd: 3 };
+    const native = key("c", { metaKey: true });
+    handleLauncherCaptureKeydown(store, native, look);
+    expect(native.defaultPrevented).toBe(false);
+    expect(look.calls).toEqual(["copyResult:hit"]);
+  });
+});

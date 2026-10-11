@@ -67,8 +67,8 @@
     autoMode: QuickRecallAutoAnswer;
     focused: boolean;
     onAsk: () => void;
-    /** Quick Look on a cited item (QR4). Absent → the eye/Space aren't offered. */
-    onLook?: (source: AskAiSource) => void;
+    /** Quick Look on a cited item; `onClose` brings the selected row back. Absent → no eye/Space. */
+    onLook?: (source: AskAiSource, onClose: () => void) => void;
     /** A turn is in flight (suspends the page's idle-clear). */
     streaming?: boolean;
     /** Something the idle-clear must not wipe: an unseen or in-flight answer, or a source hand-off. */
@@ -274,6 +274,14 @@
     }
   }
 
+  // After Quick Look closes, scroll the selected / lit row back into view.
+  function look(s: AskAiSource): void {
+    const row = sel || cite;
+    onLook?.(s, () =>
+      requestAnimationFrame(() => document.querySelector(`[data-ask-row="${row}"]`)?.scrollIntoView({ block: "nearest" })),
+    );
+  }
+
   function noticeAction(): void {
     void openSettings("intelligence");
   }
@@ -312,7 +320,7 @@
       case " ": {
         const s = sel > 0 ? sources[sel - 1] : sources[(cite || 1) - 1];
         if (!nav || !onLook || !s) return false;
-        onLook(s);
+        look(s);
         return true;
       }
       case "Enter":
@@ -547,7 +555,7 @@
             aria-label="Quick Look"
             onclick={(event) => {
               event.stopPropagation();
-              onLook(s);
+              look(s);
             }}><IconEye width="14" height="14" /></button
           >
         {:else}

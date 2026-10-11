@@ -9,6 +9,7 @@
   import { quickRecallSearch as search } from "./searchStore.svelte";
   import { mirrorSegments } from "./natural-tokens";
   import { pillLabel, pillOperators } from "./filter-chips";
+  import { quickLook, lookKeys } from "./detailStore.svelte";
 
   // The token the backend rejected, while the shown results are this query's.
   function badToken(): string | null {
@@ -21,6 +22,8 @@
     const f = search.filters;
     if (f.popoverOpen) return [["↑↓", "pick"], ["↵", "apply"], ["esc", "close"]];
     if (f.pillIndex !== null) return [["↵", "change"], ["⌫", "remove"], ["esc", "back"]];
+    const look = lookKeys();
+    if (look) return look;
     const st = search.states;
     if (st.showRecent) {
       return [["↑↓", "pick"], ["↵", "use"], ...(st.recentIndex < st.recent.length ? [["⌫", "remove"] as [string, string]] : [])];
@@ -32,7 +35,9 @@
       return [
         ...ghost,
         ["↵", "open"],
+        [quickLook.nav ? "space" : "↓ space", "look"],
         ...(search.selectedResultIsOpenable ? [["⌘↵", "page"] as [string, string]] : []),
+        ["⌘C", "copy"],
       ];
     }
     return [...ghost, ["esc", "clear"]];
@@ -189,6 +194,8 @@
 <span class="rc-right">
   {#if mode === "ask"}
     <span><kbd>⇥</kbd>search</span>
+  {:else if quickLook.result}
+    <span><b>{quickLook.index + 1}</b> of {search.resultCount}</span><span><kbd>esc</kbd>back</span>
   {:else if search.loading}
     <span><span class="mx-spin mx-spin--sm"></span>searching…</span>
   {:else if search.states.showRecent}

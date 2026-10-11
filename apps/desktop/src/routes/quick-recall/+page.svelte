@@ -9,7 +9,8 @@
     RecordingSettingsDomainUpdateResponse,
   } from "$lib/types";
   import { humanizeError } from "$lib/format-error";
-  import type { AskAiAvailability } from "$lib/insights/conversation";
+  import type { AskAiAvailability, AskAiSource } from "$lib/insights/conversation";
+  import { sourceResult } from "$lib/quick-recall/quick-look";
   import {
     quickRecallSearch as search,
     OPTION_ID_PREFIX,
@@ -17,6 +18,7 @@
   import { handleLauncherCaptureKeydown as captureKeydown } from "$lib/quick-recall/search-keys";
   import ResultsList from "$lib/quick-recall/ResultsList.svelte";
   import BarShell from "$lib/quick-recall/BarShell.svelte";
+  import QuickLook, { quickLook } from "$lib/quick-recall/QuickLook.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import Field, { fieldFoot } from "$lib/quick-recall/Field.svelte";
   import AskPane from "$lib/quick-recall/AskPane.svelte";
@@ -235,15 +237,24 @@
   // Launcher keys via a WINDOW CAPTURE listener (focus-independent; while the
   // pill popover is up it owns Escape/Arrow/Enter/⌫ regardless of DOM focus),
   // then the ask slot's (stop, evidence, citations, Continue in Chat) ahead of
-  // the field's own handler.
+  // the field's own handler. An open Quick Look owns its keys over the ask
+  // slot; the moments' Space-to-look only applies where moments show.
   function handleLauncherCaptureKeydown(event: KeyboardEvent): void {
     if (event.isComposing) return;
-    if (!filters.popoverOpen && askPane?.handleKey(event)) {
+    if (!quickLook.result && !filters.popoverOpen && askPane?.handleKey(event)) {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
-    captureKeydown(search, event);
+    const moments = !askView || askPane?.momentsBelow() || quickLook.result !== null;
+    captureKeydown(search, event, moments ? quickLook : undefined);
+  }
+
+  // Space / the eye on a cited source: Quick Look on it (its search hit when
+  // it is one, else a result built from the citation).
+  function lookAtSource(source: AskAiSource, onClose: () => void): void {
+    const result = sourceResult(source, search.ranked);
+    if (result) quickLook.show(result, onClose);
   }
 
   onMount(() => {
@@ -362,66 +373,74 @@
 {/snippet}
 
 {#snippet bodyRegion()}
-  <!-- The ask slot: the gate, a can't-answer notice, or the answer itself. -->
-  {#if askView}
-    <AskPane
-      bind:this={askPane}
-      bind:streaming={askStreaming}
-      bind:pending={askPending}
-      view={askView}
-      question={scopedQuestion(search.naturalParse.residual, search.effectivePills)}
-      forced={forced === "ask"}
-      availability={askAvailability}
-      {settings}
-      {autoMode}
-      focused={windowFocused}
-      onAsk={askNow}
-    />
+  {#if quickLook.result}
+    <QuickLook />
   {/if}
-  {#if !askView || askPane?.momentsBelow()}
-    <!-- Results paused: the backend rejected an operator (underlined in the
-         field and the footer). -->
-    {#if search.resultsPaused && search.firstParseError}
-      {@const bad = search.firstParseError.token}
-      {@const [why, hint] = (search.parseErrorMessage ?? "").split(/(?<=\.)\s+(.*)/s)}
-      <div class="quick-recall__paused mx-notice" data-tone="warn" role="alert">
-        <span class="mx-notice__icon"><IconCalendar width="15" height="15" aria-hidden="true" /></span>
-        <b class="mx-notice__title">Results paused — {why.replace(/\.$/, "")}</b>
-        {#if hint}<p class="mx-notice__text">{hint}</p>{/if}
-        {#if bad.includes(":")}
-          <div class="mx-notice__acts">
-            <button
-              type="button"
-              class="mx-btn mx-btn--ghost mx-btn--sm"
-              onclick={() => (search.query = search.query.replace(bad, bad.slice(bad.indexOf(":") + 1)))}
-              >Search it as text</button
-            >
-          </div>
+  <!-- Hidden, not unmounted, under Quick Look: an answer keeps streaming
+       and its selected citation is still there when Quick Look closes. -->
+  <div class="quick-recall__slot" hidden={quickLook.result !== null}>
+    <!-- The ask slot: the gate, a can't-answer notice, or the answer itself. -->
+    {#if askView}
+      <AskPane
+        bind:this={askPane}
+        bind:streaming={askStreaming}
+        bind:pending={askPending}
+        view={askView}
+        question={scopedQuestion(search.naturalParse.residual, search.effectivePills)}
+        forced={forced === "ask"}
+        availability={askAvailability}
+        {settings}
+        {autoMode}
+        focused={windowFocused}
+        onAsk={askNow}
+        onLook={lookAtSource}
+      />
+    {/if}
+    {#if !askView || askPane?.momentsBelow()}
+      <!-- Results paused: the backend rejected an operator (underlined in the
+           field and the footer). -->
+      {#if search.resultsPaused && search.firstParseError}
+        {@const bad = search.firstParseError.token}
+        {@const [why, hint] = (search.parseErrorMessage ?? "").split(/(?<=\.)\s+(.*)/s)}
+        <div class="quick-recall__paused mx-notice" data-tone="warn" role="alert">
+          <span class="mx-notice__icon"><IconCalendar width="15" height="15" aria-hidden="true" /></span>
+          <b class="mx-notice__title">Results paused — {why.replace(/\.$/, "")}</b>
+          {#if hint}<p class="mx-notice__text">{hint}</p>{/if}
+          {#if bad.includes(":")}
+            <div class="mx-notice__acts">
+              <button
+                type="button"
+                class="mx-btn mx-btn--ghost mx-btn--sm"
+                onclick={() => (search.query = search.query.replace(bad, bad.slice(bad.indexOf(":") + 1)))}
+                >Search it as text</button
+              >
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- The results, with the pressed pill's popover laid over them (same
+           grid cell, so the bar still grows to fit it). -->
+      {@render noticeLine()}
+      <div class="quick-recall__body">
+        {#if filters.popoverOpen}
+          <FilterPicker />
+        {/if}
+        {#if search.states.showRecent}
+          <RecentRows />
+        {:else if search.states.emptyState}
+          <EmptyStates {askAvailable} onAskAi={askNow} />
+        {:else if !search.resultsPaused}
+          <ResultsList {askAvailable} onAskAi={askNow} rowsOnly={askView !== null}
+            onlook={(i) => quickLook.show(search.visibleResults[i])} />
         {/if}
       </div>
     {/if}
-
-    <!-- The results, with the pressed pill's popover laid over them (same
-         grid cell, so the bar still grows to fit it). The selected-result
-         preview (DetailPane) returns as Quick Look (QR4). -->
-    {@render noticeLine()}
-    <div class="quick-recall__body">
-      {#if filters.popoverOpen}
-        <FilterPicker />
-      {/if}
-      {#if search.states.showRecent}
-        <RecentRows />
-      {:else if search.states.emptyState}
-        <EmptyStates {askAvailable} onAskAi={askNow} />
-      {:else if !search.resultsPaused}
-        <ResultsList {askAvailable} onAskAi={askNow} rowsOnly={askView !== null} />
-      {/if}
-    </div>
-  {/if}
+  </div>
 {/snippet}
 
 {#snippet footKeys()}
-  {#if askView && askPane}
+  {#if askView && askPane && !quickLook.result}
     {@render fieldFoot(askPane.footKeys())}
   {:else}
     {@render fieldFoot()}
@@ -429,7 +448,7 @@
 {/snippet}
 
 <div class="quick-recall">
-  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} />
+  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : 420} />
 </div>
 
 <style>
@@ -451,6 +470,14 @@
 
   .quick-recall__body > :global(*) {
     grid-area: 1 / 1;
+  }
+
+  .quick-recall__slot {
+    display: contents;
+  }
+
+  .quick-recall__slot[hidden] {
+    display: none;
   }
 
   .quick-recall__paused {

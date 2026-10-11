@@ -9,7 +9,13 @@
 //
 // Esc on an empty field is left alone: the layout's bubble handler closes
 // the window. (Stopping an answer stream is ask mode's, QR5.)
+//
+// Quick Look (`handleQuickLookKeydown`, same capture listener): Space on an
+// arrowed-into selection opens it; then ←/→ scrub · ↑/↓ other results ·
+// ↵ opens the scrubbed frame · ⌘↵ page · ⌘C copy · Esc/Space back; typing
+// closes it and edits the query.
 import type { SearchStore } from "./searchStore.svelte";
+import type { QuickLookStore } from "./detailStore.svelte";
 
 const plain = (e: KeyboardEvent) => !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
 
@@ -116,9 +122,17 @@ export function handleSearchKeydown(
 
 // The pill popover's keys, focus-independent: ↑/↓ move, ↵ applies, ⌫ removes
 // the pill, Esc/Tab close it. Any other key closes it and types on.
-export function handleLauncherCaptureKeydown(search: SearchStore, event: KeyboardEvent): void {
+export function handleLauncherCaptureKeydown(
+  search: SearchStore,
+  event: KeyboardEvent,
+  look?: QuickLookStore,
+): void {
   const filters = search.filters;
-  if (!filters.popoverOpen || event.isComposing) return;
+  if (event.isComposing) return;
+  if (!filters.popoverOpen) {
+    if (look) handleQuickLookKeydown(search, look, event);
+    return;
+  }
   switch (event.key) {
     case "ArrowDown":
       consume(event);
@@ -144,4 +158,57 @@ export function handleLauncherCaptureKeydown(search: SearchStore, event: Keyboar
       return;
   }
   if (!event.metaKey && !event.ctrlKey) filters.selectPill(null);
+}
+
+const typesText = (e: KeyboardEvent) =>
+  (e.key.length === 1 && !e.metaKey && !e.ctrlKey) || e.key === "Backspace";
+
+export function handleQuickLookKeydown(
+  search: SearchStore,
+  look: QuickLookStore,
+  event: KeyboardEvent,
+): void {
+  const copyKey = event.metaKey && event.key.toLowerCase() === "c";
+  if (look.result) {
+    if (event.key === "Enter") {
+      consume(event);
+      if (event.metaKey) look.openPage();
+      else void look.openHere();
+      return;
+    }
+    if (copyKey) {
+      consume(event);
+      void look.copy();
+      return;
+    }
+    const keys: Record<string, () => void> = {
+      ArrowLeft: () => look.scrub(-1),
+      ArrowRight: () => look.scrub(1),
+      ArrowUp: () => look.step(-1),
+      ArrowDown: () => look.step(1),
+      Escape: () => look.close(),
+      " ": () => look.close(),
+      Tab: () => look.close(),
+    };
+    if (keys[event.key] && plain(event)) {
+      consume(event);
+      keys[event.key]();
+    } else if (typesText(event)) {
+      look.close(); // and let the key edit the query
+      look.nav = false;
+    }
+    return;
+  }
+  const selected = search.selectedResult;
+  if ((event.key === "ArrowDown" || event.key === "ArrowUp") && plain(event)) {
+    look.nav = true; // the field's handler moves the selection
+  } else if (event.key === " " && plain(event) && look.nav && selected) {
+    consume(event);
+    look.show(selected);
+  } else if (copyKey && selected && search.inputEl?.selectionStart === search.inputEl?.selectionEnd) {
+    consume(event);
+    void look.copyResult(selected);
+  } else if (typesText(event)) {
+    look.nav = false;
+  }
 }
