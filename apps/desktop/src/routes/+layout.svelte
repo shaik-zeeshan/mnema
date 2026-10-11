@@ -391,7 +391,7 @@
     <Titlebar platform={windowPlatform} {devEnabled} />
   {/if}
 
-  {#if showDedicatedTitlebar}
+  {#if showDedicatedTitlebar && currentWindowLabel() !== "onboarding"}<!-- onboarding's strip owns its chrome -->
   <header class="surface-titlebar">
     <div class="surface-titlebar__drag" data-tauri-drag-region></div>
     <div class="surface-titlebar__actions">

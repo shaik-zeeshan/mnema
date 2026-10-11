@@ -36,7 +36,7 @@
      to read a parent's padding in CSS. Welcome hardcoded the previous
      `48px`/`40px` and overflowed the stage by 20px the moment this changed. */
   --ob-pad-x: 44px;
-  --ob-pad-b: 20px;
+  --ob-pad-b: 12px;
   /* How far a control is allowed to BLEED past its pane's content box: the
      audio bracket (-12px), a peeked chain row (-8px each side) and the capture
      sentence's peek rule (-14px) all sit in the gutter on purpose. A scrolling
@@ -56,107 +56,100 @@
   overflow: hidden;
 }
 
-/* ---- window chrome: dots · step label · playhead ---- */
+/* ---- the strip: lights · step name · flow ruler · count ----
+   52px, kit tokens (`docs/mockups/redesign/onboarding.html`). The window is
+   undecorated, so the lights are drawn (inert) and the strip is the drag handle.
+   The ruler is one tick per screen: done = grey-4, current = tall accent tick,
+   the two detours (Change settings, Voice) short. No fill, no motion. */
 .ob-bar {
-  height: 36px;
+  height: 52px;
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--app-border);
-  background: var(--app-surface);
-  /* The onboarding route renders without the app titlebar, so the bar doubles
-     as the window drag handle. */
-  -webkit-app-region: drag;
+  padding-right: var(--s-5);
+  border-bottom: 1px solid var(--mx-hairline);
+  background: var(--app-bg);
+  user-select: none;
+  -webkit-user-select: none;
 }
-.ob-bar button {
-  -webkit-app-region: no-drag;
-}
-.ob-dots {
+.ob-lights {
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  padding-left: 16px;
 }
-.ob-dots i {
-  width: 8px;
-  height: 8px;
+.ob-lights > * {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 0;
   border-radius: 50%;
-  border: 1px solid var(--app-border-hover);
-  display: block;
+  background: var(--app-border-strong);
 }
-.ob-bar .ob-name {
-  font-size: var(--text-xs);
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
+.ob-lights button:is(:hover, :focus-visible) {
+  background: var(--app-status-running-dot);
+}
+.ob-lights button:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
+.ob-bar__name {
+  padding-left: var(--s-2);
+  font: 500 var(--text-md) / 1 var(--font-sans);
+  color: var(--app-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ob-bar__name small {
+  margin-left: 6px;
+  font-size: inherit;
+  font-weight: 400;
   color: var(--app-text-subtle);
 }
-
-/* The step indicator is a timeline, not dots: eight ticks, a filled track
-   behind the head, and the head itself at the current step. */
-.ob-ph {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.ob-ph-track {
+.ob-rail {
   position: relative;
-  width: 144px;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
   height: 16px;
-  flex: none;
+  padding: 0 4px;
 }
-.ob-ph-track::before {
+.ob-rail::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  top: 7px;
+  bottom: -4px;
   height: 1px;
-  background: var(--app-border-hover);
+  background: var(--mx-hairline);
 }
-.ob-ph-tick {
-  position: absolute;
-  top: 4px;
-  width: 1px;
-  height: 7px;
-  background: var(--app-border-hover);
-  display: block;
+.ob-rail i {
+  flex: none;
+  width: 2px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--chart-grey-2);
 }
-.ob-ph-fill {
-  position: absolute;
-  left: 0;
-  top: 7px;
-  height: 1px;
-  background: var(--app-text-muted);
-  display: block;
-  transition: width 260ms cubic-bezier(0.3, 0.9, 0.35, 1);
+.ob-rail i[data-opt] {
+  height: 5px;
 }
-.ob-ph-head {
-  position: absolute;
-  top: 0;
-  width: 1px;
-  height: 16px;
+.ob-rail i[data-done] {
+  background: var(--chart-grey-4);
+}
+.ob-rail i[data-cur] {
+  height: 15px;
   background: var(--app-accent);
-  box-shadow: 0 0 8px 1px var(--app-accent-glow);
-  display: block;
-  transition: left 260ms cubic-bezier(0.3, 0.9, 0.35, 1);
 }
-.ob-ph-head::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -2.5px;
-  width: 6px;
-  height: 4px;
-  background: var(--app-accent);
-  clip-path: polygon(0 0, 100% 0, 50% 100%);
-}
-.ob-ph-lbl {
-  font-size: var(--text-xs);
+.ob-bar__count {
+  justify-self: end;
+  font: 500 var(--text-sm) / 1 var(--font-mono);
   color: var(--app-text-subtle);
-  letter-spacing: 0.14em;
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+.ob-bar__count b {
+  font-weight: 500;
+  color: var(--app-text-strong);
 }
 
 /* ---- stage: the screen's own canvas ---- */
@@ -170,6 +163,10 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* The kit's dot-grid texture (`mx-texture`), the one ambient decoration. */
+  background-image: radial-gradient(var(--mx-dot) 1px, transparent 1.2px), var(--mx-sheen);
+  background-size: 18px 18px, 100% 100%;
+  background-position: -9px -9px, 0 0;
 }
 
 /* ---- type registers ---- */
@@ -307,14 +304,19 @@
 }
 
 /* The action row every screen ends with: pinned to the bottom of the stage,
-   above a rule. Shell-owned so all eight screens agree on it. */
+   under a hairline that runs edge to edge (it cancels the stage gutters).
+   Shell-owned so all eight screens agree on it. */
 .ob-foot {
   margin-top: auto;
   padding-top: 24px;
   flex: none;
 }
+.ob-foot > .ob-rule {
+  margin-inline: calc(-1 * var(--ob-pad-x));
+  border-top-color: var(--mx-hairline);
+}
 .ob-foot .ob-acts {
-  margin-top: 16px;
+  margin-top: var(--ob-pad-b);
   justify-content: flex-end;
 }
 .ob-foot .ob-acts .spacer {

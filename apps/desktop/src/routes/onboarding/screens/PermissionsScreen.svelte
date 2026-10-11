@@ -24,19 +24,16 @@
       offer after granting Screen Recording. Accessibility (browser URLs) last,
       optional, and only when a Gecko browser is installed.
     must not
-      Gate the microphone, system audio or Accessibility — macOS never re-prompts
-      after a denial, so a hard gate on an OPTIONAL source would trap the user
-      with no in-app recovery. Never show system audio as confirmed: its grant
+      Gate any permission on a denial — Screen Recording included. macOS never
+      re-prompts after one, so a hard gate would trap the user with no in-app
+      recovery; a screen denial leaves an audio-only (or idle) session, which the
+      Finale names. Never show system audio as confirmed: its grant
       cannot be read (ADR 0052), so it gets Request / Request again and a plain
       statement that macOS will not confirm it.
-    gates
-      Screen Recording, and only it. Mnema records the screen — without that
-      grant there is nothing to record — so Continue stays blocked until macOS
-      reports it granted. The gate is passable without leaving onboarding:
-      Request → (on a denial) deep-link to the right pane → Re-check. A grant
-      made in THIS process is not enough: macOS hands ScreenCaptureKit the new
-      grant only to a fresh one, so Continue becomes Relaunch and the flow
-      resumes here (`RESUME_KEY` in onboarding-flow).
+    holds
+      One thing only: a Screen Recording grant made in THIS process. macOS hands
+      ScreenCaptureKit the new grant only to a fresh one, so Continue becomes
+      Relaunch and the flow resumes here (`RESUME_KEY` in onboarding-flow).
 
   SHAPE: the screen is a sequence of MOMENTS, not a list of rows. One question is
   asked at a time; every answered question shrinks to a single ledger line above.
@@ -105,11 +102,10 @@
   );
   const isLast = $derived(current === null || upcoming.length === 0);
 
-  // The one required grant. `flow.screenNeedsRelaunch` blocks just as hard as a
-  // missing grant: the permission reads granted while ScreenCaptureKit in THIS
-  // process still cannot use it, so continuing would only reach the Finale to
-  // fail there.
-  const screenReady = $derived(screenGate(value("screen"), flow.screenNeedsRelaunch).ready);
+  // The one hold on this screen: a screen grant made in THIS process reads
+  // granted while ScreenCaptureKit still cannot use it, so continuing would only
+  // reach the Finale to fail there. A denial holds nothing.
+  const gate = $derived(screenGate(value("screen"), flow.screenNeedsRelaunch));
 
   // Live levels from the system-audio probe (`start_system_audio_level_probe`).
   // The permission state cannot stand in for these: `assumed_working` is sticky
@@ -188,11 +184,10 @@
   }
 
   function advance(): void {
-    if (flow.screenNeedsRelaunch) {
+    if (!gate.ready) {
       void invoke("request_app_relaunch");
       return;
     }
-    if (!screenReady) return;
     if (isLast) {
       onContinue();
       return;
@@ -201,18 +196,17 @@
   }
 
   const primaryLabel = $derived.by(() => {
-    if (flow.screenNeedsRelaunch) return "Relaunch to continue";
-    if (!screenReady) return "Screen recording required";
+    if (!gate.ready) return gate.primaryLabel;
     if (isLast) return "Capture & Storage";
-    // Screen can no longer reach this branch — it is the gate, not a choice.
-    if (current !== null && current !== "accessibility" && isDenied(value(current))) {
+    if (current === "screen") return gate.primaryLabel;
+    if (current === "microphone" && isDenied(value("microphone"))) {
       return "Continue without the microphone";
     }
     return "Continue";
   });
 </script>
 
-<span class="ob-m">One at a time · only the screen is required</span>
+<span class="ob-m">One at a time</span>
 
 {#if settled.length > 0}
   <div class="settled">
@@ -221,8 +215,8 @@
         <span class="tk" class:on={ledgerGranted(id)} aria-hidden="true">{ledgerGranted(id) ? "✓" : "○"}</span>
         <span class="k">{NAMES[id]}</span>
         <!-- The relaunch itself is the primary action below, not a second
-             button here: with Screen Recording required, nothing continues
-             until it happens. -->
+             button here: it is the one hold, so nothing continues until it
+             happens. -->
         <span class="v">{ledgerValue(id)}</span>
       </div>
     {/each}
@@ -248,8 +242,7 @@
     {:else}
       <h1 class="ob-disp mid">Your screen.</h1>
       <p class="ob-lead">
-        The one Mnema is built on — it records the screen so you can scrub back to it. This is the
-        only grant setup will not continue without.
+        The one Mnema is built on — it records the screen so you can scrub back to it.
       </p>
       <div class="ob-acts">
         <button class="ob-btn" disabled={c.requestingPerm !== null} onclick={() => request("screen")}>
@@ -369,13 +362,7 @@
         </span>
       {/if}
     </div>
-    <button
-      class="ob-btn primary"
-      disabled={!screenReady && !flow.screenNeedsRelaunch}
-      onclick={advance}
-    >
-      {primaryLabel}&nbsp; →
-    </button>
+    <button class="ob-btn primary" onclick={advance}>{primaryLabel}&nbsp; →</button>
   </div>
 </div>
 

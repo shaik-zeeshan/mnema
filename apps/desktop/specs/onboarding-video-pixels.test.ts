@@ -48,9 +48,17 @@ mock.module("@tauri-apps/plugin-dialog", () => ({
 }));
 mock.module("$app/navigation", () => ({ goto: async () => {} }));
 
-const { nativeScreenPixels } = await import(
+const { nativeScreenPixels, RULER } = await import(
   "../src/routes/onboarding/onboarding-flow.svelte"
 );
+
+// ponytail: rides on this spec's module mocks rather than duplicating them.
+describe("the strip's flow ruler", () => {
+  test("eight ticks, one per screen; Change settings (5) and Voice (7) are the short optional ones", () => {
+    expect(RULER.map((t) => t.position)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(RULER.filter((t) => t.optional).map((t) => t.position)).toEqual([5, 7]);
+  });
+});
 
 const draft = (over = {}) => ({
   resolutionMode: "preset",

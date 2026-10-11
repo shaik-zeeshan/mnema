@@ -75,7 +75,16 @@
     },
     { name: "Semantic Search", value: f.semanticSearch ? "on" : "off", on: f.semanticSearch },
     // Never pre-ticked: consent is an affirmative act, made on Change settings.
-    { name: "AI features", value: f.aiFeatures ? "on" : "off — needs a provider", on: f.aiFeatures },
+    // On with nothing connected is allowed (a soft warning, not a hold) — say so.
+    {
+      name: "AI features",
+      value: !f.aiFeatures
+        ? "off — needs a provider"
+        : flow.controller.ai.aiConfigReady
+          ? "on"
+          : "on · nothing connected yet",
+      on: f.aiFeatures,
+    },
   ]);
 
   // ── The foot facts: downloads · location · retention · daily figure ───────

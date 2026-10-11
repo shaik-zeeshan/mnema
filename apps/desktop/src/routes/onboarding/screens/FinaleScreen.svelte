@@ -10,6 +10,9 @@
     · waiting  — capture started, no frame yet. Shows the CONFIGURED capture
                  interval, not a spinner; a spinner would not say how long.
     · success  — first frame, then the first OCR hit developing out of noise.
+                 Audio-only when the screen is not live (Screen Recording
+                 denied, mic or system audio still on): it says so and waits
+                 for no frame.
     · idle     — nothing granted, so nothing is recording. No heartbeat: there
                  is nothing alive to beat, and that absence is the point.
     · failed   — capture could not start, named with the real backend reason.
@@ -65,6 +68,17 @@
   const willCapture = $derived(
     liveSources.screen || liveSources.microphone || liveSources.systemAudio,
   );
+  // A screen denial gates nothing: with an audio source live the session runs
+  // audio-only, and the evidence column must not promise a frame.
+  const audioOnly = $derived(phase === "running" && !liveSources.screen);
+  const audioName = $derived(
+    liveSources.microphone && liveSources.systemAudio
+      ? "Audio"
+      : liveSources.microphone
+        ? "Microphone"
+        : "System audio",
+  );
+  const screenOff = $derived(screenGranted ? "Screen capture is turned off" : "Screen Recording is off");
 
   const ocrText = $derived(firstLine(frame?.ocrText ?? null));
   const secondsAgo = $derived(
@@ -117,7 +131,8 @@
   // precondition is checked here to turn a no-op into a named failure.
   async function commit(): Promise<void> {
     const start = willCapture;
-    const baselineId = start ? await newestFrameId() : null;
+    const frames = liveSources.screen;
+    const baselineId = frames ? await newestFrameId() : null;
     if (c.settings === null || !c.canSkipToDashboard) {
       failureReason =
         "Your settings could not be saved: the custom resolution or bitrate is not a valid number.";
@@ -135,7 +150,7 @@
       return;
     }
     phase = "running";
-    void poll(baselineId);
+    if (frames) void poll(baselineId);
   }
 
   // Wait for the pipeline to produce evidence: first a frame row, then the OCR
@@ -209,7 +224,11 @@
     {#if phase === "running"}
       <span class="rec"><span class="dot"></span><span class="ob-m tag">Recording</span></span>
       <h1 class="ob-disp big">It has<br />already<br />started.</h1>
-      <p class="ob-fine" style="margin-top:18px">Capture began the moment you arrived here.</p>
+      <p class="ob-fine" style="margin-top:18px">
+        {audioOnly
+          ? `${audioName} only — ${screenOff}, so there are no frames yet.`
+          : "Capture began the moment you arrived here."}
+      </p>
     {:else if phase === "idle"}
       <span class="rec"><span class="ring-glyph"></span><span class="ob-m tag">Not recording</span></span>
       <h1 class="ob-disp big">Nothing is<br />being<br />recorded.</h1>
@@ -244,7 +263,11 @@
   <div class="col evidence">
     <div>
       <span class="ob-m">
-        {phase === "running" ? "Your first frame" : "What you would be seeing"}
+        {audioOnly
+          ? `Listening — ${audioName.toLowerCase()} only`
+          : phase === "running"
+            ? "Your first frame"
+            : "What you would be seeing"}
       </span>
       {#if previewUrl}
         <div class="shot" style="margin-top:10px">
@@ -253,7 +276,9 @@
       {:else}
         <div class="shot empty" style="margin-top:10px">
           <span class="ob-fine">
-            {#if phase === "running" && frame}
+            {#if audioOnly}
+              No screen frames — {screenOff}.
+            {:else if phase === "running" && frame}
               Frame captured — its image is still being written.
             {:else if phase === "running"}
               first frame due within {intervalS} {intervalS === 1 ? "second" : "seconds"}
@@ -281,6 +306,15 @@
       </div>
     {:else if phase === "idle"}
       <p class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema, then relaunch once.</p>
+    {:else if audioOnly && !screenGranted}
+      <div>
+        <p class="ob-fine">
+          Turn Screen Recording on in System Settings, then relaunch once — frames start on their own.
+        </p>
+        <button class="ob-btn sm" style="margin-top:10px" onclick={openSettings}>
+          Open System Settings&nbsp; ›
+        </button>
+      </div>
     {/if}
   </div>
 </div>

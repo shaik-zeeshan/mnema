@@ -12,16 +12,15 @@
     AI features          $lib/onboarding/AiSetup           providers, key, model
 
   The sections are internal state of this ONE step — `onboarding-flow.svelte.ts`
-  and the phase bar are untouched, this is still step 4 of 8, and the round trip
-  still returns to Your settings.
+  are untouched, this is step 5 of 8 (its own short "round trip" tick), and the
+  round trip still returns to Your settings.
 
   Two rules this screen still carries:
    · `flow.toggleFeature(id)` is the ONLY way to flip a feature — it runs
      `applyToggle`, whose cascades run BOTH directions.
-   · The single gate: AI features may not be left on with no credentials
-     (enabled-but-unconfigured is a silent failure). It holds the two exits from
-     this screen — never the tabs, so the fix is always one click away — and on
-     the AI section it also prints in place, beside the row it is about.
+   · AI features left on with no credentials is a soft warning, never a hold:
+     it prints in place beside the row it is about, and after onboarding the
+     engine pill, Insights and Settings → Providers all say "not set up".
      Deepgram is never selectable here — cloud transcription is Settings-only,
      behind its own consent gate (ADR 0047).
 
@@ -86,7 +85,7 @@
     )?.name ?? c.draftTranscriptionProvider,
   );
 
-  // ── The one gate: AI on with nothing to run it ────────────────────────────
+  // ── AI on with nothing to run it: a warning in place, never a hold ────────
   const aiBlocked = $derived(f.aiFeatures && !ai.aiConfigReady);
 
   // Configuring a provider ENABLES the feature — otherwise the user verifies a
@@ -201,35 +200,20 @@
 <div class="ob-foot">
   <hr class="ob-rule" />
   <div class="ob-acts">
-    {#if aiBlocked}
-      <!-- The only rule this screen enforces. Enabled-but-unconfigured is a
-           silent failure, so BOTH exits are held until it is resolved either
-           way. The tabs stay live — the section that fixes it is one click. -->
-      <span class="ob-blocked spacer">
-        Back held · AI features are on, with nothing to run them
-      </span>
-      {#if active !== "ai"}
-        <button class="ob-btn" type="button" onclick={() => (active = "ai")}>Add a key</button>
-      {/if}
-      <button class="ob-btn" type="button" onclick={() => flow.toggleFeature("aiFeatures")}>
-        Turn AI features off
-      </button>
+    <span class="ob-fine spacer">{SECTIONS[at].note}</span>
+    {#if at === 0}
+      <button class="ob-btn ghost" onclick={onBack}>← Back to your settings</button>
     {:else}
-      <span class="ob-fine spacer">{SECTIONS[at].note}</span>
-      {#if at === 0}
-        <button class="ob-btn ghost" onclick={onBack}>← Back to your settings</button>
-      {:else}
-        <button class="ob-btn ghost" onclick={() => (active = SECTIONS[at - 1].id)}>
-          ← {SECTIONS[at - 1].label}
-        </button>
-      {/if}
-      {#if at === SECTIONS.length - 1}
-        <button class="ob-btn primary" onclick={onContinue}>Back to your settings&nbsp; →</button>
-      {:else}
-        <button class="ob-btn primary" onclick={() => (active = SECTIONS[at + 1].id)}>
-          {SECTIONS[at + 1].label}&nbsp; →
-        </button>
-      {/if}
+      <button class="ob-btn ghost" onclick={() => (active = SECTIONS[at - 1].id)}>
+        ← {SECTIONS[at - 1].label}
+      </button>
+    {/if}
+    {#if at === SECTIONS.length - 1}
+      <button class="ob-btn primary" onclick={onContinue}>Back to your settings&nbsp; →</button>
+    {:else}
+      <button class="ob-btn primary" onclick={() => (active = SECTIONS[at + 1].id)}>
+        {SECTIONS[at + 1].label}&nbsp; →
+      </button>
     {/if}
   </div>
 </div>
