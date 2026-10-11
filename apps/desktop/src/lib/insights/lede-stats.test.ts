@@ -1,6 +1,31 @@
 // @ts-nocheck — run under `bun test` (bun:test types aren't in svelte-check's tsconfig).
 import { describe, expect, it } from "bun:test";
-import { activityColumns, deepFocusDelta, focusHeat } from "./lede-stats";
+import { activityColumns, axisMax, deepFocusDelta, fmtAxisTick, focusHeat } from "./lede-stats";
+
+describe("axisMax / fmtAxisTick", () => {
+  const min = (m) => m * 60000;
+  it("rounds the peak up to the next nice step, so a light week isn't drawn on an 8h scale", () => {
+    expect(axisMax(min(43))).toBe(min(60));
+    expect(axisMax(min(61))).toBe(min(120));
+    expect(axisMax(min(5 * 60))).toBe(min(8 * 60));
+    expect(axisMax(min(8 * 60))).toBe(min(8 * 60));
+    expect(axisMax(min(13 * 60))).toBe(min(16 * 60));
+  });
+  it("keeps a 20m floor so a few seconds aren't drawn full-height", () => {
+    expect(axisMax(0)).toBe(min(20));
+    expect(axisMax(5000)).toBe(min(20));
+  });
+  it("grows past a day in 8h steps (overlapping activities)", () => {
+    expect(axisMax(min(25 * 60))).toBe(min(32 * 60));
+  });
+  it("labels every quarter cleanly", () => {
+    for (const top of [20, 40, 60, 120, 240, 480, 720, 960, 1440])
+      for (const q of [1, 2, 3, 4]) expect(fmtAxisTick((min(top) * q) / 4)).toMatch(/^\d+(\.5)?[mh]$/);
+    expect(fmtAxisTick(min(15))).toBe("15m");
+    expect(fmtAxisTick(min(90))).toBe("1.5h");
+    expect(fmtAxisTick(min(360))).toBe("6h");
+  });
+});
 
 const at = (d, h, m = 0) => new Date(2026, 9, d, h, m).getTime();
 const act = (d, h0, h1, focus, category = "creating") => ({ startedAtMs: at(d, h0), endedAtMs: at(d, h1), focus, category });

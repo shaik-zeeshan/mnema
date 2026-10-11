@@ -5,7 +5,7 @@
   // column so a day without capture still reads as a day. `highlight` dims every
   // part but that key (category-row hover).
   import { tip } from "$lib/components/tooltip";
-  import { fmtDuration, type Column, type PeriodUnit } from "$lib/insights/lede-stats";
+  import { axisMax, fmtAxisTick, fmtDuration, type Column, type PeriodUnit } from "$lib/insights/lede-stats";
 
   interface Props {
     columns: Column[];
@@ -15,13 +15,11 @@
 
   let { columns, unit, highlight = null }: Props = $props();
 
-  const H = 36e5;
   const month = $derived(unit === "month");
-  const peak = $derived(Math.max(0, ...columns.map((c) => c.totalMs / H)));
-  // Day mode can pass 1h per column when activities overlap — the axis grows to fit.
-  const max = $derived(unit === "day" ? Math.max(1, Math.ceil(peak * 4) / 4) : Math.max(8, Math.ceil(peak / 2) * 2));
+  // The axis shrinks to the data in every mode (day columns can pass 1h when
+  // activities overlap — it grows to fit too).
+  const max = $derived(axisMax(Math.max(0, ...columns.map((c) => c.totalMs))));
   const ticks = $derived([max, max * 0.75, max / 2, max / 4, 0]);
-  const tick = (v: number) => (unit === "day" ? `${Math.round(v * 60)}m` : `${Math.round(v)}h`);
   // ponytail: past 12 hourly columns a day gets the mockup's month treatment
   // (tight gap, no captions) — the captions' min-content overflows the panel
   // near 20 columns. The hour's minutes stay in each bar's tooltip.
@@ -31,7 +29,7 @@
 
 <div class="plot" style="--n:{columns.length || 1};--_g:{gap}" class:dim={highlight != null}>
   <div class="axis" aria-hidden="true">
-    {#each ticks as v, i (i)}<span style="bottom:{(v / max) * 100}%">{tick(v)}</span>{/each}
+    {#each ticks as v, i (i)}<span style="bottom:{(v / max) * 100}%">{fmtAxisTick(v)}</span>{/each}
   </div>
   <div class="grid" aria-hidden="true">
     {#each ticks.slice(0, 4) as v, i (i)}<i style="bottom:{(v / max) * 100}%"></i>{/each}
@@ -49,7 +47,7 @@
       <div
         class="col"
         class:today={c.live && unit === "week"}
-        style="height:{(c.totalMs / H / max) * 100}%;align-self:end"
+        style="height:{(c.totalMs / max) * 100}%;align-self:end"
       >
         {#each c.parts as p, i (p.key)}
           <i

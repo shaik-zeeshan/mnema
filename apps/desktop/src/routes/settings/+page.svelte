@@ -41,10 +41,10 @@
     type SettingsSectionId,
   } from "$lib/settings/groups";
   import {
+    SPY_LINE_PX,
+    activeSectionAt,
     isAtScrollTarget,
-    isScrollable,
     isScrolledToBottom,
-    lastSectionOfGroup,
   } from "$lib/settings/scroll-spy";
   // Shared `.settings-shell` styles, split per concern (≤800 lines each),
   // imported in SOURCE ORDER (cascade-critical; theme last). Map: settings-layout.css.
@@ -164,8 +164,8 @@
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Scroll-spy suppression: while a programmatic scroll (deeplink / rail click)
-  // is in flight, the IntersectionObserver must NOT fight it by re-deriving
-  // `activeSection` from intersection ratios mid-animation. The flag is raised
+  // is in flight, the scroll-spy must NOT fight it by re-deriving
+  // `activeSection` from section positions mid-animation. The flag is raised
   // by `focusSettingsSection` and cleared on a scroll-SETTLE signal — once the
   // region's `scrollTop` reaches the target anchor (`spySuppressTarget`) — with
   // the timer only an UPPER bound so suppression can never get stuck (a long
@@ -195,7 +195,7 @@
   }
 
   // Both scroll-spy timers are armed from event handlers (suppress-on-navigate
-  // and the onscroll is-scrolling flag), not from the IntersectionObserver
+  // and the onscroll is-scrolling flag), not from an
   // $effect, so that effect's cleanup never clears them. Clear on destroy so a
   // navigate-away mid-settle (e.g. "← Back to app" within the 700ms suppression
   // window) leaves no timer firing into a torn-down shell.
@@ -229,35 +229,28 @@
       scrollRegionScrollTimer = null;
     }, 800);
 
+    if (!scrollRegion) return;
     // Clear scroll-spy suppression on a settle signal: once the programmatic
-    // scroll has carried `scrollTop` to its target anchor, the observer is safe
-    // to drive `activeSection` again. This beats a blind timer for long smooth
-    // jumps (which can outlast the upper-bound timeout). Done before the tail
-    // short-circuit below so the freshly-settled section can be force-selected.
-    if (
-      spySuppressed &&
-      scrollRegion &&
-      isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)
-    ) {
-      clearSpySuppression();
+    // scroll has carried `scrollTop` to its target anchor, the spy may drive
+    // `activeSection` again. No re-derive on this event, so a clicked section
+    // that can't reach the line (target clamped at the bottom) stays lit.
+    if (spySuppressed) {
+      if (isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)) clearSpySuppression();
+      return;
     }
 
-    // Scroll-spy tail fix: when the region bottoms out, the last section's
-    // anchor can't reach the top detection band, so the IntersectionObserver
-    // leaves the highlight stuck on the second-to-last section. Force-select
-    // the tail here (unless a programmatic scroll is in flight).
-    if (
-      !spySuppressed &&
-      scrollRegion &&
-      isScrolledToBottom({
-        scrollHeight: scrollRegion.scrollHeight,
-        scrollTop: scrollRegion.scrollTop,
-        clientHeight: scrollRegion.clientHeight,
-      })
-    ) {
-      const last = lastSectionOfGroup(activeGroup);
-      if (last && last !== activeSection) activeSection = last;
-    }
+    // Scroll-spy: the section whose top has crossed a line just under the
+    // header, the last one at the bottom. Only the active group's panel is
+    // mounted, so these are its sections in render order.
+    const line = scrollRegion.getBoundingClientRect().top + SPY_LINE_PX;
+    const sections = [
+      ...scrollRegion.querySelectorAll<HTMLElement>('[id^="settings-section-"]'),
+    ].map((el) => ({
+      id: el.id.replace(/^settings-section-/, "") as SettingsSectionId,
+      top: el.getBoundingClientRect().top,
+    }));
+    const id = activeSectionAt(sections, line, isScrolledToBottom(scrollRegion));
+    if (id && id !== activeSection && groupForSection(id) === activeGroup) activeSection = id;
   }
 
   // Scroll a section's anchor into view after the group panel has mounted, and
@@ -338,92 +331,6 @@
   $effect(() => {
     activeGroup;
     untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
-  });
-
-  // ─── Scroll-spy ─────────────────────────────────────────────────────────────
-  // Observe the `#settings-section-*` anchors inside the scroll region and set
-  // `activeSection` to the top-most visible one as the user scrolls. Re-armed on
-  // group change (only the active group's panel is mounted, so spy only moves
-  // `activeSection` within the current group). No-ops while suppression is active
-  // so it never fights a programmatic deeplink / rail-click scroll.
-  $effect(() => {
-    // Re-run when the group changes (its anchors mount) or the scroll region
-    // (re)attaches. Read both so the effect tracks them.
-    activeGroup;
-    const root = scrollRegion;
-    if (!root || typeof IntersectionObserver === "undefined") return;
-
-    let frame = 0;
-    // Each callback reports only the entries that changed, so accumulate the
-    // latest intersection state per element and re-derive the top-most one.
-    const intersecting = new Set<HTMLElement>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          const el = e.target as HTMLElement;
-          if (e.isIntersecting) intersecting.add(el);
-          else intersecting.delete(el);
-        }
-        if (spySuppressed) return;
-        // Coalesce to the next frame: pick the top-most intersecting section.
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-          if (spySuppressed || intersecting.size === 0) return;
-          // At the bottom, the tail section can't reach the top detection band;
-          // the scroll handler force-selects it, so don't override it back to a
-          // mid-band section here. Only short-circuit when the region is actually
-          // scrollable — a short group that fits the viewport is permanently
-          // "bottomed out", which would freeze the highlight on the entry
-          // section; let it fall through to the top-most-intersecting selection.
-          if (
-            isScrollable({
-              scrollHeight: root.scrollHeight,
-              clientHeight: root.clientHeight,
-            }) &&
-            isScrolledToBottom({
-              scrollHeight: root.scrollHeight,
-              scrollTop: root.scrollTop,
-              clientHeight: root.clientHeight,
-            })
-          )
-            return;
-          // Top-most = smallest top offset relative to the root.
-          const rootTop = root.getBoundingClientRect().top;
-          let top: HTMLElement | null = null;
-          let topDelta = Infinity;
-          for (const el of intersecting) {
-            const delta = el.getBoundingClientRect().top - rootTop;
-            if (delta < topDelta) {
-              topDelta = delta;
-              top = el;
-            }
-          }
-          const id = top?.id?.replace(/^settings-section-/, "") as
-            | SettingsSectionId
-            | undefined;
-          if (id && id !== activeSection && groupForSection(id) === activeGroup) {
-            activeSection = id;
-          }
-        });
-      },
-      // Bias toward the top of the viewport so a section is "active" once its
-      // head clears the top edge — matches the deeplink scroll target.
-      { root, rootMargin: "0px 0px -70% 0px", threshold: [0, 0.1, 0.5, 1] },
-    );
-
-    // The anchors live inside the just-mounted group panel; observe after tick.
-    void tick().then(() => {
-      for (const el of root.querySelectorAll<HTMLElement>(
-        '[id^="settings-section-"]',
-      )) {
-        observer.observe(el);
-      }
-    });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
   });
 
   // ─── Auto-save (shared engine) ──────────────────────────────────────────────

@@ -153,6 +153,24 @@ export function fmtDuration(ms: number): string {
   return m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
 }
 
+// Chart axis tops, in minutes: each quarters into clean tick labels (5m … 6h).
+const AXIS_STEPS_MIN = [20, 40, 60, 120, 240, 480, 720, 960, 1440];
+
+/** "Where the time went" axis top: the column peak rounded up to the next nice
+ *  step, never under 20m so a few seconds of capture isn't drawn full-height. */
+export function axisMax(peakMs: number): number {
+  const m = peakMs / 60000;
+  const step = AXIS_STEPS_MIN.find((s) => m <= s);
+  // Past 24h (overlapping activities) keep 2h-multiple quarters.
+  return (step ?? Math.ceil(m / 480) * 480) * 60000;
+}
+
+/** Axis tick label: "15m" · "2h" · "1.5h". */
+export function fmtAxisTick(ms: number): string {
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `${m}m` : `${+(m / 60).toFixed(1)}h`;
+}
+
 const overlap = (a: Activity, s: number, e: number) =>
   Math.max(0, Math.min(a.endedAtMs, e) - Math.max(a.startedAtMs, s));
 
