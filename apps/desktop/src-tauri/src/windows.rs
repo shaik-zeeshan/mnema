@@ -12,6 +12,8 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, W
 
 use crate::native_capture;
 
+pub mod permission_helper;
+
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
@@ -81,6 +83,7 @@ enum AppWindow {
     Debug,
     QuickRecall,
     Update,
+    PermissionHelper,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -295,6 +298,23 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            // A HUD, not a dialog: one card, sized to the kit's `mx-helper`
+            // (460 wide). Built by `permission_helper.rs`, not
+            // `open_or_focus_window` — it must never take focus from System
+            // Settings.
+            Self::PermissionHelper => AppWindowConfig {
+                label: "permission-helper",
+                path: "permission-helper",
+                title: "mnema · Permission",
+                inner_size: (460.0, 62.0),
+                min_inner_size: (460.0, 62.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(8.0),
+            },
         }
     }
 
@@ -306,6 +326,7 @@ impl AppWindow {
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
             "update" => Some(Self::Update),
+            "permission-helper" => Some(Self::PermissionHelper),
             _ => None,
         }
     }
@@ -320,15 +341,16 @@ impl AppWindow {
     /// here — but the compiler cannot prove this array then grew, so satisfying
     /// that match without extending `ALL` would leave the new window unchecked.
     /// Deriving it needs a variant-enumerating macro or a new dependency, which
-    /// is not worth it for six variants; upgrade if this list gets long.
+    /// is not worth it for seven variants; upgrade if this list gets long.
     #[cfg(test)]
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Main,
         Self::Onboarding,
         Self::CliAccessRequest,
         Self::Debug,
         Self::QuickRecall,
         Self::Update,
+        Self::PermissionHelper,
     ];
 }
 
@@ -1233,9 +1255,12 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall | AppWindow::Update) => {
-            DestroyedWindowAction::None
-        }
+        Some(
+            AppWindow::CliAccessRequest
+            | AppWindow::QuickRecall
+            | AppWindow::Update
+            | AppWindow::PermissionHelper,
+        ) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -1256,7 +1281,8 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             AppWindow::Onboarding
             | AppWindow::CliAccessRequest
             | AppWindow::Debug
-            | AppWindow::Update,
+            | AppWindow::Update
+            | AppWindow::PermissionHelper,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1550,7 +1576,8 @@ mod tests {
     fn assert_all_windows_listed(window: super::AppWindow) {
         use super::AppWindow::*;
         match window {
-            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update => {}
+            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update
+            | PermissionHelper => {}
         }
     }
 

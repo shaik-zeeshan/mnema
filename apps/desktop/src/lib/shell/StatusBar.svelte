@@ -22,6 +22,7 @@
   import { licenseStatus } from "$lib/licensing-store.svelte";
   import { renderIdle } from "$lib/render-idle.svelte";
   import { openSettings } from "$lib/surface-windows";
+  import { openPermissionHelper } from "./permission-helper";
   import { getEffectiveGlobalShortcut, type GlobalShortcutId } from "$lib/global-shortcuts";
   import { formatShortcut, type KeyboardPlatform } from "$lib/keyboard";
   import type { AiRuntimeStatus } from "$lib/types/recording";
@@ -201,8 +202,8 @@
   async function openScreenPrivacy(): Promise<void> {
     openingPrivacy = true;
     try {
-      // macOS won't re-prompt once denied: today's path deep-links the pane.
-      await invoke("open_capture_privacy_settings", { kind: "screen" });
+      // macOS won't re-prompt once denied: open the pane + float the helper.
+      await openPermissionHelper("screen");
     } catch {
       // Best-effort; the flag stays until the permission changes.
     } finally {

@@ -214,7 +214,7 @@
     }
   }
 
-  const openSettings = () => invoke("open_capture_privacy_settings", { kind: "screen" });
+  const openSettings = () => invoke("show_permission_helper", { kind: "screen" });
   const relaunch = () => invoke("request_app_relaunch");
   const openMnema = () => goto("/");
 </script>

@@ -57,7 +57,7 @@
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isUpdateWindow = currentWindowLabel() === "update";
-  const isPanelSurface = isQuickRecallWindow();
+  const isPanelSurface = isQuickRecallWindow() || currentWindowLabel() === "permission-helper";
   // The Main window hosts the top-level Surfaces — Timeline (`/`) and Insights
   // (`/insights`) — under the shared titlebar, with the recording status bar
   // at the bottom. Settings shows neither.

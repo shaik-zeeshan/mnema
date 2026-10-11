@@ -839,6 +839,7 @@ pub fn run() {
             windows::request_app_relaunch,
             windows::open_debug_window,
             windows::close_current_window,
+            windows::permission_helper::show_permission_helper,
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
             windows::summon_quick_recall_window_command,

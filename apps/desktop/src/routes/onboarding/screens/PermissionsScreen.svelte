@@ -232,7 +232,7 @@
         switch has to be flipped in System Settings.
       </p>
       <div class="ob-acts">
-        <button class="ob-btn" onclick={() => request("screen")}>Open System Settings&nbsp; ›</button>
+        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "screen" })}>Open System Settings&nbsp; ›</button>
         <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
           {c.refreshingPerms ? "Checking…" : "Re-check"}
         </button>
@@ -256,7 +256,7 @@
       <h1 class="ob-disp mid">Microphone</h1>
       <p class="ob-lead">You said no. Mnema keeps working — without transcripts or speaker names.</p>
       <div class="ob-acts">
-        <button class="ob-btn" onclick={() => request("microphone")}>Open System Settings&nbsp; ›</button>
+        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "microphone" })}>Open System Settings&nbsp; ›</button>
         <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
           {c.refreshingPerms ? "Checking…" : "Re-check"}
         </button>
@@ -324,7 +324,7 @@
     </p>
     <div class="ob-acts">
       {#if accessibilityAsked}
-        <button class="ob-btn" onclick={() => c.openGeckoAccessSettings()}>Open System Settings&nbsp; ›</button>
+        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "accessibility" })}>Open System Settings&nbsp; ›</button>
         <button class="ob-btn" disabled={c.recheckingGeckoAccess} onclick={() => c.recheckGeckoAccess()}>
           {c.recheckingGeckoAccess ? "Checking…" : "Re-check"}
         </button>
