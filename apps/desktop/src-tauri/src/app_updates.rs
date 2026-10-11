@@ -106,12 +106,18 @@ impl std::error::Error for AppUpdateError {}
 #[serde(rename_all = "camelCase")]
 pub struct AppUpdateSettings {
     pub channel: AppUpdateChannel,
+    /// Remote version the out-of-window notice last opened the update window
+    /// for. Persisted — unlike the in-window `notified_version` — because only a
+    /// renewal ends that state, so an in-memory gate would reopen it every launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notified_out_of_window_version: Option<String>,
 }
 
 impl Default for AppUpdateSettings {
     fn default() -> Self {
         Self {
             channel: AppUpdateChannel::Stable,
+            notified_out_of_window_version: None,
         }
     }
 }
@@ -434,9 +440,9 @@ fn apply_running_build_window_gate(
 
 /// What `run_update_check` does with a found remote update: the stored state,
 /// whether the update stays installable (`pending_update` kept), and whether
-/// the "ready to install" notification fires. Out-of-window builds are surfaced
-/// (version shown) but never installable and never nudge — the Settings surface
-/// directs the owner to renew instead.
+/// the owner is notified. Out-of-window builds are surfaced (version shown) but
+/// never installable; their notice opens the update window once per version
+/// (see [`out_of_window_notice`]) and skips the "ready to install" bell.
 #[derive(Debug, PartialEq, Eq)]
 struct RemoteUpdateDecision {
     state: AppUpdateState,
@@ -452,8 +458,19 @@ fn decide_remote_update(out_of_window: bool, notify_available: bool) -> RemoteUp
             AppUpdateState::Available
         },
         installable: !out_of_window,
-        notify: notify_available && !out_of_window,
+        notify: notify_available,
     }
+}
+
+/// The settings to persist when an out-of-window `version` should open the
+/// update window, or `None` when that version already did (once per version).
+fn out_of_window_notice(settings: &AppUpdateSettings, version: &str) -> Option<AppUpdateSettings> {
+    (settings.notified_out_of_window_version.as_deref() != Some(version)).then(|| {
+        AppUpdateSettings {
+            notified_out_of_window_version: Some(version.to_string()),
+            ..settings.clone()
+        }
+    })
 }
 
 pub(crate) fn map_update_error_kind(error: &tauri_plugin_updater::Error) -> AppUpdateErrorKind {
@@ -790,8 +807,24 @@ async fn run_update_check(
                 spawn_update_check(app_handle);
                 return current_status(app_handle);
             }
-            // Out-of-window builds aren't installable, so don't push the
-            // "ready to install from Settings" nudge — the Settings surface directs.
+            // Out of window: open the window (its renew state) once per version,
+            // gated on disk, and skip the "ready to install" bell — it isn't.
+            if decision.notify && out_of_window {
+                let settings_state = app_handle.state::<AppUpdateSettingsState>();
+                let stored = current_settings(app_handle, settings_state.inner());
+                if let Some(next) = out_of_window_notice(&stored, &info.version) {
+                    // Open only once recorded: an unwritable gate would reopen
+                    // the window every tick.
+                    match persist_settings(app_handle, settings_state.inner(), next) {
+                        Ok(_) => prompt_update_available(app_handle),
+                        Err(error) => native_capture::debug_log::log_warn(format!(
+                            "skipped the out-of-window update notice: {error}"
+                        )),
+                    }
+                }
+                emit_current_status(app_handle);
+                return current_status(app_handle);
+            }
             // Push once per version: the periodic check re-finds the same update
             // every tick, and re-pushing would resurrect a dismissed notice.
             let already_notified = {
@@ -906,7 +939,7 @@ pub fn start_update_check_timer(app_handle: &tauri::AppHandle) {
     });
 }
 
-fn spawn_update_check(app_handle: &tauri::AppHandle) {
+pub(crate) fn spawn_update_check(app_handle: &tauri::AppHandle) {
     let app_handle = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let _ = run_update_check(&app_handle, false).await;
@@ -931,7 +964,10 @@ pub async fn set_app_update_channel(
     channel: AppUpdateChannel,
 ) -> AppUpdateStatus {
     let settings_state = app_handle.state::<AppUpdateSettingsState>();
-    let settings = AppUpdateSettings { channel };
+    let settings = AppUpdateSettings {
+        channel,
+        ..current_settings(&app_handle, settings_state.inner())
+    };
     if let Err(error) = persist_settings(&app_handle, settings_state.inner(), settings) {
         return set_runtime_error(&app_handle, AppUpdateState::Failed, error);
     }
@@ -1187,6 +1223,7 @@ mod tests {
             &path,
             serde_json::to_string(&AppUpdateSettings {
                 channel: AppUpdateChannel::Preview,
+                ..AppUpdateSettings::default()
             })
             .expect("settings should serialize"),
         )
@@ -1486,17 +1523,18 @@ mod tests {
     }
 
     #[test]
-    fn out_of_window_remote_update_is_never_installable_and_never_notifies() {
-        // Out of window: surfaced, but pending_update is dropped and the
-        // "ready to install" nudge is suppressed even on a notify check.
+    fn out_of_window_remote_update_is_never_installable_but_still_notifies() {
+        // Out of window: surfaced, pending_update dropped; a notify check still
+        // notifies (the window, gated once per version — not the install bell).
         assert_eq!(
             decide_remote_update(true, true),
             RemoteUpdateDecision {
                 state: AppUpdateState::AvailableOutOfWindow,
                 installable: false,
-                notify: false,
+                notify: true,
             },
         );
+        assert!(!decide_remote_update(true, false).notify);
         assert_eq!(
             decide_remote_update(true, false).state,
             AppUpdateState::AvailableOutOfWindow,
@@ -1517,6 +1555,35 @@ mod tests {
                 installable: true,
                 notify: false,
             },
+        );
+    }
+
+    /// The out-of-window notice opens the window once per remote version, and
+    /// the gate survives a reload of the settings file (a relaunch).
+    #[test]
+    fn out_of_window_notice_opens_once_per_version_across_reloads() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let path = dir.path().join("app-update-settings.json");
+        let stored = AppUpdateSettings {
+            channel: AppUpdateChannel::Preview,
+            ..AppUpdateSettings::default()
+        };
+
+        let first = out_of_window_notice(&stored, "0.1.24").expect("first sighting opens");
+        assert_eq!(first.channel, AppUpdateChannel::Preview, "channel kept");
+        std::fs::write(&path, serde_json::to_string(&first).unwrap()).unwrap();
+
+        let reloaded = load_app_update_settings_from_path(&path);
+        assert_eq!(out_of_window_notice(&reloaded, "0.1.24"), None, "no reopen");
+        let next = out_of_window_notice(&reloaded, "0.1.25").expect("new version opens again");
+        let gate = next.notified_out_of_window_version;
+        assert_eq!(gate.as_deref(), Some("0.1.25"));
+
+        // A file written before the field existed still loads.
+        std::fs::write(&path, r#"{"channel":"preview"}"#).unwrap();
+        assert_eq!(
+            load_app_update_settings_from_path(&path).notified_out_of_window_version,
+            None
         );
     }
 }

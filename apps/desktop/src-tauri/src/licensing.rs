@@ -139,12 +139,19 @@ fn publish(app_handle: &tauri::AppHandle, status: &LicenseStatus, generation: u6
     if !try_claim_publish(&LAST_PUBLISHED_GENERATION, generation) {
         return;
     }
+    let mut changed = false;
     if let Some(gate) = app_handle.try_state::<LicenseGate>() {
         if let Ok(mut slot) = gate.0.lock() {
+            changed = slot.as_ref() != Some(status);
             *slot = Some(status.clone());
         }
     }
     let _ = app_handle.emit(LICENSE_STATUS_EVENT, status);
+    // The update gate reads this status: re-check silently so a renewal or a
+    // Refresh flips a stale `availableOutOfWindow` now, not on the next 2 h tick.
+    if changed {
+        crate::app_updates::spawn_update_check(app_handle);
+    }
     // Keep the native tray in sync: a flip to/from Read-Only Mode changes the
     // tray's status header + Start-Recording enablement, and nothing else
     // rebuilds the menu on a licensing change.
