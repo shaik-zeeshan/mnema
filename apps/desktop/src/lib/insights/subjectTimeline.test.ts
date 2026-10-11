@@ -9,7 +9,9 @@ import type {
 } from "$lib/types/recording";
 import {
   buildTimeline,
-  sortConclusions,
+  chartPoints,
+  chartX,
+  interpolateConfidence,
   type TimelineEvent,
 } from "./subjectTimeline";
 
@@ -282,57 +284,19 @@ describe("buildTimeline", () => {
   });
 });
 
-describe("sortConclusions", () => {
-  const trajectories = new Map<number, SubjectTrajectory>([
-    [1, { conclusionId: 1, statement: "", history: [{ confidence: 0.2, snapshotAtMs: 1 }, { confidence: 0.9, snapshotAtMs: 2 }] }], // Δ +0.7
-    [2, { conclusionId: 2, statement: "", history: [{ confidence: 0.8, snapshotAtMs: 1 }, { confidence: 0.85, snapshotAtMs: 2 }] }], // Δ +0.05
-  ]);
-
-  test("confidence: desc", () => {
-    const cs = [
-      conclusion({ id: 1, confidence: 0.3 }),
-      conclusion({ id: 2, confidence: 0.9 }),
-      conclusion({ id: 3, confidence: 0.6 }),
-    ];
-    expect(sortConclusions(cs, trajectories, "confidence").map((c) => c.id)).toEqual([2, 3, 1]);
-  });
-
-  test("recent: lastSupportedAtMs desc", () => {
-    const cs = [
-      conclusion({ id: 1, lastSupportedAtMs: 100 }),
-      conclusion({ id: 2, lastSupportedAtMs: 300 }),
-      conclusion({ id: 3, lastSupportedAtMs: 200 }),
-    ];
-    expect(sortConclusions(cs, trajectories, "recent").map((c) => c.id)).toEqual([2, 3, 1]);
-  });
-
-  test("warming: trajectory Δ desc, missing history => 0", () => {
-    const cs = [
-      conclusion({ id: 2 }), // Δ +0.05
-      conclusion({ id: 1 }), // Δ +0.7
-      conclusion({ id: 3 }), // no trajectory => 0
-    ];
-    expect(sortConclusions(cs, trajectories, "warming").map((c) => c.id)).toEqual([1, 2, 3]);
-  });
-
-  test("pinned always first in every mode", () => {
-    const cs = [
-      conclusion({ id: 1, confidence: 0.9, lastSupportedAtMs: 999 }),
-      conclusion({ id: 2, confidence: 0.1, lastSupportedAtMs: 1, pinned: true }),
-    ];
-    for (const mode of ["confidence", "recent", "warming"] as const) {
-      expect(sortConclusions(cs, trajectories, mode)[0].id).toBe(2);
-    }
-  });
-
-  test("ties are stable and input is not mutated", () => {
-    const cs = [
-      conclusion({ id: 1, confidence: 0.5 }),
-      conclusion({ id: 2, confidence: 0.5 }),
-      conclusion({ id: 3, confidence: 0.5 }),
-    ];
-    const before = cs.map((c) => c.id);
-    expect(sortConclusions(cs, trajectories, "confidence").map((c) => c.id)).toEqual([1, 2, 3]);
-    expect(cs.map((c) => c.id)).toEqual(before); // not mutated
+describe("chartPoints", () => {
+  test("time axis: domain start → 0, last snapshot → right edge, evidence clamps, one snapshot flat to now", () => {
+    const h = trajectory([[0.4, 1_000], [0.6, 2_000], [0.8, 3_000]]).history;
+    // Domain [1000, 3000]: first snapshot sits at x 0, the last at the right edge.
+    expect(chartPoints(h, 1_000, 3_000)).toEqual([{ x: 0, y: 0.4 }, { x: 0.5, y: 0.6 }, { x: 1, y: 0.8 }]);
+    // An evidence time before the first retained snapshot clamps to its confidence.
+    expect(chartX(500, 1_000, 3_000)).toBe(0);
+    expect(interpolateConfidence(h, 500, 0.9)).toBe(0.4);
+    // A one-snapshot history draws flat from that snapshot to now.
+    expect(chartPoints([{ confidence: 0.5, snapshotAtMs: 2_000 }], 1_000, 5_000)).toEqual([
+      { x: 0.25, y: 0.5 },
+      { x: 1, y: 0.5 },
+    ]);
+    expect(chartPoints([], 1_000, 5_000)).toEqual([]);
   });
 });

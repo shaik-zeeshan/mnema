@@ -44,6 +44,7 @@
   function openSubject(subject: string): void {
     view = "subjects";
     selectedSubject = subject;
+    if (main) main.scrollTop = 0;
   }
 
   // Subjects' "View dismissed": switch to Context with the archive open.
@@ -252,13 +253,14 @@
       <DayTimeline />
     {:else if view === "subjects"}
       {#if selectedSubject}
-        <div class="breadcrumb">
-          <button type="button" class="breadcrumb-back" onclick={() => (selectedSubject = null)}>‹ back</button>
-          <button type="button" class="breadcrumb-link" onclick={() => (selectedSubject = null)}>Subjects</button>
-          <span class="sep">/</span>
-          <span class="current">{selectedSubject}</span>
-        </div>
-        <SubjectDetail subject={selectedSubject} onBack={() => (selectedSubject = null)} />
+        <SubjectDetail
+          subject={selectedSubject}
+          onBack={() => {
+            selectedSubject = null;
+            if (main) main.scrollTop = 0;
+          }}
+          askDisabled={engine.kind === "pitch" || engine.kind === "off"}
+        />
       {:else}
         <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} />
       {/if}
@@ -370,67 +372,5 @@
     display: grid;
     gap: var(--s-2);
     margin: 0 0 var(--s-5);
-  }
-
-  /* Drill-in breadcrumb (Subjects / <name>). Mirrors app.css `.breadcrumb`. */
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin-bottom: 14px;
-  }
-  .breadcrumb-link {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .breadcrumb-link:hover {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-link:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    border-radius: 4px;
-    box-shadow: var(--app-ring);
-  }
-  .breadcrumb .sep {
-    color: var(--app-text-faint);
-  }
-  .breadcrumb .current {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    margin-right: 4px;
-    padding: 2px 7px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11.5px;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .breadcrumb-back:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-back:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    box-shadow: var(--app-ring);
   }
 </style>

@@ -1,10 +1,9 @@
-// subjectTimeline.ts — pure timeline/sort helpers for the Subject-detail
-// redesign (Slice 1). No Svelte, no I/O, `import type` only — so it is
+// subjectTimeline.ts — pure timeline/chart helpers for the Subject detail. No Svelte, no I/O, `import type` only — so it is
 // unit-testable under `bun test`, exactly like onboarding-privacy-sync.ts.
 //
 // buildTimeline merges a conclusion's evidence with its confidence-trajectory
 // markers into one chronological (newest-first) stream, with the "formed"
-// origin pinned to the bottom. sortConclusions orders the conclusion strip.
+// origin pinned to the bottom. chartPoints maps a history onto the chart.
 import type {
   Activity,
   Conclusion,
@@ -223,52 +222,29 @@ function compareEvents(a: TimelineEvent, b: TimelineEvent): number {
   return 0; // stable within null / formed buckets
 }
 
-// ---- Conclusion strip ordering ---------------------------------------------
+// ---- Confidence-over-time chart geometry -----------------------------------
 
-export type ConclusionSort = "confidence" | "recent" | "warming";
-
-/** Order the conclusion strip. Pinned conclusions ALWAYS float first (in every
- *  mode); within the pinned and non-pinned groups the chosen key applies.
- *  Stable within equal keys. Returns a new array; does not mutate input. */
-export function sortConclusions(
-  conclusions: readonly Conclusion[],
-  trajectories: ReadonlyMap<number, SubjectTrajectory>,
-  sort: ConclusionSort,
-): Conclusion[] {
-  const key = (c: Conclusion): number => {
-    switch (sort) {
-      case "confidence":
-        return c.confidence;
-      case "recent":
-        return c.lastSupportedAtMs;
-      case "warming":
-        return warmingDelta(trajectories.get(c.id));
-    }
-  };
-  return [...conclusions].sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1; // pinned first
-    return key(b) - key(a); // desc; equal keys keep input order (stable)
-  });
+export interface ChartPoint {
+  x: number; // 0..1 across the time domain
+  y: number; // 0..1 confidence
 }
 
-/** Trajectory Δ = last - first confidence. Missing / <2-point history => 0. */
-function warmingDelta(trajectory: SubjectTrajectory | undefined): number {
-  const h = trajectory?.history ?? [];
-  if (h.length < 2) return 0;
-  return h[h.length - 1].confidence - h[0].confidence;
+/** Position of `atMs` on a [fromMs, toMs] time axis, clamped to 0..1. Pure. */
+export function chartX(atMs: number, fromMs: number, toMs: number): number {
+  return Math.max(0, Math.min(1, (atMs - fromMs) / Math.max(1, toMs - fromMs)));
 }
 
-// ---- SVG confidence-trajectory geometry (X only) ---------------------------
-// The spine SVG is 72px wide; higher confidence sits further right (matching the
-// mockup where 90% sits right, the formation origin left). Only the X mapping is
-// pure/computed here — node Ys are MEASURED from the real DOM in the component
-// (rows size to their content, so no assumed row heights).
-
-export const SVG_WIDTH = 72;
-const SVG_PAD = 9;
-
-/** Map a 0..1 confidence to its x within the 72px spine (PAD-inset). Pure. */
-export function confidenceToX(confidenceAt: number): number {
-  const c = Math.max(0, Math.min(1, confidenceAt));
-  return Number((SVG_PAD + c * (SVG_WIDTH - 2 * SVG_PAD)).toFixed(2));
+/** One conclusion's Confidence History as a polyline on a shared time axis
+ *  (`toMs` = now). The line starts at the first retained snapshot and holds
+ *  its last value flat to the right edge — confidence only moves when the
+ *  engine writes a snapshot. Empty history => no line. Pure. */
+export function chartPoints(
+  history: readonly ConfidenceSnapshot[],
+  fromMs: number,
+  toMs: number,
+): ChartPoint[] {
+  const pts = history.map((s) => ({ x: chartX(s.snapshotAtMs, fromMs, toMs), y: s.confidence }));
+  const last = pts[pts.length - 1];
+  if (last && last.x < 1) pts.push({ x: 1, y: last.y });
+  return pts;
 }
