@@ -25,6 +25,7 @@ import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.
 import {
   RECORDING_DRAFT_DOMAINS,
   RECORDING_DOMAIN_COMMANDS,
+  deriveSaveStatus,
   type AutosaveRecordingDomain,
 } from "./autosave-core";
 import { createAutosaveEngine } from "./autosave.svelte";
@@ -748,6 +749,19 @@ export class SettingsController {
 
   savingRecSettings = $derived(
     RECORDING_DRAFT_DOMAINS.some((domain) => this.rec.savingRecDomains[domain]),
+  );
+
+  // The header's save status. A shortcut issue blocks (an in-progress key
+  // capture does not); mic LOAD failures live in `micLoadError`, not here.
+  saveStatus = $derived(
+    deriveSaveStatus({
+      saveFailed: !!(this.rec.recError || this.keyboard.keyboardBindingsError || this.audio.micError),
+      blocked:
+        (this.rec.recordingSettings !== null && this.recSaveBlocked) ||
+        this.audio.micApplyBlocked ||
+        Object.keys(this.keyboard.keyboardShortcutIssues).length > 0,
+      saving: this.savingRecSettings || this.keyboard.savingKeyboardBindings || this.audio.savingMicSettings,
+    }),
   );
 }
 

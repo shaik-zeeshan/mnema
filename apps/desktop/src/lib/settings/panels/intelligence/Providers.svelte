@@ -123,7 +123,7 @@
 {/snippet}
 
 {#snippet modelPicker()}
-  <div class="pv-picker pv-ctl">
+  <div class="pv-picker">
     <ModelPickerMenu
       label={c.aiModelValue || "Choose a default model"}
       title={c.aiModelValue || "Choose a default model"}
@@ -154,7 +154,7 @@
 {/snippet}
 
 {#snippet modelsError()}
-  <span class="mx-inline pv-tight" data-tone="warn" role="alert">
+  <span class="mx-inline" data-tone="warn" role="alert">
     <IconInfo width="13" height="13" aria-hidden="true" />Couldn’t list every provider’s models — you can still type any model id.
   </span>
 {/snippet}
@@ -220,14 +220,12 @@
   <SettingRow
     label="Global default model"
     description="Used by every AI feature unless it sets its own override."
-    full={!!c.settingsModelsError}
-    aside={c.settingsModelsError ? modelPicker : undefined}
-    control={c.settingsModelsError ? modelsError : modelPicker}
+    control={modelPicker}
+    below={c.settingsModelsError ? modelsError : undefined}
   />
 
-  <SettingRow label="AI runtime" full>
-    {#snippet aside()}
-      <div class="pv-ctl">
+  <SettingRow label="AI runtime">
+    {#snippet control()}
         <button
           class="mx-btn"
           type="button"
@@ -237,9 +235,8 @@
         >
           {#if testRunning}<span class="mx-spin mx-spin--sm"></span>Testing…{:else}Test connection{/if}
         </button>
-      </div>
     {/snippet}
-    {#snippet control()}
+    {#snippet below()}
       <div class="pv-runtime" aria-live="polite">
         {#if testRunning}
           <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Testing the default model…</span>
@@ -283,19 +280,6 @@
 </SettingGroup>
 
 <style>
-  /* Beside a stacked row's copy, centre the controls on the label + first
-     hint line (mockup) without letting them push that line down. */
-  .pv-ctl {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    white-space: nowrap;
-  }
-
-  :global(.setting-row__aside > .pv-ctl) {
-    height: 20px;
-    margin: 11px 0 -11px;
-  }
   /* A full-width notice / empty state between rows, on the rows' left edge. */
   .pv-notice,
   .pv-empty {
@@ -310,12 +294,6 @@
 
   .pv-picker {
     width: 280px;
-  }
-
-  /* Inline lines read as the row's second description line. */
-  .pv-tight,
-  .pv-runtime {
-    margin-top: -8px;
   }
 
   .pv-runtime {

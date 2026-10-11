@@ -134,30 +134,28 @@
   <StorageMeter />
   <SettingRow label="Save directory" description="Where captures, the database, and model caches live on disk.">
     {#snippet control()}
-      <div class="storage-ctl">
-        <div class="storage-ctl__line">
-          {#if storageLocation}
-            <span class="storage-path" title={storageLocation}>{shownPath}</span>
-          {:else if storageLocationError}
-            <span class="storage-path storage-path--muted">—</span>
-          {:else}
-            <span class="storage-path storage-path--muted" aria-busy="true">
-              <span class="mx-sr">Resolving storage location…</span><span class="mx-skel mx-skel--line"></span>
-            </span>
+      {#if storageLocation}
+        <span class="storage-path" title={storageLocation}>{shownPath}</span>
+      {:else if storageLocationError}
+        <span class="storage-path storage-path--muted">—</span>
+      {:else}
+        <span class="storage-path storage-path--muted" aria-busy="true">
+          <span class="mx-sr">Resolving storage location…</span><span class="mx-skel mx-skel--line"></span>
+        </span>
+      {/if}
+      <button type="button" class="mx-btn" onclick={browseSaveDirectory} disabled={browsing} aria-busy={browsing}>
+        {#if browsing}<span class="mx-spin mx-spin--sm"></span>{:else}<IconFolder width="14" height="14" />{/if}Browse…
+      </button>
+    {/snippet}
+    {#snippet below()}
+      {#if storageLocationError}
+        <span class="mx-inline" data-tone="danger" role="alert">
+          <IconAlert width="13" height="13" />{storageLocation ? storageLocationError : "Couldn’t resolve storage location."}
+          {#if !storageLocation}
+            <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={loadStorageLocation}>Retry</button>
           {/if}
-          <button type="button" class="mx-btn" onclick={browseSaveDirectory} disabled={browsing} aria-busy={browsing}>
-            {#if browsing}<span class="mx-spin mx-spin--sm"></span>{:else}<IconFolder width="14" height="14" />{/if}Browse…
-          </button>
-        </div>
-        {#if storageLocationError}
-          <span class="mx-inline" data-tone="danger" role="alert">
-            <IconAlert width="13" height="13" />{storageLocation ? storageLocationError : "Couldn’t resolve storage location."}
-            {#if !storageLocation}
-              <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={loadStorageLocation}>Retry</button>
-            {/if}
-          </span>
-        {/if}
-      </div>
+        </span>
+      {/if}
     {/snippet}
   </SettingRow>
 
@@ -166,31 +164,29 @@
     description="Automatically delete captured data after the chosen window. Shortening it shows what will go first. Your User Context is kept."
   >
     {#snippet control()}
-      <div class="storage-ctl">
-        <div class="storage-ctl__line">
-          <Segmented
-            md
-            value={rec.draftRetentionPolicy}
-            onValueChange={(v) => (rec.draftRetentionPolicy = v as RetentionPolicy)}
-            options={retentionPresets()}
-            ariaLabel="Retention duration"
-          />
-          <button type="button" class="mx-btn mx-btn--ghost" onclick={runCleanup} disabled={cleanupRunning} aria-busy={cleanupRunning}>
-            {#if cleanupRunning}<span class="mx-spin mx-spin--sm"></span>Running…{:else}Run cleanup now{/if}
-          </button>
-        </div>
-        {#if cleanupError}
-          <span class="mx-inline" data-tone="danger" role="alert">
-            <IconAlert width="13" height="13" />Cleanup failed: {cleanupError}
-            <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={runCleanup} disabled={cleanupRunning}>Retry</button>
-          </span>
-        {:else if cleanup}
-          <span class="mx-inline" data-tone="ok" aria-live="polite">
-            <IconCheck width="13" height="13" /><b>Latest cleanup</b>
-            {count(cleanup.deletedCaptureSegments, "segment")}, {count(cleanup.deletedFrames, "frame")}, {count(cleanup.deletedAudioSegments, "audio segment")}.
-          </span>
-        {/if}
-      </div>
+      <Segmented
+        md
+        value={rec.draftRetentionPolicy}
+        onValueChange={(v) => (rec.draftRetentionPolicy = v as RetentionPolicy)}
+        options={retentionPresets()}
+        ariaLabel="Retention duration"
+      />
+      <button type="button" class="mx-btn mx-btn--ghost" onclick={runCleanup} disabled={cleanupRunning} aria-busy={cleanupRunning}>
+        {#if cleanupRunning}<span class="mx-spin mx-spin--sm"></span>Running…{:else}Run cleanup now{/if}
+      </button>
+    {/snippet}
+    {#snippet below()}
+      {#if cleanupError}
+        <span class="mx-inline" data-tone="danger" role="alert">
+          <IconAlert width="13" height="13" />Cleanup failed: {cleanupError}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={runCleanup} disabled={cleanupRunning}>Retry</button>
+        </span>
+      {:else if cleanup}
+        <span class="mx-inline" data-tone="ok" aria-live="polite">
+          <IconCheck width="13" height="13" /><b>Latest cleanup</b>
+          {count(cleanup.deletedCaptureSegments, "segment")}, {count(cleanup.deletedFrames, "frame")}, {count(cleanup.deletedAudioSegments, "audio segment")}.
+        </span>
+      {/if}
     {/snippet}
   </SettingRow>
 </SettingGroup>
@@ -200,27 +196,6 @@
   /* Mockup `.st-section > .mx-notice`. */
   .storage-notice {
     margin-bottom: var(--s-3);
-  }
-
-  /* Control column: the controls on one line, a result/failure inline under
-     them (SettingRow has no slot under the description). */
-  .storage-ctl {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .storage-ctl__line {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-  }
-
-  .storage-ctl .mx-inline {
-    justify-content: flex-end;
-    text-align: right;
   }
 
   /* Mockup `.st-path`: a read-only mono path chip. */

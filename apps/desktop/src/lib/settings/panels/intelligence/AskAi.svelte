@@ -27,21 +27,19 @@
 </script>
 
 {#snippet enableSwitch()}
-  <div class="aa-ctl"><Switch bind:checked={rec.draftAskAiEnabled} ariaLabel="Enable Ask AI" /></div>
+  <Switch bind:checked={rec.draftAskAiEnabled} ariaLabel="Enable Ask AI" />
 {/snippet}
 
 {#snippet enableStatus()}
-  <div class="aa-lines">
-    {#if askAi.askAiAvailabilityError}
-      <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{askAi.askAiAvailabilityError}</span>
-    {:else}
-      <span class="mx-inline" data-tone="ok"><IconCheck width="13" height="13" aria-hidden="true" />{c.askAiStatusDetail}</span>
-    {/if}
-  </div>
+  {#if askAi.askAiAvailabilityError}
+    <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{askAi.askAiAvailabilityError}</span>
+  {:else}
+    <span class="mx-inline" data-tone="ok"><IconCheck width="13" height="13" aria-hidden="true" />{c.askAiStatusDetail}</span>
+  {/if}
 {/snippet}
 
 {#snippet modelPicker()}
-  <div class="aa-picker aa-ctl">
+  <div class="aa-picker">
     <ModelPickerMenu
       label={c.askAiModelLabel(rec.draftAskAiModel)}
       title={c.askAiModelLabel(rec.draftAskAiModel)}
@@ -68,13 +66,10 @@
 {/snippet}
 
 {#snippet modelsError()}
-  <div class="aa-lines">
-    <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />Couldn’t list models — you can still type any model id.</span>
-  </div>
+  <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />Couldn’t list models — you can still type any model id.</span>
 {/snippet}
 
 {#snippet capControls()}
- <div class="aa-ctl">
   {#if rec.draftAskAiLimitToolCalls}
     <Stepper
       id="ask-ai-max-tool-calls"
@@ -89,13 +84,10 @@
     />
   {/if}
   <Switch bind:checked={rec.draftAskAiLimitToolCalls} disabled={!rec.draftAskAiEnabled} ariaLabel="Limit tool calls per question" />
- </div>
 {/snippet}
 
 {#snippet noCap()}
-  <div class="aa-lines">
-    <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />No cap: one question can run unlimited searches over your retained history.</span>
-  </div>
+  <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />No cap: one question can run unlimited searches over your retained history.</span>
 {/snippet}
 
 <SettingGroup id="settings-section-askAi" title="Ask AI">
@@ -115,25 +107,22 @@
   <SettingRow
     label="Enable Ask AI"
     description="Allow Quick Recall and Chat to answer questions over your redacted capture history."
-    full={enableLine}
-    aside={enableLine ? enableSwitch : undefined}
-    control={enableLine ? enableStatus : enableSwitch}
+    control={enableSwitch}
+    below={enableLine ? enableStatus : undefined}
   />
 
   <SettingRow
     label="Model override"
     description="Optional override for Quick Recall and Chat. A pinned chat thread still wins."
-    full={!!c.settingsModelsError}
-    aside={c.settingsModelsError ? modelPicker : undefined}
-    control={c.settingsModelsError ? modelsError : modelPicker}
+    control={modelPicker}
+    below={c.settingsModelsError ? modelsError : undefined}
   />
 
   <SettingRow
     label="Limit tool calls per question"
     description="Cap how many follow-up searches Ask AI can run for one question."
-    full={!rec.draftAskAiLimitToolCalls}
-    aside={rec.draftAskAiLimitToolCalls ? undefined : capControls}
-    control={rec.draftAskAiLimitToolCalls ? capControls : noCap}
+    control={capControls}
+    below={rec.draftAskAiLimitToolCalls ? undefined : noCap}
   />
 
   <SettingRow
@@ -151,19 +140,6 @@
 </SettingGroup>
 
 <style>
-  /* Beside a stacked row's copy, centre the controls on the label + first
-     hint line (mockup) without letting them push that line down. */
-  .aa-ctl {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    white-space: nowrap;
-  }
-
-  :global(.setting-row__aside > .aa-ctl) {
-    height: 20px;
-    margin: 11px 0 -11px;
-  }
   .aa-notice {
     padding: var(--s-3) 0;
     border-bottom: 1px solid var(--mx-hairline);
@@ -171,14 +147,5 @@
 
   .aa-picker {
     width: 280px;
-  }
-
-  /* Inline lines read as the row's second description line. */
-  .aa-lines {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    margin-top: -8px;
   }
 </style>

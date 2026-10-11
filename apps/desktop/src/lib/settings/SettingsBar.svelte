@@ -23,15 +23,7 @@
     group.sections[0].id === activeSection ? null : group.sections.find((s) => s.id === activeSection)?.label ?? null,
   );
 
-  const status = $derived<"error" | "blocked" | "saving" | "saved">(
-    c.rec.recError || c.keyboard.keyboardBindingsError || c.audio.micError
-      ? "error"
-      : (c.rec.recordingSettings !== null && c.recSaveBlocked) || c.audio.micApplyBlocked
-        ? "blocked"
-        : c.savingRecSettings || c.keyboard.savingKeyboardBindings || c.audio.savingMicSettings
-          ? "saving"
-          : "saved",
-  );
+  const status = $derived(c.saveStatus);
 </script>
 
 <header class="st-bar" class:is-scrolled={scrolled} data-tauri-drag-region>

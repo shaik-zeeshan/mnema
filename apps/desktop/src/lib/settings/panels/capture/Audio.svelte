@@ -15,6 +15,8 @@
   const micState = $derived(audio.micState);
   const loadMicState = () => audio.loadMicState();
   const noDevices = $derived(micState !== null && micState.devices.length === 0);
+  // A failed reload while state is showing; a failed first load is the empty state.
+  const micLine = $derived(audio.micError ?? (micState ? audio.micLoadError : null));
 </script>
 
 {#snippet needsDevice()}
@@ -107,11 +109,11 @@
     {/if}
   {/if}
 
-  {#if audio.micError}
+  {#if micLine}
     <div class="mic-pad">
       <span class="mx-inline" data-tone="danger" role="alert">
-        <IconAlert width="13" height="13" />{audio.micError}
-        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => (audio.micError = null)}>Dismiss</button>
+        <IconAlert width="13" height="13" />{micLine}
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => (audio.micError = audio.micLoadError = null)}>Dismiss</button>
       </span>
     </div>
   {/if}

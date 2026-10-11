@@ -112,13 +112,18 @@
 
   // Node probe for stdio rows: one probe per settings visit, cached here.
   // undefined = not probed (or still in flight), string = found version,
-  // null = Node missing → warn badge on every stdio row.
+  // null = Node missing → warn badge on every stdio row. An effect, not a
+  // mount-time check: the connector list loads after mount, and a stdio
+  // connector can also arrive later via the picker.
   let nodeVersion = $state<string | null | undefined>(undefined);
-  if (rec.draftMcpServers.some((s) => s.transport === "stdio")) {
+  let nodeProbed = false;
+  $effect(() => {
+    if (nodeProbed || !rec.draftMcpServers.some((s) => s.transport === "stdio")) return;
+    nodeProbed = true;
     void aiRuntime.checkNode().then((v) => {
       nodeVersion = v;
     });
-  }
+  });
 
   // Picker modal: add mode (all null), edit/configure (editId), or the in-modal
   // OAuth connect/reconnect flow (connectId) for one existing connector.
@@ -157,15 +162,6 @@
     // A just-added OAuth connector should immediately read "not connected" with
     // a Connect button — refresh so its row picks up the "none" state.
     void aiRuntime.refreshMcpOAuthStates();
-    // First stdio connector may have been added via the picker after this
-    // panel's mount-time probe was skipped — probe now so the warn badge can
-    // show when Node is missing. (mcp_check_node is a cheap invoke; the
-    // picker's own probe result is component-local.)
-    if (nodeVersion === undefined && rec.draftMcpServers.some((s) => s.transport === "stdio")) {
-      void aiRuntime.checkNode().then((v) => {
-        nodeVersion = v;
-      });
-    }
   };
 </script>
 
@@ -203,13 +199,12 @@
           if (e.target === e.currentTarget && flashId === server.id) flashId = null;
         }}
       >
-        <SettingRow label={name} full>
+        <SettingRow label={name}>
           {#snippet labelExtra()}
             <span class="mx-chip">{rowTag(server)}</span>
             {#if needsNode}<span class="mx-chip mx-chip--warn">needs Node</span>{/if}
           {/snippet}
-          {#snippet aside()}
-           <div class="mcp-ctl">
+          {#snippet control()}
             {#if view.badge === "authorizing"}
               <span class="settings-state"><span class="mx-spin mx-spin--sm"></span>authorizing…</span>
             {:else if view.badge === "reconnect"}
@@ -230,10 +225,8 @@
               <button class="mx-btn mx-btn--ghost" type="button" onclick={() => openConfigure(server.id)}>Configure</button>
             {/if}
             <Switch bind:checked={server.enabled} ariaLabel="Enable {name}" />
-           </div>
           {/snippet}
-          {#snippet control()}
-            <div class="mcp-sub">
+          {#snippet below()}
               <span class="mx-inline mcp-hint">
                 {#if needsNode}
                   Runs on this Mac and needs Node, which wasn’t found. Install it from nodejs.org.
@@ -264,7 +257,6 @@
               {#if oauthError}
                 <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{oauthError}</span>
               {/if}
-            </div>
           {/snippet}
         </SettingRow>
       </div>
@@ -296,18 +288,8 @@
 />
 
 <style>
-  /* Beside a stacked row's copy, centre the controls on the label + first
-     hint line (mockup) without letting them push that line down. */
-  .mcp-ctl {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
+  .mcp-row :global(.setting-row__control) {
     white-space: nowrap;
-  }
-
-  :global(.setting-row__aside > .mcp-ctl) {
-    height: 20px;
-    margin: 11px 0 -11px;
   }
   .mcp-empty {
     padding: var(--s-3) 0;
@@ -339,14 +321,6 @@
   .mcp-row--off :global(.setting-row__text),
   .mcp-row--off .mcp-hint {
     opacity: 0.5;
-  }
-  /* The hint reads as the row's description line, tight under the label. */
-  .mcp-sub {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    margin-top: -8px;
   }
   .mcp-count {
     padding: 0;

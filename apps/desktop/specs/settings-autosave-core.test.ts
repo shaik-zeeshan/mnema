@@ -10,6 +10,7 @@ import {
   domainCommand,
   isDirty,
   shouldSaveDomain,
+  deriveSaveStatus,
   type AutosaveRecordingDomain,
 } from "../src/lib/settings/state/autosave-core";
 
@@ -111,5 +112,14 @@ describe("autosave-core: save-block gating", () => {
     expect(
       shouldSaveDomain({ current: '{"a":2}', baseline: null, blocked: false, privacyCommandInFlight: false, saving: false }),
     ).toBe(false);
+  });
+});
+
+describe("autosave-core: deriveSaveStatus", () => {
+  test("failed > blocked > saving > saved", () => {
+    expect(deriveSaveStatus({ saveFailed: true, blocked: true, saving: true })).toBe("error");
+    expect(deriveSaveStatus({ saveFailed: false, blocked: true, saving: true })).toBe("blocked");
+    expect(deriveSaveStatus({ saveFailed: false, blocked: false, saving: true })).toBe("saving");
+    expect(deriveSaveStatus({ saveFailed: false, blocked: false, saving: false })).toBe("saved");
   });
 });

@@ -1,5 +1,5 @@
 /* Shared controls (part 2) — text input, buttons, saved badge, badges,
- * effective device, device list, inline error, misc, inline validation.
+ * inline error, misc.
  *
  * Split out of settings-controls.css for the 800-line cap; imported by the
  * shell immediately AFTER settings-controls.css so the cascade is unchanged
@@ -7,11 +7,6 @@
  * namespaced under `.settings-shell`. */
 
   /* ── Text input ────────────────────────────────────────────── */
-  .settings-shell .input-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
 
   .settings-shell .text-input {
     /* Inset "recess" shadow for the field. Tokenized so the light theme can
@@ -54,8 +49,7 @@
       0 0 0 3px color-mix(in srgb, var(--app-danger) 16%, transparent);
   }
 
-  .settings-shell .text-input:disabled,
-  .settings-shell .text-input.is-disabled {
+  .settings-shell .text-input:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
@@ -141,117 +135,9 @@
     border-color: var(--app-warn-border);
   }
 
-  .settings-shell .badge--danger {
-    background: var(--app-danger-bg);
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-  }
-
   .settings-shell .badge--sm {
     padding: 1px 7px;
     font-size: var(--text-xs);
-  }
-
-  /* Muted, non-uppercase pill — an authorized OAuth connector that is switched
-     off (mockup `mcp-row__badge--muted`): the token is kept, but the row is
-     dimmed and reads "authorized" in a quiet register. */
-  .settings-shell .badge--muted {
-    background: var(--app-surface);
-    color: var(--app-text-subtle);
-    border-color: var(--app-border-strong);
-    text-transform: none;
-    letter-spacing: 0.02em;
-  }
-
-  /* ── Effective device ─────────────────────────────────────── */
-  .settings-shell .effective-device {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    background: var(--app-source-mic-bg);
-    border: 1px solid var(--app-source-mic-border);
-    border-radius: 5px;
-    transition: background 0.2s, border-color 0.2s;
-  }
-
-  .settings-shell .effective-device--none {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-
-  .settings-shell .effective-device__dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-text-faint);
-    flex-shrink: 0;
-    transition: background 0.2s;
-  }
-
-  .settings-shell .effective-device__dot--on {
-    background: var(--app-accent);
-  }
-
-  .settings-shell .effective-device__label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--app-text);
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  /* ── Device list ───────────────────────────────────────────── */
-  .settings-shell .device-list {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .settings-shell .device-item {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 6px 10px;
-    border-radius: 4px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    transition: border-color 0.12s;
-  }
-
-  .settings-shell .device-item--active {
-    border-color: var(--app-source-mic-border);
-    background: var(--app-source-mic-bg);
-  }
-
-  .settings-shell .device-item__dot {
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--app-border-strong);
-    flex-shrink: 0;
-    transition: background 0.15s;
-  }
-
-  .settings-shell .device-item__dot--active {
-    background: var(--app-accent);
-  }
-
-  .settings-shell .device-item__name {
-    font-size: 11px;
-    color: var(--app-text);
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .settings-shell .device-item__badges {
-    display: flex;
-    gap: 4px;
-    flex-shrink: 0;
   }
 
   /* ── Inline error ─────────────────────────────────────────── */
@@ -299,34 +185,3 @@
     font-style: italic;
   }
 
-  .settings-shell .empty-state {
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
-    font-style: italic;
-  }
-
-  /* ── Inline validation ────────────────────────────────────── */
-  .settings-shell .inline-validation {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    padding: 12px 14px;
-    background: var(--app-warn-bg);
-    border: 1px solid var(--app-warn-border);
-    border-radius: 6px;
-  }
-
-  .settings-shell .inline-validation__item {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    font-size: 11px;
-    color: var(--app-warn);
-    line-height: 1.5;
-  }
-
-  .settings-shell .inline-validation__icon {
-    font-size: 10px;
-    flex-shrink: 0;
-    color: var(--app-warn-strong);
-  }

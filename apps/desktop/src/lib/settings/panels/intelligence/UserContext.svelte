@@ -51,7 +51,6 @@
 </script>
 
 {#snippet runActions()}
- <div class="uc-ctl">
   <ReloadButton onclick={refresh} busy={refreshing} title="Refresh" label="Refresh derivation status" />
   <button
     class="mx-btn"
@@ -62,7 +61,6 @@
   >
     {#if running}<span class="mx-spin mx-spin--sm"></span>Deriving…{:else}Run derivation now{/if}
   </button>
- </div>
 {/snippet}
 
 {#snippet statusLines()}
@@ -81,7 +79,6 @@
 {/snippet}
 
 {#snippet budget()}
- <div class="uc-ctl">
   <Segmented
     md
     value={rec.draftUserContextBudgetTier}
@@ -94,11 +91,10 @@
       { value: "thorough", label: "Thorough" },
     ]}
   />
- </div>
 {/snippet}
 
 {#snippet budgetGateLine()}
-  <div class="uc-lines"><span class="mx-inline"><IconInfo width="13" height="13" aria-hidden="true" />{budgetGate}</span></div>
+  <span class="mx-inline"><IconInfo width="13" height="13" aria-hidden="true" />{budgetGate}</span>
 {/snippet}
 
 <SettingGroup id="settings-section-userContext" title="User Context">
@@ -129,18 +125,16 @@
     <SettingRow
       label={paused ? "Derivation paused" : "Deriving activities"}
       description={counts}
-      full={hasLines}
-      aside={hasLines ? runActions : undefined}
-      control={hasLines ? statusLines : runActions}
+      control={runActions}
+      below={hasLines ? statusLines : undefined}
     />
   {/if}
 
   <SettingRow
     label="Derivation Budget"
     description="Paces background work so tokens are spent as a trickle, never a one-time bill. Applies to a cloud default model."
-    full={!!budgetGate}
-    aside={budgetGate ? budget : undefined}
-    control={budgetGate ? budgetGateLine : budget}
+    control={budget}
+    below={budgetGate ? budgetGateLine : undefined}
   />
 
   <SettingRow
@@ -171,26 +165,11 @@
 </SettingGroup>
 
 <style>
-  /* Beside a stacked row's copy, centre the controls on the label + first
-     hint line (mockup) without letting them push that line down. */
-  .uc-ctl {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    white-space: nowrap;
-  }
-
-  :global(.setting-row__aside > .uc-ctl) {
-    height: 20px;
-    margin: 11px 0 -11px;
-  }
-  /* Inline lines read as the row's second description line. */
   .uc-lines {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
     gap: 6px;
-    margin-top: -8px;
   }
 
   .uc-progress {

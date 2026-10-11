@@ -13,6 +13,9 @@
      * status card, conditional fields).
      */
     aside?: Snippet;
+    /** Inline status / error / result lines under the description, in the
+     *  copy column (mockup `.st-row .mx-inline`), so the control stays right. */
+    below?: Snippet;
     /** Leading capture-family dot before the label (mockup `.st-src`). */
     source?: "screen" | "mic" | "sysaudio";
     /** Inline content right after the label, on its line (e.g. an `mx-chip`). */
@@ -34,6 +37,7 @@
     description,
     control,
     aside,
+    below,
     source,
     labelExtra,
     id,
@@ -64,6 +68,9 @@
       </span>
       {#if description}
         <span class="setting-row__description">{description}</span>
+      {/if}
+      {#if below}
+        <div class="setting-row__below">{@render below()}</div>
       {/if}
     </div>
     {#if aside}
@@ -111,6 +118,28 @@
     flex-direction: column;
     gap: 3px;
     min-width: 0;
+  }
+
+  .setting-row__below {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 3px;
+  }
+
+  /* A long line wraps its text, not the icon onto a line of its own. */
+  .setting-row__below :global(.mx-inline) {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+  }
+
+  .setting-row__below :global(.mx-inline > svg) {
+    margin-top: 3px;
+  }
+
+  .setting-row__below:empty {
+    display: none;
   }
 
   .setting-row__aside {

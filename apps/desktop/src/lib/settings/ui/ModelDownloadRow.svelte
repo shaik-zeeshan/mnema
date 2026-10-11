@@ -62,7 +62,7 @@
   const hasInfo = $derived(
     !!info && !!(info.installPath || info.licenseLabel || info.sourceUrl || info.missingFiles?.length),
   );
-  const below = $derived(!progress && (!!error || !!warning || !!note || hasInfo));
+  const hasNotes = $derived(!!error || !!warning || !!note || hasInfo);
   const failed = $derived(!!error || chip?.tone === "danger");
 </script>
 
@@ -119,52 +119,46 @@
       </div>
     {/snippet}
   </SettingRow>
-{:else if below}
-  <SettingRow {label} {description} labelExtra={chip ? labelChip : undefined} full>
-    {#snippet aside()}{@render right()}{/snippet}
-    {#snippet control()}
-      <div class="mdr-notes">
-        {#if error}
-          <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{error}</span>
-        {/if}
-        {#if warning}
-          <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{warning}</span>
-        {/if}
-        {#if note}{@render note()}{/if}
-        {#if hasInfo && info}
-          <details class="mdr-info">
-            <summary>Model files</summary>
-            <dl>
-              {#if info.installPath}<dt>Install path</dt><dd class="mdr-mono">{info.installPath}</dd>{/if}
-              {#if info.licenseLabel}<dt>Licence</dt><dd>{info.licenseLabel}</dd>{/if}
-              {#if info.sourceUrl}<dt>Source</dt><dd class="mdr-mono">{info.sourceUrl}</dd>{/if}
-              {#if info.missingFiles?.length}
-                <dt>Missing</dt>
-                <dd class="mdr-mono">{#each info.missingFiles as file}<div>{file}</div>{/each}</dd>
-              {/if}
-            </dl>
-          </details>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
 {:else}
-  <SettingRow {label} {description} labelExtra={chip ? labelChip : undefined}>
-    {#snippet control()}{@render right()}{/snippet}
-  </SettingRow>
+  <SettingRow
+    {label}
+    {description}
+    labelExtra={chip ? labelChip : undefined}
+    control={right}
+    below={hasNotes ? notes : undefined}
+  />
 {/if}
 
+{#snippet notes()}
+  {#if error}
+    <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{error}</span>
+  {/if}
+  {#if warning}
+    <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{warning}</span>
+  {/if}
+  {#if note}{@render note()}{/if}
+  {#if hasInfo && info}
+    <details class="mdr-info">
+      <summary>Model files</summary>
+      <dl>
+        {#if info.installPath}<dt>Install path</dt><dd class="mdr-mono">{info.installPath}</dd>{/if}
+        {#if info.licenseLabel}<dt>Licence</dt><dd>{info.licenseLabel}</dd>{/if}
+        {#if info.sourceUrl}<dt>Source</dt><dd class="mdr-mono">{info.sourceUrl}</dd>{/if}
+        {#if info.missingFiles?.length}
+          <dt>Missing</dt>
+          <dd class="mdr-mono">{#each info.missingFiles as file}<div>{file}</div>{/each}</dd>
+        {/if}
+      </dl>
+    </details>
+  {/if}
+{/snippet}
+
 <style>
-  .mdr-stack,
-  .mdr-notes {
+  .mdr-stack {
     display: flex;
     flex-direction: column;
     gap: var(--s-3);
     width: 100%;
-  }
-
-  .mdr-notes {
-    gap: 6px;
   }
 
   .mdr-info summary {

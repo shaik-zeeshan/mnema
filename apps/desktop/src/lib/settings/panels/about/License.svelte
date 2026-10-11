@@ -179,16 +179,22 @@
   title="License & Trial"
   hint="Buy once, keep it forever. Verified offline."
 >
-  <SettingRow label="Status" description={hint ?? undefined} full={!status || !!inline || !!overCap}>
+  <SettingRow label="Status" description={hint ?? undefined} full={!!overCap}>
     {#snippet labelExtra()}
       {#if badge}
         <span class="mx-chip {badge.variant === 'plain' ? '' : `mx-chip--${badge.variant}`}">{badge.label}</span>
       {/if}
     {/snippet}
-    {#snippet control()}
+    {#snippet below()}
       {#if !status}
         <span class="mx-inline" role="status"><span class="mx-spin mx-spin--sm"></span>Checking license status…</span>
-      {:else if overCap}
+      {:else if inline && !overCap}
+        {@const Icon = INLINE_ICONS[inline.icon]}
+        <span class="mx-inline" data-tone={inline.tone}><Icon width="13" height="13" />{inline.text}</span>
+      {/if}
+    {/snippet}
+    {#snippet control()}
+      {#if overCap}
         <div class="lic-stack">
           <div class="mx-notice" data-tone="warn">
             <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
@@ -216,9 +222,6 @@
             <span class="mx-inline" data-tone={inline.tone}><Icon width="13" height="13" />{inline.text}</span>
           {/if}
         </div>
-      {:else if inline}
-        {@const Icon = INLINE_ICONS[inline.icon]}
-        <span class="mx-inline lic-under" data-tone={inline.tone}><Icon width="13" height="13" />{inline.text}</span>
       {/if}
     {/snippet}
   </SettingRow>
@@ -227,12 +230,14 @@
     label="Refresh license status"
     description="Re-check with the license server — a renewal or freed-up device lands right away."
   >
-    {#snippet control()}
+    {#snippet below()}
       {#if refreshNote === "ok"}
         <span class="mx-inline" data-tone="ok" role="status"><IconCheck width="13" height="13" />Checked just now</span>
       {:else if refreshNote === "failed"}
         <span class="mx-inline" data-tone="danger" role="alert"><IconCloudOff width="13" height="13" />Failed to reach the server.</span>
       {/if}
+    {/snippet}
+    {#snippet control()}
       <button type="button" class="mx-btn" disabled={refreshing} aria-busy={refreshing} onclick={() => void submitRefresh()}>
         {#if refreshing}<span class="mx-spin mx-spin--sm"></span>Checking…{:else if refreshNote === "failed"}<IconRetry width="13" height="13" />Refresh{:else}Refresh{/if}
       </button>
@@ -300,12 +305,6 @@
     display: grid;
     gap: var(--s-2);
     width: 100%;
-  }
-
-  /* An inline under the Status label sits 6px below it (mockup `.st-row .mx-inline`),
-     not the full row's 12px control gap. */
-  .lic-under {
-    margin-top: -6px;
   }
 
   /* Mockup `.st-keyfield`: the key field takes the row, Activate rides beside it. */

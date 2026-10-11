@@ -47,7 +47,7 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Screen Resolution" full divider={false}>
+  <SettingRow label="Screen Resolution" full>
     {#snippet control()}
       <div class="control-stack">
         {#if nativeCaptureUnsupported}
