@@ -139,7 +139,6 @@
     border-radius: 50%;
     background: var(--app-accent);
     box-shadow: 0 0 8px var(--app-accent-glow);
-    animation: oauth-pulse 1.4s ease-in-out infinite;
   }
 
   /* authorized stage */
@@ -188,26 +187,11 @@
       opacity: 1;
     }
   }
-  @keyframes oauth-pulse {
-    0%,
-    100% {
-      opacity: 0.3;
-      transform: scale(0.8);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
     .oauth__glyph,
     .oauth__check,
     .oauth__x {
       animation: none;
-    }
-    .oauth__pulse {
-      animation: none;
-      opacity: 1;
     }
   }
 </style>

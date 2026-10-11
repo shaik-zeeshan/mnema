@@ -395,24 +395,12 @@
     border-radius: 50%;
     border: 1px solid transparent;
     border-top-color: var(--app-accent);
-    animation: receipt-spin 1s linear infinite;
   }
-  /* Installed-but-unconfirmed: a slow pulse, deliberately not a checkmark. */
+  /* Installed-but-unconfirmed: a dashed glyph, deliberately not a checkmark. */
   .receipt-glyph--pending {
     color: var(--app-accent);
     background: var(--app-accent-bg);
     border: 1px dashed var(--app-accent-border);
-    animation: receipt-pulse 2.2s ease-in-out infinite;
-  }
-  @keyframes receipt-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @keyframes receipt-pulse {
-    50% {
-      box-shadow: 0 0 24px var(--app-accent-glow);
-    }
   }
   @media (prefers-reduced-motion: reduce) {
     .receipt-glyph--busy::after,

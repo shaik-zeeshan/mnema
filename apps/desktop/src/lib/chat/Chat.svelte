@@ -1,6 +1,5 @@
 <script lang="ts">
-  // Chat — the conversation pane of the Chat surface (`/chat`; still mounted by
-  // the Insights Chat tab until IN1 removes it). ADR 0031/0033: conversations
+  // Chat — the conversation pane of the Chat surface (`/chat`). ADR 0031/0033: conversations
   // persist in the shared store and are answered by the Ask AI engine, which
   // reaches capture data only through brokered tools. The backend owns every
   // turn's render model and streams versioned `ask_ai_update` ops; this pane

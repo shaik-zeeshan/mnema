@@ -134,18 +134,19 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
   return query ? `/settings?${query}` : "/settings";
 }
 
-// The last main surface (Timeline `/` or Insights `/insights`) the user was on
-// before entering Settings, so the settings rail's "← Back to app" can return
-// there instead of always landing on Timeline. Only the two known main surfaces
+// The last main surface (Timeline `/`, Insights `/insights` or Chat `/chat`) the
+// user was on before entering Settings, so the settings rail's "← Back to app"
+// can return there instead of always landing on Timeline. Only those surfaces
 // are accepted; anything else (`/settings`, `/onboarding`, …) is rejected and we
 // keep the `/` fallback. Survives navigations because it's module-level, not
 // route state; resets to `/` on a cold load (e.g. tray deeplink straight into
 // Settings), which is the desired fallback.
 let lastMainSurfacePath = "/";
 
-/** Is `pathname` one of the two main app surfaces (Timeline or Insights)? */
+/** Is `pathname` a main app surface (Timeline, Insights or Chat)? */
 function isMainSurface(pathname: string): boolean {
-  return isMainAppRoute(pathname) || normalizeAppPathname(pathname).startsWith("/insights");
+  const path = normalizeAppPathname(pathname);
+  return isMainAppRoute(pathname) || path.startsWith("/insights") || path.startsWith("/chat");
 }
 
 /**
@@ -153,8 +154,12 @@ function isMainSurface(pathname: string): boolean {
  * to return. No-ops for any path that isn't a known main surface, leaving the
  * `/` fallback in place.
  */
-export function recordMainSurface(path: string): void {
-  if (isMainSurface(path)) lastMainSurfacePath = normalizeAppPathname(path);
+export function recordMainSurface(path: string, search = ""): void {
+  if (!isMainSurface(path)) return;
+  const normalized = normalizeAppPathname(path);
+  // An open chat comes back open; only `c` is kept — `?q=` would re-send.
+  const chat = normalized.startsWith("/chat") ? new URLSearchParams(search).get("c") : null;
+  lastMainSurfacePath = chat ? `${normalized}?c=${encodeURIComponent(chat)}` : normalized;
 }
 
 /** The last recorded main surface path, falling back to Timeline (`/`). */
@@ -176,7 +181,7 @@ export async function openSettings(
     // Remember where we came from so "← Back to app" returns to it. The other
     // branch (focusing Main from a non-main window) has no meaningful previous
     // main surface, so we leave the stored fallback untouched.
-    recordMainSurface(window.location.pathname);
+    recordMainSurface(window.location.pathname, window.location.search);
     await goto(settingsRoutePath(tab, focus));
     return;
   }

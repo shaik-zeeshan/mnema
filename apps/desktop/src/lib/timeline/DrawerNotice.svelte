@@ -125,22 +125,5 @@
     height: 9px;
     border-radius: 3px;
     background: var(--app-surface-hover);
-    animation: drawer-skel-pulse 1.4s ease-in-out infinite;
-  }
-
-  @keyframes drawer-skel-pulse {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 0.9;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .skel span {
-      animation: none;
-    }
   }
 </style>

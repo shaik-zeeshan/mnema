@@ -58,25 +58,8 @@
     cursor: default;
   }
 
-  /* Spin while a reload is in flight (replaces the old "…" label). We rotate the
-     icon's HTML wrapper, NOT the <svg> itself: WKWebView does not reliably rotate
-     an <svg> element around its own center, so an svg-targeted animation reads as
-     static. An HTML element rotates around its box center as expected. */
   .settings-shell .settings-icon-btn__glyph {
     display: inline-flex;
-  }
-  .settings-shell .settings-icon-btn--spin .settings-icon-btn__glyph {
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @keyframes settings-icon-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .settings-shell .settings-icon-btn--spin .settings-icon-btn__glyph {
-      animation: none;
-    }
   }
 
   .settings-shell .about-id__mark {

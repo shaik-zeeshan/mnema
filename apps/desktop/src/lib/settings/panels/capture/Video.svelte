@@ -207,16 +207,7 @@
     stroke-linejoin: round;
   }
 
-  /* The "checking support…" state spins its loader. Rotate the wrapper span, not
-     the svg (WKWebView won't reliably rotate an svg around its own center). */
   .resolution-pending-notice__icon--spin {
     display: inline-flex;
-    animation: settings-icon-spin 0.7s linear infinite;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .resolution-pending-notice__icon--spin {
-      animation: none;
-    }
   }
 </style>
