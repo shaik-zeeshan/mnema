@@ -11,10 +11,13 @@
   children are never in different scroll positions. Model pickers and provider
   Segmenteds stay where they are — only the on/off column moves here.
 
-  Three rules the mockup exists to enforce:
-   · Indentation means exactly ONE thing: child of the row above. Transcription
-     has a second parent (either audio source), and that is drawn as a bracket in
-     the gutter — a different visual axis, so neither has to be decoded.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Change settings →
+  What Mnema will do): `mx-switch` rows in source colours, tree elbows for
+  dependent rows (no left bars), a stacked disk bar.
+
+  Three rules it enforces:
+   · Indentation means exactly ONE thing: child of the row above (Transcription's
+     "either audio source" parentage is in its description and lock fix).
    · Hover or keyboard-focus previews the cascade BEFORE it commits: the branch
      goes dashed, every row that would move is tagged `goes off`, both totals
      print their would-be value, and the same sentence is announced on
@@ -26,7 +29,6 @@
   owns the arithmetic. This file owns pixels, copy and the two announcements.
 -->
 <script lang="ts">
-  import Switch from "$lib/components/Switch.svelte";
   import { formatBytes } from "$lib/settings/state/format";
   import { costDelta, featureCost } from "./feature-cost";
   import {
@@ -39,6 +41,8 @@
     type TogglePreview,
   } from "./feature-rules";
   import type { ModelInventory, ModelSelections } from "./resolve-setup";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconInfo from "~icons/lucide/info";
 
   interface Props {
     /** The live feature state — `flow.features`. */
@@ -213,16 +217,15 @@
   const downloadLabel = (bytes: number, approximate: boolean) =>
     bytes > 0 ? `${approximate ? "about " : ""}${formatBytes(bytes)}` : "nothing";
 
-  /** The disk bar, in chain order. Rows with no disk cost never get a segment.
-   *  Colours ride the style attribute (tokens, never a literal) so there is no
-   *  dynamic class for Svelte's CSS pruner to guess at. */
+  /** The disk bar, in chain order. Rows with no disk cost never get a segment;
+   *  capture sources wear their source colour. */
   const BAR: readonly (readonly [FeatureId, string])[] = [
-    ["screen", "var(--app-accent-strong)"],
-    ["ocr", "var(--app-accent)"],
-    ["microphone", "var(--app-info)"],
-    ["systemAudio", "var(--app-info)"],
-    ["transcription", "var(--app-text-subtle)"],
-    ["semanticSearch", "var(--app-warn)"],
+    ["screen", "var(--app-source-screen)"],
+    ["ocr", "var(--chart-grey-4)"],
+    ["microphone", "var(--app-source-mic)"],
+    ["systemAudio", "var(--app-source-sysaudio)"],
+    ["transcription", "var(--chart-grey-3)"],
+    ["semanticSearch", "var(--app-info)"],
   ];
   const barWidth = (id: FeatureId) =>
     cost.diskMbPerDay > 0 ? (cost.diskByFeature[id] / cost.diskMbPerDay) * 100 : 0;
@@ -230,405 +233,293 @@
   const aiBlocked = $derived(features.aiFeatures && !aiConfigured);
 </script>
 
-{#snippet featureRow(id: FeatureId)}
+{#snippet featureRow(id: FeatureId, depth: number, src: string | null)}
   {@const fix = lockFix(features, id)}
   {@const cut = cutBy(id)}
   {@const willMove = movesWith(id)}
   {@const description = describe(id)}
+  {@const disk = Math.round(cost.diskByFeature[id])}
+  {@const dl = cost.downloadByFeature[id]}
   <div
-    class="row"
-    class:dead={fix !== null}
+    class="ob-feat"
+    class:off={!features[id]}
+    class:kid={depth > 0}
+    class:cut={depth > 0 && cut !== null}
     class:willmove={willMove}
     class:peek={peeked?.id === id}
+    style:--d={depth}
     role="group"
     aria-label={FEATURE_LABELS[id]}
     onmouseenter={() => setPeek(id)}
     onfocusin={() => setPeek(id)}
   >
     <div>
-      <div class="t">
+      <span class="ob-feat__name">
+        {#if src}<i class="ob-src" style:--c="var({src})"></i>{/if}
         {FEATURE_LABELS[id]}
         {#if willMove}
-          <span class="carry pre">goes {peeked?.p.after[id] ? "on" : "off"}</span>
+          <span class="ob-feat__carry pre">goes {peeked?.p.after[id] ? "on" : "off"}</span>
         {:else if cut}
-          <span class="carry">off with {cut}</span>
+          <span class="ob-feat__carry">off with {cut}</span>
         {/if}
-      </div>
-      <div class="d" class:warn={fix !== null && !cut}>{description}</div>
+      </span>
+      <span class="ob-feat__desc" class:warn={fix !== null && !cut}>{description}</span>
     </div>
-
-    <div class="cost">
-      {#if cost.diskByFeature[id] > 0}
-        <span class="ob-num">{Math.round(cost.diskByFeature[id])} MB/day</span>
+    <span class="ob-feat__cost">
+      {[disk > 0 ? `${disk} MB/day` : "", dl > 0 ? `${formatBytes(dl)} once` : ""].filter(Boolean).join(" · ") ||
+        "—"}
+    </span>
+    <span class="ob-feat__ctl">
+      {#if fix}
+        <!-- The lock renders its remedy. Never a disabled switch: a dead control
+             tells the user they are stuck without telling them how to leave. -->
+        <button
+          class="mx-btn mx-btn--sm"
+          type="button"
+          onclick={() => (fix.act === "grant" ? grant(fix.id) : commit(fix.id))}
+        >
+          {fix.label}
+        </button>
+      {:else}
+        <!-- The row copy is folded into the accessible NAME: indentation carries
+             the dependency visually, and a screen reader must hear it in words. -->
+        <input
+          type="checkbox"
+          role="switch"
+          class="mx-switch"
+          data-src={src}
+          checked={features[id]}
+          aria-label={`${FEATURE_LABELS[id]}. ${description}`}
+          onchange={(e) => {
+            e.currentTarget.checked = features[id];
+            commit(id);
+          }}
+        />
       {/if}
-      {#if cost.downloadByFeature[id] > 0}
-        {#if cost.diskByFeature[id] > 0}<span class="sep">·</span>{/if}
-        <span class="dl ob-num">{formatBytes(cost.downloadByFeature[id])} once</span>
-      {/if}
-      {#if cost.diskByFeature[id] <= 0 && cost.downloadByFeature[id] <= 0}
-        <span class="zero">—</span>
-      {/if}
-    </div>
-
-    {#if fix}
-      <!-- The lock renders its remedy. Never a disabled switch: a dead control
-           tells the user they are stuck without telling them how to leave. -->
-      <button
-        class="ob-btn sm"
-        type="button"
-        onclick={() => (fix.act === "grant" ? grant(fix.id) : commit(fix.id))}
-      >
-        {fix.label}
-      </button>
-    {:else}
-      <!-- The row copy is folded into the accessible NAME: indentation carries
-           the dependency visually, and a screen reader must hear it in words. -->
-      <Switch
-        checked={features[id]}
-        ariaLabel={`${FEATURE_LABELS[id]}. ${description}`}
-        onCheckedChange={() => commit(id)}
-      />
-    {/if}
+    </span>
   </div>
 {/snippet}
 
 <!-- The preview follows the pointer AND the keyboard: leaving the chain by either
      route drops it. `focusout` fires before the next `focusin`, so tabbing from
      one row to the next re-arms rather than clears. -->
-<div
-  class="chain"
-  role="group"
-  aria-label="What Mnema will do"
-  onmouseleave={() => setPeek(null)}
-  onfocusout={() => setPeek(null)}
->
-  <div class="chain-head">
-    <span class="ob-m">What Mnema will do</span>
+<div class="ob-pane">
+  <div class="ob-pane__head">
+    <span class="mx-kicker">What Mnema will do</span>
     <span class="ob-fine">Indented rows need the row above them.</span>
   </div>
 
-  {@render featureRow("screen")}
   <div
-    class="kid"
-    class:cut={!features.screen}
-    class:warnpeek={movesWith("ocr")}
+    class="ob-chain"
+    role="group"
+    aria-label="What Mnema will do"
+    onmouseleave={() => setPeek(null)}
+    onfocusout={() => setPeek(null)}
   >
-    {@render featureRow("ocr")}
+    {@render featureRow("screen", 0, "--app-source-screen")}
+    {@render featureRow("ocr", 1, null)}
+    {@render featureRow("microphone", 0, "--app-source-mic")}
+    {@render featureRow("systemAudio", 0, "--app-source-sysaudio")}
+    {@render featureRow("transcription", 1, null)}
+    {@render featureRow("speakerSeparation", 2, null)}
+    {@render featureRow("semanticSearch", 0, null)}
+    {@render featureRow("aiFeatures", 0, null)}
   </div>
-
-  <!-- Microphone and system audio are ROOTS that share one child, so the pair is
-       bracketed in the gutter rather than indented. Two relationships, two axes. -->
-  <div
-    class="grp"
-    class:cut={!features.microphone && !features.systemAudio}
-    class:warnpeek={movesWith("transcription")}
-  >
-    {@render featureRow("microphone")}
-    {@render featureRow("systemAudio")}
-  </div>
-  <div
-    class="kid"
-    class:cut={!features.microphone && !features.systemAudio}
-    class:warnpeek={movesWith("transcription")}
-  >
-    {@render featureRow("transcription")}
-  </div>
-  <div
-    class="kid k2"
-    class:cut={!features.transcription}
-    class:warnpeek={movesWith("speakerSeparation")}
-  >
-    {@render featureRow("speakerSeparation")}
-  </div>
-
-  {@render featureRow("semanticSearch")}
-  {@render featureRow("aiFeatures")}
 
   {#if aiBlocked}
     <!-- The soft gate renders in place, under the row it is about. -->
-    <div class="gate">
-      AI features are on with nothing to run them.
-      <span class="grow"></span>
-      <button class="ob-btn sm" type="button" onclick={connect}>Connect a provider</button>
-      <button class="ob-btn sm" type="button" onclick={() => commit("aiFeatures")}>
-        Turn it off
-      </button>
+    <div class="mx-notice" data-tone="warn">
+      <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+      <b class="mx-notice__title">AI features are on with nothing to run them.</b>
+      <div class="mx-notice__acts">
+        <button class="mx-btn mx-btn--sm" type="button" onclick={connect}>Connect a provider</button>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => commit("aiFeatures")}>
+          Turn it off
+        </button>
+      </div>
     </div>
   {/if}
 
   {#if undo}
-    <div class="undo">
-      {undo.message}
-      <span class="grow"></span>
-      <button class="ob-btn sm" type="button" onclick={restore}>Undo</button>
+    <div class="mx-notice">
+      <span class="mx-notice__icon"><IconInfo width="15" height="15" /></span>
+      <b class="mx-notice__title">{undo.message}</b>
+      <div class="mx-notice__acts">
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={restore}>Undo</button>
+      </div>
     </div>
   {/if}
 
-  <div class="totals">
-    <div class="bar">
+  <div class="ob-totals">
+    <div class="ob-bar-stack" aria-hidden="true">
       {#each BAR as [id, colour] (id)}
-        <span class="seg" style={`width:${barWidth(id).toFixed(1)}%;background:${colour}`}
-        ></span>
+        <i style:--c={colour} style:width="{barWidth(id).toFixed(1)}%"></i>
       {/each}
     </div>
-    <div class="kv">
-      <span>disk, once it is running</span>
-      <b>
-        {dayLabel(cost.diskMbPerDay, cost.approximate)}
+    <div class="ob-kv">
+      <span>
+        disk, once it is running<b>{dayLabel(cost.diskMbPerDay, cost.approximate)}</b>
         {#if peekedAfter && Math.round(peekedAfter.diskMbPerDay) !== Math.round(cost.diskMbPerDay)}
-          <span class="delta">
-            → {dayLabel(peekedAfter.diskMbPerDay, peekedAfter.approximate)}
-          </span>
+          <b class="delta">→ {dayLabel(peekedAfter.diskMbPerDay, peekedAfter.approximate)}</b>
         {/if}
-      </b>
-    </div>
-    <div class="kv second">
-      <span>to download before it works</span>
-      <b>
-        {downloadLabel(cost.downloadBytes, cost.approximate)}
+      </span>
+      <span>
+        download<b>{downloadLabel(cost.downloadBytes, cost.approximate)}</b>
         {#if peekedAfter && peekedAfter.downloadBytes !== cost.downloadBytes}
-          <span class="delta">
-            → {downloadLabel(peekedAfter.downloadBytes, peekedAfter.approximate)}
-          </span>
+          <b class="delta">→ {downloadLabel(peekedAfter.downloadBytes, peekedAfter.approximate)}</b>
         {/if}
-      </b>
+      </span>
     </div>
   </div>
 
-  <p class="chain-live ob-fine" aria-live="polite">{live}</p>
+  <p class="ob-sr-only" aria-live="polite">{live}</p>
 </div>
 
 <style>
-  .chain {
-    max-width: 100%;
+  .ob-pane {
+    display: grid;
+    gap: var(--s-4);
   }
-  .chain-head {
+  .ob-pane__head {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 10px;
-    flex-wrap: wrap;
+    gap: var(--s-3);
   }
-
-  /* ── rows ───────────────────────────────────────────────────────────────── */
-  .row {
+  .ob-chain {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: 12px;
-    align-items: center;
-    padding: 7px 0;
+    border-top: 1px solid var(--mx-hairline);
   }
-  .row .t {
-    font-size: var(--text-md);
-    color: var(--app-text-strong);
-  }
-  .row .d {
-    font-size: var(--text-sm);
-    line-height: 1.5;
-    color: var(--app-text-subtle);
-    margin-top: 2px;
-    /* 78ch, the mockup's frame measure (`revision-2.html:172`). At 46ch every
-       row wrapped to two lines and the chain overflowed its section at the
-       1120x800 DESIGN size, not just the 920x620 minimum. */
-    max-width: 78ch;
-  }
-  .row.dead .t {
-    color: var(--app-text-muted);
-  }
-  .row.dead .d {
-    color: var(--app-text-faint);
-  }
-  /* The lock reason is the one line on a dead row that must stay readable. */
-  .row .d.warn,
-  .row.dead .d.warn {
-    color: var(--app-warn);
-  }
-
-  .cost {
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    white-space: nowrap;
-  }
-  .cost .zero {
-    color: var(--app-text-faint);
-  }
-  .cost .dl {
-    color: var(--app-info);
-  }
-
-  /* ── the spine ──────────────────────────────────────────────────────────── */
-  .kid {
-    padding-left: 26px;
+  .ob-feat {
     position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 170px 64px;
+    align-items: center;
+    gap: var(--s-3);
+    min-height: 46px;
+    padding: 6px 0 6px calc(var(--d, 0) * 26px);
+    border-bottom: 1px solid var(--mx-hairline);
   }
-  .kid::before {
+  /* Tree elbow for a dependent row — hierarchy, not a selection mark. Dashed
+     when its parent has cut it off, warn-dashed while a hover would move it. */
+  .ob-feat.kid::before {
     content: "";
     position: absolute;
-    left: 9px;
-    top: 0;
-    bottom: 50%;
-    width: 10px;
-    border-left: 1px solid var(--app-border-strong);
-    border-bottom: 1px solid var(--app-border-strong);
-    border-bottom-left-radius: 6px;
-    transition: border-color 0.2s ease;
+    left: calc(var(--d) * 26px - 16px);
+    top: 12px;
+    width: 9px;
+    height: 10px;
+    border: solid var(--app-border-strong);
+    border-width: 0 0 1px 1px;
+    border-bottom-left-radius: 4px;
   }
-  .kid.k2 {
-    padding-left: 48px;
-  }
-  .kid.k2::before {
-    left: 31px;
-  }
-  .kid.cut::before,
-  .kid.warnpeek::before {
-    border-left-style: dashed;
-    border-bottom-style: dashed;
-  }
-  .kid.cut::before {
+  .ob-feat.kid.cut::before {
+    border-style: dashed;
     border-color: var(--app-text-faint);
   }
-  .kid.warnpeek::before {
+  .ob-feat.kid.willmove::before {
+    border-style: dashed;
     border-color: var(--app-warn);
   }
-
-  /* The audio pair is a BRACKET in the gutter, not an indent: indentation means
-     "child of the row above", and these two are roots that share one child. */
-  .grp {
-    border-left: 1px solid var(--app-border-strong);
-    margin: 2px 0 2px -12px;
-    padding-left: 11px;
-    transition: border-color 0.2s ease;
+  .ob-feat.peek {
+    background: var(--mx-wash);
   }
-  .grp.cut {
-    border-left-color: var(--app-text-faint);
-    border-left-style: dashed;
+  .ob-feat.willmove {
+    background: color-mix(in srgb, var(--app-warn-bg) 60%, transparent);
   }
-  .grp.warnpeek {
-    border-left-color: var(--app-warn);
-    border-left-style: dashed;
+  .ob-feat__name {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    font: 500 var(--text-md) / 1.25 var(--font-sans);
+    color: var(--app-text-strong);
   }
-
-  /* ── tags ───────────────────────────────────────────────────────────────── */
-  .carry {
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .ob-feat__desc {
+    display: block;
+    margin-top: 2px;
+    font: 400 var(--text-base) / 1.35 var(--font-sans);
     color: var(--app-text-subtle);
+    text-wrap: pretty;
+  }
+  .ob-feat__desc.warn {
+    color: var(--app-warn);
+  }
+  .ob-feat__carry {
+    font: 500 var(--text-xs) / 1 var(--font-mono);
+    color: var(--app-text-subtle);
+    letter-spacing: 0.02em;
+  }
+  .ob-feat__carry.pre {
+    color: var(--app-warn);
+  }
+  .ob-feat__cost {
+    justify-self: end;
+    font: 400 var(--text-sm) / 1 var(--font-mono);
+    color: var(--app-text-subtle);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .carry.pre {
-    color: var(--app-warn);
-    border: 1px solid var(--app-warn-border);
-    background: var(--app-warn-bg);
-    border-radius: 4px;
-    padding: 0 5px;
+  .ob-feat__ctl {
+    justify-self: end;
+    display: flex;
   }
-  .row.peek {
-    background: var(--app-surface-hover);
+  .ob-feat.off .ob-feat__name {
+    color: var(--app-text-muted);
   }
-  .row.willmove {
-    background: var(--app-warn-bg);
-    box-shadow: inset 2px 0 0 var(--app-warn);
+  .ob-src {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    flex: none;
+    background: var(--c, var(--chart-grey-3));
   }
-  .row.peek,
-  .row.willmove {
-    border-radius: 6px;
-    margin: 0 -8px;
-    padding-left: 8px;
-    padding-right: 8px;
+  /* Capture-source switches wear their source colour. */
+  .mx-switch[data-src="--app-source-screen"]:checked {
+    background: var(--app-source-screen);
+  }
+  .mx-switch[data-src="--app-source-mic"]:checked {
+    background: var(--app-source-mic);
+  }
+  .mx-switch[data-src="--app-source-sysaudio"]:checked {
+    background: var(--app-source-sysaudio);
   }
   /* A row that is about to move says so on its switch too. */
-  .row.willmove :global(.mx-switch:checked) {
+  .ob-feat.willmove .mx-switch:checked {
     outline: 1px dashed var(--app-warn-border);
     outline-offset: 2px;
   }
 
-  /* ── gate, undo, totals ─────────────────────────────────────────────────── */
-  .gate,
-  .undo {
+  .ob-totals {
+    display: grid;
+    gap: var(--s-2);
+  }
+  .ob-bar-stack {
     display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    font-size: var(--text-sm);
-  }
-  .gate {
-    color: var(--app-warn);
-    border: 1px solid var(--app-warn-border);
-    background: var(--app-warn-bg);
-    border-radius: 6px;
-    padding: 7px 10px;
-    margin: 4px 0 6px;
-  }
-  .undo {
-    color: var(--app-text-muted);
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 6px;
-    padding: 6px 10px;
-    margin: 8px 0 0;
-  }
-  .grow {
-    margin-left: auto;
-  }
-
-  .totals {
-    margin-top: 12px;
-    border-top: 1px solid var(--app-border);
-    padding-top: 10px;
-  }
-  .kv {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-  }
-  .kv.second {
-    margin-top: 3px;
-  }
-  .kv b {
-    color: var(--app-text-strong);
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-  .kv .delta {
-    color: var(--app-warn);
-    font-weight: 400;
-  }
-
-  .bar {
+    gap: 2px;
     height: 6px;
-    border-radius: 999px;
-    background: var(--app-border);
+    border-radius: 3px;
     overflow: hidden;
-    display: flex;
-    margin: 0 0 8px;
+    background: var(--app-surface-hover);
   }
-  .seg {
+  .ob-bar-stack i {
     display: block;
     height: 100%;
-    transition: width 0.22s ease;
+    background: var(--c);
   }
-
-  .chain-live {
-    min-height: 1.7em;
-    margin: 8px 0 0;
-    color: var(--app-text-muted);
+  .ob-kv {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2) var(--s-6);
+    font: 400 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-subtle);
   }
-
-  /* No breakpoint: the name column is minmax(0, 1fr), so a narrower pane is
-     absorbed by wrapping the description. Cost and switch stay on the line —
-     stacking them made every row three lines tall for no gain. */
-  @media (prefers-reduced-motion: reduce) {
-    .kid::before,
-    .grp,
-    .seg {
-      transition: none;
-    }
+  .ob-kv b {
+    margin-left: 6px;
+    font: 500 var(--text-base) / 1 var(--font-mono);
+    color: var(--app-text-strong);
+    font-variant-numeric: tabular-nums;
+  }
+  .ob-kv b.delta {
+    color: var(--app-warn);
+    font-weight: 400;
   }
 </style>

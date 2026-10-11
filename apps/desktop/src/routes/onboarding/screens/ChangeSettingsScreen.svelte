@@ -3,7 +3,7 @@
 
   The flow's ONE deliberately dense screen: every detail demoted off the other
   seven lands here. Revision 2 stops it being a scroll: the four sections are
-  SCREENS, one at a time behind a tab strip, and the tab strip is what replaced
+  SCREENS, one at a time behind an `mx-seg--md` tab strip, which replaced
   the 150px section rail (which held four links and then a column-height hole).
 
     What Mnema will do   $lib/onboarding/FeatureSwitches   the eight switches
@@ -34,6 +34,9 @@
   import FeatureSwitches from "$lib/onboarding/FeatureSwitches.svelte";
   import ModelPickers from "$lib/onboarding/ModelPickers.svelte";
   import Providers from "$lib/onboarding/Providers.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconArrow from "~icons/lucide/arrow-right";
   import { buildEngines } from "$lib/onboarding/transcription-engines";
   import { SPEAKRS_BYTES } from "$lib/onboarding/resolve-setup";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
@@ -106,201 +109,134 @@
   });
 </script>
 
-<nav class="tabs" aria-label="Sections">
-  {#each SECTIONS as section (section.id)}
-    <button
-      class="tab"
-      class:on={active === section.id}
-      type="button"
-      aria-current={active === section.id ? "true" : undefined}
-      onclick={() => (active = section.id)}
-    >
-      {section.label}
-    </button>
-  {/each}
-  <span class="count">{at + 1} / {SECTIONS.length}</span>
-</nav>
+<div class="ob-main change">
+  <div class="ob-col">
+    <div class="tabs">
+      <Segmented
+        md
+        options={SECTIONS.map((s) => ({ value: s.id, label: s.label }))}
+        value={active}
+        ariaLabel="Sections"
+        onValueChange={(v) => (active = v as typeof active)}
+      />
+      <span class="num">{at + 1} / {SECTIONS.length}</span>
+    </div>
 
-<!-- One section at a time. `.scene` is what scrolls at the 620px minimum, so
-     the footer below it is never pushed off the stage. -->
-<div class="scene">
-  {#if active === "features"}
-    <!-- ── The eight switches, as one chain ──────────────────────────────── -->
-    <FeatureSwitches
-      features={f}
-      onToggle={(id) => flow.toggleFeature(id)}
-      onRestore={(snapshot) => (flow.features = snapshot)}
-      onGrant={() => void c.requestPermission("microphone")}
-      aiConfigured={ai.aiConfigReady}
-      onConnectAi={() => (active = "ai")}
-      aiNote={ai.aiConfigMissing}
-      models={flow.models}
-      installed={flow.modelFacts}
-      captureIntervalSeconds={flow.captureIntervalSeconds}
-      videoPixels={flow.videoPixels}
-    />
-  {:else if active === "engines"}
-    <!-- ── Which engine turns speech into text, and why one is picked ────── -->
-    <Providers
-      providers={c.transcriptionModelStatus?.providers ?? []}
-      value={c.draftTranscriptionProvider}
-      onValueChange={(v) => c.chooseTranscriptionProvider(v)}
-    />
-  {:else if active === "models"}
-    <!-- ── Which build of that engine, and what it costs against the disk ── -->
-    <p class="ob-fine ctx">
-      Engine: <span class="ob-strong">{engineName}</span> — chosen on
-      <button class="link" type="button" onclick={() => (active = "engines")}>Engines</button>. This
-      screen picks its build.
-    </p>
-    <ModelPickers
-      transcriptionFamilies={[]}
-      transcriptionFamily={c.draftTranscriptionProvider}
-      transcriptionModels={c.selectedTranscriptionModels}
-      transcriptionModelId={c.draftTranscriptionModelId}
-      transcriptionEnabled={f.transcription}
-      onTranscriptionFamilyChange={(v) => c.chooseTranscriptionProvider(v)}
-      onTranscriptionModelChange={(v) => c.chooseTranscriptionModel(v)}
-      semanticStatus={c.semanticSearchModelStatus?.models ?? []}
-      semanticCatalog={c.semanticSearchSupportedModels}
-      semanticModelId={c.draftSemanticSearchModelId}
-      semanticEnabled={f.semanticSearch}
-      onSemanticModelChange={(v) => c.chooseSemanticSearchModel(v)}
-      onSemanticEnabledChange={(on) => {
-        if (on !== f.semanticSearch) flow.toggleFeature("semanticSearch");
-      }}
-      speakerEnabled={f.speakerSeparation}
-      speakerInstalled={c.selectedSpeakerModel?.available ?? false}
-      speakerBytes={c.selectedSpeakerModel?.download?.byteSize ?? SPEAKRS_BYTES}
-      freeBytes={flow.storageProbe?.freeBytes ?? null}
-      captureIntervalSeconds={flow.captureIntervalSeconds}
-      videoPixels={flow.videoPixels}
-    />
-  {:else}
-    <!-- ── AI features ──────────────────────────────────────────────────── -->
-    {#if aiBlocked}
-      <!-- The gate, beside the row it is about. In the old scroll it only ever
-           printed in the footer, several hundred pixels below the switch it
-           names. -->
-      <span class="ob-blocked gate">
-        The <span class="ob-strong">AI features</span> row is on, with nothing to run it — connect a
-        provider here, or switch the row off.
-      </span>
-    {/if}
-    <!-- AiSetup only prints this inside its "set it up now" mode, and a
-         default model cleared on re-entry needs its reason visible whichever
-         mode the user is in. -->
-    {#if ai.aiRestoredModelNote}
-      <p class="ob-fine err">{ai.aiRestoredModelNote}</p>
-    {/if}
-    <AiSetup {ai} aiEnabled={f.aiFeatures} onToggleAi={() => flow.toggleFeature("aiFeatures")} />
-  {/if}
-</div>
-
-<div class="ob-foot">
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <span class="ob-fine spacer">{SECTIONS[at].note}</span>
-    {#if at === 0}
-      <button class="ob-btn ghost" onclick={onBack}>← Back to your settings</button>
+    {#if active === "features"}
+      <!-- ── The eight switches, as one chain ──────────────────────────────── -->
+      <FeatureSwitches
+        features={f}
+        onToggle={(id) => flow.toggleFeature(id)}
+        onRestore={(snapshot) => (flow.features = snapshot)}
+        onGrant={() => void c.requestPermission("microphone")}
+        aiConfigured={ai.aiConfigReady}
+        onConnectAi={() => (active = "ai")}
+        aiNote={ai.aiConfigMissing}
+        models={flow.models}
+        installed={flow.modelFacts}
+        captureIntervalSeconds={flow.captureIntervalSeconds}
+        videoPixels={flow.videoPixels}
+      />
+    {:else if active === "engines"}
+      <!-- ── Which engine turns speech into text, and why one is picked ────── -->
+      <Providers
+        providers={c.transcriptionModelStatus?.providers ?? []}
+        value={c.draftTranscriptionProvider}
+        onValueChange={(v) => c.chooseTranscriptionProvider(v)}
+      />
+    {:else if active === "models"}
+      <!-- ── Which build of that engine, and what it costs against the disk ── -->
+      <ModelPickers
+        transcriptionFamilies={[]}
+        transcriptionFamily={c.draftTranscriptionProvider}
+        transcriptionModels={c.selectedTranscriptionModels}
+        transcriptionModelId={c.draftTranscriptionModelId}
+        transcriptionEnabled={f.transcription}
+        onTranscriptionFamilyChange={(v) => c.chooseTranscriptionProvider(v)}
+        onTranscriptionModelChange={(v) => c.chooseTranscriptionModel(v)}
+        semanticStatus={c.semanticSearchModelStatus?.models ?? []}
+        semanticCatalog={c.semanticSearchSupportedModels}
+        semanticModelId={c.draftSemanticSearchModelId}
+        semanticEnabled={f.semanticSearch}
+        onSemanticModelChange={(v) => c.chooseSemanticSearchModel(v)}
+        onSemanticEnabledChange={(on) => {
+          if (on !== f.semanticSearch) flow.toggleFeature("semanticSearch");
+        }}
+        speakerEnabled={f.speakerSeparation}
+        speakerInstalled={c.selectedSpeakerModel?.available ?? false}
+        speakerBytes={c.selectedSpeakerModel?.download?.byteSize ?? SPEAKRS_BYTES}
+        freeBytes={flow.storageProbe?.freeBytes ?? null}
+        captureIntervalSeconds={flow.captureIntervalSeconds}
+        videoPixels={flow.videoPixels}
+      >
+        {#snippet transcriptionNote()}
+          Engine: <b>{engineName}</b> — chosen on Engines. This screen picks its build.
+        {/snippet}
+      </ModelPickers>
     {:else}
-      <button class="ob-btn ghost" onclick={() => (active = SECTIONS[at - 1].id)}>
-        ← {SECTIONS[at - 1].label}
-      </button>
-    {/if}
-    {#if at === SECTIONS.length - 1}
-      <button class="ob-btn primary" onclick={onContinue}>Back to your settings&nbsp; →</button>
-    {:else}
-      <button class="ob-btn primary" onclick={() => (active = SECTIONS[at + 1].id)}>
-        {SECTIONS[at + 1].label}&nbsp; →
-      </button>
+      <!-- ── AI features ──────────────────────────────────────────────────── -->
+      <AiSetup {ai} aiEnabled={f.aiFeatures} onToggleAi={() => flow.toggleFeature("aiFeatures")}>
+        {#snippet notices()}
+          {#if aiBlocked}
+            <!-- The warning, beside the row it is about. Never a hold. -->
+            <div class="mx-notice" data-tone="warn">
+              <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+              <p class="mx-notice__text">
+                The <b>AI features</b> row is on, with nothing to run it — connect a provider here, or switch
+                the row off.
+              </p>
+            </div>
+          {/if}
+          <!-- AiSetup only prints this inside "set it up now"; a default model
+               cleared on re-entry needs its reason visible in every mode. -->
+          {#if ai.aiRestoredModelNote}
+            <span class="mx-inline" data-tone="danger">
+              <IconAlert width="13" height="13" />{ai.aiRestoredModelNote}
+            </span>
+          {/if}
+        {/snippet}
+      </AiSetup>
     {/if}
   </div>
 </div>
 
-<style>
-  /* The tab strip that replaced the rail: it names every section, says where
-     you are, and costs no width. */
-  .tabs {
-    flex: none;
-    display: flex;
-    gap: 2px;
-    border-bottom: 1px solid var(--app-border);
-    margin-bottom: 18px;
-  }
-  .tab {
-    font: inherit;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    background: transparent;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    padding: 8px 14px 9px;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-  .tab:hover {
-    color: var(--app-text);
-  }
-  .tab.on {
-    color: var(--app-text-strong);
-    border-bottom-color: var(--app-accent);
-  }
-  .tab:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .count {
-    margin-left: auto;
-    align-self: center;
-    font-size: var(--text-xs);
-    letter-spacing: 0.14em;
-    color: var(--app-text-faint);
-    font-variant-numeric: tabular-nums;
-  }
+<footer class="ob-foot">
+  <p class="ob-foot__note">{SECTIONS[at].note}</p>
+  {#if at === 0}
+    <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back to your settings</button>
+  {:else}
+    <button class="mx-btn mx-btn--ghost" onclick={() => (active = SECTIONS[at - 1].id)}>
+      {SECTIONS[at - 1].label}
+    </button>
+  {/if}
+  {#if at === SECTIONS.length - 1}
+    <button class="mx-btn mx-btn--primary" onclick={onContinue}>
+      Back to your settings<IconArrow class="ob-btn-arrow" width="14" height="14" />
+    </button>
+  {:else}
+    <button class="mx-btn mx-btn--primary" onclick={() => (active = SECTIONS[at + 1].id)}>
+      {SECTIONS[at + 1].label}<IconArrow class="ob-btn-arrow" width="14" height="14" />
+    </button>
+  {/if}
+</footer>
 
-  .scene {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
+<style>
+  /* Deliberately dense: top-aligned, wider column. */
+  .change {
+    align-content: start;
+    padding-top: var(--s-5);
+  }
+  .change > .ob-col {
+    max-width: 900px;
+    gap: var(--s-5);
+  }
+  .tabs {
     display: flex;
-    flex-direction: column;
-    /* `safe center` centres a section that fits (so a short one — AI features
-       before a provider is picked — is not left sitting on a hole) and falls
-       back to top-aligned the moment it does not, so a tall section scrolls
-       from its first line instead of losing its head. */
-    justify-content: safe center;
-    /* Room for the gutter bleeds (the audio bracket, a peeked row), cancelled
-       so the content box stays where it was. Without it the pane scrolls
-       sideways and eats the first character of every line. */
-    padding-inline: var(--ob-bleed);
-    margin-inline: calc(-1 * var(--ob-bleed));
-    gap: 14px;
+    align-items: center;
+    gap: var(--s-3);
   }
-  .ctx {
-    margin: 0;
-    /* One status sentence, not prose: `.ob-fine`'s 64ch measure wrapped it to
-       two lines on a 1032px-wide screen, and those 19px were exactly what the
-       section was short of when the budget escape prints its shortfall. */
-    max-width: none;
-  }
-  .link {
-    font: inherit;
-    color: var(--app-accent);
-    background: transparent;
-    border: 0;
-    padding: 0;
-    cursor: pointer;
-  }
-  .gate {
-    align-self: flex-start;
-  }
-  .err {
-    color: var(--app-danger);
-    margin: 0;
-  }
-  .spacer {
-    margin-right: auto;
+  .tabs .num {
+    font: 400 var(--text-sm) / 1 var(--font-mono);
+    color: var(--app-text-subtle);
   }
 </style>

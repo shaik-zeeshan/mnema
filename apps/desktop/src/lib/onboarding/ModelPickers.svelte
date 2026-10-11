@@ -4,9 +4,9 @@
   Ported from `docs/onboarding/mockups/input-components/parts/models.part.html`
   — that mockup is the design of record; behaviour and copy come from it.
 
-  Structure: a toggle group over model FAMILIES, a variant sub-group only where a
-  family has more than one build, a fixed three-cell detail strip, and a
-  read-only download budget bar as the section footer.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Change settings →
+  Models): `mx-seg` groups, a three-cell spec strip, and a read-only budget
+  (total, stacked bar, legend) as the section footer.
 
   Three things it changes about the shipping surface:
    · The two `<Select>`s become a second `Segmented`. A toggle group over quality
@@ -21,14 +21,13 @@
   the switch chain, so with the feature off no segment is active and the strip
   reads the off state. `onSemanticEnabledChange` remains for the budget escape.
 
-  Motion: none ambient. The bar's widths transition because the user just moved
-  them; that is the only movement, and `prefers-reduced-motion` drops it.
+  Motion: none.
 -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import { formatBytes } from "$lib/settings/state/format";
-  import { RESERVE_FLOOR_BYTES } from "$lib/onboarding/gates";
-  import { estimateDailyStorageMb } from "$lib/onboarding/disk-estimate";
+  import IconDisk from "~icons/lucide/hard-drive";
   import {
     FAMILY_NOTES,
     OS_MANAGED_VALUE,
@@ -97,6 +96,8 @@
     captureIntervalSeconds: number;
     /** Pixels per frame at the draft resolution (`flow.videoPixels`). */
     videoPixels?: number;
+    /** Context printed beside the Transcription kicker (the chosen engine). */
+    transcriptionNote?: Snippet;
   }
 
   let {
@@ -119,6 +120,7 @@
     freeBytes,
     captureIntervalSeconds,
     videoPixels = undefined,
+    transcriptionNote,
   }: Props = $props();
 
   // Last build chosen inside each family, so leaving Whisper Medium for Parakeet
@@ -197,30 +199,7 @@
     dismissed = false;
   });
 
-  /** What is left for downloads once the reserve and a day of capture are set
-   *  aside — the same arithmetic the Capture & Storage gate applies. */
-  const roomForDownloads = $derived(
-    freeBytes === null
-      ? null
-      : Math.max(
-          0,
-          freeBytes -
-            RESERVE_FLOOR_BYTES -
-            estimateDailyStorageMb(captureIntervalSeconds, videoPixels) * 1e6,
-        ),
-  );
-  // One axis for bytes AND room, so "it doesn't fit" is a picture. 6% headroom
-  // keeps the marker off the right edge when it fits.
-  const axis = $derived(
-    Math.max(budget.bytes, roomForDownloads ?? 0, 1) * 1.06,
-  );
-  const pct = (bytes: number): number => (bytes / axis) * 100;
-  const roomPct = $derived(
-    roomForDownloads === null ? 0 : Math.min(100, pct(roomForDownloads)),
-  );
-  // The label is centred on the marker, except near either end, where centring
-  // would push it off the track and clip it.
-  const labelShift = $derived(roomPct > 78 ? -100 : roomPct < 12 ? 0 : -50);
+  const pct = (bytes: number): number => (budget.bytes > 0 ? (bytes / budget.bytes) * 100 : 0);
 
   function sizeCell(model: PickerModel | null, prefix = ""): string {
     if (!model) return "none";
@@ -231,10 +210,13 @@
   }
 </script>
 
-<div class="mp">
+<div class="ob-models">
   <!-- ── Transcription ─────────────────────────────────────────────────── -->
-  <div class="mp-picker">
-    <span class="ob-m">Transcription</span>
+  <div class="ob-picker">
+    <div class="ob-pane__head">
+      <span class="mx-kicker">Transcription</span>
+      {#if transcriptionNote}<span class="ob-fine">{@render transcriptionNote()}</span>{/if}
+    </div>
     {#if transcriptionFamilies.length > 1}
       <Segmented
         value={transcriptionFamily}
@@ -243,9 +225,9 @@
         onValueChange={pickTranscriptionFamily}
       />
     {/if}
-    <!-- Height-reserved: the sub-group appears only for a family with more than
-         one build, but the row is always this tall, so nothing below it moves. -->
-    <div class="sub">
+    <!-- Height-reserved: the build group appears only for a family with more
+         than one build, but the row is always this tall, so nothing below moves. -->
+    <div class="ob-picker__ctl">
       {#if tVariants.length > 1}
         <Segmented
           value={tPicked?.id ?? ""}
@@ -254,36 +236,27 @@
           onValueChange={pickTranscriptionModel}
         />
       {/if}
-      <span class="sub-note">{FAMILY_NOTES[transcriptionFamily] ?? ""}</span>
+      <span class="ob-fine">{FAMILY_NOTES[transcriptionFamily] ?? ""}</span>
     </div>
-    <div class="strip">
-      <div>
-        <span class="k">Model</span>
-        <span class="v">{tPicked?.name ?? "None"}</span>
-      </div>
-      <div>
-        <span class="k">Download</span>
-        <span class="v">{sizeCell(tPicked)}</span>
-      </div>
-      <div>
-        <span class="k">Memory</span>
-        <span class="v dim">{tPicked?.detail ?? "—"}</span>
-      </div>
+    <div class="ob-strip">
+      <div><span>Model</span><b>{tPicked?.name ?? "None"}</b></div>
+      <div><span>Download</span><b class="num">{sizeCell(tPicked)}</b></div>
+      <div><span>Memory</span><b class="num">{tPicked?.detail ?? "—"}</b></div>
     </div>
   </div>
 
-  <hr class="ob-rule" />
+  <hr class="mx-rule" />
 
   <!-- ── Semantic Search ───────────────────────────────────────────────── -->
-  <div class="mp-picker">
-    <span class="ob-m">Semantic Search</span>
-    <Segmented
-      value={sFamily}
-      options={SEMANTIC_FAMILIES}
-      ariaLabel="Semantic Search languages"
-      onValueChange={pickSemanticFamily}
-    />
-    <div class="sub">
+  <div class="ob-picker">
+    <div class="ob-pane__head"><span class="mx-kicker">Semantic Search</span></div>
+    <div class="ob-picker__ctl">
+      <Segmented
+        value={sFamily}
+        options={SEMANTIC_FAMILIES}
+        ariaLabel="Semantic Search languages"
+        onValueChange={pickSemanticFamily}
+      />
       {#if sVariants.length > 1}
         <Segmented
           value={sPicked?.id ?? ""}
@@ -292,313 +265,173 @@
           onValueChange={pickSemanticModel}
         />
       {/if}
-      <span class="sub-note">{FAMILY_NOTES[sFamily] ?? ""}</span>
+      <span class="ob-fine">{FAMILY_NOTES[sFamily] ?? ""}</span>
     </div>
-    <div class="strip">
-      <div>
-        <span class="k">Model</span>
-        <span class="v">{sPicked?.name ?? "Off"}</span>
-      </div>
-      <div>
-        <span class="k">Download</span>
-        <span class="v">{sizeCell(sPicked, "about ")}</span>
-      </div>
-      <div>
-        <span class="k">Languages</span>
-        <span class="v dim">{sPicked?.detail ?? "keyword search only"}</span>
-      </div>
+    <div class="ob-strip">
+      <div><span>Model</span><b>{sPicked?.name ?? "Off"}</b></div>
+      <div><span>Download</span><b class="num">{sizeCell(sPicked, "about ")}</b></div>
+      <div><span>Languages</span><b>{sPicked?.detail ?? "keyword search only"}</b></div>
     </div>
   </div>
 
   <!-- ── Read-only footer: the whole download ──────────────────────────── -->
-  <div class="foot">
-    <div class="budget" aria-hidden="true">
-      <div class="budget-track">
-        {#if budget.speakerBytes > 0}
-          <i class="b-speaker" style="width:{pct(budget.speakerBytes)}%"></i>
-        {/if}
-        {#if budget.transcriptionBytes > 0}
-          <i class="b-transcription" style="width:{pct(budget.transcriptionBytes)}%"></i>
-        {/if}
-        {#if budget.semanticBytes > 0}
-          <i class="b-semantic" style="width:{pct(budget.semanticBytes)}%"></i>
-        {/if}
-        <i class="b-rest"></i>
-        {#if verdict}
-          <div class="budget-hatch" style="left:{roomPct}%"></div>
-        {/if}
-      </div>
-      {#if roomForDownloads !== null}
-        <div class="disk-line">
-          <i style="left:{roomPct}%"></i>
-          <span style="left:{roomPct}%; transform:translateX({labelShift}%)">
-            {roomForDownloads > 0
-              ? `${formatBytes(roomForDownloads)} left for downloads`
-              : "no room left for downloads"}
-          </span>
-        </div>
-      {/if}
+  <div class="ob-totals">
+    <div class="ob-total">
+      <b class:over={verdict && !dismissed}>{totalLabel(budget.bytes, budget.approx)}</b>
+      <span class="ob-fine">to download before any of this works</span>
     </div>
-
-    <div class="tot-line">
-      <span class="tot-hero" class:over={verdict && !dismissed}>
-        {totalLabel(budget.bytes, budget.approx)}
-      </span>
-      <span class="tot-cap">to download before any of this works</span>
+    <div class="ob-bar-stack" aria-hidden="true">
+      {#if budget.speakerBytes > 0}<i style:--c="var(--app-source-mic)" style:width="{pct(budget.speakerBytes)}%"></i>{/if}
+      {#if budget.transcriptionBytes > 0}<i style:--c="var(--chart-grey-4)" style:width="{pct(budget.transcriptionBytes)}%"></i>{/if}
+      {#if budget.semanticBytes > 0}<i style:--c="var(--app-info)" style:width="{pct(budget.semanticBytes)}%"></i>{/if}
     </div>
-    <div class="tot-parts">
-      <span>
-        <em class="b-speaker"></em>Who's speaking
+    <ul class="ob-legend">
+      <li style:--c="var(--app-source-mic)">
+        Who's speaking
         <b>
           {#if !speakerEnabled}off{:else if speakerInstalled}already on this Mac{:else}{formatBytes(
               budget.speakerBytes,
-            )} · no picker{/if}
+            )}{/if}
         </b>
-      </span>
-      <span>
-        <em class="b-transcription"></em>Transcription
-        <b>
-          {#if !transcriptionEnabled}off{:else}{sizeCell(tPicked)}{/if}
-        </b>
-      </span>
-      <span>
-        <em class="b-semantic"></em>Semantic Search
-        <b>
-          {#if !semanticEnabled}off{:else}{sizeCell(sPicked, "about ")}{/if}
-        </b>
-      </span>
-    </div>
+      </li>
+      <li style:--c="var(--chart-grey-4)">
+        Transcription <b>{#if !transcriptionEnabled}off{:else}{sizeCell(tPicked)}{/if}</b>
+      </li>
+      <li style:--c="var(--app-info)">
+        Semantic Search <b>{#if !semanticEnabled}off{:else}{sizeCell(sPicked, "about ")}{/if}</b>
+      </li>
+    </ul>
+  </div>
 
-    {#if verdict && !dismissed}
-      <div class="escape">
-        <span class="msg">{verdict.message}</span>
+  {#if verdict && !dismissed}
+    <div class="mx-notice" data-tone="danger">
+      <span class="mx-notice__icon"><IconDisk width="15" height="15" /></span>
+      <p class="mx-notice__text">{verdict.message}</p>
+      <div class="mx-notice__acts">
         {#if verdict.escapeSavingBytes !== null}
-          <button
-            class="ob-btn sm"
-            type="button"
-            onclick={() => onSemanticEnabledChange(false)}
-          >
+          <button class="mx-btn mx-btn--sm" type="button" onclick={() => onSemanticEnabledChange(false)}>
             Turn Semantic Search off
           </button>
         {/if}
-        <button class="ob-btn sm" type="button" onclick={() => (dismissed = true)}>
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => (dismissed = true)}>
           Download anyway
         </button>
       </div>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .mp :global(.ob-m) {
-    display: block;
-    margin-bottom: 8px;
-  }
-  .mp :global(.ob-rule) {
-    margin: 18px 0;
-  }
-
-  /* The variant row is ALWAYS this tall: a `Segmented`'s own height — 12px label
-     at line-height 1 + 5px×2 segment padding + 2px×2 group padding + 1px×2
-     border, which is exactly the shell's inline-control token. A family with one
-     build leaves the strip and the footer exactly where the multi-build families
-     put them. */
-  .sub {
-    margin-top: 9px;
-    min-height: var(--ob-ctl-h-sm);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .sub-note {
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    line-height: 1.5;
-  }
-
-  /* Three cells, two lines of value reserved in each, so the longest string in
-     the manifest wraps instead of clipping and the block still never changes
-     height. */
-  .strip {
-    margin-top: 10px;
+  .ob-models {
     display: grid;
-    grid-template-columns: 1.35fr 1fr 1.15fr;
-    gap: 1px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-border);
-    overflow: hidden;
+    gap: var(--s-4);
   }
-  .strip > div {
-    box-sizing: border-box;
-    background: var(--app-surface-subtle);
-    padding: 8px 11px;
-    min-height: 64px;
-    min-width: 0;
+  .ob-picker {
+    display: grid;
+    gap: var(--s-3);
   }
-  .strip .k {
-    display: block;
-    font-size: var(--text-xs);
-    line-height: 1.1;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-faint);
-    margin-bottom: 4px;
-  }
-  .strip .v {
-    display: block;
-    font-size: var(--text-sm);
-    line-height: 1.4;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-    overflow-wrap: break-word;
-  }
-  .strip .v.dim {
-    color: var(--app-text-muted);
-  }
-
-  /* ── Section footer: read-only budget bar + the total of record ───────── */
-  .foot {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--app-border);
-  }
-  .budget-track {
-    position: relative;
-    display: flex;
-    height: 22px;
-    gap: 1px;
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--app-surface-subtle);
-    box-shadow: inset 0 0 0 1px var(--app-border);
-  }
-  .budget-track i {
-    display: block;
-    height: 100%;
-    transition: width 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
-  }
-  .b-speaker {
-    background: var(--app-accent-strong);
-  }
-  .b-transcription {
-    background: var(--app-accent);
-  }
-  .b-semantic {
-    background: var(--app-info);
-  }
-  .b-rest {
-    background: transparent;
-    flex: 1 1 auto;
-  }
-  .budget-hatch {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    right: 0;
-    background: repeating-linear-gradient(
-      135deg,
-      var(--app-danger-bg) 0 5px,
-      transparent 5px 10px
-    );
-    box-shadow: inset 1px 0 0 var(--app-danger-border);
-    pointer-events: none;
-  }
-  .disk-line {
-    position: relative;
-    height: 14px;
-    margin-top: 2px;
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-  }
-  .disk-line i {
-    position: absolute;
-    top: -26px;
-    width: 2px;
-    height: 30px;
-    background: var(--app-text-muted);
-    border-radius: 1px;
-    transition: left 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
-  }
-  .disk-line span {
-    position: absolute;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-    transition: left 0.22s cubic-bezier(0.2, 0.8, 0.3, 1);
-  }
-  .tot-line {
-    margin-top: 16px;
+  .ob-pane__head {
     display: flex;
     align-items: baseline;
-    gap: 10px;
+    gap: var(--s-3);
+  }
+  .ob-pane__head :global(b) {
+    font-weight: 600;
+    color: var(--app-text);
+  }
+  .ob-picker__ctl {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
     flex-wrap: wrap;
+    min-height: var(--h-sm);
   }
-  .tot-hero {
-    font-size: var(--text-xl);
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
+  .ob-strip {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr 1fr;
+    border: 1px solid var(--app-border);
+    border-radius: var(--r-md);
+    background: var(--app-surface);
   }
-  .tot-hero.over {
-    color: var(--app-danger);
+  .ob-strip div {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 10px var(--s-3);
+    min-width: 0;
   }
-  .tot-cap {
-    font-size: var(--text-sm);
+  .ob-strip div + div {
+    border-left: 1px solid var(--mx-hairline);
+  }
+  .ob-strip span {
+    font: 500 var(--text-xs) / 1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
     color: var(--app-text-subtle);
   }
-  .tot-parts {
-    margin-top: 7px;
+  .ob-strip b {
+    font: 500 var(--text-md) / 1.2 var(--font-sans);
+    color: var(--app-text-strong);
+    overflow-wrap: break-word;
+  }
+  .ob-strip b.num {
+    font-family: var(--font-mono);
+    font-weight: 450;
+  }
+  .ob-totals {
+    display: grid;
+    gap: var(--s-2);
+  }
+  .ob-total {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+  }
+  .ob-total b {
+    font: 400 22px / 1 var(--font-mono);
+    letter-spacing: -0.04em;
+    color: var(--app-text-strong);
+  }
+  .ob-total b.over {
+    color: var(--app-danger-text);
+  }
+  .ob-bar-stack {
+    display: flex;
+    gap: 2px;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--app-surface-hover);
+  }
+  .ob-bar-stack i {
+    display: block;
+    height: 100%;
+    background: var(--c);
+  }
+  .ob-legend {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 16px;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
+    gap: var(--s-2) var(--s-5);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font: 400 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-muted);
   }
-  .tot-parts span {
+  .ob-legend li {
     display: inline-flex;
     align-items: center;
     gap: 6px;
   }
-  .tot-parts em {
+  .ob-legend li::before {
+    content: "";
     width: 8px;
     height: 8px;
     border-radius: 2px;
-    flex: 0 0 auto;
+    background: var(--c);
   }
-  .tot-parts b {
-    color: var(--app-text-muted);
-    font-weight: 400;
-  }
-
-  .escape {
-    margin-top: 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 8px;
-    background: var(--app-danger-bg);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .escape .msg {
-    font-size: var(--text-sm);
-    color: var(--app-danger);
-    line-height: 1.6;
-    flex: 1 1 240px;
-  }
-  .escape :global(.ob-btn) {
-    border-color: var(--app-danger-border);
-    color: var(--app-text);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .budget-track i,
-    .disk-line i,
-    .disk-line span {
-      transition: none;
-    }
+  .ob-legend b {
+    font: 500 var(--text-base) / 1 var(--font-mono);
+    color: var(--app-text-strong);
   }
 </style>

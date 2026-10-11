@@ -1,14 +1,13 @@
 <!--
   Screen 4 / 8 — Your settings (issue #195, slice 8).
 
-  A READ-ONLY manifest: eight rows of name + one short value, one sentence of
-  context, two actions. No row expands into an editor and nothing here mutates
+  A READ-ONLY manifest: a 2x4 grid of tick + name + one short value, a mono
+  facts row, two actions. No row expands into an editor and nothing here mutates
   settings — every change is a round trip to *Change settings*, which is also
   where provider names, model identifiers and per-row byte sizes live. That
   demotion is the whole reason this screen is light.
 
-  Ported from `docs/onboarding/mockups/chosen-cinematic-rewind.html` 1140-1204
-  (`chosen-shots/s06-dark.png`), in `var(--app-*)` tokens.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Your settings).
 -->
 <script lang="ts">
   import { systemAudioNeedsRequest } from "$lib/onboarding/feature-rules";
@@ -16,6 +15,10 @@
   import { workListBytes } from "$lib/onboarding/resolve-setup";
   import { retentionToDays } from "$lib/components/retention";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconCheck from "~icons/lucide/check";
+  import IconHalf from "~icons/lucide/circle-dashed";
+  import IconRing from "~icons/lucide/circle";
 
   let {
     flow,
@@ -40,6 +43,8 @@
     warned?: boolean;
     /** Offers the way back to the Permissions screen. */
     grant?: boolean;
+    /** On, but nothing can confirm it works (system audio, ADR 0052). */
+    unconfirmed?: boolean;
   }
 
   // One line per row, one short value, nothing else. A row whose permission is
@@ -62,6 +67,7 @@
           ? "on · macOS can't confirm the grant"
           : "on",
       on: f.systemAudio,
+      unconfirmed: f.systemAudio,
     },
     {
       name: "Transcription",
@@ -126,176 +132,123 @@
   }
 </script>
 
-<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without this
-     the heading and the manifest sat at the top with ~200px of hole under them. -->
-<div class="scene">
-  <h1 class="ob-disp mid centred">Already answered.</h1>
+<div class="ob-main">
+  <div class="ob-col">
+    <div class="ob-head">
+      <span class="mx-kicker">Your settings</span>
+      <h1 class="mx-display">Already answered.</h1>
+    </div>
 
-  <div class="manifest">
-    {#each rows as row (row.name)}
-      <div class="row" class:off={!row.on} class:warned={row.warned}>
-        <span class="tick" aria-hidden="true">{row.on ? "✓" : "○"}</span>
-        <span class="nm">{row.name}</span>
-        <span class="val">
-          {row.value}
-          {#if row.grant}
-            <button class="grant" type="button" onclick={() => flow.goTo("permissions")}>
-              Grant ▸
-            </button>
+    <!-- Two columns of four, capture | processing: rows 0-3 left, 4-7 right. -->
+    <div class="ob-manifest">
+      {#each [0, 4, 1, 5, 2, 6, 3, 7] as k (k)}
+        {@const row = rows[k]!}
+        <div class="ob-man" class:off={!row.on} class:warn={row.warned}>
+          {#if row.unconfirmed}
+            <IconHalf class="ob-mark" />
+          {:else if row.on}
+            <IconCheck class="ob-mark ob-mark--on" />
+          {:else}
+            <IconRing class="ob-mark" />
           {/if}
-        </span>
-      </div>
-    {/each}
+          <span class="ob-man__name">{row.name}</span>
+          <span class="ob-man__val">
+            {row.value}
+            {#if row.grant}
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => flow.goTo("permissions")}>
+                Grant
+              </button>
+            {/if}
+          </span>
+        </div>
+      {/each}
+    </div>
+
+    <dl class="ob-facts">
+      <div><dt>Download</dt><dd>{downloads}</dd></div>
+      <div><dt>Saves to</dt><dd class="path" title={flow.controller.draftSaveDirectory}>{saveDirectory}</dd></div>
+      <div><dt>Keeps</dt><dd>{retention}</dd></div>
+      <div><dt>Per day</dt><dd>~{daily}</dd></div>
+    </dl>
   </div>
 </div>
 
-<div class="ob-foot">
-  <dl class="facts">
-    <div class="fact">
-      <dt>Download</dt>
-      <dd class="ob-num ob-strong">{downloads}</dd>
-    </div>
-    <div class="fact">
-      <dt>Saves to</dt>
-      <dd class="ob-strong path">{saveDirectory}</dd>
-    </div>
-    <div class="fact">
-      <dt>Keeps</dt>
-      <dd class="ob-num ob-strong">{retention}</dd>
-    </div>
-    <div class="fact">
-      <dt>Per day</dt>
-      <dd class="ob-num ob-strong">~{daily}</dd>
-    </div>
-  </dl>
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <button class="ob-btn ghost spacer" onclick={onBack}>← Back</button>
-    <button class="ob-btn" onclick={onChangeSettings}>Change settings</button>
-    <button class="ob-btn primary" onclick={onContinue}>Start&nbsp; →</button>
-  </div>
-</div>
+<footer class="ob-foot">
+  <p class="ob-foot__note">Every line here stays changeable in Settings.</p>
+  <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+  <button class="mx-btn" onclick={onChangeSettings}>Change settings</button>
+  <button class="mx-btn mx-btn--primary" onclick={onContinue}>
+    Start<IconArrow class="ob-btn-arrow" width="14" height="14" />
+  </button>
+</footer>
 
 <style>
-  /* Same idiom as ChangeSettingsScreen's `.scene` and SetupScreen's `.mid`:
-     `safe center` centres the heading and the manifest while they fit, and falls
-     back to top-aligned the moment they do not — so a manifest that outgrows the
-     stage scrolls from its first row instead of losing its head off the top. No
-     `gap`: `.manifest` already carries its own margin. */
-  .scene {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    justify-content: safe center;
-    /* See `--ob-bleed`. */
-    padding-inline: var(--ob-bleed);
-    margin-inline: calc(-1 * var(--ob-bleed));
-  }
-
-  .centred {
-    text-align: center;
-  }
-
-  /* Eight rows, 600px wide, centred — name and one short value, nothing else. */
-  .manifest {
-    width: 600px;
-    max-width: 100%;
-    margin: 38px auto 0;
-    display: flex;
-    flex-direction: column;
-  }
-  .row {
+  .ob-manifest {
     display: grid;
-    grid-template-columns: 16px 1fr auto;
-    gap: 16px;
-    align-items: baseline;
-    padding: 11px 0;
-    border-bottom: 1px solid var(--app-border);
+    grid-template-columns: 1fr 1fr;
+    column-gap: var(--s-6);
+    border-top: 1px solid var(--mx-hairline);
   }
-  .row:last-child {
-    border-bottom: 0;
+  .ob-man {
+    display: grid;
+    grid-template-columns: 14px auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--s-3);
+    height: 42px;
+    border-bottom: 1px solid var(--mx-hairline);
   }
-  .row .nm {
-    font-size: var(--text-md);
+  .ob-man__name {
+    font: 500 var(--text-md) / 1 var(--font-sans);
     color: var(--app-text-strong);
     white-space: nowrap;
   }
-  .row .val {
-    font-size: var(--text-md);
+  .ob-man__val {
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    font: 400 var(--text-base) / 1 var(--font-mono);
     color: var(--app-text-muted);
     white-space: nowrap;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .row .tick {
-    color: var(--app-accent);
-  }
-  .row.off .tick {
+  .ob-man.off .ob-man__name,
+  .ob-man.off .ob-man__val {
     color: var(--app-text-subtle);
   }
-  .row.off .nm {
-    color: var(--app-text-muted);
-  }
-  .row.off .val {
-    color: var(--app-text-subtle);
-  }
-  .row.warned .val {
+  .ob-man.warn .ob-man__val {
     color: var(--app-warn);
   }
 
-  /* The way back for a missing permission. Not an editor — a link to the
-     Permissions screen, which is the only place a grant can be requested. */
-  .grant {
-    font: inherit;
-    font-size: var(--text-sm);
-    color: var(--app-text);
-    background: transparent;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 3px 9px;
-    margin-left: 10px;
-    cursor: pointer;
-  }
-  .grant:hover {
-    background: var(--app-surface-hover);
-  }
-  .grant:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  /* Four facts, label over value, centred as one cluster under the centred
-     manifest. Flex, not a grid: each fact is only as wide as it needs, so the
-     group stays optically centred instead of sitting left in fixed columns. It
-     wraps to a second row at the 920px minimum window. */
-  .facts {
-    margin: 0 0 18px;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 14px 40px;
-  }
-  .fact {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-    text-align: center;
-  }
-  /* Lower case and dimmed: the label only has to name the number under it, so
-     it stays below the uppercase step labels in the window chrome. */
-  .fact dt {
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    opacity: 0.7;
-  }
-  .fact dd {
-    font-size: var(--text-md);
-    line-height: 1.3;
+  .ob-facts {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    justify-content: start;
+    column-gap: var(--s-7);
     margin: 0;
   }
-  /* A long save path is the one value that can outrun its share of the row. */
-  .fact dd.path {
+  .ob-facts div {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ob-facts dt {
+    font: 500 var(--text-xs) / 1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+  .ob-facts dd {
+    margin: 0;
+    font: 450 var(--text-lg) / 1 var(--font-mono);
+    color: var(--app-text-strong);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  /* A long save path is the one value that can outrun its column. */
+  .ob-facts dd.path {
     max-width: 34ch;
     overflow: hidden;
     text-overflow: ellipsis;

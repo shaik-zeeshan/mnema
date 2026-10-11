@@ -1,28 +1,19 @@
 <!--
   Onboarding "Never recorded" (issue #195, slice 7).
 
-  Ported from `docs/onboarding/mockups/input-components/parts/excluded.part.html`
-  — that mockup is the design of record; behaviour and copy come from it.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Capture & Storage,
+  the "Never recorded" row). One `.ob-row`: each app is an `mx-btn--sm` toggle
+  with `aria-pressed` (pressed = never recorded; crossed out when recorded) and
+  an icon-only Add opens a type-ahead field.
 
-  THE SUMMARY LINE IS THE CONTROL. There is no editor, no disclosure and no edit
-  mode: what the app decided on the user's behalf is visible without a click, and
-  the names in the sentence are the buttons that change it.
-
-  Three properties that are load-bearing rather than decorative:
+  Load-bearing rules kept from the sentence version:
    · A struck name KEEPS ITS SLOT. Striking is the existing
      `set_privacy_excluded_app_enabled(sourceId, false)`, so the entry stays in
-     `PrivacySettings.excluded_apps` and the sentence never reflows. Nothing can
-     be removed from here at all — `remove_privacy_excluded_app` is not wired.
-   · The icon is a mark on the baseline, not a tile. Sized `1em` and dropped
-     `-.16em`, so at `line-height: 2.05` its margin box is smaller than the strut
-     and adding icons changes no line height and no wrap point. Glyph + name is
-     one unbreakable word, so a break can only land on a comma.
+     `PrivacySettings.excluded_apps`. Nothing can be removed from here at all —
+     `remove_privacy_excluded_app` is not wired.
    · A rule for an app that is not installed renders PENDING (dashed empty icon
-     slot), never as protecting — `isPendingExclusion` /
+     slot + "when installed"), never as protecting — `isPendingExclusion` /
      `activeExclusionBundleIds` are the frontend mirror of `evaluate_privacy`.
-
-  Motion: none ambient. Colour/underline transitions only, dropped under
-  prefers-reduced-motion.
 -->
 <script lang="ts">
   import { tick } from "svelte";
@@ -31,12 +22,11 @@
     addAnnouncement,
     entryLabel,
     excludedNote,
-    excludedSentence,
     resolveTypedApp,
-    separatorBefore,
     strikeAnnouncement,
   } from "$lib/onboarding/excluded-apps";
   import type { ExcludedAppEntry } from "$lib/types";
+  import IconPlus from "~icons/lucide/plus";
 
   /**
    * The privacy controller's surface, declared structurally so this component
@@ -62,7 +52,6 @@
   let { privacy }: { privacy: ExcludedAppsStore } = $props();
 
   const entries = $derived(privacy.excludedApps);
-  const sentence = $derived(excludedSentence(entries));
   const note = $derived(excludedNote(entries));
 
   const listId = $props.id();
@@ -116,39 +105,57 @@
   }
 </script>
 
-<span class="ob-m">Never recorded</span>
-<!-- One paragraph: separators are plain text between the buttons, so nothing
-     gaps before a comma. Kept on one line on purpose — a newline here becomes a
-     space and the sentence stops hugging its punctuation. -->
-<p class="sentence">{sentence.lead}{#each entries as entry, i (entry.id)}{separatorBefore(i, entries.length)}<button
-      class="nm"
-      type="button"
-      aria-pressed={entry.enabled}
-      data-waiting={isPendingExclusion(entry) ? "1" : "0"}
-      aria-label="{entryLabel(entry)}{isPendingExclusion(entry) ? ', not installed yet' : ''} — {entry.enabled
-        ? 'never recorded, activate to record it'
-        : 'recorded, activate to hide it again'}"
-      onclick={() => strike(entry)}
-    >{#if isPendingExclusion(entry)}<span class="gl wait" aria-hidden="true"></span>{:else}{@const src =
-        privacy.appIconSrcForBundleId(entry.bundleId)}<span class="gl" aria-hidden="true">{#if src}<img
-            src={src}
-            alt=""
-            loading="lazy"
-          />{:else}<span class="mono">{privacy.appIconFallback(entry.displayName, entry.bundleId)}</span>{/if}</span
-      >{/if}<span class="t">{entryLabel(entry)}</span></button
-    >{#if isPendingExclusion(entry)}<span class="waiting-note">&nbsp;· when you install it</span>{/if}{/each}{sentence.tail}
-    {#if adding}<input
-      bind:this={addInput}
-      class="add-input"
-      list={listId}
-      autocomplete="off"
-      spellcheck="false"
-      placeholder="Type any app name"
-      aria-label="Add an app Mnema should never record"
-      onkeydown={onAddKeydown}
-    />{:else}<button bind:this={addChip} class="add" type="button" onclick={openAdd}>＋ Add an app</button>{/if}</p>
-
-<p class="note">{note.text} <em class="hint">{note.hint}</em></p>
+<div class="ob-row">
+  <span class="mx-label">Never recorded</span>
+  <div class="ob-row__ctl ob-apps">
+    {#each entries as entry (entry.id)}
+      {@const pending = isPendingExclusion(entry)}
+      {@const src = pending ? null : privacy.appIconSrcForBundleId(entry.bundleId)}
+      <button
+        class="mx-btn mx-btn--sm"
+        type="button"
+        aria-pressed={entry.enabled}
+        aria-label="{entryLabel(entry)}{pending ? ', not installed yet' : ''} — {entry.enabled
+          ? 'never recorded, activate to record it'
+          : 'recorded, activate to hide it again'}"
+        onclick={() => strike(entry)}
+      >
+        <span class="ob-app" class:wait={pending} aria-hidden="true">
+          {#if src}<img {src} alt="" loading="lazy" />{:else if !pending}{privacy.appIconFallback(
+              entry.displayName,
+              entry.bundleId,
+            )}{/if}
+        </span>
+        {entryLabel(entry)}
+        {#if pending}<small>· when installed</small>{/if}
+      </button>
+    {/each}
+    {#if adding}
+      <input
+        bind:this={addInput}
+        class="mx-input add-input"
+        list={listId}
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Type any app name"
+        aria-label="Add an app Mnema should never record"
+        onkeydown={onAddKeydown}
+      />
+    {:else}
+      <button
+        bind:this={addChip}
+        class="mx-btn mx-btn--ghost mx-btn--sm mx-btn--icon"
+        type="button"
+        aria-label="Add an app it should never see"
+        title="Add an app it should never see"
+        onclick={openAdd}
+      >
+        <IconPlus width="14" height="14" />
+      </button>
+    {/if}
+  </div>
+  {#if note.text}<p class="ob-fine note">{note.text}</p>{/if}
+</div>
 
 <datalist id={listId}>
   {#each privacy.candidates as candidate (candidate.id)}
@@ -156,184 +163,62 @@
   {/each}
 </datalist>
 
-<p class="live" aria-live="polite">{announcement}</p>
+<p class="ob-sr-only" aria-live="polite">{announcement}</p>
 
 <style>
-  /* line-height is fixed and generous: it is what keeps an inline 1em glyph from
-     ever inflating a line box, so icons cost zero vertical space. */
-  .sentence {
-    margin: 5px 0 0;
-    font-size: var(--text-md);
-    line-height: 2.05;
-    color: var(--app-text-muted);
+  .ob-apps .mx-btn:not(.mx-btn--icon) {
+    gap: 6px;
+    padding-left: 4px;
   }
-
-  /* Vertical padding only — a horizontal pad would put a gap before every comma
-     and the line would stop reading as a sentence. */
-  .nm {
-    font: inherit;
-    margin: 0;
-    padding: 1px 0;
-    border: 0;
-    border-radius: 3px;
-    background: none;
-    color: var(--app-text-strong);
-    cursor: pointer;
-    white-space: nowrap; /* glyph + name is one unbreakable word */
-    transition:
-      color 0.12s,
-      background 0.12s;
-  }
-  /* The "these words are clickable" signifier underlines the NAME only. Run it
-     under the glyph too and at eight apps the underlines merge into one ragged
-     rule that reads as a table, not a sentence. */
-  .t {
-    text-decoration: underline dashed var(--app-border-hover);
-    text-underline-offset: 3px;
-    transition: text-decoration-color 0.12s;
-  }
-  .nm:hover {
-    background: var(--app-surface-hover);
-  }
-  .nm:hover .t {
-    text-decoration-color: var(--app-danger);
-  }
-  .nm:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  /* Struck = this app is recorded like everything else. Click puts it back. */
-  .nm[aria-pressed="false"] {
-    color: var(--app-text-subtle);
+  /* Not pressed = recorded like everything else: crossed out, icon dimmed. */
+  .ob-apps .mx-btn[aria-pressed="false"] {
+    --_fg: var(--app-text-subtle);
+    --_bg: transparent;
     text-decoration: line-through;
+    text-decoration-color: var(--app-text-faint);
   }
-  .nm[aria-pressed="false"] .t {
-    text-decoration: none;
-  }
-  .nm[aria-pressed="false"] .gl {
-    filter: grayscale(1);
+  .ob-apps .mx-btn[aria-pressed="false"] .ob-app {
     opacity: 0.45;
+    filter: grayscale(1);
   }
-  .nm[aria-pressed="false"]:hover {
-    color: var(--app-text-muted);
+  .ob-apps small {
+    font: 400 var(--text-sm) / 1 var(--font-sans);
+    color: var(--app-text-subtle);
   }
-
-  /* A mark, not a tile: no border, no fill, no box. Sized to the type and nudged
-     so its optical centre lands on the cap-height centre of the words. */
-  .gl {
-    display: inline-block;
-    box-sizing: border-box;
-    width: 1em;
-    height: 1em;
-    margin-right: 0.3em;
-    vertical-align: -0.16em;
-    line-height: 1;
-    text-align: center;
+  .ob-app {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    flex: none;
+    overflow: hidden;
+    font: 600 var(--text-xs) / 1 var(--font-sans);
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    box-shadow: inset 0 0 0 1px var(--app-border-strong);
   }
-  .gl img {
+  .ob-app img {
     width: 100%;
     height: 100%;
     object-fit: contain;
-    display: block;
   }
-  /* No resolved icon: the app's own monogram fallback, filling the same 1em box
-     so the sentence's rhythm is identical either way. */
-  .gl .mono {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 100%;
-    /* Full 1em so the letter's cap height matches the words beside it — a
-       smaller monogram reads as a subscript, not as the app's mark. */
-    font-size: 1em;
-    font-weight: 600;
-    color: var(--app-text-muted);
+  .ob-app:has(img) {
+    background: none;
+    box-shadow: none;
   }
-  /* Not installed yet: there is no icon to draw, so the icon slot IS the waiting
-     signal — same box, dashed and empty, rather than an extra badge. */
-  .gl.wait {
+  /* Not installed yet: there is no icon to draw, so the slot IS the signal. */
+  .ob-app.wait {
+    background: none;
+    box-shadow: none;
     border: 1px dashed var(--app-warn);
-    border-radius: 3px;
-  }
-  .nm[data-waiting="1"] .t {
-    text-decoration-color: var(--app-warn);
-  }
-  .waiting-note {
-    color: var(--app-text-subtle);
-    font-size: var(--text-xs);
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-  }
-
-  .add {
-    font: inherit;
-    font-size: var(--text-sm);
-    padding: 3px 10px;
-    vertical-align: 1px;
-    color: var(--app-text-subtle);
-    background: transparent;
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 999px;
-    white-space: nowrap;
-    cursor: pointer;
-    transition:
-      color 0.12s,
-      border-color 0.12s;
-  }
-  .add:hover {
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .add:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
   }
   .add-input {
     width: 190px;
-    padding: 3px 9px;
-    font: inherit;
-    font-size: var(--text-sm);
-    vertical-align: 1px;
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-accent);
-    border-radius: 999px;
-    outline: none;
-    box-shadow: var(--app-ring);
+    height: var(--h-sm);
   }
-  .add-input::placeholder {
-    color: var(--app-text-faint);
-  }
-
   .note {
-    margin: 7px 0 0;
-    font-size: var(--text-sm);
-    line-height: 1.7;
-    color: var(--app-text-subtle);
-  }
-  .note .hint {
-    color: var(--app-text-muted);
-    font-style: normal;
-  }
-
-  .live {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .nm,
-    .t,
-    .add {
-      transition: none;
-    }
+    grid-column: 2;
+    margin-top: -4px;
   }
 </style>

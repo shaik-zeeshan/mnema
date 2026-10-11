@@ -46,6 +46,15 @@
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
   import type { PermissionKey, PermissionValue } from "../onboarding-attention";
   import { isDenied, isGranted, screenGate } from "$lib/onboarding/permissions-gate";
+  import { openPermissionHelper, type PermissionHelperKind } from "$lib/shell/permission-helper";
+  import { serializeError } from "../onboarding-mapping";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconCheck from "~icons/lucide/check";
+  import IconExternal from "~icons/lucide/external-link";
+  import IconHalf from "~icons/lucide/circle-dashed";
+  import IconInfo from "~icons/lucide/info";
+  import IconRelaunch from "~icons/lucide/rotate-ccw";
+  import IconRing from "~icons/lucide/circle";
 
   let {
     flow,
@@ -116,6 +125,18 @@
   const soundArriving = $derived(levels.some((level) => level > 0));
   /** A previous session's tap heard sound. Evidence, not a live reading. */
   const heardBefore = $derived(value("systemAudio") === "assumed_working");
+  /** Persisted evidence that a past tap heard nothing while something played. */
+  const sysBlocked = $derived(value("systemAudio") === "possibly_blocked");
+  // ON3: every "Open System Settings" opens the pane AND floats the helper
+  // window; a failure lands in the screen's error line.
+  async function openHelper(kind: PermissionHelperKind): Promise<void> {
+    c.errorMessage = null;
+    try {
+      await openPermissionHelper(kind);
+    } catch (err) {
+      c.errorMessage = serializeError(err);
+    }
+  }
 
   // Listen only once the prompt has been raised (or a past session proved the
   // grant): building the tap IS the macOS prompt, and it must stay behind the
@@ -206,265 +227,267 @@
   });
 </script>
 
-<span class="ob-m">One at a time</span>
+<!-- Coming back from System Settings: pick up a grant without Re-check. -->
+<svelte:window onfocus={() => void recheck()} />
 
-{#if settled.length > 0}
-  <div class="settled">
-    {#each settled as id (id)}
-      <div class="s-row">
-        <span class="tk" class:on={ledgerGranted(id)} aria-hidden="true">{ledgerGranted(id) ? "✓" : "○"}</span>
-        <span class="k">{NAMES[id]}</span>
-        <!-- The relaunch itself is the primary action below, not a second
-             button here: it is the one hold, so nothing continues until it
-             happens. -->
-        <span class="v">{ledgerValue(id)}</span>
-      </div>
-    {/each}
-  </div>
-{/if}
+<div class="ob-main">
+  <div class="ob-col">
+    <span class="mx-kicker">One at a time</span>
 
-<div class="moment">
-  {#if current === "screen"}
-    {#if isDenied(value("screen"))}
-      <h1 class="ob-disp mid">Screen recording</h1>
-      <p class="ob-lead">
-        You said no — and this is the one Mnema cannot run without. macOS will not ask again, so the
-        switch has to be flipped in System Settings.
-      </p>
-      <div class="ob-acts">
-        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "screen" })}>Open System Settings&nbsp; ›</button>
-        <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
-          {c.refreshingPerms ? "Checking…" : "Re-check"}
-        </button>
-        <span class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema</span>
-      </div>
-      <p class="ob-fine tail">Flip it, come back, press Re-check — no need to quit Mnema yourself.</p>
-    {:else}
-      <h1 class="ob-disp mid">Your screen.</h1>
-      <p class="ob-lead">
-        The one Mnema is built on — it records the screen so you can scrub back to it.
-      </p>
-      <div class="ob-acts">
-        <button class="ob-btn" disabled={c.requestingPerm !== null} onclick={() => request("screen")}>
-          {c.requestingPerm === "screen" ? "Requesting…" : "Request access"}
-        </button>
-        <span class="ob-fine">macOS raises its own prompt. Nothing is recorded until you finish setup.</span>
+    {#if flow.screenNeedsRelaunch}
+      <div class="mx-notice" data-tone="info">
+        <span class="mx-notice__icon"><IconRelaunch width="15" height="15" /></span>
+        <b class="mx-notice__title">Screen recording needs one relaunch</b>
+        <p class="mx-notice__text">macOS gives that grant to a fresh copy of Mnema. Setup resumes right here.</p>
       </div>
     {/if}
-  {:else if current === "microphone"}
-    {#if isDenied(value("microphone"))}
-      <h1 class="ob-disp mid">Microphone</h1>
-      <p class="ob-lead">You said no. Mnema keeps working — without transcripts or speaker names.</p>
-      <div class="ob-acts">
-        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "microphone" })}>Open System Settings&nbsp; ›</button>
-        <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
-          {c.refreshingPerms ? "Checking…" : "Re-check"}
-        </button>
-        <span class="ob-fine">Privacy &amp; Security → Microphone → Mnema</span>
-      </div>
-      <p class="ob-fine tail">macOS never asks again on its own, which is why this screen never blocks.</p>
-    {:else}
-      <h1 class="ob-disp mid">Your microphone.</h1>
-      <p class="ob-lead">Only what you say, transcribed on this Mac — no audio ever leaves it.</p>
-      <div class="ob-acts">
-        <button class="ob-btn" disabled={c.requestingPerm !== null} onclick={() => request("microphone")}>
-          {c.requestingPerm === "microphone" ? "Requesting…" : "Request access"}
-        </button>
-        <span class="ob-fine">Off by itself, this only costs you transcripts and speaker names.</span>
-      </div>
-    {/if}
-  {:else if current === "systemAudio"}
-    <h1 class="ob-disp mid">Play anything.</h1>
-    <p class="ob-lead">macOS will not tell us whether you granted this — sound arriving is the only proof.</p>
-    <div class="level">
-      <!-- Every bar is one poll of a real tap: the meter moves with what the tap
-           is delivering and flatlines the moment it stops. Square-rooted because
-           the level is a linear peak — untouched, ordinary playback barely lifts
-           off the floor. -->
-      <div class="meter" class:live={probing || soundArriving} class:lit={soundArriving} aria-hidden="true">
-        {#each levels as level, i (i)}
-          <i style="height:{6 + Math.round(Math.sqrt(level) * 30)}px"></i>
+
+    {#if settled.length > 0}
+      <ul class="ob-ledger">
+        {#each settled as id (id)}
+          {@const half = (id === "systemAudio" && soundArriving) || (id === "screen" && flow.screenNeedsRelaunch)}
+          <li class:warn={(id !== "accessibility" && isDenied(value(id))) || (id === "systemAudio" && sysBlocked)}>
+            {#if half}
+              <IconHalf class="ob-mark" />
+            {:else if ledgerGranted(id)}
+              <IconCheck class="ob-mark ob-mark--on" />
+            {:else}
+              <IconRing class="ob-mark" />
+            {/if}
+            <span>{NAMES[id]}</span>
+            <span>{ledgerValue(id)}</span>
+          </li>
         {/each}
-      </div>
-      <div>
-        <div class="ob-strong">
-          {#if soundArriving}
-            Sound is arriving.
-          {:else if probing}
-            Listening…
-          {:else if c.sysAudioPromptRaised}
-            Requested · unconfirmed
-          {:else}
-            Nothing has arrived yet
-          {/if}
-        </div>
-        {#if !soundArriving}
-          <p class="ob-fine">
-            {probing ? "Play something — a video, a song. " : ""}Silent is not denied — it might just
-            be a quiet Mac.
-          </p>
-        {/if}
-      </div>
-    </div>
-    <div class="ob-acts">
-      <button class="ob-btn" disabled={c.requestingPerm !== null} onclick={() => request("systemAudio")}>
-        {#if c.requestingPerm === "systemAudio"}
-          Requesting…
-        {:else}
-          {c.sysAudioPromptRaised ? "Request again" : "Request"}
-        {/if}
-      </button>
-      <span class="ob-fine">A prompt you closed by accident looks exactly like a No.</span>
-    </div>
-  {:else if current === "accessibility"}
-    <h1 class="ob-disp mid">Browser page addresses.</h1>
-    <p class="ob-lead">
-      Optional, and only for {c.geckoInstalledNames.join(" and ") || "Firefox and Zen"} — every other
-      browser tells Mnema its page address already.
-    </p>
-    <div class="ob-acts">
-      {#if accessibilityAsked}
-        <button class="ob-btn" onclick={() => void invoke("show_permission_helper", { kind: "accessibility" })}>Open System Settings&nbsp; ›</button>
-        <button class="ob-btn" disabled={c.recheckingGeckoAccess} onclick={() => c.recheckGeckoAccess()}>
-          {c.recheckingGeckoAccess ? "Checking…" : "Re-check"}
-        </button>
-      {:else}
-        <button class="ob-btn" disabled={c.requestingGeckoAccess} onclick={askAccessibility}>
-          {c.requestingGeckoAccess ? "Requesting…" : "Request access"}
-        </button>
-      {/if}
-      <span class="ob-fine">Privacy &amp; Security → Accessibility → Mnema</span>
-    </div>
-    <p class="ob-fine tail">The broadest grant there is, so it never rides along with the others.</p>
-  {:else}
-    <h1 class="ob-disp mid">That is everything.</h1>
-    <p class="ob-lead">Nothing left to ask — all of it stays changeable in Settings.</p>
-  {/if}
-</div>
+      </ul>
+    {/if}
 
-<div class="ob-foot">
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <div class="spacer trail">
-      <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-      {#if flow.screenNeedsRelaunch}
-        <span class="ob-fine">
-          macOS gives that grant to a fresh copy of Mnema. Setup resumes right here.
-        </span>
-      {:else if upcoming.length > 0}
-        <span class="upcoming">
-          {#each upcoming as id, i (id)}
-            <span>
-              {i === 0 ? "next" : "then"} · {NAMES[id]}
-              {#if id === "accessibility"}<span class="faint">(optional)</span>{/if}
-            </span>
-          {/each}
-        </span>
+    <div class="ob-moment">
+      {#if current === "screen"}
+        {#if isDenied(value("screen"))}
+          <h1 class="mx-display">Screen recording</h1>
+          <p class="mx-prose">
+            You said no — and this is the one Mnema cannot run without. macOS will not ask again, so the
+            switch has to be flipped in System Settings.
+          </p>
+          <div class="ob-acts">
+            <button class="mx-btn" onclick={() => openHelper("screen")}>Open System Settings<IconExternal width="12" height="12" /></button>
+            <button class="mx-btn" disabled={c.refreshingPerms} onclick={recheck}>
+              {c.refreshingPerms ? "Checking…" : "Re-check"}
+            </button>
+            <span class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema</span>
+          </div>
+          <p class="ob-fine">Flip it, come back, press Re-check — no need to quit Mnema yourself.</p>
+        {:else}
+          <h1 class="mx-display">Your screen.</h1>
+          <p class="mx-prose">The one Mnema is built on — it records the screen so you can scrub back to it.</p>
+          <div class="ob-acts">
+            <button class="mx-btn" disabled={c.requestingPerm !== null} onclick={() => request("screen")}>
+              {c.requestingPerm === "screen" ? "Requesting…" : "Request access"}
+            </button>
+            <span class="ob-fine">macOS raises its own prompt. Nothing is recorded until you finish setup.</span>
+          </div>
+        {/if}
+      {:else if current === "microphone"}
+        {#if isDenied(value("microphone"))}
+          <h1 class="mx-display">Microphone</h1>
+          <p class="mx-prose">You said no. Mnema keeps working — without transcripts or speaker names.</p>
+          <div class="ob-acts">
+            <button class="mx-btn" onclick={() => openHelper("microphone")}>Open System Settings<IconExternal width="12" height="12" /></button>
+            <button class="mx-btn" disabled={c.refreshingPerms} onclick={recheck}>
+              {c.refreshingPerms ? "Checking…" : "Re-check"}
+            </button>
+            <span class="ob-fine">Privacy &amp; Security → Microphone → Mnema</span>
+          </div>
+          <p class="ob-fine">macOS never asks again on its own, which is why this screen never blocks.</p>
+        {:else}
+          <h1 class="mx-display">Your microphone.</h1>
+          <p class="mx-prose">Only what you say, transcribed on this Mac — no audio ever leaves it.</p>
+          <div class="ob-acts">
+            <button class="mx-btn" disabled={c.requestingPerm !== null} onclick={() => request("microphone")}>
+              {c.requestingPerm === "microphone" ? "Requesting…" : "Request access"}
+            </button>
+            <span class="ob-fine">Off by itself, this only costs you transcripts and speaker names.</span>
+          </div>
+        {/if}
+      {:else if current === "systemAudio"}
+        <h1 class="mx-display">Play anything.</h1>
+        <p class="mx-prose">macOS will not tell us whether you granted this — sound arriving is the only proof.</p>
+        <div class="ob-level">
+          <!-- Every bar is one poll of a real tap: the meter moves with what the
+               tap is delivering and flatlines the moment it stops. Square-rooted
+               because the level is a linear peak. -->
+          <div class="ob-meter" class:live={probing || soundArriving} class:lit={soundArriving} aria-hidden="true">
+            {#each levels as level, i (i)}
+              <i style="height:{4 + Math.round(Math.sqrt(level) * 30)}px"></i>
+            {/each}
+          </div>
+          <div class="ob-level__state">
+            <b>
+              {#if soundArriving}
+                Sound is arriving.
+              {:else if probing}
+                Listening…
+              {:else if c.sysAudioPromptRaised}
+                Requested · unconfirmed
+              {:else}
+                Nothing has arrived yet
+              {/if}
+            </b>
+            {#if !soundArriving}
+              <span class="ob-fine">
+                {probing ? "Play something — a video, a song. " : ""}Silent is not denied — it might just be
+                a quiet Mac.
+              </span>
+            {/if}
+          </div>
+        </div>
+        {#if sysBlocked}
+          <div class="mx-notice" data-tone="info">
+            <span class="mx-notice__icon"><IconInfo width="15" height="15" /></span>
+            <b class="mx-notice__title">System audio may be blocked</b>
+            <p class="mx-notice__text">
+              A minute of silence while something played. Check the switch, or carry on — the mic still records.
+            </p>
+            <div class="mx-notice__acts">
+              <button class="mx-btn mx-btn--sm" onclick={() => openHelper("systemAudio")}>
+                Open System Settings<IconExternal width="12" height="12" />
+              </button>
+            </div>
+          </div>
+        {/if}
+        <div class="ob-acts">
+          <button class="mx-btn" disabled={c.requestingPerm !== null} onclick={() => request("systemAudio")}>
+            {#if c.requestingPerm === "systemAudio"}
+              Requesting…
+            {:else}
+              {c.sysAudioPromptRaised ? "Request again" : "Request"}
+            {/if}
+          </button>
+          <span class="ob-fine">A prompt you closed by accident looks exactly like a No.</span>
+        </div>
+      {:else if current === "accessibility"}
+        <h1 class="mx-display">Browser page addresses.</h1>
+        <p class="mx-prose">
+          Optional, and only for {c.geckoInstalledNames.join(" and ") || "Firefox and Zen"} — every other
+          browser tells Mnema its page address already.
+        </p>
+        {#if accessibilityAsked}
+          <div class="ob-acts">
+            <button class="mx-btn" onclick={() => openHelper("accessibility")}>Open System Settings<IconExternal width="12" height="12" /></button>
+            <button class="mx-btn" disabled={c.recheckingGeckoAccess} onclick={() => c.recheckGeckoAccess()}>
+              {c.recheckingGeckoAccess ? "Checking…" : "Re-check"}
+            </button>
+            <span class="ob-fine">Privacy &amp; Security → Accessibility → Mnema</span>
+          </div>
+        {:else}
+          <div class="ob-acts">
+            <button class="mx-btn" disabled={c.requestingGeckoAccess} onclick={askAccessibility}>
+              {c.requestingGeckoAccess ? "Requesting…" : "Request access"}
+            </button>
+            <span class="ob-fine">Privacy &amp; Security → Accessibility → Mnema</span>
+          </div>
+        {/if}
+        <p class="ob-fine">The broadest grant there is, so it never rides along with the others.</p>
+      {:else}
+        <h1 class="mx-display">That is everything.</h1>
+        <p class="mx-prose">Nothing left to ask — all of it stays changeable in Settings.</p>
       {/if}
     </div>
-    <button class="ob-btn primary" onclick={advance}>{primaryLabel}&nbsp; →</button>
   </div>
 </div>
+
+<footer class="ob-foot">
+  <p class="ob-foot__note">
+    {#each upcoming as id, i (id)}{i === 0 ? "next" : "   then"} · <b>{NAMES[id]}</b
+      >{#if id === "accessibility"}&nbsp;(optional){/if}{/each}
+  </p>
+  <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+  <button class="mx-btn mx-btn--primary" onclick={advance}>
+    {primaryLabel}<IconArrow class="ob-btn-arrow" width="14" height="14" />
+  </button>
+</footer>
 
 <style>
-  /* settled ledger — one line per answered permission */
-  .settled {
-    display: flex;
-    flex-direction: column;
-    margin-top: 16px;
-    flex: none;
-  }
-  .s-row {
+  .ob-ledger {
     display: grid;
-    grid-template-columns: 14px 1fr auto;
-    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-top: 1px solid var(--mx-hairline);
+    max-width: 520px;
+  }
+  .ob-ledger li {
+    display: grid;
+    grid-template-columns: 14px 160px 1fr;
     align-items: center;
-    padding: 11px 0;
-    border-bottom: 1px solid var(--app-border);
-    font-size: var(--text-base);
+    gap: var(--s-3);
+    height: 36px;
+    border-bottom: 1px solid var(--mx-hairline);
+    font: 500 var(--text-md) / 1 var(--font-sans);
+    color: var(--app-text);
   }
-  .s-row:first-child {
-    border-top: 1px solid var(--app-border);
-  }
-  .s-row .tk {
+  .ob-ledger li span:last-child {
+    font: 400 var(--text-base) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
-  .s-row .tk.on {
-    color: var(--app-accent);
+  .ob-ledger li.warn span:last-child {
+    color: var(--app-warn);
   }
-  .s-row .k {
-    color: var(--app-text-muted);
+  .ob-moment {
+    display: grid;
+    gap: var(--s-4);
+    justify-items: start;
   }
-  .s-row .v {
-    display: inline-flex;
-    align-items: center;
-    gap: 14px;
-    color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+  .ob-moment .mx-display {
+    font-size: 36px;
   }
-
-  /* the one question on screen */
-  .moment {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
+  .ob-moment .mx-notice {
+    max-width: 640px;
+    justify-self: stretch;
   }
-  .moment .ob-lead {
-    margin-top: 20px;
-  }
-  .moment .ob-acts {
-    margin-top: 30px;
-  }
-  .moment .tail {
-    margin-top: 26px;
+  .ob-col > .mx-notice {
+    max-width: 640px;
   }
 
   /* level meter — the only proof this screen can offer, so it moves with the tap */
-  .level {
+  .ob-level {
     display: flex;
     align-items: center;
-    gap: 24px;
-    margin-top: 30px;
+    gap: var(--s-5);
+    padding: var(--s-3) var(--s-4);
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
   }
-  .level > div {
-    max-width: 52ch;
+  .ob-level__state {
+    display: grid;
+    gap: 4px;
   }
-  .meter {
+  .ob-level__state b {
+    font: 600 var(--text-md) / 1.2 var(--font-sans);
+    color: var(--app-text-strong);
+  }
+  .ob-meter {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 3px;
-    height: 44px;
+    height: 40px;
   }
-  /* Before anything is listening the meter collapses to its own floor line — a
-     44px box holding 6px bars reads as debris, not as a quiet meter. */
-  .meter:not(.live) {
-    height: 10px;
+  .ob-meter i {
+    width: 4px;
+    border-radius: 2px;
+    background: var(--chart-grey-2);
+    transition: height 120ms var(--ease-quart);
   }
-  .meter i {
-    width: 3px;
-    display: block;
-    border-radius: 1px;
-    background: var(--app-border-hover);
-    transition: height 120ms linear;
+  .ob-meter.live i {
+    background: var(--chart-grey-4);
   }
-  .meter.lit i {
-    background: var(--app-text-subtle);
+  .ob-meter.lit i {
+    background: var(--app-source-sysaudio);
   }
-
-  .trail {
-    display: flex;
-    align-items: center;
-    gap: 22px;
-  }
-  .upcoming {
-    display: flex;
-    gap: 26px;
-    color: var(--app-text-subtle);
-    font-size: var(--text-sm);
-  }
-  .faint {
-    color: var(--app-text-subtle);
-    opacity: 0.7;
+  @media (prefers-reduced-motion: reduce) {
+    .ob-meter i {
+      transition: none;
+    }
   }
 </style>
