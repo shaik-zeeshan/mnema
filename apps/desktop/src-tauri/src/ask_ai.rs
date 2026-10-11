@@ -42,6 +42,7 @@ use crate::app_infra::AppInfraState;
 use crate::ask_ai::answer_view::AnswerView;
 use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
 
+mod abandoned;
 pub(crate) mod answer_view;
 pub(crate) mod app_control;
 pub(crate) mod mcp;
@@ -2197,7 +2198,9 @@ async fn run_ask_ai_turn(
                 };
                 // Throttled partial persist for reattach. Spawned so persistence
                 // never blocks the synchronous stream callback.
-                if let Some(answer_so_far) = answer_so_far {
+                // Blank text is never persisted, so a discarded abandoned turn
+                // (see `abandoned`) has no partial write racing its delete.
+                if let Some(answer_so_far) = answer_so_far.filter(|a| !a.trim().is_empty()) {
                     let infra = Arc::clone(&infra);
                     let app_handle = app_handle.clone();
                     let conversation_announced = Arc::clone(&conversation_announced);
@@ -2438,6 +2441,22 @@ async fn run_ask_ai_turn(
         }
     };
 
+    // A cancelled Quick Recall question that never got an answer is deleted
+    // rather than kept (see `abandoned`); a displacing newer turn owns the rows.
+    let discarded = run_result.is_ok()
+        && cancel.load(Ordering::SeqCst)
+        && !abandoned::displaced(&conversation_id, &cancel)
+        && abandoned::discard_if_abandoned(
+            &infra,
+            &conversation_id,
+            &origin,
+            existing.as_ref().map(|c| c.origin.as_str()),
+            turn_index,
+            &final_answer,
+            &final_blocks,
+        )
+        .await;
+
     match run_result {
         Ok(()) if !cancel.load(Ordering::SeqCst) && final_answer.trim().is_empty() => {
             // Clean finish that produced no answer. A reasoning model can spend
@@ -2483,6 +2502,12 @@ async fn run_ask_ai_turn(
                 },
                 &mut last_version,
             );
+        }
+        Ok(()) if discarded => {
+            // An abandoned Quick Recall question: the conversation is gone, so
+            // the history list drops it; the view still settles.
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+            emit_terminal(TurnUpdate::Done, &mut last_version);
         }
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no

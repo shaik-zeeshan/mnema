@@ -184,9 +184,11 @@
   }
 
   // Stop in place: the partial stays (persisted as a done turn), still
-  // continuable in Chat; late updates stop matching once liveId drops.
+  // continuable in Chat; late updates stop matching once liveId drops. Stopped
+  // before any answer, the backend discards the thread — nothing to continue.
   async function stop(): Promise<void> {
     if (!turn || !live) return;
+    if (turn.blocks.length === 0) threadId = null;
     turn.phase = "done";
     turn.liveActivity = null;
     turn.stoppedEarly = true;
@@ -454,13 +456,13 @@
         >
       {:else}
         <span class="mono">{turn.stoppedEarly ? "stopped" : fromLine}</span>
-        <button
+        {#if threadId !== null}<button
           type="button"
           class="mx-btn mx-btn--sm"
           class:mx-btn--primary={sel === 0}
           onclick={() => void openInChat()}
           ><IconChat width="13" height="13" aria-hidden="true" />Continue in Chat<kbd>↵</kbd></button
-        >
+        >{/if}
       {/if}
     </header>
     <div class="rc-ans__body" class:rc-ans__body--split={timelines.length > 0}>
