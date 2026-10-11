@@ -203,13 +203,13 @@ export interface Column extends Slot {
 }
 
 const STACK: string[] = [...CATEGORY_ORDER, "__uncat__"];
-const BLOCK_H = 2; // day mode: 2-hour blocks
+const BLOCK_H = 1; // day mode: one column per hour (insights.html)
 const dayTip = (d: Date) => d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 const hh = (h: number) => String(h).padStart(2, "0");
 
 /** The columns of "Where the <unit> went": one per local day (week / month —
- *  empty days included, so a gap reads as a zero column), or one per 2-hour
- *  block (day). */
+ *  empty days included, so a gap reads as a zero column), or one per hour
+ *  (day). */
 export function slots(startMs: number, endMs: number, unit: PeriodUnit, nowMs: number): Slot[] {
   const out: Slot[] = [];
   const s0 = new Date(startMs);

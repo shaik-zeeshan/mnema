@@ -50,8 +50,8 @@
   const chartError = $derived(capOnly ? usage.failed : engine.failed);
   const per = $derived(
     capOnly
-      ? unit === "day" ? "app time per 2 hours" : "app time per day"
-      : unit === "day" ? "activity minutes per 2 hours, by category" : "activity hours per day, by category",
+      ? unit === "day" ? "app time per hour" : "app time per day"
+      : unit === "day" ? "activity minutes per hour, by category" : "activity hours per day, by category",
   );
   const catTotal = $derived(categories.reduce((t, c) => t + c.ms, 0));
 </script>

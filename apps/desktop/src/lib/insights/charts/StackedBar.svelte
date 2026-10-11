@@ -1,6 +1,6 @@
 <script lang="ts">
   // StackedBar — "Where the <unit> went" (insights.html `.in-week__plot`): one
-  // stacked column per slot (a day in week/month, a 2-hour block in day), each
+  // stacked column per slot (a day in week/month, an hour in day), each
   // stacked by category in the order given. Empty slots draw as a dashed zero
   // column so a day without capture still reads as a day. `highlight` dims every
   // part but that key (category-row hover).
@@ -18,7 +18,7 @@
   const H = 36e5;
   const month = $derived(unit === "month");
   const peak = $derived(Math.max(0, ...columns.map((c) => c.totalMs / H)));
-  // Day mode can pass 2h per block when activities overlap — the axis grows to fit.
+  // Day mode can pass 1h per column when activities overlap — the axis grows to fit.
   const max = $derived(unit === "day" ? Math.max(1, Math.ceil(peak * 4) / 4) : Math.max(8, Math.ceil(peak / 2) * 2));
   const ticks = $derived([max, max * 0.75, max / 2, max / 4, 0]);
   const tick = (v: number) => (unit === "day" ? `${Math.round(v * 60)}m` : `${Math.round(v)}h`);

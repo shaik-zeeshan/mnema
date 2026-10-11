@@ -25,9 +25,9 @@ describe("activityColumns", () => {
     expect(cols.map((c) => c.totalMs / 36e5)).toEqual([0, 2, 0, 0, 0, 0, 0]);
     expect(cols[4].live && cols[5].future).toBe(true);
   });
-  it("splits a day into 2-hour blocks, trimmed to the captured span", () => {
+  it("splits a day into hours, trimmed to the captured span", () => {
     const cols = activityColumns([act(5, 9, 13, "deep", "research")], at(5, 0), at(6, 0), "day", at(9, 0));
-    expect(cols.map((c) => [c.label, c.totalMs / 6e4])).toEqual([["08", 60], ["10", 120], ["12", 60]]);
+    expect(cols.map((c) => [c.label, c.totalMs / 6e4])).toEqual([["09", 60], ["10", 60], ["11", 60], ["12", 60]]);
   });
 });
 

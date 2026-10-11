@@ -12,7 +12,6 @@
   import IconPlus from "~icons/lucide/plus";
   import IconSearch from "~icons/lucide/search";
   import IconPin from "~icons/lucide/pin";
-  import IconPinOff from "~icons/lucide/pin-off";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -169,7 +168,7 @@
                   aria-label={c.pinned ? "Unpin" : "Pin"}
                   use:tip={c.pinned ? "Unpin" : "Pin"}
                   onclick={(e) => void pin(e, c)}
-                  >{#if c.pinned}<IconPinOff width="14" height="14" aria-hidden="true" />{:else}<IconPin width="14" height="14" aria-hidden="true" />{/if}</button
+                  ><IconPin width="14" height="14" aria-hidden="true" /></button
                 >
                 <button
                   type="button"
