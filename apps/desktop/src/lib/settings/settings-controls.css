@@ -1,5 +1,5 @@
 /* Shared controls & notices (part 1) — acknowledgements/notices viewer, update
- * channel/status, speaker hero, model status, permission callout, download
+ * channel/status, model status, permission callout, download
  * progress, cleanup/delete confirmations, status word + dot. (Text input, buttons, badges, device
  * list, inline error/validation live in settings-controls-fields.css.)
  *
@@ -197,39 +197,6 @@
   .settings-shell .action-hint--warn {
     color: var(--app-warn);
     font-weight: 600;
-  }
-
-  .settings-shell .speaker-settings-hero {
-    display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
-    gap: 16px;
-    align-items: start;
-    padding: 16px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
-    border-radius: 10px;
-    background:
-      radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--app-warn) 12%, transparent), transparent 38%),
-      radial-gradient(circle at 84% 8%, color-mix(in srgb, var(--app-accent) 14%, transparent), transparent 42%),
-      color-mix(in srgb, var(--app-surface) 88%, transparent);
-  }
-
-  .settings-shell .speaker-settings-hero h3 {
-    margin: 4px 0;
-    color: var(--app-text-strong);
-    font-size: var(--text-lg);
-    line-height: 1.15;
-  }
-
-  .settings-shell .speaker-settings-hero p {
-    margin: 0;
-    color: var(--app-text-muted);
-    font-size: 11px;
-    line-height: 1.55;
-  }
-
-  .settings-shell .speaker-settings-hero__toggles {
-    display: grid;
-    gap: 10px;
   }
 
   .settings-shell .group-hint {
