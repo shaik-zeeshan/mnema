@@ -16,6 +16,7 @@ import {
   categoryLabel,
 } from "$lib/insights/activity-helpers";
 import { isoWeek } from "$lib/components/date-input";
+import { formatClockRange, formatHour } from "$lib/time-format";
 
 /** Just the shape the lede footer swatch+label needs. */
 export interface LedeTopCategory {
@@ -223,7 +224,6 @@ export interface Column extends Slot {
 const STACK: string[] = [...CATEGORY_ORDER, "__uncat__"];
 const BLOCK_H = 1; // day mode: one column per hour (insights.html)
 const dayTip = (d: Date) => d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-const hh = (h: number) => String(h).padStart(2, "0");
 
 /** The columns of "Where the <unit> went": one per local day (week / month —
  *  empty days included, so a gap reads as a zero column), or one per hour
@@ -242,9 +242,9 @@ export function slots(startMs: number, endMs: number, unit: PeriodUnit, nowMs: n
     out.push({
       startMs: +s,
       endMs: +e,
-      label: unit === "day" ? hh(i * BLOCK_H) : unit === "week"
+      label: unit === "day" ? formatHour(i * BLOCK_H) : unit === "week"
         ? s.toLocaleDateString("en-US", { weekday: "short" }) : String(s.getDate()),
-      tip: unit === "day" ? `${hh(i * BLOCK_H)}:00–${hh((i + 1) * BLOCK_H)}:00` : dayTip(s),
+      tip: unit === "day" ? formatClockRange(s, e) : dayTip(s),
       live: nowMs >= +s && nowMs < +e,
       future: +s > nowMs,
     });

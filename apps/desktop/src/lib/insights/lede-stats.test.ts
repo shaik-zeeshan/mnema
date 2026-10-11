@@ -1,6 +1,11 @@
 // @ts-nocheck — run under `bun test` (bun:test types aren't in svelte-check's tsconfig).
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { activityColumns, axisMax, deepFocusDelta, fmtAxisTick, focusHeat } from "./lede-stats";
+import { setTimeFormat } from "$lib/time-format";
+
+// Day-column labels follow the Time format setting; pin 24-hour here only.
+beforeAll(() => setTimeFormat("h24"));
+afterAll(() => setTimeFormat("system"));
 
 describe("axisMax / fmtAxisTick", () => {
   const min = (m) => m * 60000;
