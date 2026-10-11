@@ -956,7 +956,7 @@
                       <div class="ac-tool__main"><div class="ac-tool__name">Claude Code <span class="mx-chip" data-tip="Identity inferred from the process">Inferred</span></div>
                         <div class="ac-tool__meta"><span class="mx-chip">last 7 days</span> <i>·</i> used 12 min ago <i>·</i> last ran <code>search</code></div></div>
                       <div class="ac-idle" data-tip="Lapses Nov 9 if unused — the next request asks again" data-tip-pos="top"><b>Lapses in <span class="num">30</span> days</b><span class="ac-idle__bar" style="--left:100%"><i></i></span></div>
-                      <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm" data-tip="Refuse its future requests — no window, no asking" data-tip-pos="top">Block</button></div>
+                      <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm" data-tip="Revoke and refuse its future requests" data-tip-pos="top">Block</button></div>
                     <div class="ac-tool"><span class="ac-glyph"><svg width="15" height="15"><use href="#ac-terminal"/></svg></span>
                       <div class="ac-tool__main"><div class="ac-tool__name">Codex <span class="mx-chip" data-tip="Identity inferred from the process">Inferred</span></div>
                         <div class="ac-tool__meta"><span class="mx-chip">last day</span> <i>·</i> used 3 days ago <i>·</i> last ran <code>timeline</code></div></div>
@@ -987,11 +987,11 @@
                     <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div></div></div>
                 <div class="ac-sec" data-st="access-error" data-replaces="grants"><div class="ac-sec__head"><b>Tools with access</b></div>
                   <div class="ac-list"><div class="mx-empty mx-empty--compact" data-tone="danger"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-alert"/></svg></span>
-                    <b class="mx-empty__title">Couldn’t load CLI Access permissions</b><p class="mx-empty__text">database is locked. Tools keep the access they had.</p>
+                    <b class="mx-empty__title">Couldn’t load CLI Access permissions</b><p class="mx-empty__text">database is locked. Tools keep the access they had; this list refreshes every 30 s.</p>
                     <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button></div></div></div></div>
                 <div class="ac-sec" data-st="access-empty" data-replaces="grants act"><div class="ac-sec__head"><b>Tools with access</b></div>
                   <div class="ac-list"><div class="mx-empty mx-empty--compact"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#ac-terminal"/></svg></span>
-                    <b class="mx-empty__title">No tool has access</b><p class="mx-empty__text">The first time an agent runs a command like <code class="num">mnema search</code>, a window asks you. Tools you allow or block show up here.</p></div></div></div>
+                    <b class="mx-empty__title">No tool has access</b><p class="mx-empty__text">The first time an agent runs a command like <code class="num">mnema search</code>, a window asks you. Tools you allow — or block — show up here.</p></div></div></div>
 
                 <div class="ac-sec">
                   <div class="ac-sec__head"><b>Recent activity</b><span class="mx-spacer"></span><button class="mx-btn mx-btn--ghost mx-btn--sm" data-base="act"><svg width="13" height="13"><use href="#st-folder"/></svg>Reveal log in Finder</button></div>
@@ -999,7 +999,8 @@
                     <li><b>Claude Code</b><code>search</code><span>14 results</span><span class="num">12 min ago</span></li>
                     <li><b>Claude Code</b><code>show-text</code><span>1 result</span><span class="num">13 min ago</span></li>
                     <li><b>Codex</b><code>timeline</code><span class="is-refused">Out of scope</span><span class="num">3 days ago</span></li>
-                    <li><b>curl-wrapper</b><code>search</code><span class="is-refused">Refused</span><span class="num">10 days ago</span></li>
+                    <li><b>Codex</b><code>search</code><span>6 results</span><span class="num">3 days ago</span></li>
+                    <li><b>curl-wrapper</b><code>search</code><span class="is-refused">Denied</span><span class="num">10 days ago</span></li>
                   </ul>
                   <p class="mx-body-sm" data-st="access-empty" style="margin:0">Nothing yet. Commands run by tools with access are recorded here.</p>
                 </div>
