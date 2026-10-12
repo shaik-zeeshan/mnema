@@ -2176,11 +2176,13 @@ async fn run_ask_ai_turn(
         let question = question.clone();
         move |event: ai_engine::AgentLoopEvent| match event {
             ai_engine::AgentLoopEvent::Delta(text) => {
-                // On the FIRST delta advance the phase to "streaming" and clear any
-                // live tool-activity line. Reading the
-                // current live_activity first avoids a no-op version bump when
-                // there is nothing to clear.
-                {
+                // On the FIRST visible delta advance the phase to "streaming" and
+                // clear any live tool-activity line. Whitespace doesn't count: a
+                // model often sends a bare newline before its tool calls, and
+                // flipping then hid the step line behind an empty answer. Reading
+                // the current live_activity first avoids a no-op version bump
+                // when there is nothing to clear.
+                if !text.trim().is_empty() {
                     let (was_thinking, had_live) = ask_ai_live_turns()
                         .lock()
                         .ok()

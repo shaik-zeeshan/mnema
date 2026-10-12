@@ -490,7 +490,7 @@
       {/if}
     </header>
     <div class="rc-ans__body" class:rc-ans__body--split={timelines.length > 0}>
-      {#if !turn || (turn.blocks.length === 0 && turn.phase !== "error" && turn.phase !== "done")}
+      {#if !turn || turn.phase === "thinking" || (turn.blocks.length === 0 && turn.phase !== "error" && turn.phase !== "done")}
         <div class="rc-ans__wait">
           <div class="mx-skel" style="width:92%"></div>
           <div class="mx-skel" style="width:78%"></div>
