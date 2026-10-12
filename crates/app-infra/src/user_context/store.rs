@@ -2848,7 +2848,7 @@ pub(super) fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
 
 /// The stored snake_case string for an [`ActivityCategory`] (matches the
 /// capture-types serde rename).
-fn category_to_str(category: ActivityCategory) -> &'static str {
+pub(super) fn category_to_str(category: ActivityCategory) -> &'static str {
     match category {
         ActivityCategory::Creating => "creating",
         ActivityCategory::Communication => "communication",
@@ -2879,7 +2879,7 @@ fn category_from_str(value: Option<&str>) -> Option<ActivityCategory> {
 
 /// The stored snake_case string for a [`FocusLevel`] (matches the capture-types
 /// serde rename and the SQL `focus` column).
-fn focus_to_str(focus: FocusLevel) -> &'static str {
+pub(super) fn focus_to_str(focus: FocusLevel) -> &'static str {
     match focus {
         FocusLevel::Deep => "deep",
         FocusLevel::Mixed => "mixed",

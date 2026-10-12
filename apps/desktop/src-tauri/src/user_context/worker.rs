@@ -474,7 +474,14 @@ pub async fn run_forward_activity_window(
                     gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
-            let message = if outcome.inserted == 0 {
+            let message = if outcome.inserted == 0 && outcome.extended > 0 {
+                format!(
+                    "Extended {} ongoing {} from {} capture item(s).",
+                    outcome.extended,
+                    if outcome.extended == 1 { "Activity" } else { "Activities" },
+                    items_read
+                )
+            } else if outcome.inserted == 0 {
                 "Derivation completed; no new Activities in this window.".to_string()
             } else {
                 format!(
@@ -494,7 +501,7 @@ pub async fn run_forward_activity_window(
                 window_end_ms: end,
                 items_read,
                 message,
-                changed: outcome.inserted > 0,
+                changed: outcome.inserted + outcome.extended > 0,
                 derived_window: true,
             }
         }
@@ -539,7 +546,8 @@ enum BackfillStep {
     /// A window was read but had no captures; a `skipped` run advanced the
     /// cursor. Keep going (more windows may have content).
     Advanced,
-    /// A window was derived (≥1 Activity), recorded as a completed run.
+    /// A window was derived (≥1 Activity inserted or extended), recorded as a
+    /// completed run.
     Derived,
     /// A window read empty-of-engine-work or failed; the outcome was still
     /// recorded via a run. Keep going.
@@ -642,7 +650,7 @@ async fn derive_window_and_record(
                     gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
-            if outcome.inserted > 0 {
+            if outcome.inserted + outcome.extended > 0 {
                 BackfillStep::Derived
             } else {
                 BackfillStep::NoChange
@@ -853,6 +861,10 @@ struct WorkerCadence {
     /// `count_activities()` observed at the last distillation, so a tick can
     /// distill early when the Activity total has grown.
     last_distilled_activity_count: Option<i64>,
+    /// An Activity pass inserted OR extended a row since the last distillation.
+    /// Continuation extends rows without growing the count, so the count alone
+    /// would leave a long Activity's new minutes waiting for the K-tick beat.
+    activities_changed_since_distillation: bool,
     /// Ticks (of any kind, including idle-but-resolved ones that reach the
     /// decay check) since the last confidence-decay pass.
     ticks_since_decay: u32,
@@ -860,14 +872,16 @@ struct WorkerCadence {
 
 impl WorkerCadence {
     /// Whether this tick should run a Conclusion distillation: every Kth
-    /// successful Activity tick, OR as soon as new Activities exist since the
-    /// last distillation.
+    /// successful Activity tick, OR as soon as Activities were added or
+    /// extended since the last distillation.
     fn should_distill(&self, current_activity_count: i64) -> bool {
         let grew = self
             .last_distilled_activity_count
             .map(|last| current_activity_count > last)
             .unwrap_or(current_activity_count > 0);
-        grew || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+        grew
+            || self.activities_changed_since_distillation
+            || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
     }
 
     /// Whether this tick should run the confidence-decay beat: every Mth tick.
@@ -1248,6 +1262,12 @@ async fn worker_tick(
         }
     }
 
+    // Only the Activity passes have run so far, so this is "an Activity was
+    // inserted or extended this tick".
+    if dossier_changed {
+        cadence.activities_changed_since_distillation = true;
+    }
+
     // --- Conclusion beat (slower) ---
     // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
     // Conclusion distillation on a slower beat — every Kth successful Activity
@@ -1278,6 +1298,7 @@ async fn worker_tick(
         dossier_changed = dossier_changed || changed;
         cadence.activity_ticks_since_distillation = 0;
         cadence.last_distilled_activity_count = Some(activity_count);
+        cadence.activities_changed_since_distillation = false;
     }
 
     // --- Confidence-decay beat (slowest, LLM-free) ---

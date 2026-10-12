@@ -29,6 +29,7 @@
 //!   conclusions / subject view / digest / run-now).
 
 pub mod commands;
+mod continuation;
 pub mod derivation;
 pub mod digest;
 pub mod subject_candidates;

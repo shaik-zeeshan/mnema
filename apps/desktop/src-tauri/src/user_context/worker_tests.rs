@@ -145,11 +145,24 @@ fn cadence_distills_when_activity_count_grows() {
 }
 
 #[test]
+fn cadence_distills_when_an_activity_was_extended_without_growth() {
+    let mut cadence = WorkerCadence {
+        last_distilled_activity_count: Some(5),
+        ..WorkerCadence::default()
+    };
+    assert!(!cadence.should_distill(5));
+    // Continuation grew an existing row: same count, still distill early.
+    cadence.activities_changed_since_distillation = true;
+    assert!(cadence.should_distill(5));
+}
+
+#[test]
 fn cadence_distills_every_kth_tick_without_growth() {
     let cadence = WorkerCadence {
         activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
         last_distilled_activity_count: Some(10),
         ticks_since_decay: 0,
+        activities_changed_since_distillation: false,
     };
     // No growth, but the K-tick threshold is met => distill.
     assert!(cadence.should_distill(10));
