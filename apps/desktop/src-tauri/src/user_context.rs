@@ -32,6 +32,7 @@ pub mod commands;
 mod continuation;
 pub mod derivation;
 pub mod digest;
+mod evidence_tags;
 pub mod subject_candidates;
 pub mod subject_vector_worker;
 pub mod worker;

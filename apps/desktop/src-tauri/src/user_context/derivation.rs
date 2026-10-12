@@ -25,6 +25,8 @@ use app_infra::{
 };
 use app_infra::user_context::{confidence, guardrail};
 
+use super::evidence_tags::strip_evidence_tags;
+
 /// System instruction for the Activity-segmentation pass. Kept terse: the
 /// detailed item formatting + the return shape live in the per-call prompt and
 /// the `DerivedActivityBatch` JSON schema.
@@ -56,7 +58,9 @@ the one moment someone should see first to recognize the Activity (must be one o
 own evidence tags). Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
-summaries to the work/task itself. Return the structured result.";
+summaries to the work/task itself. Write titles and summaries without a subject, starting with a \
+verb; never write 'the user', 'they' or 'their'; name the project or site. The f<id>/a<id> tags go \
+only in evidence_refs and headline_ref, never in a title or summary. Return the structured result.";
 
 /// Per-item text cap so a single noisy capture cannot dominate the prompt budget.
 const ITEM_TEXT_CHAR_CAP: usize = 1200;
@@ -567,8 +571,8 @@ async fn persist_batch(
             .unwrap_or(window.end_ms);
 
         let draft = NewActivity {
-            title: activity.title.trim().to_string(),
-            summary: activity.summary.trim().to_string(),
+            title: strip_evidence_tags(activity.title.trim(), tag_to_captured_at),
+            summary: strip_evidence_tags(activity.summary.trim(), tag_to_captured_at),
             category: parse_category(&activity.category),
             focus: parse_focus(&activity.focus),
             started_at_ms,
