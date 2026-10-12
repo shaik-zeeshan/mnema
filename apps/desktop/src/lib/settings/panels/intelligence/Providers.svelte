@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
@@ -8,6 +8,7 @@
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ProviderRow from "./ProviderRow.svelte";
   import { runtimeReasonTone } from "./provider-row-state";
+  import { testProvidersOnce } from "$lib/settings/state/ai-runtime.svelte";
   import type { AiProviderKind } from "$lib/types";
   import IconCheck from "~icons/lucide/check";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -42,6 +43,14 @@
       destroyed = true;
       unlisten?.();
     };
+  });
+
+  // Each row's reachability, once per app session on the first open of this
+  // panel once settings have loaded — never while AI features are off. Rows
+  // re-check on their own "Test again".
+  $effect(() => {
+    if (!rec.recordingSettings || !rec.draftAiEnabled) return;
+    untrack(() => testProvidersOnce(rec.draftAiProviders));
   });
 
   const status = $derived(aiRuntime.aiRuntimeStatus);

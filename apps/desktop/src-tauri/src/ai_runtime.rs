@@ -754,6 +754,35 @@ pub async fn ai_runtime_has_provider_key(
         .map_err(|error| error.to_string())
 }
 
+/// The last 4 characters of a provider's stored API key, so Settings can show
+/// which key is which (`…4f2a`). This is the ONLY key material that ever
+/// crosses IPC; `None` when no key is stored, the key is too short for 4
+/// characters to be a small fraction of it, or the slot holds a ChatGPT OAuth
+/// token set (JSON) rather than a key.
+#[tauri::command]
+pub async fn ai_runtime_provider_key_ending(
+    request: AiRuntimeProviderRequest,
+) -> Result<Option<String>, String> {
+    let provider = request.provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    let key = tokio::task::spawn_blocking(move || app_infra::load_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    Ok(key.as_deref().and_then(key_ending))
+}
+
+fn key_ending(key: &str) -> Option<String> {
+    let key = key.trim();
+    let chars: Vec<char> = key.chars().collect();
+    if key.starts_with('{') || chars.len() < 12 {
+        return None;
+    }
+    Some(chars[chars.len() - 4..].iter().collect())
+}
+
 /// Start a ChatGPT device-code login for one `chatgpt` provider instance.
 /// Returns the user code + verify URL for the UI to show; the terminal
 /// outcome arrives as a `chatgpt_login_update` event (see `chatgpt_auth`).
@@ -1678,6 +1707,28 @@ mod tests {
         assert_eq!(base_host("http://192.168.0.9:8080/v1"), "192.168.0.9");
         assert_eq!(base_host("https://API.Fireworks.AI/v1"), "api.fireworks.ai");
         assert_eq!(base_host("https://user@host.example/v1"), "host.example");
+    }
+
+    #[test]
+    fn key_ending_never_returns_more_than_four_chars() {
+        assert_eq!(
+            key_ending("sk-ant-api03-abcdefgh4f2a").as_deref(),
+            Some("4f2a")
+        );
+        assert_eq!(
+            key_ending("  sk-proj-0123456789\n").as_deref(),
+            Some("6789")
+        );
+        // Multibyte-safe: 4 characters, not 4 bytes.
+        assert_eq!(key_ending("key-ééééééééé✓✓").as_deref(), Some("éé✓✓"));
+        // Too short for 4 characters to be a small part of it.
+        assert_eq!(key_ending("sk-12345678"), None);
+        // A ChatGPT OAuth token set is not a key.
+        assert_eq!(key_ending(r#"{"access_token":"abcdefghijklmnop"}"#), None);
+        for len in 0..64 {
+            let key = "x".repeat(len);
+            assert!(key_ending(&key).is_none_or(|end| end.chars().count() == 4));
+        }
     }
 
     #[test]

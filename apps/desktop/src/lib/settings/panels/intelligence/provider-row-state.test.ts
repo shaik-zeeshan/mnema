@@ -14,8 +14,10 @@ const row = (kind, over = {}) => ({
 });
 
 describe("providerRowState", () => {
-  it("cloud key presence", () => {
-    expect(providerRowState(row("anthropic", { keySaved: true }))).toEqual({ text: "key saved", tone: "ok" });
+  it("cloud key presence, then the verify check", () => {
+    expect(providerRowState(row("anthropic", { keySaved: true, listed: false }))).toEqual({ text: "key saved", tone: "ok" });
+    expect(providerRowState(row("anthropic", { keySaved: true }))).toEqual({ text: "reachable", tone: "ok" });
+    expect(providerRowState(row("anthropic", { keySaved: true, listFailed: true }))).toEqual({ text: "not reachable", tone: "warn" });
     expect(providerRowState(row("anthropic"))).toEqual({ text: "no key", tone: "" });
   });
 

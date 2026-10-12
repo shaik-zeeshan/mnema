@@ -1,7 +1,8 @@
 // Pure status-word mapping for one provider row (mockup `.st-prov__state`):
 // the word + tone beside its Manage button. Only facts the settings page
 // already holds feed it — key presence, the runtime status reason (which
-// names an instance id, ADR 0035), and the model-list probe.
+// names an instance id, ADR 0035), and the reachability evidence: the row's
+// own `verify_ai_provider` check plus the model-list probe.
 
 import type { AiProviderConfig } from "$lib/types";
 
@@ -13,10 +14,10 @@ export interface ProviderRowInput {
   keySaved: boolean;
   /** `AiRuntimeStatus.reason` — only codes ending in this row's id apply. */
   runtimeReason: string | null | undefined;
-  /** The model-list probe failed for this instance. */
+  /** The row's verify check (or the model-list probe) failed for this instance. */
   listFailed: boolean;
-  /** The model-list probe returned models for this instance — the only
-   *  evidence of reachability the page has (it lists on picker open). */
+  /** The row's verify check (or the model-list probe) answered live for this
+   *  instance — the evidence of reachability. */
   listed: boolean;
 }
 
@@ -31,7 +32,7 @@ export function providerRowState(i: ProviderRowInput): { text: string; tone: Row
   if (p.kind === "chatgpt") return keySaved ? { text: "connected", tone: "ok" } : { text: "not connected", tone: "" };
   if (cloud && !keySaved) return { text: "no key", tone: "" };
   if (i.listFailed) return { text: "not reachable", tone: "warn" };
-  if (cloud) return { text: "key saved", tone: "ok" };
+  if (cloud) return i.listed ? { text: "reachable", tone: "ok" } : { text: "key saved", tone: "ok" };
   return i.listed ? { text: "reachable", tone: "ok" } : { text: "on this Mac", tone: "" };
 }
 

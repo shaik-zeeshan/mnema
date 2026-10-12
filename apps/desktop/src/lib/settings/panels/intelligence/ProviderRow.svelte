@@ -6,6 +6,12 @@
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import { baseUrlHost } from "$lib/settings/state/ai-providers";
   import { providerRowState } from "./provider-row-state";
+  import {
+    forgetReachability,
+    providerReachability,
+    reachabilityFailureText,
+    testProvider,
+  } from "$lib/settings/state/ai-runtime.svelte";
   import type { AiProviderConfig } from "$lib/types";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconCloudOff from "~icons/lucide/cloud-off";
@@ -34,16 +40,26 @@
   const savingId = $derived(aiRuntime.aiProviderKeySavingProvider);
   const listFailure = $derived(c.settingsModelFailureRows.find((f) => f.provider === provider.id));
   const reason = $derived(aiRuntime.aiRuntimeStatus?.reason ?? null);
+  const keyEnding = $derived(aiRuntime.aiProviderKeyEndings[provider.id]);
+  // This row's own verify check outranks the picker's model-list probe.
+  const verdict = $derived(providerReachability(provider.id));
+  const verifyFailure = $derived(verdict?.status === "failed" ? verdict.reason : null);
   const state = $derived(
     providerRowState({
       provider,
       cloud,
       keySaved,
       runtimeReason: reason,
-      listFailed: !!listFailure,
-      listed: c.settingsModelLoader.pool.some((m) => m.provider === provider.id),
+      listFailed: verdict && verdict.status !== "checking" ? !!verifyFailure : !!listFailure,
+      listed:
+        verdict && verdict.status !== "checking"
+          ? verdict.status === "reachable"
+          : c.settingsModelLoader.pool.some((m) => m.provider === provider.id),
     }),
   );
+  function testAgain(): void {
+    void testProvider(provider.id, c.rec.draftAiProviders);
+  }
   const needsBaseUrl = $derived(provider.kind === "openai_compatible" && provider.baseUrl.trim().length === 0);
   const keyKind = $derived(cloud && provider.kind !== "chatgpt");
   // Pinned open while something here still needs the user: a typed key only
@@ -64,7 +80,9 @@
       : provider.kind === "chatgpt"
         ? undefined
         : keyKind
-          ? [keySaved ? "Key in the encrypted vault" : "No key yet", host].filter(Boolean).join(" · ")
+          ? [keySaved ? "Key in the encrypted vault" : "No key yet", keySaved && keyEnding ? `…${keyEnding}` : "", host]
+              .filter(Boolean)
+              .join(" · ")
           : `${host} · no key, nothing leaves this Mac`,
   );
   // The expanded fields and ChatGPT's connect block (device code) need the
@@ -81,6 +99,17 @@
 {#snippet ctl()}
   <div class="pr-ctl">
     <span class="settings-state {state.tone ? `settings-state--${state.tone}` : ''}">{state.text}</span>
+    {#if provider.kind !== "chatgpt" && (keySaved || !cloud)}
+      <button
+        class="mx-btn mx-btn--ghost"
+        type="button"
+        disabled={verdict?.status === "checking"}
+        aria-busy={verdict?.status === "checking"}
+        onclick={testAgain}
+      >
+        {#if verdict?.status === "checking"}<span class="mx-spin mx-spin--sm"></span>Testing…{:else}Test again{/if}
+      </button>
+    {/if}
     {#if !pinned}
       <button class="mx-btn" type="button" aria-expanded={expanded} onclick={() => ontoggle(!expanded)}>
         {expanded ? "Done" : "Manage"}
@@ -94,6 +123,14 @@
     <span class="mx-inline" data-tone={reasonForThis.toLowerCase().startsWith("needs_") ? "danger" : "warn"} role="status">
       {#if reasonForThis.toLowerCase().startsWith("needs_")}<IconAlert width="13" height="13" aria-hidden="true" />{:else}<IconCloudOff width="13" height="13" aria-hidden="true" />{/if}
       {aiRuntime.aiRuntimeReasonLabel(reasonForThis)}
+    </span>
+  {:else if verifyFailure && state.text === "not reachable"}
+    {@const rejected = /^authentication failed$/i.test(verifyFailure)}
+    <span class="mx-inline" data-tone={rejected ? "danger" : "warn"} role="status">
+      {#if rejected}<IconAlert width="13" height="13" aria-hidden="true" />{:else}<IconCloudOff width="13" height="13" aria-hidden="true" />{/if}
+      {cloud || !/^unreachable$/i.test(verifyFailure)
+        ? `Not reachable — ${reachabilityFailureText(verifyFailure)}.`
+        : `The local endpoint could not be reached. Start ${c.aiProviderKindLabel(provider.kind)}, then test again.`}
     </span>
   {:else if listFailure && state.text === "not reachable"}
     <span class="mx-inline" data-tone="warn" role="status">
@@ -152,7 +189,10 @@
               placeholder="https://api.fireworks.ai/inference/v1"
               aria-invalid={needsBaseUrl}
               bind:value={provider.baseUrl}
-              oninput={() => aiRuntime.resetTestResult()}
+              oninput={() => {
+                aiRuntime.resetTestResult();
+                forgetReachability(provider.id);
+              }}
             />
             {#if needsBaseUrl}
               <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" aria-hidden="true" />OpenAI-compatible providers need a base URL.</span>
@@ -166,7 +206,10 @@
             autocomplete="off"
             placeholder={c.AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
             bind:value={provider.baseUrl}
-            oninput={() => aiRuntime.resetTestResult()}
+            oninput={() => {
+              aiRuntime.resetTestResult();
+              forgetReachability(provider.id);
+            }}
           />
         {/if}
 
