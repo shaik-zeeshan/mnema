@@ -187,6 +187,7 @@
   class:reader--sel={selectedClusterId != null}
   class:reader--only={onlySelected}
   data-ts={showTimestamps ? "on" : "off"}
+  data-playing={activeGroupIndex !== null ? "1" : "0"}
 >
   <div
     class="reader__scroll"
@@ -456,8 +457,15 @@
     margin: 0;
     max-width: 78ch;
     font: 400 var(--text-base) / 1.65 var(--font-sans);
-    color: var(--app-text-subtle);
+    color: var(--app-text);
     text-wrap: pretty;
+  }
+
+  /* Hybrid (D1): idle text reads normally; only while playing do the unplayed
+     words dim, so the played run fills in behind the playhead. Lines without
+     word timings never dim — they have no "played" state to fill in. */
+  [data-playing="1"] .para:not(.para--button) {
+    color: var(--app-text-subtle);
   }
 
   .turn--overlap .para {
