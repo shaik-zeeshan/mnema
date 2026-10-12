@@ -264,6 +264,26 @@ export function shortModelLabel(model: string): string {
   return tail.length > 0 ? tail : trimmed;
 }
 
+const titleCase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
+/** A friendly name for a model id ("claude-sonnet-4-5-20250929" → "Claude
+ *  Sonnet 4.5", "gpt-5-mini" → "GPT-5 mini"). Unknown ids come back as their
+ *  short label untouched. Display only — `contextWindowForModel` keeps
+ *  matching `shortModelLabel`'s raw output. */
+export function modelDisplayName(model: string): string {
+  const short = shortModelLabel(model);
+  const id = short.replace(/-(\d{8}|\d{4}-\d{2}-\d{2}|latest)$/i, "");
+  const claude = (family: string, major: string, minor: string | undefined) =>
+    `Claude ${titleCase(family.toLowerCase())} ${major}${minor ? `.${minor}` : ""}`;
+  const modern = id.match(/^claude-([a-z]+)-(\d+)(?:-(\d+))?$/i); // claude-sonnet-4-5
+  if (modern) return claude(modern[1], modern[2], modern[3]);
+  const older = id.match(/^claude-(\d+)(?:-(\d+))?-([a-z]+)$/i); // claude-3-5-sonnet
+  if (older) return claude(older[3], older[1], older[2]);
+  const gpt = id.match(/^gpt-([\d.]+o?)(?:-(.+))?$/i);
+  if (gpt) return `GPT-${gpt[1]}${gpt[2] ? ` ${gpt[2].replace(/-/g, " ")}` : ""}`;
+  return short;
+}
+
 // ponytail: known-family fallback table for the composer occupancy ring, used
 // when the provider's model listing doesn't advertise a window (Anthropic and
 // OpenAI never do). Null for everything else — the readout stays a plain used

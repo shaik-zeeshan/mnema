@@ -27,7 +27,7 @@
     defaultEngineModel,
     defaultEnginePinProvider,
     providerLabelById,
-    shortModelLabel,
+    modelDisplayName,
   } from "$lib/insights/conversation";
   import { conversationStore as store } from "$lib/insights/conversationStore.svelte";
   import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
@@ -656,7 +656,7 @@
             <ChatTurnView
               {turn}
               trailing={ti === turns.length - 1}
-              model={engineModel === null ? null : shortModelLabel(engineModel)}
+              model={engineModel === null ? null : modelDisplayName(engineModel)}
               where={engineWhere}
               {contextWindow}
               settings={aiRuntime}

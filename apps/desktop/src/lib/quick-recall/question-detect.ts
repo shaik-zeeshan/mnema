@@ -4,7 +4,7 @@
 // "Answer questions automatically" let it answer on its own, and what the hero
 // slot says when Ask AI can't answer.
 import type { QuickRecallAutoAnswer, RecordingSettings } from "$lib/types/recording";
-import { shortModelLabel } from "$lib/insights/conversation";
+import { modelDisplayName } from "$lib/insights/conversation";
 import { reasonCopy } from "$lib/insights/engine-state";
 import { aiProviderInstanceLabel, aiProviderKindLabel } from "$lib/settings/state/ai-providers";
 import type { Pill } from "./natural-tokens";
@@ -56,7 +56,7 @@ export function askEngine(settings: RecordingSettings | null): AskEngine {
   const model = settings?.access?.askAiModel?.trim() || def?.model?.trim() || "";
   const kind = settings?.aiRuntime?.providers.find((p) => p.id === def?.provider)?.kind;
   return {
-    model: model ? shortModelLabel(model) : null,
+    model: model ? modelDisplayName(model) : null,
     local: kind === "ollama" || kind === "llamafile",
   };
 }

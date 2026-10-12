@@ -17,7 +17,7 @@
   import {
     providerLabelById,
     pinnableEnginesFromModelPool,
-    shortModelLabel,
+    modelDisplayName,
   } from "$lib/insights/conversation";
   import type { AiProviderConfig, AiRuntimeModel } from "$lib/types/recording";
   import { providerVia, providerWhere } from "./chat-format";
@@ -167,13 +167,13 @@
         rows.push(header, { type: "loading", key: `load-${provider}`, label: groupLabel });
         continue;
       }
-      const matches = models.filter((m) => q.length === 0 || m.toLowerCase().includes(q) || groupLabel.toLowerCase().includes(q));
+      const matches = models.filter((m) => q.length === 0 || m.toLowerCase().includes(q) || modelDisplayName(m).toLowerCase().includes(q) || groupLabel.toLowerCase().includes(q));
       if (matches.length === 0) continue;
       rows.push(header);
       for (const model of matches) {
         const ctx = modelPool.find((m) => m.provider === provider && m.id === model)?.contextWindow ?? null;
         const selected = model === selectedModel && (selectedProvider === null || provider === selectedProvider);
-        addOption({ kind: "pool", provider, model }, letter(provider), shortModelLabel(model), ctx ? `${Math.round(ctx / 1000)}k` : null, model, selected);
+        addOption({ kind: "pool", provider, model }, letter(provider), modelDisplayName(model), ctx ? `${Math.round(ctx / 1000)}k` : null, model, selected);
       }
     }
 
@@ -391,7 +391,7 @@
             >
               <span class="ch-glyph" aria-hidden="true">{row.glyph}</span>
               <span class="ch-opt__main"
-                >{row.main}{#if row.option.kind === "sentinel" && sentinelDetail}<em>{shortModelLabel(sentinelDetail)}</em>{/if}</span
+                >{row.main}{#if row.option.kind === "sentinel" && sentinelDetail}<em>{modelDisplayName(sentinelDetail)}</em>{/if}</span
               >
               <small>{row.sub ?? ""}</small>
               <IconCheck class="ch-tick" width="13" height="13" aria-hidden="true" />

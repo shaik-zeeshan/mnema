@@ -51,7 +51,7 @@ describe("nextForced", () => {
 describe("askEngine + autoAnswerAllowed", () => {
   test("local = the default provider's kind; the override replaces only the model", () => {
     expect(askEngine(settings("ollama", "qwen3:14b"))).toEqual({ model: "qwen3:14b", local: true });
-    expect(askEngine(settings("anthropic"))).toEqual({ model: "claude-sonnet-4-6", local: false });
+    expect(askEngine(settings("anthropic"))).toEqual({ model: "Claude Sonnet 4.6", local: false });
     expect(askEngine(null)).toEqual({ model: null, local: false });
   });
   test("always · local only · never", () => {

@@ -12,7 +12,7 @@
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import ChatErrorTurn from "$lib/insights/ChatErrorTurn.svelte";
-  import { shortModelLabel, type ToolActivityEntry } from "$lib/insights/conversation";
+  import { modelDisplayName, type ToolActivityEntry } from "$lib/insights/conversation";
   import type { AiRuntimeSettings } from "$lib/types/recording";
   import ChatSources from "./ChatSources.svelte";
   import { formatTokenCount, providerWhere, stepsLine } from "./chat-format";
@@ -53,7 +53,7 @@
   const reasoningLive = $derived(live && (turn.reasoning ?? "").trim().length > 0 && turn.blocks.length === 0);
   const copyText = $derived(answerPlainText(turn));
   // The answer's own engine, so a mid-chat model switch never relabels it.
-  const shownModel = $derived(turn.model ? shortModelLabel(turn.model) : model);
+  const shownModel = $derived(turn.model ? modelDisplayName(turn.model) : model);
   const shownWhere = $derived.by(() => {
     if (!turn.provider) return where;
     const provider = settings?.providers.find((p) => p.id === turn.provider);

@@ -18,7 +18,7 @@
     defaultEnginePinProvider,
     defaultEngineModel,
     providerLabelById,
-    shortModelLabel,
+    modelDisplayName,
   } from "$lib/insights/conversation";
   import type { AiRuntimeSettings } from "$lib/types/recording";
 
@@ -61,13 +61,13 @@
         : defaultEngineModel(aiRuntime),
   );
 
-  // The trigger shows the SHORT id of the model answering this chat (pin, else
+  // The trigger shows the friendly name of the model answering this chat (pin, else
   // what Default resolves to) with its provider letter and cloud/local chip; the
   // full id rides on the tooltip.
   let activeProvider = $derived(pinProvider ?? defaultProvider);
   let activeModel = $derived(pinModel ?? resolvedDefaultModel);
   let activeConfig = $derived(aiRuntime?.providers.find((p) => p.id === activeProvider));
-  let activeModelLabel = $derived(activeModel === null ? "Default" : shortModelLabel(activeModel));
+  let activeModelLabel = $derived(activeModel === null ? "Default" : modelDisplayName(activeModel));
   let activeModelTitle = $derived.by(() => {
     const model = activeModel ?? "Default";
     const head = pinProvider === null ? "Default · " : "";
