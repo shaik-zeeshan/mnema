@@ -86,6 +86,7 @@ fn test_conclusion(
         evidence: Vec::new(),
         replaced_statement: None,
         replaced_at_ms: None,
+        formed_evidence_count: None,
     }
 }
 

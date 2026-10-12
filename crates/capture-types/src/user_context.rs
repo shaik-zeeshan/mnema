@@ -135,6 +135,10 @@ pub struct Conclusion {
     pub replaced_statement: Option<String>,
     #[serde(default)]
     pub replaced_at_ms: Option<i64>,
+    /// Supporting Activities the belief formed from, stamped once at formation.
+    /// `None` for beliefs formed before it was recorded, and outside the Subject page.
+    #[serde(default)]
+    pub formed_evidence_count: Option<i64>,
 }
 
 /// A single point on a [`Conclusion`]'s confidence-over-time line.
@@ -499,6 +503,7 @@ mod tests {
             }],
             replaced_statement: Some("ships slow".to_string()),
             replaced_at_ms: Some(250),
+            formed_evidence_count: Some(2),
         };
         let value = serde_json::to_value(&conclusion).unwrap();
         assert_eq!(
@@ -522,7 +527,8 @@ mod tests {
                     }
                 ],
                 "replacedStatement": "ships slow",
-                "replacedAtMs": 250
+                "replacedAtMs": 250,
+                "formedEvidenceCount": 2
             })
         );
         let round_tripped: Conclusion = serde_json::from_value(value).unwrap();

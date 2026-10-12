@@ -1144,7 +1144,8 @@ impl UserContextStore {
         let now = now_ms();
         // Formation path: does NOT pre-decay, so it must not touch the decay
         // anchor — the decay beat owns `last_decayed_at_ms` here (#H3).
-        Self::upsert_conclusion_in(self.db.write(), &draft, draft.confidence, now, false).await
+        Self::upsert_conclusion_in(self.db.write(), &draft, draft.confidence, now, false, None)
+            .await
     }
 
     /// Atomic conclusion upsert against an arbitrary executor (the pool or an open
@@ -1173,6 +1174,7 @@ impl UserContextStore {
         confidence: f64,
         now: i64,
         stamp_decayed: bool,
+        formed_evidence_count: Option<i64>,
     ) -> Result<i64>
     where
         E: sqlx::Executor<'e, Database = Sqlite>,
@@ -1187,6 +1189,8 @@ impl UserContextStore {
         } else {
             ""
         };
+        // `formed_evidence_count` is written on the INSERT only: the ON CONFLICT
+        // update keeps the count the row formed with.
         // ADR 0046: the ON CONFLICT DO UPDATE below must NEVER resurrect a
         // 'superseded' row back to visible/faded — the model re-deriving the same
         // wrong statement from still-in-window evidence would otherwise silently
@@ -1196,10 +1200,11 @@ impl UserContextStore {
         let id = sqlx::query(&format!(
             "INSERT INTO user_context_conclusions \
                 (subject, statement, confidence, status, formed_at_ms, \
-                 last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
+                 last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms, \
+                 formed_evidence_count) \
              VALUES (?1, ?2, ?3, \
                      CASE WHEN ?3 < 0.15 THEN 'faded' ELSE 'visible' END, \
-                     ?4, ?5, ?6, ?6, {insert_decayed_value}) \
+                     ?4, ?5, ?6, ?6, {insert_decayed_value}, ?7) \
              ON CONFLICT (subject COLLATE NOCASE, statement COLLATE NOCASE) DO UPDATE SET \
                 confidence = excluded.confidence, \
                 last_supported_at_ms = MAX(last_supported_at_ms, excluded.last_supported_at_ms), \
@@ -1216,6 +1221,7 @@ impl UserContextStore {
         .bind(draft.formed_at_ms)
         .bind(draft.last_supported_at_ms)
         .bind(now)
+        .bind(formed_evidence_count)
         .fetch_one(executor)
         .await?
         .get::<i64, _>("id");
@@ -1339,12 +1345,20 @@ impl UserContextStore {
             // ON CONFLICT path in `upsert_conclusion_in` cannot fire here (no row
             // for this Subject exists), so this is a plain insert; `stamp_decayed =
             // true` is still correct (a brand-new row has no silence to re-count).
+            // The support count is stamped as the row's formation evidence (B5) —
+            // the links below are replaced on every later reinforcement.
             None => {
                 let confidence =
                     super::confidence::initial_confidence(support_count, contradict_count);
-                let id =
-                    Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true)
-                        .await?;
+                let id = Self::upsert_conclusion_in(
+                    &mut *transaction,
+                    &draft,
+                    confidence,
+                    now,
+                    true,
+                    Some(support_count as i64),
+                )
+                .await?;
                 (id, confidence)
             }
         };
@@ -1645,6 +1659,7 @@ impl UserContextStore {
         let rows = sqlx::query(
             "SELECT c.id, c.subject, c.statement, c.confidence, c.status, c.pinned, \
                     c.formed_at_ms, c.last_supported_at_ms, c.updated_at_ms, \
+                    c.formed_evidence_count, \
                     (SELECT p.statement FROM user_context_conclusions p \
                        WHERE p.superseded_by = c.id AND p.status = 'superseded' \
                        ORDER BY p.updated_at_ms DESC LIMIT 1) AS replaced_statement, \
@@ -2986,6 +3001,8 @@ fn map_conclusion(row: SqliteRow) -> Conclusion {
         // columns (`list_conclusions_for_subject`); absent elsewhere → None.
         replaced_statement: row.try_get("replaced_statement").unwrap_or(None),
         replaced_at_ms: row.try_get("replaced_at_ms").unwrap_or(None),
+        // B5: likewise only on the Subject page; NULL for rows formed before 0057.
+        formed_evidence_count: row.try_get("formed_evidence_count").unwrap_or(None),
     }
 }
 
@@ -3076,7 +3093,8 @@ mod tests {
                 created_at_ms INTEGER NOT NULL,
                 last_decayed_at_ms INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
-                superseded_by INTEGER
+                superseded_by INTEGER,
+                formed_evidence_count INTEGER
             )",
             // Mirrors migration 0037: the NOCASE unique index that backs the
             // atomic `INSERT ... ON CONFLICT` dedup in `upsert_conclusion`.
@@ -3366,7 +3384,8 @@ mod tests {
                 updated_at_ms INTEGER NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 last_decayed_at_ms INTEGER,
-                pinned INTEGER NOT NULL DEFAULT 0
+                pinned INTEGER NOT NULL DEFAULT 0,
+                formed_evidence_count INTEGER
             )",
             "CREATE UNIQUE INDEX IF NOT EXISTS user_context_conclusions_subject_statement_unique_idx
                 ON user_context_conclusions (subject COLLATE NOCASE, statement COLLATE NOCASE)",
@@ -3888,6 +3907,76 @@ mod tests {
                 1,
                 "a non-raising reinforcement must not append a history snapshot"
             );
+        });
+    }
+
+    /// B5: the support count a belief formed from is stamped on its first insert
+    /// and survives later writes, which replace the evidence links wholesale —
+    /// both an id-cited reinforcement and an uncited same-statement re-derivation
+    /// (the ON CONFLICT update) leave it alone.
+    #[test]
+    fn formed_evidence_count_is_stamped_once_at_formation() {
+        block_on(async {
+            let store = test_store().await;
+            let ids = [
+                seed_activity(&store, "rust borrow checker", 2_000).await,
+                seed_activity(&store, "rust async", 3_000).await,
+                seed_activity(&store, "rust traits", 4_000).await,
+                seed_activity(&store, "rust macros", 5_000).await,
+            ];
+            let support = |n: usize| {
+                ids[..n]
+                    .iter()
+                    .map(|&activity_id| NewConclusionEvidence {
+                        activity_id,
+                        stance: EvidenceStance::Support,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let formed_count = |rows: Vec<Conclusion>| rows[0].formed_evidence_count;
+
+            let id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    support(2),
+                    None,
+                    None,
+                )
+                .await
+                .expect("form")
+                .id;
+            let rows = store
+                .list_conclusions_for_subject("Rust")
+                .await
+                .expect("rows");
+            assert_eq!(formed_count(rows), Some(2), "stamped on insert");
+
+            for reinforces_id in [Some(id), None] {
+                store
+                    .upsert_conclusion_with_evidence(
+                        draft("Rust", "Learning Rust", 0.0),
+                        4,
+                        0,
+                        support(4),
+                        reinforces_id,
+                        None,
+                    )
+                    .await
+                    .expect("reinforce");
+                let rows = store
+                    .list_conclusions_for_subject("Rust")
+                    .await
+                    .expect("rows");
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].evidence.len(), 4, "evidence links were replaced");
+                assert_eq!(
+                    formed_count(rows),
+                    Some(2),
+                    "unchanged after update ({reinforces_id:?})"
+                );
+            }
         });
     }
 

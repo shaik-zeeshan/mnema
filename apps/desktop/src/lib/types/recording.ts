@@ -348,6 +348,9 @@ export interface Conclusion {
 	 *  timeline event). Absent when this belief superseded nothing. */
 	replacedStatement?: string | null;
 	replacedAtMs?: number | null;
+	/** Supporting activities the belief formed from, stamped once at formation.
+	 *  Subject page only; absent for beliefs formed before it was recorded. */
+	formedEvidenceCount?: number | null;
 }
 
 /** A single point on a Conclusion's confidence-over-time line. */

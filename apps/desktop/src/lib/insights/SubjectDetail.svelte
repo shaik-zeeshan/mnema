@@ -412,7 +412,13 @@
             <li class:origin={ev.kind === "formed"} class:conf={ev.kind === "marker"} style:--i={i}>
               <time class="num">{ev.atMs == null ? "—" : day(ev.atMs)}</time>
               {#if ev.kind === "formed"}
-                <div>Formed at {pct(ev.confidence)}%</div>
+                {@const n = selected.formedEvidenceCount}
+                <!-- Beliefs formed before the count was recorded keep the old line. -->
+                <div>
+                  {n == null
+                    ? `Formed at ${pct(ev.confidence)}%`
+                    : `Formed from ${n} supporting ${n === 1 ? "activity" : "activities"} · ${pct(ev.confidence)}%`}
+                </div>
               {:else if ev.kind === "marker"}
                 <div>Confidence {pct(ev.from)}% → {pct(ev.to)}%</div>
               {:else if ev.kind === "replaced"}
