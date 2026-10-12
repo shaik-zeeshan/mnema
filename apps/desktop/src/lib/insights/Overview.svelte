@@ -121,8 +121,6 @@
         ? firstDay.toLocaleDateString("en-US", { month: "long" })
         : firstDay.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }),
   );
-  // ponytail: no first-capture command, so the picker reaches back a year.
-  const minDay = toIso(addDays(new Date(), -365));
   // "Ask about this week" → a pre-scoped chat (CH3: `?q=&from=&to=`, local days).
   const askHref = $derived(
     `/chat?q=${encodeURIComponent(`What did ${scope} add up to?`)}&from=${toIso(firstDay)}&to=${toIso(lastDay)}`,
@@ -131,6 +129,11 @@
   // ── Engine gating ────────────────────────────────────────────────────
   let aiStatus = $state<AiRuntimeStatus | null>(null);
   let ctxStatus = $state<UserContextStatus | null>(null);
+  // The picker starts at the first capture still on disk (nothing to show
+  // before it); a year back only until the status read lands.
+  const minDay = $derived(
+    ctxStatus ? toIso(new Date(ctxStatus.earliestCaptureAtMs ?? Date.now())) : toIso(addDays(new Date(), -365)),
+  );
   const engineOn = $derived(
     Boolean(aiStatus?.enabled && aiStatus?.available) ||
       Boolean(ctxStatus?.engineAvailable),

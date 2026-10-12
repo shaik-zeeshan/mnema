@@ -225,6 +225,10 @@ pub struct UserContextStatus {
     /// `backfill` failures have no success after them. `None` when healthy.
     #[serde(default)]
     pub summarizing_failure: Option<UserContextSummarizingFailure>,
+    /// The earliest raw capture still on disk (frames or audio, so it moves
+    /// with Retention) — Overview's date-picker floor. `None` with no captures.
+    #[serde(default)]
+    pub earliest_capture_at_ms: Option<i64>,
 }
 
 /// Why Activity summarizing keeps failing, for the Overview's red card.
@@ -636,6 +640,7 @@ mod tests {
                 provider: Some("Anthropic".to_string()),
                 reason: "Rate limited.".to_string(),
             }),
+            earliest_capture_at_ms: Some(5_000),
         };
         let value = serde_json::to_value(&status).unwrap();
         let obj = value.as_object().unwrap();
@@ -655,6 +660,7 @@ mod tests {
         assert_eq!(obj["skippedWindows24h"], json!(2));
         assert_eq!(obj["localOffsetMinutes"], json!(330));
         assert_eq!(obj["lastDayDigest"]["generatedAtMs"], json!(3_000));
+        assert_eq!(obj["earliestCaptureAtMs"], json!(5_000));
 
         let round_tripped: UserContextStatus = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, status);

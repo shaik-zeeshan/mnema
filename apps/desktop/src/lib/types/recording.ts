@@ -415,6 +415,8 @@ export interface UserContextStatus {
 	lastDayDigest?: UserContextDigest | null;
 	/** Set while Activity summarizing keeps failing; null when healthy. */
 	summarizingFailure?: UserContextSummarizingFailure | null;
+	/** Earliest raw capture still on disk (moves with Retention); null with none. */
+	earliestCaptureAtMs?: number | null;
 }
 
 /** Mirrors `capture_types::UserContextSummarizingFailure`. */

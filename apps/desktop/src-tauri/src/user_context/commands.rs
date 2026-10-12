@@ -146,15 +146,16 @@ pub async fn get_user_context_status(
     //      (earliest_capture < oldest_covered). Without older captures there is
     //      nothing to backfill even if the floor is lower.
     // The floor is resolved from the SAME settings the worker uses.
+    // `earliest_capture` doubles as Overview's date-picker floor.
+    let earliest_capture = store
+        .earliest_capture_at_ms()
+        .await
+        .map_err(|e| e.to_string())?;
     let backfilling = if !engine_available {
         false
     } else {
         let oldest_covered = store
             .oldest_derivation_run_window_start()
-            .await
-            .map_err(|e| e.to_string())?;
-        let earliest_capture = store
-            .earliest_capture_at_ms()
             .await
             .map_err(|e| e.to_string())?;
         match oldest_covered {
@@ -191,6 +192,7 @@ pub async fn get_user_context_status(
         local_offset_minutes,
         last_day_digest,
         summarizing_failure,
+        earliest_capture_at_ms: earliest_capture,
     })
 }
 
