@@ -59,7 +59,7 @@
 </script>
 
 <script lang="ts">
-  import { formatClock } from "$lib/time-format";
+  import { formatClock, localizeClockTimes } from "$lib/time-format";
   // The Overview lede (insights.html `.in-read`): kicker · mx-display headline ·
   // prose · foot on the left, four derived stats on the right. Every state of
   // the read is one honest sentence in the headline's place.
@@ -100,7 +100,7 @@
   );
   // IN-B1 joins `headline — turn`; the turn reads de-emphasized.
   const headline = $derived.by(() => {
-    const h = e.digest?.headline?.trim() ?? "";
+    const h = localizeClockTimes(e.digest?.headline?.trim() ?? "");
     const k = h.indexOf(" — ");
     return k < 0 ? { head: h, turn: "" } : { head: h.slice(0, k), turn: h.slice(k + 1) };
   });
@@ -166,7 +166,7 @@
           <h1 class="mx-display">{headline.head}{#if headline.turn}{" "}<em>{headline.turn}</em>{/if}</h1>
         {/if}
         {#if !e.digestError || e.regenerating || !headline.head}
-          <p class="mx-prose">{e.digest.narrative}</p>
+          <p class="mx-prose">{localizeClockTimes(e.digest.narrative)}</p>
         {/if}
       {/key}
       <div class="foot">

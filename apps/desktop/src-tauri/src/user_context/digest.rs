@@ -49,7 +49,7 @@ plain prose addressed to the user in the second person — for example \"Most of
 the billing migration…\". Mention the dominant work, the shape it took across the days, and any \
 notable shift in focus or topic. Do NOT use markdown, lists, bullet points, headers, or quotes — \
 only sentences. Ground every claim in the listed Activities; do not invent work that is not shown. \
-Each Activity line carries its local clock times; cite them when they help (\"before the 11:00 \
+Each Activity line carries its local clock times; cite them when they help (\"before the late-morning \
 call\"). Weigh the range by time: lead with what took the most of it (the time-by-category line \
 shows the real shape), and never call an episode of a few seconds focus, work or a session. Keep \
 watching or listening (videos, podcasts, streams) apart from doing (building, writing, calls): \

@@ -20,7 +20,7 @@
   import { computeLedeStats } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, capturedHoursByDay, categoryMix, weekDays } from "$lib/insights/journal-view";
-  import { formatClock } from "$lib/time-format";
+  import { formatClock, localizeClockTimes } from "$lib/time-format";
   import { densityFromHeatmap, toIso } from "$lib/components/date-input";
   import { captureControls, resumeCapture, startCapture } from "$lib/capture-controls.svelte";
   import { openSettings } from "$lib/surface-windows";
@@ -181,7 +181,7 @@
     return total && top ? Math.round((top.ms / total) * 100) : null;
   });
   const n = $derived(model.slots.length);
-  const headline = $derived((digest?.headline ?? "").split(" — "));
+  const headline = $derived(localizeClockTimes(digest?.headline ?? "").split(" — "));
   // The digest's own absent reason backs up the status guess (`noDerive`).
   const digestOff = $derived(noDerive || digestReason === "derivation_off" || digestReason === "engine_not_ready");
   const offWhat = $derived(
@@ -519,7 +519,7 @@
             <p class="mx-prose">{n === 1 ? "A digest needs at least two activities; this day has one. It's below, as captured." : n ? "A digest needs at least two activities it can use. They're below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>
           {:else if digest}
             <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}{" "}<em>— {headline.slice(1).join(" — ")}</em>{/if}</h1>
-            <p class="mx-prose">{digest.narrative}</p>
+            <p class="mx-prose">{localizeClockTimes(digest.narrative)}</p>
             <div class="in-read__foot">
               <span class="mx-label num">written {formatClock(digest.generatedAtMs)}{atLatest && ctxStatus?.coveredUntilMs ? ` · covers through ${formatClock(ctxStatus.coveredUntilMs)}` : ""}</span>
               {#if engineOn}

@@ -110,3 +110,33 @@ export function formatHour(hour: number, opts: { h24?: boolean } = {}): string {
   if (opts.h24 ?? uses24h()) return pad(h);
   return `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`;
 }
+
+// "14:05" / "9:20" with nothing that marks it as something else: not glued to a
+// word, digit, `.`, `:` or `/` ("v1:31", "3/1:31", "1:31:05"), minutes 00–59,
+// not already followed by AM/PM.
+const CLOCK_24 = /(?<![\w.:/])(\d{1,2}):([0-5]\d)(?![\d:]|\s*[AaPp]\.?[Mm](?!\w))/g;
+// "2 PM" / "2:05 pm" / "2 p.m." (a trailing period stays — it may end the sentence).
+const CLOCK_12 = /(?<![\w.:/])(\d{1,2})(?::([0-5]\d))?\s*([AaPp])\.?[Mm](?!\w)/g;
+
+/**
+ * Re-spell the clock times inside engine-written prose (digests are written
+ * with the 24-hour labels Mnema feeds the model, and the model sometimes says
+ * "2 PM") to the Time format setting. Applied at render, so stored text and a
+ * setting change both follow without regenerating.
+ *
+ * ponytail: a regex, not a parser. Its ceiling: a bare "H:MM" in prose that is
+ * not a time — a verse ("Genesis 1:31"), a ratio ("16:10"), a duration ("a
+ * 1:31 clip") — reads as one and gets AM/PM in 12-hour mode; and in 24-hour
+ * mode the first half of "9–11 AM" stays bare. Glued forms ("v1:31",
+ * "1:31:05") and impossible times ("10:75", "25:00", "13 PM") are left alone.
+ */
+export function localizeClockTimes(text: string, h24: boolean = uses24h()): string {
+  const clock = (h: number, m: number) => formatClock(new Date(2000, 0, 1, h, m), { h24 });
+  if (!h24) {
+    return text.replace(CLOCK_24, (all, h: string, m: string) => (+h > 23 ? all : clock(+h, +m)));
+  }
+  return text.replace(CLOCK_12, (all, h: string, m: string | undefined, ap: string) => {
+    if (+h < 1 || +h > 12) return all;
+    return clock((+h % 12) + (/p/i.test(ap) ? 12 : 0), +(m ?? 0));
+  });
+}
