@@ -41,9 +41,12 @@ const feed = {
 };
 
 const RELEASE_NOTES = "## What's Changed\n* Fixed a thing by @someone in #1";
+// Byte sizes of the local archives, keyed by file name (the workflow builds
+// this map from assets/ with `stat`).
+const SIZES = { "mnema_0.1.12_aarch64.app.tar.gz": 38400123, "mnema_0.1.12_x64.app.tar.gz": 41000000 };
 
-test("rewrites every platform url to the R2 release path, preserving signature and version", () => {
-  const proc = Bun.spawnSync(
+const rewrite = (sizes) =>
+  Bun.spawnSync(
     [
       "jq",
       "--arg",
@@ -52,10 +55,16 @@ test("rewrites every platform url to the R2 release path, preserving signature a
       "--arg",
       "notes",
       RELEASE_NOTES,
+      "--argjson",
+      "sizes",
+      JSON.stringify(sizes),
       jqProgram,
     ],
     { stdin: Buffer.from(JSON.stringify(feed)) },
   );
+
+test("rewrites every platform url to the R2 release path, preserving signature and version", () => {
+  const proc = rewrite(SIZES);
   assert.equal(proc.exitCode, 0, proc.stderr.toString());
   const out = JSON.parse(proc.stdout.toString());
 
@@ -75,4 +84,14 @@ test("rewrites every platform url to the R2 release path, preserving signature a
   // `notes: ""` and the in-app update window had nothing to render.
   assert.equal(out.notes, RELEASE_NOTES);
   assert.equal(out.pub_date, "2026-07-11T00:00:00Z");
+  // Each platform carries its archive's byte size as a JSON number, so the
+  // update window can show it before the download starts.
+  assert.equal(out.platforms["darwin-aarch64"].size, 38400123);
+  assert.equal(out.platforms["darwin-x86_64"].size, 41000000);
+});
+
+test("fails the promote when a platform's archive is missing from assets/", () => {
+  const proc = rewrite({ "mnema_0.1.12_aarch64.app.tar.gz": 38400123 });
+  assert.notEqual(proc.exitCode, 0);
+  assert.match(proc.stderr.toString(), /no local asset for platform archive mnema_0\.1\.12_x64\.app\.tar\.gz/);
 });
