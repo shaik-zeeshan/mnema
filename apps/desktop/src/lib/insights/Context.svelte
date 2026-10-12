@@ -15,7 +15,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { confirm, message } from "@tauri-apps/plugin-dialog";
-  import type { AiProviderKind, AiRuntimeStatus, AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
+  import type { AiProviderKind, AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
   import { aiProviderKindLabel, isCloudAiProviderKind } from "$lib/settings/state/ai-providers";
   import { humanizeError } from "$lib/format-error";
   import ContextSide, { GUARDED, TOPICS, topicColor } from "$lib/insights/ContextSide.svelte";
@@ -32,8 +32,11 @@
     // Subjects' "View dismissed": land with the Dismissed archive in view.
     openDismissed?: boolean;
     onOpenSubject?: (subject: string) => void;
+    /** The default model's provider kind — where statements go (null: no default).
+     * The shell owns it and re-reads it on Settings / sign-in changes. */
+    providerKind?: AiProviderKind | null;
   }
-  let { openDismissed = false, onOpenSubject }: Props = $props();
+  let { openDismissed = false, onOpenSubject, providerKind = null }: Props = $props();
 
   // Per-statement limit (ruling #15); the add/update commands enforce it too.
   const MAX_CHARS = 280;
@@ -43,8 +46,6 @@
   let loadError = $state(false);
   let loading = $state(true);
   let inferred = $state<Conclusion[] | null>(null);
-  /** The default model's provider kind — where statements go (null: no default). */
-  let providerKind = $state<AiProviderKind | null>(null);
   let dismissed = $state<DismissedView[]>([]);
   let dismissedError = $state<string | null>(null);
   let restoringKey = $state<string | null>(null);
@@ -84,11 +85,6 @@
   async function loadInferred(): Promise<void> {
     const list = await invoke<Conclusion[]>("list_user_context_conclusions", { includeFaded: false }).catch(() => null);
     if (list) inferred = list.filter((c) => c.status === "visible");
-  }
-
-  async function loadProvider(): Promise<void> {
-    const status = await invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null);
-    providerKind = status?.defaultProviderKind ?? null;
   }
 
   async function loadDismissed(): Promise<void> {
@@ -181,7 +177,6 @@
     void untrack(() => loadStatements());
     void untrack(() => loadInferred());
     void untrack(() => loadDismissed());
-    void untrack(() => loadProvider());
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {

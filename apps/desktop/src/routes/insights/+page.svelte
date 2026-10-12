@@ -268,7 +268,11 @@
         <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} onFilter={() => (selectedSubject = null)} />
       </div>
     {:else}
-      <Context openDismissed={contextOpenDismissed} onOpenSubject={openSubject} />
+      <Context
+        openDismissed={contextOpenDismissed}
+        onOpenSubject={openSubject}
+        providerKind={aiStatus?.defaultProviderKind ?? null}
+      />
     {/if}
   </section>
 </div>
