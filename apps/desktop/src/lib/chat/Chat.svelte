@@ -244,6 +244,7 @@
     activeCreatedAtMs = convo.createdAtMs;
     pinProvider = convo.provider ?? null;
     pinModel = convo.model ?? null;
+    pinnedLocal = convo.pinned;
     turns = convo.turns.map(hydrateTurn);
     // A persisted "streaming" last turn is still in flight; the snapshot below
     // replaces it with the authoritative live view + version.

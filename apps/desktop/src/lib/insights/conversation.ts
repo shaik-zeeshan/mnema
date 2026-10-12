@@ -61,6 +61,8 @@ export interface Conversation {
   provider?: string | null;
   /** Pinned model id within `provider`, or null/absent when unpinned. */
   model?: string | null;
+  /** Pinned to the top of the history list (as on `ConversationSummary`). */
+  pinned: boolean;
   turns: ConversationTurn[];
 }
 

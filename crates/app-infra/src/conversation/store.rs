@@ -207,7 +207,7 @@ impl ConversationStore {
     pub async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         let row = sqlx::query(
             "SELECT id, conversation_id, title, user_title, generated_title, origin, \
-                    created_at_ms, updated_at_ms, provider, model \
+                    created_at_ms, updated_at_ms, provider, model, pinned \
              FROM conversations WHERE conversation_id = ?1",
         )
         .bind(conversation_id)
@@ -236,6 +236,7 @@ impl ConversationStore {
             updated_at_ms: row.get("updated_at_ms"),
             provider: row.get("provider"),
             model: row.get("model"),
+            pinned: row.get::<i64, _>("pinned") != 0,
             turns,
         }))
     }

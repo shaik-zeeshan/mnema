@@ -37,6 +37,10 @@ fn pinned_sorts_first_in_list_and_search() {
         done_turn(&store, "new", 0, "alpha new", 5_000).await;
 
         assert!(store.set_pinned("old", true).await.expect("pin"));
+        let opened = store.get_conversation("old").await.expect("get");
+        assert!(opened.expect("row").pinned, "the open chat knows it's pinned");
+        let opened = store.get_conversation("new").await.expect("get");
+        assert!(!opened.expect("row").pinned);
 
         let list = store.list_conversations(50, 0).await.expect("list");
         let ids: Vec<&str> = list.iter().map(|s| s.conversation_id.as_str()).collect();

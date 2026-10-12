@@ -67,6 +67,11 @@ pub struct Conversation {
     /// The pinned model id within [`Self::provider`], or `None` when unpinned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Pinned to the top of the history list (the same flag as
+    /// [`ConversationSummary::pinned`]), so the open chat knows it without
+    /// its list row.
+    #[serde(default)]
+    pub pinned: bool,
     pub turns: Vec<ConversationTurn>,
 }
 
