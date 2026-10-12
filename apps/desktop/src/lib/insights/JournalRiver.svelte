@@ -92,7 +92,7 @@
               <span class="mx-label">
                 {pending.audioOnly
                   ? "Screen capture is off, so this stretch is built from what the mic and system audio picked up."
-                  : "The journal trails live capture by up to 30 minutes — the footage is already on the Timeline."}
+                  : "The journal trails live capture by a few minutes — the footage is already on the Timeline."}
               </span>
             {:else}
               <span class="mx-kicker">Not written up · {since} → now</span>
@@ -147,7 +147,7 @@
         <div class="mx-empty mx-empty--compact">
           <span class="mx-empty__glyph"><IconInbox width="14" height="14" aria-hidden="true" /></span>
           <b class="mx-empty__title">Your day is being written</b>
-          <p class="mx-empty__text">Capture is landing. The first card appears once the first half-hour window is summarized.</p>
+          <p class="mx-empty__text">Capture is landing. The first card appears within a few minutes.</p>
         </div>
       {/if}
     {/if}

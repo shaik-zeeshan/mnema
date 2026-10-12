@@ -484,7 +484,7 @@
   {:else if loadError}
     {@render centerEmpty(`Couldn't load ${dayLabel}`, "Reading this day's activities failed. Nothing is lost — the footage is still on the Timeline.", "danger")}
   {:else if pitch && !hasCards}
-    {@render centerEmpty("Your journal is written by AI", "Once a provider is connected, Mnema writes each half hour up as an activity — with a digest of the day on top. Capture is already on the Timeline.", null)}
+    {@render centerEmpty("Your journal is written by AI", "Once a provider is connected, Mnema writes up what you do as activities every few minutes — with a digest of the day on top. Capture is already on the Timeline.", null)}
   {:else if empty}
     {#if empty.kind === "idle"}
       {@render centerEmpty(empty.paused ? "Recording is paused" : "Mnema isn't recording", `${empty.paused ? "Resume" : "Start recording"} and today's journal fills in as you work. The first card usually lands within about 10 minutes.`, null)}

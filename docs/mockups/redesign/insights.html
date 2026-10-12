@@ -1074,7 +1074,7 @@ function renderJournal() {
       acts: retryBtn() + `<a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html">Open in Timeline</a>` }));
   }
   if (S("not-set-up")) {
-    return html("#j-body", empty({ mod: "center", icon: "i-sparkle", title: "Your journal is written by AI", text: "Once a provider is connected, Mnema writes each half hour up as an activity — with a digest of the day on top. Capture is already on the Timeline.",
+    return html("#j-body", empty({ mod: "center", icon: "i-sparkle", title: "Your journal is written by AI", text: "Once a provider is connected, Mnema writes up what you do as activities every few minutes — with a digest of the day on top. Capture is already on the Timeline.",
       acts: `<a class="mx-btn mx-btn--sm" href="settings.html#s-providers">Set up AI</a><a class="mx-btn mx-btn--ghost mx-btn--sm" href="timeline.html">Open Timeline</a>` }));
   }
   if (!st.n && !pending && !D.runs) {
@@ -1155,7 +1155,7 @@ function renderJournal() {
   const pendRow = !pending ? "" : `<div class="in-pending"><time class="num">${clk(since)}</time><div>${PAUSED
     ? `<span class="mx-kicker">Not written up · ${clk(since)} → now</span>${inline(ENGINE[STATE][0] === "off" ? "" : ENGINE[STATE][0], ENGINE[STATE][1], PAUSED_COPY[STATE])}`
     : `<span class="mx-kicker mx-kicker--live">Writing up ${clk(since)} → now</span><div class="mx-skel" style="width:46%;height:12px"></div><div class="mx-skel" style="width:72%"></div>
-       <span class="mx-label">The journal trails live capture by up to 30 minutes — the footage is already on the Timeline.</span>`}</div></div>`;
+       <span class="mx-label">The journal trails live capture by a few minutes — the footage is already on the Timeline.</span>`}</div></div>`;
   let river = pendRow;
   const rows = D.acts.map((a, i) => ({ a, i })).sort((x, y) => toMin(y.a[notGap(y.a) ? 0 : 1]) - toMin(x.a[notGap(x.a) ? 0 : 1]) || (notGap(y.a) && notGap(x.a) ? mins(x.a) - mins(y.a) : 0));
   rows.forEach(({ a }) => {
@@ -1173,7 +1173,7 @@ function renderJournal() {
         <div class="mx-panel mx-panel--inset in-receipt">${rc ? receipt(s, e, rcv) : receipt(s, e, "receipt")}</div></div>
     </article>`;
   });
-  if (!st.n) river += empty({ mod: "compact", icon: "i-inbox", title: "Your day is being written", text: "Capture is landing. The first card appears once the first half-hour window is summarized." });
+  if (!st.n) river += empty({ mod: "compact", icon: "i-inbox", title: "Your day is being written", text: "Capture is landing. The first card appears within a few minutes." });
 
   // Lede: digest (≥ 2 activities) or its honest absence.
   const kick = `<span class="mx-kicker">${today ? "Digest so far" : "Digest"} · ${label}</span>`;
