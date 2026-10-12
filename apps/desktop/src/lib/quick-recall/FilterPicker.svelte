@@ -1,8 +1,8 @@
 <!-- The pressed pill's popover (recall.html `.rc-pop`): the operators it stands
      for, its alternatives (with result counts once `search.facetCounts` has
      them), Edit as text, and Remove ⌫. The page mounts it at the top of the
-     body, in the same grid cell as the results so it overlays them and the
-     window still grows to fit it; it hangs under its pill. Keys:
+     body, in the same grid cell as the results so it overlays them (the
+     window doesn't grow; its menu scrolls); it hangs under its pill. Keys:
      search-keys.ts `handleLauncherCaptureKeydown`. -->
 <script lang="ts">
   import IconCalendar from "~icons/lucide/calendar";
@@ -115,10 +115,10 @@
     font: 400 var(--text-xs) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
-  /* Seven rows — every date option — without scrolling; a long app list
-     scrolls. The page grows the window while the popover is open to fit it. */
+  /* The bar stays 420 px while the popover is open, so the menu fits under
+     the field (with a notice line showing) and scrolls when longer. */
   .rc-pop .mx-menu {
-    max-height: 252px;
+    max-height: 232px;
     overflow-y: auto;
   }
   .rc-pop .mx-menu li {

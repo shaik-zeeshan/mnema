@@ -429,7 +429,7 @@
       {/if}
 
       <!-- The results, with the pressed pill's popover laid over them (same
-           grid cell, so the bar still grows to fit it). -->
+           grid cell, so the bar grows to fit it, up to its 420 px cap). -->
       {@render noticeLine()}
       <div class="quick-recall__body">
         {#if filters.popoverOpen}
@@ -457,7 +457,7 @@
 {/snippet}
 
 <div class="quick-recall">
-  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : filters.popoverOpen ? 440 : 420} />
+  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : 420} />
 </div>
 
 <style>
