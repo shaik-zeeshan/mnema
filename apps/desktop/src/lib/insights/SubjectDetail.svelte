@@ -22,6 +22,7 @@
   import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
   import { relativeTime } from "$lib/insights/conversationStore.svelte";
   import { fmtDuration } from "$lib/insights/lede-stats";
+  import { formatClock } from "$lib/time-format";
   import { tip } from "$lib/components/tooltip";
   import { humanizeError } from "$lib/format-error";
   import IconBack from "~icons/lucide/chevron-left";
@@ -135,7 +136,8 @@
   });
   function evidenceNote(a: Activity): string {
     const frames = a.evidence.filter((r) => r.subjectType === "frame").length;
-    const parts = [fmtDuration(a.endedAtMs - a.startedAtMs)];
+    // B6: the activity's clock time, not a transcript offset Mnema can't pin.
+    const parts = [formatClock(a.startedAtMs), fmtDuration(a.endedAtMs - a.startedAtMs)];
     if (frames) parts.push(`cited ${frames} ${frames === 1 ? "frame" : "frames"}`);
     return parts.join(" · ");
   }
