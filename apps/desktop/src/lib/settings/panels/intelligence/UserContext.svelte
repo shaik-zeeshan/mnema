@@ -59,7 +59,7 @@
     aria-busy={running}
     onclick={() => userContext.runUserContextDerivationNow()}
   >
-    {#if running}<span class="mx-spin mx-spin--sm"></span>Deriving…{:else}Run derivation now{/if}
+    {#if running}<span class="mx-spin mx-spin--sm"></span>Deriving…{:else}Derive latest now{/if}
   </button>
 {/snippet}
 
@@ -112,6 +112,7 @@
       label="Deriving activities"
       description="Building your understanding — deriving from your history in the background, newest first."
       full
+      below={hasLines ? statusLines : undefined}
     >
       {#snippet aside()}{@render runActions()}{/snippet}
       {#snippet control()}

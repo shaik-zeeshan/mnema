@@ -164,7 +164,7 @@
         <span class={runStatusBadgeClass(lastRun.status)}>{lastRun.status}</span>
       {/if}
       <button class="btn btn--ghost btn--sm" onclick={features.runDerivationNow} disabled={features.runningDerivation}>
-        {features.runningDerivation ? "…" : "run now"}
+        {features.runningDerivation ? "…" : "derive latest now"}
       </button>
     </div>
   </div>

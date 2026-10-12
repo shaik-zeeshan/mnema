@@ -432,7 +432,7 @@ export interface UserContextSummarizingFailure {
 	reason: string;
 }
 
-/** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
+/** Result of a manual "Derive latest now" pass, mirroring the Rust DTO. */
 export interface UserContextDerivationRunResult {
 	activitiesDerived: number;
 	conclusionsDerived: number;

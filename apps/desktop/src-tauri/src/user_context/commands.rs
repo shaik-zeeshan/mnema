@@ -25,7 +25,7 @@ use super::worker::{
     run_forward_activity_window, USER_CONTEXT_CHANGED_EVENT,
 };
 
-/// Result of a manual one-window derivation pass (the "Run derivation now"
+/// Result of a manual one-window derivation pass (the "Derive latest now"
 /// button). camelCase to match the rest of the wire DTOs.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,42 +138,13 @@ pub async fn get_user_context_status(
     // --- backfilling progress (#98) ---
     // Cheap (two store reads): backfilling is true only when the engine is
     // available AND the background History Backfill still has older history to
-    // reach. Two shapes count as "still backfilling":
-    //   1. No windowed coverage exists yet but there ARE captures — the forward
-    //      pass has not even seeded coverage, so older history is pending.
-    //   2. Coverage exists but its oldest-covered edge is still above the floor,
-    //      AND there is older captured history below that edge to derive
-    //      (earliest_capture < oldest_covered). Without older captures there is
-    //      nothing to backfill even if the floor is lower.
-    // The floor is resolved from the SAME settings the worker uses.
-    // `earliest_capture` doubles as Overview's date-picker floor.
+    // reach (see `still_backfilling`). `earliest_capture` doubles as Overview's date-picker floor.
     let earliest_capture = store
         .earliest_capture_at_ms()
         .await
         .map_err(|e| e.to_string())?;
-    let backfilling = if !engine_available {
-        false
-    } else {
-        let oldest_covered = store
-            .oldest_derivation_run_window_start()
-            .await
-            .map_err(|e| e.to_string())?;
-        match oldest_covered {
-            // Shape 1: nothing windowed has run yet — backfilling iff captures exist.
-            None => earliest_capture.is_some(),
-            // Shape 2: coverage exists — older history remains iff the floor is
-            // below the trailing edge AND there are captures older than it.
-            Some(oldest) => {
-                let floor_ms = backfill_floor_ms(
-                    now_ms(),
-                    user_context.backfill_window_days,
-                    user_context.backfill_go_deeper,
-                    earliest_capture,
-                );
-                oldest > floor_ms && earliest_capture.map_or(false, |earliest| earliest < oldest)
-            }
-        }
-    };
+    let backfilling = engine_available
+        && still_backfilling(store, &user_context, earliest_capture).await?;
 
     Ok(UserContextStatus {
         engine_available,
@@ -193,6 +164,38 @@ pub async fn get_user_context_status(
         last_day_digest,
         summarizing_failure,
         earliest_capture_at_ms: earliest_capture,
+    })
+}
+
+/// Whether the background History Backfill still has older history to reach
+/// (engine availability is the caller's gate). Two shapes count:
+///   1. No windowed coverage exists yet but there ARE captures — the forward
+///      pass has not even seeded coverage, so older history is pending.
+///   2. Coverage exists but its oldest-covered edge is still above the floor,
+///      AND there is older captured history below that edge to derive
+///      (earliest_capture < oldest_covered). Without older captures there is
+///      nothing to backfill even if the floor is lower.
+/// The floor is resolved from the SAME settings the worker uses.
+async fn still_backfilling(
+    store: &app_infra::UserContextStore,
+    user_context: &capture_types::UserContextSettings,
+    earliest_capture: Option<i64>,
+) -> Result<bool, String> {
+    let oldest_covered = store
+        .oldest_derivation_run_window_start()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(match oldest_covered {
+        None => earliest_capture.is_some(),
+        Some(oldest) => {
+            let floor_ms = backfill_floor_ms(
+                now_ms(),
+                user_context.backfill_window_days,
+                user_context.backfill_go_deeper,
+                earliest_capture,
+            );
+            oldest > floor_ms && earliest_capture.map_or(false, |earliest| earliest < oldest)
+        }
     })
 }
 
@@ -478,6 +481,16 @@ pub async fn user_context_run_derivation_now(
     {
         message.push(' ');
         message.push_str(&summary);
+    }
+    // The button derives only the latest window; say so while the background
+    // History Backfill is still working through older captures. Best-effort.
+    let store = infra.user_context();
+    let earliest_capture = store.earliest_capture_at_ms().await.ok().flatten();
+    if still_backfilling(store, &user_context, earliest_capture)
+        .await
+        .unwrap_or(false)
+    {
+        message.push_str(" Older history keeps filling in the background.");
     }
 
     Ok(UserContextDerivationRunResult {
