@@ -33,6 +33,7 @@
   } from "$lib/audio-drawer-dismiss";
   import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
   import RecallLandingChip from "$lib/timeline/RecallLandingChip.svelte";
+  import RecallMatchBoxes from "$lib/timeline/RecallMatchBoxes.svelte";
   import { transcriptModelLabel, type TranscriptModelLabel } from "$lib/timeline/transcript-model-label";
   import { RailEpisodes } from "$lib/timeline/rail-episodes.svelte";
   import {
@@ -485,6 +486,7 @@
     alignedFrameId?: number | null;
     // The Quick Recall query behind this hit → the landing chip. Absent elsewhere.
     query?: string | null;
+    byMeaning?: boolean;
   };
   type AppIconResolution = {
     bundleId: string;
@@ -3724,7 +3726,8 @@
   // succeeded) so the cold-mount init can skip the latest-frames load that would
   // otherwise clobber the handed-off frame (see `initializeTimeline`).
   // From-Recall landing chip + its one rail mark at the landed frame (§8 #2).
-  let recallLanding = $state<{ query: string; frameId: number } | null>(null);
+  type RecallLanding = { query: string; frameId: number; screen: boolean; byMeaning: boolean };
+  let recallLanding = $state<RecallLanding | null>(null);
   const recallLandingIndex = $derived(
     recallLanding ? timelineFrames.findIndex((f) => f.id === recallLanding?.frameId) : -1,
   );
@@ -3747,7 +3750,7 @@
         const target = payload.kind === "frame" ? payload.frameId : payload.alignedFrameId;
         recallLanding =
           payload.query && timelineActive && (target == null || target === timelineActive.id)
-            ? { query: payload.query, frameId: timelineActive.id }
+            ? { query: payload.query, frameId: timelineActive.id, screen: payload.kind === "frame", byMeaning: !!payload.byMeaning }
             : null;
       } catch {
         // get_frame / get_audio_segment threw (capture gone or DB error) — the
@@ -6427,6 +6430,10 @@
               hover to read · copy all in ⋯
             </span>
           </div>
+        {/if}
+        {#if recallLanding?.screen && displayedActiveExactPreview && recallLanding.frameId === timelineActive.id}
+          {@const { frameId, query, byMeaning } = recallLanding}
+          <RecallMatchBoxes {frameId} {query} {byMeaning} rect={renderedImageRect} />
         {/if}
       {:else}
         {#if frameActionStatus?.tone === "error"}

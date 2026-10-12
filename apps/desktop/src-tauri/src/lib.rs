@@ -89,6 +89,10 @@ struct BrokerOpenCaptureResultPayload {
     /// dismissible `from Recall · "query"` landing chip. Absent for other senders.
     #[serde(default)]
     query: Option<String>,
+    /// The Recall hit was meaning-only (`foundByMeaning`), so the Timeline's
+    /// landed-frame match outlines draw dashed.
+    #[serde(default)]
+    by_meaning: bool,
 }
 
 #[derive(Default)]
@@ -114,6 +118,7 @@ fn open_capture_result_in_main_window(
     span_start_ms: Option<i64>,
     aligned_frame_id: Option<i64>,
     query: Option<String>,
+    by_meaning: Option<bool>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrokerOpenCaptureResultState>,
 ) {
@@ -125,6 +130,7 @@ fn open_capture_result_in_main_window(
         span_start_ms,
         aligned_frame_id,
         query,
+        by_meaning: by_meaning.unwrap_or(false),
     };
     if let Ok(mut pending) = state.pending.lock() {
         pending.push_back(payload.clone());
@@ -387,6 +393,7 @@ async fn broker_payload_from_url(
         span_start_ms: None,
         aligned_frame_id: None,
         query: None,
+        by_meaning: false,
     })
 }
 

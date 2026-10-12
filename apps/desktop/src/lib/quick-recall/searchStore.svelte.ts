@@ -389,6 +389,7 @@ export class SearchStore {
         frameId: result.representativeFrame.id,
         audioSegmentId: null,
         query: this.resultsQuery,
+        byMeaning: result.foundByMeaning,
       });
     } catch (err) {
       await this.surfaceResultHandoffFailure(err);
