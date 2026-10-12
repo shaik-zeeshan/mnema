@@ -11,6 +11,7 @@
   import type {
     AiRuntimeSettings,
     AiRuntimeStatus,
+    AuthoredContext,
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
@@ -58,19 +59,22 @@
   let aiStatus = $state<AiRuntimeStatus | null>(null);
   let aiSettings = $state<AiRuntimeSettings | null>(null);
   let ctxStatus = $state<UserContextStatus | null>(null);
+  let authoredCount = $state<number | undefined>(undefined);
   // Nothing flashes a notice before the first status read lands.
   let statusLoaded = $state(false);
 
   const engine = $derived(engineState(statusLoaded, aiStatus, aiSettings));
 
   async function loadEngineStatus(): Promise<void> {
-    const [ai, ctx, settings] = await Promise.all([
+    const [ai, ctx, settings, authored] = await Promise.all([
       invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
       invoke<UserContextStatus>("get_user_context_status").catch(() => null),
       invoke<RecordingSettings>("get_recording_settings").catch(() => null),
+      invoke<AuthoredContext[]>("list_user_context_authored").catch(() => null),
     ]);
     aiStatus = ai;
     ctxStatus = ctx;
+    authoredCount = authored?.length;
     aiSettings = settings?.aiRuntime ?? null;
     statusLoaded = true;
   }
@@ -173,16 +177,19 @@
     return null;
   });
 
-  // Tab counts come only from what the shell already reads: Subjects from the
-  // context status. Journal's day count and Context's statement count live in
-  // their views, so those tabs carry no number.
+  // Tab counts: Subjects from the context status, Context from the authored
+  // list (both re-read on `user_context_changed`). Journal carries no number
+  // by ruling (B7).
   const TABS: { id: InsightsTab; label: string }[] = [
     { id: "overview", label: "Overview" },
     { id: "journal", label: "Journal" },
     { id: "subjects", label: "Subjects" },
     { id: "context", label: "Context" },
   ];
-  const counts = $derived<Partial<Record<InsightsTab, number>>>({ subjects: ctxStatus?.subjectCount });
+  const counts = $derived<Partial<Record<InsightsTab, number>>>({
+    subjects: ctxStatus?.subjectCount,
+    context: authoredCount,
+  });
 
   $effect(() => {
     void untrack(() => loadEngineStatus());
