@@ -478,7 +478,7 @@
   // 60-row cap can hide that row.
   let renaming = $state(false);
   let draft = $state("");
-  // The last pin result for a chat with no visible row (no pin flag on `Conversation`).
+  // The open chat's pin when its list row is hidden: loaded, then the last click.
   let pinnedLocal = $state<boolean | null>(null);
   const headPinned = $derived(activeSummary?.pinned ?? pinnedLocal ?? false);
 
@@ -500,7 +500,8 @@
     // Empty or unchanged → cancel, like the list's inline rename.
     if (id === null || title.length === 0 || title === displayTitle) return;
     try {
-      await invoke("set_conversation_title", { request: { conversationId: id, title } });
+      // `origin` creates the row if the first save hasn't landed yet.
+      await invoke("set_conversation_title", { request: { conversationId: id, title, origin: "chat" } });
       if (activeConversationId === id) activeTitle = title;
     } catch (error) {
       void message(`Couldn’t rename this chat: ${humanizeError(error)}`, { kind: "error" });
@@ -523,7 +524,7 @@
     if (id === null) return;
     const pinned = !headPinned;
     try {
-      await invoke("set_conversation_pinned", { conversationId: id, pinned });
+      await invoke("set_conversation_pinned", { conversationId: id, pinned, origin: "chat" });
       if (activeConversationId === id) pinnedLocal = pinned;
     } catch (error) {
       void message(`Couldn’t ${pinned ? "pin" : "unpin"} this chat: ${humanizeError(error)}`, { kind: "error" });

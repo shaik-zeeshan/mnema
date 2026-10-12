@@ -69,6 +69,30 @@ impl ConversationStore {
         Ok(row.get("id"))
     }
 
+    /// Create the conversation row if it is missing; an existing row is left
+    /// untouched (no title, origin or stamp change). For a header Rename/Pin
+    /// that lands between `ask_ai_start` and its first save: the first save's
+    /// upsert then fills in the title and keeps the user title and pin.
+    pub async fn ensure_conversation(
+        &self,
+        conversation_id: &str,
+        origin: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO conversations \
+                (conversation_id, title, origin, created_at_ms, updated_at_ms, last_activity_at_ms) \
+             VALUES (?1, '', ?2, ?3, ?3, ?3) \
+             ON CONFLICT(conversation_id) DO NOTHING",
+        )
+        .bind(conversation_id)
+        .bind(origin)
+        .bind(now_ms)
+        .execute(self.db.write())
+        .await?;
+        Ok(())
+    }
+
     /// Upsert one turn of a conversation. The conversation row is ensured first
     /// (mirroring [`Self::upsert_conversation`], which also bumps its activity
     /// stamps), then the turn is inserted or — on conflict with an existing

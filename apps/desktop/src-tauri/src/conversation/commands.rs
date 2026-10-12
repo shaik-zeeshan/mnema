@@ -137,11 +137,16 @@ pub struct SetConversationTitleRequest {
     pub conversation_id: String,
     /// The new title. Trimmed; an empty/whitespace-only title is rejected.
     pub title: String,
+    /// The calling door. When set, a missing row is created first (Chat's
+    /// header can rename before the first save lands); when absent, a missing
+    /// conversation is an error.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
-/// Persist the user-set title for an existing conversation. Rejects an empty
-/// (post-trim) title and a missing conversation (a rename never creates a
-/// row). Emits [`CONVERSATION_CHANGED_EVENT`].
+/// Persist the user-set title for a conversation. Rejects an empty
+/// (post-trim) title and, unless `origin` is given, a missing conversation.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]
 pub async fn set_conversation_title(
     app_handle: tauri::AppHandle,
@@ -153,6 +158,13 @@ pub async fn set_conversation_title(
         return Err("conversation title must not be empty".to_string());
     }
 
+    if let Some(origin) = request.origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&request.conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let renamed = infra
         .conversation()
         .set_user_title(&request.conversation_id, title, now_ms())
@@ -170,16 +182,25 @@ pub async fn set_conversation_title(
 }
 
 /// Pin (or unpin) a chat to the top of the history list. Touches no
-/// timestamp (pinning is not activity) and never creates a row. Not the
-/// per-chat engine pin — that is [`set_conversation_engine`]. Emits
-/// [`CONVERSATION_CHANGED_EVENT`].
+/// timestamp (pinning is not activity). A missing row is created only when
+/// `origin` is given (Chat's header, before the first save lands), otherwise
+/// it is an error. Not the per-chat engine pin — that is
+/// [`set_conversation_engine`]. Emits [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]
 pub async fn set_conversation_pinned(
     app_handle: tauri::AppHandle,
     infra: tauri::State<'_, AppInfraState>,
     conversation_id: String,
     pinned: bool,
+    origin: Option<String>,
 ) -> Result<(), String> {
+    if let Some(origin) = origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let found = infra
         .conversation()
         .set_pinned(&conversation_id, pinned)

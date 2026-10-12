@@ -38,7 +38,10 @@ fn pinned_sorts_first_in_list_and_search() {
 
         assert!(store.set_pinned("old", true).await.expect("pin"));
         let opened = store.get_conversation("old").await.expect("get");
-        assert!(opened.expect("row").pinned, "the open chat knows it's pinned");
+        assert!(
+            opened.expect("row").pinned,
+            "the open chat knows it's pinned"
+        );
         let opened = store.get_conversation("new").await.expect("get");
         assert!(!opened.expect("row").pinned);
 
@@ -79,6 +82,48 @@ fn set_pinned_touches_no_timestamp_and_never_creates_a_row() {
             .await
             .expect("get")
             .is_none());
+    });
+}
+
+#[test]
+fn ensure_conversation_lets_rename_and_pin_land_before_the_first_save() {
+    block_on(async {
+        let store = test_store().await;
+        store
+            .ensure_conversation("c", "chat", 500)
+            .await
+            .expect("ensure");
+        assert!(store
+            .set_user_title("c", "Renamed early", 600)
+            .await
+            .expect("rename"));
+        assert!(store.set_pinned("c", true).await.expect("pin"));
+
+        // The first save lands afterwards and keeps both.
+        done_turn(&store, "c", 0, "first question", 1_000).await;
+        let convo = store
+            .get_conversation("c")
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(convo.title, "Renamed early");
+        assert_eq!(convo.origin, "chat");
+        assert!(convo.pinned);
+        assert_eq!(convo.turns.len(), 1);
+
+        // An existing row is left untouched.
+        let before = stamps(&store, "c").await;
+        store
+            .ensure_conversation("c", "quick_recall", 9_000)
+            .await
+            .expect("ensure again");
+        assert_eq!(stamps(&store, "c").await, before);
+        let convo = store
+            .get_conversation("c")
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(convo.origin, "chat");
     });
 }
 
