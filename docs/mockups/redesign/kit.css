@@ -139,7 +139,7 @@ button, input, select, textarea { font-family: inherit; }
    recall/ask door) | trail (chats · notifications · settings, icon-only).
    The real window is TitleBarStyle::Overlay: macOS draws the lights in .mx-lights. */
 .mx-titlebar {
-  position: relative; z-index: 20;
+  position: relative; z-index: 50; /* above page sticky bars (z 20) so titlebar popovers drop over them */
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
   gap: var(--s-3); padding: 0 var(--s-2) 0 0; min-width: 0;
   background: color-mix(in srgb, var(--app-titlebar-bg) 82%, transparent);

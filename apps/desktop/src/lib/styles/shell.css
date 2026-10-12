@@ -11,7 +11,8 @@
    title bar — never put content there). */
 .mx-spacer { flex: 1; }
 .mx-titlebar {
-  position: relative; z-index: 20; flex: none; height: var(--mx-titlebar-h);
+  /* z 50: above page sticky bars (Insights' .in-bar is 20) so titlebar popovers drop over them. */
+  position: relative; z-index: 50; flex: none; height: var(--mx-titlebar-h);
   display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
   gap: var(--s-3); padding: 0 var(--s-2) 0 78px; min-width: 0;
   background: color-mix(in srgb, var(--app-titlebar-bg) 82%, transparent);
