@@ -50,7 +50,7 @@ export the matching `MNEMA_LICENSE_KID` and `MNEMA_LICENSE_PK_TOKEN` yourself.
 | `MNEMA_TRIAL_RESET` | `1` | Clear the trial-issuance stamp once at launch (stored keys untouched), to re-run the first-capture trial flow. |
 | `MNEMA_TRIAL_LEN_MS` | `300000` | Shrink the 7-day offline-issuance ceiling (here, 5 min) so the "connect once to start your trial" gate is testable in one sitting. The trial days themselves are server-issued and not overridable client-side. |
 | `MNEMA_TRIAL_LEN_DAYS` | `45` | **Compile-time** (build env, not runtime): the trial-days number shown in the pre-trial promise copy (`TrialNotStarted`). Display-only — enforcement is the server plan; set this at build time if the server plan changes. Baked fallback: 30. |
-| `MNEMA_LICENSE_TOKEN_DIR` | a temp dir | **Tests only** (`#[cfg(test)]` in `license_token_store.rs` — a built app ignores it): store licensing keychain items (key/receipt/stamps) as files in a directory instead of the OS keychain. |
+| `MNEMA_LICENSE_TOKEN_DIR` | `~/Library/Application Support/day.mnema.dev/license-tokens` | **Tests and debug builds only** (compiled out of release): store licensing keychain items (key/receipt/stamps) as files in a directory instead of the OS keychain. `scripts/dev-app.sh` sets it so the ad-hoc-signed dev sandbox never hits the `day.mnema.licensing` keychain prompt; `dev-app-signed.sh` leaves it unset to test the real prompts. |
 
 > Any new `MNEMA_*` var must be added to `turbo.json` `passThroughEnv` — turbo
 > silently strips undeclared vars, so a knob set on the command line never
