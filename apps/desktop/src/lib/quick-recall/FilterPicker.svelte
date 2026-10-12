@@ -100,6 +100,9 @@
     justify-self: start;
     position: relative;
     z-index: 2;
+    display: flex;
+    flex-direction: column;
+    max-height: 100%;
     min-width: 240px;
     max-width: 320px;
     padding: 4px 0 0;
@@ -115,9 +118,12 @@
     font: 400 var(--text-xs) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
-  /* The bar stays 420 px while the popover is open, so the menu fits under
-     the field (with a notice line showing) and scrolls when longer. */
+  /* The bar stays 420 px while the popover is open: the menu scrolls past
+     232 px, and shrinks further when a notice line above takes the room, so
+     Edit as text / Remove stay on screen. */
   .rc-pop .mx-menu {
+    flex: 0 1 auto;
+    min-height: 0;
     max-height: 232px;
     overflow-y: auto;
   }
