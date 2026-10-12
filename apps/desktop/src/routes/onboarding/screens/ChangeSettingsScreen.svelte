@@ -170,7 +170,9 @@
         videoPixels={flow.videoPixels}
       >
         {#snippet transcriptionNote()}
-          Engine: <b>{engineName}</b> — chosen on Engines. This screen picks its build.
+          Engine: <b>{engineName}</b> — chosen on
+          <button class="link" type="button" onclick={() => (active = "engines")}>Engines</button>. This screen
+          picks its build.
         {/snippet}
       </ModelPickers>
     {:else}
@@ -234,6 +236,22 @@
     display: flex;
     align-items: center;
     gap: var(--s-3);
+  }
+  .link {
+    font: inherit;
+    color: var(--app-accent);
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-color: var(--app-accent-border);
+    text-underline-offset: 3px;
+  }
+  .link:focus-visible {
+    outline: none;
+    border-radius: 2px;
+    box-shadow: var(--app-ring);
   }
   .tabs .num {
     font: 400 var(--text-sm) / 1 var(--font-mono);

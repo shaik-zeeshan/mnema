@@ -67,6 +67,11 @@
     </p>
   </div>
 
+  <div class="ob-pane__head">
+    <span class="mx-kicker">Turning speech into text</span>
+    <span class="ob-fine">one is picked for you</span>
+  </div>
+
   <div class="mx-choice ob-engines" role="radiogroup" aria-label="Transcription engine">
     {#each engines as engine (engine.id)}
       {@const Icon = ICONS[engine.id]}
@@ -108,6 +113,11 @@
     {/if}
   </div>
 
+  <p class="ob-fine axn">
+    Memory figures are measured on a running app, not published in any manifest — they always
+    read “about”. The one ordering the manifest states is memory: Parakeet uses the most.
+  </p>
+
   <details class="cloud">
     <summary>Where's the cloud option?</summary>
     <p>
@@ -122,6 +132,12 @@
   .ob-pane {
     display: grid;
     gap: var(--s-4);
+  }
+  .ob-pane__head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+    margin-bottom: calc(var(--s-2) - var(--s-4));
   }
   .ob-engines .mx-choice__opt {
     gap: 6px;
@@ -165,6 +181,10 @@
   }
   .ob-fine.up {
     color: var(--app-warn);
+  }
+  .axn {
+    font-size: var(--text-sm);
+    max-width: 62ch;
   }
   .cloud {
     font: 400 var(--text-sm) / 1.5 var(--font-sans);

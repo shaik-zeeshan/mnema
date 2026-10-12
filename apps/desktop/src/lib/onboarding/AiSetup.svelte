@@ -376,13 +376,16 @@
         onchange={(e) => onToggleAi(e.currentTarget.checked)} />
     </div>
 
-    <p class="ob-fine">
-      {local
-        ? "If one is already running here, nothing has to be typed."
-        : oauth
-          ? "Your own ChatGPT Plus/Pro plan. Sign in in the browser — no API key."
-          : "Your own account. There is no Save — the key proves itself."}
-    </p>
+    <div>
+      <div class="t">{providers.length ? "Connect another engine" : "Connect an engine"}</div>
+      <div class="d">
+        {local
+          ? "If one is already running here, nothing has to be typed."
+          : oauth
+            ? "Your own ChatGPT Plus/Pro plan. Sign in in the browser — no API key."
+            : "Your own account. There is no Save — the key proves itself."}
+      </div>
+    </div>
 
     <div class="ob-acts">
       <select

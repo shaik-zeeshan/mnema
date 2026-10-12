@@ -154,7 +154,7 @@
       </button>
     {/if}
   </div>
-  {#if note.text}<p class="ob-fine note">{note.text}</p>{/if}
+  <p class="ob-fine note">{note.text} <span class="hint">{note.hint}</span></p>
 </div>
 
 <datalist id={listId}>
@@ -220,5 +220,8 @@
   .note {
     grid-column: 2;
     margin-top: -4px;
+  }
+  .note .hint {
+    color: var(--app-text-muted);
   }
 </style>
