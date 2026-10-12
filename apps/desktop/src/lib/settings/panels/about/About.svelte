@@ -223,7 +223,7 @@
   </SettingRow>
 </SettingGroup>
 
-<SettingGroup title="Acknowledgements" hint="Mnema's on-device models are built on these open projects. Each is credited under its license.">
+<SettingGroup title="Acknowledgements" hint="Mnema's on-device models and fonts come from these open projects. Each is credited under its license.">
   <SettingRow label="Third-party notices" description="The full attribution list for the bundled open-source components." full divider={false}>
     {#snippet control()}
       <div class="about-notices">
