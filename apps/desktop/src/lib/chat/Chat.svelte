@@ -427,6 +427,8 @@
       if (!turn) {
         const hydrated = makeTurn(snapshot.view.turnIndex, snapshot.view.question, normalizePhase(snapshot.view.phase));
         turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+        // A live turn means the chat exists; "missing" was the pre-first-save gap.
+        missingConversation = false;
         turn = turns.find((t) => t.turnIndex === event.turnIndex);
         if (!turn) return;
         adoptView(turn, snapshot.view, snapshot.version);
@@ -549,6 +551,11 @@
       void loadEngineSettings();
     };
     void listen("user_context_changed", refresh).then(keep);
+    // A remount between `ask_ai_start` and the first save reads "missing";
+    // that save emits this event, so look again while the pane says deleted.
+    void listen("conversation_changed", () => {
+      if (missingConversation && activeConversationId !== null) void loadConversationById(activeConversationId);
+    }).then(keep);
     // An inline "Sign in again" (ChatErrorTurn) landed: bring the composer back.
     void listen("chatgpt_login_update", () => void loadAskAvailability()).then(keep);
     void listen<RecordingSettingsDomainUpdateResponse>("recording_settings_domain_changed", (e) => {
