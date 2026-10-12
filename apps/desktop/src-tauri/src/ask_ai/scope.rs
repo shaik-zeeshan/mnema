@@ -6,10 +6,12 @@
 //! `fetch_url` and MCP connectors are not limited by it (IMPLEMENTATION.md §5 c);
 //! `show_text` only takes opaque ids a scoped result handed out.
 
-use capture_types::AskAiScope;
+use capture_types::{AskAiScope, ToolActivityEntry};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+
+use super::tool_activity::format_tool_activity;
 
 /// Clamp one tool call's window into `scope`: a missing bound is filled with the
 /// scope's (`search` / `recall_context` / `speakers` take optional bounds), a bound past the
@@ -85,6 +87,31 @@ pub(super) fn scope_tool_params(
         }
     }
     Ok(params)
+}
+
+/// The live step label for a tool call, built from the window the call will
+/// actually read (clamped into `scope`). A call refused as entirely outside the
+/// chat's dates keeps its raw params and says so.
+pub(super) fn scoped_tool_activity(
+    scope: Option<&AskAiScope>,
+    tool: &str,
+    params: &Value,
+    now_ms: i64,
+    utc_offset_minutes: Option<i32>,
+) -> ToolActivityEntry {
+    let (params, outside) = match scope_tool_params(scope, tool, params.clone()) {
+        Ok(clamped) => (clamped, false),
+        // About you off refuses `recall_context` for a reason that isn't dates.
+        Err(_) => (
+            params.clone(),
+            !(tool == "recall_context" && scope.is_some_and(|scope| !scope.about_you)),
+        ),
+    };
+    let mut entry = format_tool_activity(tool, &params, now_ms, utc_offset_minutes);
+    if outside {
+        entry.label.push_str(" \u{00b7} outside this chat's dates");
+    }
+    entry
 }
 
 /// The one prompt line naming the scope (local wall clock when known). An
@@ -211,6 +238,39 @@ mod tests {
             Ok(Some((Some(1_000), Some(9_000))))
         );
         assert!(clamp_tool_range(&since, "timeline", Some(0), Some(500)).is_err());
+    }
+
+    #[test]
+    fn step_label_shows_the_clamped_window_or_says_it_is_outside() {
+        let scope = AskAiScope {
+            from_ms: Some(1_791_158_400_000), // 2026-10-05T00:00:00Z
+            to_ms: Some(1_791_763_199_999),   // 2026-10-11T23:59:59.999Z
+            about_you: true,
+        };
+        let now = 1_791_800_000_000;
+        let wide = json!({ "from": "2026-01-01T00:00:00Z", "to": "2026-10-06T00:00:00Z" });
+        let clamped = json!({ "from": "2026-10-05T00:00:00Z", "to": "2026-10-06T00:00:00Z" });
+        assert_ne!(
+            format_tool_activity("timeline", &wide, now, None).label,
+            format_tool_activity("timeline", &clamped, now, None).label
+        );
+        assert_eq!(
+            scoped_tool_activity(Some(&scope), "timeline", &wide, now, None).label,
+            format_tool_activity("timeline", &clamped, now, None).label
+        );
+        let outside = json!({ "from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z" });
+        assert_eq!(
+            scoped_tool_activity(Some(&scope), "timeline", &outside, now, None).label,
+            format!(
+                "{} \u{00b7} outside this chat's dates",
+                format_tool_activity("timeline", &outside, now, None).label
+            )
+        );
+        // Unscoped: exactly today's label.
+        assert_eq!(
+            scoped_tool_activity(None, "timeline", &wide, now, None).label,
+            format_tool_activity("timeline", &wide, now, None).label
+        );
     }
 
     #[test]

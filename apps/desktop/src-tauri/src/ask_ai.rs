@@ -2317,7 +2317,8 @@ async fn run_ask_ai_turn(
                 // set it as the live activity line. Icon resolution is async, so it
                 // is spawned and re-emits an enriched live line if/when it resolves.
                 let now = now_ms();
-                let mut entry = tool_activity::format_tool_activity(
+                let mut entry = scope::scoped_tool_activity(
+                    scope.as_ref(),
                     &name,
                     &params,
                     now,
