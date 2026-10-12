@@ -63,6 +63,12 @@
   // UI-only disclosure state (settled turns start collapsed).
   let stepsOpen = $state(false);
   let reasonOpen = $state(false);
+  // Reasoning lives in a fixed-height box; while it streams, keep its tail in view.
+  let reasonEl = $state<HTMLParagraphElement | null>(null);
+  $effect(() => {
+    void turn.reasoning;
+    if (reasoningLive && reasonEl !== null) reasonEl.scrollTop = reasonEl.scrollHeight;
+  });
   const askedAt = $derived(
     turn.atMs === null ? "" : new Date(turn.atMs).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() }),
   );
@@ -126,7 +132,7 @@
             {#each turn.toolActivities as a, i (i)}
               {@const running = live && turn.liveActivity !== null && i === turn.toolActivities.length - 1}
               <li data-run={running || undefined}>
-                {#if running}<IconLoader width="13" height="13" aria-hidden="true" />{:else}<IconCheck width="13" height="13" aria-hidden="true" />{/if}
+                {#if running}<span class="ch-spin" aria-hidden="true"><IconLoader width="13" height="13" /></span>{:else}<IconCheck width="13" height="13" aria-hidden="true" />{/if}
                 {a.label}{#if a.app}{@render appChip(a)}{/if}
               </li>
             {/each}
@@ -139,7 +145,7 @@
       {#if (turn.reasoning ?? "").trim().length > 0}
         <details class="ch-reason" open={reasoningLive || reasonOpen} ontoggle={(e) => !reasoningLive && (reasonOpen = e.currentTarget.open)}>
           <summary><IconSparkle width="12" height="12" aria-hidden="true" />Thought process<IconChev width="11" height="11" aria-hidden="true" /></summary>
-          <p>{turn.reasoning}</p>
+          <p bind:this={reasonEl}>{turn.reasoning}</p>
         </details>
       {/if}
       {#each turn.blocks as block, bi (bi)}
@@ -239,6 +245,11 @@
   .ch-steps li > span { display: inline-flex; align-items: center; gap: 4px; color: var(--app-text-subtle); }
   .ch-steps li[data-run] { color: var(--app-text-strong); }
   .ch-steps li[data-run] > :global(svg) { color: var(--app-accent); }
+  /* An HTML wrapper with its own layer, so the rotation runs on the compositor
+     and doesn't stall while streamed reasoning keeps the main thread busy. */
+  .ch-spin { flex: none; display: inline-flex; color: var(--app-accent); will-change: transform; animation: ch-spin 0.9s linear infinite; }
+  @keyframes ch-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .ch-spin { animation: none; } }
   .ch-appicon { width: 13px; height: 13px; border-radius: 3px; font: 600 8px/13px var(--font-sans); font-style: normal; text-align: center; background: var(--app-surface-hover); }
   .ch-live { display: inline-flex; align-items: center; gap: 8px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); }
   .ch-live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
@@ -249,6 +260,9 @@
     font: 400 var(--text-base)/1.55 var(--font-sans);
     color: var(--app-text-subtle);
     white-space: pre-wrap;
+    max-height: 12em;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .ch-block { padding: var(--s-4) var(--s-5); margin: 0 0 var(--s-4); }
   .ch-block__h { display: flex; align-items: baseline; gap: var(--s-3); margin-bottom: var(--s-3); }
