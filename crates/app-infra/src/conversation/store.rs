@@ -277,14 +277,16 @@ impl ConversationStore {
     pub async fn set_conversation_engine(
         &self,
         conversation_id: &str,
+        origin: &str,
         provider: Option<&str>,
         model: Option<&str>,
         now_ms: i64,
     ) -> Result<()> {
         // Ensure the row exists (and bump its activity stamps). `title`/`origin`
-        // here are upsert defaults that only apply when the row is newly created;
-        // an existing row keeps its first non-empty title and original origin.
-        self.upsert_conversation(conversation_id, "", "quick_recall", now_ms)
+        // only apply when the row is newly created (a pin chosen before the
+        // first save); an existing row keeps its first non-empty title and
+        // original origin.
+        self.upsert_conversation(conversation_id, "", origin, now_ms)
             .await?;
 
         sqlx::query(

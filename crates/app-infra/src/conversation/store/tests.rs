@@ -589,7 +589,13 @@ fn engine_pin_round_trips_and_survives_a_later_turn() {
 
         // Pinning before any turn creates the row and stores the identity.
         store
-            .set_conversation_engine("conv-pin", Some("anthropic"), Some("claude-x"), 1_000)
+            .set_conversation_engine(
+                "conv-pin",
+                "chat",
+                Some("anthropic"),
+                Some("claude-x"),
+                1_000,
+            )
             .await
             .expect("set engine pin");
 
@@ -609,6 +615,7 @@ fn engine_pin_round_trips_and_survives_a_later_turn() {
             .expect("exists");
         assert_eq!(pinned.provider.as_deref(), Some("anthropic"));
         assert_eq!(pinned.model.as_deref(), Some("claude-x"));
+        assert_eq!(pinned.origin, "chat", "a pin-created row keeps its door");
 
         // A turn saved AFTER pinning must not clobber the pin.
         store
@@ -629,7 +636,7 @@ fn engine_pin_round_trips_and_survives_a_later_turn() {
 
         // Clearing the pin (None/None) leaves the row but unpins it.
         store
-            .set_conversation_engine("conv-pin", None, None, 3_000)
+            .set_conversation_engine("conv-pin", "chat", None, None, 3_000)
             .await
             .expect("clear engine pin");
         assert_eq!(

@@ -95,6 +95,8 @@ pub async fn search_conversations(
 pub struct SetConversationEngineRequest {
     /// Frontend-generated UUID (the stable cross-restart identity).
     pub conversation_id: String,
+    /// The calling door (`"chat"`), stored only if this call creates the row.
+    pub origin: String,
     /// The engine provider id to pin, or `None` to clear.
     #[serde(default)]
     pub provider: Option<String>,
@@ -115,6 +117,7 @@ pub async fn set_conversation_engine(
         .conversation()
         .set_conversation_engine(
             &request.conversation_id,
+            &request.origin,
             request.provider.as_deref(),
             request.model.as_deref(),
             now_ms(),

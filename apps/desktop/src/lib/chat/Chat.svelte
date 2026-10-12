@@ -131,7 +131,7 @@
     if (conversationId === null || turns.length === 0) return;
     try {
       await invoke("set_conversation_engine", {
-        request: { conversationId, provider: engine?.provider ?? null, model: engine?.model ?? null },
+        request: { conversationId, origin: "chat", provider: engine?.provider ?? null, model: engine?.model ?? null },
       });
     } catch {
       // Best-effort: the pin is re-read on the next hydrate.
@@ -337,7 +337,7 @@
       if (isFirstTurn) {
         // Persist a pin chosen before the row existed, BEFORE the turn reads it.
         if (pinProvider !== null && pinModel !== null) {
-          await invoke("set_conversation_engine", { request: { conversationId, provider: pinProvider, model: pinModel } }).catch(() => {});
+          await invoke("set_conversation_engine", { request: { conversationId, origin: "chat", provider: pinProvider, model: pinModel } }).catch(() => {});
         }
         await invoke<void>("ask_ai_start", {
           request: { conversationId, question, origin: "chat", title, scope: wireScope, ...askAiClock() },
