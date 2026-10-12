@@ -3172,8 +3172,8 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
     })
 }
 
-/// The resolved on-disk storage root where captures, the database, and model
-/// caches live. This is the authoritative, env-honoring resolution: when no
+/// The resolved on-disk storage root where captures and the database live
+/// (downloaded models stay in Mnema's app data, not here). This is the authoritative, env-honoring resolution: when no
 /// `save_directory` is persisted it falls back to `default_save_directory()`
 /// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Settings › Storage shows this
 /// read-only; the folder is changed by writing `save_directory` through the

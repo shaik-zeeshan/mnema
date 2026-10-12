@@ -140,6 +140,7 @@
             disabled: !picked.provider,
           }
         : null}
+      folder={{ path: semanticSearchModelStatus.modelsDirectory, reveal: picked.available ? picked.installPath : null }}
     />
   {/if}
 </SettingGroup>

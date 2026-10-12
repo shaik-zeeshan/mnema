@@ -7,11 +7,14 @@
   import SettingRow from "./SettingRow.svelte";
   import ButtonSpinner from "./ButtonSpinner.svelte";
   import type { DownloadMeta } from "./model-download";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import { revealItemInDir } from "@tauri-apps/plugin-opener";
   import { formatBytes } from "$lib/settings/state/format";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconInfo from "~icons/lucide/info";
   import IconDownload from "~icons/lucide/download";
   import IconRetry from "~icons/lucide/rotate-cw";
+  import IconFolder from "~icons/lucide/folder";
 
   interface Props {
     label: string;
@@ -40,6 +43,16 @@
       sourceUrl?: string | null;
       missingFiles?: string[];
     } | null;
+    /**
+     * "Stored in <family folder> · Copy · Show in Finder". `path` is the
+     * family's own store folder (the status response's `modelsDirectory`),
+     * never the app-data root. `reveal` is the installed model's own
+     * directory, or null until it is downloaded: Finder then opens inside the
+     * family folder with this model selected. Revealing the family folder
+     * itself would open the app-data root around it (grants, vault, settings),
+     * so Show in Finder stays hidden until there's a model.
+     */
+    folder?: { path: string | null | undefined; reveal?: string | null } | null;
   }
 
   let {
@@ -57,12 +70,23 @@
     controls,
     note,
     info = null,
+    folder = null,
   }: Props = $props();
+
+  const folderPath = $derived(folder?.path || null);
+  let copied = $state(false);
+
+  async function copyFolder() {
+    if (!folderPath) return;
+    await writeText(folderPath);
+    copied = true;
+    setTimeout(() => (copied = false), 1500);
+  }
 
   const hasInfo = $derived(
     !!info && !!(info.installPath || info.licenseLabel || info.sourceUrl || info.missingFiles?.length),
   );
-  const hasNotes = $derived(!!error || !!warning || !!note || hasInfo);
+  const hasNotes = $derived(!!error || !!warning || !!note || hasInfo || !!folderPath);
   const failed = $derived(!!error || chip?.tone === "danger");
 </script>
 
@@ -137,6 +161,21 @@
     <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />{warning}</span>
   {/if}
   {#if note}{@render note()}{/if}
+  {#if folderPath}
+    <span class="mx-inline mdr-folder">
+      <IconFolder width="13" height="13" /><span class="mdr-folder__text">Stored in <span class="mdr-mono"
+        >{#each folderPath.split("/") as part, i}{i ? "/" : ""}<wbr />{part}{/each}</span
+      ></span>
+      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void copyFolder()}>
+        {copied ? "Copied" : "Copy"}
+      </button>
+      {#if folder?.reveal}
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void revealItemInDir(folder.reveal!)}>
+          Show in Finder
+        </button>
+      {/if}
+    </span>
+  {/if}
   {#if hasInfo && info}
     <details class="mdr-info">
       <summary>Model files</summary>
@@ -187,6 +226,17 @@
   .mdr-info dd {
     margin: 0;
     color: var(--app-text-muted);
+    overflow-wrap: anywhere;
+  }
+
+  .mdr-folder {
+    color: var(--app-text-subtle);
+    font-size: var(--text-sm);
+  }
+
+  /* A narrow copy column breaks the path at its slashes (<wbr>) first. */
+  .mdr-folder__text {
+    min-width: 0;
     overflow-wrap: anywhere;
   }
 

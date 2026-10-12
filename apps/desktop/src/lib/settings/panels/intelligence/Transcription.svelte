@@ -373,6 +373,7 @@
         ? { bytes: m.download.byteSize, starting: startingTranscriptionDownload, onclick: startSelectedTranscriptionModelDownload }
         : null}
       info={m}
+      folder={{ path: models.transcriptionModelStatus?.modelsDirectory, reveal: m.available ? m.installPath : null }}
     />
   {/if}
 

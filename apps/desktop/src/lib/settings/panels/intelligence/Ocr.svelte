@@ -258,6 +258,7 @@
         ? { bytes: m.download.byteSize, starting: startingOcrDownload, onclick: startSelectedOcrModelDownload }
         : null}
       info={m}
+      folder={{ path: models.ocrModelStatus?.modelsDirectory, reveal: m.available ? m.installPath : null }}
     />
   {/if}
 

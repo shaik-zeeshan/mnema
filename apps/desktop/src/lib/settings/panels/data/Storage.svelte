@@ -132,7 +132,7 @@
     </div>
   {/if}
   <StorageMeter />
-  <SettingRow label="Save directory" description="Where captures, the database, and model caches live on disk.">
+  <SettingRow label="Save directory" description="Where captures and the database live on disk. Downloaded models stay in Mnema's app data.">
     {#snippet control()}
       {#if storageLocation}
         <span class="storage-path" title={storageLocation}>{shownPath}</span>

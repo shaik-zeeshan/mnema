@@ -148,6 +148,7 @@
         ? { bytes: m.download.byteSize, starting: startingSpeakerDownload, onclick: startSelectedSpeakerModelDownload }
         : null}
       info={m}
+      folder={{ path: models.speakerModelStatus?.modelsDirectory, reveal: m.available ? m.installPath : null }}
     />
   {/if}
 </SettingGroup>
