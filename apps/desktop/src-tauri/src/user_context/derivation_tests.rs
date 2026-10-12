@@ -694,3 +694,50 @@ fn diarized_turns_cannot_blow_the_per_item_prompt_budget() {
         prompt.chars().count()
     );
 }
+
+// === C1: an empty extraction is a failure ===============================
+
+fn derived(evidence_refs: &[&str]) -> DerivedActivity {
+    DerivedActivity {
+        title: "Edited the config".to_string(),
+        summary: "Tuned the build.".to_string(),
+        category: None,
+        focus: None,
+        evidence_refs: evidence_refs.iter().map(|r| r.to_string()).collect(),
+        headline_ref: None,
+        continues_id: None,
+    }
+}
+
+/// A batch that grounds nothing (no activities, or only refs the window never
+/// showed) must be an `Err` so the worker records `failed` and retries it.
+#[tokio::test]
+async fn a_batch_that_grounds_nothing_is_an_error() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("empty-extraction-{unique}"));
+    std::fs::create_dir_all(&dir).expect("test dir");
+    let infra = app_infra::AppInfra::initialize(&dir).await.expect("app infra");
+    let window = CaptureWindow {
+        start_ms: 0,
+        end_ms: 10,
+        items: vec![audio_item(1, 5, "hello", "microphone", vec![])],
+    };
+    let tags = HashMap::from([("a1".to_string(), 5_i64)]);
+    let neighbours = std::collections::HashSet::new();
+
+    for batch in [vec![], vec![derived(&["f99", "a2"])]] {
+        let batch = DerivedActivityBatch { activities: batch };
+        let result =
+            persist_batch(infra.user_context(), &window, &tags, &neighbours, &batch).await;
+        assert!(result.is_err(), "ungrounded batch must fail, got {result:?}");
+    }
+    assert_eq!(infra.user_context().count_activities().await.expect("count"), 0);
+
+    let grounded = DerivedActivityBatch { activities: vec![derived(&["a1"])] };
+    let result = persist_batch(infra.user_context(), &window, &tags, &neighbours, &grounded).await;
+    assert_eq!(result, Ok((1, 0)));
+    let _ = std::fs::remove_dir_all(&dir);
+}

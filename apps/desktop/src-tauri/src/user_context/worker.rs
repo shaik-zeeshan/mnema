@@ -481,8 +481,6 @@ pub async fn run_forward_activity_window(
                     if outcome.extended == 1 { "Activity" } else { "Activities" },
                     items_read
                 )
-            } else if outcome.inserted == 0 {
-                "Derivation completed; no new Activities in this window.".to_string()
             } else {
                 format!(
                     "Derived {} {} from {} capture item(s).",

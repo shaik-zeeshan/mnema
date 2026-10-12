@@ -490,6 +490,27 @@ pub async fn derive_activities(
         .map(|json| estimate_tokens(&json))
         .unwrap_or(0);
 
+    let (inserted, extended) =
+        persist_batch(store, &window, &tag_to_captured_at, &neighbour_ids, &batch).await?;
+    Ok(ActivityDerivationOutcome {
+        inserted,
+        extended,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+/// Persist one engine batch for a NON-EMPTY window, returning
+/// `(inserted, extended)`. A batch that grounds nothing (no activities, or all
+/// ungrounded) is an `Err`, so the worker records the window `failed` and the
+/// Retry pass re-derives it instead of a `completed` run hiding the hole.
+async fn persist_batch(
+    store: &UserContextStore,
+    window: &CaptureWindow,
+    tag_to_captured_at: &HashMap<String, i64>,
+    neighbour_ids: &std::collections::HashSet<i64>,
+    batch: &DerivedActivityBatch,
+) -> Result<(usize, usize), String> {
     let mut inserted = 0usize;
     let mut extended = 0usize;
     for activity in &batch.activities {
@@ -580,12 +601,12 @@ pub async fn derive_activities(
         inserted += 1;
     }
 
-    Ok(ActivityDerivationOutcome {
-        inserted,
-        extended,
-        input_tokens,
-        output_tokens,
-    })
+    // ponytail: no minimum-item guard; add `window.items.len() >= 3` if
+    // lock-screen-only windows start reading "failed".
+    if inserted + extended == 0 {
+        return Err("The model returned no Activities grounded in this window.".to_string());
+    }
+    Ok((inserted, extended))
 }
 
 // === #94: Conclusion distillation =========================================
