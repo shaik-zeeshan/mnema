@@ -81,6 +81,10 @@
       event.stopPropagation();
       searchQuery = "";
       searchInput?.blur();
+    } else if (event.key === "Enter" && filtering && flatItems[0] && !event.isComposing) {
+      // Jump to the first visible match; the query stays so you can refine it.
+      event.preventDefault();
+      onNavigate(flatItems[0].id);
     }
   }
 
