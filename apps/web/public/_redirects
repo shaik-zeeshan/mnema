@@ -1,0 +1,15 @@
+# Permanent (301) trailing-slash redirects. Without these, Cloudflare's asset
+# handler sends /x -> /x/ as a temporary 307, and Search Console keeps both
+# URLs as separate pages.
+# ponytail: explicit list — add a line when you add a page.
+/agents /agents/ 301
+/alternatives /alternatives/ 301
+/alternatives/limitless /alternatives/limitless/ 301
+/alternatives/microsoft-recall-mac /alternatives/microsoft-recall-mac/ 301
+/alternatives/rewind-ai /alternatives/rewind-ai/ 301
+/alternatives/screenpipe /alternatives/screenpipe/ 301
+/license/devices /license/devices/ 301
+/license/open /license/open/ 301
+/pricing /pricing/ 301
+/privacy /privacy/ 301
+/support /support/ 301
