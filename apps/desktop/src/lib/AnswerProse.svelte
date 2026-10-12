@@ -11,7 +11,7 @@
   // when the turn settles (`isStreaming` flips to false).
   import { onDestroy } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { isOpenableHref, renderMarkdown } from "$lib/markdown";
+  import { closeDanglingBold, isOpenableHref, renderMarkdown } from "$lib/markdown";
 
   let {
     source,
@@ -27,13 +27,16 @@
   // recomputes only when one of those tracked inputs changes, and lives per
   // instance so each turn renders independently. While streaming we pass
   // `highlight: false` (plain, escaped code); once settled we re-render once with
-  // full highlighting.
+  // full highlighting. A still-open `**` is closed while streaming only, so a
+  // half-arrived bold never flashes raw asterisks.
   //
   // SECURITY: this HTML is trusted ONLY because `markdown.ts` is the sanctioned
   // hardening boundary (`html: false`, image strip, link allowlist, highlight.js
   // escaping). This component must not introduce any other unescaped injection.
   let html = $derived(
-    source.length > 0 ? renderMarkdown(source, { highlight: !isStreaming }) : "",
+    source.length > 0
+      ? renderMarkdown(isStreaming ? closeDanglingBold(source) : source, { highlight: !isStreaming })
+      : "",
   );
 
   // Per-instance timer for the copy button's transient "Copied" label, cleared
