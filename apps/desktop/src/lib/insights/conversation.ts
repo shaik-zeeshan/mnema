@@ -40,6 +40,12 @@ export interface ConversationTurn {
   /** `"streaming"` | `"done"` | `"error"`. */
   phase: string;
   errorMessage: string | null;
+  /** A failed turn's `TurnUpdate::Error.kind`; null on success and old turns. */
+  errorKind: TurnErrorKind | null;
+  /** The engine that wrote this answer (provider instance id + model id); null
+   *  on turns from before it was recorded. */
+  provider: string | null;
+  model: string | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -143,6 +149,9 @@ export interface TurnView {
   liveActivity: ToolActivityEntry | null;
   sources: unknown;
   errorMessage: string | null;
+  /** The engine answering this turn (provider instance id + model id). */
+  provider: string | null;
+  model: string | null;
   /** Tokens occupying the model's context window after the turn's latest
    *  completion request, or null when the provider reported no usage. */
   contextTokens: number | null;

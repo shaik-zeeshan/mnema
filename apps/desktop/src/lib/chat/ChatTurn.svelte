@@ -12,10 +12,10 @@
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import ChatErrorTurn from "$lib/insights/ChatErrorTurn.svelte";
-  import type { ToolActivityEntry } from "$lib/insights/conversation";
+  import { shortModelLabel, type ToolActivityEntry } from "$lib/insights/conversation";
   import type { AiRuntimeSettings } from "$lib/types/recording";
   import ChatSources from "./ChatSources.svelte";
-  import { formatTokenCount, stepsLine } from "./chat-format";
+  import { formatTokenCount, providerWhere, stepsLine } from "./chat-format";
   import { answerPlainText, type ChatTurn } from "./turn-model";
   import IconCheck from "~icons/lucide/check";
   import IconChev from "~icons/lucide/chevron-down";
@@ -28,7 +28,8 @@
     turn: ChatTurn;
     /** The last turn of the thread (only it gets Retry / Regenerate). */
     trailing: boolean;
-    /** The model answering this chat (not recorded per turn) + where it runs. */
+    /** The chat's current model + where it runs: the footer's fallback for an
+     *  answer that predates per-turn engine stamps (or is still live). */
     model: string | null;
     where: "cloud" | "local" | null;
     /** The model's context window when known (for the token bar). */
@@ -51,6 +52,13 @@
   });
   const reasoningLive = $derived(live && (turn.reasoning ?? "").trim().length > 0 && turn.blocks.length === 0);
   const copyText = $derived(answerPlainText(turn));
+  // The answer's own engine, so a mid-chat model switch never relabels it.
+  const shownModel = $derived(turn.model ? shortModelLabel(turn.model) : model);
+  const shownWhere = $derived.by(() => {
+    if (!turn.provider) return where;
+    const provider = settings?.providers.find((p) => p.id === turn.provider);
+    return provider ? providerWhere(provider) : null;
+  });
 
   // UI-only disclosure state (settled turns start collapsed).
   let stepsOpen = $state(false);
@@ -175,7 +183,7 @@
             <IconRegen width="15" height="15" aria-hidden="true" />
           </button>
         {/if}
-        {#if model}<span class="mx-label"><span class="mono">{model}</span>{where ? ` · ${where}` : ""}</span>{/if}
+        {#if shownModel}<span class="mx-label"><span class="mono">{shownModel}</span>{shownWhere ? ` · ${shownWhere}` : ""}</span>{/if}
         {#if turn.contextTokens !== null}
           <span
             class="mx-label num ch-ctxread"

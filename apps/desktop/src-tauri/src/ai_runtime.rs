@@ -636,6 +636,18 @@ pub(crate) async fn resolve_engine_config_live(
     pin: Option<(&str, &str)>,
     feature_override_model: Option<&str>,
 ) -> Result<ai_engine::EngineConfig, String> {
+    resolve_engine_ref_live(settings, pin, feature_override_model)
+        .await
+        .map(|(_, config)| config)
+}
+
+/// [`resolve_engine_config_live`] plus the resolved provider *instance id*,
+/// for a caller that records which engine answered (Ask AI stamps each turn).
+pub(crate) async fn resolve_engine_ref_live(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<(String, ai_engine::EngineConfig), String> {
     let (provider_id, mut config) = resolve_engine_ref(settings, pin, feature_override_model)?;
     if let ai_engine::EngineConfig::Cloud {
         provider: ai_engine::CloudProvider::Chatgpt,
@@ -645,7 +657,7 @@ pub(crate) async fn resolve_engine_config_live(
     {
         *api_key = crate::chatgpt_auth::fresh_access_token(&provider_id).await?;
     }
-    Ok(config)
+    Ok((provider_id, config))
 }
 
 /// The static (no-network) half of the engine-configured prerequisite: master

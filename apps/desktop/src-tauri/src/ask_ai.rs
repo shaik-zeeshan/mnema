@@ -1561,7 +1561,7 @@ async fn persist_turn(
     tool_activities: &[serde_json::Value],
     sources: &[serde_json::Value],
     phase: &str,
-    error_message: Option<&str>,
+    error: Option<(&str, &str)>,
 ) -> bool {
     let tool_activities_json = serde_json::to_string(tool_activities).unwrap_or_else(|_| "[]".into());
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".into());
@@ -1579,7 +1579,7 @@ async fn persist_turn(
             &tool_activities_json,
             &sources_json,
             phase,
-            error_message,
+            error,
             now_ms(),
         )
         .await
@@ -1755,7 +1755,7 @@ async fn persist_resolve_failure(
         &[],
         &[],
         "error",
-        Some(reason),
+        Some((reason, resolve_failure_kind(reason))),
     )
     .await
 }
@@ -1861,14 +1861,14 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config_live(
+    let config_result = crate::ai_runtime::resolve_engine_ref_live(
         &settings.ai_runtime,
         pin_ref,
         settings.access.ask_ai_model.as_deref(),
     )
     .await;
-    let config = match config_result {
-        Ok(config) => config,
+    let (engine_provider, config) = match config_result {
+        Ok(resolved) => resolved,
         Err(reason) => {
             // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
             // `ask_ai_update` error (no live view exists for `emit_live_update` to
@@ -1922,6 +1922,11 @@ async fn run_ask_ai_turn(
         return;
     }
 
+    let engine_model = match &config {
+        ai_engine::EngineConfig::Cloud { model, .. }
+        | ai_engine::EngineConfig::Local { model, .. } => model.clone(),
+    };
+
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
     //    can read the in-flight partial.
     //    The FIRST successful persist is when the conversation row exists, so it
@@ -1949,6 +1954,22 @@ async fn run_ask_ai_turn(
     {
         conversation_announced.store(true, Ordering::SeqCst);
         let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+        // Stamp the engine answering this turn, so a later model switch never
+        // relabels this answer. Best-effort, like every persist here.
+        if let Err(error) = infra
+            .conversation()
+            .set_turn_engine(
+                &conversation_id,
+                turn_index,
+                &engine_provider,
+                &engine_model,
+            )
+            .await
+        {
+            tauri_plugin_log::log::warn!(
+                "Ask AI failed to stamp the engine on turn {turn_index} for {conversation_id}: {error}"
+            );
+        }
     }
 
     // Register the in-memory LiveTurn alongside the initial streaming row, at the
@@ -1969,6 +1990,8 @@ async fn run_ask_ai_turn(
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
+            provider: Some(engine_provider),
+            model: Some(engine_model),
             context_tokens: None,
         },
     );
@@ -2491,7 +2514,7 @@ async fn run_ask_ai_turn(
                 &final_tool_activities,
                 &final_sources,
                 "error",
-                Some(&message),
+                Some((&message, "retryable")),
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2557,6 +2580,7 @@ async fn run_ask_ai_turn(
             // backend a rejected credential is a sign-in problem, and there is
             // no API key field to send the user to.
             let message = error.user_facing_message_for(config.cloud_provider());
+            let kind = error.failure_kind();
             persist_turn(
                 &infra,
                 &conversation_id,
@@ -2570,7 +2594,7 @@ async fn run_ask_ai_turn(
                 &final_tool_activities,
                 &final_sources,
                 "error",
-                Some(&message),
+                Some((&message, kind)),
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2578,7 +2602,7 @@ async fn run_ask_ai_turn(
             emit_terminal(
                 TurnUpdate::Error {
                     message: message.clone(),
-                    kind: Some(error.failure_kind().to_string()),
+                    kind: Some(kind.to_string()),
                 },
                 &mut last_version,
             );
@@ -4090,6 +4114,8 @@ model believes the narrower contract: {}",
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
+            provider: None,
+            model: None,
             context_tokens: None,
         }
     }

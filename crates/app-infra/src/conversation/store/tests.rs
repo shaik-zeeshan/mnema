@@ -53,6 +53,9 @@ async fn test_store() -> ConversationStore {
             sources TEXT NOT NULL DEFAULT '[]',
             phase TEXT NOT NULL DEFAULT 'streaming',
             error_message TEXT,
+            error_kind TEXT,
+            provider TEXT,
+            model TEXT,
             seeded_result_count INTEGER,
             created_at_ms INTEGER NOT NULL,
             updated_at_ms INTEGER NOT NULL,
@@ -327,7 +330,7 @@ fn save_turn_guard_rejects_writes_to_terminal_phase_only() {
         store
             .save_turn(
                 "conv-error", "t", "chat", 0, "q", "", None, None, "[]", "[]", "error",
-                Some("boom"), 1_000,
+                Some(("boom", "retryable")), 1_000,
             )
             .await
             .expect("initial error turn");
@@ -377,6 +380,55 @@ fn save_turn_guard_rejects_writes_to_terminal_phase_only() {
             "non-terminal turn IS updated through the guard"
         );
         assert_eq!(live.turns[0].phase, "done");
+    });
+}
+
+/// A failed turn keeps its error kind across a reload (A1), and the engine
+/// stamped at the start of a turn survives every later save of that turn (B2).
+#[test]
+fn error_kind_and_turn_engine_round_trip_through_save_and_get() {
+    block_on(async {
+        let store = test_store().await;
+        store
+            .save_turn(
+                "conv-k", "t", "chat", 0, "q", "", None, Some(&[]), "[]", "[]", "streaming",
+                None, 1_000,
+            )
+            .await
+            .expect("streaming turn");
+        store
+            .set_turn_engine("conv-k", 0, "anthropic-1", "claude-sonnet-4-5")
+            .await
+            .expect("stamp engine");
+        store
+            .save_turn(
+                "conv-k", "t", "chat", 0, "q", "", None, Some(&[]), "[]", "[]", "error",
+                Some(("Over quota", "quota")), 2_000,
+            )
+            .await
+            .expect("terminal error");
+        // An older turn with no stamp and no error reads all three as None.
+        store
+            .save_turn(
+                "conv-k", "t", "chat", 1, "q2", "a", None, None, "[]", "[]", "done", None, 3_000,
+            )
+            .await
+            .expect("plain turn");
+
+        let turns = store
+            .get_conversation("conv-k")
+            .await
+            .expect("get")
+            .expect("exists")
+            .turns;
+        assert_eq!(turns[0].error_message.as_deref(), Some("Over quota"));
+        assert_eq!(turns[0].error_kind.as_deref(), Some("quota"));
+        assert_eq!(turns[0].provider.as_deref(), Some("anthropic-1"));
+        assert_eq!(turns[0].model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(
+            (&turns[1].error_kind, &turns[1].provider, &turns[1].model),
+            (&None, &None, &None)
+        );
     });
 }
 

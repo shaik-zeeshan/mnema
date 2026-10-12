@@ -24,8 +24,12 @@ export interface ChatTurn {
   liveActivity: ToolActivityEntry | null;
   sources: AskAiSource[];
   errorMessage: string | null;
-  /** `TurnUpdate::Error.kind` from the live stream (not persisted). */
+  /** `TurnUpdate::Error.kind` (live, or persisted on the turn). */
   errorKind: TurnErrorKind | null;
+  /** The engine that wrote this answer; null for a live turn not yet adopted
+   *  from a snapshot and for old turns (the footer falls back to the chat's). */
+  provider: string | null;
+  model: string | null;
   /** An error caught by send() before the backend saved a row (CH-04): it must
    *  not count toward turnIndex. */
   localOnly?: boolean;
@@ -56,6 +60,8 @@ export function makeTurn(turnIndex: number, question: string, phase: ChatTurn["p
     sources: [],
     errorMessage: null,
     errorKind: null,
+    provider: null,
+    model: null,
     contextTokens: null,
     version: 0,
     startedAtMs: null,
@@ -111,6 +117,9 @@ export function hydrateTurn(turn: ConversationTurn): ChatTurn {
   t.toolActivities = coerceToolActivities(turn.toolActivities);
   t.sources = coerceSources(turn.sources);
   t.errorMessage = turn.errorMessage;
+  t.errorKind = turn.errorKind ?? null;
+  t.provider = turn.provider ?? null;
+  t.model = turn.model ?? null;
   t.atMs = turn.createdAtMs;
   return t;
 }
@@ -124,6 +133,8 @@ export function adoptView(turn: ChatTurn, view: TurnView, version: number): void
   turn.liveActivity = view.liveActivity;
   turn.sources = coerceSources(view.sources);
   turn.errorMessage = view.errorMessage;
+  turn.provider = view.provider ?? null;
+  turn.model = view.model ?? null;
   turn.contextTokens = view.contextTokens;
   turn.version = version;
 }

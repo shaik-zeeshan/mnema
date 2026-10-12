@@ -78,6 +78,10 @@ impl ConversationStore {
     /// never leave the conversation row activity-bumped without its turn (or an
     /// orphan turn against a half-written conversation row): either both land or
     /// neither does.
+    ///
+    /// `error` is the failed turn's `(message, kind)`; the kind is the
+    /// `TurnUpdate::Error.kind` the live stream carried, so a reload offers the
+    /// same action.
     #[allow(clippy::too_many_arguments)]
     pub async fn save_turn(
         &self,
@@ -92,7 +96,7 @@ impl ConversationStore {
         tool_activities_json: &str,
         sources_json: &str,
         phase: &str,
-        error_message: Option<&str>,
+        error: Option<(&str, &str)>,
         now_ms: i64,
     ) -> Result<()> {
         // Round-trip the parsed blocks as opaque JSON text (the store does NO
@@ -133,8 +137,8 @@ impl ConversationStore {
         sqlx::query(
             "INSERT INTO conversation_turns \
                 (conversation_row_id, turn_index, question, answer, reasoning, blocks, tool_activities, sources, \
-                 phase, error_message, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) \
+                 phase, error_message, error_kind, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12) \
              ON CONFLICT(conversation_row_id, turn_index) DO UPDATE SET \
                 question = excluded.question, \
                 answer = excluded.answer, \
@@ -144,6 +148,7 @@ impl ConversationStore {
                 sources = excluded.sources, \
                 phase = excluded.phase, \
                 error_message = excluded.error_message, \
+                error_kind = excluded.error_kind, \
                 updated_at_ms = excluded.updated_at_ms \
              WHERE conversation_turns.phase NOT IN ('done', 'error')",
         )
@@ -156,7 +161,8 @@ impl ConversationStore {
         .bind(tool_activities_json)
         .bind(sources_json)
         .bind(phase)
-        .bind(error_message)
+        .bind(error.map(|(message, _)| message))
+        .bind(error.map(|(_, kind)| kind))
         .bind(now_ms)
         .execute(&mut *tx)
         .await?;
@@ -377,10 +383,36 @@ impl ConversationStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Stamp the engine (`provider` instance id + `model`) that answers a turn,
+    /// once it resolves at the start of the turn. Separate from
+    /// [`Self::save_turn`] so the many partial/terminal saves never carry it,
+    /// and unguarded: it runs right after the turn's first `streaming` save.
+    pub async fn set_turn_engine(
+        &self,
+        conversation_id: &str,
+        turn_index: i64,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE conversation_turns SET provider = ?3, model = ?4 \
+             WHERE turn_index = ?2 \
+               AND conversation_row_id = \
+                   (SELECT id FROM conversations WHERE conversation_id = ?1)",
+        )
+        .bind(conversation_id)
+        .bind(turn_index)
+        .bind(provider)
+        .bind(model)
+        .execute(self.db.write())
+        .await?;
+        Ok(())
+    }
+
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
             "SELECT turn_index, question, answer, reasoning, blocks, tool_activities, sources, phase, \
-                    error_message, created_at_ms, updated_at_ms \
+                    error_message, error_kind, provider, model, created_at_ms, updated_at_ms \
              FROM conversation_turns \
              WHERE conversation_row_id = ?1 \
              ORDER BY turn_index ASC",
@@ -534,6 +566,9 @@ fn map_turn(row: SqliteRow) -> ConversationTurn {
         sources: parse_json(&sources),
         phase: row.get("phase"),
         error_message: row.get("error_message"),
+        error_kind: row.get("error_kind"),
+        provider: row.get("provider"),
+        model: row.get("model"),
         created_at_ms: row.get("created_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
     }
