@@ -20,6 +20,7 @@ import {
   type FacetCall,
 } from "./recall-states";
 import { pillOptions } from "./filterSurfaces.svelte";
+import { pillOperators } from "./filter-chips";
 import type { SearchStore } from "./searchStore.svelte";
 
 export class RecallStates {
@@ -153,5 +154,8 @@ export class RecallStates {
       }),
       new Date(),
     );
+    // Zero-count rows just dropped out; keep the highlight on the current one.
+    const current = pillOperators(pill);
+    s.filters.popoverIndex = Math.max(0, s.filters.popoverOptions.findIndex((o) => o.op === current));
   }
 }

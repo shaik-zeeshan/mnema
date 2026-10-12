@@ -11,7 +11,7 @@ import {
   weekDays,
   withRecent,
 } from "./recall-states";
-import { pillOptions } from "./filterSurfaces.svelte";
+import { pillOptions, shownOptions } from "./filterSurfaces.svelte";
 
 // Friday 2026-10-09, 16:40.
 const NOW = new Date(2026, 9, 9, 16, 40);
@@ -81,6 +81,11 @@ describe("pill popover counts", () => {
       { facet: "app", query: "", counts: counts("app", 9, [["company.thebrowser.Browser", 5, "Arc"], ["dev.zed.Zed", 4, "Zed"]]) },
     ], NOW);
     expect(out).toEqual({ "app:Arc": 5, "app:Zed": 4, "app:Slack": 0, "": 9 });
+    // Slack has nothing here, so its row drops out; Any app always stays.
+    expect(shownOptions(options, out, "app:Arc").map((o) => o.label)).toEqual(["Arc", "Zed", "Any app"]);
+    // The current option stays even at zero; nothing drops before counts load.
+    expect(shownOptions(options, out, "app:Slack").map((o) => o.label)).toEqual(["Arc", "Zed", "Slack", "Any app"]);
+    expect(shownOptions(options, null, "app:Arc")).toHaveLength(4);
   });
 
   test("date options: parts of the same day, weeks from days, capped reads as a lower bound", () => {
@@ -103,6 +108,18 @@ describe("pill popover counts", () => {
       "date:last-week": "7+",
       "": "50+",
     });
+    // Evening (0) drops out; the capped week counts stay.
+    expect(shownOptions(options, out, "date:2026-10-06 hours:12-18").map((o) => o.op)).not.toContain("date:2026-10-06 hours:18-24");
+    expect(shownOptions(options, out, "date:2026-10-06 hours:12-18")).toHaveLength(options.length - 1);
+  });
+
+  test("a capped zero shows no number and keeps its row", () => {
+    const options = pillOptions(tueAfternoon, []);
+    const out = popoverCounts(tueAfternoon, options, [
+      { facet: "day", query: "", counts: counts("day", 50, [["2026-10-06", 6]], true) },
+    ], NOW);
+    expect(out["date:last-week"]).toBeUndefined();
+    expect(shownOptions(options, out, "").map((o) => o.label)).toContain("Last week");
   });
 
   test("weeks run Monday to Sunday", () => {

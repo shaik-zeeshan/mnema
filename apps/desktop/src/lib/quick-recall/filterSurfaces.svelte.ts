@@ -8,6 +8,7 @@ import { trailingToken } from "./query-tokens";
 import { pillEditText, pillLabel, pillOperators } from "./filter-chips";
 import type { PartOfDay, Pill } from "./natural-tokens";
 import type { SearchStore } from "./searchStore.svelte";
+import type { CountLabel } from "./recall-states";
 
 // The canonical operator names the ghost completes. Order matters only for
 // first match.
@@ -57,6 +58,17 @@ export function pillOptions(pill: Pill, appNames: readonly string[]): PillOption
   ];
 }
 
+// The rows a popover shows: options with no results drop out once counts are
+// in, except the current one and the "Any …" row. The list itself shrinks
+// (not CSS), so ↑/↓ indices stay in step with what's drawn.
+export function shownOptions(
+  options: readonly PillOption[],
+  counts: Record<string, CountLabel> | null,
+  current: string,
+): PillOption[] {
+  return options.filter((o) => o.pill === null || o.op === current || counts?.[o.op] !== 0);
+}
+
 export class FilterSurfaces {
   #store: SearchStore;
 
@@ -75,7 +87,8 @@ export class FilterSurfaces {
 
   popoverOptions = $derived.by<PillOption[]>(() => {
     const pill = this.pillIndex === null ? undefined : this.#store.pills[this.pillIndex];
-    return this.popoverOpen && pill ? pillOptions(pill, this.#store.appNames) : [];
+    if (!this.popoverOpen || !pill) return [];
+    return shownOptions(pillOptions(pill, this.#store.appNames), this.#store.facetCounts, pillOperators(pill));
   });
 
   selectPill(index: number | null): void {

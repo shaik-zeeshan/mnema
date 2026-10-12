@@ -187,7 +187,8 @@ export function popoverCounts(
       const days = weekDays(now, next.value === "this-week" ? 0 : -1);
       if (c) n = bucket(c, (k) => days.has(k));
     }
-    if (c && n !== undefined) out[option.op] = countLabel(n, c.capped);
+    // A capped zero ("0+") says nothing; leave it unnumbered.
+    if (c && n !== undefined && !(c.capped && n === 0)) out[option.op] = countLabel(n, c.capped);
   }
   return out;
 }
