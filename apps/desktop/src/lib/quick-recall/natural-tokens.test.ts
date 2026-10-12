@@ -43,8 +43,13 @@ describe("parseNatural → operators", () => {
     expect(ops("tonight")).toBe("date:today hours:18-24");
   });
 
-  test("a part of day on its own is an hours filter", () => {
-    expect(ops("standup in the afternoon")).toBe("standup hours:12-18");
+  test("a part of day said on its own means today; a named day still wins", () => {
+    expect(ops("standup in the afternoon")).toBe("standup date:today hours:12-18");
+    expect(ops("afternoon")).toBe("date:today hours:12-18");
+    expect(ops("afternoon standup yesterday")).toBe("standup date:yesterday hours:12-18");
+    expect(ops("evening on tuesday")).toBe("date:2026-10-06 hours:18-24");
+    // A typed hours: operator stays every day.
+    expect(ops("standup hours:12-18")).toBe("standup hours:12-18");
   });
 
   test("sources", () => {
@@ -78,6 +83,13 @@ describe("mergePills", () => {
     expect(narrowed).toEqual([{ ...yesterday, part: "afternoon" }]);
     expect(pillLabel(narrowed[0])).toBe("Yesterday · afternoon");
     expect(mergePills([afternoon], [yesterday])).toEqual([{ ...yesterday, part: "afternoon" }]);
+  });
+
+  test("a worded part reads Today, and a day named after a pause keeps the part", () => {
+    const worded = mergePills([], [{ ...afternoon, today: true }]);
+    expect(pillLabel(worded[0])).toBe("Today · afternoon");
+    expect(mergePills(worded, [yesterday])).toEqual([{ ...yesterday, part: "afternoon" }]);
+    expect(mergePills([afternoon], [])).toEqual([afternoon]);
   });
 
   test("one pill per kind, in app · date · source order", () => {

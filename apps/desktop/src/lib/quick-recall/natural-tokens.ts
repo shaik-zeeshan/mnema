@@ -14,7 +14,9 @@ export type SourceValue = "mic" | "system" | "screen";
 export type Pill =
   | { kind: "app"; app: string }
   // `value` is the `date:` operator value; null = a part of day on its own.
-  | { kind: "date"; value: string | null; label: string; part: PartOfDay | null }
+  // `today`: a part of day said in words, which means today unless a day is
+  // named too (a typed `hours:` stays every day).
+  | { kind: "date"; value: string | null; label: string; part: PartOfDay | null; today?: true }
   | { kind: "source"; source: SourceValue };
 
 export type NaturalSpan = { start: number; end: number; pill: Pill };
@@ -153,7 +155,7 @@ function rules(now: Date, apps: readonly string[]): Rule[] {
     [/\b(?:in|on)\s+a\s+(?:podcast|video)\b/gi, () => ({ kind: "source", source: "system" })],
     [
       /\b(?:in\s+the\s+)?(morning|afternoon|evening)\b/gi,
-      (m) => ({ kind: "date", value: null, label: "", part: asPart(m[1]) }),
+      (m) => ({ kind: "date", value: null, label: "", part: asPart(m[1]), today: true }),
     ],
   );
   return out;
@@ -191,7 +193,8 @@ export function parseNatural(
 }
 
 // One pill per kind, in PILL_ORDER. A part of day on its own narrows the date
-// pill already there; a new date keeps a part-only pill's part.
+// pill already there; a new date keeps a part-only pill's part. Only then
+// does a worded part with no day left ("afternoon") become today's.
 export function mergePills(base: readonly Pill[], add: readonly Pill[]): Pill[] {
   const byKind = new Map(base.map((p) => [p.kind, p] as const));
   for (const p of add) {
@@ -201,12 +204,16 @@ export function mergePills(base: readonly Pill[], add: readonly Pill[]): Pill[] 
         byKind.set("date", { ...prev, part: p.part });
         continue;
       }
-      if (prev.value === null && p.part === null) {
+      if ((prev.value === null || prev.today) && p.part === null) {
         byKind.set("date", { ...p, part: prev.part });
         continue;
       }
     }
     byKind.set(p.kind, p);
+  }
+  const date = byKind.get("date");
+  if (date?.kind === "date" && date.value === null && date.today) {
+    byKind.set("date", { ...date, value: "today", label: "Today" });
   }
   return PILL_ORDER.flatMap((k) => byKind.get(k) ?? []);
 }
