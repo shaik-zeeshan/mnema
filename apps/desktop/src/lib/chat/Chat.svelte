@@ -203,6 +203,8 @@
     pinProvider = null;
     pinModel = null;
     pickerOpen = false;
+    renaming = false;
+    pinnedLocal = null;
   }
 
   // `prefill` seeds the composer to review/edit; it is sent only via the bus's
@@ -469,6 +471,62 @@
   }
 
   // ── Header actions ───────────────────────────────────────────────────────
+  // Rename and Pin act on the open chat by id, not its list row: search or the
+  // 60-row cap can hide that row.
+  let renaming = $state(false);
+  let draft = $state("");
+  // The last pin result for a chat with no visible row (no pin flag on `Conversation`).
+  let pinnedLocal = $state<boolean | null>(null);
+  const headPinned = $derived(activeSummary?.pinned ?? pinnedLocal ?? false);
+
+  function focusSelect(node: HTMLInputElement): void {
+    node.focus();
+    node.select();
+  }
+
+  function startHeaderRename(): void {
+    draft = displayTitle;
+    renaming = true;
+  }
+
+  async function commitHeaderRename(): Promise<void> {
+    if (!renaming) return;
+    renaming = false;
+    const id = activeConversationId;
+    const title = draft.trim();
+    // Empty or unchanged → cancel, like the list's inline rename.
+    if (id === null || title.length === 0 || title === displayTitle) return;
+    try {
+      await invoke("set_conversation_title", { request: { conversationId: id, title } });
+      if (activeConversationId === id) activeTitle = title;
+    } catch (error) {
+      void message(`Couldn’t rename this chat: ${humanizeError(error)}`, { kind: "error" });
+    }
+  }
+
+  function onRenameKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void commitHeaderRename();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      renaming = false;
+    }
+  }
+
+  async function togglePinActive(): Promise<void> {
+    const id = activeConversationId;
+    if (id === null) return;
+    const pinned = !headPinned;
+    try {
+      await invoke("set_conversation_pinned", { conversationId: id, pinned });
+      if (activeConversationId === id) pinnedLocal = pinned;
+    } catch (error) {
+      void message(`Couldn’t ${pinned ? "pin" : "unpin"} this chat: ${humanizeError(error)}`, { kind: "error" });
+    }
+  }
+
   const headerSummary = (): ConversationSummary =>
     activeSummary ?? ({ conversationId: activeConversationId ?? "", title: displayTitle, preview: "" } as ConversationSummary);
   async function deleteActive(): Promise<void> {
@@ -531,13 +589,17 @@
 <section class="ch-main" data-mode={mode} aria-label="Conversation">
   {#if mode === "chat"}
     <header class="ch-head">
-      <h1>{displayTitle}</h1>
+      {#if renaming}
+        <input class="ch-head__rename" aria-label="Rename chat" spellcheck="false" autocomplete="off" maxlength={TITLE_MAX} bind:value={draft} use:focusSelect onkeydown={onRenameKeydown} onblur={() => void commitHeaderRename()} />
+      {:else}
+        <h1>{displayTitle}</h1>
+      {/if}
       {#if headCount > 0}<span class="mx-label">{headCount} turn{headCount === 1 ? "" : "s"}{headStarted ? ` · started ${new Date(headStarted).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", hourCycle: hourCycle() })}` : ""}</span>{/if}
       <div class="ch-head__acts">
-        <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed={activeSummary?.pinned ?? false} aria-label={activeSummary?.pinned ? "Unpin chat" : "Pin chat"} use:tip={activeSummary?.pinned ? "Unpin" : "Pin"} disabled={!activeSummary} onclick={() => activeSummary && void store.togglePin(activeSummary.conversationId)}>
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-pressed={headPinned} aria-label={headPinned ? "Unpin chat" : "Pin chat"} use:tip={headPinned ? "Unpin" : "Pin"} onclick={() => void togglePinActive()}>
           <IconPin width="15" height="15" aria-hidden="true" />
         </button>
-        <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Rename chat" use:tip={"Rename"} disabled={!activeSummary} onclick={() => activeSummary && store.startRename(activeSummary)}>
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Rename chat" use:tip={"Rename"} onclick={startHeaderRename}>
           <IconEdit width="15" height="15" aria-hidden="true" />
         </button>
         <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Delete chat" use:tip={"Delete"} onclick={() => void deleteActive()}>
@@ -625,6 +687,21 @@
     background: color-mix(in srgb, var(--app-bg) 70%, transparent);
   }
   .ch-head h1 { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 var(--text-lg)/1.2 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
+  .ch-head__rename {
+    flex: 0 1 420px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 6px;
+    margin: 0 0 0 -7px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: var(--r-xs);
+    background: var(--app-surface-subtle);
+    color: var(--app-text-strong);
+    font: 600 var(--text-lg)/1.2 var(--font-sans);
+    letter-spacing: -0.01em;
+    outline: 0;
+    box-shadow: var(--app-ring);
+  }
   .ch-head .mx-label { white-space: nowrap; font-size: var(--text-xs); }
   .ch-head__acts { margin-left: auto; display: flex; gap: 2px; }
   .ch-scroll { grid-row: 2; min-height: 0; overflow: auto; }
