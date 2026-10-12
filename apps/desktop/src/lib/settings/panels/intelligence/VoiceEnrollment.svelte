@@ -21,6 +21,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import { VoiceEnrollmentStore } from "$lib/voice-enrollment.svelte";
   import {
@@ -148,10 +149,14 @@
         {/if}
 
         {#if voice.rejection}
-          <p class="group-hint group-hint--warn">{rejectionMessage(voice.rejection)}</p>
+          <div>
+            <span class="mx-inline" data-tone="warn" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{rejectionMessage(voice.rejection)}</span>
+          </div>
         {/if}
         {#if voice.error}
-          <p class="group-hint group-hint--warn">{voice.error}</p>
+          <div>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{voice.error}</span>
+          </div>
         {/if}
 
         <div class="voice-actions">
