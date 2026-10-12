@@ -12,6 +12,7 @@
     quickRecallSearch as search,
     OPTION_ID_PREFIX,
   } from "$lib/quick-recall/searchStore.svelte";
+  import { quickLook } from "$lib/quick-recall/detailStore.svelte";
   import { moreRowLabel } from "$lib/quick-recall/result-sections";
   import { parseCapturedAt } from "$lib/format-time";
 
@@ -24,6 +25,12 @@
     // Under the ask slot's gate / notice: plain "Moments" rows, no best moment.
     rowsOnly?: boolean;
   } = $props();
+
+  // A click selects like ↑/↓ does, so Space then opens Quick Look on it.
+  const select = (i: number) => {
+    search.selectResultAt(i);
+    quickLook.nav = true;
+  };
 
   const best = $derived(search.visibleResults[0]);
   const moreLabel = $derived(moreRowLabel(search.totalResultCount, search.expanded));
@@ -90,7 +97,7 @@
           : null}
         id={`${OPTION_ID_PREFIX}0`}
         selected={search.selectedIndex === 0}
-        onselect={() => search.selectResultAt(0)}
+        onselect={() => select(0)}
         onlook={onlook && (() => onlook(0))}
       />
     {/if}
@@ -106,7 +113,7 @@
           {result}
           id={`${OPTION_ID_PREFIX}${k + first}`}
           selected={search.selectedIndex === k + first}
-          onselect={() => search.selectResultAt(k + first)}
+          onselect={() => select(k + first)}
           onlook={onlook && (() => onlook(k + first))}
         />
       {/each}
