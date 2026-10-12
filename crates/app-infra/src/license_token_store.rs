@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 use std::path::PathBuf;
 
 use crate::error::{AppInfraError, Result};
@@ -46,16 +46,18 @@ where
     }
 }
 
-// The plaintext file-backed store exists only for tests; release builds must
-// route every token through the OS keychain (the "tokens live ONLY in the
-// keychain" invariant), so it is compiled out entirely outside `cfg(test)`.
-#[cfg(test)]
+// The plaintext file-backed store exists only for tests and debug builds
+// (`MNEMA_LICENSE_TOKEN_DIR`, set by `scripts/dev-app.sh` so ad-hoc dev builds
+// never hit the keychain prompt); release builds must route every token through
+// the OS keychain (the "tokens live ONLY in the keychain" invariant), so it is
+// compiled out of release entirely.
+#[cfg(any(test, debug_assertions))]
 #[derive(Debug, Clone)]
 struct FileLicenseTokenStoreAdapter {
     token_dir: PathBuf,
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 impl FileLicenseTokenStoreAdapter {
     fn new(token_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -68,7 +70,7 @@ impl FileLicenseTokenStoreAdapter {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 impl LicenseTokenStoreAdapter for FileLicenseTokenStoreAdapter {
     fn load_token(&self, account: &str) -> Result<Option<String>> {
         std::fs::create_dir_all(&self.token_dir)?;
@@ -106,7 +108,7 @@ impl LicenseTokenStoreAdapter for PlatformKeychainLicenseTokenStoreAdapter {
 }
 
 fn store(account: &str, token: &str) -> Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
         return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
             .store(account, token);
@@ -116,7 +118,7 @@ fn store(account: &str, token: &str) -> Result<()> {
 }
 
 fn load(account: &str) -> Result<Option<String>> {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
         return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir)).load(account);
     }
@@ -171,7 +173,7 @@ pub fn load_trial_issuance() -> Result<Option<String>> {
 /// an absent entry is success.
 // ponytail: standalone delete instead of a trait method — one caller, one account.
 pub fn clear_trial_issuance() -> Result<()> {
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
         let path = PathBuf::from(token_dir).join(format!("{TRIAL_ISSUANCE_ACCOUNT}.token"));
         return match std::fs::remove_file(path) {
