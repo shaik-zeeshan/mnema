@@ -128,6 +128,15 @@ fn remove_inflight_if_owner(conversation_id: &str, cancel: &Arc<AtomicBool>) {
     }
 }
 
+/// Whether a turn is still running for this conversation (its in-flight flag
+/// is registered). `delete_last_turn` refuses while it is: the running turn's
+/// next save would re-insert the row it deleted.
+pub(crate) fn turn_in_flight(conversation_id: &str) -> bool {
+    ask_ai_inflight()
+        .lock()
+        .is_ok_and(|map| map.contains_key(conversation_id))
+}
+
 /// Take (remove and return) the in-flight flag for a conversation. Used by
 /// `ask_ai_cancel`: setting the returned flag cooperatively stops the running
 /// turn, and removing it keeps the registry tidy.
@@ -1887,6 +1896,9 @@ async fn run_ask_ai_turn(
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+            // Clear the flag before the terminal emit, so a Retry on this row
+            // never meets "a turn is still running" (see `emit_terminal`).
+            remove_inflight_if_owner(&conversation_id, &cancel);
             let _ = app_handle.emit(
                 ASK_AI_UPDATE_EVENT,
                 serde_json::json!({
@@ -1899,7 +1911,6 @@ async fn run_ask_ai_turn(
                     },
                 }),
             );
-            remove_inflight_if_owner(&conversation_id, &cancel);
             return;
         }
     };
@@ -2445,7 +2456,13 @@ async fn run_ask_ai_turn(
     // turn; emit the terminal DIRECTLY anyway — continuing THIS turn's own version
     // sequence (`last_version + 1`) so the frontend view for this `turn_index`
     // settles ("Writing…" resolves) with no version gap.
+    // Every terminal path has persisted its final row by the time it emits, so
+    // clear our in-flight flag FIRST: once the frontend sees Done/Error it may
+    // `delete_last_turn` (Regenerate/Retry), which refuses while a turn is in
+    // flight. Only our own flag goes — a displacing newer turn holds a
+    // different `Arc` and must survive our teardown.
     let emit_terminal = |update: TurnUpdate, last_version: &mut u64| {
+        remove_inflight_if_owner(&conversation_id, &cancel);
         match emit_live_update(&app_handle, &conversation_id, turn_token, update.clone()) {
             Some(version) => *last_version = version,
             None => {
@@ -2609,11 +2626,9 @@ async fn run_ask_ai_turn(
         }
     }
 
-    // Remove only our own in-flight flag: a newer turn that displaced us holds a
-    // different `Arc` and must survive our teardown.
-    remove_inflight_if_owner(&conversation_id, &cancel);
-    // Likewise remove our LiveTurn ONLY if we still own it — a displacing newer
-    // turn registered a different token and its entry must survive our teardown.
+    // Remove our LiveTurn ONLY if we still own it — a displacing newer turn
+    // registered a different token and its entry must survive our teardown.
+    // (The in-flight flag already went in `emit_terminal`.)
     remove_live_turn_if_owner(&conversation_id, turn_token);
 }
 
@@ -4082,6 +4097,16 @@ model believes the narrower contract: {}",
         let next = register_inflight(id);
         assert!(!next.load(Ordering::SeqCst));
         let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn turn_in_flight_tracks_the_registered_flag() {
+        let id = "inflight-delete-guard-conv";
+        assert!(!turn_in_flight(id));
+        let cancel = register_inflight(id);
+        assert!(turn_in_flight(id), "delete_last_turn must refuse mid-turn");
+        remove_inflight_if_owner(id, &cancel);
+        assert!(!turn_in_flight(id));
     }
 
     #[test]

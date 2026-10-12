@@ -195,7 +195,10 @@ pub async fn set_conversation_pinned(
 
 /// Delete a conversation's trailing turn so Regenerate / Retry can re-send
 /// the same question into the same `turn_index`. Errors (deleting nothing)
-/// when `turn_index` is not the last turn. Emits [`CONVERSATION_CHANGED_EVENT`].
+/// when `turn_index` is not the last turn, or while a turn is still running —
+/// its next save would re-insert the deleted row. The phase check lives here,
+/// not in the store, so a crash-orphaned `streaming` row stays retryable.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]
 pub async fn delete_last_turn(
     app_handle: tauri::AppHandle,
@@ -203,6 +206,9 @@ pub async fn delete_last_turn(
     conversation_id: String,
     turn_index: i64,
 ) -> Result<(), String> {
+    if crate::ask_ai::turn_in_flight(&conversation_id) {
+        return Err("a turn is still running".to_string());
+    }
     let deleted = infra
         .conversation()
         .delete_last_turn(&conversation_id, turn_index)
