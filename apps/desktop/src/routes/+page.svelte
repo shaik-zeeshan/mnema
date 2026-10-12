@@ -7772,9 +7772,10 @@
     position: absolute;
     z-index: 6;
     left: 10px;
-    top: 4px;
-    height: 26px;
-    padding: 0 8px;
+    /* Centred in the 36px rail: (36 - 24) / 2. */
+    top: 6px;
+    height: 24px;
+    padding: 0 10px;
     display: inline-flex;
     align-items: center;
     border-radius: var(--r-sm);

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { formatClock } from "$lib/time-format";
   // The reading surface: one padded row per speaker turn — a left speaker column
-  // (mark · name, the turn's clock time under it) beside a ~78ch prose measure. Slices 1, 3, 4, 7 and 8 of the
+  // (mark · name, the turn's clock time under it) beside prose that fills the row. Slices 1, 3, 4, 7 and 8 of the
   // redesign live here — typography, the dual-encoded marker, the timestamps
   // toggle, follow mode, and word-level karaoke.
   //
@@ -455,7 +455,6 @@
   /* ── the prose ──────────────────────────────────────────────────────────── */
   .para {
     margin: 0;
-    max-width: 78ch;
     font: 400 var(--text-base) / 1.65 var(--font-sans);
     color: var(--app-text);
     text-wrap: pretty;
