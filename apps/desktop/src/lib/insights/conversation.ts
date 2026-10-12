@@ -224,6 +224,9 @@ export interface AskAiSource {
    *  "github.com/owner/repo/commit/9fceb…"), or null for audio / no URL. The
    *  raw URL stays in Rust; only this guarded form is ever shown. */
   url: string | null;
+  /** The search match the model read (`<mark>` runs kept); an activity's
+   *  title. Absent on timeline sources and answers saved before it existed. */
+  snippet?: string | null;
   startedAt: string;
   endedAt: string;
   sourceKind: "microphone" | "system" | null;

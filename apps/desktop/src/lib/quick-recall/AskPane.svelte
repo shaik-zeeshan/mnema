@@ -3,7 +3,7 @@
      shapes: "Press Tab to ask <model>" when auto-answer is off for this model
      (`gate`), a notice when Ask AI can't answer (the moments stay below), or
      the answer streaming in place with its cited evidence rows numbered under
-     it. ONE turn per question over the unchanged `ask_ai_start` session: an
+     it, then the visible moments it didn't cite. ONE turn per question over the unchanged `ask_ai_start` session: an
      edit cancels the in-flight turn and asks again after the pause, "Continue
      in Chat ↵" takes the thread on. Rendering only — the backend owns the
      `TurnView`, the blocks and the `ask_ai_update` ops (lib/chat/turn-model).
@@ -32,8 +32,12 @@
     TurnSnapshot,
   } from "$lib/insights/conversation";
   import type { QuickRecallAutoAnswer, RecordingSettings } from "$lib/types/recording";
+  import { parseSearchSnippet } from "$lib/search-snippet";
   import { appIcons } from "./app-icons.svelte";
   import { askEngine, askNotice } from "./question-detect";
+  import { sourceResult } from "./quick-look";
+  import type { RankedResult } from "./result-sections";
+  import SearchResultCard from "./SearchResultCard.svelte";
   import IconSparkle from "~icons/lucide/sparkle";
   import IconStop from "~icons/lucide/square";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -68,8 +72,8 @@
     autoMode: QuickRecallAutoAnswer;
     focused: boolean;
     onAsk: () => void;
-    /** Quick Look on a cited item; `onClose` brings the selected row back. Absent → no eye/Space. */
-    onLook?: (sources: AskAiSource[], at: number, onClose: (at: number) => void) => void;
+    /** Quick Look on evidence row `at` (cited, then more); `onClose` brings the selected row back. Absent → no eye/Space. */
+    onLook?: (rows: (RankedResult | null)[], at: number, onClose: (at: number) => void) => void;
     /** A turn is in flight (suspends the page's idle-clear). */
     streaming?: boolean;
     /** Something the idle-clear must not wipe: an unseen or in-flight answer, or a source hand-off. */
@@ -109,6 +113,13 @@
 
   const live = $derived(turn !== null && liveId !== null && (turn.phase === "thinking" || turn.phase === "streaming"));
   const sources = $derived(turn?.sources ?? []);
+  // The visible moments the answer didn't cite, listed under the cited rows.
+  const cites = (r: RankedResult, s: AskAiSource) =>
+    r.kind === "frame" ? r.frame.representativeFrame.id === s.frameId : r.audio.audioSegment.id === s.audioSegmentId;
+  const more = $derived(search.visibleResults.filter((r) => !sources.some((s) => cites(r, s))));
+  // Evidence rows 1…n for Quick Look: the citations, then the rest.
+  const looks = $derived([...sources.map((s) => sourceResult(s, search.ranked)), ...more]);
+  const rowEl = (row: number) => document.getElementById(`rc-ask-row-${row}`);
   const waiting = $derived(canAsk && question.trim() !== "" && question.trim() !== asked);
   const errorCopy = $derived(
     turn?.phase === "error" ? turnErrorCopy(turn.errorMessage, turn.errorKind, settings?.aiRuntime ?? null) : null,
@@ -235,9 +246,15 @@
     await closeCurrentWindow();
   }
 
-  // A cited item hops to the main window's Timeline; the answer is kept for
+  type OpenTarget = Pick<AskAiSource, "kind" | "frameId" | "audioSegmentId" | "spanStartMs" | "alignedFrameId">;
+  const resultTarget = (r: RankedResult): OpenTarget =>
+    r.kind === "frame"
+      ? { kind: "frame", frameId: r.frame.representativeFrame.id, audioSegmentId: null }
+      : { kind: "audio", frameId: null, audioSegmentId: r.audio.audioSegment.id, spanStartMs: r.audio.spanStartMs, alignedFrameId: r.audio.alignedFrame?.id ?? null };
+
+  // An evidence row hops to the main window's Timeline; the answer is kept for
   // the re-summon (handoff) instead of being idle-cleared behind the user.
-  async function openSource(source: AskAiSource): Promise<void> {
+  async function openSource(source: OpenTarget): Promise<void> {
     try {
       await invoke("open_capture_result_in_main_window", {
         kind: source.kind,
@@ -277,14 +294,14 @@
     }
   }
 
-  // Quick Look on source `i` (↑/↓ there walk the sources). When it closes,
-  // the source it ended on is selected — or lit, when it opened from the
-  // answer's citations — and scrolled into view.
+  // Quick Look on evidence row `i` (↑/↓ there walk the rows). When it
+  // closes, the row it ended on is selected — or lit, when it opened from the
+  // answer's citations and ended on one — and scrolled into view.
   function look(i: number, fromCite: boolean): void {
-    onLook?.(sources, i, (at) => {
-      if (fromCite) cite = at + 1;
+    onLook?.(looks, i, (at) => {
+      if (fromCite && at < sources.length) cite = at + 1;
       else [sel, cite] = [at + 1, 0];
-      requestAnimationFrame(() => document.querySelector(`[data-ask-row="${at + 1}"]`)?.scrollIntoView({ block: "nearest" }));
+      requestAnimationFrame(() => rowEl(at + 1)?.scrollIntoView({ block: "nearest" }));
     });
   }
 
@@ -313,24 +330,30 @@
         return true;
       case "ArrowDown":
       case "ArrowUp":
-        sel = Math.max(0, Math.min(n, sel + (e.key === "ArrowDown" ? 1 : -1)));
+        sel = Math.max(0, Math.min(looks.length, sel + (e.key === "ArrowDown" ? 1 : -1)));
         cite = 0;
-        document.querySelector(`[data-ask-row="${sel}"]`)?.scrollIntoView({ block: "nearest" });
+        rowEl(sel)?.scrollIntoView({ block: "nearest" });
         return true;
       case "ArrowLeft":
       case "ArrowRight":
         if (!nav || sel !== 0 || n === 0 || !plain) return false;
         cite = (((cite || (e.key === "ArrowRight" ? 0 : 1)) - 1 + (e.key === "ArrowRight" ? 1 : -1) + n) % n) + 1;
-        document.querySelector(`[data-ask-row="${cite}"]`)?.scrollIntoView({ block: "nearest" });
+        rowEl(cite)?.scrollIntoView({ block: "nearest" });
         return true;
       case " ": {
         const i = sel > 0 ? sel - 1 : (cite || 1) - 1;
-        if (!nav || !onLook || !sources[i]) return false;
+        if (!nav || !onLook || i >= looks.length) return false;
         look(i, sel === 0);
         return true;
       }
       case "Enter":
-        if (sel > 0) {
+        if (sel > n) {
+          const r = more[sel - n - 1];
+          if (!r) return true;
+          if (e.metaKey || e.ctrlKey) {
+            if (r.kind === "frame" && r.frame.url != null) void search.openCapturedFrameUrl(r.frame.thumbnailFrameId);
+          } else void openSource(resultTarget(r));
+        } else if (sel > 0) {
           const s = sources[sel - 1];
           if (e.metaKey || e.ctrlKey) {
             if (s.frameId != null) void search.openCapturedFrameUrl(s.frameId);
@@ -516,8 +539,8 @@
     </div>
   </article>
 
-  {#if sources.length > 0}
-    <div class="rc-sec">Evidence<span class="mono">{sources.length} cited</span></div>
+  {#if sources.length + more.length > 0}
+    <div class="rc-sec">Evidence<span class="mono">{sources.length} cited · {more.length} more</span></div>
     {#each sources as s, i (i)}
       {@const icon = s.kind === "frame" ? appIcons.src(s.appName) : null}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -525,7 +548,7 @@
         class="rc-row"
         role="option"
         tabindex="-1"
-        data-ask-row={i + 1}
+        id={`rc-ask-row-${i + 1}`}
         aria-selected={sel === i + 1}
         data-hot={cite === i + 1 || undefined}
         onclick={() => void openSource(s)}
@@ -545,11 +568,13 @@
         {/if}
         <span class="rc-row__t"
           >{s.windowTitle || s.appName || (s.kind === "audio" ? "Recording" : "Screen")}<span
-            >{s.kind === "audio"
-              ? s.sourceKind === "microphone"
-                ? "microphone"
-                : "system audio"
-              : (s.url ?? (s.windowTitle ? (s.appName ?? "") : ""))}</span
+            >{#if s.snippet}{#if s.kind === "audio"}“{/if}{#each parseSearchSnippet(s.snippet) as seg, j (j)}{#if seg.marked}<mark
+                    >{seg.text}</mark
+                  >{:else}{seg.text}{/if}{/each}{#if s.kind === "audio"}”{/if}{:else}{s.kind === "audio"
+                ? s.sourceKind === "microphone"
+                  ? "microphone"
+                  : "system audio"
+                : (s.url ?? (s.windowTitle ? (s.appName ?? "") : ""))}{/if}</span
           ></span
         >
         <time>{when(s.startedAt)}</time>
@@ -568,6 +593,19 @@
           <span></span>
         {/if}
       </div>
+    {/each}
+    {#each more as r, k (r.kind === "frame" ? r.frame.groupKey : r.audio.groupKey)}
+      {@const row = sources.length + k + 1}
+      <SearchResultCard
+        result={r}
+        id={`rc-ask-row-${row}`}
+        selected={sel === row}
+        onselect={() => {
+          [sel, cite, nav] = [row, 0, true];
+          search.inputEl?.focus();
+        }}
+        onlook={onLook && (() => look(row - 1, false))}
+      />
     {/each}
   {/if}
 {/if}

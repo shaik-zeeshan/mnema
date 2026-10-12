@@ -800,6 +800,9 @@ struct ResolvedAskAiSource {
     /// Guarded host+path of the page behind this source (already sanitized +
     /// secret-redacted at the broker boundary). Frame sources only; audio → None.
     url: Option<String>,
+    /// The search result's text match (`<mark>` runs kept) — the evidence row's
+    /// second line. An activity's title; `None` for a timeline interval.
+    snippet: Option<String>,
     started_at: String,
     ended_at: String,
     // Audio Search Result Anchor: sub-segment match timing + aligned frame for
@@ -877,6 +880,7 @@ where
             // Guarded host+path of the cited page (frame sources only; audio:
             // null). Already sanitized + secret-redacted at the broker boundary.
             "url": source.url,
+            "snippet": source.snippet,
             "startedAt": source.started_at,
             "endedAt": source.ended_at,
             // Audio Search Result Anchor: sub-segment match span + aligned frame
@@ -951,6 +955,7 @@ async fn handle_reference_captures(
             // The broker already guarded this URL when it built the search
             // result context (frame results only); copy it through verbatim.
             url: result.context.as_ref().and_then(|c| c.url.clone()),
+            snippet: Some(result.snippet.clone()).filter(|s| !s.trim().is_empty()),
             started_at: result.started_at.clone(),
             ended_at: result.ended_at.clone(),
             // Audio Search Result Anchor retained from the search result the
@@ -3496,6 +3501,7 @@ model believes the narrower contract: {}",
             app_name: Some("Xcode".to_string()),
             window_title: Some("ContentView.swift".to_string()),
             url: Some("github.com/owner/repo".to_string()),
+            snippet: Some("the <mark>pricing</mark> page".to_string()),
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: None,
@@ -3512,6 +3518,7 @@ model believes the narrower contract: {}",
             app_name: Some("Zoom".to_string()),
             window_title: None,
             url: None,
+            snippet: None,
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: Some(3_000),
@@ -3588,6 +3595,7 @@ model believes the narrower contract: {}",
                     app_name: None,
                     window_title: None,
                     url: None,
+                    snippet: None,
                     started_at: result.started_at.clone(),
                     ended_at: result.ended_at.clone(),
                     span_start_ms: result.span_start_ms,
@@ -3742,6 +3750,11 @@ model believes the narrower contract: {}",
         assert_eq!(frame["alignedFrameId"], serde_json::Value::Null);
         // Frame sources carry the guarded host+path; audio sources null it.
         assert_eq!(frame["url"], serde_json::json!("github.com/owner/repo"));
+        // The text match rides along for the evidence row's second line.
+        assert_eq!(
+            frame["snippet"],
+            serde_json::json!("the <mark>pricing</mark> page")
+        );
 
         let audio = &sources[1];
         assert_eq!(audio["kind"], serde_json::json!("audio"));
@@ -3749,6 +3762,7 @@ model believes the narrower contract: {}",
         assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert_eq!(audio["url"], serde_json::Value::Null);
+        assert_eq!(audio["snippet"], serde_json::Value::Null);
         // Mic-vs-system now rides the search result's kind, not a DB post-pass.
         assert_eq!(audio["sourceKind"], serde_json::json!("microphone"));
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));

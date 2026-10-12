@@ -9,8 +9,8 @@
     RecordingSettingsDomainUpdateResponse,
   } from "$lib/types";
   import { humanizeError } from "$lib/format-error";
-  import type { AskAiAvailability, AskAiSource } from "$lib/insights/conversation";
-  import { sourceResult } from "$lib/quick-recall/quick-look";
+  import type { AskAiAvailability } from "$lib/insights/conversation";
+  import type { RankedResult } from "$lib/quick-recall/result-sections";
   import {
     quickRecallSearch as search,
     OPTION_ID_PREFIX,
@@ -259,11 +259,11 @@
     captureKeydown(search, event, moments ? quickLook : undefined);
   }
 
-  // Space / the eye on cited source `at`: Quick Look on it (its search hit
-  // when it is one, else a result built from the citation); ↑/↓ walk the
-  // citations.
-  function lookAtSource(sources: AskAiSource[], at: number, onClose: (at: number) => void): void {
-    quickLook.showCited(sources.map((s) => sourceResult(s, search.ranked)), at, onClose);
+  // Space / the eye on evidence row `at`: Quick Look on it (a citation's
+  // search hit when it is one, else a result built from the citation); ↑/↓
+  // walk the evidence rows.
+  function lookAtSource(rows: (RankedResult | null)[], at: number, onClose: (at: number) => void): void {
+    quickLook.showCited(rows, at, onClose);
   }
 
   onMount(() => {
