@@ -203,26 +203,28 @@ span.mx-flag { cursor: default; }
               color var(--t-fast) var(--ease-quart), transform var(--t-fast) var(--ease-quart);
 }
 .mx-btn svg { flex: none; }
-.mx-btn:hover { --_bg: var(--app-surface-hover); }
-.mx-btn:active { transform: translateY(1px); }
+.mx-btn:hover:not(:where([aria-disabled="true"])) { --_bg: var(--app-surface-hover); }
+.mx-btn:active:not(:where([aria-disabled="true"])) { transform: translateY(1px); }
 .mx-btn:focus-visible { box-shadow: none; outline: 2px solid var(--_ring); }
 .mx-btn[aria-pressed="true"] { --_bg: var(--mx-selected); }
-.mx-btn:disabled, .mx-btn[aria-disabled="true"] { opacity: var(--app-disabled-opacity); pointer-events: none; }
+.mx-btn:disabled { opacity: var(--app-disabled-opacity); pointer-events: none; }
+/* aria-disabled keeps pointer events so its "why" tooltip can show; the call site blocks the action. */
+.mx-btn[aria-disabled="true"] { opacity: var(--app-disabled-opacity); cursor: default; }
 .mx-btn[aria-busy="true"] { opacity: var(--app-busy-opacity); cursor: progress; }
 
 .mx-btn--sm { --_h: var(--h-sm); --_px: 9px; --_fs: var(--text-base); --_r: 5px; --_gap: 6px; }
 .mx-btn--icon { width: var(--_h); padding: 0; }
 
 .mx-btn--primary { --_bg: var(--app-accent); --_bd: transparent; --_fg: var(--app-accent-contrast); }
-.mx-btn--primary:hover { --_bg: color-mix(in srgb, var(--app-accent) 88%, var(--app-text-strong)); }
-.mx-btn--primary:active { --_bg: color-mix(in srgb, var(--app-accent) 80%, var(--app-text-strong)); }
+.mx-btn--primary:hover:not(:where([aria-disabled="true"])) { --_bg: color-mix(in srgb, var(--app-accent) 88%, var(--app-text-strong)); }
+.mx-btn--primary:active:not(:where([aria-disabled="true"])) { --_bg: color-mix(in srgb, var(--app-accent) 80%, var(--app-text-strong)); }
 
 .mx-btn--ghost { --_bg: transparent; --_bd: transparent; --_fg: var(--app-text-muted); }
-.mx-btn--ghost:hover { --_bg: var(--mx-wash-strong); --_fg: var(--app-text-strong); }
+.mx-btn--ghost:hover:not(:where([aria-disabled="true"])) { --_bg: var(--mx-wash-strong); --_fg: var(--app-text-strong); }
 .mx-btn--ghost[aria-pressed="true"], .mx-btn--ghost[aria-current="page"] { --_bg: var(--mx-selected); --_fg: var(--app-text-strong); }
 
 .mx-btn--danger { --_fg: var(--app-danger-text); --_ring: var(--app-danger); }
-.mx-btn--danger:hover { --_bg: var(--app-danger-bg); --_bd: var(--app-danger-border); }
+.mx-btn--danger:hover:not(:where([aria-disabled="true"])) { --_bg: var(--app-danger-bg); --_bd: var(--app-danger-border); }
 
 /* kbd hint slot: quiet mono text, no box */
 .mx-btn kbd { height: auto; min-width: 0; padding: 0; margin-left: 2px; border: 0; background: none;

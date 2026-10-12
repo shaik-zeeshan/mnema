@@ -280,7 +280,7 @@
     <span class="mx-spacer"></span>
     <a
       class="mx-btn mx-btn--ghost mx-btn--sm"
-      href={askHref}
+      href={askDisabled ? undefined : askHref}
       aria-disabled={askDisabled || undefined}
       use:tip={askDisabled ? "Ask needs AI — turn it on in Settings" : "Opens Chat with this question"}
       ><IconSparkle class="mx-btn__accent" width="13" height="13" aria-hidden="true" />Ask about {subject}<kbd>⌘J</kbd></a

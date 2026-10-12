@@ -679,7 +679,7 @@
   <div class="ov-ctl" use:inBar>
     <a
       class="mx-btn mx-btn--ghost"
-      href={askHref}
+      href={capOnly ? undefined : askHref}
       aria-disabled={capOnly || undefined}
       use:tip={capOnly ? "Ask needs AI — turn it on in Settings" : `Opens Chat with ${scope} in scope`}
       ><IconSparkle class="mx-btn__accent" width="14" height="14" aria-hidden="true" /><span>Ask about {scope}</span><kbd
