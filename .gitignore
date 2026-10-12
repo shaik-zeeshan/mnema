@@ -28,3 +28,6 @@ pi-session-*.html
 ds-bundle/
 
 .firecrawl
+
+# Cloudflare Wrangler local state
+.wrangler/
