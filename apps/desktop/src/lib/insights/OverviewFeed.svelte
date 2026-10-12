@@ -4,7 +4,9 @@
   // this period — conclusions formed, strengthened or started fading — beside
   // "Needs attention", the uncategorized activities one tap can tag. Standing
   // beliefs without a change live on Subjects (pin / dismiss live there too).
-  import type { Activity, ActivityCategory, Conclusion } from "$lib/types/recording";
+  import type { Activity, ActivityCategory, Conclusion, ConfidenceSnapshot } from "$lib/types/recording";
+  import Sparkline from "$lib/insights/charts/Sparkline.svelte";
+  import { loadSubjectHistories } from "$lib/insights/subject-histories";
   import { CATEGORY_COLOR, CATEGORY_ORDER, categoryLabel } from "$lib/insights/activity-helpers";
   import { fmtDuration } from "$lib/insights/lede-stats";
   import IconInbox from "~icons/lucide/inbox";
@@ -63,6 +65,22 @@
       .filter((g) => g.rows.length);
   });
 
+  // Each shown row's trend line (same history Subjects draws), re-read whenever
+  // the rows change; the generation token drops a load a newer one overtook.
+  let histories = $state(new Map<string, Map<number, ConfidenceSnapshot[]>>());
+  let historiesGen = 0;
+  $effect(() => {
+    const gen = ++historiesGen;
+    void loadSubjectHistories(shown.flatMap((g) => g.rows.map((c) => c.subject))).then((next) => {
+      if (gen === historiesGen) histories = next;
+    });
+  });
+  // A polyline needs two points: flatten a missing/one-point history.
+  function sparkPoints(c: Conclusion): number[] {
+    const p = histories.get(c.subject)?.get(c.id)?.map((s) => s.confidence);
+    return p && p.length >= 2 ? p : [p?.[0] ?? c.confidence, p?.[0] ?? c.confidence];
+  }
+
   const attention = $derived(
     activities.filter((a) => a.category == null).sort((a, b) => b.startedAtMs - a.startedAtMs),
   );
@@ -117,6 +135,12 @@
                 ><span class="mx-chip">{c.subject}</span>{#if g.kind === "formed"}<span class="new">● new</span>{/if}{#if g.kind === "fading"}below
                   the display floor — kept for history{/if}</span
               >
+            </span>
+            <span class="spark">
+              <Sparkline
+                series={[{ colorVar: "--app-text-strong", faded: g.kind === "fading", points: sparkPoints(c) }]}
+                label={`${c.subject} — confidence over time`}
+              />
             </span>
             <span class="num pct"
               >{Math.round(c.confidence * 100)}%<small class:up={g.kind !== "fading"} class:down={g.kind === "fading"}
@@ -228,7 +252,7 @@
   }
   .concl {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px;
+    grid-template-columns: minmax(0, 1fr) 96px 96px;
     gap: var(--s-4);
     align-items: center;
     width: 100%;
@@ -274,6 +298,15 @@
   }
   .new {
     color: var(--app-accent);
+  }
+  .spark {
+    display: block;
+    width: 96px;
+    height: 28px;
+  }
+  .spark :global(svg) {
+    width: 100%;
+    height: 100%;
   }
   .pct {
     font-size: var(--text-md);

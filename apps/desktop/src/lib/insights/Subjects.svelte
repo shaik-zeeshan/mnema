@@ -12,8 +12,9 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import type { Conclusion, ConfidenceSnapshot, SubjectView, UserContextStatus } from "$lib/types/recording";
+  import type { Conclusion, ConfidenceSnapshot, UserContextStatus } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
+  import { loadSubjectHistories } from "$lib/insights/subject-histories";
   import Segmented from "$lib/components/Segmented.svelte";
   import { inBar } from "$lib/insights/in-bar";
   import ConvictionMap, { type MapRow } from "$lib/insights/ConvictionMap.svelte";
@@ -250,25 +251,10 @@
     pendingCount = 0;
   }
 
-  // Bounded concurrency keeps a large dossier responsive; a failed fetch leaves
-  // that subject on its flat baseline.
+  // A failed fetch leaves that subject on its flat baseline.
   async function loadTrajectories(list: Conclusion[]): Promise<void> {
     const gen = ++trajectoriesGen;
-    const subjects = [...new Set(list.map((c) => c.subject))];
-    const next = new Map<string, Map<number, ConfidenceSnapshot[]>>();
-    let cursor = 0;
-    async function worker(): Promise<void> {
-      while (cursor < subjects.length) {
-        const subject = subjects[cursor++];
-        try {
-          const view = await invoke<SubjectView>("get_user_context_subject", { subject });
-          next.set(subject, new Map(view.trajectories.map((t) => [t.conclusionId, t.history])));
-        } catch {
-          // Best-effort.
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, subjects.length) }, worker));
+    const next = await loadSubjectHistories(list.map((c) => c.subject));
     if (gen === trajectoriesGen) trajectories = next;
   }
 
