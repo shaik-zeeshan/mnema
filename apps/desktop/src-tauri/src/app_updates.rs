@@ -146,6 +146,9 @@ pub struct AppUpdateInfo {
     pub date: Option<String>,
     pub notes: Option<String>,
     pub channel: AppUpdateChannel,
+    /// Archive size in bytes from the feed's `platforms[k].size` (written by
+    /// the promote workflow). `None` for feeds published before it existed.
+    pub size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -374,7 +377,22 @@ fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpd
         date: update.date.and_then(|date| date.format(&Rfc3339).ok()),
         notes: update.body.clone(),
         channel,
+        size_bytes: update_size_bytes(&update.raw_json, update.download_url.as_str()),
     }
+}
+
+/// The `size` of the platform entry the updater selected. `Update.raw_json` is
+/// the whole manifest and `Update.target` is only the OS ("darwin"), not the
+/// key it picked (`darwin-aarch64-app` vs `darwin-aarch64`), so match the entry
+/// by the download URL the updater resolved.
+fn update_size_bytes(raw_json: &serde_json::Value, download_url: &str) -> Option<u64> {
+    raw_json
+        .get("platforms")?
+        .as_object()?
+        .values()
+        .find(|platform| platform.get("url").and_then(|url| url.as_str()) == Some(download_url))?
+        .get("size")?
+        .as_u64()
 }
 
 /// The remote build's release date as unix ms (the manifest `pub_date`, carried
@@ -1208,6 +1226,39 @@ mod tests {
     }
 
     #[test]
+    fn update_size_comes_from_the_selected_platform_entry() {
+        let url = "https://release.mnema.day/releases/v0.1.24/Mnema_aarch64.app.tar.gz";
+        let feed = |size: serde_json::Value| {
+            serde_json::json!({
+                "version": "0.1.24",
+                "platforms": {
+                    "darwin-x86_64": { "url": "https://x/other.app.tar.gz", "signature": "s", "size": 1 },
+                    "darwin-aarch64": { "url": url, "signature": "s", "size": size },
+                }
+            })
+        };
+        assert_eq!(
+            update_size_bytes(&feed(serde_json::json!(38_400_000)), url),
+            Some(38_400_000)
+        );
+        assert_eq!(
+            update_size_bytes(&feed(serde_json::json!("38400000")), url),
+            None
+        );
+        assert_eq!(update_size_bytes(&feed(serde_json::json!(-1)), url), None);
+        let mut absent = feed(serde_json::Value::Null);
+        absent["platforms"]["darwin-aarch64"]
+            .as_object_mut()
+            .unwrap()
+            .remove("size");
+        assert_eq!(update_size_bytes(&absent, url), None);
+        assert_eq!(
+            update_size_bytes(&serde_json::json!({ "version": "0.1.24" }), url),
+            None
+        );
+    }
+
+    #[test]
     fn default_settings_loads_stable_when_no_config_exists() {
         let dir = tempfile::tempdir().expect("temp dir should be created");
         let settings = load_app_update_settings_from_path(&dir.path().join("missing.json"));
@@ -1382,6 +1433,7 @@ mod tests {
             date: None,
             notes: None,
             channel: AppUpdateChannel::Stable,
+            size_bytes: None,
         };
 
         let notification = startup_update_notification_for_update(&update, 42);

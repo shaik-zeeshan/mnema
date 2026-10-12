@@ -35,6 +35,7 @@
     appUpdateProgressText,
     formatUpdateDate,
   } from "$lib/settings/state/about.svelte";
+  import { formatBytes } from "$lib/settings/state/format";
   import {
     appUpdateHeading,
     canInstallUpdate,
@@ -62,6 +63,8 @@
   const version = $derived(status?.update?.version ?? null);
   const currentVersion = $derived(status?.app.version ?? null);
   const releaseDate = $derived(formatUpdateDate(status?.update?.date));
+  // Feeds promoted before the workflow wrote `size` carry none — show nothing.
+  const archiveSize = $derived(status?.update?.sizeBytes ? formatBytes(status.update.sizeBytes) : null);
   const canInstall = $derived(canInstallUpdate(status, acting));
   const canRestart = $derived(canRestartUpdate(status, acting));
   const heading = $derived(appUpdateHeading(status));
@@ -324,6 +327,7 @@
         {#if version && currentVersion && key !== "expired"}
           <span>{currentVersion}</span><i aria-hidden="true">→</i><b>{version}</b>
           {#if releaseDate}<i aria-hidden="true">·</i><span>{releaseDate}</span>{/if}
+          {#if archiveSize}<i aria-hidden="true">·</i><span>{archiveSize}</span>{/if}
         {:else if currentVersion}
           <span class="up-ver__words">
             You have <b class="num">{currentVersion}</b>
