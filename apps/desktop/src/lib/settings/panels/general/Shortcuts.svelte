@@ -107,62 +107,65 @@
         <button type="button" class="mx-btn mx-btn--sm" onclick={() => keyboard.loadKeyboardBindingsSettings()}>Retry</button>
       </div>
     </div>
-  {/if}
+  {:else}
+    <!-- No rows on a load failure: they'd show the defaults, not your shortcuts, and
+         with no loaded baseline an edit never reads as dirty, so it silently wouldn't save. -->
 
-  {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
-    <div class="mx-notice kb-notice" data-tone="danger" role="alert">
-      <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
-      <b class="mx-notice__title">Shortcuts not saved</b>
-      <p class="mx-notice__text">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</p>
-      {#if firstConflictActionId !== null}
-        <div class="mx-notice__acts">
-          <button type="button" class="mx-btn mx-btn--sm" onclick={jumpToConflict}>Jump to conflict</button>
-        </div>
-      {/if}
-    </div>
-  {/if}
+    {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
+      <div class="mx-notice kb-notice" data-tone="danger" role="alert">
+        <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+        <b class="mx-notice__title">Shortcuts not saved</b>
+        <p class="mx-notice__text">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</p>
+        {#if firstConflictActionId !== null}
+          <div class="mx-notice__acts">
+            <button type="button" class="mx-btn mx-btn--sm" onclick={jumpToConflict}>Jump to conflict</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
-  <SettingRow
-    label="Global shortcuts"
-    description="Work from any app while Mnema is in the background. Background shortcuts need Command/Control or Option."
-  >
-    {#snippet control()}
-      <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
-    {/snippet}
-  </SettingRow>
+    <SettingRow
+      label="Global shortcuts"
+      description="Work from any app while Mnema is in the background. Background shortcuts need Command/Control or Option."
+    >
+      {#snippet control()}
+        <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
+      {/snippet}
+    </SettingRow>
 
-  {#each SHORTCUT_CATEGORIES as category (category)}
-    <h3 class="kb-cat">{keyboard.shortcutCategoryLabel(category)}</h3>
-    {#each keyboard.shortcutCategoryActions(category) as action (action.id)}
-      {@const issue = keyboard.shortcutIssueFor(action.id)}
-      {#if issue}
-        <!-- The issue line sits under the copy, so the chord moves to `aside`. -->
-        <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description} full>
-          {#snippet aside()}{@render chord(action, issue)}{/snippet}
-          {#snippet control()}
-            <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{issue}</span>
-          {/snippet}
-        </SettingRow>
-      {:else}
-        <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description}>
-          {#snippet control()}{@render chord(action, null)}{/snippet}
-        </SettingRow>
-      {/if}
+    {#each SHORTCUT_CATEGORIES as category (category)}
+      <h3 class="kb-cat">{keyboard.shortcutCategoryLabel(category)}</h3>
+      {#each keyboard.shortcutCategoryActions(category) as action (action.id)}
+        {@const issue = keyboard.shortcutIssueFor(action.id)}
+        {#if issue}
+          <!-- The issue line sits under the copy, so the chord moves to `aside`. -->
+          <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description} full>
+            {#snippet aside()}{@render chord(action, issue)}{/snippet}
+            {#snippet control()}
+              <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{issue}</span>
+            {/snippet}
+          </SettingRow>
+        {:else}
+          <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description}>
+            {#snippet control()}{@render chord(action, null)}{/snippet}
+          </SettingRow>
+        {/if}
+      {/each}
     {/each}
-  {/each}
 
-  <SettingRow label="Restore all default shortcuts" description="Asks first.">
-    {#snippet control()}
-      <button
-        type="button"
-        class="mx-btn"
-        disabled={savingKeyboardBindings}
-        onclick={() => keyboard.restoreDefaultShortcuts()}
-      >
-        Restore defaults
-      </button>
-    {/snippet}
-  </SettingRow>
+    <SettingRow label="Restore all default shortcuts" description="Asks first.">
+      {#snippet control()}
+        <button
+          type="button"
+          class="mx-btn"
+          disabled={savingKeyboardBindings}
+          onclick={() => keyboard.restoreDefaultShortcuts()}
+        >
+          Restore defaults
+        </button>
+      {/snippet}
+    </SettingRow>
+  {/if}
 </SettingGroup>
 
 <style>
