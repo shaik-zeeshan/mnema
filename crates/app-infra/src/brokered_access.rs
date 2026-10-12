@@ -727,6 +727,12 @@ pub struct BrokerSpeakersRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional RFC3339 window, clamped into the grant's scope like `search`'s.
+    /// Ask AI fills it from a Chat's date range; absent, the grant is the window.
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

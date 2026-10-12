@@ -44,10 +44,9 @@ pub(super) async fn broker_speakers(
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
         .clamp(1, MAX_SEARCH_LIMIT);
     let name = broker_optional_filter(request.name, "name")?;
-    // No `from`/`to`: the grant IS the scope here. `None` means All Retained
-    // History, which needs no time predicate at all.
-    // No `from`/`to` means nothing can be clamped: the grant IS the window here.
-    let range = scoped_date_range(grant, None, None)?.refinement;
+    // No `from`/`to` means the grant IS the window; `None` (All Retained History
+    // with no bounds) needs no time predicate at all.
+    let range = scoped_date_range(grant, request.from, request.to)?.refinement;
 
     let rows = broker_speakers_query(range.as_ref(), name.as_deref(), limit)
         .build()

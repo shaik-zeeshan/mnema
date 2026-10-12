@@ -471,6 +471,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             let request = BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
                 name: args.name,
                 limit: args.limit,
+                ..Default::default()
             });
             run_data_command("speakers", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -3318,6 +3319,7 @@ mod tests {
             BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
                 name: None,
                 limit: None,
+                ..Default::default()
             }),
         ] {
             assert_eq!(
@@ -3530,6 +3532,7 @@ mod tests {
             BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
                 name: None,
                 limit: None,
+                ..Default::default()
             })
         };
         let window = serve_one_approval(identity.clone(), BrokerGrantScope::LAST_DAY);
@@ -3657,6 +3660,7 @@ mod tests {
             BrokeredCaptureRequest::Speakers(app_infra::brokered_access::BrokerSpeakersRequest {
                 name: None,
                 limit: None,
+                ..Default::default()
             }),
             false,
         )

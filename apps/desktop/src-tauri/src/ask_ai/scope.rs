@@ -12,7 +12,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 /// Clamp one tool call's window into `scope`: a missing bound is filled with the
-/// scope's (`search` / `recall_context` take optional bounds), a bound past the
+/// scope's (`search` / `recall_context` / `speakers` take optional bounds), a bound past the
 /// scope is narrowed (`timeline` / `activities` require theirs). A side the scope
 /// leaves open is left as the call sent it. `Ok(None)` for a tool the scope
 /// doesn't govern or an all-time scope; `Err` (shown to the model) when the call
@@ -31,7 +31,7 @@ pub(super) fn clamp_tool_range(
                     .to_string(),
             )
         }
-        "search" | "recall_context" | "timeline" | "activities" => {}
+        "search" | "recall_context" | "timeline" | "activities" | "speakers" => {}
         _ => return Ok(None),
     }
     if scope.from_ms.is_none() && scope.to_ms.is_none() {
@@ -113,7 +113,7 @@ pub(super) fn scope_prompt_line(scope: &AskAiScope, utc_offset_minutes: Option<i
     }
     format!(
         "Scope: the user limited this chat to captures from {} to {} ({zone}); every \
-`search`/`timeline`/`activities`/`recall_context` window is clamped to it, so say so when the \
+`search`/`timeline`/`activities`/`speakers`/`recall_context` window is clamped to it, so say so when the \
 question needs other dates.{about}\n\n",
         scope
             .from_ms
@@ -165,6 +165,11 @@ mod tests {
         );
         // A window entirely outside the scope is refused, not inverted.
         assert!(clamp_tool_range(&SCOPE, "activities", Some(3_000), Some(4_000)).is_err());
+        // `speakers` gets the scope's window, so nobody heard outside it is named.
+        assert_eq!(
+            clamp_tool_range(&SCOPE, "speakers", None, None),
+            Ok(Some((Some(1_000), Some(2_000))))
+        );
         // Tools the scope doesn't govern pass through.
         assert_eq!(clamp_tool_range(&SCOPE, "fetch_url", None, None), Ok(None));
         // About you off refuses recall_context.

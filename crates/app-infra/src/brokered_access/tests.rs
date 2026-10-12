@@ -3702,6 +3702,7 @@ async fn discover_speakers(
         BrokerSpeakersRequest {
             name: name.map(str::to_string),
             limit,
+            ..Default::default()
         },
     )
     .await
@@ -4031,6 +4032,81 @@ fn broker_speakers_never_names_a_person_heard_outside_the_grant_scope() {
     });
 }
 
+/// A request's own `from`/`to` (a Chat's date range) narrows the roster inside
+/// a wider grant: someone heard only outside the window is not named.
+#[test]
+fn broker_speakers_from_to_excludes_people_heard_outside_the_window() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-window");
+        let save_dir = temp_save_dir("speakers-window");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "mnema CLI",
+            BrokerGrantScope::RecentDays { days: 7 },
+        )
+        .expect("grant should create");
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        let bo = infra
+            .create_person_profile("Bo", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        let hour_ms = 60 * 60 * 1000;
+        let day_ms = 24 * hour_ms;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "inside-window",
+            now.saturating_sub(hour_ms),
+            now,
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn("speaker_00", 0, 1_000)],
+        )
+        .await;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "outside-window",
+            now.saturating_sub(3 * day_ms),
+            now.saturating_sub(3 * day_ms - hour_ms),
+            vec![speaker_cluster("speaker_00", &[0.0, 1.0])],
+            vec![speaker_turn("speaker_00", 0, 60_000)],
+        )
+        .await;
+        assign_cluster(&infra, "inside-window", "speaker_00", ada.id).await;
+        assign_cluster(&infra, "outside-window", "speaker_00", bo.id).await;
+
+        let roster = broker_speakers(
+            &config_dir,
+            &infra,
+            std::slice::from_ref(&grant),
+            BrokerSpeakersRequest {
+                from: Some(format_unix_ms(now.saturating_sub(day_ms))),
+                to: Some(format_unix_ms(now)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("speakers should run")
+        .expect("the grant should authorize the roster");
+
+        assert_eq!(
+            roster_shape(&roster),
+            vec![(Some("Ada"), "person", 1_000)],
+            "Bo, louder but three days back, is outside the one-day window"
+        );
+        // Unbounded, the same grant names both.
+        let all = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+        assert_eq!(all.speakers.len(), 2, "{all:?}");
+    });
+}
+
 /// Both counts hang off ONE handle, because a person confirmed on one cluster and
 /// merely voice-matched on another is one person. The split is how an agent weighs
 /// how much of the answer is guesswork before it filters — an unnamed voice has
@@ -4261,6 +4337,7 @@ fn broker_speakers_is_audited_without_recording_who_it_named() {
                 BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
                     name: Some("ada".to_string()),
                     limit: None,
+                    ..Default::default()
                 }),
             )
             .await
