@@ -27,6 +27,10 @@ export type FeatureSettings =
 
 export type DetailSpec = {
 	id: ProcessorKey;
+	/** Plain name for the breadcrumb and the inspector subtitle. */
+	name: string;
+	/** What one job's average time is measured against ("per frame"). */
+	per: string | null;
 	/**
 	 * `processing_jobs.processor`, or `null` for a feature with **no job lane**.
 	 * The meaning index is that case: the semantic index is swept by a worker, not
@@ -48,6 +52,8 @@ export type DetailSpec = {
 export const DETAIL_SPECS: Record<ProcessorKey, DetailSpec> = {
 	reading: {
 		id: "reading",
+		name: "Reading",
+		per: "per frame",
 		processor: "ocr",
 		subjectType: "frame",
 		reprocess: { command: "reprocess_captured_frame_ocr", arg: "frameId" },
@@ -55,6 +61,8 @@ export const DETAIL_SPECS: Record<ProcessorKey, DetailSpec> = {
 	},
 	transcription: {
 		id: "transcription",
+		name: "Transcription",
+		per: "per 5-minute segment",
 		processor: "audio_transcription",
 		subjectType: "audio_segment",
 		reprocess: { command: "reprocess_audio_segment_transcription", arg: "audioSegmentId" },
@@ -62,6 +70,8 @@ export const DETAIL_SPECS: Record<ProcessorKey, DetailSpec> = {
 	},
 	speakers: {
 		id: "speakers",
+		name: "Speakers",
+		per: "per 5-minute segment",
 		processor: "speaker_analysis",
 		subjectType: "audio_segment",
 		reprocess: { command: "reprocess_audio_segment_speaker_analysis", arg: "audioSegmentId" },
@@ -69,6 +79,8 @@ export const DETAIL_SPECS: Record<ProcessorKey, DetailSpec> = {
 	},
 	meaningIndex: {
 		id: "meaningIndex",
+		name: "Meaning index",
+		per: null,
 		processor: null,
 		subjectType: null,
 		reprocess: null,
