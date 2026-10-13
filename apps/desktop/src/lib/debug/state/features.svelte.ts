@@ -5,8 +5,9 @@
 // `controller.poll`, so it only runs while one of them is mounted.
 //
 // ── What is polled vs. loaded once ────────────────────────────────────────
-// POLLED (cheap DB / in-memory reads): pipeline lanes, semantic index,
-// derivation runs, Ask AI last-turn usage.
+// POLLED (cheap DB / in-memory reads): pipeline lanes, semantic index
+// (`poll`); Ask AI last-turn usage, derivation runs and CLI history
+// (`fetchAiLive`, the AI tab's 5 s poll).
 //
 // NOT polled: `get_ai_runtime_status` and `get_user_context_status` both run
 // `engine_configured_prerequisite`, which *pings the local engine endpoint* for
@@ -17,6 +18,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
+import type { BrokerAuditEvent, BrokerGrant } from "$lib/settings/state/cli-access.svelte";
 import type {
 	AiRuntimeStatus,
 	AiRuntimeTestResult,
@@ -33,7 +35,7 @@ import type {
 } from "$lib/types";
 
 /** Only the newest few runs are rendered; keep the polled read small. */
-const DERIVATION_RUN_LIMIT = 5;
+const DERIVATION_RUN_LIMIT = 4;
 
 /** A lane with no jobs at all. See `ProcessorPipelineStatus` on why this exists. */
 function emptyLane(processor: string): ProcessorPipelineStatus {
@@ -72,6 +74,9 @@ export function createFeaturesStore() {
 	let derivationRuns = $state<DerivationRun[]>([]);
 	let derivationRunsError = $state<string | null>(null);
 	let askAiUsage = $state<AskAiTokenUsage | null>(null);
+	let cliHistory = $state<BrokerAuditEvent[]>([]);
+	let cliHistoryError = $state<string | null>(null);
+	let cliGrants = $state<BrokerGrant[]>([]);
 
 	// ─── Loaded on mount / ↻ ─────────────────────────────────────────────────
 	let aiStatus = $state<AiRuntimeStatus | null>(null);
@@ -117,6 +122,12 @@ export function createFeaturesStore() {
 			invoke<SemanticIndexStatusDto>("get_semantic_index_status")
 				.then((v) => { semanticIndex = v; semanticIndexError = null; })
 				.catch((err) => { semanticIndexError = humanizeError(err); }),
+		]);
+	}
+
+	/** The AI tab's poll: last turn, newest runs, CLI history. All cheap reads. */
+	async function fetchAiLive() {
+		await Promise.all([
 			invoke<DerivationRun[]>("list_user_context_derivation_runs", { limit: DERIVATION_RUN_LIMIT })
 				.then((v) => { derivationRuns = v; derivationRunsError = null; })
 				.catch((err) => { derivationRunsError = humanizeError(err); }),
@@ -124,6 +135,21 @@ export function createFeaturesStore() {
 			invoke<AskAiTokenUsage | null>("get_ask_ai_last_turn_usage")
 				.then((v) => { askAiUsage = v; })
 				.catch(() => { /* usage is a nicety; never surface a poll error for it */ }),
+			// ponytail: the whole audit file (capped at 500) per tick; the tab shows 4.
+			invoke<{ events: BrokerAuditEvent[] }>("list_cli_access_history")
+				.then((v) => { cliHistory = v.events ?? []; cliHistoryError = null; })
+				.catch((err) => { cliHistoryError = humanizeError(err); }),
+		]);
+	}
+
+	/** The AI tab's once-per-mount config: engine, User Context, CLI grants. */
+	async function loadAiConfig() {
+		await Promise.all([
+			loadAiStatus(),
+			loadUserContextStatus(),
+			invoke<{ grants: BrokerGrant[] }>("list_cli_access_grants")
+				.then((v) => { cliGrants = v.grants ?? []; })
+				.catch(() => { /* the header count just stays at 0 */ }),
 		]);
 	}
 
@@ -226,7 +252,7 @@ export function createFeaturesStore() {
 			derivationRunMessage = humanizeError(err);
 		} finally {
 			runningDerivation = false;
-			await loadUserContextStatus();
+			await Promise.all([loadUserContextStatus(), fetchAiLive()]);
 		}
 	}
 
@@ -275,6 +301,9 @@ export function createFeaturesStore() {
 		get derivationRuns() { return derivationRuns; },
 		get derivationRunsError() { return derivationRunsError; },
 		get askAiUsage() { return askAiUsage; },
+		get cliHistory() { return cliHistory; },
+		get cliHistoryError() { return cliHistoryError; },
+		get cliGrants() { return cliGrants; },
 
 		get aiStatus() { return aiStatus; },
 		get aiStatusError() { return aiStatusError; },
@@ -304,7 +333,9 @@ export function createFeaturesStore() {
 		get digestMessage() { return digestMessage; },
 
 		poll,
+		fetchAiLive,
 		loadConfig,
+		loadAiConfig,
 		loadAiStatus,
 		loadUserContextStatus,
 		loadModelStatuses,
