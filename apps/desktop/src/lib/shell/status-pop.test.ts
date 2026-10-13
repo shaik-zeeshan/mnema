@@ -254,6 +254,25 @@ describe("disk and AI", () => {
     expect(r.value).toEqual([{ num: "4.2 GB" }, " left"]);
     expect(r.note).toEqual(["Recording is paused. It resumes on its own once you free up space."]);
   });
+  // Founder ruling: below 5 GB always warns, even with the thresholds unknown (stopped).
+  const stopped = (freeBytes) =>
+    input({
+      running: false,
+      health: health({ recording: false, disk: { freeBytes, reserveFloorBytes: 0, pauseThresholdBytes: null, resumeThresholdBytes: null } }),
+    });
+  test("stopped at 0.4 GB warns with the 5 GB floor", () => {
+    const r = diskRow(stopped(0.4 * GB));
+    expect(r.tone).toBe("warn");
+    expect(r.value).toEqual([{ num: "0.4 GB" }, " left"]);
+    expect(r.note).toEqual(["Recording pauses below ", { num: "5 GB" }, " and resumes when you free up space."]);
+  });
+  test("stopped at 50 GB stays neutral", () => {
+    expect(diskRow(stopped(50 * GB))).toEqual({ name: "Free space", dot: "fill", tone: null, value: [{ num: "50 GB" }] });
+  });
+  test("recording with thresholds and plenty free stays neutral", () => {
+    const i = input({ health: health({ disk: { ...health().disk, freeBytes: 20 * GB } }) });
+    expect(diskRow(i).tone).toBeNull();
+  });
   test("unreadable free space omits the row", () => {
     expect(diskRow(input({ health: null }))).toBeNull();
   });
