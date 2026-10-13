@@ -260,11 +260,12 @@ describe("disk and AI", () => {
       running: false,
       health: health({ recording: false, disk: { freeBytes, reserveFloorBytes: 0, pauseThresholdBytes: null, resumeThresholdBytes: null } }),
     });
-  test("stopped at 0.4 GB warns with the 5 GB floor", () => {
+  test("stopped at 0.4 GB warns without claiming a 5 GB pause", () => {
     const r = diskRow(stopped(0.4 * GB));
     expect(r.tone).toBe("warn");
     expect(r.value).toEqual([{ num: "0.4 GB" }, " left"]);
-    expect(r.note).toEqual(["Recording pauses below ", { num: "5 GB" }, " and resumes when you free up space."]);
+    expect(r.note).toEqual(["Less than ", { num: "5 GB" }, " free. Recording pauses when the disk is nearly full."]);
+    expect(r.action).toEqual({ label: "Open Storage", settings: "storage" });
   });
   test("stopped at 50 GB stays neutral", () => {
     expect(diskRow(stopped(50 * GB))).toEqual({ name: "Free space", dot: "fill", tone: null, value: [{ num: "50 GB" }] });

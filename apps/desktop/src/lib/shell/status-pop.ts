@@ -161,7 +161,7 @@ export function catchingUp(i: PopInput): CatchingUp {
   return rows.length === 0 && meaningPercent === null ? { kind: "caught-up" } : { kind: "busy", rows, meaningPercent };
 }
 
-/** Free space below this always warns. Not the backend's 1 GiB reserve floor: the mockup's "pauses below 5 GB". */
+/** Free space below this always warns. Not the backend's pause point (~1 GiB reserve + the next segment); only where we start warning. */
 export const LOW_DISK_WARN_BYTES = 5 * 1024 ** 3;
 
 export function diskRow(i: PopInput): PopRow | null {
@@ -180,11 +180,15 @@ export function diskRow(i: PopInput): PopRow | null {
   if ((i.diskSoon && disk.pauseThresholdBytes != null) || disk.freeBytes < LOW_DISK_WARN_BYTES) {
     return {
       ...fill("Free space", "warn", [free, " left"]),
-      note: [
-        "Recording pauses below ",
-        { num: `${gb(disk.pauseThresholdBytes ?? LOW_DISK_WARN_BYTES)} GB` },
-        " and resumes when you free up space.",
-      ],
+      // Unknown threshold: 5 GB is only where we warn; the real pause is ~1 GB + the next segment.
+      note:
+        disk.pauseThresholdBytes == null
+          ? ["Less than ", { num: `${gb(LOW_DISK_WARN_BYTES)} GB` }, " free. Recording pauses when the disk is nearly full."]
+          : [
+              "Recording pauses below ",
+              { num: `${gb(disk.pauseThresholdBytes)} GB` },
+              " and resumes when you free up space.",
+            ],
       action: storage,
     };
   }
