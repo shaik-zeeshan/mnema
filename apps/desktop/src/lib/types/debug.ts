@@ -25,30 +25,33 @@
 
 import type { ProcessingJobDto, ProcessingJobStatus } from "./app-infra";
 
-/** Dock health dot. Wire: serde `rename_all = "camelCase"` over the Rust enum. */
-export type DebugSeverity = "ok" | "warn" | "error";
+/** A health row's tone. UI: `error` renders as danger; the rest keep their name. */
+export type DebugSeverity = "ok" | "info" | "warn" | "error" | "off";
 
-/**
- * A debug section that has a health rollup. Note there are **9** of these but
- * **11** sections — `health` and `logs` have no health entry (see
- * `lib/debug/sections.ts`, where `healthFeature` is nullable).
- */
+/** One health row. `get_debug_health` always returns all 12, in this order. */
 export type DebugFeature =
-	| "capture"
-	| "privacy"
-	| "ocr"
+	| "screen"
+	| "microphone"
+	| "systemAudio"
+	| "reading"
 	| "transcription"
-	| "diarization"
-	| "embeddings"
-	| "aiRuntime"
+	| "speakers"
+	| "meaningIndex"
+	| "aiEngine"
 	| "userContext"
-	| "jobsAndStorage";
+	| "disk"
+	| "cliAccess"
+	| "startup";
 
 export interface FeatureHealthDto {
 	feature: DebugFeature;
 	severity: DebugSeverity;
-	/** Short plain-language sentence — rendered in the dock tooltip. */
+	/** One plain sentence ("Deepgram can’t be reached, retrying on its own"). */
 	reason: string;
+	/** Short right-column text ("14 waiting", "182 GB", "3rd today", "1.8 s"). */
+	metric: string | null;
+	/** When set, render a local HH:MM instead of `metric` (AI engine, User Context). */
+	metricAtMs: number | null;
 }
 
 // ─── Log tail (tail_app_log) ───────────────────────────────────────────────
