@@ -76,7 +76,7 @@
     .g-sb + .g-sb { margin-top: 6px; }
     .g-sb__cap { display: grid; gap: 3px; font: 500 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-strong); }
     .g-sb__cap small { font: 400 var(--text-xs)/1.35 var(--font-mono); color: var(--app-text-subtle); }
-    .g-sb__cap .mx-chip { justify-self: start; height: 17px; font-size: 9.5px; }
+    .g-sb__cap .mx-chip { justify-self: start; height: 17px; font-size: 9.5px; text-decoration: none; }
     .g-sb .mx-statusbar { height: 30px; border: 1px solid var(--app-status-border); border-radius: var(--r-md); }
     .g-sb .mx-banner { border: 1px solid color-mix(in srgb, var(--tone-bd) 70%, var(--app-border)); border-radius: var(--r-md); }
     .g-group { display: grid; gap: var(--s-2); }
@@ -227,33 +227,43 @@
               <span class="mx-h3"><svg width="16" height="16"><use href="#i-chat"/></svg>Chat<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">Conversations over your history; the command field's Ask mode lands here.</p>
             </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="status.html">
+              <span class="mx-kicker">04 · Main</span>
+              <span class="mx-h3">Status<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">What Mnema is doing, from the status bar.</p>
+            </a>
             <a class="mx-panel mx-panel--interactive g-page" href="settings.html">
-              <span class="mx-kicker">04 · Mode</span>
+              <span class="mx-kicker">05 · Mode</span>
               <span class="mx-h3"><svg width="16" height="16"><use href="#i-gear"/></svg>Settings<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">Quiet rows, one decision per line. Capture, privacy, AI, storage.</p>
             </a>
             <a class="mx-panel mx-panel--interactive g-page" href="onboarding.html">
-              <span class="mx-kicker">05 · Window</span>
+              <span class="mx-kicker">06 · Window</span>
               <span class="mx-h3">Onboarding<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">The locked #195 flow, Welcome to Finale, in the new skin.</p>
             </a>
             <a class="mx-panel mx-panel--interactive g-page" href="recall.html">
-              <span class="mx-kicker">06 · Window</span>
+              <span class="mx-kicker">07 · Window</span>
               <span class="mx-h3"><svg width="16" height="16"><use href="#i-search"/></svg>Quick Recall<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">The chosen ⌥⌘Space bar (C + B's Quick Look). Phrases turn into pills, one best moment leads, and questions are answered inline with selectable citations. Space or → opens Quick Look under the bar: scrub ±15 s and ↵ opens that exact frame.</p>
             </a>
             <a class="mx-panel mx-panel--interactive g-page" href="access.html">
-              <span class="mx-kicker">07 · Window</span>
+              <span class="mx-kicker">08 · Window</span>
               <span class="mx-h3">CLI Access<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">Approval request, scope widen, and managing allowed and blocked tools.</p>
             </a>
             <a class="mx-panel mx-panel--interactive g-page" href="update.html">
-              <span class="mx-kicker">08 · Window</span>
+              <span class="mx-kicker">09 · Window</span>
               <span class="mx-h3">Update<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">Available, downloading, ready, and outside your update window.</p>
             </a>
+            <a class="mx-panel mx-panel--interactive g-page" href="developer.html">
+              <span class="mx-kicker">10 · Window</span>
+              <span class="mx-h3">Developer<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
+              <p class="mx-prose">Small diagnosis window: health, pipeline, capture, AI, logs.</p>
+            </a>
             <a class="mx-panel mx-panel--interactive g-page" href="backend.html">
-              <span class="mx-kicker">09 · Report</span>
+              <span class="mx-kicker">11 · Report</span>
               <span class="mx-h3">Backend changes<svg class="arrow" width="16" height="16"><use href="#i-arrow"/></svg></span>
               <p class="mx-prose">What the redesign needs from Rust: commands, prompts, migrations, decisions.</p>
             </a>
@@ -559,7 +569,7 @@
 
   <div class="g-group">
     <span class="mx-kicker">Status bar · source conditions (session keeps recording)</span>
-    <div class="g-sb"><span class="g-sb__cap">Display asleep / disconnected<small>screen only; mic + system continue</small><span class="mx-chip mx-chip--warn">debug-only today</span></span>
+    <div class="g-sb"><span class="g-sb__cap">Display asleep / disconnected<small>screen only; mic + system continue</small><a class="mx-chip mx-chip--info" href="status.html?state=display-asleep">status popover · needs backend</a></span>
       <footer class="mx-statusbar"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span><span class="mx-sep"></span>
         <span class="mx-lane mx-lane--screen mx-lane--waiting" data-tip="Screen resumes when the display is back" data-tip-pos="top">screen <small>display asleep</small></span><span class="mx-lane mx-lane--mic mx-lane--on">mic</span><span class="mx-lane mx-lane--sysaudio mx-lane--on">system</span></footer></div>
     <div class="g-sb"><span class="g-sb__cap">Privacy filter failed · retrying<small>reason privacy_filter_apply_failed</small></span>
