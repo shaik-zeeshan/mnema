@@ -66,7 +66,7 @@ Pages with no recording context may drop the `<footer>`: set `grid-template-rows
 - Narrow (< 1000px container): key hints hide; the field shrinks (clamp 260–440px).
 
 ## Engine status — hidden when healthy
-The Reasoning Engine is plumbing: when it works the user never sees its name. **Remove every "engine <model>" indicator from page chrome** (Insights' `.in-engine`). Only when it is not healthy, add ONE pill to the status bar (after `mx-spacer`) and one `.mx-notif` row:
+The Reasoning Engine is plumbing: when it works the user never sees its name. **Remove every "engine <model>" indicator from page chrome** (Insights' `.in-engine`). Only when it is not healthy, add ONE pill to the status bar (after `mx-spacer`) and the AI row in the status popover (`status.html`). **No standing `.mx-notif` row** (ruled 2026-10-14): the bell holds events, the popover holds current state, and the two never repeat a row:
 
 | condition (reason code) | pill | page surfaces show |
 |---|---|---|
