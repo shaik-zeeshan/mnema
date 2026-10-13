@@ -112,7 +112,7 @@ export function cloneMcpServer(server: McpServerConfig): McpServerConfig {
 export interface RecordingStoreDeps {
   // App-wide theme runtime (lib/theme.svelte): apply the loaded appearance.
   setAppearance: (value: AppearanceSetting) => void;
-  // Developer-options runtime (lib/developer-options.svelte): gate the Debug page.
+  // Developer-options runtime (lib/developer-options.svelte): gate the developer window.
   setDeveloperOptionsEnabled: (value: boolean) => void;
   // Reload the debug-log status (page-owned loader) after a developer-domain sync.
   loadDebugLogStatus: () => void;

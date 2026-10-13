@@ -163,7 +163,6 @@
   .dv-insp__title { display: flex; align-items: center; gap: var(--s-2); }
   .dv-insp__title .mx-h3 { font-family: var(--font-mono); font-weight: 500; letter-spacing: -0.02em; }
   .dv-insp__sub { margin: 0; font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-muted); }
-  .dv-raw-err { display: block; margin-top: 6px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--mx-wash); font: 450 var(--text-sm)/1.45 var(--font-mono); color: var(--app-text); overflow-wrap: anywhere; }
   .dv-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .dv-acts .mx-spacer { flex: 1; }
   .dv-msg { margin: -10px 0 0; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-muted); }

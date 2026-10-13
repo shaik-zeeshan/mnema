@@ -15,9 +15,6 @@
 
   interface Props {
     platform: KeyboardPlatform;
-    // ponytail: unused since the bug icon left the titlebar (⌘D + Settings are
-    // the ways in); kept so +layout.svelte's call site stays valid.
-    devEnabled: boolean;
   }
   let { platform }: Props = $props();
 

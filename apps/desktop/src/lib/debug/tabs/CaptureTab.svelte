@@ -24,7 +24,7 @@
   import { getDebugController } from "../state/controller.svelte";
   import { formatRunning } from "../verdict";
   import {
-    LANE_WORD, WEB_ADDRESS, diskAt, formatSeconds, formatWait, gb, laneDetail, meterBars, rebuildReasonLabel,
+    LANE_WORD, WEB_ADDRESS, diskAt, formatSeconds, formatWait, gb, laneDetail, meterBars, rebuildReasonText,
   } from "../capture-view";
 
   const controller = getDebugController();
@@ -54,6 +54,7 @@
 
   const settings = $derived(capture.recordingSettings);
   const tap = $derived(health?.systemAudioTap ?? null);
+  const lastReason = $derived(rebuildReasonText(tap?.lastReason ?? null, tap?.lastDetail ?? null));
   const suspension = $derived(health?.suspension ?? null);
   const platform = detectKeyboardPlatform();
   const keys = $derived(formatShortcut(getEffectiveGlobalShortcut("toggleRecording").bindings[0], platform).join(""));
@@ -182,7 +183,7 @@
       </div>
       <div>
         <dt>Last reason</dt>
-        <dd>{rebuildReasonLabel(tap.lastReason)}{#if tap.lastDetail}, <span class="num">{tap.lastDetail}</span>{/if}</dd>
+        <dd>{lastReason.label}{#if lastReason.detail}, <span class="num">{lastReason.detail}</span>{/if}</dd>
         <dd class="mx-spec__note">{tap.lastRebuildAtMs != null ? formatClock(tap.lastRebuildAtMs) : ""}</dd>
       </div>
       <div>

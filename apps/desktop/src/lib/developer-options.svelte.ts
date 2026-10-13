@@ -1,8 +1,8 @@
-// Shared developer-options state — drives whether the Debug page and its
-// nav entry are exposed in the UI. Backed by the persisted recording-settings
+// Shared developer-options state — drives whether the developer window (⌘D,
+// Settings › Developer) is available. Backed by the persisted recording-settings
 // `developerOptionsEnabled` field; the layout loads it once on mount and the
-// settings page updates the in-memory value after a successful save so nav
-// visibility and redirects react immediately without a round-trip.
+// settings page updates the in-memory value after a successful save so the
+// Settings row and the /debug redirect react immediately without a round-trip.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -41,7 +41,7 @@ function initDeveloperOptionsSync(): void {
 /**
  * Best-effort load of the persisted developer-options flag. Failures are
  * swallowed and the flag stays at its current (or default `false`) value —
- * the gating is fail-safe: hidden Debug surfaces are the secure default.
+ * the gating is fail-safe: a hidden developer window is the secure default.
  */
 export async function loadDeveloperOptions(): Promise<void> {
   initDeveloperOptionsSync();

@@ -61,10 +61,16 @@
 .dv-body .mx-spec { grid-template-columns: minmax(96px, max-content) 1fr auto; }
 .dv-body .mx-spec dt, .dv-body .mx-spec dd { padding-block: 7px; }
 .dv-body .mx-spec dd { font: 400 var(--text-base)/1.4 var(--font-sans); }
-.dv-body .mx-spec dd.mx-spec__note { font-size: var(--text-sm); }
+/* Notes stay sans like the mockup. Spelled out at higher specificity than both
+   kit.css's mono note rule and the dd rule above, so stylesheet order can't flip it. */
+.dv-body .mx-spec > div > dd.mx-spec__note { font: 400 var(--text-sm)/1.4 var(--font-sans); }
 .dv-spec-box { padding: 2px var(--s-3); border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface-subtle); }
 .dv-body .mx-notice { padding: 9px 11px; }
 .dv-body .mx-notice__text .num { color: var(--app-text); }
+/* A raw error string inside a notice (job error, model load error). */
+.dv-body .dv-raw-err { display: block; margin-top: 6px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--mx-wash); font: 450 var(--text-sm)/1.45 var(--font-mono); color: var(--app-text); overflow-wrap: anywhere; }
+/* Beats kit.css's .mx-empty--compact glyph (span 2) by specificity, not load order. */
+.dv-body .dv-empty .mx-empty__glyph { grid-row: auto; }
 
 /* --- Breadcrumb for drill-ins --- */
 .dv-crumb { display: flex; align-items: center; gap: 4px; margin: -4px 0 -6px -6px; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }

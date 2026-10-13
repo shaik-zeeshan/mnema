@@ -212,9 +212,26 @@ fn screen(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     row(F::Screen, S::Ok, why, duration)
 }
 
-fn rebuild_reason(reason: TapRebuildReasonDto) -> &'static str {
+/// Bluetooth call (HFP) audio runs at 16 kHz or less; music (A2DP) above it.
+const CALL_RATE_HZ: u32 = 16_000;
+
+/// The rates out of a sample-rate rebuild's detail ("48000 → 16000 Hz").
+fn rate_change(detail: Option<&str>) -> Option<(u32, u32)> {
+    let (before, after) = detail?.strip_suffix(" Hz")?.split_once(" → ")?;
+    Some((before.parse().ok()?, after.parse().ok()?))
+}
+
+fn rebuild_reason(reason: TapRebuildReasonDto, detail: Option<&str>) -> &'static str {
     match reason {
-        TapRebuildReasonDto::SampleRateChanged => "headset switched to call quality",
+        TapRebuildReasonDto::SampleRateChanged => match rate_change(detail) {
+            Some((before, after)) if after <= CALL_RATE_HZ && before > CALL_RATE_HZ => {
+                "headset switched to call quality"
+            }
+            Some((before, after)) if before <= CALL_RATE_HZ && after > CALL_RATE_HZ => {
+                "headset went back to full quality"
+            }
+            _ => "a sample rate change",
+        },
         TapRebuildReasonDto::DeviceChanged => "output device changed",
         TapRebuildReasonDto::DeviceDied => "output device disappeared",
         TapRebuildReasonDto::ExcludeListMoved => "an excluded app started or quit",
@@ -237,8 +254,11 @@ fn audio(
     match source.state {
         CaptureSourceState::Paused => return paused(feature, source),
         CaptureSourceState::Reconnecting => {
-            let why = match tap.and_then(|tap| tap.last_reason) {
-                Some(reason) => format!("Rebuilding after {}", rebuild_reason(reason)),
+            let why = match tap.and_then(|tap| Some((tap.last_reason?, tap.last_detail.as_deref())))
+            {
+                Some((reason, detail)) => {
+                    format!("Rebuilding after {}", rebuild_reason(reason, detail))
+                }
                 None => "Reconnecting".to_string(),
             };
             let nth = tap

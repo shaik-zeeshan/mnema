@@ -572,7 +572,7 @@ export interface ProcessingJobDto {
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
-	/** Queued but its model is downloading/absent ("Preparing"). Only job-listing commands resolve it. */
+	/** Queued but its model is downloading/absent ("Preparing"). Resolved by the job commands. */
 	modelLocked: boolean;
 }
 

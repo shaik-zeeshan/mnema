@@ -240,6 +240,4 @@
   .dv-tail__end { margin: 0; padding: 4px 0 0; font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
   .dv-test { display: block; margin-top: 4px; color: var(--tone); }
   .dv-err { margin: 0; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-danger-text); }
-  .dv-raw-err { display: block; margin-top: 6px; padding: 6px 8px; border-radius: var(--r-sm); background: var(--mx-wash); font: 450 var(--text-sm)/1.45 var(--font-mono); color: var(--app-text); overflow-wrap: anywhere; }
-  .dv-empty .mx-empty__glyph { grid-row: auto; }
 </style>

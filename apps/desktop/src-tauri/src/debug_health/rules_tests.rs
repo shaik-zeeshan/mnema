@@ -188,6 +188,7 @@ fn scenario_issues() {
     let tap = inputs.capture.system_audio_tap.as_mut().unwrap();
     tap.rebuilds_today = 3;
     tap.last_reason = Some(TapRebuildReasonDto::SampleRateChanged);
+    tap.last_detail = Some("48000 → 16000 Hz".into());
     inputs.pipeline[1].queued = 14;
     inputs.pipeline[1].retrying = 12;
     inputs.pipeline[1].last_error = Some(
@@ -391,4 +392,31 @@ fn the_wire_shape_is_camel_case() {
     assert_eq!(json["severity"], "ok");
     assert!(json["metricAtMs"].is_i64());
     assert!(json["metric"].is_null());
+}
+
+#[test]
+fn a_sample_rate_rebuild_reads_the_direction_of_the_switch() {
+    let mut inputs = ok();
+    inputs.capture.system_audio.state = CaptureSourceState::Reconnecting;
+    let tap = inputs.capture.system_audio_tap.as_mut().unwrap();
+    tap.last_reason = Some(TapRebuildReasonDto::SampleRateChanged);
+    for (detail, why) in [
+        (
+            Some("16000 → 48000 Hz"),
+            "Rebuilding after headset went back to full quality",
+        ),
+        (
+            Some("48000 → 44100 Hz"),
+            "Rebuilding after a sample rate change",
+        ),
+        (None, "Rebuilding after a sample rate change"),
+    ] {
+        inputs
+            .capture
+            .system_audio_tap
+            .as_mut()
+            .unwrap()
+            .last_detail = detail.map(Into::into);
+        assert_eq!(get(&roll_up(&inputs), F::SystemAudio).reason, why);
+    }
 }

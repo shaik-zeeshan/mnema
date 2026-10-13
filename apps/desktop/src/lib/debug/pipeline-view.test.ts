@@ -19,12 +19,12 @@ const settings = (provider) => ({
 });
 
 describe("flowNodes", () => {
-	it("maps the issues scenario: waiting = queued + retrying, tones from failures/retries", () => {
+	it("maps the issues scenario: waiting = queued (retrying is inside it), tones from failures/retries", () => {
 		const nodes = flowNodes(
 			ISSUES_HEALTH,
 			lanesOf({
 				ocr: lane("ocr", { queued: 9, running: 1, failedLast24h: 1 }),
-				audio_transcription: lane("audio_transcription", { queued: 2, retrying: 12, failedLast24h: 1 }),
+				audio_transcription: lane("audio_transcription", { queued: 14, retrying: 12, failedLast24h: 1 }),
 			}),
 			{ vectorCount: 12480, backlogCount: 31 },
 		);
@@ -40,6 +40,12 @@ describe("flowNodes", () => {
 		expect(nodes[4].lines[0].text).toBe((12480).toLocaleString() + " done");
 	});
 
+	it("does not count retrying jobs twice: they are already inside queued", () => {
+		const nodes = flowNodes(OFF_HEALTH, lanesOf({ ocr: lane("ocr", { queued: 5, retrying: 5 }) }), null);
+		expect(nodes[1].big).toBe("5");
+		expect(nodes[1].bar).toBeCloseTo(5 / 50);
+	});
+
 	it("marks draining backlogs info when nothing records, and caps the bar", () => {
 		const nodes = flowNodes(OFF_HEALTH, lanesOf({ ocr: lane("ocr", { queued: 80, running: 1 }) }), { vectorCount: 1, backlogCount: 212 });
 		expect(nodes[0]).toMatchObject({ big: "0", lines: [{ text: "not recording" }] });
@@ -52,7 +58,7 @@ describe("processorRows", () => {
 	it("names the engine, flags an unreachable cloud provider, formats the average", () => {
 		const rows = processorRows(
 			ISSUES_HEALTH,
-			lanesOf({ audio_transcription: lane("audio_transcription", { retrying: 3, averageCompletedSecondsLast24h: 6.24 }), ocr: lane("ocr", { averageCompletedSecondsLast24h: 0.04 }) }),
+			lanesOf({ audio_transcription: lane("audio_transcription", { queued: 3, retrying: 3, averageCompletedSecondsLast24h: 6.24 }), ocr: lane("ocr", { averageCompletedSecondsLast24h: 0.04 }) }),
 			settings("deepgram"),
 		);
 		expect(rows.map((r) => r.key)).toEqual(["reading", "transcription", "speakers", "meaningIndex"]);

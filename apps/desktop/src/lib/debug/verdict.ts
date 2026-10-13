@@ -43,7 +43,9 @@ export function verdict(rows: VerdictRow[]): Verdict {
 	if (capture.length > 0 && capture.every((r) => r.severity === "off")) {
 		return { tone: "off", text: info ? "Not recording · finishing earlier work" : "Not recording" };
 	}
-	if (info) return { tone: "info", text: info.reason };
+	// Named like the mini line ("Screen: Waiting, display asleep"): a bare reason
+	// doesn't say which feature is waiting.
+	if (info) return { tone: "info", text: `${FEATURE_ROWS[info.feature]?.name ?? info.feature}: ${info.reason}` };
 	return { tone: "ok", text: "Everything is running" };
 }
 

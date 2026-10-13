@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig, so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { diskAt, formatWait, gb, laneDetail, meterBars, rebuildReasonLabel, reasonPhrase } from "./capture-view";
+import { diskAt, formatWait, gb, laneDetail, meterBars, rebuildReasonText, reasonPhrase } from "./capture-view";
 
 const lane = (state, reason = null, deviceName = null) => ({ requested: true, state, reason, levelDb: null, idleMs: null, deviceName });
 
@@ -17,6 +17,7 @@ describe("capture view", () => {
 
 	it("lane detail prefers the device, else the reason, plus the tap rate", () => {
 		expect(laneDetail(lane("waiting", "capture_display_unavailable"))).toBe("display asleep");
+		expect(laneDetail(lane("waiting", "capture_display_unavailable", "Built-in Retina Display"))).toBe("display asleep");
 		expect(laneDetail(lane("recording", null, "AirPods Pro"), 48_000)).toBe("AirPods Pro · 48 kHz");
 		expect(laneDetail(lane("recording"), 48_000)).toBe("48 kHz");
 		expect(laneDetail(lane("off"), 48_000)).toBe("");
@@ -39,6 +40,14 @@ describe("capture view", () => {
 		expect(gb(41.23 * 1024 ** 3)).toBe("41.2");
 		expect(diskAt(5 * 1024 ** 3)).toBe(0.2);
 		expect(diskAt(500 * 1024 ** 3)).toBe(1);
-		expect(rebuildReasonLabel("sampleRateChanged")).toBe("Sample rate changed");
+	});
+
+	it("reads a sample-rate rebuild as the headset changing mode", () => {
+		expect(rebuildReasonText("sampleRateChanged", "48000 → 16000 Hz")).toEqual({ label: "Headset switched to call quality", detail: "48 → 16 kHz" });
+		expect(rebuildReasonText("sampleRateChanged", "16000 → 48000 Hz")).toEqual({ label: "Headset back to full quality", detail: "16 → 48 kHz" });
+		expect(rebuildReasonText("sampleRateChanged", "48000 → 44100 Hz")).toEqual({ label: "Sample rate changed", detail: "48 → 44.1 kHz" });
+		expect(rebuildReasonText("sampleRateChanged", null)).toEqual({ label: "Sample rate changed", detail: null });
+		expect(rebuildReasonText("deviceDied", null)).toEqual({ label: "Output device went away", detail: null });
+		expect(rebuildReasonText(null)).toEqual({ label: "—", detail: null });
 	});
 });

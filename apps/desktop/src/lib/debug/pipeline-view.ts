@@ -55,7 +55,8 @@ function captureNode(health: HealthLike[]): FlowNode {
 }
 
 function laneNode(name: string, lane: ProcessorPipelineStatus, recording: boolean): FlowNode {
-	const waiting = lane.queued + lane.retrying;
+	// The wire's `queued` already includes `retrying` (a retry reverts to queued).
+	const waiting = lane.queued;
 	const first: NodeLine =
 		lane.retrying > 0
 			? { text: `${count(lane.retrying)} retrying`, tone: "warn" }
@@ -83,7 +84,8 @@ function meaningNode(index: SemanticIndexStatusDto | null, recording: boolean): 
 
 /**
  * The five flow nodes. `lane(processor)` must zero-default a missing lane
- * (`laneFor` in features.svelte.ts). Waiting = queued + retrying.
+ * (`laneFor` in features.svelte.ts). Waiting = the lane's `queued`, which
+ * already counts the retrying jobs.
  */
 export function flowNodes(
 	health: HealthLike[],

@@ -1,14 +1,10 @@
-// Debug-page wire types.
+// Developer-window wire types.
 //
 // Hand-mirrored from Rust per repo convention (no codegen). Sources:
 //   • `DebugSeverity` / `DebugFeature` / `FeatureHealthDto`
 //       → apps/desktop/src-tauri/src/debug_health.rs
 //   • `AppLogFile` / `AppLogTailDto`
 //       → apps/desktop/src-tauri/src/debug_status.rs (tail_app_log)
-//   • `CapturePrivacyDebugInfo`
-//       → apps/desktop/src-tauri/src/native_capture/metadata.rs (get_capture_privacy_debug)
-//   • `OcrBudgetDebug` + its events
-//       → apps/desktop/src-tauri/src/ocr_budget.rs (get_ocr_budget_debug)
 //   • `ProcessorPipelineStatus` / `ProcessingJobListing`
 //       → crates/app-infra/src/processing/store.rs
 //         (get_processing_pipeline_status / list_processing_jobs_by_processor)
@@ -19,10 +15,6 @@
 //   • `AskAiTokenUsage`
 //       → apps/desktop/src-tauri/src/ask_ai.rs (get_ask_ai_last_turn_usage)
 //
-// The privacy/OCR shapes were page-local `type` aliases inside
-// routes/debug/+page.svelte before the slice-5 split; they moved here verbatim
-// because the section components and the state stores both need them now.
-
 import type { ProcessingJobDto, ProcessingJobStatus } from "./app-infra";
 
 /** A health row's tone. UI: `error` renders as danger; the rest keep their name. */
@@ -71,91 +63,6 @@ export interface AppLogTailDto {
 	exists: boolean;
 	/** Up to the requested line count, oldest first. Empty when missing. */
 	lines: string[];
-}
-
-// ─── Privacy filter debug (get_capture_privacy_debug) ──────────────────────
-
-export interface PrivacyFilterDecision {
-	excludedBundleIds: string[];
-	excludedBundleSourceIds?: Record<string, string>;
-	matchedRuleIds: string[];
-	metadataRedactionReason: string | null;
-	privacyFilterApplied: boolean;
-}
-
-export interface CapturePrivacyDebugInfo {
-	metadataEnabled: boolean;
-	browserUrlMode: string;
-	browserUrlMetadataSource: string;
-	privacyDebug: {
-		latestSnapshot: {
-			appBundleId: string | null;
-			appName: string | null;
-			windowTitle: string | null;
-			browserUrl: string | null;
-			displayId: number | null;
-			metadataRedactionReason: string | null;
-			metadataRedactionSourceId: string | null;
-		} | null;
-		latestDecision: PrivacyFilterDecision;
-		latestAppliedDecision: PrivacyFilterDecision;
-		currentlyExcludedBundleIds: string[];
-		privacyFilterApplied: boolean;
-	};
-}
-
-// ─── OCR budget debug (get_ocr_budget_debug) ───────────────────────────────
-
-export interface OcrAdmissionSignals {
-	firstCandidateInScope: boolean;
-	contextChanged: boolean;
-	lowQueuePressure: boolean;
-	representativeDue: boolean;
-	highQueuePressure: boolean;
-	fingerprintNovelInScope: boolean;
-	noveltyAdmissionAvailable: boolean;
-}
-
-export interface OcrAdmissionDebugEvent {
-	occurredAt: string;
-	sessionId: string;
-	workspaceScope: string;
-	frameId: number;
-	outcome: string;
-	reason: string;
-	queuePressureCount: number;
-	recordingActive: boolean;
-	jobId: number | null;
-	relatedFrameId: number | null;
-	signals: OcrAdmissionSignals;
-}
-
-export interface OcrExecutionDebugEvent {
-	occurredAt: string;
-	jobId: number;
-	frameId: number | null;
-	provider: string;
-	modelId: string | null;
-	recognitionMode: string | null;
-	status: string;
-	runDurationMs: number;
-	queueWaitMs: number | null;
-	resultTextLength: number | null;
-	observationCount: number | null;
-	lastError: string | null;
-}
-
-export interface OcrBudgetDebug {
-	summary: {
-		queuedOrRunningCount: number;
-		executionState: string;
-		cooldownRemainingMs: number;
-		lastRunDurationMs: number | null;
-		lastRunStatus: string | null;
-		lastPacingMode: string | null;
-	};
-	admissionEvents: OcrAdmissionDebugEvent[];
-	executionEvents: OcrExecutionDebugEvent[];
 }
 
 // ─── Pipeline status (get_processing_pipeline_status) ──────────────────────
@@ -215,9 +122,9 @@ export interface ProcessingJobListing extends ProcessingJobDto {
 	 * `status === "queued" && modelLocked` is the "Preparing" state: waiting for its model rather
 	 * than queued behind other work.
 	 *
-	 * Lives HERE, not on `ProcessingJobDto`: Rust resolves it on the listing wrapper
-	 * (`ProcessingJobListing`, `crates/app-infra/src/processing/store.rs`), not on the domain
-	 * `ProcessingJob` — so `get_processing_job` / `list_processing_jobs` never send it.
+	 * Also on `ProcessingJobDto` now: the desktop commands (`get_processing_job`,
+	 * `list_processing_jobs`, `retry_processing_job_now`) resolve it too. Here the
+	 * listing wrapper (`crates/app-infra/src/processing/store.rs`) resolves it.
 	 */
 	modelLocked: boolean;
 }

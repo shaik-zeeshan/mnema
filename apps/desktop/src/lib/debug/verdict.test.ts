@@ -20,10 +20,10 @@ describe("verdict", () => {
 		expect(verdict([...STOPPED, row("disk", "warn")]).text).toBe("1 thing needs a look");
 	});
 
-	it("says the first info row's reason", () => {
+	it("names the first info row and says its reason", () => {
 		expect(
 			verdict([row("screen", "info", "Waiting, display asleep"), row("microphone", "ok"), row("reading", "info", "second")]),
-		).toEqual({ tone: "info", text: "Waiting, display asleep" });
+		).toEqual({ tone: "info", text: "Screen: Waiting, display asleep" });
 	});
 
 	it("reads all-off capture as not recording, naming the draining queues", () => {

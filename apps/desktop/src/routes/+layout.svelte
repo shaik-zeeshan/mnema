@@ -224,7 +224,7 @@
     }
   });
 
-  // Hide the gated Debug surface until we know whether developer options
+  // Hide the gated developer window until we know whether developer options
   // are enabled, and while we're redirecting a disabled user away from it.
   // Non-gated routes always render immediately.
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
@@ -385,7 +385,7 @@
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
 >
   {#if showMainTitlebar}
-    <Titlebar platform={windowPlatform} {devEnabled} />
+    <Titlebar platform={windowPlatform} />
   {/if}
 
   {#if isMainWindow}

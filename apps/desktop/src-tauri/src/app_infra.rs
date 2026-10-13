@@ -1778,8 +1778,6 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
 /// the end of [`run_deferred_startup_blocking`], so it is `None` while startup
 /// is still running and for a run a quit cut short. The aggregate-device reap
 /// runs afterwards in `lib.rs` and is not part of it.
-// ponytail: dead_code allowed until the health rows read it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StartupReport {
     pub duration_ms: u64,
@@ -1798,7 +1796,6 @@ pub(crate) struct StartupReport {
 
 static STARTUP_REPORT: OnceLock<StartupReport> = OnceLock::new();
 
-#[allow(dead_code)]
 pub(crate) fn startup_report() -> Option<StartupReport> {
     STARTUP_REPORT.get().cloned()
 }

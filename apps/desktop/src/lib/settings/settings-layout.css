@@ -15,7 +15,7 @@
  *   settings-theme.css    — [data-theme="light"] overrides
  *
  * Every selector is namespaced under `.settings-shell` (the shell root) so the
- * rules never leak to other surfaces (Insights, Debug) that reuse generic class
+ * rules never leak to other surfaces (Insights, Developer) that reuse generic class
  * names. @keyframes stay global (referenced by name). The `.settings-shell`
  * root rule itself lives on the shell component's own <style>; the rail and
  * the content header style themselves (SettingsRail / SettingsBar). */

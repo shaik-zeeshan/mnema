@@ -110,7 +110,7 @@ pub struct SegmentWorkspaceBatchReference {
     pub status: FrameBatchStatus,
 }
 
-/// Open/failed rollup for the debug page's Jobs & Storage card.
+/// Open/failed rollup for the developer window's Pipeline housekeeping.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameBatchCounts {
@@ -326,7 +326,7 @@ impl FrameBatchStore {
         get_frame_batch_optional(self.db.read(), batch_id).await
     }
 
-    /// Open/failed rollup for the debug page's Jobs & Storage card.
+    /// Open/failed rollup for the developer window's Pipeline housekeeping.
     pub async fn counts(&self) -> Result<FrameBatchCounts> {
         let row = sqlx::query(
             "SELECT \

@@ -171,7 +171,6 @@
   .dv-test { margin: 0; padding: 0 2px; color: var(--app-text-muted); }
   .dv-test :global(svg) { color: var(--tone); }
   .dv-empty { padding: 10px 0; }
-  .dv-empty .mx-empty__glyph { grid-row: auto; }
   .dv-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--app-border); border-radius: var(--r-md); }
   .dv-stats .mx-stat { padding: 10px 12px; gap: 6px; }
   .dv-stats .mx-stat + .mx-stat { border-left: 1px solid var(--mx-hairline); }

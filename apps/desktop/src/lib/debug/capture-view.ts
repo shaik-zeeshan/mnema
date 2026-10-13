@@ -46,16 +46,40 @@ const REBUILD: Record<SystemAudioTapRebuildReason, string> = {
 	silenceWatchdog: "no sound for a while",
 };
 
-/** "Sample rate changed" — the spec row's sentence-case rebuild reason. */
-export function rebuildReasonLabel(reason: SystemAudioTapRebuildReason | null): string {
-	if (!reason) return "—";
+/** Bluetooth call (HFP) audio runs at 16 kHz or less; music (A2DP) above it. */
+const CALL_RATE_HZ = 16_000;
+const kHz = (hz: number) => String(Math.round(hz / 100) / 10);
+
+/**
+ * The spec row's sentence-case rebuild reason plus its mono detail. A sample-rate
+ * rebuild whose detail ("48000 → 16000 Hz") crosses the call-audio line reads as
+ * the headset switching mode, with the rates shortened to "48 → 16 kHz".
+ */
+export function rebuildReasonText(
+	reason: SystemAudioTapRebuildReason | null,
+	detail: string | null = null,
+): { label: string; detail: string | null } {
+	if (!reason) return { label: "—", detail: null };
 	const text = REBUILD[reason];
-	return text[0].toUpperCase() + text.slice(1);
+	const rates = /^(\d+) → (\d+) Hz$/.exec(detail ?? "");
+	if (reason === "sampleRateChanged" && rates) {
+		const [before, after] = [Number(rates[1]), Number(rates[2])];
+		const short = `${kHz(before)} → ${kHz(after)} kHz`;
+		if (after <= CALL_RATE_HZ && before > CALL_RATE_HZ) return { label: "Headset switched to call quality", detail: short };
+		if (before <= CALL_RATE_HZ && after > CALL_RATE_HZ) return { label: "Headset back to full quality", detail: short };
+		return { label: "Sample rate changed", detail: short };
+	}
+	return { label: text[0].toUpperCase() + text.slice(1), detail };
 }
 
-/** Lane detail: device name or the plain reason, plus "48 kHz" for system audio. */
+/**
+ * Lane detail, plus "48 kHz" for system audio. A recording lane names its
+ * device; any other state leads with why ("display asleep"), so a known device
+ * name can never hide the suspension reason.
+ */
 export function laneDetail(src: CaptureSourceHealth, sampleRateHz: number | null = null): string {
-	const parts = [src.deviceName ?? reasonPhrase(src.reason)];
+	const why = reasonPhrase(src.reason);
+	const parts = [src.state === "recording" ? (src.deviceName ?? why) : (why ?? src.deviceName)];
 	if (sampleRateHz && src.state !== "off") parts.push(`${Math.round(sampleRateHz / 1000)} kHz`);
 	return parts.filter(Boolean).join(" · ");
 }
