@@ -2051,19 +2051,28 @@ impl ProcessingStore {
         Ok(job)
     }
 
-    /// Test-only: clear a job's retry backoff so the automatic queue drain treats
-    /// it as immediately eligible again, simulating the backoff window elapsing
-    /// without waiting in wall-clock time.
+    /// Clear a queued job's retry backoff so the next queue drain may claim it right away.
+    /// Returns `false` when no queued job with that id exists (a failed job goes through
+    /// reprocess instead). Leaves `failure_count`, `attempt_count` and model locks alone.
+    pub async fn clear_processing_job_backoff(&self, job_id: i64) -> Result<bool> {
+        let cleared = sqlx::query(
+            "UPDATE processing_jobs \
+             SET next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .execute(self.db.write())
+        .await?;
+        Ok(cleared.rows_affected() > 0)
+    }
+
+    /// Test-only: simulate the backoff window elapsing without waiting in wall-clock time.
     #[cfg(test)]
     pub(crate) async fn expire_processing_job_retry_backoff_for_test(
         &self,
         job_id: i64,
     ) -> Result<()> {
-        sqlx::query("UPDATE processing_jobs SET next_attempt_at = NULL WHERE id = ?1")
-            .bind(job_id)
-            .execute(self.db.write())
-            .await?;
-        Ok(())
+        self.clear_processing_job_backoff(job_id).await.map(|_| ())
     }
 
     pub async fn complete_job(
@@ -4987,6 +4996,56 @@ mod tests {
             assert_eq!(claimed.id, job.id);
             assert_eq!(claimed.failure_count, 0);
             assert_eq!(claimed.attempt_count, 1);
+        });
+    }
+
+    /// "Retry now" in the developer window: a queued job waiting out a backoff becomes claimable
+    /// at once, while a failed job is left for reprocess.
+    #[test]
+    fn retry_now_clears_a_queued_backoff_but_leaves_a_failed_job() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            sqlx::query(
+                "UPDATE processing_jobs SET next_attempt_at = datetime(CURRENT_TIMESTAMP, '+1 hour') WHERE id = ?1",
+            )
+            .bind(job.id)
+            .execute(store.db.write())
+            .await
+            .expect("backoff should be set");
+            assert!(store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed")
+                .is_none());
+
+            assert!(store
+                .clear_processing_job_backoff(job.id)
+                .await
+                .expect("clear should succeed"));
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed")
+                .expect("job should be claimable once the backoff is cleared");
+            assert_eq!(claimed.id, job.id);
+
+            let failed = store
+                .mark_job_failed(job.id, Some("engine exploded"))
+                .await
+                .expect("mark_job_failed should succeed");
+            assert!(!store
+                .clear_processing_job_backoff(job.id)
+                .await
+                .expect("clear should succeed"));
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(after.status, ProcessingJobStatus::Failed);
+            assert_eq!(after.failure_count, failed.failure_count);
+            assert_eq!(after.attempt_count, failed.attempt_count);
         });
     }
 

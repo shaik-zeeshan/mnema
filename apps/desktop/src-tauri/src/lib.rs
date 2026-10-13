@@ -745,6 +745,7 @@ pub fn run() {
             app_infra::frame_preview::cancel_active_frame_preview_video_requests,
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
+            app_infra::retry_processing_job_now,
             app_infra::get_processing_result,
             ocr_budget::get_ocr_budget_debug,
             app_infra::list_processing_results,

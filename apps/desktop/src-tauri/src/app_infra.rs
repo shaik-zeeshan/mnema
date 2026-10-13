@@ -5195,6 +5195,38 @@ pub async fn get_processing_job(
         .map_err(|error| format!("failed to get processing job {}: {error}", request.job_id))
 }
 
+/// Developer window "Retry now": skip a waiting job's backoff. Failed jobs use the
+/// `reprocess_*` commands instead.
+#[tauri::command]
+pub async fn retry_processing_job_now(
+    job_id: i64,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<ProcessingJobDto, String> {
+    let infra = Arc::clone(&*state);
+    let cleared = infra
+        .clear_processing_job_backoff(job_id)
+        .await
+        .map_err(|error| format!("failed to retry processing job {job_id}: {error}"))?;
+    if !cleared {
+        return Err(
+            "Only a waiting job can be retried now. Use Reprocess for a failed job.".to_string(),
+        );
+    }
+    crate::native_capture::debug_log::log_info(format!(
+        "processing job {job_id} retry requested from developer window"
+    ));
+    let locked_model_keys = infra
+        .list_locked_processing_model_keys()
+        .await
+        .map_err(|error| format!("failed to list locked processing models: {error}"))?;
+    infra
+        .get_processing_job(job_id)
+        .await
+        .map_err(|error| format!("failed to get processing job {job_id}: {error}"))?
+        .map(|job| ProcessingJobDto::from_job(job, &locked_model_keys))
+        .ok_or_else(|| format!("processing job {job_id} not found"))
+}
+
 #[tauri::command]
 pub async fn get_processing_result(
     request: GetProcessingResultRequest,

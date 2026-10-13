@@ -1,15 +1,16 @@
 // Compile-time mirror guard for the processing-job wire shapes. No runtime
 // behaviour: `bun run check` is the assertion.
 //
-// `ProcessingJobDto` mirrors Rust's `ProcessingJob`
-// (crates/app-infra/src/processing/job.rs) — what `get_processing_job` and
-// `list_processing_jobs` return. `ProcessingJobListing` mirrors the debug-page
-// wrapper (crates/app-infra/src/processing/store.rs), which `#[serde(flatten)]`s
-// the job and resolves `nextAttemptAt` + `modelLocked` alongside it.
+// `ProcessingJobDto` mirrors the desktop `ProcessingJobDto`
+// (apps/desktop/src-tauri/src/app_infra.rs) — what `get_processing_job`,
+// `list_processing_jobs` and `retry_processing_job_now` return; it always sends
+// `modelLocked` (false unless the command resolved it). `ProcessingJobListing`
+// mirrors the debug-page wrapper (crates/app-infra/src/processing/store.rs),
+// which `#[serde(flatten)]`s the domain job and resolves `nextAttemptAt` +
+// `modelLocked` alongside it.
 //
-// A field added to the wrapper but declared on the DTO would make every plain
-// job DTO claim a property the backend never sends. These two literals are the
-// exact wire payloads; if the mirrors drift, this file stops compiling.
+// These two literals are the exact wire payloads; if the mirrors drift, this
+// file stops compiling.
 import type { ProcessingJobDto } from "./app-infra";
 import type { ProcessingJobListing } from "./debug";
 
@@ -28,6 +29,7 @@ const WIRE_JOB: ProcessingJobDto = {
 	updatedAt: "2026-07-15 14:30:00",
 	startedAt: null,
 	finishedAt: null,
+	modelLocked: false,
 };
 
 const WIRE_LISTING: ProcessingJobListing = {

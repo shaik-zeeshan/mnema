@@ -1483,6 +1483,12 @@ impl AppInfra {
         self.processing.get_job(job_id).await
     }
 
+    /// Drop a queued job's retry backoff so it runs on the next queue drain. `false` when the job
+    /// is not queued.
+    pub async fn clear_processing_job_backoff(&self, job_id: i64) -> Result<bool> {
+        self.processing.clear_processing_job_backoff(job_id).await
+    }
+
     pub async fn list_processing_jobs_for_subject(
         &self,
         subject: &ProcessingSubject,
