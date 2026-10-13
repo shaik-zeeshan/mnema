@@ -1,11 +1,11 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import IconRefresh from "~icons/lucide/refresh-cw";
+  import IconRetry from "~icons/lucide/rotate-ccw";
   import { tip } from "$lib/components/tooltip";
 
   interface Props {
     onclick: () => void;
-    /** Reload in flight — spins the icon and disables the button. */
+    /** Reload in flight — swaps the icon for the kit spinner and disables the button. */
     busy?: boolean;
     /** Disabled for a reason other than an in-flight reload (e.g. saving). */
     disabled?: boolean;
@@ -17,7 +17,7 @@
 
   let { onclick, busy = false, disabled = false, title = "Reload", label }: Props = $props();
 
-  // Guarantee a visible spin on activation. Several callers either pass no `busy`
+  // Guarantee a visible busy state on activation. Several callers either pass no `busy`
   // or a flag that flips true→false within a few ms (a local status read), so a
   // `busy`-only spin is an imperceptible one-frame twitch. On click we latch a
   // short minimum spin; the icon keeps spinning while EITHER the latch or a real
@@ -43,15 +43,20 @@
   });
 </script>
 
+<!-- Kit ghost icon button (settings mockup's mic "Reload"); in flight the icon
+     becomes the kit's static `.mx-spin` ring, like every other busy control. -->
 <button
-  class="settings-icon-btn"
-  class:settings-icon-btn--spin={spinning}
+  class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
   type="button"
   use:tip={title}
   aria-label={label ?? title}
-  aria-busy={busy}
+  aria-busy={spinning}
   disabled={disabled || busy}
   onclick={handleClick}
 >
-  <span class="settings-icon-btn__glyph"><IconRefresh aria-hidden="true" /></span>
+  {#if spinning}
+    <span class="mx-spin mx-spin--sm" aria-hidden="true"></span>
+  {:else}
+    <IconRetry width="14" height="14" aria-hidden="true" />
+  {/if}
 </button>

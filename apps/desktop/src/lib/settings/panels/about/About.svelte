@@ -215,7 +215,7 @@
           <div class="inline-error">
             <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{about.appUpdateActionError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear aria-hidden="true" /></button>
+            <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear width="14" height="14" aria-hidden="true" /></button>
           </div>
         {/if}
       </div>

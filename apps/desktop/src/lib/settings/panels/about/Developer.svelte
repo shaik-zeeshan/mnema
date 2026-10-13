@@ -119,7 +119,7 @@
             <div class="inline-error">
               <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
               <span class="inline-error__msg">{logs.debugLogError}</span>
-              <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}><IconClear aria-hidden="true" /></button>
+              <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}><IconClear width="14" height="14" aria-hidden="true" /></button>
             </div>
           {/if}
         </div>
@@ -186,7 +186,7 @@
           <div class="inline-error">
             <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{logs.generalLogError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}><IconClear aria-hidden="true" /></button>
+            <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}><IconClear width="14" height="14" aria-hidden="true" /></button>
           </div>
         {/if}
       </div>
