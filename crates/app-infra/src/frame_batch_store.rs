@@ -5,9 +5,7 @@ use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, Transaction};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-pub use crate::hidden_segment_workspace::{
-    HiddenSegmentWorkspaceRepairResult, SegmentWorkspaceCleanupDebugInfo,
-};
+pub use crate::hidden_segment_workspace::HiddenSegmentWorkspaceRepairResult;
 
 use crate::{
     db::CaptureDb,
@@ -467,15 +465,6 @@ impl FrameBatchStore {
             frame_count,
             batch_references,
         })
-    }
-
-    pub async fn classify_hidden_segment_workspace(
-        &self,
-        workspace_dir: &Path,
-    ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
-        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.db.clone()))
-            .classify_hidden_segment_workspace(workspace_dir)
-            .await
     }
 
     pub async fn repair_hidden_segment_workspaces(

@@ -223,22 +223,6 @@ pub struct BrowserUrlSupportResponse {
     pub warning: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CapturePrivacyDebugResponse {
-    pub metadata_enabled: bool,
-    pub browser_url_mode: capture_metadata::BrowserUrlMode,
-    pub browser_url_metadata_source: BrowserUrlMetadataDebugSource,
-    pub privacy_debug: metadata::CapturePrivacyDebugInfo,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BrowserUrlMetadataDebugSource {
-    NativeBrowserUrlProbe,
-    Unavailable,
-}
-
 #[derive(Debug, Default)]
 pub struct AppNotificationsRuntime {
     notifications: Vec<AppNotification>,
@@ -825,31 +809,6 @@ pub async fn check_browser_url_support(
                 .to_string()
         }),
     })
-}
-
-#[tauri::command]
-pub fn get_capture_privacy_debug(
-    _app_handle: tauri::AppHandle,
-    metadata_state: tauri::State<'_, CaptureMetadataState>,
-    settings_state: tauri::State<'_, RecordingSettingsState>,
-) -> CapturePrivacyDebugResponse {
-    let settings = current_recording_settings(settings_state.inner());
-    CapturePrivacyDebugResponse {
-        metadata_enabled: settings.metadata.enabled,
-        browser_url_mode: settings.metadata.browser_url_mode,
-        browser_url_metadata_source: browser_url_metadata_source(&settings.metadata),
-        privacy_debug: metadata::capture_privacy_debug_info(metadata_state.inner()),
-    }
-}
-
-fn browser_url_metadata_source(
-    metadata: &capture_metadata::MetadataSettings,
-) -> BrowserUrlMetadataDebugSource {
-    if metadata.enabled && metadata.browser_url_mode != capture_metadata::BrowserUrlMode::Off {
-        BrowserUrlMetadataDebugSource::NativeBrowserUrlProbe
-    } else {
-        BrowserUrlMetadataDebugSource::Unavailable
-    }
 }
 
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {

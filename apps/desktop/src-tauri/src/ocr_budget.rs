@@ -6,14 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
-use time::{
-    format_description, format_description::well_known::Rfc3339, OffsetDateTime, PrimitiveDateTime,
-};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const HIGH_PRESSURE_THRESHOLD: i64 = 3;
 const REPRESENTATIVE_SECONDS: i64 = 15;
-const DEBUG_RING_CAPACITY: usize = 256;
 /// Minimum gap between two visual-novelty admissions in the same scope. The
 /// firm cost bound: even a continuous stream of new frames adds at most one
 /// novelty OCR read per this interval on top of the representative sampling.
@@ -62,58 +58,6 @@ macro_rules! ocr_budget_trace {
     }};
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrBudgetDebugDto {
-    pub summary: OcrBudgetExecutionSummaryDto,
-    pub admission_events: Vec<OcrAdmissionDebugEventDto>,
-    pub execution_events: Vec<OcrExecutionDebugEventDto>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrBudgetExecutionSummaryDto {
-    pub queued_or_running_count: i64,
-    pub execution_state: String,
-    pub cooldown_remaining_ms: i64,
-    pub last_run_duration_ms: Option<i64>,
-    pub last_run_status: Option<String>,
-    pub last_pacing_mode: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrAdmissionDebugEventDto {
-    pub occurred_at: String,
-    pub session_id: String,
-    pub workspace_scope: String,
-    pub frame_id: i64,
-    pub outcome: ::app_infra::OcrAdmissionOutcome,
-    pub reason: ::app_infra::OcrAdmissionReason,
-    pub queue_pressure_count: i64,
-    pub recording_active: bool,
-    pub job_id: Option<i64>,
-    pub related_frame_id: Option<i64>,
-    pub signals: ::app_infra::OcrAdmissionSignals,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OcrExecutionDebugEventDto {
-    pub occurred_at: String,
-    pub job_id: i64,
-    pub frame_id: Option<i64>,
-    pub provider: String,
-    pub model_id: Option<String>,
-    pub recognition_mode: Option<String>,
-    pub status: String,
-    pub run_duration_ms: i64,
-    pub queue_wait_ms: Option<i64>,
-    pub result_text_length: Option<i64>,
-    pub observation_count: Option<i64>,
-    pub last_error: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OcrProcessingPass {
     DidWork,
@@ -124,8 +68,6 @@ pub enum OcrProcessingPass {
 #[derive(Debug, Default)]
 struct OcrBudgetState {
     admission_scopes: HashMap<AdmissionScopeKey, AdmissionScopeState>,
-    admission_events: VecDeque<OcrAdmissionDebugEventDto>,
-    execution_events: VecDeque<OcrExecutionDebugEventDto>,
     execution: OcrExecutionBudgetState,
 }
 
@@ -162,7 +104,6 @@ struct OcrExecutionBudgetState {
     next_due_at: Option<Instant>,
     last_run_at: Option<Instant>,
     last_run_ms: Option<u64>,
-    last_status: Option<String>,
     last_recording_active: bool,
 }
 
@@ -208,35 +149,8 @@ fn scope_key(frame: &::app_infra::NewFrame) -> AdmissionScopeKey {
     }
 }
 
-fn workspace_scope_label(workspace_prefix: Option<&str>) -> String {
-    let Some(prefix) = workspace_prefix else {
-        return "session".to_string();
-    };
-    let basename = Path::new(prefix)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("workspace");
-    let mut hasher = DefaultHasher::new();
-    prefix.hash(&mut hasher);
-    format!("{basename}-{:08x}", (hasher.finish() & 0xffff_ffff) as u32)
-}
-
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
 fn parse_rfc3339(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).ok()
-}
-
-fn push_capped<T>(ring: &mut VecDeque<T>, value: T) {
-    if ring.len() >= DEBUG_RING_CAPACITY {
-        ring.pop_front();
-    }
-    ring.push_back(value);
 }
 
 fn fingerprint_hash(hint: &str) -> u64 {
@@ -553,26 +467,12 @@ pub fn record_admission_result(
         session_id: result.frame.session_id.clone(),
         workspace_prefix: workspace_prefix.clone(),
     };
-    let event = OcrAdmissionDebugEventDto {
-        occurred_at: now_rfc3339(),
-        session_id: result.frame.session_id.clone(),
-        workspace_scope: workspace_scope_label(workspace_prefix.as_deref()),
-        frame_id: result.frame.id,
-        outcome: decision.outcome,
-        reason: decision.reason,
-        queue_pressure_count: decision.queue_pressure_count,
-        recording_active: decision.recording_active,
-        job_id: result.job.as_ref().map(|job| job.id),
-        related_frame_id: decision.related_frame_id,
-        signals: decision.signals.clone(),
-    };
     // The decide-time novelty signal; may be stale if the pipeline overrode the
     // decision to SkippedEquivalentFrame afterward. `record_novelty_memory`
     // reconciles it against the final outcome/reason.
     let decide_time_fingerprint_novel = decision.signals.fingerprint_novel_in_scope;
     let fingerprint = stored_frame_fingerprint(&result.frame);
     with_state(infra.base_dir(), |state| {
-        push_capped(&mut state.admission_events, event.clone());
         if decision.reason != ::app_infra::OcrAdmissionReason::SkippedOcrDisabled {
             let scope = state.admission_scopes.entry(key).or_default();
             scope.seen_candidate = true;
@@ -629,91 +529,6 @@ fn cooldown_duration(last_run_ms: u64, recording_active: bool) -> Duration {
     }
 }
 
-fn parse_job_timestamp(value: &str) -> Option<OffsetDateTime> {
-    if let Ok(parsed) = OffsetDateTime::parse(value, &Rfc3339) {
-        return Some(parsed);
-    }
-
-    let sqlite_format =
-        format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
-    PrimitiveDateTime::parse(value, &sqlite_format)
-        .ok()
-        .map(|parsed| parsed.assume_utc())
-}
-
-fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Option<i64> {
-    let start = parse_job_timestamp(start?)?;
-    let end = parse_job_timestamp(end?)?;
-    Some((end - start).whole_milliseconds().max(0) as i64)
-}
-
-fn processing_job_queue_wait_ms(job: &::app_infra::ProcessingJob) -> Option<i64> {
-    timestamp_delta_ms(Some(&job.queued_at), job.started_at.as_deref())
-}
-
-fn observation_count(structured_payload_json: Option<&str>) -> Option<i64> {
-    let payload = structured_payload_json?;
-    let parsed: serde_json::Value = serde_json::from_str(payload).ok()?;
-    parsed
-        .get("observations")
-        .and_then(|value| value.as_array())
-        .map(|items| items.len().min(i64::MAX as usize) as i64)
-}
-
-fn execution_event_for_outcome(
-    outcome: &::app_infra::ProcessingJobRunOutcome,
-    run_duration_ms: i64,
-) -> OcrExecutionDebugEventDto {
-    let (job, status, result) = match outcome {
-        ::app_infra::ProcessingJobRunOutcome::Completed(completion) => {
-            (&completion.job, "completed", Some(&completion.result))
-        }
-        ::app_infra::ProcessingJobRunOutcome::Failed(job) => (job, "failed", None),
-        ::app_infra::ProcessingJobRunOutcome::RequeuedForLiveness(job) => (job, "requeued", None),
-    };
-    let parsed_payload =
-        ::app_infra::FrozenOcrPayload::from_payload_json(job.payload_json.as_deref());
-    if let Err(error) = &parsed_payload {
-        crate::native_capture::debug_log::log_warn(format!(
-            "failed to parse OCR payload for budget debug job_id={}: {error}",
-            job.id
-        ));
-    }
-    let (provider, model_id, recognition_mode) = parsed_payload
-        .ok()
-        .map(|payload| {
-            let recognition_mode = payload
-                .options
-                .get("recognitionMode")
-                .and_then(|value| value.as_str())
-                .map(ToOwned::to_owned);
-            (payload.provider, payload.model_id, recognition_mode)
-        })
-        .unwrap_or_else(|| ("unknown".to_string(), None, None));
-
-    OcrExecutionDebugEventDto {
-        occurred_at: now_rfc3339(),
-        job_id: job.id,
-        frame_id: if job.subject_type == ::app_infra::FRAME_SUBJECT_TYPE {
-            Some(job.subject_id)
-        } else {
-            None
-        },
-        provider,
-        model_id,
-        recognition_mode,
-        status: status.to_string(),
-        run_duration_ms,
-        queue_wait_ms: processing_job_queue_wait_ms(job),
-        result_text_length: result
-            .and_then(|result| result.result_text.as_ref())
-            .map(|text| text.chars().count().min(i64::MAX as usize) as i64),
-        observation_count: result
-            .and_then(|result| observation_count(result.structured_payload_json.as_deref())),
-        last_error: job.last_error.clone(),
-    }
-}
-
 pub async fn process_pending_ocr_job_once(
     infra: &::app_infra::AppInfra,
     recording_active: bool,
@@ -741,81 +556,29 @@ pub async fn process_pending_ocr_job_once(
     }
 
     let started_at = Instant::now();
-    let outcome = infra
+    if infra
         .process_next_processing_job_for_processor(::app_infra::OCR_PROCESSOR)
-        .await?;
-    let Some(outcome) = outcome else {
+        .await?
+        .is_none()
+    {
         return Ok(OcrProcessingPass::Idle);
-    };
-    let run_duration_ms = started_at.elapsed().as_millis().min(i64::MAX as u128) as i64;
-    let event = execution_event_for_outcome(&outcome, run_duration_ms);
-    let cooldown = cooldown_duration(run_duration_ms.max(0) as u64, recording_active);
+    }
+    let run_duration_ms = started_at.elapsed().as_millis() as u64;
+    let cooldown = cooldown_duration(run_duration_ms, recording_active);
     with_state(infra.base_dir(), |state| {
         let completed_at = Instant::now();
-        state.execution.last_run_ms = Some(run_duration_ms.max(0) as u64);
+        state.execution.last_run_ms = Some(run_duration_ms);
         state.execution.last_run_at = Some(completed_at);
-        state.execution.last_status = Some(event.status.clone());
         state.execution.last_recording_active = recording_active;
         state.execution.next_due_at = Some(completed_at + cooldown);
-        push_capped(&mut state.execution_events, event.clone());
     });
     ocr_budget_trace!(
-        "OCR execution budget paced job_id={} status={} run_duration_ms={} cooldown_ms={} recording_active={}",
-        event.job_id,
-        event.status,
+        "OCR execution budget paced run_duration_ms={} cooldown_ms={} recording_active={}",
         run_duration_ms,
         cooldown.as_millis(),
         recording_active
     );
     Ok(OcrProcessingPass::DidWork)
-}
-
-pub async fn debug_for_infra(
-    infra: &::app_infra::AppInfra,
-) -> ::app_infra::Result<OcrBudgetDebugDto> {
-    let queued_or_running_count = infra
-        .count_queued_or_running_processing_jobs_for_processor(::app_infra::OCR_PROCESSOR)
-        .await?;
-    let now = Instant::now();
-    Ok(with_state(infra.base_dir(), |state| {
-        let cooldown_remaining = state
-            .execution
-            .next_due_at
-            .and_then(|due| due.checked_duration_since(now))
-            .unwrap_or_default();
-        OcrBudgetDebugDto {
-            summary: OcrBudgetExecutionSummaryDto {
-                queued_or_running_count,
-                execution_state: if cooldown_remaining.is_zero() {
-                    "idle".to_string()
-                } else {
-                    "cooling_down".to_string()
-                },
-                cooldown_remaining_ms: cooldown_remaining.as_millis().min(i64::MAX as u128) as i64,
-                last_run_duration_ms: state.execution.last_run_ms.map(|value| value as i64),
-                last_run_status: state.execution.last_status.clone(),
-                last_pacing_mode: state.execution.last_run_at.map(|_| {
-                    if state.execution.last_recording_active {
-                        "recording_active".to_string()
-                    } else {
-                        "catch_up".to_string()
-                    }
-                }),
-            },
-            admission_events: state.admission_events.iter().cloned().rev().collect(),
-            execution_events: state.execution_events.iter().cloned().rev().collect(),
-        }
-    }))
-}
-
-#[tauri::command]
-pub async fn get_ocr_budget_debug(
-    state: tauri::State<'_, crate::app_infra::AppInfraState>,
-) -> Result<OcrBudgetDebugDto, String> {
-    let infra = std::sync::Arc::clone(&*state);
-    debug_for_infra(&infra)
-        .await
-        .map_err(|error| format!("failed to get OCR budget debug state: {error}"))
 }
 
 #[cfg(test)]
@@ -1391,18 +1154,6 @@ mod tests {
         record_novelty_memory(&mut scope, true, Some(1), outcome, reason, None);
         // Prior parseable anchor is preserved, not clobbered by None.
         assert_eq!(scope.last_novelty_admitted_at, captured_at_seconds(5));
-    }
-
-    #[test]
-    fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
-        assert_eq!(
-            timestamp_delta_ms(Some("2026-04-12 10:00:00"), Some("2026-04-12 10:00:02")),
-            Some(2000)
-        );
-        assert_eq!(
-            timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
-            Some(2000)
-        );
     }
 
     /// The governor's whole job is a duty cycle: OCR must not occupy more than

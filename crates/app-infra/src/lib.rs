@@ -89,7 +89,7 @@ pub use hidden_segment_workspace::{
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
-    CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
+    CpuJobSuccess, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use license_token_store::{
     clear_trial_issuance, load_activation_receipt, load_first_seen, load_license_key,
@@ -871,15 +871,6 @@ impl AppInfra {
     ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
         self.capture_retention
             .list_finalized_screen_segments_overlapping_window(start_at, end_at)
-            .await
-    }
-
-    pub async fn classify_hidden_segment_workspace(
-        &self,
-        workspace_dir: &Path,
-    ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
-        self.frame_batches
-            .classify_hidden_segment_workspace(workspace_dir)
             .await
     }
 
@@ -1984,26 +1975,6 @@ impl AppInfra {
 
     pub async fn process_next_frame_batch_job(&self) -> Result<Option<FrameBatchFinalizeResult>> {
         self.frame_batch_runtime.process_next_queued_job().await
-    }
-
-    pub async fn submit_debug_cpu_job(&self, request: DebugCpuJobRequest) -> Result<BackgroundJob> {
-        let request = request.normalized();
-        let payload_json = serde_json::to_string(&request)?;
-        let task_request = request.clone();
-        let handle = self
-            .spawn_cpu_job(
-                JobDescriptor::new(jobs::DEBUG_CPU_JOB_KIND),
-                Some(&payload_json),
-                move || {
-                    let result_text = task_request.simulated_result_text();
-                    Ok(CpuJobSuccess::new(result_text.clone()).with_result_text(result_text))
-                },
-            )
-            .await?;
-
-        self.get_job(handle.job_id())
-            .await?
-            .ok_or(AppInfraError::JobNotFound(handle.job_id()))
     }
 
     pub async fn spawn_cpu_job<F, T>(

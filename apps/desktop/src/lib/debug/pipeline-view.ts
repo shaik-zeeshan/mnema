@@ -205,7 +205,6 @@ export function frameBatchLine(batches: FrameBatch[]): SpecLine {
 
 const JOB_KIND: Record<string, string> = {
 	frame_batch_combine: "Combining frames",
-	debug_cpu_analysis: "Test CPU job",
 };
 const kindLabel = (kind: string) => JOB_KIND[kind] ?? kind.replaceAll("_", " ");
 

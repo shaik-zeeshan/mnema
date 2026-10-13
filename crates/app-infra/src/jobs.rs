@@ -14,7 +14,6 @@ use crate::error::{AppInfraError, Result};
 
 pub(crate) const ORPHANED_RUNNING_JOB_ERROR: &str =
     "job was marked failed during startup recovery after the app shut down while it was running";
-pub(crate) const DEBUG_CPU_JOB_KIND: &str = "debug_cpu_analysis";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -109,63 +108,6 @@ pub struct JobCounts {
     pub running: i64,
     pub completed: i64,
     pub failed: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DebugCpuJobRequest {
-    pub document_name: String,
-    pub source_text: String,
-}
-
-impl DebugCpuJobRequest {
-    pub(crate) fn normalized(self) -> Self {
-        let document_name = self.document_name.trim();
-        let source_text = self.source_text.trim();
-
-        Self {
-            document_name: if document_name.is_empty() {
-                "debug-document".to_string()
-            } else {
-                document_name.to_string()
-            },
-            source_text: if source_text.is_empty() {
-                "Simulated OCR input for the debug CPU job.".to_string()
-            } else {
-                source_text.to_string()
-            },
-        }
-    }
-
-    pub(crate) fn simulated_result_text(&self) -> String {
-        let token_list = self
-            .source_text
-            .split_whitespace()
-            .take(6)
-            .collect::<Vec<_>>();
-        let token_count = self.source_text.split_whitespace().count();
-        let character_count = self.source_text.chars().count();
-        let excerpt = if token_list.is_empty() {
-            "no tokens detected".to_string()
-        } else {
-            token_list.join(" ")
-        };
-        let sample = self.source_text.as_bytes();
-        let mut checksum = 0_u64;
-
-        for round in 0..2_048_u64 {
-            for (index, byte) in sample.iter().take(256).enumerate() {
-                let weight = (index as u64 + 1) * (round + 1);
-                checksum = checksum.wrapping_add((*byte as u64) * weight);
-                checksum = checksum.rotate_left(((index + (round as usize % 13)) % 31 + 1) as u32);
-            }
-        }
-
-        format!(
-            "Simulated OCR analysis complete for {}: {} tokens, {} chars, checksum {:016x}, excerpt \"{}\"",
-            self.document_name, token_count, character_count, checksum, excerpt
-        )
-    }
 }
 
 #[derive(Clone)]

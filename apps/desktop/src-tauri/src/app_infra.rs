@@ -294,13 +294,6 @@ struct ResolvedAppInfraBaseDir {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubmitDebugCpuJobRequest {
-    pub document_name: String,
-    pub source_text: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GetAppJobRequest {
     pub job_id: i64,
 }
@@ -645,47 +638,6 @@ pub struct FocusedFrameWindowDto {
 pub struct AudioSegmentMediaDto {
     pub mime_type: String,
     pub data_base64: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClassifyHiddenSegmentWorkspaceRequest {
-    pub workspace_dir: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HiddenSegmentWorkspacePathsDto {
-    pub workspace_dir: String,
-    pub frames_dir: String,
-    pub visible_segment_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceBatchReferenceDto {
-    pub batch_id: i64,
-    pub status: ::app_infra::FrameBatchStatus,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceOcrReferenceDto {
-    pub frame_id: i64,
-    pub job_id: i64,
-    pub status: ::app_infra::ProcessingJobStatus,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceCleanupDebugInfoDto {
-    pub paths: HiddenSegmentWorkspacePathsDto,
-    pub disposition: ::app_infra::SegmentWorkspaceCleanupDisposition,
-    pub safe_to_remove: bool,
-    pub visible_segment_exists: bool,
-    pub frame_count: i64,
-    pub batch_references: Vec<SegmentWorkspaceBatchReferenceDto>,
-    pub nonterminal_ocr_references: Vec<SegmentWorkspaceOcrReferenceDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1152,66 +1104,6 @@ impl From<::app_infra::AudioSegment> for AudioSegmentDto {
             ended_at: segment.ended_at,
             created_at: segment.created_at,
             updated_at: segment.updated_at,
-        }
-    }
-}
-
-impl From<::app_infra::HiddenSegmentWorkspacePaths> for HiddenSegmentWorkspacePathsDto {
-    fn from(paths: ::app_infra::HiddenSegmentWorkspacePaths) -> Self {
-        Self {
-            workspace_dir: paths.workspace_dir,
-            frames_dir: paths.frames_dir,
-            visible_segment_path: paths.visible_segment_path,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceBatchReference> for SegmentWorkspaceBatchReferenceDto {
-    fn from(reference: ::app_infra::SegmentWorkspaceBatchReference) -> Self {
-        Self {
-            batch_id: reference.batch_id,
-            status: reference.status,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceOcrReference> for SegmentWorkspaceOcrReferenceDto {
-    fn from(reference: ::app_infra::SegmentWorkspaceOcrReference) -> Self {
-        Self {
-            frame_id: reference.frame_id,
-            job_id: reference.job_id,
-            status: reference.status,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceCleanupDebugInfo> for SegmentWorkspaceCleanupDebugInfoDto {
-    fn from(info: ::app_infra::SegmentWorkspaceCleanupDebugInfo) -> Self {
-        Self {
-            paths: info.paths.into(),
-            disposition: info.disposition,
-            safe_to_remove: info.safe_to_remove,
-            visible_segment_exists: info.visible_segment_exists,
-            frame_count: info.frame_count,
-            batch_references: info
-                .batch_references
-                .into_iter()
-                .map(SegmentWorkspaceBatchReferenceDto::from)
-                .collect(),
-            nonterminal_ocr_references: info
-                .nonterminal_ocr_references
-                .into_iter()
-                .map(SegmentWorkspaceOcrReferenceDto::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
-    fn from(request: SubmitDebugCpuJobRequest) -> Self {
-        Self {
-            document_name: request.document_name,
-            source_text: request.source_text,
         }
     }
 }
@@ -3346,16 +3238,6 @@ async fn reprocess_system_audio_speech_activity_inner(
         .map(SystemAudioSpeechActivityReprocessingResultDto::from)
 }
 
-async fn classify_hidden_segment_workspace_inner(
-    infra: &::app_infra::AppInfra,
-    request: ClassifyHiddenSegmentWorkspaceRequest,
-) -> ::app_infra::Result<Option<SegmentWorkspaceCleanupDebugInfoDto>> {
-    infra
-        .classify_hidden_segment_workspace(Path::new(&request.workspace_dir))
-        .await
-        .map(|info| info.map(SegmentWorkspaceCleanupDebugInfoDto::from))
-}
-
 #[tauri::command]
 pub async fn get_app_infra_status(
     state: tauri::State<'_, AppInfraState>,
@@ -4650,19 +4532,6 @@ pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliS
 }
 
 #[tauri::command]
-pub async fn submit_debug_cpu_job(
-    request: SubmitDebugCpuJobRequest,
-    state: tauri::State<'_, AppInfraState>,
-) -> Result<AppJobDto, String> {
-    let infra = Arc::clone(&*state);
-    infra
-        .submit_debug_cpu_job(request.into())
-        .await
-        .map(AppJobDto::from)
-        .map_err(|error| format!("failed to submit debug cpu job: {error}"))
-}
-
-#[tauri::command]
 pub async fn list_app_jobs(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Vec<AppJobDto>, String> {
@@ -4783,23 +4652,6 @@ pub async fn reprocess_system_audio_speech_activity(
             format!(
                 "failed to reprocess system-audio speech activity for segment {}: {error}",
                 request.audio_segment_id
-            )
-        })
-}
-
-#[tauri::command]
-pub async fn classify_hidden_segment_workspace(
-    request: ClassifyHiddenSegmentWorkspaceRequest,
-    state: tauri::State<'_, AppInfraState>,
-) -> Result<Option<SegmentWorkspaceCleanupDebugInfoDto>, String> {
-    let infra = Arc::clone(&*state);
-
-    classify_hidden_segment_workspace_inner(&infra, request.clone())
-        .await
-        .map_err(|error| {
-            format!(
-                "failed to classify hidden segment workspace {}: {error}",
-                request.workspace_dir
             )
         })
 }
@@ -6694,50 +6546,6 @@ mod tests {
             resolved.video_path,
             PathBuf::from("/tmp/2026/04/12/session-abc-segment-0004.mov")
         );
-    }
-
-    #[test]
-    fn classify_hidden_segment_workspace_info_dto_maps_nested_debug_payload() {
-        let dto = SegmentWorkspaceCleanupDebugInfoDto::from(
-            ::app_infra::SegmentWorkspaceCleanupDebugInfo {
-                paths: ::app_infra::HiddenSegmentWorkspacePaths {
-                    workspace_dir: "/tmp/.session-segment-0001".to_string(),
-                    frames_dir: "/tmp/.session-segment-0001/frames".to_string(),
-                    visible_segment_path: "/tmp/session-segment-0001.mov".to_string(),
-                },
-                disposition: ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly,
-                safe_to_remove: true,
-                visible_segment_exists: true,
-                frame_count: 2,
-                batch_references: vec![::app_infra::SegmentWorkspaceBatchReference {
-                    batch_id: 7,
-                    status: ::app_infra::FrameBatchStatus::Completed,
-                }],
-                nonterminal_ocr_references: vec![::app_infra::SegmentWorkspaceOcrReference {
-                    frame_id: 11,
-                    job_id: 12,
-                    status: ::app_infra::ProcessingJobStatus::Queued,
-                }],
-            },
-        );
-
-        assert_eq!(dto.paths.workspace_dir, "/tmp/.session-segment-0001");
-        assert_eq!(dto.paths.frames_dir, "/tmp/.session-segment-0001/frames");
-        assert_eq!(
-            dto.paths.visible_segment_path,
-            "/tmp/session-segment-0001.mov"
-        );
-        assert_eq!(
-            dto.disposition,
-            ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly
-        );
-        assert!(dto.safe_to_remove);
-        assert_eq!(dto.frame_count, 2);
-        assert_eq!(dto.batch_references.len(), 1);
-        assert_eq!(dto.batch_references[0].batch_id, 7);
-        assert_eq!(dto.nonterminal_ocr_references.len(), 1);
-        assert_eq!(dto.nonterminal_ocr_references[0].frame_id, 11);
-        assert_eq!(dto.nonterminal_ocr_references[0].job_id, 12);
     }
 
     #[test]
