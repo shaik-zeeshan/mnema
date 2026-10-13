@@ -674,7 +674,7 @@ fn execution_event_for_outcome(
     let parsed_payload =
         ::app_infra::FrozenOcrPayload::from_payload_json(job.payload_json.as_deref());
     if let Err(error) = &parsed_payload {
-        crate::native_capture::debug_log::log_error(format!(
+        crate::native_capture::debug_log::log_warn(format!(
             "failed to parse OCR payload for budget debug job_id={}: {error}",
             job.id
         ));

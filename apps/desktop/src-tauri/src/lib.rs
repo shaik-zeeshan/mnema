@@ -43,9 +43,11 @@ use std::{collections::VecDeque, path::Path, sync::Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind, WEBVIEW_TARGET};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
+const APP_LOG_MAX_FILE_BYTES: u128 = 5 * 1024 * 1024;
+const APP_LOG_KEPT_FILES: usize = 5;
 
 const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "mnema",
@@ -56,6 +58,7 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "capture_runtime",
     "capture_screen",
     "capture_microphone",
+    "capture_system_audio",
     "capture_writers",
     "capture_types",
     WEBVIEW_TARGET,
@@ -567,10 +570,19 @@ pub fn run() {
             let _ = windows::open_main_window(app);
         }))
         .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(tauri_plugin_log::log::LevelFilter::Info)
-                .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
-                .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
+            APP_LOG_TARGET_PREFIXES
+                .iter()
+                .fold(
+                    tauri_plugin_log::Builder::new()
+                        .level(tauri_plugin_log::log::LevelFilter::Info),
+                    |builder, target| {
+                        builder.level_for(*target, tauri_plugin_log::log::LevelFilter::Debug)
+                    },
+                )
+                // The plugin default (40 KB, delete on rotate) kept ~5 minutes of
+                // history; this keeps days, in at most 5 × 5 MB files.
+                .max_file_size(APP_LOG_MAX_FILE_BYTES)
+                .rotation_strategy(RotationStrategy::KeepSome(APP_LOG_KEPT_FILES))
                 .filter(|metadata| {
                     is_app_log_target(metadata.target())
                         && native_capture::debug_log::app_log_record_allowed(metadata.level())
@@ -955,7 +967,7 @@ pub fn run() {
                 // fallback and not the normal path. Logged through the app log sink
                 // so a "no background workers" incident is captured in the packaged
                 // app log rather than only on stderr.
-                native_capture::debug_log::log_error(format!(
+                native_capture::debug_log::log_warn(format!(
                     "failed to spawn deferred startup thread; running inline (re-blocks first paint): {error}"
                 ));
                 run_deferred_startup(app.handle(), onboarding_complete);

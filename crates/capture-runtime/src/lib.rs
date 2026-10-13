@@ -1,15 +1,43 @@
 mod debug_log;
 
 pub use debug_log::{
-    configure_debug_log, debug_log_files_exist, delete_debug_log_files, write_debug_log,
-    write_debug_log_fmt, write_debug_log_to_file,
+    configure_debug_log, debug_log_files_exist, delete_debug_log_files, write_debug_log_to_file,
 };
+
+#[doc(hidden)]
+pub use log as __log;
+
+/// Log at `level` under the caller's module path (so the app log names the real
+/// source), and mirror the line into the native-capture debug file when enabled.
+/// Levels follow the CLAUDE.md logging rule: Debug is detail, Info a state change,
+/// Warn self-healing trouble, Error giving up.
+#[macro_export]
+macro_rules! capture_log {
+    ($level:expr, $($arg:tt)*) => {{
+        let message = ::std::fmt::format(format_args!($($arg)*));
+        $crate::__log::log!($level, "{message}");
+        $crate::write_debug_log_to_file(&message);
+    }};
+}
 
 #[macro_export]
 macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        $crate::write_debug_log_fmt(format_args!($($arg)*))
-    };
+    ($($arg:tt)*) => { $crate::capture_log!($crate::__log::Level::Debug, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! info_log {
+    ($($arg:tt)*) => { $crate::capture_log!($crate::__log::Level::Info, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! warn_log {
+    ($($arg:tt)*) => { $crate::capture_log!($crate::__log::Level::Warn, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! error_log {
+    ($($arg:tt)*) => { $crate::capture_log!($crate::__log::Level::Error, $($arg)*) };
 }
 
 use std::path::{Path, PathBuf};

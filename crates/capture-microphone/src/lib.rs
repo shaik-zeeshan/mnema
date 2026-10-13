@@ -436,7 +436,6 @@ struct MicrophoneOutputContext {
     output_file: Option<String>,
     first_error: Option<CaptureErrorResponse>,
     format_state: MicFormatStabilityState,
-    logged_format_samples: u32,
     pending_samples: VecDeque<BufferedMicSample>,
     inactivity_tail_trim_seconds: u64,
     activity_threshold: f32,
@@ -471,8 +470,6 @@ const FORMAT_STABILITY_REQUIRED_CONSECUTIVE: u32 = 3;
 #[cfg(target_os = "macos")]
 const FORMAT_STABILITY_MIN_OBSERVED: u32 = 5;
 #[cfg(target_os = "macos")]
-const FORMAT_LOG_SAMPLE_LIMIT: u32 = 8;
-#[cfg(target_os = "macos")]
 // Keep enough queued microphone samples to bridge the ~1s inactivity poll
 // interval plus writer startup backpressure, without carrying several seconds
 // of probe-only silence into the resumed file.
@@ -485,20 +482,6 @@ fn record_observed_audio_format(
 ) {
     let was_stable = context.format_state.stable_format.is_some();
     observe_microphone_format(&mut context.format_state, sample_format);
-
-    if context.logged_format_samples < FORMAT_LOG_SAMPLE_LIMIT {
-        context.logged_format_samples += 1;
-        capture_runtime::debug_log!(
-            "[capture-microphone] sample_format_observed index={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
-            context.format_state.observed_format_count,
-            sample_format.sample_rate_hz,
-            sample_format.channels_per_frame,
-            sample_format.bits_per_channel,
-            sample_format.bytes_per_frame,
-            sample_format.format_id,
-            sample_format.format_flags,
-        );
-    }
 
     if !was_stable {
         let Some(stable_format) = context.format_state.stable_format else {
@@ -562,7 +545,6 @@ mod tests {
             output_file: None,
             first_error: None,
             format_state: MicFormatStabilityState::default(),
-            logged_format_samples: 0,
             pending_samples: std::collections::VecDeque::new(),
             inactivity_tail_trim_seconds: tail_seconds,
             activity_threshold: 0.0,
@@ -822,7 +804,6 @@ mod tests {
         let mut previous =
             tail_activity_context(MicrophoneInactivityTailTrimActivityMode::PeakLevel, 10);
         observe_microphone_format(&mut previous.format_state, fmt);
-        previous.logged_format_samples = 1;
 
         let mut resumed = microphone_output_context_for_output_url(
             &output_url,
@@ -838,7 +819,6 @@ mod tests {
             resolve_microphone_live_format(&resumed.format_state),
             Some(fmt)
         );
-        assert_eq!(resumed.logged_format_samples, 1);
     }
 
     #[test]
@@ -1557,7 +1537,6 @@ fn carry_probe_only_microphone_context(
 
     if next_context.format_state.observed_format_count == 0 {
         next_context.format_state = previous_context.format_state;
-        next_context.logged_format_samples = previous_context.logged_format_samples;
     }
 
     transfer_pending_microphone_samples(
@@ -1635,7 +1614,7 @@ fn microphone_output_callback_panic_error(
         "Microphone output callback panicked with a non-string payload".to_string()
     };
 
-    capture_runtime::debug_log!(
+    capture_runtime::error_log!(
         "[capture-microphone] panic boundary captured in microphone output callback: {message}"
     );
 
@@ -1658,7 +1637,7 @@ fn microphone_output_callback_objc_exception_error(
 
     let message = format!("Microphone output callback ObjC exception: {name} - {reason}");
 
-    capture_runtime::debug_log!(
+    capture_runtime::error_log!(
         "[capture-microphone] ObjC exception boundary captured in microphone output callback: {message}"
     );
 
@@ -2165,11 +2144,20 @@ fn finalize_microphone_vad_boundary_trim(
             })
         }
         Err(error) => {
-            capture_runtime::debug_log!(
-                "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
-                error.code,
-                error.message
-            );
+            // The empty-trim case is expected during silence; anything else is real trouble.
+            if error.message.contains("no audio frames") {
+                capture_runtime::debug_log!(
+                    "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
+                    error.code,
+                    error.message
+                );
+            } else {
+                capture_runtime::warn_log!(
+                    "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
+                    error.code,
+                    error.message
+                );
+            }
             move_microphone_source_to_output(&source_file, &output_file)?;
             Ok(MicrophoneOutputFinalization {
                 source_file: Some(source_file),
@@ -2237,7 +2225,6 @@ fn microphone_output_context_for_output_url(
         output_file,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
-        logged_format_samples: 0,
         pending_samples: VecDeque::new(),
         inactivity_tail_trim_seconds,
         activity_threshold: normalized_audio_activity_threshold(activity_threshold),
@@ -2287,7 +2274,6 @@ fn microphone_probe_only_context() -> MicrophoneOutputContext {
         output_file: None,
         first_error: None,
         format_state: MicFormatStabilityState::default(),
-        logged_format_samples: 0,
         pending_samples: VecDeque::new(),
         inactivity_tail_trim_seconds: 0,
         activity_threshold: 0.0,
@@ -2313,7 +2299,7 @@ fn maybe_remove_microphone_output_file(path: &str) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => capture_runtime::debug_log!(
+        Err(error) => capture_runtime::warn_log!(
             "[capture-microphone] failed to remove invalid microphone artifact {path}: {error}"
         ),
     }

@@ -137,7 +137,7 @@ impl RecordingLifecycle {
             // Suspend only errors when the stop must preserve runtime state
             // (an in-flight stop timeout); keep the session and let a later
             // tick or the wake/display recovery paths reconcile it.
-            super::debug_log::log(format!(
+            super::debug_log::log_warn(format!(
                 "capture suspension could not stop screen capture; preserving runtime state: [{}] {}",
                 stop_error.code, stop_error.message
             ));
@@ -197,7 +197,7 @@ impl RecordingLifecycle {
             return None;
         }
 
-        super::debug_log::log(
+        super::debug_log::log_warn(
             "segment rotation due but the screen capture session is missing; suspending screen until capture can restart",
         );
         Some(self.suspend_screen_after_unexpected_stop(
@@ -239,7 +239,7 @@ impl RecordingLifecycle {
             // Recompute async so the cache/tray/Settings flip from the stale
             // `Trial` to `ReadOnly`; the refusal itself doesn't wait for it.
             crate::licensing::recompute_status_async(&app_handle, gate_now_ms);
-            super::debug_log::log(format!("capture refused: {}", refusal.code));
+            super::debug_log::log_info(format!("capture refused: {}", refusal.code));
             return Err(refusal);
         }
 
@@ -405,7 +405,7 @@ impl RecordingLifecycle {
                     self.runtime.system_audio_recording_file = system_audio_recording_file;
                 }
                 Err(error) => {
-                    super::debug_log::log(format!(
+                    super::debug_log::log_warn(format!(
                         "failed to restart system audio while resuming user pause; continuing without it: [{}] {}",
                         error.code, error.message
                     ));
@@ -577,7 +577,7 @@ impl RecordingLifecycle {
                     active_session: &mut self.runtime.active_screen_session,
                 },
             ) {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed stopping live screen session for system sleep; tail segment may be unfinalizable: [{}] {}",
                     error.code, error.message
                 ));
@@ -675,7 +675,7 @@ impl RecordingLifecycle {
                 self.system_audio_start_retry_at_ms = None;
                 self.system_audio_start_retry_delay_ms = 0;
                 if let Some(output_file) = output_file {
-                    super::debug_log::log(format!(
+                    super::debug_log::log_info(format!(
                         "{} tap started on retry after an earlier start failure",
                         capture_system_audio::LOG_PREFIX
                     ));
@@ -684,7 +684,7 @@ impl RecordingLifecycle {
             }
             Err(error) => {
                 self.schedule_system_audio_start_retry(now);
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "{} tap start retry failed; next attempt in {}ms: [{}] {}",
                     capture_system_audio::LOG_PREFIX,
                     self.system_audio_start_retry_delay_ms,
@@ -726,7 +726,7 @@ impl RecordingLifecycle {
                 let _ = self.clear_screen_state_for_sleep_or_stop();
                 return TickOutcome::SkipRotation;
             }
-            super::debug_log::log(format!(
+            super::debug_log::log_warn(format!(
                 "screen capture stream stopped unexpectedly; suspending screen until capture can restart: [{}] {}",
                 error.code, error.message
             ));
@@ -746,7 +746,7 @@ impl RecordingLifecycle {
             .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed to resume microphone capture after activity: [{}] {}",
                     error.code, error.message
                 ));
@@ -772,7 +772,7 @@ impl RecordingLifecycle {
             if let Err(error) =
                 pause_microphone_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
             {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed to pause microphone capture for inactivity: [{}] {}",
                     error.code, error.message
                 ));
@@ -796,7 +796,7 @@ impl RecordingLifecycle {
             .should_resume_system_audio_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_system_audio_from_inactivity(&mut self.runtime) {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed to resume system audio capture after activity: [{}] {}",
                     error.code, error.message
                 ));
@@ -823,7 +823,7 @@ impl RecordingLifecycle {
                 &mut self.runtime,
                 Some(app_handle),
             ) {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed to pause system audio capture for inactivity: [{}] {}",
                     error.code, error.message
                 ));
@@ -906,7 +906,7 @@ impl RecordingLifecycle {
                     return TickOutcome::StopLoop;
                 }
             } else {
-                super::debug_log::log(format!(
+                super::debug_log::log_info(format!(
                     "resumed native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
@@ -928,7 +928,7 @@ impl RecordingLifecycle {
                     return TickOutcome::StopLoop;
                 }
             } else {
-                super::debug_log::log(format!(
+                super::debug_log::log_info(format!(
                     "paused native capture for inactivity threshold crossing (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,
                     effective_idle.source.as_str(),
@@ -993,7 +993,7 @@ impl RecordingLifecycle {
             match ensure_system_audio_planner_for_runtime(&mut self.runtime, "rotating segments") {
                 Ok(planner) => planner,
                 Err(error) => {
-                    super::debug_log::log(format!(
+                    super::debug_log::log_error(format!(
                         "failed to prepare system-audio planner while rotating segments: [{}] {}",
                         error.code, error.message
                     ));
@@ -1078,7 +1078,7 @@ impl RecordingLifecycle {
             system_audio_dir,
             &active_sources,
         ) {
-            super::debug_log::log(format!(
+            super::debug_log::log_error(format!(
                 "failed to prepare capture segment output directories while rotating segments: [{}] {}",
                 error.code, error.message
             ));
@@ -1376,7 +1376,7 @@ impl RecordingLifecycle {
                         next_microphone_recording_file.as_deref(),
                         next_system_audio_recording_file.as_deref(),
                     );
-                    super::debug_log::log(format!(
+                    super::debug_log::log_warn(format!(
                         "mid-segment disk-full during segment finalization; discarded partials: [{}] {}",
                         error.code, error.message
                     ));
@@ -1403,7 +1403,7 @@ impl RecordingLifecycle {
                 );
                 stop_active_sessions_after_failure(&mut self.runtime);
                 mark_runtime_session_failed(&mut self.runtime);
-                super::debug_log::log(format!(
+                super::debug_log::log_error(format!(
                     "fatal native capture segment finalization failure while rotating segments: [{}] {}",
                     error.code, error.message
                 ));
@@ -1443,7 +1443,7 @@ impl RecordingLifecycle {
         self.runtime.microphone_recording_file = next_microphone_recording_file;
         self.runtime.system_audio_recording_file = next_system_audio_recording_file;
         if let Err(error) = reanchor_active_segment_timing(&mut self.runtime, "rotating segments") {
-            super::debug_log::log(format!(
+            super::debug_log::log_error(format!(
                 "failed to re-anchor native capture segment timing while rotating segments: [{}] {}",
                 error.code, error.message
             ));

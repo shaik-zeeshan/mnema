@@ -1996,7 +1996,7 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
 
     *last_snapshot = Some(snapshot.clone());
 
-    debug_log::log(format!(
+    debug_log::log_info(format!(
         "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
@@ -2020,7 +2020,7 @@ fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
 
     *last_snapshot = Some(snapshot.clone());
 
-    debug_log::log(format!(
+    debug_log::log_info(format!(
         "observed native capture permissions (screen={}, microphone={}, system_audio={})",
         snapshot.screen, snapshot.microphone, snapshot.system_audio
     ));

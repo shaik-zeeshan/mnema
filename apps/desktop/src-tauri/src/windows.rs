@@ -1119,7 +1119,7 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
             method.cast_mut(),
             std::mem::transmute(terminate as *const ()),
         );
-        crate::native_capture::debug_log::log_info(
+        crate::native_capture::debug_log::log(
             "installed macOS terminate handler for graceful app exit",
         );
     }
@@ -1195,7 +1195,7 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
 
         match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
             Ok(unloaded) => {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
                 ));
             }

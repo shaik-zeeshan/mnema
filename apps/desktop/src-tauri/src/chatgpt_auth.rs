@@ -150,8 +150,12 @@ pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, Stri
         return Ok(None);
     }
     serde_json::from_str(&raw).map(Some).map_err(|error| {
+        // Classification + position only: a serde error can quote slot content.
         tauri_plugin_log::log::warn!(
-            "chatgpt-auth: the stored token set for {provider_id} is unreadable: {error}"
+            "chatgpt-auth: the stored token set for {provider_id} is unreadable: {:?} at {}:{}",
+            error.classify(),
+            error.line(),
+            error.column()
         );
         format!("needs_reconnect:{provider_id}")
     })
@@ -358,8 +362,9 @@ async fn fresh_access_token_with(
         Ok(tokens) => tokens,
         Err(error) => {
             tauri_plugin_log::log::warn!(
-                "chatgpt-auth: token refresh failed for {provider_id}: {}",
-                error.message
+                "chatgpt-auth: token refresh failed for {provider_id} ({}): {}",
+                if error.transient { "unreachable" } else { "needs_reconnect" },
+                oauth_failure_log_kind(&error.message)
             );
             // Being offline is not being signed out. Telling a user with a
             // healthy login to re-run the device flow is the worst possible
@@ -496,6 +501,14 @@ impl OAuthError {
     }
 }
 
+/// The loggable part of an OAuth failure message: everything before the first
+/// `:`. That keeps "… failed with status 401 Unauthorized" and drops what follows
+/// it — a response body, a serde error quoting a token, a transport error's URL —
+/// because user logs leave the machine.
+pub(crate) fn oauth_failure_log_kind(message: &str) -> &str {
+    message.split(':').next().unwrap_or(message).trim_end()
+}
+
 /// Did OpenAI actually reject the *grant*, or just fail to answer?
 ///
 /// Mirrors rig 0.41's `should_reauthenticate_after_refresh`: only a 400/401
@@ -585,7 +598,7 @@ fn persist_refreshed_token_set(
         Err(error) => return Err(error),
     };
     if !holds_it {
-        tauri_plugin_log::log::info!(
+        tauri_plugin_log::log::debug!(
             "chatgpt-auth: dropping a refreshed token set for {provider_id}: the stored credential changed under it"
         );
         return Ok(false);

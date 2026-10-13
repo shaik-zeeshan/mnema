@@ -104,28 +104,45 @@ pub(crate) fn install_panic_hook() {
     });
 }
 
+#[track_caller]
 pub(crate) fn log(message: impl AsRef<str>) {
-    let message = message.as_ref();
-    tauri_plugin_log::log::debug!("{message}");
-    capture_runtime::write_debug_log_to_file(message);
+    log_at(tauri_plugin_log::log::Level::Debug, message.as_ref());
 }
 
+#[track_caller]
 pub(crate) fn log_info(message: impl AsRef<str>) {
-    let message = message.as_ref();
-    tauri_plugin_log::log::info!("{message}");
-    capture_runtime::write_debug_log_to_file(message);
+    log_at(tauri_plugin_log::log::Level::Info, message.as_ref());
 }
 
+#[track_caller]
 pub(crate) fn log_warn(message: impl AsRef<str>) {
-    let message = message.as_ref();
-    tauri_plugin_log::log::warn!("{message}");
+    log_at(tauri_plugin_log::log::Level::Warn, message.as_ref());
+}
+
+#[track_caller]
+pub(crate) fn log_error(message: impl AsRef<str>) {
+    log_at(tauri_plugin_log::log::Level::Error, message.as_ref());
+}
+
+/// Logs under the caller's module (`mnema_lib::semantic_search_worker`), not this
+/// file's, so the app log and the Developer window can tell sources apart.
+#[track_caller]
+fn log_at(level: tauri_plugin_log::log::Level, message: &str) {
+    let target = caller_target(std::panic::Location::caller().file());
+    tauri_plugin_log::log::log!(target: &target, level, "{message}");
     capture_runtime::write_debug_log_to_file(message);
 }
 
-pub(crate) fn log_error(message: impl AsRef<str>) {
-    let message = message.as_ref();
-    tauri_plugin_log::log::error!("{message}");
-    capture_runtime::write_debug_log_to_file(message);
+fn caller_target(file: &str) -> String {
+    let file = file.replace('\\', "/");
+    let module = file
+        .rsplit_once("/src/")
+        .map(|(_, rest)| rest)
+        .or_else(|| file.strip_prefix("src/"))
+        .unwrap_or(&file);
+    let module = module.strip_suffix(".rs").unwrap_or(module);
+    let module = module.strip_suffix("/mod").unwrap_or(module);
+    format!("mnema_lib::{}", module.replace('/', "::"))
 }
 
 fn status_for_path(enabled: bool, path: &Path) -> NativeCaptureDebugLogStatus {
@@ -349,5 +366,21 @@ mod tests {
         assert!(contents.contains("info message"));
         assert!(contents.contains("warn message"));
         assert!(contents.contains("error message"));
+    }
+
+    #[test]
+    fn caller_target_names_the_calling_module() {
+        assert_eq!(
+            super::caller_target("apps/desktop/src-tauri/src/semantic_search_worker.rs"),
+            "mnema_lib::semantic_search_worker"
+        );
+        assert_eq!(
+            super::caller_target("src/native_capture/lifecycle.rs"),
+            "mnema_lib::native_capture::lifecycle"
+        );
+        assert_eq!(
+            super::caller_target("C:\\mnema\\apps\\desktop\\src-tauri\\src\\ask_ai\\mod.rs"),
+            "mnema_lib::ask_ai"
+        );
     }
 }

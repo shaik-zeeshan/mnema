@@ -150,6 +150,14 @@ async fn connect_and_list(cfg: &McpServerConfig) -> Result<Established, String> 
     })
 }
 
+/// The loggable head of a connect/list failure: our own sentence, cut before
+/// the first `": "`, which is where every wrapped transport error starts.
+/// rmcp's reqwest errors quote the connector URL, and a URL can carry a token;
+/// the error itself is not reachable as a `reqwest::Error` to strip it.
+fn connect_failure_log_head(error: &str) -> &str {
+    error.split_once(": ").map_or(error, |(head, _)| head)
+}
+
 /// Project rmcp's `Tool` onto our trimmed [`ToolInfo`] (name, description,
 /// schema) — or DROP it (`None`) when its model-facing `mcp__<id>__<name>` would
 /// violate the provider tool-name contract (`^[a-zA-Z0-9_-]{1,64}$`): providers
@@ -158,7 +166,7 @@ async fn connect_and_list(cfg: &McpServerConfig) -> Result<Established, String> 
 fn tool_info_from_rmcp(server_id: &str, tool: rmcp::model::Tool) -> Option<ToolInfo> {
     let name = tool.name.into_owned();
     if !is_valid_model_tool_name(&model_tool_name(server_id, &name)) {
-        tauri_plugin_log::log::info!(
+        tauri_plugin_log::log::debug!(
             "Ask AI MCP tool \"{name}\" on \"{server_id}\" dropped: its model-facing name \
              violates the provider tool-name contract (^[a-zA-Z0-9_-]{{1,64}}$)"
         );
@@ -204,8 +212,9 @@ fn assemble_turn_tools(
                 // Connect/list failed within the budget: skip this server this
                 // turn (remedy is the enabled toggle; next turn retries).
                 tauri_plugin_log::log::warn!(
-                    "Ask AI MCP connector \"{}\" unavailable this turn: {error}",
-                    cfg.label
+                    "Ask AI MCP connector \"{}\" unavailable this turn: {}",
+                    cfg.label,
+                    connect_failure_log_head(&error)
                 );
                 continue;
             }
@@ -218,14 +227,14 @@ fn assemble_turn_tools(
                  cannot accept; they are unavailable",
                 cfg.label
             );
-            tauri_plugin_log::log::info!("Ask AI {line}");
+            tauri_plugin_log::log::debug!("Ask AI {line}");
             notes.push(line);
         }
         let (offered, note) = offered_tools(&discovered, cfg.enabled_tools.as_deref());
         if let Some(note) = note {
             // Non-silent trim: log AND surface one preamble note.
             let line = format!("MCP server \"{}\" {}", cfg.label, note);
-            tauri_plugin_log::log::info!("Ask AI {line}");
+            tauri_plugin_log::log::debug!("Ask AI {line}");
             notes.push(line);
         }
         for tool in offered {
@@ -376,9 +385,10 @@ impl McpManager {
                     );
                 }
                 if let Err(error) = ready {
-                    tauri_plugin_log::log::info!(
-                        "Ask AI MCP warm connect for \"{}\" failed (will retry on use): {error}",
-                        cfg.label
+                    tauri_plugin_log::log::warn!(
+                        "Ask AI MCP warm connect for \"{}\" failed (will retry on use): {}",
+                        cfg.label,
+                        connect_failure_log_head(&error)
                     );
                 }
             });
@@ -427,7 +437,7 @@ impl McpManager {
                 Err(_elapsed) => {
                     // Still connecting when the budget expired: proceed without it;
                     // the in-flight connect keeps running for the next turn.
-                    tauri_plugin_log::log::info!(
+                    tauri_plugin_log::log::warn!(
                         "Ask AI MCP connector \"{}\" not ready within {}s; proceeding without it",
                         cfg.label,
                         DISCOVERY_TURN_BUDGET.as_secs()
@@ -682,6 +692,20 @@ pub async fn mcp_list_server_tools(
 mod tests {
     use super::*;
     use capture_types::McpTransport;
+
+    #[test]
+    fn connect_failure_log_head_drops_the_transport_error() {
+        assert_eq!(
+            connect_failure_log_head(
+                "failed to connect to \"Linear\": error sending request for url (https://x.test/mcp?token=s3cret)"
+            ),
+            "failed to connect to \"Linear\""
+        );
+        assert_eq!(
+            connect_failure_log_head("timed out connecting to \"Linear\" after 10s"),
+            "timed out connecting to \"Linear\" after 10s"
+        );
+    }
 
     /// A stdio server config for tests: enabled, no env/secret/curation.
     /// Dialing it reads the connector secret through the process vault, so pin

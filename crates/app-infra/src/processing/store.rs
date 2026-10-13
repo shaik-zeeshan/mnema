@@ -1830,7 +1830,7 @@ impl ProcessingStore {
                     )
                 }
                 capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-                    capture_runtime::debug_log!(
+                    capture_runtime::warn_log!(
                         "[app-infra] quarantined frame {} during equivalence backfill: {}",
                         frame_id,
                         error

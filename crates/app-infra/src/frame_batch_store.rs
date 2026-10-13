@@ -897,7 +897,7 @@ impl FrameBatchStore {
                 .enqueue_finalize_job_if_needed_in_transaction(transaction, batch.id)
                 .await
             {
-                capture_runtime::debug_log!(
+                capture_runtime::warn_log!(
                     "[app-infra][frame-batches] failed to schedule finalize job for batch {}: {}",
                     batch.id,
                     error

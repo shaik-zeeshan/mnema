@@ -1146,7 +1146,8 @@ async fn list_fireworks_models(
         match list_fireworks_account_models(client, host, api_key, &account, false).await {
             Ok(personal) => ids.extend(personal),
             Err(error) => tauri_plugin_log::log::warn!(
-                "fireworks personal account {account} model listing skipped: {error}"
+                "fireworks personal account {account} model listing skipped: {}",
+                classify_listing_failure(&error)
             ),
         }
     }
@@ -1329,8 +1330,9 @@ pub async fn ai_runtime_list_models(
             ),
             Err(error) => {
                 tauri_plugin_log::log::warn!(
-                    "model listing skipped provider {}: {error}",
-                    provider.id
+                    "model listing skipped provider {}: {}",
+                    provider.id,
+                    classify_listing_failure(&error)
                 );
                 failures.push(AiRuntimeProviderFailure {
                     provider: provider.id.clone(),
@@ -1400,8 +1402,9 @@ pub async fn verify_ai_provider(
     let discovered = list_models_for_provider(&reqwest::Client::new(), provider)
         .await
         .map_err(|error| {
-            tauri_plugin_log::log::warn!("provider {provider_id} failed verification: {error}");
-            classify_listing_failure(&error)
+            let reason = classify_listing_failure(&error);
+            tauri_plugin_log::log::warn!("provider {provider_id} failed verification: {reason}");
+            reason
         })?;
     Ok(AiRuntimeVerifyResult {
         provider: provider_id,

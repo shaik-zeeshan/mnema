@@ -1489,7 +1489,7 @@ pub async fn persist_screen_frame_artifact(
                 equivalence.version,
             )),
         capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "quarantined captured frame equivalence for session {} artifact {}: {}",
                 session_id, file_path, error
             ));
@@ -1889,13 +1889,13 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
                     Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
                         "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
                     )),
-                    Err(error) => crate::native_capture::debug_log::log_error(format!(
+                    Err(error) => crate::native_capture::debug_log::log_warn(format!(
                         "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
                     )),
                 }
             }
         } else {
-            crate::native_capture::debug_log::log_error(
+            crate::native_capture::debug_log::log_warn(
                 "failed to read recording settings during OCR disabled startup reconciliation",
             );
         }
@@ -2019,7 +2019,7 @@ pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri:
                 "graceful shutdown reclaimed in-flight processing jobs (requeued={}, failed_on_ceiling={})",
                 reclamation.requeued, reclamation.failed_on_ceiling
             )),
-            Err(error) => crate::native_capture::debug_log::log_error(format!(
+            Err(error) => crate::native_capture::debug_log::log_warn(format!(
                 "graceful shutdown failed to reclaim in-flight processing jobs: {error}"
             )),
         },
@@ -2052,7 +2052,7 @@ pub(crate) async fn acquire_model_download_lock(
     {
         Ok(lock) => Some(lock),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to lock {processor} model for download; its queued jobs may fail against the in-flight model: {error}"
             ));
             None
@@ -2076,7 +2076,7 @@ pub(crate) async fn release_model_download_lock(
     reconcile_absent_model_locks(app_handle).await;
     if let (Some(lock), Some(infra)) = (lock, app_handle.try_state::<AppInfraState>()) {
         if let Err(error) = infra.release_processing_model_locks(&lock).await {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to release model download lock: {error}"
             ));
         }
@@ -2098,7 +2098,7 @@ pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) 
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(app_data_dir) => app_data_dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to resolve app data directory for absent-model lock reconciliation: {error}"
             ));
             return;
@@ -2137,7 +2137,7 @@ pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) 
             .sync_absent_processing_model_locks(processor, &model_keys)
             .await
         {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to reconcile absent-model locks for {processor}: {error}"
             ));
         }
@@ -2160,7 +2160,7 @@ async fn run_audio_transcription_backfill_pass(
 ) {
     let admission = audio_transcription_admission_for_current_settings(app_handle);
     if !admission.enabled || !admission.provider_available || admission.payload_json.is_none() {
-        crate::native_capture::debug_log::log_info(
+        crate::native_capture::debug_log::log(
             format!(
                 "{reason} audio transcription backfill skipped because transcription is disabled or the selected model is unavailable"
             ),
@@ -2178,7 +2178,7 @@ async fn run_audio_transcription_backfill_pass(
             ));
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "{reason} audio transcription backfill failed: {error}"
             ));
         }
@@ -2199,7 +2199,7 @@ async fn run_audio_transcription_backfill_pass(
                 ));
             }
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "{reason} speaker analysis backfill failed: {error}"
                 ));
             }
@@ -2527,7 +2527,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
             ));
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "startup hidden segment workspace repair failed (recordings_root='{}'): {error}",
                 recordings_root_display
             ));
@@ -2710,7 +2710,7 @@ fn spawn_processing_worker_loop(
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "app infrastructure {worker_name} worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
                         base_dir_display,
                         consecutive_failures,
@@ -2788,7 +2788,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
 
             match repair_result {
                 Ok(result) => {
-                    crate::native_capture::debug_log::log_info(format!(
+                    crate::native_capture::debug_log::log(format!(
                         "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                         recordings_root_display,
                         result.scanned_workspace_count,
@@ -2797,7 +2797,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
                     ));
                 }
                 Err(error) => {
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "hidden segment workspace repair failed (recordings_root='{}'): {error}",
                         recordings_root_display
                     ));
@@ -2836,7 +2836,7 @@ fn spawn_retention_cleanup_worker(
                     RetentionSleepOutcome::Elapsed => {}
                     RetentionSleepOutcome::ScheduleChanged => {
                         schedule_changed = true;
-                        crate::native_capture::debug_log::log_info(
+                        crate::native_capture::debug_log::log(
                             "retention cleanup worker woke for retention schedule change",
                         );
                     }
@@ -2858,7 +2858,7 @@ fn spawn_retention_cleanup_worker(
                 .await;
             let mut retry_soon = false;
             if policy != SettingsRetentionPolicy::Never {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "retention cleanup worker running cleanup (policy={}, triggered_by={})",
                     app_retention_policy(policy).as_str(),
                     if schedule_changed {
@@ -2917,7 +2917,7 @@ fn spawn_retention_cleanup_worker(
                     Ok(summary) => {
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
-                        crate::native_capture::debug_log::log_info(format!(
+                        crate::native_capture::debug_log::log(format!(
                             "retention cleanup worker completed cleanup (policy={}, status={}, eligible_segments={}, deleted_segments={}, deleted_frames={}, deleted_audio_segments={}, retry_soon={})",
                             summary.policy,
                             summary.status,
@@ -2928,7 +2928,7 @@ fn spawn_retention_cleanup_worker(
                             retry_soon
                         ));
                     }
-                    Err(error) => crate::native_capture::debug_log::log_error(format!(
+                    Err(error) => crate::native_capture::debug_log::log_warn(format!(
                         "retention cleanup worker failed: {error}"
                     )),
                 }
@@ -2938,7 +2938,7 @@ fn spawn_retention_cleanup_worker(
             } else {
                 duration_until_next_retention_daily_run()
             };
-            crate::native_capture::debug_log::log_info(format!(
+            crate::native_capture::debug_log::log(format!(
                 "retention cleanup worker scheduled next wake (policy={}, next_sleep_ms={})",
                 app_retention_policy(policy).as_str(),
                 next_sleep.as_millis()
@@ -3056,7 +3056,7 @@ async fn process_pending_jobs_once(
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "app infrastructure frame-batch finalization failed after state update; worker will continue: {error}"
             ));
             true
@@ -3071,7 +3071,7 @@ async fn process_pending_jobs_once(
         match infra.process_next_frame_batch_job().await {
             Ok(result) => result.is_some(),
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "app infrastructure frame-batch finalization failed after OCR state update; worker will continue: {error}"
                 ));
                 true

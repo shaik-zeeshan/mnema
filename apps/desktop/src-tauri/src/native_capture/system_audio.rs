@@ -64,7 +64,7 @@ impl SegmentBus {
 
         if let Some(audio_dir) = next.parent() {
             if let Err(error) = std::fs::create_dir_all(audio_dir) {
-                super::debug_log::log(format!(
+                super::debug_log::log_error(format!(
                     "{LOG_PREFIX} failed to create system audio output directory: {error}"
                 ));
                 self.live_output_file = None;
@@ -171,7 +171,7 @@ impl SystemAudioFamily {
     pub(super) fn poll(&mut self) -> Option<String> {
         let before = self.live_output_file();
         if let Err(error) = self.session.poll() {
-            super::debug_log::log(format!(
+            super::debug_log::log_warn(format!(
                 "{LOG_PREFIX} tap rebuild failed; retrying on the watchdog's backoff: [{}] {}",
                 error.code, error.message
             ));
@@ -283,7 +283,7 @@ pub(crate) async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
                 .map(SystemAudioEvidence::from_str)
                 .unwrap_or_default(),
         ),
-        Err(error) => super::debug_log::log(format!(
+        Err(error) => super::debug_log::log_warn(format!(
             "{LOG_PREFIX} failed to read stored permission evidence; leaving it unjudged for this session: {error}"
         )),
     }
@@ -306,7 +306,7 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
     };
     store_evidence(next);
 
-    super::debug_log::log(format!(
+    super::debug_log::log_info(format!(
         "{LOG_PREFIX} permission evidence moved to {} after {session_age_ms}ms of tap",
         next.as_str()
     ));
@@ -319,7 +319,7 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
     // uses, and this is only the durable copy catching up.
     tauri::async_runtime::spawn(async move {
         if let Err(error) = infra.system_audio_evidence().set_evidence(next.as_str()).await {
-            super::debug_log::log(format!(
+            super::debug_log::log_warn(format!(
                 "{LOG_PREFIX} failed to persist permission evidence: {error}"
             ));
         }

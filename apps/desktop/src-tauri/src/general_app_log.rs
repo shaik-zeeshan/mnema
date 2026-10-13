@@ -42,10 +42,27 @@ fn open_target_path(path: &Path, exists: bool) -> Result<PathBuf, CaptureErrorRe
 }
 
 fn delete_log_file_at_path(path: &Path) -> Result<(), CaptureErrorResponse> {
-    delete_debug_log_files(path).map_err(|error| CaptureErrorResponse {
+    let to_error = |error: std::io::Error| CaptureErrorResponse {
         code: "app_log_delete_failed".to_string(),
         message: format!("Failed to delete general application log: {error}"),
-    })
+    };
+    delete_debug_log_files(path).map_err(to_error)?;
+    // The log plugin rotates into `rust_<date>.log` siblings; delete those too.
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
+        return Ok(());
+    };
+    let rotated_prefix = format!("{}_", stem.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&rotated_prefix) && name.ends_with(".log") {
+            std::fs::remove_file(entry.path()).map_err(to_error)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn status(
@@ -165,10 +182,16 @@ mod tests {
         fs::write(&log_path, "current").expect("log file should write");
         fs::write(log_path.with_file_name("rust.log.1"), "backup")
             .expect("backup log file should write");
+        let rotated = log_path.with_file_name("rust_2026-10-13_14-20-01.log");
+        fs::write(&rotated, "rotated").expect("rotated log file should write");
+        let unrelated = log_path.with_file_name("rusty.log");
+        fs::write(&unrelated, "other").expect("unrelated file should write");
 
         delete_log_file_at_path(&log_path).expect("log file should be deleted");
         assert!(!log_path.exists());
         assert!(!log_path.with_file_name("rust.log.1").exists());
+        assert!(!rotated.exists());
+        assert!(unrelated.exists());
 
         delete_log_file_at_path(&log_path).expect("missing log file should be ignored");
     }

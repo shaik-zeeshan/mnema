@@ -281,7 +281,7 @@ fn rebuild_listener_block(
             shared.request_rebuild(reason);
         }));
         if requested.is_err() {
-            capture_runtime::debug_log!("{LOG_PREFIX} {label} panicked");
+            capture_runtime::error_log!("{LOG_PREFIX} {label} panicked");
         }
     })
 }
@@ -407,7 +407,7 @@ impl SystemAudioCaptureSession {
         self.teardown_generation();
         let replaced = self.shared.lock_generation().take();
         self.finalize(replaced.map(|generation| generation.output));
-        capture_runtime::debug_log!(
+        capture_runtime::info_log!(
             "{LOG_PREFIX} stopped session after {} rebuild(s)",
             self.rebuild_count()
         );
@@ -415,7 +415,7 @@ impl SystemAudioCaptureSession {
 
     fn rebuild(&mut self, reason: RebuildReason) -> Result<(), CaptureErrorResponse> {
         self.rebuilds += 1;
-        capture_runtime::debug_log!(
+        capture_runtime::warn_log!(
             "{LOG_PREFIX} rebuilding tap generation (reason={}, rebuild={})",
             reason.as_str(),
             self.rebuilds

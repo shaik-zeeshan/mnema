@@ -304,7 +304,7 @@ impl McpManager {
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             let Some(state) = state else {
-                tauri_plugin_log::log::info!(
+                tauri_plugin_log::log::debug!(
                     "Ask AI MCP OAuth callback carried no state parameter; ignoring"
                 );
                 return;
@@ -312,7 +312,7 @@ impl McpManager {
             // Claim the pending flow by its CSRF state (one-shot removal).
             let pending = { lock_recover(&manager.inner().oauth_pending).remove(&state) };
             let Some(pending) = pending else {
-                tauri_plugin_log::log::info!(
+                tauri_plugin_log::log::debug!(
                     "Ask AI MCP received an unknown or expired OAuth callback; ignoring"
                 );
                 return;
@@ -345,7 +345,7 @@ impl McpManager {
                     emit_authorization_changed(&app_handle, &id);
                 }
                 Err(error) => {
-                    tauri_plugin_log::log::warn!(
+                    tauri_plugin_log::log::error!(
                         "Ask AI MCP OAuth token exchange failed for \"{id}\": {error}"
                     );
                     emit_authorization_changed(&app_handle, &id);
@@ -392,7 +392,7 @@ fn emit_authorization_changed(app_handle: &tauri::AppHandle, id: &str) {
 /// test can drive it against the file-backed secret store.
 async fn drop_oauth_local(inner: &Inner, id: &str) {
     if let Err(error) = app_infra::delete_mcp_server_secret(id) {
-        tauri_plugin_log::log::warn!(
+        tauri_plugin_log::log::error!(
             "Ask AI MCP failed to delete the OAuth Token Set for \"{id}\": {error}"
         );
     }
@@ -480,9 +480,10 @@ async fn revoke_inner(cfg: &McpServerConfig) {
             "Ask AI MCP best-effort token revoke posted for \"{}\"",
             cfg.label
         ),
-        Err(error) => tauri_plugin_log::log::debug!(
-            "Ask AI MCP best-effort token revoke for \"{}\" failed (ignored): {error}",
-            cfg.label
+        Err(error) => tauri_plugin_log::log::warn!(
+            "Ask AI MCP best-effort token revoke for \"{}\" failed (ignored): {}",
+            cfg.label,
+            error.without_url()
         ),
     }
 }

@@ -1,4 +1,3 @@
-use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -223,19 +222,9 @@ pub fn configure_debug_log(enabled: bool, path: Option<PathBuf>) {
     runtime.path = path;
 }
 
-pub fn write_debug_log(message: impl AsRef<str>) {
-    let message = message.as_ref();
-    log::debug!("{message}");
-    write_debug_log_to_file(message);
-}
-
 pub fn write_debug_log_to_file(message: impl AsRef<str>) {
     let line = format_log_line(message.as_ref());
     append_log_line_to_configured_path(&line);
-}
-
-pub fn write_debug_log_fmt(args: fmt::Arguments<'_>) {
-    write_debug_log(args.to_string());
 }
 
 pub fn debug_log_files_exist(path: &Path) -> bool {

@@ -477,7 +477,7 @@ impl AppInfra {
         self.jobs.reconcile_orphaned_running_jobs().await?;
         let reclamation = self.processing.reconcile_orphaned_running_jobs().await?;
         if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
-            capture_runtime::debug_log!(
+            capture_runtime::info_log!(
                 "[app-infra] startup reclaimed orphaned processing jobs (requeued={}, failed_on_ceiling={})",
                 reclamation.requeued,
                 reclamation.failed_on_ceiling

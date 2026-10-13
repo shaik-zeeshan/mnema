@@ -123,7 +123,10 @@ pub async fn begin_login(
                 }
             }
             Err(error) => {
-                tauri_plugin_log::log::warn!("chatgpt-auth: login for {provider_id} failed: {error}");
+                tauri_plugin_log::log::error!(
+                    "chatgpt-auth: login for {provider_id} failed: {}",
+                    super::oauth_failure_log_kind(&error)
+                );
                 ChatgptLoginUpdate {
                     provider_id: provider_id.clone(),
                     connected: false,
@@ -314,7 +317,7 @@ async fn exchange_with_retry(
             Err(error) if error.transient => {
                 tauri_plugin_log::log::warn!(
                     "chatgpt-auth: the code exchange did not reach OpenAI (attempt {attempt}): {}",
-                    error.message
+                    super::oauth_failure_log_kind(&error.message)
                 );
                 tokio::time::sleep(backoff).await;
             }
@@ -418,7 +421,7 @@ pub(super) fn persist_token_set_if_current(
         .unwrap_or(0)
         != generation
     {
-        tauri_plugin_log::log::info!(
+        tauri_plugin_log::log::debug!(
             "chatgpt-auth: dropping a token set from a superseded login for {provider_id}"
         );
         return Ok(());

@@ -469,7 +469,7 @@ where
             Ok(output) => output,
             Err(payload) => {
                 let error = format_cpu_job_panic(payload);
-                capture_runtime::debug_log!(
+                capture_runtime::error_log!(
                     "[app-infra][jobs] captured panic in cpu job {job_id} ({job_kind}): {error}"
                 );
                 Err(error)

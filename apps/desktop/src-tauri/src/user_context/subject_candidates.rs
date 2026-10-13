@@ -70,7 +70,7 @@ pub(crate) async fn select_semantic_subject_candidates(
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "subject-candidate select could not resolve app data dir: {error}"
             ));
             return Vec::new();
@@ -132,7 +132,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         let loaded = match load_embedder(&app_data_dir, &descriptor) {
             Ok(loaded) => loaded,
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "subject-candidate select failed to load model '{}/{}': {error}",
                     descriptor.provider, descriptor.model_id
                 ));
@@ -148,7 +148,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         Ok(Some(results)) => results,
         Ok(None) => return Vec::new(),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "subject-candidate select embed task panicked/cancelled: {error}"
             ));
             return Vec::new();
@@ -162,7 +162,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         let vector = match result {
             Ok(vector) => vector,
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "subject-candidate select embed failed for an activity: {error}"
                 ));
                 continue;
@@ -179,7 +179,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         {
             Ok(hits) => per_activity.push(hits),
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "subject-candidate select KNN failed: {error}"
                 ));
             }

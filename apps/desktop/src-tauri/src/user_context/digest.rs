@@ -910,7 +910,7 @@ pub async fn get_or_generate_digest(
         return Ok(absent(DigestAbsentReason::DerivationOff));
     }
     if let Err(reason) = crate::ai_runtime::engine_configured_prerequisite(ai_runtime).await {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "digest: skipped {range_kind} (engine not ready: {reason})"
         ));
         return Ok(absent(DigestAbsentReason::EngineNotReady));
@@ -938,7 +938,7 @@ pub async fn get_or_generate_digest(
         .filter(|a| !guardrail::is_sensitive(&a.title, &a.summary))
         .collect();
     if activities.len() < MIN_DIGEST_ACTIVITIES {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "digest: skipped {range_kind} (only {} activities, need {MIN_DIGEST_ACTIVITIES})",
             activities.len()
         ));
@@ -1032,7 +1032,7 @@ pub async fn get_or_generate_digest(
     );
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
-    crate::native_capture::debug_log::log_info(format!(
+    crate::native_capture::debug_log::log(format!(
         "digest: generating {range_kind} [{range_start_ms}..{range_end_ms}) force={force} \
          activities={} day_digests={} prompt_chars={} est_input_tokens={input_tokens} \
          provider={:?} model={:?}",
@@ -1056,7 +1056,7 @@ pub async fn get_or_generate_digest(
     let engine = match crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await {
         Ok(engine) => engine,
         Err(reason) => {
-            crate::native_capture::debug_log::log_info(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "digest: skipped {range_kind} (engine config did not resolve: {reason})"
             ));
             // Both paths surface it (and record it) exactly like the extraction
@@ -1089,12 +1089,16 @@ pub async fn get_or_generate_digest(
     let batch = match extracted {
         Ok(batch) => batch,
         Err(error) => {
-            // Log the RAW provider/transport error (the user-facing message is a
-            // lossy one-liner; the raw text carries the status code + provider
-            // body needed to tell "thinking mode rejected tool_choice" apart from
-            // a bad key or an outage).
+            // Log the failure kind plus the raw provider/transport error cut to
+            // 200 chars (the user-facing message is a lossy one-liner; the raw
+            // text's head carries the status code needed to tell "thinking mode
+            // rejected tool_choice" apart from a bad key or an outage). Cut
+            // because the body can echo prompt or output fragments, and user
+            // logs leave the machine.
             crate::native_capture::debug_log::log_warn(format!(
-                "digest: extraction FAILED for {range_kind} [{range_start_ms}..{range_end_ms}): {error}"
+                "digest: extraction FAILED for {range_kind} [{range_start_ms}..{range_end_ms}) ({}): {}",
+                error.failure_kind(),
+                truncate_chars(&error.to_string(), 200)
             ));
             // The ledger keeps the raw provider/transport detail for debugging;
             // the surface gets the one-sentence classification (rate limit,
@@ -1179,9 +1183,8 @@ pub async fn get_or_generate_digest(
 
     crate::native_capture::debug_log::log_info(format!(
         "digest: generated {range_kind} [{range_start_ms}..{range_end_ms}) \
-         narrative_chars={} headline={:?} output_tokens={output_tokens}",
+         narrative_chars={} output_tokens={output_tokens}",
         narrative.chars().count(),
-        headline.as_deref(),
     ));
 
     Ok(present(digest_dto(

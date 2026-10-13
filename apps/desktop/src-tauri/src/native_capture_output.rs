@@ -1315,7 +1315,7 @@ pub(crate) fn cleanup_unusable_segment_artifacts(
     for file in files_to_remove {
         if let Err(error) = std::fs::remove_file(&file) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                super::debug_log::log(format!(
+                super::debug_log::log_warn(format!(
                     "failed removing unusable segment artifact {file}: {error}"
                 ));
             }

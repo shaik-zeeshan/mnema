@@ -1479,7 +1479,7 @@ pub(super) fn log_video_preview_exact_miss(
         .map(|(captured_at_unix_ms, frame_index)| format!("{captured_at_unix_ms}:{frame_index}"))
         .unwrap_or_else(|| "unknown".to_string());
 
-    crate::native_capture::debug_log::log_warn(format!(
+    crate::native_capture::debug_log::log(format!(
         "[DEBUG-frame-preview] event=video_exact_miss path={} frame_id={} frame_identity={} used_indexed_offset={} require_exact_time={} offset_seconds={} requested_time={} actual_time={} delta_ms={:.3}",
         video_path.display(),
         frame.id,
@@ -2138,7 +2138,7 @@ pub(super) async fn get_frame_preview_inner_with_logging(
 
     match &result {
         Ok(Some(_preview)) => {}
-        Ok(None) => crate::native_capture::debug_log::log_warn(format!(
+        Ok(None) => crate::native_capture::debug_log::log(format!(
             "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
             frame_id, elapsed_ms,
         )),
@@ -2341,7 +2341,7 @@ fn log_scrub_preview_perf(event: &str, fields: impl AsRef<str>) {
     if !scrub_preview_perf_debug_enabled() {
         return;
     }
-    crate::native_capture::debug_log::log_info(format!(
+    crate::native_capture::debug_log::log(format!(
         "[DEBUG-scrub-perf] event={event} {}",
         fields.as_ref()
     ));
