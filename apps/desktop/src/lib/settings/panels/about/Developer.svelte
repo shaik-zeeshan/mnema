@@ -7,6 +7,9 @@
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconClear from "~icons/lucide/x";
+  import { openDebugWindow } from "$lib/surface-windows";
+  import { getEffectiveGlobalShortcut } from "$lib/global-shortcuts";
+  import { detectKeyboardPlatform, formatShortcut } from "$lib/keyboard";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -33,17 +36,41 @@
   const deleteDebugLog = () => logs.deleteDebugLog();
   const openGeneralLog = () => logs.openGeneralLog();
   const deleteGeneralLog = () => logs.deleteGeneralLog();
+
+  // Follows a rebind: the effective binding reads reactive keyboard settings.
+  const platform = detectKeyboardPlatform();
+  const openDebugKeys = $derived(
+    formatShortcut(getEffectiveGlobalShortcut("openDebug").bindings[0], platform).join(""),
+  );
 </script>
 
 <SettingGroup id="settings-section-developer" title="Developer &amp; Logs">
   <SettingRow
     label="Enable developer options"
-    description="Reveal the Debug surface in the navigation bar (raw session, system probe, idle policy, app-infra and background-job tools) and record verbose Debug-level entries in the General Application Log. When disabled, the Debug page is hidden, visiting it redirects to the Timeline, and the General Application Log keeps only high-level events and errors. Development builds always log verbosely. Changes auto-save and apply immediately."
+    description="Turns on the developer window and keeps detailed entries in the app log. Changes apply immediately."
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftDeveloperOptionsEnabled} ariaLabel="Enable developer options" />
     {/snippet}
   </SettingRow>
+
+  <!-- mockup `.st-row.is-off`: dims the copy while developer options are off. -->
+  <div class="dev-win" class:is-off={!rec.draftDeveloperOptionsEnabled}>
+    <SettingRow
+      label="Developer window"
+      description="Health, queues, capture and logs in a small window you can keep beside the app."
+    >
+      {#snippet control()}
+        <button
+          type="button"
+          class="mx-btn mx-btn--sm"
+          disabled={!rec.draftDeveloperOptionsEnabled}
+          aria-disabled={!rec.draftDeveloperOptionsEnabled}
+          onclick={() => void openDebugWindow()}
+        >Open<kbd>{openDebugKeys}</kbd></button>
+      {/snippet}
+    </SettingRow>
+  </div>
 
   <SettingRow
     label="Native capture debug logging"
@@ -201,6 +228,10 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  .dev-win.is-off :global(.setting-row__text) {
+    opacity: 0.55;
   }
 
 </style>

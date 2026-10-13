@@ -7,7 +7,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { tip } from "$lib/components/tooltip";
   import { normalizeAppPathname } from "$lib/route-path";
-  import { getLastMainSurface, openDebugWindow, openSettings } from "$lib/surface-windows";
+  import { getLastMainSurface, openSettings } from "$lib/surface-windows";
   import { getEffectiveGlobalShortcut } from "$lib/global-shortcuts";
   import { setKeyboardHelpGroups } from "$lib/keyboard-help.svelte";
   import { formatShortcut, matchShortcut, type KeyboardPlatform, type ShortcutDefinition } from "$lib/keyboard";
@@ -15,9 +15,11 @@
 
   interface Props {
     platform: KeyboardPlatform;
+    // ponytail: unused since the bug icon left the titlebar (⌘D + Settings are
+    // the ways in); kept so +layout.svelte's call site stays valid.
     devEnabled: boolean;
   }
-  let { platform, devEnabled }: Props = $props();
+  let { platform }: Props = $props();
 
   const path = $derived(normalizeAppPathname($page.url.pathname));
   const onTimeline = $derived(path === "/");
@@ -181,16 +183,5 @@
     >
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
     </button>
-    {#if devEnabled}
-      <button
-        type="button"
-        class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
-        aria-label="Open debug"
-        use:tip={`Debug  ${formatShortcut(getEffectiveGlobalShortcut("openDebug").bindings[0], platform).join("")}`}
-        onclick={() => void openDebugWindow()}
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6" /><path d="M10 9V7a2 2 0 1 1 4 0v2" /><rect x="5" y="9" width="14" height="10" rx="2" /><path d="M8 13h.01" /><path d="M16 13h.01" /><path d="M9 19v2" /><path d="M15 19v2" /><path d="M2 12h3" /><path d="M19 12h3" /></svg>
-      </button>
-    {/if}
   </div>
 </header>
