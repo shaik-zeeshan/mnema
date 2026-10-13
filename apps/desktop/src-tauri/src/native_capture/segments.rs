@@ -962,7 +962,7 @@ fn active_sources_for_runtime_pause_state(
 /// bitrate, segment duration, and requested audio sources. Mirrors the preflight
 /// estimate so the rotation boundary reserves the same amount the preflight did.
 #[cfg(target_os = "macos")]
-fn next_segment_estimate_for_runtime(runtime: &NativeCaptureRuntime) -> u64 {
+pub(super) fn next_segment_estimate_for_runtime(runtime: &NativeCaptureRuntime) -> u64 {
     let bitrate_bps = runtime.effective_screen_bitrate_bps.unwrap_or(0) as u64;
     let (microphone, system_audio) = runtime
         .requested_sources
@@ -1002,7 +1002,7 @@ pub(super) fn low_disk_decision_at_boundary(
 /// planner (screen/mic/system-audio all share the same recordings root). Used to
 /// probe free space at rotation/recovery time.
 #[cfg(target_os = "macos")]
-fn recordings_root_for_runtime(runtime: &NativeCaptureRuntime) -> Option<PathBuf> {
+pub(super) fn recordings_root_for_runtime(runtime: &NativeCaptureRuntime) -> Option<PathBuf> {
     screen_planner_for_runtime(runtime)
         .or(runtime.microphone_planner.as_ref())
         .or(runtime.system_audio_planner.as_ref())

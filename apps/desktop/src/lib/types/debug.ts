@@ -305,3 +305,65 @@ export interface AskAiTokenUsage {
 	/** Loop start → usage report, ms (within a stream-tail of the full turn). */
 	durationMs: number;
 }
+
+// ─── Capture health (get_capture_health) ───────────────────────────────────
+
+export type CaptureSourceState = "off" | "recording" | "paused" | "waiting" | "reconnecting" | "failed";
+
+export interface CaptureSourceHealth {
+	requested: boolean;
+	state: CaptureSourceState;
+	/** Raw reason code, e.g. `capture_display_unavailable`, `inactivity`, `not_requested`. */
+	reason: string | null;
+	/** dBFS from the normalized peak, clamped to −60; audio only. */
+	levelDb: number | null;
+	idleMs: number | null;
+	/** Not cheaply known today: always `null`. */
+	deviceName: string | null;
+}
+
+export interface CaptureSuspensionHealth {
+	kind: "privacyFilter" | "displayUnavailable" | "lowDisk";
+	reason: string;
+	recoveryAttempts: number;
+	restartRequired: boolean;
+	sinceMs: number | null;
+	lastErrorMessage: string | null;
+}
+
+export type SystemAudioTapRebuildReason =
+	| "deviceChanged"
+	| "deviceDied"
+	| "sampleRateChanged"
+	| "excludeListMoved"
+	| "silenceWatchdog";
+
+export interface SystemAudioTapHealth {
+	/** Since local midnight, within this app run (resets on relaunch). */
+	rebuildsToday: number;
+	lastReason: SystemAudioTapRebuildReason | null;
+	lastRebuildAtMs: number | null;
+	/** e.g. "48000 → 16000 Hz" after a sample-rate rebuild. */
+	lastDetail: string | null;
+	nextSilenceCheckInMs: number | null;
+	watchdogDelayMs: number | null;
+	sampleRateHz: number | null;
+}
+
+export interface CaptureHealthDto {
+	recording: boolean;
+	startedAtMs: number | null;
+	screen: CaptureSourceHealth;
+	microphone: CaptureSourceHealth;
+	systemAudio: CaptureSourceHealth;
+	suspension: CaptureSuspensionHealth | null;
+	/** `null` while no system-audio session is live. */
+	systemAudioTap: SystemAudioTapHealth | null;
+	disk: {
+		freeBytes: number | null;
+		reserveFloorBytes: number;
+		/** `null` while not recording. */
+		pauseThresholdBytes: number | null;
+		resumeThresholdBytes: number | null;
+	};
+}

@@ -1,4 +1,5 @@
 mod activity;
+pub(crate) mod capture_health;
 #[cfg(target_os = "macos")]
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
@@ -2706,6 +2707,16 @@ pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> 
             None::<String>,
         )
         .map_err(|error| format!("failed to open accessibility settings: {error}"))
+}
+
+/// The developer window's Capture tab and health rollup. `(async)`: the
+/// free-space read can block on a slow volume, so keep it off the main thread.
+#[tauri::command(async)]
+pub fn get_capture_health(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, NativeCaptureState>,
+) -> capture_health::CaptureHealthDto {
+    capture_health::capture_health_snapshot(&state, &app_handle)
 }
 
 #[tauri::command]

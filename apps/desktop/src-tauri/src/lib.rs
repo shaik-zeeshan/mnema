@@ -774,6 +774,7 @@ pub fn run() {
             native_capture::request_browser_url_accessibility,
             native_capture::open_browser_url_accessibility_settings,
             native_capture::get_idle_debug,
+            native_capture::get_capture_health,
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,

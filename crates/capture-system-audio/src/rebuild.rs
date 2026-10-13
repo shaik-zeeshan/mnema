@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use capture_types::CaptureErrorResponse;
 use capture_writers::derive_audio_activity_level_from_sample_buf;
@@ -68,7 +68,7 @@ pub enum RebuildReason {
 }
 
 impl RebuildReason {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::DefaultOutputDeviceChanged => "default_output_device_changed",
             Self::DeviceSampleRateChanged => "device_sample_rate_changed",
@@ -77,6 +77,21 @@ impl RebuildReason {
             Self::ZeroWatchdog => "zero_watchdog",
         }
     }
+}
+
+/// A read-only snapshot of a session's rebuild history, for the developer
+/// window. Session-scoped: a new session starts from zero.
+#[derive(Debug, Clone)]
+pub struct TapHealth {
+    pub rebuilds: u64,
+    pub last_reason: Option<RebuildReason>,
+    pub last_rebuild_at: Option<SystemTime>,
+    /// For a sample-rate rebuild, the rates either side ("48000 → 16000 Hz").
+    pub last_detail: Option<String>,
+    pub next_silence_check_in: Option<Duration>,
+    pub watchdog_delay: Duration,
+    /// The rate the live generation writes at; `None` while no tap is up.
+    pub sample_rate_hz: Option<u32>,
 }
 
 /// The tap generation's live state, shared with the IOProc's queue.
@@ -301,6 +316,9 @@ pub struct SystemAudioCaptureSession {
     tap: Option<SystemAudioTapSession>,
     listeners: Option<DeviceChangeListeners>,
     rebuilds: u64,
+    last_reason: Option<RebuildReason>,
+    last_rebuild_at: Option<SystemTime>,
+    last_detail: Option<String>,
     stopped: bool,
 }
 
@@ -328,6 +346,9 @@ impl SystemAudioCaptureSession {
             tap: None,
             listeners: None,
             rebuilds: 0,
+            last_reason: None,
+            last_rebuild_at: None,
+            last_detail: None,
             stopped: false,
         };
         session.start_generation()?;
@@ -399,6 +420,26 @@ impl SystemAudioCaptureSession {
         self.rebuilds
     }
 
+    /// Cheap: plain field copies plus one brief watchdog lock.
+    pub fn health(&self) -> TapHealth {
+        let watchdog = self.shared.lock_watchdog();
+        TapHealth {
+            rebuilds: self.rebuilds,
+            last_reason: self.last_reason,
+            last_rebuild_at: self.last_rebuild_at,
+            last_detail: self.last_detail.clone(),
+            next_silence_check_in: (!self.stopped).then(|| watchdog.next_check_in(Instant::now())),
+            watchdog_delay: watchdog.delay(),
+            sample_rate_hz: self.tap_sample_rate_hz(),
+        }
+    }
+
+    fn tap_sample_rate_hz(&self) -> Option<u32> {
+        self.tap
+            .as_ref()
+            .map(|tap| tap.asbd().sample_rate.round() as u32)
+    }
+
     /// Tears the tap down and closes the in-flight segment. Terminal: a stopped
     /// session never rebuilds, so a late tick cannot resurrect a tap the user
     /// asked to be rid of.
@@ -420,6 +461,10 @@ impl SystemAudioCaptureSession {
             reason.as_str(),
             self.rebuilds
         );
+        let rate_before = self.tap_sample_rate_hz();
+        self.last_reason = Some(reason);
+        self.last_rebuild_at = Some(SystemTime::now());
+        self.last_detail = None;
 
         // Full teardown of *both* tap and aggregate before anything else: it is
         // the only recovery the macOS-26 wedge responds to, and it is what makes
@@ -428,7 +473,13 @@ impl SystemAudioCaptureSession {
         let replaced = self.shared.lock_generation().take();
         self.finalize(replaced.map(|generation| generation.output));
 
-        self.start_generation()
+        let started = self.start_generation();
+        if reason == RebuildReason::DeviceSampleRateChanged {
+            if let (Some(before), Some(after)) = (rate_before, self.tap_sample_rate_hz()) {
+                self.last_detail = Some(format!("{before} → {after} Hz"));
+            }
+        }
+        started
     }
 
     fn start_generation(&mut self) -> Result<(), CaptureErrorResponse> {
