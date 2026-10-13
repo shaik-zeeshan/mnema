@@ -29,7 +29,9 @@
   import type { StorageUsage } from "$lib/types/app-infra";
   import { formatBytes } from "$lib/settings/state/format";
   import { storageTotal } from "$lib/settings/panels/data/storage-meter";
+  import IconChevronUp from "~icons/lucide/chevron-up";
   import ShortcutsPop from "./ShortcutsPop.svelte";
+  import StatusPop from "./StatusPop.svelte";
   import { captureHealth, statusPop, subscribeCaptureHealth } from "./status-live.svelte";
   import {
     LANES,
@@ -218,7 +220,7 @@
     }
   }
 
-  function runFlag(): void {
+  function runFlag(e: MouseEvent): void {
     switch (flag?.kind) {
       case "privacy-restart":
         void restartForPrivacy();
@@ -237,10 +239,29 @@
         void openScreenPrivacy();
         break;
       case "disk-soon":
-        statusPop.open = true;
+        togglePop(e);
         break;
     }
   }
+
+  // ── The "What Mnema is doing" popover: REC pill, lane group, disk flag ──
+  let popTrigger = $state<HTMLElement | null>(null);
+  let popByKeyboard = $state(false);
+  function togglePop(e: MouseEvent): void {
+    popTrigger = e.currentTarget as HTMLElement;
+    popByKeyboard = e.detail === 0; // keyboard-activated clicks carry no click count
+    statusPop.open = !statusPop.open;
+  }
+  // The AI row reads the engine pill's status: make it current on open.
+  $effect(() => {
+    if (statusPop.open) void refresh();
+  });
+  const popAttrs = $derived({
+    "data-status-pop-trigger": "",
+    "aria-haspopup": "dialog" as const,
+    "aria-expanded": statusPop.open,
+    "aria-controls": "status-popover",
+  });
 
   const LIVE_TIP: Record<string, string> = {
     on: "recording",
@@ -268,10 +289,11 @@
 </script>
 
 <footer class="mx-statusbar">
-  <span class="mx-rec{rec.mod ? ` mx-rec--${rec.mod}` : ''}" aria-live="polite">
+  <div class="mx-pop-anchor ss-anchor">
+  <button type="button" class="mx-rec{rec.mod ? ` mx-rec--${rec.mod}` : ''} ss-rectrig" aria-live="polite" {...popAttrs} onclick={togglePop}>
     {#if rec.mod === "starting"}<span class="mx-spin mx-spin--sm"></span>{:else}<span class="mx-rec__dot"></span>{/if}
     {rec.label}{#if clockText} <span class="num">{clockText}</span>{/if}
-  </span>
+  </button>
 
   {#if captureControls.running}
     <button
@@ -321,15 +343,22 @@
   <span class="mx-sep"></span>
 
   {#if startingOrRunning}
-    {#each lanes as lane (lane.key)}
-      {@const meta = LANES.find((l) => l.key === lane.key)!}
-      <span
-        class="mx-lane mx-lane--{meta.mod} mx-lane--{lane.mod}"
-        role="status"
-        aria-label={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
-        use:tip={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
-      >{meta.label}{#if lane.small} <small>{lane.small}</small>{/if}</span>
-    {/each}
+    <button
+      type="button"
+      class="ss-trig"
+      {...popAttrs}
+      aria-label={`What Mnema is doing — ${lanes.map((l) => `${NAMES[l.key]}: ${laneTip(l.mod, l.small)}`).join(", ")}`}
+      onclick={togglePop}
+    >
+      {#each lanes as lane (lane.key)}
+        {@const meta = LANES.find((l) => l.key === lane.key)!}
+        <span
+          class="mx-lane mx-lane--{meta.mod} mx-lane--{lane.mod}"
+          use:tip={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
+        >{meta.label}{#if lane.small} <small>{lane.small}</small>{/if}</span>
+      {/each}
+      <IconChevronUp class="ss-trig__chev" width="10" height="10" aria-hidden="true" />
+    </button>
   {:else}
     {#each LANES as meta (meta.key)}
       {@const blocked = meta.key === "screen" && screenBlocked}
@@ -344,6 +373,8 @@
       >{meta.label}{#if blocked} <small>no permission</small>{/if}</button>
     {/each}
   {/if}
+  <StatusPop {platform} {devEnabled} {engine} trigger={popTrigger} byKeyboard={popByKeyboard} />
+  </div>
 
   <span class="mx-spacer"></span>
 
@@ -354,6 +385,8 @@
       <button
         type="button"
         class="mx-flag"
+        class:ss-trig-flag={flag.kind === "disk-soon"}
+        {...flag.kind === "disk-soon" ? popAttrs : {}}
         data-tone={flag.tone}
         aria-busy={(flag.kind === "privacy-restart" && restarting) || (flag.kind === "permission" && openingPrivacy)}
         disabled={flag.kind === "privacy-restart" && (restarting || captureControls.loadingStop)}
@@ -396,3 +429,18 @@
     {canToggleSources}
   />
 </footer>
+
+<style>
+  .ss-anchor { display: flex; align-items: center; gap: var(--s-3); }
+  .ss-trig { display: inline-flex; align-items: center; gap: var(--s-3); height: 22px; margin: 0 -6px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
+    background: none; color: inherit; font: inherit; letter-spacing: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+  .ss-trig:hover, .ss-trig[aria-expanded="true"] { background: var(--mx-wash-strong); }
+  .ss-trig:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 0; }
+  .ss-trig :global(.ss-trig__chev) { flex: none; color: var(--app-text-faint); margin-left: -4px; transition: color var(--t-fast) var(--ease-quart); }
+  .ss-trig:hover :global(.ss-trig__chev), .ss-trig[aria-expanded="true"] :global(.ss-trig__chev) { color: var(--app-text-muted); }
+  :where(.ss-rectrig) { color: inherit; }
+  .ss-rectrig { background: none; font: inherit; letter-spacing: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+  .ss-rectrig:hover, .ss-rectrig[aria-expanded="true"] { background: var(--mx-wash-strong); }
+  .ss-rectrig:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  button.mx-flag.ss-trig-flag:hover, button.mx-flag.ss-trig-flag[aria-expanded="true"] { background: var(--tone-bg); }
+</style>
