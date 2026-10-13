@@ -354,7 +354,7 @@
         {@const meta = LANES.find((l) => l.key === lane.key)!}
         <span
           class="mx-lane mx-lane--{meta.mod} mx-lane--{lane.mod}"
-          use:tip={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
+          use:tip={statusPop.open ? null : `${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
         >{meta.label}{#if lane.small} <small>{lane.small}</small>{/if}</span>
       {/each}
       <IconChevronUp class="ss-trig__chev" width="10" height="10" aria-hidden="true" />

@@ -14,9 +14,8 @@
        lib/shell/StatusPop.svelte (the popover). Opens from the REC pill or the lane group (and from the low-disk-soon flag).
        Data: session.svelte.ts (NativeCaptureSession) · get_quick_recall_index_status (queuedFrames, oldestQueuedMs,
        semanticIndexedPercent) · get_processing_pipeline_status (transcription queued, averageCompletedSecondsLast24h)
-       · get_storage_location (free_bytes) · get_ai_runtime_status · developer-options.svelte.ts (footer link).
-       Needs backend: display-unavailable on NativeCaptureSession · system-audio tap rebuild + its reason ·
-       low-disk pause/resume thresholds · Deepgram "unreachable, will retry" as a readable state. */
+       · get_capture_health (disk.freeBytes, display-unavailable, tap rebuild + reason, low-disk thresholds)
+       · transcription_deepgram_auth_status · get_ai_runtime_status · developer-options.svelte.ts (footer link). */
     .ss-page { max-width: 1232px; margin: 0 auto; padding: var(--s-7) var(--s-5) var(--s-8); display: grid; gap: var(--s-8); }
     .ss-head { display: grid; gap: var(--s-2); max-width: 72ch; }
     .ss-head .mx-prose { margin: 0; }
@@ -261,17 +260,15 @@
             <li><b>“about 2 min”</b> · queued × averageCompletedSecondsLast24h from <code>get_processing_pipeline_status</code></li>
             <li><b>Transcribing N clips</b> · same call, transcription queued + running</li>
             <li><b>Meaning index %</b> · semanticIndexedPercent (row hidden when meaning search is off)</li>
-            <li><b>Free space</b> · free_bytes, storage layout</li>
+            <li><b>Free space</b> · <code>get_capture_health</code> disk.freeBytes</li>
             <li><b>AI row</b> · <code>get_ai_runtime_status</code> reason codes, same rule as the <code>mx-engine</code> pill</li>
             <li><b>Footer link</b> · <code>developer-options.svelte.ts</code></li>
+            <li><b>Display asleep</b> · <code>get_capture_health</code> screen.state “waiting”, reason <code>capture_display_unavailable</code></li>
+            <li><b>System audio reconnecting + reason</b> · <code>get_capture_health</code> systemAudio.state “reconnecting”, systemAudioTap.lastReason / sampleRateHz</li>
+            <li><b>“pauses below 5 GB”</b> · <code>get_capture_health</code> disk.pauseThresholdBytes / resumeThresholdBytes (null while stopped)</li>
+            <li><b>Deepgram unreachable</b> · <code>get_processing_pipeline_status</code> audio_transcription retrying, plus <code>transcription_deepgram_auth_status</code> (key rejected vs unreachable)</li>
           </ul></div>
-        <div><h3 class="mx-label">Needs backend</h3>
-          <ul>
-            <li><span class="mx-chip mx-chip--warn">new</span> <b>Display asleep</b> · display-unavailable is not on <code>NativeCaptureSession</code> today</li>
-            <li><span class="mx-chip mx-chip--warn">new</span> <b>System audio reconnecting</b> · tap rebuild and its reason are not exposed</li>
-            <li><span class="mx-chip mx-chip--warn">new</span> <b>“pauses below 5 GB”</b> · low-disk pause / resume thresholds are not exposed</li>
-            <li><span class="mx-chip mx-chip--warn">new</span> <b>Deepgram unreachable</b> · today only a requeued job; needs a readable “waiting for the network” state</li>
-          </ul></div>
+
       </aside>
     </div>
   </section>
