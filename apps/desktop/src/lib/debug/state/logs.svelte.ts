@@ -1,96 +1,63 @@
-// Log tail state — backs `lib/debug/LogTail.svelte` (the Logs section today,
-// the per-feature "Log tail" sub-tab in slice 7's detail views next).
+// Log tail state for the Logs tab.
 //
 // `tail_app_log` is a poll-and-replace snapshot: there is no server-side
-// filtering and no tail-follow push. So this store owns three things — which
-// file to read, the poll loop, and the client-side feature filter over the
-// lines the backend hands back.
+// filtering and no tail-follow push. So this store owns which file to read,
+// the poll, and the client-side level / feature / text filters over the lines
+// the backend hands back.
 //
-// One store per viewer (created inside the component, not on the debug
-// controller): the Logs section and a detail view's log sub-tab want
-// independent file/filter/follow state.
+// Created inside the tab (not on the controller), so it lives and polls only
+// while the tab is mounted.
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
-import { filterLogLines, type LogFeature } from "../log-filter";
+import { LOG_FEATURE_PATTERNS, type LogFeature } from "../log-filter";
+import { groupLogLines, levelMatches, type LogLevelFilter } from "../log-line";
+import type { PollFn } from "./controller.svelte";
 import type { AppLogFile, AppLogTailDto } from "$lib/types";
 
 /**
  * Lines requested per poll. The backend clamps to 1..=2000; this is the whole
- * window the viewer has, so it is also the render cap — surfaced in the UI
- * ("last N lines") so a truncated view can never read as "that's all there is".
+ * window the viewer has, so it is surfaced in the UI ("last N lines") so a
+ * truncated view never reads as "that's all there is".
  */
 export const LOG_TAIL_LINES = 500;
 
-/**
- * ponytail: 2s, not the page's usual 1s. Each tick re-reads the file front to
- * back Rust-side and re-renders up to LOG_TAIL_LINES rows; logs are written at
- * human pace, so a 1s tick would pay that twice to show the same lines.
- */
+/** Logs are written at human pace; each tick re-reads the file Rust-side. */
 const LOG_POLL_MS = 2000;
 
-/** The real on-disk file names — a debug tool should name what it reads. */
-export const LOG_FILE_OPTIONS: { value: AppLogFile; label: string }[] = [
-	{ value: "rust", label: "rust.log" },
-	{ value: "nativeCapture", label: "native-capture-debug.log" },
-];
-
-export function createLogTailStore(
-	init: { file?: AppLogFile; feature?: LogFeature | null; needle?: string } = {},
-) {
-	let file = $state<AppLogFile>(init.file ?? "rust");
-	let feature = $state<LogFeature | null>(init.feature ?? null);
-	/** Free-text substring filter (case-insensitive) — e.g. a job id to grep for. */
+export function createLogTailStore(poll: PollFn, init: { needle?: string } = {}) {
+	let file = $state<AppLogFile>("rust");
+	let level = $state<LogLevelFilter>("all");
+	let feature = $state<LogFeature | null>(null);
+	/** Free-text substring filter (case-insensitive), e.g. a job id. */
 	let needle = $state(init.needle ?? "");
-	/** Pin the view to the newest line. The user disengages by scrolling up. */
+	/** Stick to the newest line on each poll. */
 	let follow = $state(true);
 	let tail = $state<AppLogTailDto | null>(null);
 	let error = $state<string | null>(null);
 
 	async function fetch() {
-		// Nothing to tail into an off-screen view.
-		if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
 		const requested = file;
 		try {
-			const next = await invoke<AppLogTailDto>("tail_app_log", {
-				file: requested,
-				lines: LOG_TAIL_LINES,
-			});
-			// A file switch landed while this was in flight — that request owns the
-			// view now; dropping this one keeps rust.log's lines off native-capture's
-			// path label.
+			const next = await invoke<AppLogTailDto>("tail_app_log", { file: requested, lines: LOG_TAIL_LINES });
+			// A file switch landed while this was in flight; that request owns the view.
 			if (requested !== file) return;
 			tail = next;
 			error = null;
 		} catch (err) {
-			// A missing log is `exists: false`, not a throw — anything that lands
-			// here is a real read failure.
+			// A missing log is `exists: false`, not a throw.
 			error = humanizeError(err);
 		}
 	}
 
-	/** Poll while mounted + visible. Returns teardown. */
-	function startPolling(): () => void {
-		void fetch();
-		const interval = setInterval(() => { void fetch(); }, LOG_POLL_MS);
-		const onVisibility = () => {
-			if (document.visibilityState === "visible") void fetch();
-		};
-		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			clearInterval(interval);
-			document.removeEventListener("visibilitychange", onVisibility);
-		};
-	}
-
-	// The rendered rows. One filter pass over ≤LOG_TAIL_LINES strings per change
-	// — no memo cache, so nothing to keep in a WeakMap and nothing the template
-	// can write back into.
-	const lines = $derived.by(() => {
-		const byFeature = filterLogLines(tail?.lines ?? [], feature);
+	const grouped = $derived(groupLogLines(tail?.lines ?? []));
+	const entries = $derived.by(() => {
+		const pattern = feature ? LOG_FEATURE_PATTERNS[feature] : null;
 		const query = needle.trim().toLowerCase();
-		if (!query) return byFeature;
-		return byFeature.filter((line) => line.toLowerCase().includes(query));
+		return grouped.filter((entry) =>
+			levelMatches(entry.head?.level ?? null, level) &&
+			(!pattern || pattern.test(entry.raw)) &&
+			(!query || entry.raw.toLowerCase().includes(query)));
 	});
 
 	return {
@@ -98,31 +65,28 @@ export function createLogTailStore(
 		set file(next: AppLogFile) {
 			if (next === file) return;
 			file = next;
-			// Drop the old file's lines immediately rather than showing them under
-			// the new file's name until the next tick lands.
+			// Drop the old file's lines rather than showing them under the new name.
 			tail = null;
 			error = null;
 			void fetch();
 		},
-
+		get level() { return level; },
+		set level(next: LogLevelFilter) { level = next; },
 		get feature() { return feature; },
 		set feature(next: LogFeature | null) { feature = next; },
-
 		get needle() { return needle; },
 		set needle(next: string) { needle = next; },
-
 		get follow() { return follow; },
 		set follow(next: boolean) { follow = next; },
 
 		get tail() { return tail; },
 		get error() { return error; },
-		/** Filtered lines, oldest first — what the viewer renders. */
-		get lines() { return lines; },
-		/** Unfiltered count, so the header can say "42 of 500". */
+		/** Filtered entries, oldest first. */
+		get entries() { return entries; },
+		/** Raw line count the backend returned. */
 		get totalLines() { return tail?.lines.length ?? 0; },
 
-		fetch,
-		startPolling,
+		startPolling: () => poll(fetch, LOG_POLL_MS),
 	};
 }
 
