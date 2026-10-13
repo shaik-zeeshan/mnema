@@ -49,7 +49,7 @@
 </script>
 
 {#if controller.mode === "mini"}
-  <MiniView />
+  <DevStrip compact><MiniView /></DevStrip>
 {:else}
   <div class="dv-win" data-at={nav.tab}>
     <DevStrip />
