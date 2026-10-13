@@ -251,12 +251,15 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            // The developer window: a compact 520×640 panel. Mini mode
+            // (300×120, kept on top) lowers the min size at runtime (F1b)
+            // through the frontend window API, so this is the full-size floor.
             Self::Debug => AppWindowConfig {
                 label: "debug",
                 path: "debug",
-                title: "mnema · Debug",
-                inner_size: (980.0, 680.0),
-                min_inner_size: (800.0, 560.0),
+                title: "mnema · Developer",
+                inner_size: (520.0, 640.0),
+                min_inner_size: (440.0, 480.0),
                 gated_by_dev_options: true,
                 decorations: false,
                 overlay_title_bar: false,
@@ -1616,7 +1619,7 @@ mod tests {
         }
 
         // Covering the label is necessary but not sufficient: the command still
-        // has to be in the permission set. None of these three is in
+        // has to be in the permission set. None of these is in
         // `core:window:default`, and each one fails SILENTLY when absent —
         // the pages swallow the rejection — so assert them by name.
         let permissions: Vec<&str> = capability["permissions"]
@@ -1637,6 +1640,14 @@ mod tests {
             (
                 "core:window:allow-close",
                 "the CLI access receipt closes its own window",
+            ),
+            (
+                "core:window:allow-set-always-on-top",
+                "the developer window pins itself on top",
+            ),
+            (
+                "core:window:allow-set-min-size",
+                "the developer window lowers its min size to shrink to mini",
             ),
         ] {
             assert!(
