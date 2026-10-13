@@ -41,9 +41,8 @@ describe("filterLogLines", () => {
 });
 
 describe("LOG_FEATURE_PATTERNS", () => {
-	it("covers every chip the section renders, and none carries /g", () => {
-		// The chips come from the 9 sections with a `healthFeature`; a missing key
-		// would make that chip silently match nothing.
+	it("covers every LogFeature, and none carries /g", () => {
+		// A missing key would make that chip silently match nothing.
 		expect(Object.keys(LOG_FEATURE_PATTERNS).sort()).toEqual([
 			"aiRuntime",
 			"capture",

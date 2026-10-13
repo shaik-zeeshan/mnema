@@ -21,7 +21,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
 import { laneFor } from "./features.svelte";
-import { DETAIL_SPECS, type DetailFeatureId } from "../detail/specs";
+import { DETAIL_SPECS, type ProcessorKey } from "../detail/specs";
 import type {
 	ListProcessingJobsRequest,
 	ProcessingJobListing,
@@ -39,7 +39,7 @@ export const JOBS_PAGE_SIZE = 25;
 export type DetailTab = "overview" | "jobs" | "config" | "log";
 
 export function createDetailStore() {
-	let feature = $state<DetailFeatureId | null>(null);
+	let feature = $state<ProcessorKey | null>(null);
 	let tab = $state<DetailTab>("overview");
 
 	/** `null` = the "all" chip. Filtering is server-side, so it repages. */
@@ -64,7 +64,7 @@ export function createDetailStore() {
 	/** Ticks with the poll so "next attempt in 4m 12s" actually counts down. */
 	let now = $state(Date.now());
 
-	function open(next: DetailFeatureId) {
+	function open(next: ProcessorKey) {
 		feature = next;
 		tab = "overview";
 		statusFilter = null;

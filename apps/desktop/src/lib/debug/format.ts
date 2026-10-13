@@ -1,42 +1,12 @@
-// Debug-page formatters + badge-class helpers.
-//
-// A 1:1 move of the page-local helpers that used to live in the
-// routes/debug/+page.svelte <script> block, re-homed so several section
-// components can share them. Behaviour is unchanged.
+// Developer-window formatters (plain strings only; no CSS class emitters).
 
 import { formatClock, formatClockRange } from "$lib/time-format";
 import type {
-	BackgroundJobStatus,
 	DebugSeverity,
-	FrameBatchStatus,
 	OcrAdmissionSignals,
 	PermissionStatus,
-	ProcessingJobStatus,
 	SegmentWorkspaceCleanupDisposition,
 } from "$lib/types";
-
-/**
- * One cell of a feature card's stat grid (mockup A). Lives here rather than in
- * `StatGrid.svelte` so sections can annotate a `$derived.by` without a
- * `<script module>` export — `tone` would otherwise widen to `string`.
- */
-export type DebugStat = {
-	/** `{#each}` key. */
-	key: string;
-	label: string;
-	value: string | number;
-	/** Small trailing unit rendered next to the value (e.g. "ms", "tok"). */
-	unit?: string;
-	/** The dim line under the value. */
-	sub?: string | null;
-	/** Colours the value; omit for the default (neutral) tone. */
-	tone?: "ok" | "warn" | "err";
-	/**
-	 * Tag the label with mockup A's "new" chip. Honesty rule: only for a readout
-	 * that genuinely did not exist before this redesign — never decoration.
-	 */
-	isNew?: boolean;
-};
 
 export function formatDebugList(values: Array<string | number> | null | undefined): string {
 	if (!values || values.length === 0) return "none";
@@ -136,19 +106,6 @@ export function runtimeStateWord(src: {
 	return { word: "idle", cls: "rs-state rs-state--idle" };
 }
 
-// ─── Badge classes ─────────────────────────────────────────────────────────
-
-export function permissionBadgeClass(status: PermissionStatus | undefined): string {
-	if (!status) return "badge badge--neutral";
-	if (status === "granted") return "badge badge--ok";
-	if (status === "denied" || status === "restricted") return "badge badge--err";
-	return "badge badge--neutral";
-}
-
-export function supportBadge(val: boolean): string {
-	return val ? "badge badge--ok" : "badge badge--err";
-}
-
 export function formatPermission(status: PermissionStatus | undefined): string {
 	if (!status) return "unknown";
 	return status.replace(/_/g, " ");
@@ -167,76 +124,7 @@ export function dispositionLabel(d: SegmentWorkspaceCleanupDisposition): string 
 	}
 }
 
-export function dispositionBadgeClass(d: SegmentWorkspaceCleanupDisposition): string {
-	switch (d) {
-		case "completed_only":
-		case "no_references":
-		case "dead_segment_without_artifacts":
-			return "badge badge--ok badge--sm";
-		case "referenced_by_incomplete_batch":
-		case "referenced_by_nonterminal_ocr":
-		case "pending_frame_artifacts":
-			return "badge badge--warn badge--sm";
-		case "missing_visible_segment_sibling":
-			return "badge badge--err badge--sm";
-		default:
-			return "badge badge--neutral badge--sm";
-	}
-}
-
-export function batchStatusBadgeClass(status: FrameBatchStatus): string {
-	if (status === "completed") return "badge badge--ok badge--sm";
-	if (status === "failed") return "badge badge--err badge--sm";
-	if (status === "processing") return "badge badge--running badge--sm";
-	return "badge badge--neutral badge--sm";
-}
-
-export function ocrStatusBadgeClass(status: ProcessingJobStatus): string {
-	if (status === "completed") return "badge badge--ok badge--sm";
-	if (status === "failed") return "badge badge--err badge--sm";
-	if (status === "running") return "badge badge--running badge--sm";
-	return "badge badge--neutral badge--sm";
-}
-
-/**
- * The status badge a feature card wears in its group title, from the dock's
- * health rollup. `null` (feature missing from the rollup, or not polled yet)
- * reads as neutral — absence is normal, never an error (see `sections.ts` on
- * the 9-vs-11 split).
- *
- * Full-size, not `badge--sm`: mockup A puts this badge inline in the group
- * title, where it is the card's headline status, not a dense inline tag.
- */
-export function severityBadgeClass(severity: DebugSeverity | null): string {
-	if (severity === "ok") return "badge badge--ok";
-	if (severity === "warn") return "badge badge--warn";
-	if (severity === "error") return "badge badge--err";
-	return "badge badge--neutral";
-}
-
-/**
- * The strip / dock dot for a severity. Same three tones as the badge, so a
- * feature's dot and its badge never disagree.
- */
-export function severityDotClass(severity: DebugSeverity | null): string {
-	if (severity === "ok") return "health-dot health-dot--ok";
-	if (severity === "warn") return "health-dot health-dot--warn";
-	if (severity === "error") return "health-dot health-dot--err";
-	return "health-dot health-dot--idle";
-}
-
-/**
- * The severity-tinted accent hairline a card wears (mockup A's `card--warn` /
- * `card--danger`), passed to `<SettingGroup cardClass=…>`. `ok`/unknown get the
- * default neutral hairline SettingGroup already paints.
- */
-export function severityCardClass(severity: DebugSeverity | null): string {
-	if (severity === "warn") return "setting-group__card--warn";
-	if (severity === "error") return "setting-group__card--danger";
-	return "";
-}
-
-/** The word inside that badge. */
+/** A plain word for a health severity. */
 export function severityLabel(severity: DebugSeverity | null): string {
 	if (severity === "ok") return "healthy";
 	if (severity === "warn") return "degraded";
@@ -272,13 +160,6 @@ export function formatBytes(bytes: number | null | undefined): string {
 /** Thousands-separated count — job/vector counts get long enough to need it. */
 export function formatCount(n: number | null | undefined): string {
 	return n == null ? "—" : n.toLocaleString();
-}
-
-export function jobStatusBadgeClass(status: BackgroundJobStatus): string {
-	if (status === "completed") return "badge badge--ok badge--sm";
-	if (status === "failed") return "badge badge--err badge--sm";
-	if (status === "running") return "badge badge--running badge--sm";
-	return "badge badge--neutral badge--sm";
 }
 
 function normalizeJobTsForDate(ts: string): string {

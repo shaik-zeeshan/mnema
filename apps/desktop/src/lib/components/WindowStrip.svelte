@@ -2,12 +2,14 @@
   The small-window strip (access.html `.ac-strip`, update.html `.up-strip`):
   three drawn lights, the window's name centred, and the whole strip is the
   drag region. These windows are undecorated, so the first light IS the close
-  button (the onboarding strip does the same); the other two are drawn.
+  button (the onboarding strip does the same); the other two are drawn. An
+  optional `actions` snippet renders right-aligned buttons (developer window).
 -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { closeCurrentWindow } from "$lib/surface-windows";
 
-  let { title, onclose }: { title: string; onclose?: () => void } = $props();
+  let { title, onclose, actions }: { title: string; onclose?: () => void; actions?: Snippet } = $props();
 </script>
 
 <header class="mx-strip" data-tauri-drag-region>
@@ -16,6 +18,7 @@
     <i aria-hidden="true"></i><i aria-hidden="true"></i>
   </div>
   <span class="mx-strip__title">{title}</span>
+  {#if actions}<div class="mx-strip__acts">{@render actions()}</div>{/if}
 </header>
 
 <style>
@@ -54,6 +57,14 @@
   .mx-strip__lights button:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
+  }
+  .mx-strip__acts {
+    position: relative;
+    z-index: 1;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
   }
   .mx-strip__title {
     position: absolute;

@@ -35,15 +35,6 @@ export function jobState(
 	return next != null && next > nowMs ? "retrying" : "queued";
 }
 
-export function jobStateBadgeClass(state: JobState): string {
-	if (state === "completed") return "badge badge--ok badge--sm";
-	if (state === "failed") return "badge badge--err badge--sm";
-	if (state === "retrying") return "badge badge--warn badge--sm";
-	if (state === "preparing") return "badge badge--warn badge--sm";
-	if (state === "running") return "badge badge--running badge--sm";
-	return "badge badge--neutral badge--sm";
-}
-
 /** `4m 12s` / `18s` — a backoff window, not a wall clock. */
 function formatDelta(ms: number): string {
 	const seconds = Math.round(ms / 1000);

@@ -12,8 +12,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
-import { filterLogLines } from "../log-filter";
-import type { AppLogFile, AppLogTailDto, DebugFeature } from "$lib/types";
+import { filterLogLines, type LogFeature } from "../log-filter";
+import type { AppLogFile, AppLogTailDto } from "$lib/types";
 
 /**
  * Lines requested per poll. The backend clamps to 1..=2000; this is the whole
@@ -36,10 +36,10 @@ export const LOG_FILE_OPTIONS: { value: AppLogFile; label: string }[] = [
 ];
 
 export function createLogTailStore(
-	init: { file?: AppLogFile; feature?: DebugFeature | null; needle?: string } = {},
+	init: { file?: AppLogFile; feature?: LogFeature | null; needle?: string } = {},
 ) {
 	let file = $state<AppLogFile>(init.file ?? "rust");
-	let feature = $state<DebugFeature | null>(init.feature ?? null);
+	let feature = $state<LogFeature | null>(init.feature ?? null);
 	/** Free-text substring filter (case-insensitive) — e.g. a job id to grep for. */
 	let needle = $state(init.needle ?? "");
 	/** Pin the view to the newest line. The user disengages by scrolling up. */
@@ -106,7 +106,7 @@ export function createLogTailStore(
 		},
 
 		get feature() { return feature; },
-		set feature(next: DebugFeature | null) { feature = next; },
+		set feature(next: LogFeature | null) { feature = next; },
 
 		get needle() { return needle; },
 		set needle(next: string) { needle = next; },

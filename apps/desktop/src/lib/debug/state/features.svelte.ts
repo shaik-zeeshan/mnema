@@ -1,13 +1,11 @@
 // State for the five feature summary cards added in slice 6: Transcription,
 // Diarization, Embeddings, AI Runtime and User Context.
 //
-// One store, one poller. The five cards share a data set (the processor lanes
-// feed two of them, the config half feeds the rest), so a single tick keeps the
-// cards coherent with each other and costs 4 round-trips per second instead of
-// one per card.
+// One store, one `poll()`. The tabs that show this data drive it through
+// `controller.poll`, so it only runs while one of them is mounted.
 //
 // ── What is polled vs. loaded once ────────────────────────────────────────
-// POLLED (1s, cheap DB / in-memory reads): pipeline lanes, semantic index,
+// POLLED (cheap DB / in-memory reads): pipeline lanes, semantic index,
 // derivation runs, Ask AI last-turn usage.
 //
 // NOT polled: `get_ai_runtime_status` and `get_user_context_status` both run
@@ -16,9 +14,6 @@
 // a second forever. Same for the model-status commands, which stat model files
 // on disk. All of these describe configuration, not live throughput — so they
 // load on mount and refresh on the card's ↻ button.
-//
-// ponytail: no per-card store and no refcounted shared poller — one store with
-// one `startPolling()` matches the health/pipeline idiom already in this folder.
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
@@ -37,7 +32,6 @@ import type {
 	UserContextStatus,
 } from "$lib/types";
 
-const POLL_MS = 1000;
 /** Only the newest few runs are rendered; keep the polled read small. */
 const DERIVATION_RUN_LIMIT = 5;
 
@@ -112,7 +106,7 @@ export function createFeaturesStore() {
 
 	// ─── Loaders ─────────────────────────────────────────────────────────────
 
-	/** The 1s tick. Every read here is a cheap DB or in-memory lookup. */
+	/** One tick. Every read here is a cheap DB or in-memory lookup. */
 	async function poll() {
 		// Stop polling when the page isn't visible — nothing here is on screen.
 		if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
@@ -131,20 +125,6 @@ export function createFeaturesStore() {
 				.then((v) => { askAiUsage = v; })
 				.catch(() => { /* usage is a nicety; never surface a poll error for it */ }),
 		]);
-	}
-
-	/** 1s poll, paused while the document is hidden. Returns teardown. */
-	function startPolling(): () => void {
-		void poll();
-		const interval = setInterval(() => { void poll(); }, POLL_MS);
-		const onVisibility = () => {
-			if (document.visibilityState === "visible") void poll();
-		};
-		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			clearInterval(interval);
-			document.removeEventListener("visibilitychange", onVisibility);
-		};
 	}
 
 	async function loadAiStatus() {
@@ -324,7 +304,6 @@ export function createFeaturesStore() {
 		get digestMessage() { return digestMessage; },
 
 		poll,
-		startPolling,
 		loadConfig,
 		loadAiStatus,
 		loadUserContextStatus,
