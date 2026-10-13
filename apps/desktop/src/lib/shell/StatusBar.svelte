@@ -30,6 +30,7 @@
   import { formatBytes } from "$lib/settings/state/format";
   import { storageTotal } from "$lib/settings/panels/data/storage-meter";
   import ShortcutsPop from "./ShortcutsPop.svelte";
+  import { captureHealth, statusPop, subscribeCaptureHealth } from "./status-live.svelte";
   import {
     LANES,
     engineFlag,
@@ -100,6 +101,7 @@
     startError: captureControls.startError,
     readOnly,
     stoppedReason: stoppedReasonFrom(appNotifications.items, lastSessionStartMs),
+    health: captureControls.running ? captureHealth.value : null,
   });
   const rec = $derived(recView(input));
   const lanes = $derived(liveLanes(input, rec));
@@ -127,6 +129,11 @@
   $effect(() => {
     if (!captureControls.running) return;
     return subscribeRuntimeSources();
+  });
+  // Display asleep / system audio reconnecting / free space (2 s, ref-counted).
+  $effect(() => {
+    if (!captureControls.running) return;
+    return subscribeCaptureHealth();
   });
 
   // ── Engine pill + today's tracked time + permissions, refreshed on focus ─
@@ -229,6 +236,9 @@
       case "permission":
         void openScreenPrivacy();
         break;
+      case "disk-soon":
+        statusPop.open = true;
+        break;
     }
   }
 
@@ -238,7 +248,11 @@
     starting: "starting…",
     off: "off",
     error: "stopped — privacy filter",
+    waiting: "waiting",
   };
+  // "waiting · display asleep" · "reconnecting".
+  const laneTip = (mod: string, small: string | null) =>
+    mod === "waiting" && small ? (small === "reconnecting" ? small : `waiting · ${small}`) : LIVE_TIP[mod];
   const NAMES: Record<LaneKey, string> = { screen: "Screen", microphone: "Microphone", systemAudio: "System audio" };
   const SHORTCUT: Record<LaneKey, GlobalShortcutId> = {
     screen: "toggleSourceScreen",
@@ -312,8 +326,8 @@
       <span
         class="mx-lane mx-lane--{meta.mod} mx-lane--{lane.mod}"
         role="status"
-        aria-label={`${NAMES[lane.key]}: ${LIVE_TIP[lane.mod]}`}
-        use:tip={`${NAMES[lane.key]}: ${LIVE_TIP[lane.mod]}`}
+        aria-label={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
+        use:tip={`${NAMES[lane.key]}: ${laneTip(lane.mod, lane.small)}`}
       >{meta.label}{#if lane.small} <small>{lane.small}</small>{/if}</span>
     {/each}
   {:else}
