@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -1773,6 +1773,36 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
     Ok(())
 }
 
+/// What the last deferred startup repaired, for the developer window's Startup
+/// row. Data only; the row's copy lives with the health rows. Stored once, at
+/// the end of [`run_deferred_startup_blocking`], so it is `None` while startup
+/// is still running and for a run a quit cut short. The aggregate-device reap
+/// runs afterwards in `lib.rs` and is not part of it.
+// ponytail: dead_code allowed until the health rows read it.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StartupReport {
+    pub duration_ms: u64,
+    pub vault_unlocked: bool,
+    /// `"vault_denied"` or `"vault_error"`. Never the message: it can quote a secret.
+    pub vault_error_code: Option<&'static str>,
+    /// `None` when maintenance failed (`errors` then holds `"startup_maintenance"`).
+    pub maintenance: Option<::app_infra::StartupMaintenanceSummary>,
+    /// `None` when the workspace repair failed or never ran.
+    pub workspaces_removed: Option<u64>,
+    /// Queued OCR jobs failed because OCR is off; `None` while OCR is on.
+    pub ocr_disabled_jobs_failed: Option<u64>,
+    /// Short labels of the passes that failed, in run order.
+    pub errors: Vec<&'static str>,
+}
+
+static STARTUP_REPORT: OnceLock<StartupReport> = OnceLock::new();
+
+#[allow(dead_code)]
+pub(crate) fn startup_report() -> Option<StartupReport> {
+    STARTUP_REPORT.get().cloned()
+}
+
 /// Runs every startup task that does not need to complete before the window is
 /// shown: the [`::app_infra::AppInfra::run_startup_maintenance`] passes, the
 /// filesystem repair/conversion scans, OCR-disabled reconciliation, the
@@ -1821,16 +1851,28 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     };
     let background_workers = background_workers.inner().clone();
     let base_dir = infra.base_dir().to_path_buf();
+    let started = Instant::now();
+    let mut report = StartupReport::default();
 
     // Unlock the secret vault exactly once per process, here on the deferred
     // thread so a first-run keychain prompt never blocks the window opening.
     // A denied unlock is cached: features degrade with a distinct
     // SecretVaultDenied error instead of re-prompting per read.
     match infra.secret_vault().unlock_now() {
-        Ok(()) => crate::native_capture::debug_log::log_info("secret vault unlocked"),
-        Err(error) => crate::native_capture::debug_log::log_error(format!(
-            "secret vault unlock failed; AI/MCP secret access is disabled for this run: {error}"
-        )),
+        Ok(()) => {
+            report.vault_unlocked = true;
+            crate::native_capture::debug_log::log_info("secret vault unlocked");
+        }
+        Err(error) => {
+            report.vault_error_code = Some(match error {
+                ::app_infra::AppInfraError::SecretVaultDenied(_) => "vault_denied",
+                _ => "vault_error",
+            });
+            report.errors.push("vault_unlock");
+            crate::native_capture::debug_log::log_error(format!(
+                "secret vault unlock failed; AI/MCP secret access is disabled for this run: {error}"
+            ));
+        }
     }
 
     // #3: This runs on a detached background thread, so we cannot cleanly
@@ -1842,11 +1884,15 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // next launch. The ADR-0020 ordering still holds: orphaned-job reconciliation
     // lives inside `run_startup_maintenance` and completes (or this thread is
     // gone via a panic — see below) before the workers spawn.
-    if let Err(error) = tauri::async_runtime::block_on(infra.run_startup_maintenance()) {
-        crate::native_capture::debug_log::log_error(format!(
-            "startup maintenance failed (base_dir='{}'): {error}",
-            base_dir.display()
-        ));
+    match tauri::async_runtime::block_on(infra.run_startup_maintenance()) {
+        Ok(summary) => report.maintenance = Some(summary),
+        Err(error) => {
+            report.errors.push("startup_maintenance");
+            crate::native_capture::debug_log::log_error(format!(
+                "startup maintenance failed (base_dir='{}'): {error}",
+                base_dir.display()
+            ));
+        }
     }
 
     // If a quit was requested during maintenance, stop here rather than running
@@ -1879,22 +1925,30 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         // its three attempts for the whole session. It depends on none of the passes below.
         tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
         run_generated_frame_preview_cache_startup_pass(app_handle);
-        run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
+        report.workspaces_removed =
+            run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
+        if report.workspaces_removed.is_none() {
+            report.errors.push("workspace_repair");
+        }
         if let Ok(settings) = app_handle
             .state::<crate::native_capture::RecordingSettingsState>()
             .lock()
         {
             if !settings.settings.ocr.enabled {
-                match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
-                    Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
-                        "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
-                    )),
-                    Err(error) => crate::native_capture::debug_log::log_warn(format!(
-                        "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
-                    )),
+                match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled())
+                {
+                    // Counted in the "startup maintenance finished" line below.
+                    Ok(failed_count) => report.ocr_disabled_jobs_failed = Some(failed_count),
+                    Err(error) => {
+                        report.errors.push("ocr_disabled_reconcile");
+                        crate::native_capture::debug_log::log_warn(format!(
+                            "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
+                        ));
+                    }
                 }
             }
         } else {
+            report.errors.push("ocr_disabled_reconcile");
             crate::native_capture::debug_log::log_warn(
                 "failed to read recording settings during OCR disabled startup reconciliation",
             );
@@ -1902,6 +1956,7 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
     }));
     if post_maintenance.is_err() {
+        report.errors.push("post_maintenance_panic");
         // The panic itself is already recorded by the installed panic hook; we
         // intentionally continue to spawn workers because these passes are not
         // ordering-critical and stranding processing is worse than skipping them.
@@ -1984,6 +2039,24 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     crate::licensing::run_license_gate(app_handle);
 
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
+
+    report.duration_ms = started.elapsed().as_millis() as u64;
+    let summary = report.maintenance.unwrap_or_default();
+    crate::native_capture::debug_log::log_info(format!(
+        "startup maintenance finished in {} ms (requeued={}, failed={}, workspaces_removed={}, orphaned_app_jobs={}, stale_model_locks={}, frame_equivalence={}, batches_closed={}, batches_open={}, ocr_disabled_failed={}, errors={:?})",
+        report.duration_ms,
+        summary.orphaned_processing_requeued,
+        summary.orphaned_processing_failed,
+        report.workspaces_removed.unwrap_or(0),
+        summary.orphaned_app_jobs,
+        summary.stale_model_locks_cleared,
+        summary.frame_equivalence_backfilled,
+        summary.closed_batches_reconciled,
+        summary.open_batches_reconciled,
+        report.ocr_disabled_jobs_failed.unwrap_or(0),
+        report.errors,
+    ));
+    let _ = STARTUP_REPORT.set(report);
 }
 
 pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri::AppHandle) {
@@ -2499,7 +2572,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     infra: &::app_infra::AppInfra,
     base_dir: &Path,
     app_handle: &tauri::AppHandle,
-) {
+) -> Option<u64> {
     let recordings_root =
         crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
             .recordings_root();
@@ -2518,19 +2591,22 @@ fn run_hidden_segment_workspace_repair_startup_pass(
         &active_workspace_dirs,
     )) {
         Ok(result) => {
-            crate::native_capture::debug_log::log_info(format!(
+            // Debug: `removed` is repeated in the "startup maintenance finished" Info line.
+            crate::native_capture::debug_log::log(format!(
                 "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                 recordings_root_display,
                 result.scanned_workspace_count,
                 result.removed_workspace_count,
                 result.skipped_workspace_count
             ));
+            Some(result.removed_workspace_count)
         }
         Err(error) => {
             crate::native_capture::debug_log::log_warn(format!(
                 "startup hidden segment workspace repair failed (recordings_root='{}'): {error}",
                 recordings_root_display
             ));
+            None
         }
     }
 }
