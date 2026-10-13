@@ -1,29 +1,36 @@
 <!--
-  Stub until F2: the health rows as one flat list, so the window stays usable
-  mid-build. F2 replaces it with the grouped Overview.
+  Overview (developer.html `renderOverview`): the 12 health rows grouped under
+  "Needs a look", "Right now" and "Running fine", ranked within each group.
+  Every row drills into the tab that explains it. No polls of its own — the
+  rows come from the shell's health poll.
 -->
 <script lang="ts">
-  import { formatClock } from "$lib/time-format";
   import HealthRow from "../HealthRow.svelte";
   import { getDebugController } from "../state/controller.svelte";
-  import { FEATURE_ROWS, toneOf } from "../verdict";
+  import { group, type RowTarget } from "../health-view";
 
   const controller = getDebugController();
-  type Row = { feature: string; severity: string; reason: string; metric?: string | null; metricAtMs?: number | null };
-  const rows = $derived(controller.health.entries as Row[]);
+  const groups = $derived(group(controller.health.entries));
+
+  function open(target: RowTarget) {
+    if ("processor" in target) controller.openProcessor(target.processor);
+    else controller.go(target.tab);
+  }
 </script>
 
-<section class="dv-sec">
-  <div class="dv-list">
-    {#each rows as row (row.feature)}
-      {@const meta = FEATURE_ROWS[row.feature]}
-      <HealthRow
-        tone={toneOf(row.severity)}
-        name={meta?.name ?? row.feature}
-        why={row.reason}
-        metric={row.metricAtMs != null ? formatClock(row.metricAtMs) : (row.metric ?? "")}
-        onclick={() => controller.go(meta?.tab ?? "overview")}
-      />
-    {/each}
-  </div>
-</section>
+<div class="dv-sec dv-overview">
+  {#each groups as g (g.title)}
+    <section class="dv-sec">
+      <h3 class="dv-h">{g.title}<span class="num">{g.rows.length}</span></h3>
+      <div class="dv-list">
+        {#each g.rows as row (row.feature)}
+          <HealthRow tone={row.tone} name={row.name} why={row.why} metric={row.metric} onclick={() => open(row.target)} />
+        {/each}
+      </div>
+    </section>
+  {/each}
+</div>
+
+<style>
+  .dv-overview { gap: 18px; }
+</style>
