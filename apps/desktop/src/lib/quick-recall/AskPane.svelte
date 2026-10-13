@@ -34,7 +34,7 @@
   import type { QuickRecallAutoAnswer, RecordingSettings } from "$lib/types/recording";
   import { parseSearchSnippet } from "$lib/search-snippet";
   import { appIcons } from "./app-icons.svelte";
-  import { askEngine, askNotice } from "./question-detect";
+  import { askEngine, askNotice, sameQuestion } from "./question-detect";
   import { sourceResult } from "./quick-look";
   import type { RankedResult } from "./result-sections";
   import SearchResultCard from "./SearchResultCard.svelte";
@@ -109,6 +109,12 @@
   let nav = $state(false);
   let cite = $state(0);
   let copied = $state(false);
+  // Natural vs clipped answer height: past the clip the answer fades out and
+  // points to Chat — the glance panel never scrolls (the prompt asks for ≤2
+  // sentences; this catches a model that ignores it).
+  let proseH = $state(0);
+  let clipH = $state(0);
+  const clipped = $derived(proseH > clipH + 1);
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const live = $derived(turn !== null && liveId !== null && (turn.phase === "thinking" || turn.phase === "streaming"));
@@ -120,7 +126,7 @@
   // Evidence rows 1…n for Quick Look: the citations, then the rest.
   const looks = $derived([...sources.map((s) => sourceResult(s, search.ranked)), ...more]);
   const rowEl = (row: number) => document.getElementById(`rc-ask-row-${row}`);
-  const waiting = $derived(canAsk && question.trim() !== "" && question.trim() !== asked);
+  const waiting = $derived(canAsk && question.trim() !== "" && !sameQuestion(question, asked));
   const errorCopy = $derived(
     turn?.phase === "error" ? turnErrorCopy(turn.errorMessage, turn.errorKind, settings?.aiRuntime ?? null) : null,
   );
@@ -144,9 +150,11 @@
   $effect(() => {
     const q = question.trim();
     const delay = forced ? 0 : PAUSE_MS;
-    if (!canAsk || q === "" || q === asked) return;
+    if (!canAsk || q === "" || sameQuestion(q, asked)) return;
     untrack(() => {
-      void cancel();
+      // An edit drops the old thread even mid-answer — it answers a question
+      // no longer asked, and would sit in Chat history as a near-duplicate.
+      void cancel(true);
       turn = null;
     });
     timer = setTimeout(() => void start(q), delay);
@@ -184,12 +192,12 @@
     }
   }
 
-  async function cancel(): Promise<void> {
+  async function cancel(discard = false): Promise<void> {
     const id = liveId;
     if (id === null) return;
     liveId = null;
     try {
-      await invoke("ask_ai_cancel", { request: { conversationId: id } });
+      await invoke("ask_ai_cancel", { request: { conversationId: id, discard } });
     } catch {
       // Best-effort: the turn is being abandoned.
     }
@@ -497,30 +505,35 @@
           <div class="mx-skel" style="width:54%"></div>
         </div>
       {:else}
-        <div class="rc-ans__prose">
-          {#each turn.blocks as block, bi (bi)}
-            {#if block.kind === "prose"}
-              <AnswerProse
-                source={block.markdown}
-                isStreaming={live && bi === turn.blocks.length - 1}
-                onOpenLink={openAnswerLink}
-              />
-            {:else if block.kind === "bars"}
-              <div class="mx-panel rc-block">
-                {#if block.title}<h5>{block.title}</h5>{/if}
-                <MiniBars items={block.items} />
-              </div>
-            {:else if block.kind === "dossier"}
-              <ul class="rc-dossier">
-                {#each block.items as item, di (di)}<li>{item.statement}</li>{/each}
-              </ul>
+        <div class="rc-ans__clip" class:rc-ans__clip--cut={clipped} bind:clientHeight={clipH}>
+          <div class="rc-ans__prose" bind:clientHeight={proseH}>
+            {#each turn.blocks as block, bi (bi)}
+              {#if block.kind === "prose"}
+                <AnswerProse
+                  source={block.markdown}
+                  isStreaming={live && bi === turn.blocks.length - 1}
+                  onOpenLink={openAnswerLink}
+                />
+              {:else if block.kind === "bars"}
+                <div class="mx-panel rc-block">
+                  {#if block.title}<h5>{block.title}</h5>{/if}
+                  <MiniBars items={block.items} />
+                </div>
+              {:else if block.kind === "dossier"}
+                <ul class="rc-dossier">
+                  {#each block.items as item, di (di)}<li>{item.statement}</li>{/each}
+                </ul>
+              {/if}
+            {/each}
+            {#if errorCopy}<p class="rc-ans__errtext">{errorCopy.text}</p>{/if}
+            {#if turn.phase === "done" && turn.blocks.length === 0}
+              <p class="mx-body-sm">No answer came back. Press ↵ in a moment, or ask again.</p>
             {/if}
-          {/each}
-          {#if errorCopy}<p class="rc-ans__errtext">{errorCopy.text}</p>{/if}
-          {#if turn.phase === "done" && turn.blocks.length === 0}
-            <p class="mx-body-sm">No answer came back. Press ↵ in a moment, or ask again.</p>
-          {/if}
+          </div>
         </div>
+        {#if clipped && !live && threadId !== null}
+          <button type="button" class="rc-ans__more" onclick={() => void openInChat()}>Read the full answer in Chat →</button>
+        {/if}
         {#if timelines.length > 0}
           <div class="rc-tl">
             {#each timelines as block, ti (ti)}
@@ -647,7 +660,14 @@
   .rc-ans__body { margin-top: 10px; }
   /* The timeline block beside the prose keeps the answer within the bar's cap. */
   .rc-ans__body--split { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+  .rc-ans__clip { max-height: 148px; overflow: hidden; min-width: 0; }
+  .rc-ans__clip--cut { mask-image: linear-gradient(to bottom, #000 72%, transparent); }
   .rc-ans__prose { display: grid; gap: 10px; min-width: 0; }
+  .rc-ans__more {
+    margin-top: 6px; padding: 0; border: 0; background: none; cursor: pointer;
+    font: 500 var(--text-base) / 1.3 var(--font-sans); color: var(--app-accent);
+  }
+  .rc-ans__more:hover { text-decoration: underline; }
   .rc-ans .rc-ans__prose :global(.answer-prose) { font-size: 14px; line-height: 1.65; }
   .rc-ans__errtext { margin: 0; font: 400 14px / 1.65 var(--font-sans); color: var(--app-text); }
   .rc-ans__wait { display: grid; gap: 8px; padding: 4px 0 2px; }

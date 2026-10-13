@@ -31,6 +31,13 @@ export function scopedQuestion(residual: string, pills: readonly Pill[]): string
   return body && text.endsWith("?") ? `${body}?` : body;
 }
 
+/** Whether two typed questions ask the same thing — case, spacing and
+ *  trailing punctuation don't count, so typing the final "?" never re-asks. */
+export function sameQuestion(a: string, b: string): boolean {
+  const norm = (t: string) => t.toLowerCase().replace(/\s+/g, " ").replace(/[\s?.!]+$/, "").trim();
+  return norm(a) === norm(b);
+}
+
 export type Forced = "ask" | "search" | null;
 
 /** Tab flips what the bar is doing; landing back on what detection would do

@@ -119,11 +119,18 @@ fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
 /// different `Arc`).
 fn remove_inflight_if_owner(conversation_id: &str, cancel: &Arc<AtomicBool>) {
     if let Ok(mut map) = ask_ai_inflight().lock() {
-        if map
-            .get(conversation_id)
-            .is_some_and(|flag| Arc::ptr_eq(flag, cancel))
-        {
-            map.remove(conversation_id);
+        match map.get(conversation_id) {
+            // A newer turn owns the id now — its mark is not ours to drop.
+            Some(flag) if !Arc::ptr_eq(flag, cancel) => {}
+            owned => {
+                if owned.is_some() {
+                    map.remove(conversation_id);
+                }
+                // With our flag gone no cancel can mark us any more; drop a mark
+                // that landed after finalize read it. Under the lock, so none
+                // slips in between.
+                abandoned::take_superseded(conversation_id);
+            }
         }
     }
 }
@@ -1035,6 +1042,10 @@ pub struct AskAiFollowupRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AskAiCancelRequest {
     conversation_id: String,
+    /// The question was edited into a new one (Quick Recall): drop the thread
+    /// even if a partial answer already arrived (see `abandoned`).
+    #[serde(default)]
+    discard: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1198,6 +1209,20 @@ such tools are present, the user has configured no connectors — do not mention
 
     preamble
 }
+
+/// Appended to the preamble for a Quick Recall question: the panel is read at a
+/// glance, so the answer must fit without scrolling. Last in the preamble so it
+/// overrides the general "you MAY include a block" guidance above.
+const QUICK_RECALL_GLANCE: &str = "THIS QUESTION COMES FROM QUICK RECALL, a small glance panel: \
+the user reads your answer in one look and must never have to scroll. Answer in AT MOST 2 short \
+sentences (about 40 words), and the FIRST words must be the answer itself — the exact name, time, \
+app, number, or phrase they are after, in **bold**. No greeting, no restating the question, no \
+headings, no tables, no caveats or offers to help further. A list only for at most 3 items of a few \
+words each. No fenced mnema-* block, except ONE ```mnema-bars block of at most 5 bars when the \
+question asks for a ranking or breakdown — then the block IS the answer, with at most one sentence \
+beside it. The moments behind your answer are shown under it, so do not describe them in prose — \
+still call `reference_captures`. If the full answer would be longer, give the gist and stop; the \
+user can continue in Chat for detail.\n";
 
 /// Assemble the per-turn **prompt**: the temporal grounding followed by the bare
 /// question. The model gathers all capture context itself through tool calls. The
@@ -2127,7 +2152,13 @@ async fn run_ask_ai_turn(
         tools.retain(|tool| tool.name != "recall_context");
     }
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
-    let preamble = build_ask_ai_preamble(&mcp_notes);
+    let mut preamble = build_ask_ai_preamble(&mcp_notes);
+    // Quick Recall only ever asks a thread's first turn; later turns come from
+    // Chat (a follow-up still sends the default `quick_recall` origin), which
+    // gets full-length answers.
+    if origin == "quick_recall" && turn_index == 0 {
+        preamble.push_str(QUICK_RECALL_GLANCE);
+    }
     let prompt = build_ask_ai_prompt(&question, now_ms(), &clock, scope.as_ref());
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
@@ -2141,6 +2172,10 @@ async fn run_ask_ai_turn(
     // `ask_ai_reasoning` events and accumulate here so every persist (partial /
     // done / error) writes the snapshot through `save_turn`'s `reasoning` arg.
     let reasoning: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // Spawned partial persists, awaited before a discard so none lands after
+    // the delete and re-creates the row.
+    let partial_persists: Arc<Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let mut deltas_since_persist = 0usize;
     let mut chars_since_persist = 0usize;
     // Captured for the `ToolCall` arm's tool-activity labelling: the recall-range
@@ -2167,6 +2202,7 @@ async fn run_ask_ai_turn(
         let infra = Arc::clone(&infra);
         let conversation_announced = Arc::clone(&conversation_announced);
         let answer = Arc::clone(&answer);
+        let partial_persists = Arc::clone(&partial_persists);
         let answer_view = Arc::clone(&answer_view);
         let reasoning = Arc::clone(&reasoning);
         let tool_activities = Arc::clone(&tool_activities);
@@ -2239,8 +2275,8 @@ async fn run_ask_ai_turn(
                 };
                 // Throttled partial persist for reattach. Spawned so persistence
                 // never blocks the synchronous stream callback.
-                // Blank text is never persisted, so a discarded abandoned turn
-                // (see `abandoned`) has no partial write racing its delete.
+                // Blank text is never persisted; non-blank partials are tracked
+                // in `partial_persists` so a discard can wait them out.
                 if let Some(answer_so_far) = answer_so_far.filter(|a| !a.trim().is_empty()) {
                     let infra = Arc::clone(&infra);
                     let app_handle = app_handle.clone();
@@ -2270,7 +2306,7 @@ async fn run_ask_ai_turn(
                         .lock()
                         .map(|v| v.blocks().to_vec())
                         .unwrap_or_default();
-                    tauri::async_runtime::spawn(async move {
+                    let handle = tauri::async_runtime::spawn(async move {
                         let persisted = persist_turn(
                             &infra,
                             &conversation_id,
@@ -2298,6 +2334,10 @@ async fn run_ask_ai_turn(
                             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
                         }
                     });
+                    if let Ok(mut handles) = partial_persists.lock() {
+                        handles.retain(|h| !h.inner().is_finished());
+                        handles.push(handle);
+                    }
                 }
             }
             ai_engine::AgentLoopEvent::Reasoning(text) => {
@@ -2489,17 +2529,30 @@ async fn run_ask_ai_turn(
         }
     };
 
-    // A cancelled Quick Recall question that never got an answer is deleted
-    // rather than kept (see `abandoned`); a displacing newer turn owns the rows.
-    let discarded = run_result.is_ok()
+    // A cancelled Quick Recall question that never got an answer, or was edited
+    // into a new one, is deleted rather than kept (see `abandoned`); a
+    // displacing newer turn owns the rows.
+    let superseded = abandoned::take_superseded(&conversation_id);
+    let cancelled = run_result.is_ok()
         && cancel.load(Ordering::SeqCst)
-        && !abandoned::displaced(&conversation_id, &cancel)
+        && !abandoned::displaced(&conversation_id, &cancel);
+    if cancelled {
+        let handles = partial_persists
+            .lock()
+            .map(|mut h| std::mem::take(&mut *h))
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+    let discarded = cancelled
         && abandoned::discard_if_abandoned(
             &infra,
             &conversation_id,
             &origin,
             existing.as_ref().map(|c| c.origin.as_str()),
             turn_index,
+            superseded,
             &final_answer,
             &final_blocks,
         )
@@ -2761,7 +2814,18 @@ pub async fn ask_ai_cancel(
     // sits behind an async access-readiness check). Record it as pending so the
     // imminent registration brings the turn up already cancelled instead of
     // dropping the cancel and letting the turn run to completion.
-    match take_inflight(&request.conversation_id) {
+    // A pre-registration cancel never writes a row, so only a running turn
+    // needs the discard mark. It is set under the in-flight lock, before the
+    // flag: the turn either sees it at finalize or clears it once its own flag
+    // is gone (see `remove_inflight_if_owner`), so a late mark never lingers.
+    let taken = ask_ai_inflight().lock().ok().and_then(|mut map| {
+        let cancel = map.remove(&request.conversation_id)?;
+        if request.discard {
+            abandoned::mark_superseded(&request.conversation_id);
+        }
+        Some(cancel)
+    });
+    match taken {
         Some(cancel) => cancel.store(true, Ordering::SeqCst),
         None => record_cancel_before_register(&request.conversation_id),
     }
@@ -4135,6 +4199,21 @@ model believes the narrower contract: {}",
         remove_inflight_if_owner(id, &first);
         let still = take_inflight(id).expect("newer flag should still be registered");
         assert!(Arc::ptr_eq(&still, &second));
+    }
+
+    #[test]
+    fn a_late_superseded_mark_is_dropped_with_the_turns_flag() {
+        let id = "inflight-late-superseded-conv";
+        let ours = register_inflight(id);
+        // A displaced turn finishing leaves the newer turn's mark alone.
+        let newer = register_inflight(id);
+        abandoned::mark_superseded(id);
+        remove_inflight_if_owner(id, &ours);
+        assert!(abandoned::take_superseded(id));
+        // The owner finishing drops a mark that arrived after its finalize.
+        abandoned::mark_superseded(id);
+        remove_inflight_if_owner(id, &newer);
+        assert!(!abandoned::take_superseded(id));
     }
 
     // ── LiveTurn store / versioned transport (Slice 4) ───────────────────────

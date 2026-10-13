@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { askEngine, askNotice, autoAnswerAllowed, isQuestion, nextForced, scopedQuestion } from "./question-detect";
+import { askEngine, askNotice, autoAnswerAllowed, isQuestion, nextForced, sameQuestion, scopedQuestion } from "./question-detect";
 
 const settings = (kind: string, override = "") => ({
   access: { askAiModel: override },
@@ -84,5 +84,14 @@ describe("askNotice", () => {
     const other = askNotice("no_default_model", s, true, cloud);
     expect(other?.title).toBe("Ask AI isn’t set up yet");
     expect(other?.text).not.toContain("no_default_model");
+  });
+});
+
+describe("sameQuestion", () => {
+  test("ignores case, spacing and trailing punctuation, not words", () => {
+    expect(sameQuestion("what did I do yesterday", "What did I  do yesterday?")).toBe(true);
+    expect(sameQuestion("what did I do yesterday?", "what did I do yesterday ?!")).toBe(true);
+    expect(sameQuestion("what did I do yesterday", "what did I do yesterday in Arc")).toBe(false);
+    expect(sameQuestion("", "")).toBe(true);
   });
 });
