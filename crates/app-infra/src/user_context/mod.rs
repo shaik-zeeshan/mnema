@@ -18,6 +18,7 @@ pub mod capture_source;
 pub mod conclusion_dedup;
 pub mod confidence;
 pub mod guardrail;
+pub(crate) mod lock_screen;
 pub mod recurrence;
 pub mod store;
 pub mod subject_vectors;

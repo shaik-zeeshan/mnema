@@ -217,7 +217,8 @@
       const request = { capturedAtStart: new Date(startMs).toISOString(), capturedAtEnd: new Date(endMs).toISOString() };
       const [nextActivities, nextFrames, nextAudio, nextFailed, nextWeek, nextMeta] = await Promise.all([
         invoke<Activity[]>("list_user_context_activities", { startMs, endMs }),
-        invoke<FrameSummaryDto[]>("list_frame_summaries_in_range", { request }),
+        // Lock-screen frames are time away: without them the span reads as Away.
+        invoke<FrameSummaryDto[]>("list_frame_summaries_in_range", { request: { ...request, excludeLockScreen: true } }),
         invoke<AudioSegmentDto[]>("list_audio_segments", { request }),
         // Best-effort extras: a hole marker or a week bar is never a reason to fail the day.
         invoke<[number, number][]>("list_failed_derivation_windows", { startMs, endMs }).catch(() => [] as [number, number][]),

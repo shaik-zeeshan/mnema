@@ -96,7 +96,25 @@ pub struct FrameMetadataSnapshot {
     pub metadata_redaction_source_id: Option<String>,
 }
 
+/// The macOS lock screen, by bundle id and by app name. `loginwindow` holds the
+/// foreground while the Mac is locked, so its frames are time away, not app
+/// use: activity derivation, app-time totals and the Journal's away gaps all
+/// skip them. `SecurityAgent` is deliberately absent — it also draws admin
+/// password prompts on an unlocked Mac (founder ruling 2026-10-14).
+pub const LOCK_SCREEN_BUNDLE_IDS: &[&str] = &["com.apple.loginwindow"];
+pub const LOCK_SCREEN_APP_NAMES: &[&str] = &["loginwindow"];
+
 impl FrameMetadataSnapshot {
+    /// True when the foreground app is a lock-screen process
+    /// ([`LOCK_SCREEN_BUNDLE_IDS`] / [`LOCK_SCREEN_APP_NAMES`]).
+    pub fn is_lock_screen(&self) -> bool {
+        let matches = |value: &Option<String>, list: &[&str]| {
+            value.as_deref().is_some_and(|v| list.contains(&v.trim()))
+        };
+        matches(&self.app_bundle_id, LOCK_SCREEN_BUNDLE_IDS)
+            || matches(&self.app_name, LOCK_SCREEN_APP_NAMES)
+    }
+
     pub fn normalized_json(&self) -> String {
         serde_json::to_string(self).expect("metadata snapshot should serialize")
     }
@@ -551,6 +569,23 @@ impl PrivacyFilterKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lock_screen_matches_by_bundle_id_or_app_name() {
+        let snap = |name: Option<&str>, bundle: Option<&str>| FrameMetadataSnapshot {
+            app_name: name.map(str::to_string),
+            app_bundle_id: bundle.map(str::to_string),
+            ..Default::default()
+        };
+        assert!(snap(Some("loginwindow"), None).is_lock_screen());
+        assert!(snap(None, Some("com.apple.loginwindow")).is_lock_screen());
+        // SecurityAgent also prompts on an unlocked Mac: not the lock screen.
+        assert!(!snap(Some("SecurityAgent"), Some("com.apple.SecurityAgent")).is_lock_screen());
+        assert!(snap(Some("Safari"), Some("com.apple.loginwindow")).is_lock_screen());
+        assert!(!snap(Some("Safari"), Some("com.apple.Safari")).is_lock_screen());
+        assert!(!snap(Some("loginwindowish"), None).is_lock_screen());
+        assert!(!snap(None, None).is_lock_screen());
+    }
 
     #[test]
     fn sanitizes_urls() {

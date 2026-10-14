@@ -460,6 +460,9 @@ pub struct ListFramesRequest {
 pub struct FrameCapturedAtRangeRequest {
     pub captured_at_start: String,
     pub captured_at_end: String,
+    /// Journal only: drop lock-screen frames so their span reads as Away.
+    #[serde(default)]
+    pub exclude_lock_screen: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1865,6 +1868,7 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
         // Before the User Context worker spawns below, so no distillation races it.
         crate::user_context::conclusion_guard::run_dedup_startup_pass(&infra);
+        run_lock_screen_activity_heal_startup_pass(&infra);
     }));
     if post_maintenance.is_err() {
         report.errors.push("post_maintenance_panic");
@@ -2966,6 +2970,25 @@ async fn repair_hidden_segment_workspaces_once(
             },
         )
         .await
+}
+
+/// Deferred-startup heal: delete Activities written entirely from lock-screen
+/// frames before derivation learned to skip them (lock screen = time away).
+/// Idempotent and a no-op once clean; a failure is retried on the next launch.
+fn run_lock_screen_activity_heal_startup_pass(infra: &::app_infra::AppInfra) {
+    match tauri::async_runtime::block_on(infra.user_context().delete_lock_screen_only_activities())
+    {
+        Ok(summary) if summary.deleted_activities > 0 => {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context removed {} lock-screen-only activit(ies), {} conclusion(s), {} digest(s)",
+                summary.deleted_activities, summary.deleted_conclusions, summary.deleted_digests
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+            "lock-screen activity heal failed; retrying next launch: {error}"
+        )),
+    }
 }
 
 /// The Retention Cleanup cutoff for the user's current policy, so the repair
@@ -4721,7 +4744,11 @@ pub async fn list_frame_summaries_in_range(
 ) -> Result<Vec<FrameSummaryDto>, String> {
     let infra = Arc::clone(&*state);
     infra
-        .list_frame_summaries_in_range(&request.captured_at_start, &request.captured_at_end)
+        .list_frame_summaries_in_range(
+            &request.captured_at_start,
+            &request.captured_at_end,
+            request.exclude_lock_screen,
+        )
         .await
         .map(|frames| frames.into_iter().map(FrameSummaryDto::from).collect())
         .map_err(|error| format!("failed to list frame summaries in range: {error}"))

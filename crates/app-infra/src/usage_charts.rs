@@ -217,7 +217,19 @@ impl UsageChartsStore {
                 continue;
             };
             let snapshot_json: Option<String> = row.get("snapshot_json");
-            let (app, app_bundle_id, domain) = labels_from_snapshot(snapshot_json.as_deref());
+            let snapshot = snapshot_json.as_deref().and_then(|json| {
+                serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(json).ok()
+            });
+            // Lock-screen frames are time away, not app use: dropping them
+            // leaves the span a gap (capped like any idle gap) and keeps them
+            // out of app time, transitions and the heatmap.
+            if snapshot
+                .as_ref()
+                .is_some_and(capture_metadata::FrameMetadataSnapshot::is_lock_screen)
+            {
+                continue;
+            }
+            let (app, app_bundle_id, domain) = labels_from_snapshot(snapshot);
             out.push(FrameRow {
                 session_id: row.get("session_id"),
                 captured_at_ms,
@@ -370,18 +382,13 @@ fn add_tail(
     }
 }
 
-/// Maps a frame metadata snapshot JSON to `(app_label, bundle_id, domain)`.
+/// Maps a parsed frame metadata snapshot to `(app_label, bundle_id, domain)`.
 /// `app_label` prefers the app name, then the bundle id, then `UNKNOWN_APP`.
 /// `domain` is the host of `browser_url` when present.
 fn labels_from_snapshot(
-    snapshot_json: Option<&str>,
+    snapshot: Option<capture_metadata::FrameMetadataSnapshot>,
 ) -> (String, Option<String>, Option<String>) {
-    let Some(snapshot_json) = snapshot_json else {
-        return (UNKNOWN_APP.to_string(), None, None);
-    };
-    let Ok(snapshot) =
-        serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(snapshot_json)
-    else {
+    let Some(snapshot) = snapshot else {
         return (UNKNOWN_APP.to_string(), None, None);
     };
 
@@ -670,15 +677,16 @@ mod tests {
             .await
             .expect("create frames");
 
-            // Two snapshots: Safari w/ url, and a plain app.
+            // Three snapshots: Safari w/ url, a plain app, and the lock screen.
             sqlx::query(
                 "INSERT INTO frame_metadata_snapshots (id, normalized_hash, snapshot_json) \
-                 VALUES (1, 'h1', ?1), (2, 'h2', ?2)",
+                 VALUES (1, 'h1', ?1), (2, 'h2', ?2), (3, 'h3', ?3)",
             )
             .bind(
                 r#"{"appBundleId":"com.apple.Safari","appName":"Safari","windowTitle":"GH","browserUrl":"https://github.com/x/y"}"#,
             )
             .bind(r#"{"appBundleId":"com.foo.Editor","appName":"Editor"}"#)
+            .bind(r#"{"appBundleId":"com.apple.loginwindow","appName":"loginwindow"}"#)
             .execute(&pool)
             .await
             .expect("insert snapshots");
@@ -687,6 +695,7 @@ mod tests {
                 "INSERT INTO frames (session_id, file_path, captured_at, metadata_snapshot_id) VALUES \
                  ('s1', 'a.jpg', '2026-01-01T00:00:00Z', 2), \
                  ('s1', 'b.jpg', '2026-01-01T00:00:05Z', 1), \
+                 ('s1', 'l.jpg', '2026-01-01T00:00:20Z', 3), \
                  ('s1', 'c.jpg', '2026-01-01T01:30:00Z', 2)",
             )
             .execute(&pool)
@@ -713,6 +722,14 @@ mod tests {
                 .any(|s| s.domain == "github.com"));
             // Heatmap spans two hours (00:00 and 01:00).
             assert_eq!(resp.activity_heatmap.len(), 2);
+            // The lock-screen frame is away time: no app row, no transition,
+            // no heatmap count (hour 00:00 holds just the Editor + Safari frames).
+            assert!(resp.time_per_app.iter().all(|a| a.app != "loginwindow"));
+            assert!(resp
+                .app_transitions
+                .iter()
+                .all(|t| t.from_app != "loginwindow" && t.to_app != "loginwindow"));
+            assert_eq!(resp.activity_heatmap[0].intensity_count, 2);
 
             // Narrow range to just the first hour -> excludes the 01:30 frame.
             let start = rfc3339_to_ms("2026-01-01T00:00:00Z").unwrap();

@@ -770,9 +770,10 @@ impl AppInfra {
         &self,
         captured_at_start: &str,
         captured_at_end: &str,
+        exclude_lock_screen: bool,
     ) -> Result<Vec<FrameSummary>> {
         self.processing
-            .list_frame_summaries_in_range(captured_at_start, captured_at_end)
+            .list_frame_summaries_in_range(captured_at_start, captured_at_end, exclude_lock_screen)
             .await
     }
 
@@ -9471,7 +9472,7 @@ mod tests {
                 .expect("later frame should persist");
 
             let summaries = infra
-                .list_frame_summaries_in_range("2026-04-12T00:00:00Z", "2026-04-12T23:59:59Z")
+                .list_frame_summaries_in_range("2026-04-12T00:00:00Z", "2026-04-12T23:59:59Z", false)
                 .await
                 .expect("frame summaries should list");
 

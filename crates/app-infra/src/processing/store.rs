@@ -806,19 +806,30 @@ impl ProcessingStore {
         rows.into_iter().map(map_frame).collect()
     }
 
+    /// `exclude_lock_screen` drops lock-screen frames (time away, see
+    /// `user_context::lock_screen`) — the Journal reads their span as Away.
     pub async fn list_frame_summaries_in_range(
         &self,
         captured_at_start: &str,
         captured_at_end: &str,
+        exclude_lock_screen: bool,
     ) -> Result<Vec<FrameSummary>> {
+        let excluded_snapshot_ids = if exclude_lock_screen {
+            crate::user_context::lock_screen::lock_screen_snapshot_ids_json(self.db.read()).await?
+        } else {
+            "[]".to_string()
+        };
         let rows = sqlx::query(
             "SELECT id, captured_at \
              FROM frames \
              WHERE captured_at >= ?1 AND captured_at <= ?2 \
+               AND (metadata_snapshot_id IS NULL \
+                    OR metadata_snapshot_id NOT IN (SELECT value FROM json_each(?3))) \
              ORDER BY captured_at DESC, id DESC",
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
+        .bind(excluded_snapshot_ids)
         .fetch_all(self.db.read())
         .await?;
 

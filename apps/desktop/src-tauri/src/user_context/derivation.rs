@@ -606,7 +606,9 @@ async fn persist_batch(
     }
 
     // ponytail: no minimum-item guard; add `window.items.len() >= 3` if
-    // lock-screen-only windows start reading "failed".
+    // near-empty windows start reading "failed". (Lock-screen-only windows
+    // can't: `read_capture_window` drops lock-screen frames, so they read as
+    // empty and are skipped before reaching here.)
     if inserted + extended == 0 {
         return Err("The model returned no Activities grounded in this window.".to_string());
     }

@@ -159,6 +159,8 @@ export interface FrameSummaryDto {
 export interface FrameRangeRequest {
 	capturedAtStart: string;
 	capturedAtEnd: string;
+	/** `list_frame_summaries_in_range` only: drop lock-screen frames (time away). */
+	excludeLockScreen?: boolean;
 }
 
 export interface ListFramesRequest {

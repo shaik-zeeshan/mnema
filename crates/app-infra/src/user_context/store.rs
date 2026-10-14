@@ -2705,6 +2705,18 @@ pub async fn cascade_derived_for_deleted_subjects_in(
     activity_ids.sort_unstable();
     activity_ids.dedup();
 
+    cascade_delete_activities_in(conn, &activity_ids).await
+}
+
+/// Steps 2–5 of the cascade above for an already-chosen Activity set: purge
+/// overlapping Digests, delete the Activities (evidence links cascade via FK),
+/// re-apply the Conclusion formation bar, and purge orphaned Subject Vectors.
+/// Also the lock-screen heal's delete path (`lock_screen.rs`), so every
+/// Activity delete leaves nothing dangling the same way.
+pub(super) async fn cascade_delete_activities_in(
+    conn: &mut sqlx::SqliteConnection,
+    activity_ids: &[i64],
+) -> Result<UserContextCascadeSummary> {
     // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE the
     //    Activities are deleted (their spans are the overlap source). Overlap of
     //    digest [range_start_ms, range_end_ms) with activity [started_at_ms,
