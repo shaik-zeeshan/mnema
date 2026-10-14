@@ -615,7 +615,7 @@ impl UserContextStore {
             .collect())
     }
 
-    async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
+    pub(super) async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
         let rows = sqlx::query(
             "SELECT subject_type, subject_id, captured_at_ms, is_headline \
              FROM user_context_activity_evidence \
@@ -2963,7 +2963,7 @@ fn focus_from_str(value: Option<&str>) -> Option<FocusLevel> {
 /// correction precedence: a user correction WINS over the engine label. When
 /// the `*_corrected` flag is set the corrected value (which may be NULL =
 /// deliberately "unset") is the effective value; otherwise the engine column is.
-fn map_activity(row: SqliteRow) -> Activity {
+pub(super) fn map_activity(row: SqliteRow) -> Activity {
     let category = if row.get::<i64, _>("category_corrected") != 0 {
         category_from_str(row.get::<Option<String>, _>("corrected_category").as_deref())
     } else {

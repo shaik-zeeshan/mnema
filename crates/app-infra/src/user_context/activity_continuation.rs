@@ -29,7 +29,8 @@ impl UserContextStore {
             "UPDATE user_context_activities SET \
                 title = COALESCE(NULLIF(?2, ''), title), summary = COALESCE(NULLIF(?3, ''), summary), \
                 category = COALESCE(?4, category), focus = COALESCE(?5, focus), \
-                started_at_ms = MIN(started_at_ms, ?6), ended_at_ms = MAX(ended_at_ms, ?7) \
+                started_at_ms = MIN(started_at_ms, ?6), ended_at_ms = MAX(ended_at_ms, ?7), \
+                updated_at_ms = ?8 \
              WHERE id = ?1",
         )
         .bind(activity_id)
@@ -39,6 +40,7 @@ impl UserContextStore {
         .bind(draft.focus.map(focus_to_str))
         .bind(draft.started_at_ms)
         .bind(draft.ended_at_ms)
+        .bind(super::store::now_ms())
         .execute(&mut *transaction)
         .await?
         .rows_affected();
@@ -79,7 +81,7 @@ mod tests {
         CREATE TABLE user_context_activities (id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL, summary TEXT NOT NULL, category TEXT, focus TEXT,
             started_at_ms INTEGER NOT NULL, ended_at_ms INTEGER NOT NULL,
-            derivation_run_id INTEGER, created_at_ms INTEGER NOT NULL,
+            derivation_run_id INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER,
             corrected_category TEXT, category_corrected INTEGER NOT NULL DEFAULT 0,
             corrected_focus TEXT, focus_corrected INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE user_context_activity_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT,

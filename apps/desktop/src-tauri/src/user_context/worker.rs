@@ -828,14 +828,15 @@ async fn run_failed_window_retry_pass(
     derived_anything
 }
 
-/// Run Conclusion distillation on the slower beat once every this many
-/// successful Activity ticks, so the dossier (expensive, occasional) re-distills
-/// less often than the diary (cheap, frequent). A distillation also runs early
-/// whenever the Activity count has grown since the last one (see [`WorkerCadence`]).
-const CONCLUSION_EVERY_K_ACTIVITY_TICKS: u32 = 3;
+/// Conclusion distillation runs at most once per this interval, and only when
+/// an Activity was inserted or extended since the last successful pass, so the
+/// dossier (expensive, occasional) re-distills far less often than the diary
+/// (cheap, frequent). Each pass sends only what changed (`distill_conclusions`).
+/// The manual run-now command bypasses this throttle.
+const CONCLUSION_MIN_INTERVAL_MS: i64 = 30 * 60 * 1000;
 
 /// Run the confidence-decay beat once every this many ticks. This is the
-/// *slowest* beat (M ≥ K, the Conclusion beat): confidence fades on a 30-day
+/// *slowest* beat: confidence fades on a 30-day
 /// half-life, so re-evaluating decay only every few ticks is plenty, and decay
 /// uses **no LLM** (it is pure local math). Counting ticks (not successful
 /// Activity ticks) means the dossier keeps fading during quiet stretches even
@@ -850,40 +851,44 @@ const MAX_SNAPSHOTS_PER_CONCLUSION: i64 = 64;
 
 /// Cross-tick state for the slower Conclusion-distillation beat. The worker loop
 /// owns one of these and threads it through each tick. Activity derivation stays
-/// the frequent beat; this counts successful Activity ticks so distillation runs
-/// on a slower cadence (or sooner when new Activities have accumulated).
+/// the frequent beat; distillation is throttled to [`CONCLUSION_MIN_INTERVAL_MS`].
 #[derive(Debug, Default)]
 struct WorkerCadence {
-    /// Successful Activity ticks since the last distillation.
-    activity_ticks_since_distillation: u32,
-    /// `count_activities()` observed at the last distillation, so a tick can
-    /// distill early when the Activity total has grown.
-    last_distilled_activity_count: Option<i64>,
-    /// An Activity pass inserted OR extended a row since the last distillation.
-    /// Continuation extends rows without growing the count, so the count alone
-    /// would leave a long Activity's new minutes waiting for the K-tick beat.
-    activities_changed_since_distillation: bool,
+    /// When the worker last attempted a distillation pass (failed ones too, so a
+    /// failing engine is not re-billed every tick). Seeded at worker start from
+    /// the last completed pass in the ledger, so a restart does not re-distill.
+    last_distillation_at_ms: Option<i64>,
+    /// The last pass succeeded but more changed Activities wait behind the
+    /// watermark than one pass sends (e.g. a History Backfill), so the next tick
+    /// distills again without waiting out [`CONCLUSION_MIN_INTERVAL_MS`].
+    distillation_backlog: bool,
     /// Ticks (of any kind, including idle-but-resolved ones that reach the
     /// decay check) since the last confidence-decay pass.
     ticks_since_decay: u32,
 }
 
 impl WorkerCadence {
-    /// Whether this tick should run a Conclusion distillation: every Kth
-    /// successful Activity tick, OR as soon as Activities were added or
-    /// extended since the last distillation.
-    fn should_distill(&self, current_activity_count: i64) -> bool {
-        let grew = self
-            .last_distilled_activity_count
-            .map(|last| current_activity_count > last)
-            .unwrap_or(current_activity_count > 0);
-        grew
-            || self.activities_changed_since_distillation
-            || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+    /// Whether this tick should run a Conclusion distillation: only when an
+    /// Activity was inserted or extended since the last successful pass, and —
+    /// unless a backlog is draining — at most once per [`CONCLUSION_MIN_INTERVAL_MS`].
+    fn should_distill(&self, now_ms: i64, activities_changed: bool) -> bool {
+        activities_changed
+            && (self.distillation_backlog
+                || self
+                    .last_distillation_at_ms
+                    .is_none_or(|last| now_ms.saturating_sub(last) >= CONCLUSION_MIN_INTERVAL_MS))
+    }
+
+    /// Record a pass attempted at `now_ms`. A failed pass always waits the full
+    /// interval; a successful one drains back to back (one per tick, at the
+    /// worker's normal pacing) while changes remain behind the watermark.
+    fn record_distillation(&mut self, now_ms: i64, succeeded: bool, backlog_remaining: bool) {
+        self.last_distillation_at_ms = Some(now_ms);
+        self.distillation_backlog = succeeded && backlog_remaining;
     }
 
     /// Whether this tick should run the confidence-decay beat: every Mth tick.
-    /// Decay is the slowest beat (M ≥ K) and unconditional on new Activities —
+    /// Decay is the slowest beat and unconditional on new Activities —
     /// silence is precisely when a Conclusion should fade.
     fn should_decay(&self) -> bool {
         self.ticks_since_decay >= CONFIDENCE_DECAY_EVERY_M_TICKS
@@ -1180,8 +1185,6 @@ async fn worker_tick(
             "user context worker derived {} activities (window=[{},{}], items={})",
             run.activities_derived, run.window_start_ms, run.window_end_ms, run.items_read
         ));
-        cadence.activity_ticks_since_distillation =
-            cadence.activity_ticks_since_distillation.saturating_add(1);
     }
 
     // --- History Backfill beat (backward, newest-first) ---
@@ -1228,8 +1231,6 @@ async fn worker_tick(
         .await;
         if backfilled {
             dossier_changed = true;
-            cadence.activity_ticks_since_distillation =
-                cadence.activity_ticks_since_distillation.saturating_add(1);
             crate::native_capture::debug_log::log(
                 "user context worker backfilled older history (background trickle)",
             );
@@ -1255,35 +1256,29 @@ async fn worker_tick(
         .await;
         if retried {
             dossier_changed = true;
-            cadence.activity_ticks_since_distillation =
-                cadence.activity_ticks_since_distillation.saturating_add(1);
         }
     }
 
-    // Only the Activity passes have run so far, so this is "an Activity was
-    // inserted or extended this tick".
-    if dossier_changed {
-        cadence.activities_changed_since_distillation = true;
-    }
-
     // --- Conclusion beat (slower) ---
-    // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
-    // Conclusion distillation on a slower beat — every Kth successful Activity
-    // tick, or whenever the Activity count has grown since the last distillation.
-    // It shares the SAME resolved engine and records its own `derivation_run`
+    // CADENCE HOOK (spec §6 / §4): after the Activity passes, run Conclusion
+    // distillation at most once per `CONCLUSION_MIN_INTERVAL_MS`, and only when
+    // an Activity was inserted or extended since the last successful pass (the
+    // durable watermark, so a restart neither loses nor repeats changes). It
+    // shares the SAME resolved engine and records its own `derivation_run`
     // (kind `'conclusion'`).
-    let activity_count = infra
-        .user_context()
-        .count_activities()
-        .await
-        .unwrap_or(0);
     // While draining a forward backlog (catch-up cadence) we derive many
     // Activities fast; deferring distillation until caught up avoids an LLM
-    // distillation call on every catch-up tick — it runs once on the first normal
-    // tick afterward (the Activity count will have grown by then, so
-    // `should_distill` fires immediately).
-    if !catching_up && cadence.should_distill(activity_count) {
-        let changed = run_conclusion_distillation(
+    // distillation call on every catch-up tick — the changes wait behind the
+    // watermark for the first normal tick afterward.
+    let now = now_ms();
+    let activities_changed = !catching_up
+        && infra
+            .user_context()
+            .activities_changed_since_distillation()
+            .await
+            .unwrap_or(false);
+    if cadence.should_distill(now, activities_changed) {
+        let outcome = run_conclusion_distillation(
             &engine,
             infra.user_context(),
             app_handle,
@@ -1291,12 +1286,18 @@ async fn worker_tick(
             provider_label.clone(),
             model_label.clone(),
         )
-        .await
-        .is_some_and(|outcome| outcome.upserted > 0);
-        dossier_changed = dossier_changed || changed;
-        cadence.activity_ticks_since_distillation = 0;
-        cadence.last_distilled_activity_count = Some(activity_count);
-        cadence.activities_changed_since_distillation = false;
+        .await;
+        dossier_changed = dossier_changed || outcome.is_some_and(|outcome| outcome.upserted > 0);
+        // Still changed right after a pass that actually sent something = the
+        // pass hit its cap. (A no-op pass — e.g. a lone Activity — sends nothing
+        // and must not spin every tick.)
+        let backlog_remaining = outcome.is_some_and(|outcome| outcome.input_tokens > 0)
+            && infra
+                .user_context()
+                .activities_changed_since_distillation()
+                .await
+                .unwrap_or(false);
+        cadence.record_distillation(now, outcome.is_some(), backlog_remaining);
     }
 
     // --- Confidence-decay beat (slowest, LLM-free) ---
@@ -1377,7 +1378,16 @@ pub fn spawn_user_context_worker(
         let infra = Arc::clone(&infra);
         // The slower Conclusion-distillation beat is paced relative to the
         // frequent Activity beat; this state survives across ticks.
-        let mut cadence = WorkerCadence::default();
+        let mut cadence = WorkerCadence {
+            last_distillation_at_ms: infra
+                .user_context()
+                .latest_distillation_summary()
+                .await
+                .ok()
+                .flatten()
+                .map(|(at_ms, _, _)| at_ms),
+            ..WorkerCadence::default()
+        };
         loop {
             if *shutdown_rx.borrow() {
                 break;

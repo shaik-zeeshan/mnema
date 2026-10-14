@@ -705,8 +705,12 @@ fn conclusion_preamble() -> String {
     )
 }
 
-/// Number of recent Activities pulled into one distillation pass.
+/// Most Activities one distillation pass sends (changed + context).
 const DISTILLATION_ACTIVITY_LIMIT: i64 = 60;
+
+/// Already-distilled recent Activities sent alongside the changed ones, so a
+/// pass over two new episodes still sees what the user was just doing.
+const DISTILLATION_CONTEXT_ACTIVITIES: i64 = 5;
 
 /// Per-summary text cap so one verbose Activity summary cannot dominate the
 /// prompt budget.
@@ -837,28 +841,41 @@ pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
 /// the run-now command) owns recording the single `derivation_run` ledger row
 /// (kind `'conclusion'`) from the returned [`ConclusionDistillationOutcome`].
 ///
-/// Distillation is a no-op below two Activities: intent / belief signal needs at
-/// least a couple of episodes to form a non-flimsy Conclusion.
+/// Incremental: the pass sends only Activities inserted or extended since the
+/// last successful pass (the durable watermark), plus a few recent ones for
+/// context, and advances the watermark on success. Nothing changed → no-op with
+/// no engine call. Distillation is also a no-op below two Activities: intent /
+/// belief signal needs at least a couple of episodes to form a non-flimsy
+/// Conclusion.
 pub async fn distill_conclusions(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
     app_handle: &tauri::AppHandle,
     subject_vectors: &SubjectVectorStore,
 ) -> Result<ConclusionDistillationOutcome, String> {
-    let activities = store
-        .activities_for_distillation(DISTILLATION_ACTIVITY_LIMIT)
+    let input = store
+        .distillation_input(
+            DISTILLATION_ACTIVITY_LIMIT - DISTILLATION_CONTEXT_ACTIVITIES,
+            DISTILLATION_CONTEXT_ACTIVITIES,
+        )
         .await
         .map_err(|error| error.to_string())?;
+    let (changed_count, context_count) = (input.changed.len(), input.context.len());
+    let mut activities = input.changed;
+    activities.extend(input.context);
+    // The prompt lists Activities newest first.
+    activities.sort_by(|a, b| (b.started_at_ms, b.id).cmp(&(a.started_at_ms, a.id)));
 
-    // Nothing to distill from a single (or zero) Activity.
-    if activities.len() < 2 {
+    // Nothing changed since the last pass, or nothing to distill from a single
+    // Activity.
+    let Some(next_watermark) = input.next_watermark.filter(|_| activities.len() >= 2) else {
         return Ok(ConclusionDistillationOutcome {
             upserted: 0,
             gate_drops: Default::default(),
             input_tokens: 0,
             output_tokens: 0,
         });
-    }
+    };
 
     // Dismissal State (#99): every Conclusion the user has rejected, with which
     // evidence and when. This feeds BOTH the prompt (a soft "do not reconstitute"
@@ -1184,6 +1201,18 @@ pub async fn distill_conclusions(
             "conclusion distillation: duplicate guard turned {guard_merged} new belief(s) into reinforcements"
         ));
     }
+    crate::native_capture::debug_log::log(format!(
+        "conclusion distillation sent {} activities ({changed_count} new or extended, \
+         {context_count} context)",
+        changed_count + context_count
+    ));
+    // A failed write only means the next pass re-sends these Activities.
+    if let Err(error) = store.set_distillation_watermark(next_watermark).await {
+        crate::native_capture::debug_log::log_warn(format!(
+            "conclusion distillation could not save its watermark: {error}"
+        ));
+    }
+
     Ok(ConclusionDistillationOutcome {
         upserted,
         gate_drops,

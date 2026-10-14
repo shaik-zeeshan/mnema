@@ -132,46 +132,55 @@ fn is_catching_up_strictly_greater_than_threshold() {
 }
 
 #[test]
-fn cadence_distills_when_activity_count_grows() {
-    let mut cadence = WorkerCadence::default();
-    // Cold: distills as soon as there is at least one Activity.
-    assert!(cadence.should_distill(1));
-    cadence.last_distilled_activity_count = Some(5);
-    cadence.activity_ticks_since_distillation = 0;
-    // No growth and below the K threshold => skip.
-    assert!(!cadence.should_distill(5));
-    // Growth => distill early even below the K threshold.
-    assert!(cadence.should_distill(6));
-}
-
-#[test]
-fn cadence_distills_when_an_activity_was_extended_without_growth() {
-    let mut cadence = WorkerCadence {
-        last_distilled_activity_count: Some(5),
+fn cadence_never_distills_when_nothing_changed() {
+    let now = 10_000_000_000;
+    // Cold (no pass yet) and long overdue: still no pass without a change.
+    assert!(!WorkerCadence::default().should_distill(now, false));
+    let cadence = WorkerCadence {
+        last_distillation_at_ms: Some(now - 10 * CONCLUSION_MIN_INTERVAL_MS),
         ..WorkerCadence::default()
     };
-    assert!(!cadence.should_distill(5));
-    // Continuation grew an existing row: same count, still distill early.
-    cadence.activities_changed_since_distillation = true;
-    assert!(cadence.should_distill(5));
+    assert!(!cadence.should_distill(now, false));
 }
 
 #[test]
-fn cadence_distills_every_kth_tick_without_growth() {
+fn cadence_distills_changes_at_most_once_per_interval() {
+    let now = 10_000_000_000;
+    // Cold: the first change distills right away.
+    assert!(WorkerCadence::default().should_distill(now, true));
     let cadence = WorkerCadence {
-        activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
-        last_distilled_activity_count: Some(10),
-        ticks_since_decay: 0,
-        activities_changed_since_distillation: false,
+        last_distillation_at_ms: Some(now),
+        ..WorkerCadence::default()
     };
-    // No growth, but the K-tick threshold is met => distill.
-    assert!(cadence.should_distill(10));
+    // Changes keep arriving every tick, but the throttle holds for 30 minutes.
+    assert!(!cadence.should_distill(now + THOROUGH_INTERVAL.as_millis() as i64, true));
+    assert!(!cadence.should_distill(now + CONCLUSION_MIN_INTERVAL_MS - 1, true));
+    assert!(cadence.should_distill(now + CONCLUSION_MIN_INTERVAL_MS, true));
+}
+
+#[test]
+fn cadence_drains_a_backlog_back_to_back_then_throttles_and_failures_wait() {
+    let now = 10_000_000_000;
+    let next_tick = now + BALANCED_INTERVAL.as_millis() as i64;
+    let mut cadence = WorkerCadence::default();
+
+    // Backlog: the pass hit its cap, so the next tick distills without waiting.
+    cadence.record_distillation(now, true, true);
+    assert!(cadence.should_distill(next_tick, true));
+
+    // Caught up: the next change waits out the full interval.
+    cadence.record_distillation(next_tick, true, false);
+    assert!(!cadence.should_distill(next_tick * 2 - now, true));
+    assert!(cadence.should_distill(next_tick + CONCLUSION_MIN_INTERVAL_MS, true));
+
+    // Failure: waits the full interval even with a backlog behind the watermark.
+    cadence.record_distillation(now, false, true);
+    assert!(!cadence.should_distill(next_tick, true));
+    assert!(cadence.should_distill(now + CONCLUSION_MIN_INTERVAL_MS, true));
 }
 
 #[test]
 fn cadence_decays_on_the_slowest_beat() {
-    // The decay beat is strictly the slowest (M ≥ K).
-    assert!(CONFIDENCE_DECAY_EVERY_M_TICKS >= CONCLUSION_EVERY_K_ACTIVITY_TICKS);
     let mut cadence = WorkerCadence::default();
     // Below the M threshold => no decay yet.
     cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS - 1;
