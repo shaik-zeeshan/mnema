@@ -192,7 +192,7 @@ pub(super) fn lock_runtime_for_idle_debug(
     match state.lock() {
         Ok(runtime) => runtime,
         Err(poisoned) => {
-            super::debug_log::log(
+            super::debug_log::log_warn(
                 "native capture state poisoned while reading idle debug; returning best-effort snapshot",
             );
             poisoned.into_inner()

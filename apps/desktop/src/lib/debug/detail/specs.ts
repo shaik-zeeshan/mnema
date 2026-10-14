@@ -1,11 +1,9 @@
-// The four feature-detail instantiations. ONE generic template
-// (`FeatureDetail.svelte`) reads this table — the only per-feature code in the
-// drill-in level lives here.
+// The four processor drill-ins (Pipeline › <processor>). The only
+// per-processor code in the drill-in level lives here.
 //
-// A `DetailFeatureId` is deliberately also a `DebugSectionId` *and* a
-// `DebugFeature`, so the breadcrumb label, the dock anchor, the health
-// dot/diagnosis and the log-tail chip all come from the registries that already
-// exist (`sections.ts`, `get_debug_health`) instead of being restated here.
+// Keyed by `ProcessorKey`, the developer window's own vocabulary — deliberately
+// not `DebugFeature`, so the backend can re-cut the health rows without
+// touching this table.
 
 import type {
 	AudioTranscriptionSettings,
@@ -15,10 +13,10 @@ import type {
 	SpeakerAnalysisSettings,
 } from "$lib/types";
 
-/** The features with a drill-in. Each is a `DebugSectionId` and a `DebugFeature`. */
-export type DetailFeatureId = "ocr" | "transcription" | "diarization" | "embeddings";
+/** The processors with a drill-in. */
+export type ProcessorKey = "reading" | "transcription" | "speakers" | "meaningIndex";
 
-export const DETAIL_FEATURE_IDS: DetailFeatureId[] = ["ocr", "transcription", "diarization", "embeddings"];
+export const PROCESSOR_KEYS: ProcessorKey[] = ["reading", "transcription", "speakers", "meaningIndex"];
 
 /** The settings slice a feature runs on. All four carry `provider` + `modelId`. */
 export type FeatureSettings =
@@ -28,10 +26,14 @@ export type FeatureSettings =
 	| SemanticSearchSettings;
 
 export type DetailSpec = {
-	id: DetailFeatureId;
+	id: ProcessorKey;
+	/** Plain name for the breadcrumb and the inspector subtitle. */
+	name: string;
+	/** What one job's average time is measured against ("per frame"). */
+	per: string | null;
 	/**
 	 * `processing_jobs.processor`, or `null` for a feature with **no job lane**.
-	 * Embeddings is that case: the semantic index is swept by a worker, not
+	 * The meaning index is that case: the semantic index is swept by a worker, not
 	 * queued as processing jobs — so it has no jobs table and no per-job actions,
 	 * and its hero reads `get_semantic_index_status` instead of a lane.
 	 */
@@ -47,9 +49,11 @@ export type DetailSpec = {
 	config: (settings: RecordingSettings | null) => FeatureSettings | null;
 };
 
-export const DETAIL_SPECS: Record<DetailFeatureId, DetailSpec> = {
-	ocr: {
-		id: "ocr",
+export const DETAIL_SPECS: Record<ProcessorKey, DetailSpec> = {
+	reading: {
+		id: "reading",
+		name: "Reading",
+		per: "per frame",
 		processor: "ocr",
 		subjectType: "frame",
 		reprocess: { command: "reprocess_captured_frame_ocr", arg: "frameId" },
@@ -57,20 +61,26 @@ export const DETAIL_SPECS: Record<DetailFeatureId, DetailSpec> = {
 	},
 	transcription: {
 		id: "transcription",
+		name: "Transcription",
+		per: "per 5-minute segment",
 		processor: "audio_transcription",
 		subjectType: "audio_segment",
 		reprocess: { command: "reprocess_audio_segment_transcription", arg: "audioSegmentId" },
 		config: (settings) => settings?.transcription ?? null,
 	},
-	diarization: {
-		id: "diarization",
+	speakers: {
+		id: "speakers",
+		name: "Speakers",
+		per: "per 5-minute segment",
 		processor: "speaker_analysis",
 		subjectType: "audio_segment",
 		reprocess: { command: "reprocess_audio_segment_speaker_analysis", arg: "audioSegmentId" },
 		config: (settings) => settings?.speakerAnalysis ?? null,
 	},
-	embeddings: {
-		id: "embeddings",
+	meaningIndex: {
+		id: "meaningIndex",
+		name: "Meaning index",
+		per: null,
 		processor: null,
 		subjectType: null,
 		reprocess: null,

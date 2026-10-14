@@ -103,7 +103,6 @@ export class SettingsController {
   rec = createRecordingStore({
     setAppearance: (value) => setAppearance(value),
     setDeveloperOptionsEnabled: (value) => setDeveloperOptionsEnabled(value),
-    loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
     refreshMcpServerSecretPresence: () => void this.aiRuntime.refreshMcpServerSecretPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),

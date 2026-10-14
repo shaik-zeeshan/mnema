@@ -744,7 +744,6 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
-            native_capture_debug_logging_enabled: false,
             developer_options_enabled: false,
             preview_cache_ttl_seconds: capture_types::default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,

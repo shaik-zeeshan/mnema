@@ -43,9 +43,13 @@ use std::{collections::VecDeque, path::Path, sync::Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_log::{Target, TargetKind, WEBVIEW_TARGET};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind, WEBVIEW_TARGET};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
+const APP_LOG_MAX_FILE_BYTES: u128 = 5 * 1024 * 1024;
+/// Rotated files kept *besides* the active `rust.log` (`KeepSome(n)` keeps n
+/// archives plus the live file), so 4 = five files in all.
+const APP_LOG_KEPT_FILES: usize = 4;
 
 const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "mnema",
@@ -56,6 +60,7 @@ const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "capture_runtime",
     "capture_screen",
     "capture_microphone",
+    "capture_system_audio",
     "capture_writers",
     "capture_types",
     WEBVIEW_TARGET,
@@ -567,10 +572,19 @@ pub fn run() {
             let _ = windows::open_main_window(app);
         }))
         .plugin(
-            tauri_plugin_log::Builder::new()
-                .level(tauri_plugin_log::log::LevelFilter::Info)
-                .level_for("capture_runtime", tauri_plugin_log::log::LevelFilter::Debug)
-                .level_for("mnema_lib", tauri_plugin_log::log::LevelFilter::Debug)
+            APP_LOG_TARGET_PREFIXES
+                .iter()
+                .fold(
+                    tauri_plugin_log::Builder::new()
+                        .level(tauri_plugin_log::log::LevelFilter::Info),
+                    |builder, target| {
+                        builder.level_for(*target, tauri_plugin_log::log::LevelFilter::Debug)
+                    },
+                )
+                // The plugin default (40 KB, delete on rotate) kept ~5 minutes of
+                // history; this keeps days, in at most 5 × 5 MB files.
+                .max_file_size(APP_LOG_MAX_FILE_BYTES)
+                .rotation_strategy(RotationStrategy::KeepSome(APP_LOG_KEPT_FILES))
                 .filter(|metadata| {
                     is_app_log_target(metadata.target())
                         && native_capture::debug_log::app_log_record_allowed(metadata.level())
@@ -696,7 +710,6 @@ pub fn run() {
             ocr_models::cancel_ocr_model_download,
             ocr_models::delete_unused_ocr_models,
             third_party_notices::get_third_party_notices,
-            app_infra::submit_debug_cpu_job,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
             app_infra::debug_insert_frame_and_enqueue_processing_job,
@@ -705,7 +718,6 @@ pub fn run() {
             app_infra::reprocess_audio_segment_transcription,
             app_infra::reprocess_audio_segment_speaker_analysis,
             app_infra::reprocess_system_audio_speech_activity,
-            app_infra::classify_hidden_segment_workspace,
             app_infra::list_frames,
             app_infra::list_frame_summaries_in_range,
             app_infra::get_latest_frame_in_range,
@@ -733,8 +745,8 @@ pub fn run() {
             app_infra::frame_preview::cancel_active_frame_preview_video_requests,
             app_infra::list_processing_jobs,
             app_infra::get_processing_job,
+            app_infra::retry_processing_job_now,
             app_infra::get_processing_result,
-            ocr_budget::get_ocr_budget_debug,
             app_infra::list_processing_results,
             app_infra::list_speaker_turns,
             app_infra::list_person_profiles,
@@ -762,13 +774,13 @@ pub fn run() {
             native_capture::request_browser_url_accessibility,
             native_capture::open_browser_url_accessibility_settings,
             native_capture::get_idle_debug,
+            native_capture::get_capture_health,
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,
             native_capture::list_privacy_app_candidates,
             native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,
-            native_capture::get_capture_privacy_debug,
             native_capture::get_recording_settings,
             clock_format::system_uses_24_hour_time,
             native_capture::update_recording_settings,
@@ -837,9 +849,6 @@ pub fn run() {
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::set_privacy_filter_system_audio,
             privacy_redaction_sources::remove_privacy_excluded_app,
-            native_capture::get_native_capture_debug_log_status,
-            native_capture::open_native_capture_debug_log,
-            native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
             native_capture::get_microphone_activity_level,
@@ -955,7 +964,7 @@ pub fn run() {
                 // fallback and not the normal path. Logged through the app log sink
                 // so a "no background workers" incident is captured in the packaged
                 // app log rather than only on stderr.
-                native_capture::debug_log::log_error(format!(
+                native_capture::debug_log::log_warn(format!(
                     "failed to spawn deferred startup thread; running inline (re-blocks first paint): {error}"
                 ));
                 run_deferred_startup(app.handle(), onboarding_complete);

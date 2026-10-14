@@ -56,7 +56,7 @@ pub async fn list_processing_jobs_by_processor(
         .clamp(0, MAX_JOB_PAGE_LIMIT);
     let offset = request.offset.unwrap_or(0).max(0);
 
-    // ponytail: two reads, no transaction — a 1s-polled debug page can tolerate a
+    // ponytail: two reads, no transaction — a 2s-polled developer window can tolerate a
     // one-tick skew between the page and its total.
     let jobs = infra
         .list_processing_jobs_by_processor(

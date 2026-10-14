@@ -2,7 +2,6 @@
   import "$lib/styles/kit.css";
   import "$lib/styles/kit-extra.css";
   import "$lib/styles/shell.css";
-  import { tip } from "$lib/components/tooltip";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { type Snippet } from "svelte";
@@ -225,13 +224,10 @@
     }
   });
 
-  // Hide the gated Debug surface until we know whether developer options
+  // Hide the gated developer window until we know whether developer options
   // are enabled, and while we're redirecting a disabled user away from it.
   // Non-gated routes always render immediately.
   const showChildren = $derived(!isDebug || (devLoaded && devEnabled));
-
-  // Routes that want a centered, padded reading column (only `/debug`).
-  const isNarrow = $derived(isDebug);
 
   // ── Global shortcuts (recording, sources, help) ─────────────────────────
   const isCapturing = $derived(captureControls.running);
@@ -300,7 +296,7 @@
 
   function closeDedicatedWindowOnEscape(event: KeyboardEvent): boolean {
     // Keyed on the WINDOW, not the route, so it cannot drift again: a window
-    // with a close control (Debug's Close chip, Update's close light) should
+    // with a close control (Debug's close light, Update's close light) should
     // honour Escape too.
     // The update window is the one surface the app opens unsolicited, and it
     // shipped as the only dismissible window Escape could not close (⌘W is
@@ -389,28 +385,7 @@
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
 >
   {#if showMainTitlebar}
-    <Titlebar platform={windowPlatform} {devEnabled} />
-  {/if}
-
-  {#if showDedicatedTitlebar && currentWindowLabel() === "debug"}<!-- onboarding, CLI Access and Update draw their own strip -->
-  <header class="surface-titlebar">
-    <div class="surface-titlebar__drag" data-tauri-drag-region></div>
-    <div class="surface-titlebar__actions">
-      <button
-        type="button"
-        class="surface-titlebar__close"
-        aria-label="Close window"
-        use:tip={"Close"}
-        onclick={() => void closeCurrentWindow()}
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-          <path d="M2.5 2.5 9.5 9.5" />
-          <path d="M9.5 2.5 2.5 9.5" />
-        </svg>
-        <span>Close</span>
-      </button>
-    </div>
-  </header>
+    <Titlebar platform={windowPlatform} />
   {/if}
 
   {#if isMainWindow}
@@ -423,7 +398,7 @@
     <LicenseDeepLinkModal />
   {/if}
 
-  <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>
+  <main class="app-content" class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>
     {#if showChildren}
       {@render children()}
     {/if}
@@ -958,75 +933,6 @@
     --app-window-radius: 8px;
   }
 
-  .surface-titlebar {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    height: 40px;
-    padding: 0 10px 0 14px;
-    background: var(--app-titlebar-bg);
-    border-radius: var(--app-window-radius) var(--app-window-radius) 0 0;
-    box-shadow: inset 0 -1px 0 var(--app-titlebar-border);
-    user-select: none;
-    -webkit-user-select: none;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-  }
-
-  .surface-titlebar__drag {
-    flex: 1 1 auto;
-    min-width: 0;
-    height: 100%;
-    display: flex;
-    align-items: center;
-  }
-
-  .surface-titlebar__actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    flex: 0 0 auto;
-  }
-
-  .surface-titlebar__close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-width: 72px;
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 999px;
-    border: 1px solid var(--app-icon-border-hover);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
-    font-family: inherit;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .surface-titlebar__close:hover {
-    background: var(--app-icon-bg-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .surface-titlebar__close:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .surface-titlebar__close:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-
   /* ── Content ──────────────────────────────────────────────── */
   .app-content {
     flex: 1;
@@ -1069,24 +975,4 @@
     height: 100vh;
     height: 100dvh;
   }
-
-  /* The narrow column is opt-in — only routes that explicitly want a
-     centered, padded reading column (currently `/settings` and `/debug`)
-     request it. Surfaces like the timeline consume the full
-     viewport width by default so previews and dense controls aren't
-     artificially capped. */
-  .app-content--narrow {
-    max-width: 860px;
-    margin: 0 auto;
-    padding: calc(var(--mx-titlebar-h) + 14px) 24px 64px;
-    gap: 14px;
-  }
-
-  .app-content--dedicated.app-content--narrow {
-    max-width: none;
-    margin: 0;
-    padding: 16px 20px 28px;
-    gap: 14px;
-  }
-
 </style>

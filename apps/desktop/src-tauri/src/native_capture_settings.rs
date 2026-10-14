@@ -2,22 +2,22 @@ use capture_types::{
     default_appearance, default_audio_speech_detection_settings,
     default_audio_transcription_settings, default_developer_options_enabled,
     default_follow_timeline_live, default_idle_timeout_seconds, default_metadata_settings,
-    default_microphone_activity_sensitivity, default_native_capture_debug_logging_enabled,
-    default_ocr_settings, default_ocr_tesseract_char_whitelist,
-    default_ocr_tesseract_page_segmentation_mode, default_ocr_tesseract_preprocess_mode,
-    default_ocr_tesseract_upscale_factor, default_pause_capture_on_inactivity,
-    default_preview_cache_ttl_seconds, default_privacy_settings, default_semantic_search_model_id,
-    default_semantic_search_provider, default_speaker_analysis_model_id,
-    default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
-    default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
-    AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector,
-    AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider,
-    OcrRecognitionMode, OcrSettings, RecordingSettings, RetentionPolicy, ScreenResolution,
-    ScreenResolutionPreset, SemanticSearchSettings, SettingsOwnershipDomain,
-    SpeakerAnalysisSettings, UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
-    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
-    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
-    UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
+    default_microphone_activity_sensitivity, default_ocr_settings,
+    default_ocr_tesseract_char_whitelist, default_ocr_tesseract_page_segmentation_mode,
+    default_ocr_tesseract_preprocess_mode, default_ocr_tesseract_upscale_factor,
+    default_pause_capture_on_inactivity, default_preview_cache_ttl_seconds,
+    default_privacy_settings, default_semantic_search_model_id, default_semantic_search_provider,
+    default_speaker_analysis_model_id, default_speaker_analysis_settings,
+    default_speaker_analysis_timeout_seconds, default_system_audio_activity_sensitivity,
+    default_video_bitrate, AccessSettings, AiRuntimeSettings, AudioSpeechDetectionSettings,
+    AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
+    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
+    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SemanticSearchSettings,
+    SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
+    UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
+    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
+    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
     UpdateSemanticSearchSettingsRequest, UpdateStorageSettingsRequest,
     UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest, UserContextSettings,
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
@@ -69,7 +69,6 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
     pub(crate) previous_settings: RecordingSettings,
     pub(crate) previous_save_directory: String,
     pub(crate) save_directory_changed: bool,
-    pub(crate) debug_logging_enabled_changed: bool,
 }
 
 pub(crate) fn default_save_directory() -> String {
@@ -112,7 +111,6 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         video_bitrate: default_video_bitrate(),
         save_directory: default_save_directory(),
         auto_start: false,
-        native_capture_debug_logging_enabled: default_native_capture_debug_logging_enabled(),
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: default_follow_timeline_live(),
@@ -779,7 +777,6 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         video_bitrate,
         save_directory,
         auto_start: request.auto_start,
-        native_capture_debug_logging_enabled: request.native_capture_debug_logging_enabled,
         developer_options_enabled: request.developer_options_enabled,
         preview_cache_ttl_seconds: request.preview_cache_ttl_seconds,
         follow_timeline_live: request.follow_timeline_live,
@@ -887,7 +884,6 @@ fn load_recording_settings_from_path_with_resolution_support(
             video_bitrate: parsed.video_bitrate,
             save_directory: parsed.save_directory,
             auto_start: parsed.auto_start,
-            native_capture_debug_logging_enabled: parsed.native_capture_debug_logging_enabled,
             developer_options_enabled: parsed.developer_options_enabled,
             preview_cache_ttl_seconds: parsed.preview_cache_ttl_seconds,
             follow_timeline_live: parsed.follow_timeline_live,
@@ -1010,14 +1006,6 @@ pub(crate) fn current_auto_start(state: &RecordingSettingsState) -> bool {
         .auto_start
 }
 
-pub(crate) fn current_native_capture_debug_logging_enabled(state: &RecordingSettingsState) -> bool {
-    state
-        .lock()
-        .expect("recording settings state poisoned")
-        .settings
-        .native_capture_debug_logging_enabled
-}
-
 pub(crate) enum RecordingSettingsDomainPatch {
     CaptureSources(UpdateCaptureSourceSettingsRequest),
     CaptureTiming(UpdateCaptureTimingSettingsRequest),
@@ -1091,7 +1079,6 @@ fn recording_settings_request_from_settings(
         video_bitrate: settings.video_bitrate,
         save_directory: settings.save_directory,
         auto_start: settings.auto_start,
-        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
         developer_options_enabled: settings.developer_options_enabled,
         preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
         follow_timeline_live: settings.follow_timeline_live,
@@ -1352,10 +1339,6 @@ fn apply_domain_patch_to_settings(
                 settings.developer_options_enabled = value;
                 touched = true;
             }
-            if let Some(value) = request.native_capture_debug_logging_enabled {
-                settings.native_capture_debug_logging_enabled = value;
-                touched = true;
-            }
         }
     }
 
@@ -1385,8 +1368,6 @@ pub(crate) fn apply_recording_settings_update(
     let previous_settings = runtime.settings.clone();
     let previous_save_directory = previous_settings.save_directory.clone();
     let save_directory_changed = previous_save_directory != settings.save_directory;
-    let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
-        != settings.native_capture_debug_logging_enabled;
 
     persist_recording_settings(app_handle, &settings)?;
     runtime.settings = settings.clone();
@@ -1396,7 +1377,6 @@ pub(crate) fn apply_recording_settings_update(
         previous_settings,
         previous_save_directory,
         save_directory_changed,
-        debug_logging_enabled_changed,
     })
 }
 
@@ -1429,8 +1409,6 @@ pub(crate) fn apply_recording_settings_domain_mutation(
     let previous_settings = runtime.settings.clone();
     let previous_save_directory = previous_settings.save_directory.clone();
     let save_directory_changed = previous_save_directory != settings.save_directory;
-    let debug_logging_enabled_changed = previous_settings.native_capture_debug_logging_enabled
-        != settings.native_capture_debug_logging_enabled;
 
     if domain != SettingsOwnershipDomain::AppPrivacyExclusion
         && previous_settings.privacy != settings.privacy
@@ -1449,7 +1427,6 @@ pub(crate) fn apply_recording_settings_domain_mutation(
         previous_settings,
         previous_save_directory,
         save_directory_changed,
-        debug_logging_enabled_changed,
     })
 }
 
@@ -1568,11 +1545,6 @@ mod tests {
     }
 
     #[test]
-    fn default_recording_settings_disable_native_capture_debug_logging() {
-        assert!(!default_recording_settings().native_capture_debug_logging_enabled);
-    }
-
-    #[test]
     fn default_recording_settings_disable_developer_options() {
         assert!(!default_recording_settings().developer_options_enabled);
     }
@@ -1583,25 +1555,6 @@ mod tests {
             default_recording_settings().microphone_vad_adapter,
             capture_types::default_microphone_vad_adapter()
         );
-    }
-
-    #[test]
-    fn load_recording_settings_from_path_preserves_native_capture_debug_logging_flag() {
-        let dir = TestDir::new("debug-log-enabled");
-        let path = dir.path().join("recording-settings.json");
-        let mut settings = default_recording_settings();
-        settings.native_capture_debug_logging_enabled = true;
-
-        fs::write(
-            &path,
-            serde_json::to_string_pretty(&settings).expect("settings should serialize"),
-        )
-        .expect("settings file should write");
-
-        let loaded =
-            load_recording_settings_from_path(&path).expect("settings should load from disk");
-
-        assert!(loaded.native_capture_debug_logging_enabled);
     }
 
     #[test]
@@ -2141,7 +2094,6 @@ mod tests {
                 "videoBitrate": { "mode": "preset", "preset": "medium" },
                 "saveDirectory": "/tmp",
                 "autoStart": false,
-                "nativeCaptureDebugLoggingEnabled": false,
                 "pauseCaptureOnInactivity": true,
                 "idleTimeoutSeconds": 10,
                 "microphoneActivitySensitivity": 50,
@@ -2329,13 +2281,11 @@ mod tests {
             base.clone(),
             RecordingSettingsDomainPatch::Developer(UpdateDeveloperSettingsRequest {
                 developer_options_enabled: Some(true),
-                native_capture_debug_logging_enabled: Some(true),
             }),
         )
         .expect("developer patch should validate");
 
         assert!(updated.developer_options_enabled);
-        assert!(updated.native_capture_debug_logging_enabled);
         assert_eq!(updated.capture_microphone, base.capture_microphone);
         assert_eq!(updated.ocr, base.ocr);
         assert_eq!(
@@ -2428,7 +2378,6 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
-                native_capture_debug_logging_enabled: false,
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
@@ -2491,7 +2440,6 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
-                native_capture_debug_logging_enabled: false,
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
@@ -2568,7 +2516,6 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
-                native_capture_debug_logging_enabled: false,
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
@@ -2619,7 +2566,6 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
-                native_capture_debug_logging_enabled: false,
                 developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
@@ -2710,7 +2656,6 @@ mod tests {
                 "videoBitrate": { "mode": "preset", "preset": "medium" },
                 "saveDirectory": "/tmp",
                 "autoStart": false,
-                "nativeCaptureDebugLoggingEnabled": false,
                 "pauseCaptureOnInactivity": true,
                 "idleTimeoutSeconds": 10,
                 "microphoneActivitySensitivity": 50,
@@ -2748,7 +2693,6 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
-            native_capture_debug_logging_enabled: false,
             developer_options_enabled: false,
             preview_cache_ttl_seconds: MAX_PREVIEW_CACHE_TTL_SECONDS + 1,
             follow_timeline_live: false,

@@ -92,16 +92,16 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
                     Err(error) => {
                         // The server minted a key this build rejects (revoked,
                         // or product/config mismatch): retrying won't help.
-                        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "claimed key could not be installed: {error}");
+                        tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "claimed key could not be installed: {error}");
                         break;
                     }
                 }
             }
             ClaimDisposition::KeepPolling { reason } => {
-                tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "claim attempt {attempt}/{CLAIM_POLL_ATTEMPTS}: {reason}");
+                tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "claim attempt {attempt}/{CLAIM_POLL_ATTEMPTS}: {reason}");
             }
             ClaimDisposition::GiveUp { reason } => {
-                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "claim gave up: {reason} (from {})", adapter::base_url());
+                tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "claim gave up: {reason} (from {})", adapter::base_url());
                 break;
             }
         }

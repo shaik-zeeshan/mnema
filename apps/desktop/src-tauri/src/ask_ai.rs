@@ -1625,7 +1625,7 @@ async fn persist_turn(
     {
         Ok(()) => true,
         Err(error) => {
-            tauri_plugin_log::log::warn!(
+            tauri_plugin_log::log::error!(
                 "Ask AI failed to persist turn {turn_index} for {conversation_id} (phase {phase}): {error}"
             );
             false
@@ -1722,8 +1722,12 @@ async fn generate_conversation_title(
     {
         Ok(extracted) => extracted,
         Err(error) => {
+            // Kind + the error's head only: the raw provider error can echo
+            // prompt fragments, and user logs leave the machine.
             tauri_plugin_log::log::warn!(
-                "Ask AI title generation failed for {conversation_id}: {error}"
+                "Ask AI title generation failed for {conversation_id} ({}): {}",
+                error.failure_kind(),
+                error.log_detail()
             );
             return;
         }
@@ -2649,10 +2653,14 @@ async fn run_ask_ai_turn(
             }
         }
         Err(error) => {
-            // Display a plain-language sentence; keep the raw provider/transport
-            // detail (status codes, JSON body) in the log for debugging.
+            // Display a plain-language sentence; log the failure kind plus
+            // the error's head (status code, error class) — never the body,
+            // which can echo prompt or answer fragments, and user logs leave
+            // the machine.
             tauri_plugin_log::log::warn!(
-                "Ask AI agent loop failed for {conversation_id}: {error}"
+                "Ask AI agent loop failed for {conversation_id} ({}): {}",
+                error.failure_kind(),
+                error.log_detail()
             );
             // Worded for the engine that failed: on the ChatGPT subscription
             // backend a rejected credential is a sign-in problem, and there is

@@ -26,7 +26,7 @@ use semantic_search::{
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
-use crate::native_capture::debug_log::{log_error, log_info};
+use crate::native_capture::debug_log::{log, log_error, log_info, log_warn};
 
 /// The frontend event the Settings UI listens on for live download progress.
 /// The bytes/percent in each payload come from the streaming HTTP download of the
@@ -613,12 +613,12 @@ pub async fn select_semantic_search_model(
     match infra.semantic_search().live_vector_model().await {
         Ok(Some(live)) if live == expected_epoch => {}
         Ok(other) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic search model switch to '{model_id}': the live vec0 table is stamped {other:?}, NOT the selected model, after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
             ));
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic search model switch to '{model_id}': could not read the live vec0 model stamp to confirm it matches the selection after rebuild+persist: {error}"
             ));
         }
@@ -743,7 +743,7 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
     let settings = read_settings();
 
     let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(&settings) else {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log_warn(format!(
             "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",
             settings.model_id.as_deref().unwrap_or("<none>"),
             settings.provider
@@ -762,7 +762,7 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
             // The common case: the table already matches the selected model. No log
             // so a default/Anthropic-only user sees nothing on every launch.
         }
-        Err(error) => crate::native_capture::debug_log::log_error(format!(
+        Err(error) => crate::native_capture::debug_log::log_warn(format!(
             "semantic search startup reconciliation failed to read/rebuild the vec0 table (search stays keyword-only until it succeeds): {error}"
         )),
     }
@@ -1301,7 +1301,7 @@ fn emit_download_progress(
         // A swallowed emit means the Settings UI never sees this status (a
         // Failed/Cancelled event in particular) — surface it in the log rather
         // than letting the download silently appear stuck.
-        log_error(format!(
+        log_warn(format!(
             "semantic search model download: failed to emit progress event ({:?}) for {}/{}: {error}",
             progress.status, progress.provider, progress.model_id
         ));
@@ -1433,7 +1433,7 @@ fn preflight_free_disk_space(plan: &DownloadPlan) -> Result<(), ModelDownloadErr
         .ancestors()
         .find(|ancestor| ancestor.exists());
     let Some(probe_path) = probe_path else {
-        log_info(format!(
+        log(format!(
             "semantic search model download disk preflight skipped for {}/{}: no existing ancestor of {} to stat",
             plan.provider,
             plan.model_id,
@@ -1463,7 +1463,7 @@ fn preflight_free_disk_space(plan: &DownloadPlan) -> Result<(), ModelDownloadErr
         }
         Err(error) => {
             // Cannot measure — log and proceed rather than blocking the download.
-            log_info(format!(
+            log_warn(format!(
                 "semantic search model download disk preflight could not read free space at {} for {}/{}: {error}; proceeding",
                 probe_path.display(),
                 plan.provider,
@@ -1530,7 +1530,7 @@ async fn download_and_install_model(
                 source,
             })?;
         }
-        log_info(format!(
+        log(format!(
             "semantic search model download fetching {}/{} file '{}' from {url}",
             plan.provider, plan.model_id, spec.relative_path
         ));
@@ -1557,7 +1557,7 @@ async fn download_and_install_model(
         match spec.expected_sha256.as_deref() {
             Some(_) => {
                 verify_file_checksum(&destination, &spec.relative_path, spec.expected_sha256.as_deref())?;
-                log_info(format!(
+                log(format!(
                     "semantic search model download verified '{}' against pinned SHA256 for {}/{}",
                     spec.relative_path, plan.provider, plan.model_id
                 ));
@@ -1573,7 +1573,7 @@ async fn download_and_install_model(
             }
         }
 
-        log_info(format!(
+        log(format!(
             "semantic search model download saved '{}' ({file_bytes} bytes) for {}/{}",
             spec.relative_path, plan.provider, plan.model_id
         ));

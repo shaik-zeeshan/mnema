@@ -613,7 +613,7 @@ pub async fn user_context_dismiss_conclusion(
     if let Some(subject) = dismissed_subject {
         if let Err(error) = infra.subject_vectors().mark_subject_vector_stale(&subject).await {
             crate::native_capture::debug_log::log_warn(format!(
-                "failed to mark subject vector stale after dismissing a conclusion for '{subject}': {error}"
+                "failed to mark subject vector stale after dismissing conclusion {id}: {error}"
             ));
         }
     }

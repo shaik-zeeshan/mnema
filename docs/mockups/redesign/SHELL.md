@@ -66,7 +66,7 @@ Pages with no recording context may drop the `<footer>`: set `grid-template-rows
 - Narrow (< 1000px container): key hints hide; the field shrinks (clamp 260–440px).
 
 ## Engine status — hidden when healthy
-The Reasoning Engine is plumbing: when it works the user never sees its name. **Remove every "engine <model>" indicator from page chrome** (Insights' `.in-engine`). Only when it is not healthy, add ONE pill to the status bar (after `mx-spacer`) and one `.mx-notif` row:
+The Reasoning Engine is plumbing: when it works the user never sees its name. **Remove every "engine <model>" indicator from page chrome** (Insights' `.in-engine`). Only when it is not healthy, add ONE pill to the status bar (after `mx-spacer`) and the AI row in the status popover (`status.html`). **No standing `.mx-notif` row** (ruled 2026-10-14): the bell holds events, the popover holds current state, and the two never repeat a row:
 
 | condition (reason code) | pill | page surfaces show |
 |---|---|---|
@@ -157,12 +157,14 @@ Left: `mx-rec` · its controls (22px: `style="--_h:22px"`) · `mx-sep` · three 
 | paused · idle (`isInactivityPaused`) | `mx-rec--paused` "PAUSED · idle" | Pause stays **enabled** (locks the session) · Stop | lanes `--paused`; right: "resumes when you're back" |
 | paused · by you (`isUserPaused`) | `mx-rec--paused` "PAUSED 00:12" | Resume (`i-play`) · Stop | lanes `--paused` |
 | suspended · low disk (`isLowDiskSuspended`) | `mx-rec--suspended` "PAUSED · low disk" | Resume **disabled** · Stop | `mx-flag[warn]` "free up space · <b>resumes on its own</b>" → Storage; banner too |
+| recording · disk almost full (early warning) | running | — | `button.mx-flag[data-tone=info]` "disk almost full · <b>6.1 GB left</b>", opens the status popover (`status.html`); once below the pause threshold it becomes the "suspended · low disk" row |
 | stopped by the system (disk full / trial ended / revoked) | `mx-rec--stopped` "STOPPED · disk full" | Record (disabled if license) | `mx-flag[danger]`; the `AppNotification` carries the detail |
 | display asleep / disconnected (screen only) | stays running | — | `mx-lane--waiting` `screen <small>display asleep</small>`; mic + system keep `--on` |
 | privacy filter failed, retrying | running | — | `mx-lane--error` `<small>stopped</small>` on screen/system; `<span class="mx-flag" data-tone="warn">privacy filter failed · <b>retrying</b></span>` |
 | privacy filter, restart required | running | — | `<button class="mx-flag" data-tone="danger">restart to resume screen · <b>Restart</b></button>` |
 | system audio possibly blocked (inferred) | running | — | `mx-lane--blocked` `system <small>possibly blocked</small>` + warn flag "no system sound yet · Open System Settings" |
-| system audio reconnecting (tap rebuild) | running | — | `mx-lane--waiting` `system <small>reconnecting</small>` |
+| system audio reconnecting (tap rebuild) | running | — | `mx-lane--waiting` `system <small>reconnecting</small>` (not a silence-watchdog rebuild whose tap is already back up — that stays `--on`) |
+The REC pill and, while starting/recording, the lane group are buttons that open the status popover (`status.html`), with a chevron-up after the lanes. While stopped the lanes stay toggles.
 Lane modifiers: `--on --off --paused --starting --waiting --blocked --error` (+ `--screen|--mic|--sysaudio`); `<small>` = short reason. Recording failures to start are a native dialog (`@tauri-apps/plugin-dialog`), not a toast.
 
 ### Notifications (titlebar bell)

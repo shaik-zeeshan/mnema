@@ -1088,7 +1088,9 @@
                 <div class="st-section__head"><h2 class="mx-h3">Developer &amp; Logs</h2></div>
                 <div class="st-rows">
                   <div class="st-row"><div><div class="st-row__label">Enable developer options</div></div>
-                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Enable developer options" /></div></div>
+                    <div class="st-row__ctl"><input type="checkbox" class="mx-switch" id="st-devopts" aria-label="Enable developer options" /></div></div>
+                  <div class="st-row is-off" id="st-devwin"><div><div class="st-row__label">Developer window</div><p class="st-row__desc">Health, queues, capture and logs in a small window you can keep beside the app.</p></div>
+                    <div class="st-row__ctl"><a class="mx-btn mx-btn--sm" href="developer.html" aria-disabled="true">Open<kbd>⌘D</kbd></a></div></div>
                   <div class="st-row"><div><div class="st-row__label">Native capture debug logging</div><p class="st-row__desc">Write native capture diagnostic output to a log file on disk for troubleshooting.</p></div>
                     <div class="st-row__ctl"><input type="checkbox" class="mx-switch" aria-label="Native capture debug logging" /></div></div>
                   <div class="st-row"><div><div class="st-row__label">General application log</div><p class="st-row__desc"><span class="num">~/.mnema/logs/rust.log</span> · exists on disk</p></div>
@@ -1247,6 +1249,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const lane = $(`[data-lane-ind="${sw.dataset.lane}"]`);
     lane.classList.toggle("mx-lane--on", sw.checked); lane.classList.toggle("mx-lane--off", !sw.checked);
   }));
+
+  // Developer options gate the Developer window row (and ⌘D in the app).
+  $("#st-devopts").addEventListener("change", (e) => {
+    $("#st-devwin").classList.toggle("is-off", !e.target.checked);
+    $("#st-devwin .mx-btn").setAttribute("aria-disabled", String(!e.target.checked));
+  });
 
   // Theme: the Appearance segmented control is the toggle here (no app titlebar in Settings).
   // Same storage key as kit.js so the choice carries to the other pages.

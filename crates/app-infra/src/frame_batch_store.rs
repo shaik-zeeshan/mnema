@@ -5,9 +5,7 @@ use sqlx::{sqlite::SqliteRow, Executor, Row, Sqlite, Transaction};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-pub use crate::hidden_segment_workspace::{
-    HiddenSegmentWorkspaceRepairResult, SegmentWorkspaceCleanupDebugInfo,
-};
+pub use crate::hidden_segment_workspace::HiddenSegmentWorkspaceRepairResult;
 
 use crate::{
     db::CaptureDb,
@@ -110,7 +108,7 @@ pub struct SegmentWorkspaceBatchReference {
     pub status: FrameBatchStatus,
 }
 
-/// Open/failed rollup for the debug page's Jobs & Storage card.
+/// Open/failed rollup for the developer window's Pipeline housekeeping.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameBatchCounts {
@@ -326,7 +324,7 @@ impl FrameBatchStore {
         get_frame_batch_optional(self.db.read(), batch_id).await
     }
 
-    /// Open/failed rollup for the debug page's Jobs & Storage card.
+    /// Open/failed rollup for the developer window's Pipeline housekeeping.
     pub async fn counts(&self) -> Result<FrameBatchCounts> {
         let row = sqlx::query(
             "SELECT \
@@ -467,15 +465,6 @@ impl FrameBatchStore {
             frame_count,
             batch_references,
         })
-    }
-
-    pub async fn classify_hidden_segment_workspace(
-        &self,
-        workspace_dir: &Path,
-    ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
-        HiddenSegmentWorkspaceRepair::new(self.clone(), ProcessingStore::new(self.db.clone()))
-            .classify_hidden_segment_workspace(workspace_dir)
-            .await
     }
 
     pub async fn repair_hidden_segment_workspaces(
@@ -897,7 +886,7 @@ impl FrameBatchStore {
                 .enqueue_finalize_job_if_needed_in_transaction(transaction, batch.id)
                 .await
             {
-                capture_runtime::debug_log!(
+                capture_runtime::warn_log!(
                     "[app-infra][frame-batches] failed to schedule finalize job for batch {}: {}",
                     batch.id,
                     error

@@ -477,7 +477,6 @@ export interface RecordingSettings {
 	autoStart: boolean;
 	screenResolution: ScreenResolution;
 	videoBitrate: VideoBitrate;
-	nativeCaptureDebugLoggingEnabled: boolean;
 	pauseCaptureOnInactivity: boolean;
 	idleTimeoutSeconds: number;
 	activityMode: ActivityMode;
@@ -565,7 +564,7 @@ export type UpdateProcessingSettingsRequest = Partial<
 >;
 
 export type UpdateDeveloperSettingsRequest = Partial<
-	Pick<RecordingSettings, "developerOptionsEnabled" | "nativeCaptureDebugLoggingEnabled">
+	Pick<RecordingSettings, "developerOptionsEnabled">
 >;
 
 export interface UpdateAccessSettingsRequest {

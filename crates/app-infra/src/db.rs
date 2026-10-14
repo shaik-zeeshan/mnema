@@ -166,7 +166,7 @@ impl Database {
         // Owner exited uncleanly (it would otherwise have checkpointed and
         // truncated the WAL on a clean close).
         if wal_sidecar_is_non_empty(&database_path) {
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[app-infra] brokered reader opening with non-empty -wal (owner exited uncleanly?)"
             );
         }

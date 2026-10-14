@@ -112,10 +112,8 @@ export function cloneMcpServer(server: McpServerConfig): McpServerConfig {
 export interface RecordingStoreDeps {
   // App-wide theme runtime (lib/theme.svelte): apply the loaded appearance.
   setAppearance: (value: AppearanceSetting) => void;
-  // Developer-options runtime (lib/developer-options.svelte): gate the Debug page.
+  // Developer-options runtime (lib/developer-options.svelte): gate the developer window.
   setDeveloperOptionsEnabled: (value: boolean) => void;
-  // Reload the debug-log status (page-owned loader) after a developer-domain sync.
-  loadDebugLogStatus: () => void;
   // AI-runtime store refreshers, re-run after an ai_runtime-domain sync so the
   // key-presence badges + availability reflect the synced provider list.
   refreshAiProviderKeyPresence: () => void;
@@ -187,7 +185,6 @@ export class RecordingStore {
   draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
 
   // Developer drafts
-  draftNativeCaptureDebugLoggingEnabled = $state(false);
   draftDeveloperOptionsEnabled = $state(false);
 
   // Processing: preview cache TTL (seconds; 0 disables)
@@ -413,7 +410,6 @@ export class RecordingStore {
   }
 
   syncDeveloperDrafts(s: RecordingSettings): void {
-    this.draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     this.draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
   }
 
@@ -599,7 +595,6 @@ export class RecordingStore {
     }
     if (draftDomain === "developer" && applyDrafts) {
       this.#deps.setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
-      this.#deps.loadDebugLogStatus();
     }
     if (draftDomain === "ai_runtime" && applyDrafts) {
       this.#deps.refreshAiProviderKeyPresence();

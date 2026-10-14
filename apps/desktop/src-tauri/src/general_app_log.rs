@@ -1,4 +1,3 @@
-use capture_runtime::delete_debug_log_files;
 use capture_types::{CaptureErrorResponse, GeneralAppLogStatus};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -42,10 +41,42 @@ fn open_target_path(path: &Path, exists: bool) -> Result<PathBuf, CaptureErrorRe
 }
 
 fn delete_log_file_at_path(path: &Path) -> Result<(), CaptureErrorResponse> {
-    delete_debug_log_files(path).map_err(|error| CaptureErrorResponse {
+    let to_error = |error: std::io::Error| CaptureErrorResponse {
         code: "app_log_delete_failed".to_string(),
         message: format!("Failed to delete general application log: {error}"),
-    })
+    };
+    // Truncate, don't remove: the log plugin holds `rust.log` open in append
+    // mode and only reopens it on rotation, so a removed file would swallow
+    // every line until the next 5 MB. Append writes land at the new end.
+    // ponytail: the plugin's size counter isn't reset, so its next rotation
+    // comes early; harmless.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(to_error(error)),
+        _ => {}
+    }
+    // The log plugin rotates into `rust_<date>.log` siblings (`.log.bak` on a
+    // name collision); delete those too.
+    let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
+        return Ok(());
+    };
+    let rotated_prefix = format!("{}_", stem.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&rotated_prefix)
+            && (name.ends_with(".log") || name.ends_with(".log.bak"))
+        {
+            std::fs::remove_file(entry.path()).map_err(to_error)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn status(
@@ -159,17 +190,35 @@ mod tests {
     }
 
     #[test]
-    fn delete_log_file_at_path_removes_existing_file_and_backups() {
+    fn delete_log_file_at_path_empties_live_file_and_removes_rotations() {
+        use std::io::Write;
         let dir = TestDir::new("delete");
         let log_path = dir.path().join("rust.log");
         fs::write(&log_path, "current").expect("log file should write");
-        fs::write(log_path.with_file_name("rust.log.1"), "backup")
-            .expect("backup log file should write");
+        // The log plugin's handle: append mode, held across the delete.
+        let mut plugin_handle = fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .expect("append handle should open");
+        let rotated = log_path.with_file_name("rust_2026-10-13_14-20-01.log");
+        fs::write(&rotated, "rotated").expect("rotated log file should write");
+        let collided = log_path.with_file_name("rust_2026-10-13_14-20-01.log.bak");
+        fs::write(&collided, "collided").expect("bak log file should write");
+        let unrelated = log_path.with_file_name("rusty.log");
+        fs::write(&unrelated, "other").expect("unrelated file should write");
 
         delete_log_file_at_path(&log_path).expect("log file should be deleted");
-        assert!(!log_path.exists());
-        assert!(!log_path.with_file_name("rust.log.1").exists());
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "");
+        assert!(!rotated.exists());
+        assert!(!collided.exists());
+        assert!(unrelated.exists());
 
+        // Lines the plugin writes after the delete stay readable.
+        plugin_handle.write_all(b"after\n").unwrap();
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "after\n");
+
+        fs::remove_file(&log_path).unwrap();
         delete_log_file_at_path(&log_path).expect("missing log file should be ignored");
+        assert!(!log_path.exists(), "a missing log is not recreated");
     }
 }

@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Status</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Status popover + where developer info lives. Prefix: ss-
+       ?state= ok | catching-up | display-asleep | sysaudio-rebuild | low-disk-soon | engine-offline | not-recording | dev-on
+       (on-page switcher). ?theme=light for renders.
+       Stands for: lib/shell/StatusBar.svelte + status-bar.ts (the bar, unchanged per SHELL.md › Status bar) and a NEW
+       lib/shell/StatusPop.svelte (the popover). Opens from the REC pill or the lane group (and from the low-disk-soon flag).
+       Data: session.svelte.ts (NativeCaptureSession) · get_quick_recall_index_status (queuedFrames, oldestQueuedMs,
+       semanticIndexedPercent) · get_processing_pipeline_status (transcription queued, averageCompletedSecondsLast24h)
+       · get_capture_health (disk.freeBytes, display-unavailable, tap rebuild + reason, low-disk thresholds)
+       · transcription_deepgram_auth_status · get_ai_runtime_status · developer-options.svelte.ts (footer link). */
+    .ss-page { max-width: 1232px; margin: 0 auto; padding: var(--s-7) var(--s-5) var(--s-8); display: grid; gap: var(--s-8); }
+    .ss-head { display: grid; gap: var(--s-2); max-width: 72ch; }
+    .ss-head .mx-prose { margin: 0; }
+
+    /* Part 1 · decision */
+    .ss-opts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-3); }
+    .ss-opt { display: grid; gap: var(--s-3); align-content: start; padding: var(--s-4); }
+    .ss-opt__title { display: flex; align-items: center; gap: var(--s-2); }
+    .ss-opt__title .mx-chip { margin-left: auto; }
+    .ss-opt .mx-body-sm { margin: 0; }
+    .ss-pc { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+    .ss-pc li { display: grid; grid-template-columns: 14px 1fr; gap: 8px; align-items: start; font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-text); }
+    .ss-pc svg { margin-top: 3px; color: var(--tone, var(--app-text-subtle)); }
+    .ss-audience { margin: var(--s-4) 0 0; max-width: 84ch; }
+
+    /* schematics: boxes only */
+    .ss-sch { position: relative; height: 128px; border-radius: var(--r-md); background: var(--mx-wash); border: 1px solid var(--mx-hairline); overflow: hidden; }
+    .ss-sch i { position: absolute; display: block; border: 1px solid var(--app-border-strong); border-radius: 4px; background: var(--app-surface); }
+    .ss-sch i.is-dev { background: var(--mx-selected); border-color: var(--app-border-hover); }
+    .ss-sch i.is-bar { height: 0; border-width: 1px 0 0; border-radius: 0; background: none; }
+    .ss-sch i.is-line { height: 3px; border: 0; border-radius: 2px; background: var(--app-border-strong); }
+    .ss-sch i.is-pop { background: var(--app-surface-raised); border-color: var(--app-border-hover); box-shadow: var(--app-shadow-popover); }
+    .ss-sch__in { position: absolute; top: 0; left: 50%; width: 260px; height: 100%; translate: -50% 0; }
+    .ss-sch em { position: absolute; font: 500 var(--text-xs)/1 var(--font-sans); font-style: normal; color: var(--app-text-subtle); white-space: nowrap; }
+
+    /* Part 2 · stage */
+    .ss-switch { justify-self: start; display: flex; align-items: center; gap: var(--s-3); padding: 2px 2px 2px 10px; border-radius: var(--r-md); border: 1px dashed var(--app-border-strong); }
+    .ss-switch select { appearance: none; height: var(--h-sm); min-width: 240px; padding: 0 26px 0 10px; border-radius: var(--r-sm);
+      border: 1px solid var(--app-border-strong); background: var(--app-surface-raised); color: var(--app-text-strong); font: 400 var(--text-base)/1 var(--font-sans); cursor: pointer; }
+    .ss-stage { display: grid; grid-template-columns: 880px minmax(0, 1fr); gap: var(--s-5); align-items: start; }
+    .mx-window.ss-win { width: 880px; height: 600px; min-height: 0; }
+
+    /* dimmed timeline placeholder */
+    .ss-body { position: relative; overflow: hidden; }
+    .ss-ph { position: absolute; inset: var(--s-5); display: grid; grid-template-rows: auto 1fr auto; gap: var(--s-4); opacity: 0.42; }
+    .ss-ph__head { display: flex; gap: var(--s-2); }
+    .ss-ph__head i { height: 10px; width: 120px; border-radius: 3px; background: var(--mx-wash-strong); }
+    .ss-ph__head i + i { width: 60px; }
+    .ss-ph__frame { border-radius: var(--r-lg); border: 1px solid var(--app-border); background: var(--app-surface); }
+    .ss-ph__track { height: 40px; display: flex; align-items: end; gap: 3px; }
+    .ss-ph__track i { flex: 1; border-radius: 2px 2px 0 0; background: var(--app-border-strong); height: calc(var(--h) * 1%); }
+
+    /* status bar triggers */
+    .ss-anchor { display: flex; align-items: center; gap: var(--s-3); }
+    .ss-trig { display: inline-flex; align-items: center; gap: var(--s-3); height: 22px; margin: 0 -6px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
+      background: none; color: inherit; font: inherit; letter-spacing: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+    .ss-trig:hover, .ss-trig[aria-expanded="true"] { background: var(--mx-wash-strong); }
+    .ss-trig:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 0; }
+    .ss-trig__chev { color: var(--app-text-faint); margin-left: -4px; transition: color var(--t-fast) var(--ease-quart); }
+    .ss-trig:hover .ss-trig__chev, .ss-trig[aria-expanded="true"] .ss-trig__chev { color: var(--app-text-muted); }
+    :where(.ss-rectrig) { color: inherit; }
+    .ss-rectrig { background: none; font: inherit; letter-spacing: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+    .ss-rectrig:hover, .ss-rectrig[aria-expanded="true"] { background: var(--mx-wash-strong); }
+    .ss-rectrig:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+    button.mx-flag.ss-trig-flag:hover, button.mx-flag.ss-trig-flag[aria-expanded="true"] { background: var(--tone-bg); }
+
+    /* the popover */
+    .mx-pop.ss-pop { left: -4px; right: auto; width: 340px; transform-origin: bottom left; padding-bottom: var(--s-2); }
+    .ss-pop__head { display: flex; align-items: center; gap: var(--s-2); }
+    .ss-grp { padding: var(--s-2) var(--s-4) var(--s-2); border-top: 1px solid var(--mx-hairline); display: grid; gap: 6px; }
+    .ss-grp > .mx-label { display: block; }
+    .ss-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+    .ss-row { display: grid; grid-template-columns: 8px 92px minmax(0, 1fr); gap: 8px; align-items: baseline; font: 400 var(--text-base)/1.4 var(--font-sans); }
+    .ss-row__dot { width: 7px; height: 7px; border-radius: 50%; translate: 0 -1px; background: var(--tone, var(--app-text-faint)); }
+    .ss-row[data-dot="ring"] .ss-row__dot { background: none; box-shadow: inset 0 0 0 1.5px var(--app-text-muted); }
+    .ss-row__name { color: var(--app-text-strong); font-weight: 500; }
+    .ss-row__val { color: var(--app-text-muted); min-width: 0; }
+    .ss-row[data-tone="warn"] .ss-row__val { color: var(--app-text); }
+    .ss-row__val .mx-btn { --_h: 22px; --_px: 6px; display: flex; width: max-content; margin: 2px 0 0 -6px; }
+    .ss-row__val small { display: block; font: inherit; color: var(--app-text-muted); }
+    .ss-prog { padding-top: 2px; }
+    .ss-prog .mx-progress__meta { margin-bottom: 6px; }
+    .ss-quiet { color: var(--app-text-subtle); }
+    .ss-pop__foot { margin: var(--s-1) var(--s-2) 0; padding-top: var(--s-2); border-top: 1px solid var(--mx-hairline); }
+    .ss-pop__foot .mx-btn { width: 100%; justify-content: flex-start; }
+    .ss-pop__foot .mx-btn kbd { margin-left: auto; }
+
+    /* spec column (not app UI) */
+    .ss-notes { display: grid; gap: var(--s-4); align-content: start; padding-top: var(--s-2); }
+    .ss-notes h3 { margin: 0 0 var(--s-2); }
+    .ss-notes ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--mx-hairline); }
+    .ss-notes li { padding: 8px 0; border-bottom: 1px solid var(--mx-hairline); font: 400 var(--text-base)/1.45 var(--font-sans); color: var(--app-text-muted); }
+    .ss-notes li b { color: var(--app-text-strong); font-weight: 500; }
+    .ss-notes code { font: 450 var(--text-sm)/1.4 var(--font-mono); color: var(--app-text); word-break: break-word; }
+    .ss-notes .mx-chip { height: 18px; font-size: 10px; vertical-align: 1px; }
+    .ss-statenote { margin: 0; font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text); }
+
+    [hidden] { display: none !important; }
+    @media (max-width: 1240px) { .ss-stage { grid-template-columns: 880px; } }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.9A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17 19 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z"/></symbol>
+    <symbol id="i-record" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></symbol>
+  </defs>
+</svg>
+
+<div class="ss-page">
+  <!-- ===== Part 1 · decision ===== -->
+  <section>
+    <div class="ss-head">
+      <span class="mx-kicker">Decision</span>
+      <h1 class="mx-h2">Where does developer info live?</h1>
+      <p class="mx-prose">Two different questions: “what is Mnema doing right now?” and “why is this broken?”. Three homes were considered for the second one.</p>
+    </div>
+    <div class="ss-opts" style="margin-top: var(--s-5)">
+      <article class="mx-panel ss-opt">
+        <div class="ss-sch" aria-hidden="true"><div class="ss-sch__in">
+          <i style="left:14px; top:14px; width:150px; height:98px"></i>
+          <i class="is-bar" style="left:14px; top:100px; width:150px"></i>
+          <i class="is-pop" style="left:22px; top:66px; width:58px; height:28px"></i>
+          <i class="is-dev" style="left:176px; top:24px; width:70px; height:78px"></i>
+          <em style="left:178px; top:108px">developer</em>
+          <em style="left:84px; top:22px">main window</em>
+        </div></div>
+        <div class="ss-opt__title"><span class="mx-h3">A · Small separate window</span><span class="mx-chip mx-chip--accent">recommended</span></div>
+        <p class="mx-body-sm">A status popover in the main window for everyone, plus a small Developer window for diagnosis.</p>
+        <ul class="ss-pc">
+          <li data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Sits beside the app while you reproduce a bug.</li>
+          <li data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Never takes room from the screen you are testing.</li>
+          <li><svg width="13" height="13"><use href="#i-x"/></svg>One more window to open, so it needs ⌘D and a button in Settings.</li>
+        </ul>
+      </article>
+      <article class="mx-panel ss-opt">
+        <div class="ss-sch" aria-hidden="true"><div class="ss-sch__in">
+          <i style="left:14px; top:14px; width:232px; height:98px"></i>
+          <i class="is-line" style="left:24px; top:28px; width:44px"></i><i class="is-line" style="left:24px; top:38px; width:36px"></i>
+          <i class="is-line" style="left:24px; top:48px; width:40px"></i><i class="is-dev" style="left:20px; top:56px; width:52px; height:12px"></i>
+          <i class="is-bar" style="left:80px; top:14px; width:0; height:98px; border-width:0 0 0 1px"></i>
+          <i class="is-dev" style="left:92px; top:26px; width:140px; height:74px"></i>
+          <em style="left:120px; top:56px">developer page</em>
+        </div></div>
+        <div class="ss-opt__title"><span class="mx-h3">B · A Settings page</span></div>
+        <p class="mx-body-sm">Developer becomes one more section in Settings.</p>
+        <ul class="ss-pc">
+          <li data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Easy to find, nothing new to learn.</li>
+          <li><svg width="13" height="13"><use href="#i-x"/></svg>Settings takes over the main window, so you can’t watch it while you use the app.</li>
+          <li><svg width="13" height="13"><use href="#i-x"/></svg>Live numbers don’t belong among preferences.</li>
+        </ul>
+      </article>
+      <article class="mx-panel ss-opt">
+        <div class="ss-sch" aria-hidden="true"><div class="ss-sch__in">
+          <i style="left:14px; top:14px; width:232px; height:98px"></i>
+          <i class="is-bar" style="left:14px; top:100px; width:232px"></i>
+          <i class="is-dev" style="left:160px; top:15px; width:85px; height:84px; border-radius:0 3px 0 0"></i>
+          <em style="left:178px; top:52px">drawer</em>
+          <em style="left:40px; top:52px">surface under test</em>
+        </div></div>
+        <div class="ss-opt__title"><span class="mx-h3">C · Side drawer</span></div>
+        <p class="mx-body-sm">A panel that slides in from the right of the main window.</p>
+        <ul class="ss-pc">
+          <li data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>Always one shortcut away, no extra window.</li>
+          <li><svg width="13" height="13"><use href="#i-x"/></svg>Crowds the very surface you are testing.</li>
+          <li><svg width="13" height="13"><use href="#i-x"/></svg>Repeats what the status bar already says.</li>
+        </ul>
+      </article>
+    </div>
+    <p class="mx-prose ss-audience"><b>Two audiences, two homes.</b> Everyone gets the status popover: what Mnema is doing now, one click from the status bar, no setting needed. Developers get the Developer window for diagnosis, after turning on developer options. The bell keeps <i>events</i>, things that happened; the popover shows <i>now</i>, so the two never repeat a row.</p>
+  </section>
+
+  <!-- ===== Part 2 · status popover ===== -->
+  <section style="display:grid; gap: var(--s-4)">
+    <div class="ss-head">
+      <span class="mx-kicker">Status popover</span>
+      <h2 class="mx-h2">What Mnema is doing</h2>
+      <p class="mx-prose">Click the REC pill or the source lanes. The status bar itself never changes shape; it follows SHELL.md › Status bar in every state below.</p>
+    </div>
+    <label class="ss-switch">
+      <span class="mx-label">Mockup state</span>
+      <select id="ss-states" aria-label="Mockup state">
+        <option value="ok">Recording · all well</option>
+        <option value="catching-up">Catching up</option>
+        <option value="display-asleep">Display asleep</option>
+        <option value="sysaudio-rebuild">System audio reconnecting</option>
+        <option value="low-disk-soon">Disk almost full</option>
+        <option value="engine-offline">AI and Deepgram unreachable</option>
+        <option value="not-recording">Not recording</option>
+        <option value="dev-on">Developer options on</option>
+      </select>
+    </label>
+
+    <div class="ss-stage">
+      <div class="mx-window ss-win">
+        <header class="mx-titlebar" data-tauri-drag-region>
+          <div class="mx-titlebar__lead">
+            <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+            <nav class="mx-nav" aria-label="Main surface">
+              <a href="timeline.html" aria-label="Timeline" data-tip="Timeline  ⌘1" aria-current="page"><svg width="15" height="15"><use href="#i-timeline"/></svg></a>
+              <a href="insights.html" aria-label="Insights" data-tip="Insights  ⌘2"><svg width="15" height="15"><use href="#i-insights"/></svg></a>
+            </nav>
+          </div>
+          <label class="mx-cmd" for="mx-q" data-mode="recall">
+            <button type="button" class="mx-cmd__mode" tabindex="-1" aria-label="Switch between recall and ask (Tab)">
+              <svg class="mx-cmd__recall" width="14" height="14"><use href="#i-search"/></svg>
+              <svg class="mx-cmd__ask" width="13" height="13"><use href="#i-sparkle"/></svg><b>Ask</b>
+            </button>
+            <input id="mx-q" placeholder="Recall anything…" aria-label="Recall anything — Tab to ask instead" autocomplete="off" spellcheck="false" />
+            <span class="mx-cmd__keys" aria-hidden="true">
+              <kbd class="mx-cmd__k-idle">⌘K</kbd>
+              <span class="mx-cmd__k-recall"><kbd>⇥</kbd>to ask</span>
+              <span class="mx-cmd__k-ask"><kbd>↵</kbd>ask in chat</span>
+            </span>
+          </label>
+          <div class="mx-titlebar__trail">
+            <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="chat.html" aria-label="Chats" data-tip="Chats"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+            <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Notifications" data-tip="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg></button>
+            <a class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" href="settings.html" aria-label="Settings" data-tip="Settings  ⌘,"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+          </div>
+        </header>
+        <main class="mx-body mx-texture ss-body" aria-hidden="true">
+          <div class="ss-ph">
+            <div class="ss-ph__head"><i></i><i></i></div>
+            <div class="ss-ph__frame"></div>
+            <div class="ss-ph__track" id="ss-track"></div>
+          </div>
+        </main>
+        <footer class="mx-statusbar" id="ss-sb"></footer>
+      </div>
+
+      <aside class="ss-notes" aria-label="Spec notes">
+        <div><h3 class="mx-label">This state</h3><p class="ss-statenote" id="ss-statenote"></p></div>
+        <div><h3 class="mx-label">Available today</h3>
+          <ul>
+            <li><b>Screen, mic, system recording</b> · <code>NativeCaptureSession</code> source sessions</li>
+            <li><b>Reading backlog</b> · <code>get_quick_recall_index_status</code> queuedFrames, oldestQueuedMs</li>
+            <li><b>“about 2 min”</b> · queued × averageCompletedSecondsLast24h from <code>get_processing_pipeline_status</code></li>
+            <li><b>Transcribing N clips</b> · same call, transcription queued + running</li>
+            <li><b>Meaning index %</b> · semanticIndexedPercent (row hidden when meaning search is off)</li>
+            <li><b>Free space</b> · <code>get_capture_health</code> disk.freeBytes</li>
+            <li><b>AI row</b> · <code>get_ai_runtime_status</code> reason codes, same rule as the <code>mx-engine</code> pill</li>
+            <li><b>Footer link</b> · <code>developer-options.svelte.ts</code></li>
+            <li><b>Display asleep</b> · <code>get_capture_health</code> screen.state “waiting”, reason <code>capture_display_unavailable</code></li>
+            <li><b>System audio reconnecting + reason</b> · <code>get_capture_health</code> systemAudio.state “reconnecting”, systemAudioTap.lastReason / sampleRateHz</li>
+            <li><b>“pauses below 5 GB”</b> · <code>get_capture_health</code> disk.pauseThresholdBytes / resumeThresholdBytes (null while stopped)</li>
+            <li><b>Deepgram unreachable</b> · <code>get_processing_pipeline_status</code> audio_transcription retrying, plus <code>transcription_deepgram_auth_status</code> (key rejected vs unreachable)</li>
+          </ul></div>
+
+      </aside>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const q = new URLSearchParams(location.search);
+  const sv = (id, n) => `<svg width="${n}" height="${n}"><use href="#i-${id}"/></svg>`;
+
+  // dimmed timeline placeholder track
+  $("#ss-track").innerHTML = Array.from({ length: 96 }, (_, i) => `<i style="--h:${20 + Math.round(70 * Math.abs(Math.sin(i * 0.37) * Math.cos(i * 0.11)))}"></i>`).join("");
+
+  /* ---- status bar (SHELL.md › Status bar, verbatim vocabulary) ---- */
+  const sbBtn = (id, label, tip) => `<button class="mx-btn mx-btn--ghost mx-btn--icon" style="--_h:22px" aria-label="${label}" data-tip="${tip}" data-tip-pos="top">${sv(id, 11)}</button>`;
+  const ln = (src, label, mod, small = "") => `<span class="mx-lane mx-lane--${src} mx-lane--${mod}">${label}${small ? ` <small>${small}</small>` : ""}</span>`;
+  const tog = (src, label) => `<button class="mx-lane mx-lane--${src}" aria-pressed="true">${label}</button>`;
+  const TRIG = (inner) => `<button type="button" class="ss-trig" data-pop="ss-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="What Mnema is doing">${inner}<svg class="ss-trig__chev" width="10" height="10"><use href="#i-chevron-up"/></svg></button>`;
+  const REC = `<button type="button" class="mx-rec mx-rec--running ss-rectrig" data-pop="ss-pop" aria-haspopup="dialog" aria-expanded="false"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></button>`;
+  const CTRL = sbBtn("pause", "Pause", "Pause recording") + sbBtn("stop", "Stop", "Stop recording  ⌥⌘R");
+  const RIGHT = `<span>today <span class="num">6h 12m</span></span><span class="mx-sep"></span><span class="num">1.2 GB</span><span class="mx-sep"></span><span>local only</span>`;
+  const HELP = `<button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" style="--_h:22px" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts · /" data-tip-pos="top">${sv("help", 14)}</button>`;
+  const running = (lanes) => REC + CTRL + `<span class="mx-sep"></span>` + TRIG(lanes);
+
+  /* ---- popover rows ---- */
+  const row = (name, val, tone = "", dot = "") => `<li class="ss-row"${tone ? ` data-tone="${tone}"` : ""}${dot ? ` data-dot="${dot}"` : ""}><span class="ss-row__dot"></span><span class="ss-row__name">${name}</span><span class="ss-row__val">${val}</span></li>`;
+  const grp = (label, body) => `<section class="ss-grp"><span class="mx-label">${label}</span>${body}</section>`;
+  const capture = (screen, mic, sys) => grp("Capture", `<ul class="ss-rows">${row("Screen", ...screen)}${row("Microphone", ...mic)}${row("System audio", ...sys)}</ul>`);
+  const REC_ON = ["Recording", "ok"];
+  const CAUGHT = grp("Catching up", `<span class="mx-inline ss-quiet">${sv("check", 13)}All caught up</span>`);
+  const disk = (free, warn) => grp("Disk", `<ul class="ss-rows">${row("Free space", warn
+    ? `<span class="num">${free}</span> left<small>Recording pauses below <span class="num">5 GB</span> and resumes when you free up space.</small><a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-storage">Open Storage</a>`
+    : `<span class="num">${free}</span>`, warn ? "warn" : "")}</ul>`);
+  const catching = (rows, bar = true) => grp("Catching up", `<ul class="ss-rows">${rows}</ul>${bar ? `<div class="ss-prog"><div class="mx-progress__meta"><b>Building meaning index</b><span>92%</span></div><div class="mx-progress" role="progressbar" aria-valuenow="92" aria-valuemin="0" aria-valuemax="100" style="--v:.92"><i></i></div></div>` : ""}`);
+  const ai = grp("AI", `<ul class="ss-rows">${row("Ask AI", `Can’t reach ChatGPT. Mnema retries on its own; your sign-in is fine.<a class="mx-btn mx-btn--ghost mx-btn--sm" href="settings.html#s-providers">AI settings</a>`, "warn")}</ul>`);
+  const FOOT = `<div class="ss-pop__foot"><a class="mx-btn mx-btn--ghost mx-btn--sm" href="developer.html">Open developer window<kbd>⌘D</kbd></a></div>`;
+
+  const S = {
+    ok: {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: capture(REC_ON, REC_ON, REC_ON) + CAUGHT + disk("182 GB"),
+      note: "Everything is recording and nothing is waiting to be read. The popover is three quiet groups.",
+    },
+    "catching-up": {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: capture(REC_ON, REC_ON, REC_ON)
+        + catching(row("Reading", `<span class="num">38</span> frames · about <span class="num">2 min</span>`, "", "ring") + row("Transcribing", `<span class="num">3</span> clips`, "", "ring"))
+        + disk("182 GB"),
+      note: "After a busy stretch: the reading backlog, clips waiting for transcription, and the meaning index still building. Search is already usable; this only says new moments are a little behind.",
+    },
+    "display-asleep": {
+      sb: running(ln("screen", "screen", "waiting", "display asleep") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: capture(["Waiting for the display. Mic and system audio continue.", "", "ring"], REC_ON, REC_ON) + CAUGHT + disk("182 GB"),
+      note: "Display asleep is a normal pause, not a problem: neutral ring, no tone. Mic and system audio keep recording (ADR 0021, screen only).",
+    },
+    "sysaudio-rebuild": {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "waiting", "reconnecting")) + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: capture(REC_ON, REC_ON, ["Reconnecting after the output device changed", "", "ring"]) + CAUGHT + disk("182 GB"),
+      note: "A tap rebuild after an output change. Same word as the lane (“reconnecting”); the reason is the plain version of the rebuild reason. Silence-watchdog rebuilds say “Reconnecting after a long silence”.",
+    },
+    "low-disk-soon": {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>`
+        + `<button type="button" class="mx-flag ss-trig-flag" data-tone="info" data-pop="ss-pop" aria-haspopup="dialog" aria-expanded="false">disk almost full · <b>6.1 GB left</b></button>`,
+      pop: capture(REC_ON, REC_ON, REC_ON) + CAUGHT + disk("6.1 GB", true),
+      note: "Early warning, still recording. The info flag is new (SHELL has the paused low-disk flag only) and opens this popover instead of linking away. Once below the threshold it becomes the existing “PAUSED · low disk” state with its banner.",
+    },
+    "engine-offline": {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>`
+        + `<a class="mx-engine mx-engine--error" href="settings.html#s-providers" data-tip="Can't reach ChatGPT — resumes on its own. Your sign-in is fine." data-tip-pos="top">engine <b>offline</b></a><span class="mx-sep"></span>` + RIGHT,
+      pop: capture(REC_ON, REC_ON, REC_ON)
+        + catching(row("Transcribing", `<span class="num">3</span> clips waiting<small>Can’t reach Deepgram. Retries on its own.</small>`, "warn"), false)
+        + disk("182 GB") + ai,
+      note: "Offline. Both are warn, never “sign in again” (ADR 0048, SHELL engine rule). The AI row exists only while the engine is unhealthy, like the pill; the pill still links to Settings.",
+    },
+    "not-recording": {
+      sb: `<button type="button" class="mx-rec ss-rectrig" data-pop="ss-pop" aria-haspopup="dialog" aria-expanded="false"><span class="mx-rec__dot"></span>NOT RECORDING</button>`
+        + `<button class="mx-btn mx-btn--sm" style="--_h:22px" data-tip="Start recording  ⌥⌘R" data-tip-pos="top"><svg width="10" height="10" style="color:var(--app-danger)"><use href="#i-record"/></svg>Record</button><span class="mx-sep"></span>`
+        + tog("screen", "screen") + tog("mic", "mic") + tog("sysaudio", "system") + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: grp("Capture", `<p class="ss-quiet" style="margin:0">Not recording. Press Record or <kbd>⌥⌘R</kbd>.</p>`)
+        + catching(row("Reading", `<span class="num">12</span> frames · under a minute`, "", "ring"), false) + disk("182 GB"),
+      note: "While stopped the lanes are toggles (SHELL), so only the NOT RECORDING pill opens the popover. Reading keeps going after you stop.",
+    },
+    "dev-on": {
+      sb: running(ln("screen", "screen", "on") + ln("mic", "mic", "on") + ln("sysaudio", "system", "on")) + `<span class="mx-spacer"></span>` + RIGHT,
+      pop: capture(REC_ON, REC_ON, REC_ON) + CAUGHT + disk("182 GB") + FOOT,
+      note: "Developer options on (Settings › Developer). The only change is the footer link to the Developer window; ⌘D works from anywhere.",
+    },
+  };
+
+  let state = q.get("state") || location.hash.slice(1);
+  if (!S[state]) state = "ok";
+
+  function set(s) {
+    const v = S[s];
+    $("#ss-sb").innerHTML = `<div class="mx-pop-anchor ss-anchor">${v.sb.split('<span class="mx-spacer">')[0]}
+      <div class="mx-pop mx-pop--up ss-pop" id="ss-pop" role="dialog" aria-label="What Mnema is doing" data-open>
+        <div class="mx-pop__head ss-pop__head"><span class="mx-kicker">What Mnema is doing</span></div>${v.pop}</div></div>`
+      + `<span class="mx-spacer">` + (v.sb.split('<span class="mx-spacer">')[1] || "</span>") + HELP;
+    ($("#ss-sb .ss-trig, #ss-sb .ss-trig-flag") || $("#ss-sb .ss-rectrig")).setAttribute("aria-expanded", "true");
+    $("#ss-statenote").textContent = v.note;
+    $("#ss-states").value = s;
+    history.replaceState(null, "", `?state=${s}${q.get("theme") ? `&theme=${q.get("theme")}` : ""}`);
+  }
+  $("#ss-states").addEventListener("change", (e) => set(e.target.value));
+  set(state);
+})();
+</script>
+</body>
+</html>

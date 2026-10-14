@@ -39,7 +39,7 @@ fn window_open(status: Option<&LicenseStatus>) -> bool {
 /// nothing to paste.
 pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
     if POLL_RUNNING.swap(true, Ordering::AcqRel) {
-        tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: poll already running, ignoring");
+        tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "renewed deep link: poll already running, ignoring");
         return;
     }
     struct Reset;
@@ -55,7 +55,7 @@ pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
             tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: update window open after {attempt} refresh attempt(s)");
             return;
         }
-        tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: attempt {attempt}/{RENEWED_POLL_ATTEMPTS}, window still closed (server reached: {reached})");
+        tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "renewed deep link: attempt {attempt}/{RENEWED_POLL_ATTEMPTS}, window still closed (server reached: {reached})");
         if attempt < RENEWED_POLL_ATTEMPTS {
             tokio::time::sleep(RENEWED_POLL_INTERVAL).await;
         }

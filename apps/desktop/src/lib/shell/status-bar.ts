@@ -5,6 +5,8 @@
 import type { PermissionsMap, RecordingSettings } from "$lib/types";
 import type { AiRuntimeStatus } from "$lib/types/recording";
 import type { RuntimeSourcesStatus } from "$lib/types/inactivity";
+import type { CaptureHealthDto } from "$lib/types/debug";
+import { gb, reasonPhrase } from "$lib/debug/capture-view";
 import { engineState } from "$lib/insights/engine-state";
 
 export type LaneKey = "screen" | "microphone" | "systemAudio";
@@ -29,6 +31,9 @@ export interface StatusInput {
   readOnly: boolean;
   /** Short reason from a "Recording stopped — …" notification, e.g. "disk full". */
   stoppedReason: string | null;
+  /** `get_capture_health` while recording (`status-live.svelte.ts`); null while stopped or
+   *  unread. Optional: Settings' rail footer draws lanes without the live feed. */
+  health?: CaptureHealthDto | null;
 }
 
 export type RecMod = "" | "starting" | "running" | "paused" | "suspended" | "stopped";
@@ -64,7 +69,7 @@ export function recView(i: StatusInput): RecView {
   return { mod: "running", label: "REC", clock: "elapsed" };
 }
 
-export type LaneMod = "on" | "off" | "paused" | "starting" | "error";
+export type LaneMod = "on" | "off" | "paused" | "starting" | "waiting" | "error";
 export interface LiveLane {
   key: LaneKey;
   mod: LaneMod;
@@ -81,9 +86,37 @@ export function liveLanes(i: StatusInput, rec: RecView = recView(i)): LiveLane[]
     if (!src.requested) return { key, mod: "off", small: null };
     if (isPrivacyReason(src.reason)) return { key, mod: "error", small: "stopped" };
     if (src.paused) return { key, mod: "paused", small: rec.mod === "running" ? "idle" : null };
+    const screen = i.health?.screen;
+    if (key === "screen" && screen?.state === "waiting" && screen.reason === "capture_display_unavailable") {
+      return { key, mod: "waiting", small: reasonPhrase(screen.reason) };
+    }
+    if (key === "systemAudio" && sysAudioReconnecting(i.health ?? null)) {
+      return { key, mod: "waiting", small: "reconnecting" };
+    }
     if (src.sessionActive && src.writerActive) return { key, mod: "on", small: null };
     return { key, mod: "starting", small: null };
   });
+}
+
+/** System audio is rebuilding its tap — except a silence-watchdog rebuild whose
+ *  tap is already back up: that is still recording (founder decision 1: the
+ *  watchdog fires through every quiet stretch, so "reconnecting" would be lit
+ *  for much of a quiet hour while nothing is wrong). */
+export function sysAudioReconnecting(health: CaptureHealthDto | null): boolean {
+  if (health?.systemAudio.state !== "reconnecting") return false;
+  const tap = health.systemAudioTap;
+  return !(tap?.lastReason === "silenceWatchdog" && tap.sampleRateHz != null);
+}
+
+// ponytail: ≈1 h of recording at 5-min segments; tune here.
+export const EARLY_WARNING_SEGMENTS = 12;
+
+/** Free space is within ~an hour of the low-disk pause. `resume − pause` is one
+ *  segment's estimate (`disk_space.rs`); thresholds are null while stopped. */
+export function diskSoon(health: CaptureHealthDto | null, running: boolean, lowDisk: boolean): boolean {
+  const { freeBytes, pauseThresholdBytes: pause, resumeThresholdBytes: resume } = health?.disk ?? {};
+  if (!running || lowDisk || freeBytes == null || pause == null || resume == null) return false;
+  return freeBytes < pause + EARLY_WARNING_SEGMENTS * (resume - pause);
 }
 
 /** Screen permission is refused outright (macOS won't re-prompt) — the lane is blocked. */
@@ -96,13 +129,14 @@ export type FlagKind =
   | "privacy-restart"
   | "privacy-retry"
   | "low-disk"
+  | "disk-soon"
   | "start-failed"
   | "read-only"
   | "stopped"
   | "permission";
 export interface StatusFlag {
   kind: FlagKind;
-  tone: "warn" | "danger";
+  tone: "info" | "warn" | "danger";
   /** Plain lead text (may be empty); `action` renders bold after it. */
   text: string;
   action: string;
@@ -118,7 +152,7 @@ function privacySources(runtime: RuntimeSourcesStatus): string[] {
 const joinList = (items: string[]) =>
   items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 
-/** At most ONE flag. Recording: privacy restart > privacy retry > low disk.
+/** At most ONE flag. Recording: privacy restart > privacy retry > low disk > disk soon.
  *  Not recording: start failure > read-only > stopped by the system > permission. */
 export function statusFlag(i: StatusInput): StatusFlag | null {
   if (i.running) {
@@ -148,6 +182,10 @@ export function statusFlag(i: StatusInput): StatusFlag | null {
     }
     if (i.lowDisk) {
       return { kind: "low-disk", tone: "warn", text: "free up space ·", action: "resumes on its own", tip: null };
+    }
+    if (diskSoon(i.health ?? null, i.running, i.lowDisk)) {
+      const left = `${gb(i.health!.disk.freeBytes!)} GB left`;
+      return { kind: "disk-soon", tone: "info", text: "disk almost full ·", action: left, tip: null };
     }
     return null;
   }

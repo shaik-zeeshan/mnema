@@ -521,42 +521,6 @@ export interface SpeakerClusterDto {
 export type FrameBatchStatus = "open" | "closed" | "processing" | "completed" | "failed";
 export type ProcessingJobStatus = "queued" | "running" | "completed" | "failed";
 
-export type SegmentWorkspaceCleanupDisposition =
-	| "referenced_by_incomplete_batch"
-	| "referenced_by_nonterminal_ocr"
-	| "missing_visible_segment_sibling"
-	| "dead_segment_without_artifacts"
-	| "pending_frame_artifacts"
-	| "completed_only"
-	| "no_references";
-
-export interface HiddenSegmentWorkspacePathsDto {
-	workspaceDir: string;
-	framesDir: string;
-	visibleSegmentPath: string;
-}
-
-export interface SegmentWorkspaceBatchReferenceDto {
-	batchId: number;
-	status: FrameBatchStatus;
-}
-
-export interface SegmentWorkspaceOcrReferenceDto {
-	frameId: number;
-	jobId: number;
-	status: ProcessingJobStatus;
-}
-
-export interface SegmentWorkspaceCleanupDebugInfoDto {
-	paths: HiddenSegmentWorkspacePathsDto;
-	disposition: SegmentWorkspaceCleanupDisposition;
-	safeToRemove: boolean;
-	visibleSegmentExists: boolean;
-	frameCount: number;
-	batchReferences: SegmentWorkspaceBatchReferenceDto[];
-	nonterminalOcrReferences: SegmentWorkspaceOcrReferenceDto[];
-}
-
 export interface ProcessingJobDto {
 	id: number;
 	subjectType: string;
@@ -572,6 +536,8 @@ export interface ProcessingJobDto {
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
+	/** Queued but its model is downloading/absent ("Preparing"). Resolved by the job commands. */
+	modelLocked: boolean;
 }
 
 export interface ProcessingResultDto {

@@ -50,7 +50,6 @@ const MAX_TAP_AUDIO_BUFFERS: usize = 8;
 /// arrived three times running, with at least five deliveries seen.
 const FORMAT_STABILITY_REQUIRED_CONSECUTIVE: u32 = 3;
 const FORMAT_STABILITY_MIN_OBSERVED: u32 = 5;
-const FORMAT_LOG_SAMPLE_LIMIT: u32 = 8;
 
 const WRITER_LABEL: &str = "system audio";
 
@@ -109,7 +108,6 @@ pub struct SystemAudioSampleBuilder {
     asbd: cat::AudioStreamBasicDesc,
     format_desc: arc::R<cm::AudioFormatDesc>,
     format_state: FormatStabilityState,
-    logged_format_samples: u32,
     /// Frame counter behind `sample_time`, for the timestamps that arrive
     /// without it marked valid.
     next_fallback_frame: i64,
@@ -127,7 +125,6 @@ impl SystemAudioSampleBuilder {
             asbd,
             format_desc,
             format_state: FormatStabilityState::default(),
-            logged_format_samples: 0,
             next_fallback_frame: 0,
         })
     }
@@ -238,20 +235,6 @@ impl SystemAudioSampleBuilder {
     fn record_observed_format(&mut self, format: AudioSampleFormat) {
         let was_stable = self.format_state.stable_format.is_some();
         observe_system_audio_format(&mut self.format_state, format);
-
-        if self.logged_format_samples < FORMAT_LOG_SAMPLE_LIMIT {
-            self.logged_format_samples += 1;
-            capture_runtime::debug_log!(
-                "{LOG_PREFIX} sample_format_observed index={} sample_rate_hz={} channels={} bits_per_channel={} bytes_per_frame={} format_id={} format_flags={}",
-                self.format_state.observed_format_count,
-                format.sample_rate_hz,
-                format.channels_per_frame,
-                format.bits_per_channel,
-                format.bytes_per_frame,
-                format.format_id,
-                format.format_flags,
-            );
-        }
 
         if !was_stable {
             if let Some(stable_format) = self.format_state.stable_format {

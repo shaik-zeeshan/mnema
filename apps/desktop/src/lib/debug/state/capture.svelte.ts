@@ -1,6 +1,6 @@
 // Capture-side debug state: support/permissions probes, recording settings,
-// session lifecycle (start/stop + reconciliation + wake resync), the native
-// idle debug snapshot and the privacy-filter snapshot.
+// session lifecycle (start/stop + reconciliation + wake resync) and the
+// `get_capture_health` snapshot the Capture tab polls.
 //
 // A behaviour-preserving move of the capture half of the legacy
 // routes/debug/+page.svelte <script>. The comments that document *why* each
@@ -12,11 +12,10 @@ import { listen } from "@tauri-apps/api/event";
 import { captureSession, setSession } from "$lib/session.svelte";
 import { humanizeError } from "$lib/format-error";
 import type {
-	CapturePrivacyDebugInfo,
+	CaptureHealthDto,
 	CaptureSession,
 	CaptureSupport,
 	GetPermissionsResponse,
-	IdleDebugInfo,
 	MicrophoneAutoDisconnectTransitionFailedEvent,
 	MicrophoneControllerState,
 	PermissionsMap,
@@ -35,7 +34,6 @@ const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
  * consecutive misses so the user knows the readout may be stale.
  */
 const RECONCILE_STALE_THRESHOLD = 3;
-const RECONCILE_MS = 5_000;
 
 // Tauri/macOS does not reliably flip `document.visibilityState` on every wake
 // (the webview can stay "visible" while the system slept), so the resync also
@@ -43,8 +41,6 @@ const RECONCILE_MS = 5_000;
 // normal jank/GC pauses don't trigger a resync; a real sleep is tens of seconds.
 const WAKE_DRIFT_THRESHOLD_MS = 5_000;
 const WAKE_DRIFT_TICK_MS = 1_000;
-
-const IDLE_POLL_MS = 2_000;
 
 export function createCaptureStore() {
 	let support = $state<CaptureSupport | null>(null);
@@ -75,18 +71,8 @@ export function createCaptureStore() {
 	let loadingStop = $state(false);
 	let loadingSettings = $state(false);
 
-	let idleDebug = $state<IdleDebugInfo | null>(null);
-	let idleDebugError = $state<string | null>(null);
-	let privacyDebug = $state<CapturePrivacyDebugInfo | null>(null);
-	let privacyDebugError = $state<string | null>(null);
-
-	// Per-button loading flags for the manual ↻ refresh controls. The underlying
-	// fetch fns are also driven by polling/effects, so each button owns its own
-	// flag (set in try/finally) rather than reading a shared one — polling won't
-	// flicker the button, and the button disables only itself while in flight.
-	let loadingRuntimeSources = $state(false);
-	let loadingPrivacyFilter = $state(false);
-	let loadingInactivity = $state(false);
+	let captureHealth = $state<CaptureHealthDto | null>(null);
+	let captureHealthError = $state<string | null>(null);
 
 	function clearError() {
 		lastError = null;
@@ -148,55 +134,12 @@ export function createCaptureStore() {
 
 	// ─── Live snapshots ──────────────────────────────────────────────────────
 
-	async function fetchIdleDebug() {
-		// Skip the round-trip when the page is hidden or no capture session is
-		// active — the debug panel is only meaningful while recording (or briefly
-		// after stop).
-		if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-		if (!captureSession.value?.isRunning) return;
+	async function fetchCaptureHealth() {
 		try {
-			idleDebug = await invoke<IdleDebugInfo>("get_idle_debug");
-			idleDebugError = null;
+			captureHealth = await invoke<CaptureHealthDto>("get_capture_health");
+			captureHealthError = null;
 		} catch (err) {
-			idleDebugError = humanizeError(err);
-		}
-	}
-
-	async function fetchCapturePrivacyDebug() {
-		if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-		if (!captureSession.value?.isRunning) return;
-		try {
-			privacyDebug = await invoke<CapturePrivacyDebugInfo>("get_capture_privacy_debug");
-			privacyDebugError = null;
-		} catch (err) {
-			privacyDebugError = humanizeError(err);
-		}
-	}
-
-	async function refreshRuntimeSources() {
-		loadingRuntimeSources = true;
-		try {
-			await Promise.all([fetchIdleDebug(), fetchCapturePrivacyDebug()]);
-		} finally {
-			loadingRuntimeSources = false;
-		}
-	}
-
-	async function refreshPrivacyFilter() {
-		loadingPrivacyFilter = true;
-		try {
-			await fetchCapturePrivacyDebug();
-		} finally {
-			loadingPrivacyFilter = false;
-		}
-	}
-
-	async function refreshInactivity() {
-		loadingInactivity = true;
-		try {
-			await fetchIdleDebug();
-		} finally {
-			loadingInactivity = false;
+			captureHealthError = humanizeError(err);
 		}
 	}
 
@@ -323,27 +266,6 @@ export function createCaptureStore() {
 		};
 	}
 
-	/** 2s idle + privacy snapshot poll. Returns teardown. */
-	function startIdlePolling(): () => void {
-		void fetchIdleDebug();
-		void fetchCapturePrivacyDebug();
-		const interval = setInterval(() => {
-			void fetchIdleDebug();
-			void fetchCapturePrivacyDebug();
-		}, IDLE_POLL_MS);
-		return () => clearInterval(interval);
-	}
-
-	/** 5s session reconcile while the UI believes capture is running. */
-	function startReconcilePolling(): () => void {
-		const interval = setInterval(() => {
-			// Skip when the tab is hidden — avoids unnecessary IPC while inactive.
-			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-			void resyncSession();
-		}, RECONCILE_MS);
-		return () => clearInterval(interval);
-	}
-
 	/**
 	 * Wake/visibility resync. After macOS sleep/wake the native capture pipeline
 	 * may have been torn down and restarted while the webview was suspended,
@@ -418,10 +340,8 @@ export function createCaptureStore() {
 		get permissions() { return permissions; },
 		get permissionsError() { return permissionsError; },
 		get recordingSettings() { return recordingSettings; },
-		get idleDebug() { return idleDebug; },
-		get idleDebugError() { return idleDebugError; },
-		get privacyDebug() { return privacyDebug; },
-		get privacyDebugError() { return privacyDebugError; },
+		get captureHealth() { return captureHealth; },
+		get captureHealthError() { return captureHealthError; },
 
 		get lastError() { return lastError; },
 		set lastError(v: string | null) { lastError = v; },
@@ -431,23 +351,16 @@ export function createCaptureStore() {
 		get loadingSettings() { return loadingSettings; },
 		get loadingStart() { return loadingStart; },
 		get loadingStop() { return loadingStop; },
-		get loadingRuntimeSources() { return loadingRuntimeSources; },
-		get loadingPrivacyFilter() { return loadingPrivacyFilter; },
-		get loadingInactivity() { return loadingInactivity; },
 
 		loadSupport,
 		loadPermissions,
 		loadSettings,
 		startCapture,
 		stopCapture,
-		fetchIdleDebug,
-		fetchCapturePrivacyDebug,
-		refreshRuntimeSources,
-		refreshPrivacyFilter,
-		refreshInactivity,
+		fetchCaptureHealth,
+		/** Session reconcile; the Capture tab polls it every 5 s while recording. */
+		resyncSession,
 		initListeners,
-		startIdlePolling,
-		startReconcilePolling,
 		startWakeResync,
 
 		getSourceSessionId(value: CaptureSession | null | undefined, source: CaptureSource): string {

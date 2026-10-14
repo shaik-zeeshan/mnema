@@ -753,6 +753,25 @@ fn only_a_rejected_grant_is_terminal_the_rest_is_transient() {
     assert!(OAuthError::transport("dns failure").transient);
 }
 
+#[test]
+fn oauth_failure_log_kind_drops_the_response_body() {
+    assert_eq!(
+        oauth_failure_log_kind(
+            r#"token request failed with status 401 Unauthorized: {"access_token":"sk-x"}"#
+        ),
+        "token request failed with status 401 Unauthorized"
+    );
+    assert_eq!(
+        oauth_failure_log_kind("device code request failed with status 500: <html>"),
+        "device code request failed with status 500"
+    );
+    assert_eq!(
+        oauth_failure_log_kind(r#"invalid type: string "eyJtoken", expected u64"#),
+        "invalid type"
+    );
+    assert_eq!(oauth_failure_log_kind("timed out"), "timed out");
+}
+
 fn unreachable_grant(
     _refresh_token: String,
 ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>> {

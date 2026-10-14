@@ -106,7 +106,7 @@ pub async fn embed_search_query(
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic query embed could not resolve app data dir: {error}"
             ));
             return None;
@@ -167,7 +167,7 @@ pub async fn embed_search_query(
             None => match load_embedder_private(&app_data_dir, &descriptor) {
                 Ok(loaded) => loaded,
                 Err(error) => {
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "semantic query embed failed to load model '{}/{}': {error}",
                         descriptor.provider, descriptor.model_id
                     ));
@@ -192,7 +192,7 @@ pub async fn embed_search_query(
         Ok(Some((loaded, vector))) => (loaded, vector),
         Ok(None) => return None,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic query embed task panicked/cancelled: {error}"
             ));
             return None;
@@ -219,7 +219,7 @@ pub async fn embed_search_query(
         // ordering, so drop the vector and fall back to the keyword-only path the
         // function already takes when there is no usable semantic vector.
         Ok(vector) if vector.iter().any(|component| !component.is_finite()) => {
-            crate::native_capture::debug_log::log_error(
+            crate::native_capture::debug_log::log_warn(
                 "semantic query embed produced a non-finite component; \
                  falling back to keyword-only search"
                     .to_string(),
@@ -228,7 +228,7 @@ pub async fn embed_search_query(
         }
         Ok(vector) => Some(vector),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic query embed failed: {error}"
             ));
             None

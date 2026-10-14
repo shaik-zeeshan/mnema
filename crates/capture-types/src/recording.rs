@@ -116,10 +116,6 @@ pub fn default_audio_speech_detection_settings() -> AudioSpeechDetectionSettings
     }
 }
 
-pub fn default_native_capture_debug_logging_enabled() -> bool {
-    false
-}
-
 pub fn default_developer_options_enabled() -> bool {
     false
 }
@@ -1129,8 +1125,6 @@ pub struct RecordingSettings {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
-    #[serde(default = "default_native_capture_debug_logging_enabled")]
-    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_developer_options_enabled")]
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
@@ -1229,8 +1223,6 @@ pub struct UpdateRecordingSettingsRequest {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
-    #[serde(default = "default_native_capture_debug_logging_enabled")]
-    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_developer_options_enabled")]
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
@@ -1385,5 +1377,4 @@ pub struct UpdateAccessSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateDeveloperSettingsRequest {
     pub developer_options_enabled: Option<bool>,
-    pub native_capture_debug_logging_enabled: Option<bool>,
 }

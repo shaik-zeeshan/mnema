@@ -72,10 +72,10 @@ Tags: **[UI]** frontend only · **[DERIVED]** new data computed from the existin
 - `provider_unreachable` must not read as "reconnect" (ADR 0058).
 
 **Status-bar and bell gaps found while drawing states** (details in `backend.html` §1/§3/§5):
-- [BACKEND] Display unavailable is not on `CaptureSession`; `capture_display_unavailable` only reaches the frontend via the debug `get_idle_debug` runtime sources (`native_capture/activity.rs:384-402`), and no notification is pushed. Today the titlebar shows it as "starting…" (`+layout.svelte:437-443`).
-- [BACKEND] Mic / system-audio `RuntimeSourceStatus.reason` is always `None` (`activity.rs:409-428`): tap rebuild, zero-watchdog and device loss are invisible, so "System audio reconnecting" has no source.
+- **Served** by `get_capture_health` (screen.state `waiting`, reason `capture_display_unavailable`; status bar lane + status popover, STATUS-PLAN SP1/SP3). Was: [BACKEND] Display unavailable is not on `CaptureSession`; `capture_display_unavailable` only reaches the frontend via the debug `get_idle_debug` runtime sources (`native_capture/activity.rs:384-402`), and no notification is pushed. Today the titlebar shows it as "starting…" (`+layout.svelte:437-443`).
+- **Served** by `get_capture_health` (systemAudio.state `reconnecting`, systemAudioTap.lastReason / sampleRateHz; status bar lane + status popover). Was: [BACKEND] Mic / system-audio `RuntimeSourceStatus.reason` is always `None` (`activity.rs:409-428`): tap rebuild, zero-watchdog and device loss are invisible, so "System audio reconnecting" has no source.
 - [BACKEND] No engine-health `AppNotification` and no engine-status event; `AppNotificationAction.tab` can't target Providers / License / Storage / Privacy (`lib/notifications.svelte.ts:5-8`).
-- [BACKEND] No low-disk early warning; free bytes and the resume threshold aren't exposed (`native_capture/disk_space.rs:136`). The drawn banner doesn't need them.
+- **Served** by `get_capture_health` (disk.freeBytes, pauseThresholdBytes, resumeThresholdBytes; the "disk almost full" flag + popover Disk row). Was: [BACKEND] No low-disk early warning; free bytes and the resume threshold aren't exposed (`native_capture/disk_space.rs:136`). The drawn banner doesn't need them.
 - [UI] Start-capture failure is a one-off native dialog (`lib/capture-controls.svelte.ts:45-47`); the status bar needs to keep the error.
 - [UI][BACKEND] The status bar's "Screen Recording off · Open System Settings" flag (and the stage notice) also floats the **permission helper window** — see Onboarding below (decision 20). Today no main-window surface offers Open System Settings for Screen Recording at all.
 

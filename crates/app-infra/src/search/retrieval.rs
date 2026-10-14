@@ -225,14 +225,14 @@ pub(super) fn degrade_to_keyword_only<T>(
             // Reported on the response (`semantic_degraded`) so the page can say
             // "keyword only" instead of silently returning fewer results.
             *degraded = true;
-            // Route the degrade through `debug_log!` — the same packaged-app log
+            // Route the degrade through `warn_log!` — the same packaged-app log
             // target the companion query-embed failure path uses on the desktop
             // side — rather than bare stderr, so a persistent semantic-tier
             // outage (a DB failure silently dropping hybrid to keyword-only) is
             // observable even when the packaged app does not capture stderr. It
             // is a degrade signal, never a user-facing error — search proceeds
             // keyword-only.
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[app-infra][search] semantic {kind} search degraded to keyword-only (semantic fetch failed: {error})"
             );
             Vec::new()
