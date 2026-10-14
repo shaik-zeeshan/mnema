@@ -19,7 +19,7 @@
   import { categoryLabel, humanizeMs, windowFor } from "$lib/insights/activity-helpers";
   import { computeLedeStats, listedAppRows } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
-  import { buildRiver, capturedHoursByDay, categoryMix, weekDays } from "$lib/insights/journal-view";
+  import { buildRiver, capturedHoursByDay, categoryMix, foldCards, shownSlots, weekDays } from "$lib/insights/journal-view";
   import { formatClock, localizeClockTimes } from "$lib/time-format";
   import { densityFromHeatmap, toIso } from "$lib/components/date-input";
   import { captureControls, resumeCapture, startCapture } from "$lib/capture-controls.svelte";
@@ -105,9 +105,12 @@
       dayEndMs: range.endMs,
     }),
   );
-  const rows = $derived(buildRiver(model.slots, model.gaps, model.failed));
+  // Short and overlapping activities fold into neighbouring cards (display only).
+  const cards = $derived(foldCards(model.slots));
+  const rows = $derived(buildRiver(cards, model.gaps, model.failed));
   const hasCards = $derived(model.slots.length > 0);
-  const dayActs = $derived(model.slots.map((s) => s.activity));
+  const spineSlots = $derived(shownSlots(cards));
+  const dayActs = $derived(spineSlots.map((s) => s.activity));
   const mix = $derived(categoryMix(dayActs));
 
   // ── Truthful day states (Direction A frames 6a–6c, 7a–7d) ───────────────
@@ -181,6 +184,8 @@
     return total && top ? Math.round((top.ms / total) * 100) : null;
   });
   const n = $derived(model.slots.length);
+  /** Cards as shown — what "N activities" counts (sub-lines fold in). */
+  const shownN = $derived(cards.length);
   const headline = $derived(localizeClockTimes(digest?.headline ?? "").split(" — "));
   // The digest's own absent reason backs up the status guess (`noDerive`).
   const digestOff = $derived(noDerive || digestReason === "derivation_off" || digestReason === "engine_not_ready");
@@ -518,7 +523,7 @@
             <h1 class="mx-display">{n ? `Too little captured on ${dayLabel} to write a digest.` : "Your day is being written."}</h1>
             <p class="mx-prose">{n === 1 ? "A digest needs at least two activities; this day has one. It's below, as captured." : n ? "A digest needs at least two activities it can use. They're below, as captured." : "Capture is landing. The digest appears once two activities are written up."}</p>
           {:else if digest}
-            <h1 class="mx-display">{headline[0] || `${n} activities, ${tracked} tracked.`}{#if headline[1]}{" "}<em>— {headline.slice(1).join(" — ")}</em>{/if}</h1>
+            <h1 class="mx-display">{headline[0] || `${shownN} activities, ${tracked} tracked.`}{#if headline[1]}{" "}<em>— {headline.slice(1).join(" — ")}</em>{/if}</h1>
             <p class="mx-prose">{localizeClockTimes(digest.narrative)}</p>
             <div class="in-read__foot">
               <span class="mx-label num">written {formatClock(digest.generatedAtMs)}{atLatest && ctxStatus?.coveredUntilMs ? ` · covers through ${formatClock(ctxStatus.coveredUntilMs)}` : ""}</span>
@@ -529,7 +534,7 @@
               {/if}
             </div>
           {:else}
-            <h1 class="mx-display">{n} activities, {tracked} tracked.</h1>
+            <h1 class="mx-display">{shownN} activities, {tracked} tracked.</h1>
             <p class="mx-prose">
               {digestOff
                 ? `No digest while ${offWhat} is off — the cards below were written before.`
@@ -554,7 +559,7 @@
         {#if captureRun}
           {@render stat("Activities", "—", "none · needs AI")}
         {:else}
-          {@render stat("Activities", String(n), n ? `${model.gaps.length} away-gap${model.gaps.length === 1 ? "" : "s"}` : "none written up yet")}
+          {@render stat("Activities", String(shownN), n ? `${model.gaps.length} away-gap${model.gaps.length === 1 ? "" : "s"}` : "none written up yet")}
         {/if}
         {#if n && ledeStats.deepPct !== null}
           {@render stat("Deep focus · by activity", `${ledeStats.deepPct}%`, `${focused.filter((a) => a.focus === "deep").length} of ${focused.length} activities`)}
@@ -571,7 +576,7 @@
 
     <div class="mx-reveal" style="--i:3">
       <DaySpine
-        slots={model.slots}
+        slots={spineSlots}
         gaps={model.gaps}
         runs={captureRun ? model.runs.map((span) => ({ span, apps: runApps[span.startMs] ?? [] })) : null}
         pending={captureRun ? null : spinePending}

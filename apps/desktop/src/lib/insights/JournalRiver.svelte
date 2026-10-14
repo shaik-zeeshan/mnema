@@ -16,6 +16,7 @@
   import IconOff from "~icons/lucide/circle-off";
   import IconInbox from "~icons/lucide/inbox";
   import IconAlert from "~icons/lucide/triangle-alert";
+  import IconSub from "~icons/lucide/corner-down-right";
 
   type Mix = { category: keyof typeof CATEGORY_COLOR | null; ms: number }[];
   interface Props {
@@ -56,6 +57,16 @@
   const weekday = (ms: number) => new Date(ms).toLocaleDateString(undefined, { weekday: "short" });
   const longDay = (ms: number) => new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 </script>
+
+{#snippet receipt(id: number, open: boolean)}
+  <button
+    type="button"
+    class="mx-btn mx-btn--ghost mx-btn--sm"
+    aria-pressed={open}
+    aria-expanded={open}
+    onclick={() => (openId = open ? null : id)}
+  ><IconPlay width="11" height="11" aria-hidden="true" />Receipt</button>
+{/snippet}
 
 <div class="in-feed">
   <div class="mx-reveal" style="--i:4">
@@ -111,34 +122,51 @@
           {@const open = openId === a.id}
           <article
             class="in-act"
+            class:in-act--slim={row.slim}
             id="in-act-{a.id}"
             data-hot={hot === a.id ? "" : undefined}
             onmouseenter={() => onHot(a.id)}
             onmouseleave={() => onHot(null)}
           >
-            <div class="in-act__t"><time>{formatClock(a.startedAtMs)}</time><span class="num">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span></div>
+            <div class="in-act__t"><time>{formatClock(row.startMs)}</time><span class="num">{humanizeMs(row.endMs - row.startMs)}</span></div>
             <div>
-              <h4><span class="in-sw" style="--c:{cat(a.category ?? null)}"></span>{a.title}</h4>
-              {#if a.summary}<p>{a.summary}</p>{/if}
-              <div class="in-act__meta">
-                <span class="mx-chip mx-chip--cat" style="--c:{cat(a.category ?? null)}">{catName(a.category ?? null)}</span>
-                {#if a.focus}
-                  <span class="mx-chip in-focus" style="--c:var({FOCUS[a.focus][0]})">{FOCUS[a.focus][1]}</span>
-                {/if}
-                {#each meta[a.id]?.apps ?? [] as app (app)}<span class="mx-chip">{app}</span>{/each}
-                {#if meta[a.id]?.speakers}
-                  <span class="mx-chip mx-chip--mic">{meta[a.id].speakers} speaker{meta[a.id].speakers === 1 ? "" : "s"}</span>
-                {/if}
-                {#if row.slot.media === "expired"}<span class="mx-chip">footage expired</span>{/if}
-                <button
-                  type="button"
-                  class="mx-btn mx-btn--ghost mx-btn--sm"
-                  aria-pressed={open}
-                  aria-expanded={open}
-                  onclick={() => (openId = open ? null : a.id)}
-                ><IconPlay width="11" height="11" aria-hidden="true" />Receipt</button>
+              <div class="in-act__head">
+                <h4><span class="in-sw" style="--c:{cat(a.category ?? null)}"></span>{a.title}</h4>
+                {#if row.slim}{@render receipt(a.id, open)}{/if}
               </div>
+              {#if !row.slim}
+                {#if a.summary}<p>{a.summary}</p>{/if}
+                <div class="in-act__meta">
+                  <span class="mx-chip mx-chip--cat" style="--c:{cat(a.category ?? null)}">{catName(a.category ?? null)}</span>
+                  {#if a.focus}
+                    <span class="mx-chip in-focus" style="--c:var({FOCUS[a.focus][0]})">{FOCUS[a.focus][1]}</span>
+                  {/if}
+                  {#each meta[a.id]?.apps ?? [] as app (app)}<span class="mx-chip">{app}</span>{/each}
+                  {#if meta[a.id]?.speakers}
+                    <span class="mx-chip mx-chip--mic">{meta[a.id].speakers} speaker{meta[a.id].speakers === 1 ? "" : "s"}</span>
+                  {/if}
+                  {#if row.slot.media === "expired"}<span class="mx-chip">footage expired</span>{/if}
+                  {@render receipt(a.id, open)}
+                </div>
+              {/if}
               {#if open}<ReceiptViewer activity={a} />{/if}
+              {#if row.subs.length}
+                <ul class="in-subs">
+                  {#each row.subs as sub (sub.slot.activity.id)}
+                    {@const s = sub.slot.activity}
+                    {@const subOpen = openId === s.id}
+                    <li id="in-act-{s.id}">
+                      <button type="button" class="in-sub" aria-expanded={subOpen} onclick={() => (openId = subOpen ? null : s.id)}>
+                        <IconSub width="12" height="12" aria-hidden="true" />
+                        <time class="num">{formatClock(sub.startMs)}</time>
+                        <span class="in-sub__title">{s.title}</span>
+                        <span class="num">· {humanizeMs(sub.endMs - sub.startMs)}</span>
+                      </button>
+                      {#if subOpen}<ReceiptViewer activity={s} />{/if}
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
             </div>
           </article>
         {/if}
@@ -223,6 +251,19 @@
   .in-act__t { display: grid; gap: 5px; align-content: start; padding-top: 2px; }
   .in-act__t time { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
   .in-act__t span { font-size: var(--text-xs); color: var(--app-text-subtle); }
+  .in-act__head { display: flex; align-items: center; gap: var(--s-3); }
+  .in-act__head .mx-btn { margin-left: auto; }
+  .in-act--slim { padding-block: var(--s-3); }
+  .in-act--slim .in-act__t { grid-auto-flow: column; justify-content: start; align-items: baseline; gap: var(--s-3); }
+  .in-act--slim h4 { font-size: var(--text-md); font-weight: 500; color: var(--app-text); }
+  .in-subs { display: grid; gap: 2px; margin: 10px 0 0; padding: 0; list-style: none; }
+  .in-sub { display: flex; align-items: center; gap: var(--s-2); width: 100%; padding: 5px 6px; margin-left: -6px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; font: 500 var(--text-sm)/1.3 var(--font-sans); color: var(--app-text-muted); transition: background-color var(--t-fast) var(--ease-quart); }
+  .in-sub:hover, .in-sub[aria-expanded="true"] { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+  .in-sub:focus-visible { outline: 0; box-shadow: var(--app-ring); }
+  .in-sub :global(svg) { flex: none; color: var(--app-text-faint); }
+  .in-sub time { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+  .in-sub__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .in-sub .num { flex: none; font-size: var(--text-xs); color: var(--app-text-subtle); }
   .in-act h4 { display: flex; align-items: center; gap: 9px; margin: 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
   .in-act h4 .in-sw { width: 9px; height: 9px; }
   .in-act p { margin: 6px 0 10px; color: var(--app-text-muted); font-size: var(--text-md); line-height: 1.5; }

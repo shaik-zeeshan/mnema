@@ -8,26 +8,101 @@ import { humanizeMs } from "./activity-helpers";
 
 /** One row of the river — an activity card, an away-gap, or a failed window. */
 export type RiverRow =
-  | { kind: "card"; slot: JournalCardSlot; atMs: number }
+  | ({ kind: "card"; atMs: number } & JournalCard)
   | { kind: "gap"; gap: JournalGap; atMs: number }
   /** A window whose summarizing failed past the retry cap (real bounds). */
   | { kind: "failed"; span: Span; atMs: number };
 
-/** Merge activity slots, away-gaps and failed windows into one river, newest
+/** Merge activity cards, away-gaps and failed windows into one river, newest
  *  first. Same start: the shorter card sits above the longer one. */
 export function buildRiver(
-  slots: JournalCardSlot[],
+  cards: JournalCard[],
   gaps: JournalGap[],
   failed: Span[] = [],
 ): RiverRow[] {
   const rows: RiverRow[] = [
-    ...slots.map((slot): RiverRow => ({ kind: "card", slot, atMs: slot.activity.startedAtMs })),
+    ...cards.map((card): RiverRow => ({ kind: "card", ...card, atMs: card.startMs })),
     ...gaps.map((gap): RiverRow => ({ kind: "gap", gap, atMs: gap.startMs })),
     ...failed.map((span): RiverRow => ({ kind: "failed", span, atMs: span.startMs })),
   ];
-  const len = (r: RiverRow) => (r.kind === "card" ? r.slot.activity.endedAtMs - r.atMs : 0);
+  const len = (r: RiverRow) => (r.kind === "card" ? r.endMs - r.atMs : 0);
   rows.sort((a, b) => b.atMs - a.atMs || len(a) - len(b));
   return rows;
+}
+
+// ── Folding short and overlapping activities (display only) ────────────
+/** Shown for less than this, an activity is "short": it folds into a neighbour. */
+export const SHORT_ACTIVITY_MS = 120_000;
+/** Backed by fewer screen frames than this, an activity is "short" too. */
+export const SHORT_ACTIVITY_MIN_FRAMES = 3;
+/** A short activity folds only into a card at most this far away. */
+export const FOLD_NEIGHBOUR_MS = 300_000;
+
+/** An activity shown as one line inside a neighbouring card. */
+export interface SubLine {
+  slot: JournalCardSlot;
+  startMs: number;
+  endMs: number;
+}
+
+/** One card as shown: its span after overlap clipping, the short activities
+ *  folded into it, and `slim` = short with no neighbour (a one-line row). */
+export interface JournalCard extends SubLine {
+  subs: SubLine[];
+  slim: boolean;
+}
+
+/**
+ * The day's cards as shown. Nothing is dropped: an activity that overlaps an
+ * earlier one starts where that one ends (or, with nothing left, becomes its
+ * sub-line); a short one (`SHORT_ACTIVITY_MS` / `SHORT_ACTIVITY_MIN_FRAMES`)
+ * becomes a sub-line of the full card before or after it within
+ * `FOLD_NEIGHBOUR_MS` — same category first, then the closer, then the longer —
+ * or, with none near, a slim row. Returned chronological.
+ */
+export function foldCards(slots: JournalCardSlot[]): JournalCard[] {
+  const cards: JournalCard[] = [];
+  let reach: JournalCard | null = null; // the card shown furthest to the right
+  // Same start: the longer one keeps its span, the shorter is the "later" one.
+  const order = [...slots].sort(
+    (a, b) => a.activity.startedAtMs - b.activity.startedAtMs || b.activity.endedAtMs - a.activity.endedAtMs,
+  );
+  for (const slot of order) {
+    const { startedAtMs, endedAtMs } = slot.activity;
+    const startMs = reach ? Math.max(startedAtMs, reach.endMs) : startedAtMs;
+    if (reach && startedAtMs < reach.endMs && startMs >= endedAtMs) {
+      reach.subs.push({ slot, startMs: startedAtMs, endMs: endedAtMs });
+      continue;
+    }
+    const card: JournalCard = { slot, startMs, endMs: Math.max(startMs, endedAtMs), subs: [], slim: false };
+    cards.push(card);
+    if (!reach || card.endMs >= reach.endMs) reach = card;
+  }
+
+  const short = (c: JournalCard) =>
+    c.endMs - c.startMs < SHORT_ACTIVITY_MS ||
+    (c.slot.media === "frames" && c.slot.frameCount < SHORT_ACTIVITY_MIN_FRAMES);
+  const full = cards.filter((c) => !short(c));
+  const len = (c: JournalCard) => c.endMs - c.startMs;
+  const away = (c: JournalCard, h: JournalCard) => Math.max(0, c.startMs - h.endMs, h.startMs - c.endMs);
+  for (const c of cards) {
+    if (!short(c)) continue;
+    const category = c.slot.activity.category ?? null;
+    const same = (h: JournalCard) => category !== null && h.slot.activity.category === category;
+    const next = full.findIndex((h) => h.startMs > c.startMs);
+    const host = [full[(next < 0 ? full.length : next) - 1], full[next]]
+      .filter((h) => h && away(c, h) <= FOLD_NEIGHBOUR_MS)
+      .sort((x, y) => Number(same(y)) - Number(same(x)) || away(c, x) - away(c, y) || len(y) - len(x))[0];
+    if (!host) {
+      c.slim = true;
+      continue;
+    }
+    host.subs.push({ slot: c.slot, startMs: c.startMs, endMs: c.endMs }, ...c.subs);
+    c.subs = [];
+  }
+  const shown = cards.filter((c) => c.slim || !short(c));
+  for (const c of shown) c.subs.sort((a, b) => a.startMs - b.startMs);
+  return shown;
 }
 
 /**
@@ -44,6 +119,12 @@ export function riverRowKey(row: RiverRow): string {
 /** "Away · 1h 10m" — gaps carry no label, only their length. */
 export function awayLabel(span: Span): string {
   return `Away · ${humanizeMs(span.endMs - span.startMs)}`;
+}
+
+/** The shown cards as slots over their displayed spans — what the spine draws
+ *  and the Day mix tallies, so overlapping time is never counted twice. */
+export function shownSlots(cards: JournalCard[]): JournalCardSlot[] {
+  return cards.map((c) => ({ ...c.slot, activity: { ...c.slot.activity, startedAtMs: c.startMs, endedAtMs: c.endMs } }));
 }
 
 // ── Day spine ───────────────────────────────────────────────────────────
@@ -134,12 +215,15 @@ export function weekDays(
     d.setDate(d.getDate() + 1);
     const endMs = d.getTime();
     const own = activities.filter((a) => a.startedAtMs >= startMs && a.startedAtMs < endMs);
-    const mix = categoryMix(own);
+    // Count and tally cards as the Journal shows them (no frame counts here,
+    // so only the duration and overlap rules fold).
+    const cards = foldCards(own.map((activity) => ({ activity, frameCount: 0, media: "none" as const })));
+    const mix = categoryMix(shownSlots(cards).map((s) => s.activity));
     out.push({
       startMs,
       mix,
       activityMs: mix.reduce((t, m) => t + m.ms, 0),
-      activities: own.length,
+      activities: cards.length,
       capturedHours: capturedHours[startMs] ?? 0,
       future: startMs > nowMs,
     });

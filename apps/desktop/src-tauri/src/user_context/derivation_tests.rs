@@ -754,3 +754,59 @@ async fn a_batch_that_grounds_nothing_is_an_error() {
     assert_eq!(result, Ok((1, 0)));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Two Activities whose items interleave must not both claim the stretch:
+/// the later one keeps only the time the first doesn't hold; one wholly inside
+/// another's time is still its own row, nested; and two-frame Activities are
+/// stored title-only.
+#[tokio::test]
+async fn interleaved_activities_in_one_window_do_not_overlap() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("interleaved-activities-{unique}"));
+    std::fs::create_dir_all(&dir).expect("test dir");
+    let infra = app_infra::AppInfra::initialize(&dir)
+        .await
+        .expect("app infra");
+    let window = CaptureWindow {
+        start_ms: 0,
+        end_ms: 100,
+        items: vec![],
+    };
+    let tags: HashMap<String, i64> = [("f1", 10), ("f2", 20), ("f3", 30), ("f4", 40), ("f5", 50)]
+        .map(|(t, ms)| (t.to_string(), ms))
+        .into();
+    let batch = DerivedActivityBatch {
+        activities: vec![
+            derived(&["f2", "f4", "f5"]),
+            derived(&["f1", "f3"]),
+            derived(&["f2"]),
+        ],
+    };
+    let result = persist_batch(
+        infra.user_context(),
+        &window,
+        &tags,
+        &std::collections::HashSet::new(),
+        &batch,
+    )
+    .await;
+    assert_eq!(result, Ok((3, 0)));
+    let stored = infra
+        .user_context()
+        .list_activities_in_range(0, 100)
+        .await
+        .expect("list");
+    let spans: Vec<(i64, i64, bool)> = stored
+        .iter()
+        .map(|a| (a.started_at_ms, a.ended_at_ms, a.summary.is_empty()))
+        .collect();
+    assert_eq!(spans, vec![(10, 30, true), (20, 20, true), (30, 50, false)]);
+    assert_eq!(
+        stored[1].title, "Edited the config",
+        "the nested row keeps its own title"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

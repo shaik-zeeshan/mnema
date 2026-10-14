@@ -25,6 +25,8 @@ use app_infra::{
 };
 use app_infra::user_context::{confidence, guardrail};
 
+use super::activity_spans::{place, too_thin_for_summary, Placement, Span};
+use super::continuation::CONTINUATION_GAP_MS;
 use super::evidence_tags::strip_evidence_tags;
 
 /// System instruction for the Activity-segmentation pass. Kept terse: the
@@ -515,8 +517,7 @@ async fn persist_batch(
     neighbour_ids: &std::collections::HashSet<i64>,
     batch: &DerivedActivityBatch,
 ) -> Result<(usize, usize), String> {
-    let mut inserted = 0usize;
-    let mut extended = 0usize;
+    let mut drafts: Vec<(Option<i64>, NewActivity)> = Vec::new();
     for activity in &batch.activities {
         // Resolve evidence refs that are actually present in the window, dedup,
         // and pull each capture time.
@@ -581,27 +582,61 @@ async fn persist_batch(
             evidence,
         };
 
-        // Continuation: extend the neighbour the engine named (blank title or
-        // summary keep the stored ones). A vanished row falls through to insert.
-        if let Some(id) = activity.continues_id.filter(|id| neighbour_ids.contains(id)) {
-            if store
-                .extend_activity_with_evidence(id, draft.clone())
-                .await
-                .map_err(|error| error.to_string())?
-            {
-                extended += 1;
-                continue;
+        let continues = activity
+            .continues_id
+            .filter(|id| neighbour_ids.contains(id));
+        drafts.push((continues, draft));
+    }
+
+    // Place oldest first (longer first on a tie) against the time stored
+    // Activities and this batch's earlier writes already hold, so no two
+    // Activities overlap (see `activity_spans`).
+    drafts.sort_by_key(|(_, d)| (d.started_at_ms, d.started_at_ms - d.ended_at_ms));
+    let mut claimed: Vec<(i64, Span)> = store
+        .list_activities_in_range(
+            window.start_ms.saturating_sub(CONTINUATION_GAP_MS),
+            window.end_ms.saturating_add(CONTINUATION_GAP_MS),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|a| (a.id, (a.started_at_ms, a.ended_at_ms)))
+        .collect();
+    let mut inserted = 0usize;
+    let mut extended = 0usize;
+    for (continues, mut draft) in drafts {
+        let span = (draft.started_at_ms, draft.ended_at_ms);
+        // Continuation: extend the neighbour (blank title or summary keep the
+        // stored ones). Anything else is a new row over the time `place` gave it.
+        match place(span, continues, &claimed) {
+            Placement::Insert(piece) => (draft.started_at_ms, draft.ended_at_ms) = piece,
+            Placement::Extend(id) => {
+                if store
+                    .extend_activity_with_evidence(id, draft.clone())
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    if let Some(held) = claimed.iter_mut().find(|c| c.0 == id) {
+                        held.1 = (held.1 .0.min(span.0), held.1 .1.max(span.1));
+                    }
+                    extended += 1;
+                    continue;
+                }
+                // A vanished row falls through to insert.
             }
         }
-
-        let mut draft = draft;
         if draft.title.is_empty() {
             draft.title = "Activity".to_string();
         }
-        store
+        if too_thin_for_summary(&draft.evidence) {
+            draft.summary.clear();
+        }
+        let stored = (draft.started_at_ms, draft.ended_at_ms);
+        let id = store
             .insert_activity_with_evidence(draft)
             .await
             .map_err(|error| error.to_string())?;
+        claimed.push((id, stored));
         inserted += 1;
     }
 

@@ -6,7 +6,9 @@ import {
   buildRiver,
   capturedHoursByDay,
   categoryMix,
+  foldCards,
   pendingReasonCopy,
+  shownSlots,
   riverRowKey,
   spineAxis,
   stackLanes,
@@ -22,18 +24,86 @@ const slot = (startMs, endMs = startMs + 60_000) => ({
   expired: false,
 });
 const gap = (startMs, endMs) => ({ startMs, endMs });
+// A card shown as-is (no folding), for the river-ordering tests.
+const card = (s) => ({ slot: s, startMs: s.activity.startedAtMs, endMs: s.activity.endedAtMs, subs: [], slim: false });
 const act = (id, startMs, endMs, category = null) => ({ id, startedAtMs: startMs, endedAtMs: endMs, category });
 
 describe("buildRiver", () => {
   it("is newest first, gaps interleaved by start", () => {
-    const rows = buildRiver([slot(at(9)), slot(at(13))], [gap(at(11), at(12))]);
+    const rows = buildRiver([card(slot(at(9))), card(slot(at(13)))], [gap(at(11), at(12))]);
     expect(rows.map((r) => r.kind)).toEqual(["card", "gap", "card"]);
     expect(rows.map((r) => r.atMs)).toEqual([at(13), at(11), at(9)]);
   });
 
   it("puts the shorter of two same-start cards first", () => {
-    const rows = buildRiver([slot(at(9), at(11)), slot(at(9), at(9, 20))], []);
+    const rows = buildRiver([card(slot(at(9), at(11))), card(slot(at(9), at(9, 20)))], []);
     expect(rows.map((r) => r.slot.activity.endedAtMs)).toEqual([at(9, 20), at(11)]);
+  });
+});
+
+describe("foldCards", () => {
+  // A frame-backed activity: `frames` screen frames, given category.
+  const fa = (id, startMs, endMs, category = null, frames = 20) => ({
+    activity: { id, startedAtMs: startMs, endedAtMs: endMs, category },
+    frameCount: frames,
+    media: "frames",
+  });
+  const shape = (cards) => cards.map((c) => [c.slot.activity.id, c.subs.map((s) => s.slot.activity.id), c.slim]);
+
+  it("folds a short activity into the same-category neighbour over a closer one", () => {
+    const cards = foldCards([
+      fa(1, at(9), at(9, 30), "communication"),
+      fa(2, at(9, 30), at(10), "creating"),
+      fa(3, at(10, 4), at(10, 4) + 6_000, "communication"), // 6 s, 4 min after 2
+      fa(4, at(10, 8) + 30_000, at(11), "communication"), // ~4.4 min after 3: further, same category
+    ]);
+    expect(shape(cards)).toEqual([[1, [], false], [2, [], false], [4, [3], false]]);
+  });
+
+  it("folds into the closer neighbour when no category matches", () => {
+    const cards = foldCards([
+      fa(1, at(9), at(9, 30), "research"),
+      fa(2, at(9, 31), at(9, 32), "communication", 1), // 1 frame, 1 min after 1
+      fa(3, at(9, 35), at(10), "creating"),
+    ]);
+    expect(shape(cards)).toEqual([[1, [2], false], [3, [], false]]);
+  });
+
+  it("treats too few frames as short even when the span is long", () => {
+    const cards = foldCards([fa(1, at(9), at(9, 30)), fa(2, at(9, 30), at(9, 40), null, 2)]);
+    expect(shape(cards)).toEqual([[1, [2], false]]);
+  });
+
+  it("keeps an isolated short activity as its own slim row", () => {
+    const cards = foldCards([fa(1, at(9), at(9, 30)), fa(2, at(9, 40), at(9, 40) + 6_000), fa(3, at(9, 50), at(10, 30))]);
+    expect(shape(cards)).toEqual([[1, [], false], [2, [], true], [3, [], false]]);
+  });
+
+  it("clips an overlapping card to start where the earlier ends, or folds it when nothing remains", () => {
+    const cards = foldCards([
+      fa(1, at(6, 37), at(7, 13)), // 36 min
+      fa(2, at(6, 37), at(7, 10)), // 33 min, same start → nothing remains
+      fa(3, at(7), at(7, 40)), // overlaps → shown from 7:13
+    ]);
+    expect(shape(cards)).toEqual([[1, [2], false], [3, [], false]]);
+    expect([cards[1].startMs, cards[1].endMs]).toEqual([at(7, 13), at(7, 40)]);
+  });
+
+  it("tallies the Day mix over the shown spans, never counting overlap twice", () => {
+    const cards = foldCards([
+      fa(1, at(6, 37), at(7, 13), "creating"),
+      fa(2, at(6, 37), at(7, 10), "entertainment"), // nested → sub-line, no time of its own
+      fa(3, at(7), at(7, 40), "creating"), // shown from 7:13
+    ]);
+    const mix = categoryMix(shownSlots(cards).map((s) => s.activity));
+    expect(mix).toEqual([{ category: "creating", ms: at(7, 40) - at(6, 37) }]);
+  });
+
+  it("counts only full cards and slim rows, never sub-lines", () => {
+    const slots = [fa(1, at(9), at(10)), fa(2, at(10), at(10) + 6_000), fa(3, at(10, 1), at(10, 1)), fa(4, at(13), at(13) + 1_000)];
+    const cards = foldCards(slots);
+    expect(cards).toHaveLength(2);
+    expect(buildRiver(cards, []).filter((r) => r.kind === "card")).toHaveLength(2);
   });
 });
 
@@ -104,11 +174,11 @@ describe("riverRowKey", () => {
     // each_key_duplicate and froze the river on its skeleton.
     const a = { ...slot(at(9)), activity: { ...slot(at(9)).activity, id: 1 } };
     const b = { ...slot(at(9)), activity: { ...slot(at(9)).activity, id: 2 } };
-    const keys = buildRiver([a, b], []).map(riverRowKey);
+    const keys = buildRiver([card(a), card(b)], []).map(riverRowKey);
     expect(new Set(keys).size).toBe(keys.length);
   });
   it("keeps gap keys distinct from card keys at the same timestamp", () => {
-    const keys = buildRiver([slot(at(9))], [gap(at(9), at(10))]).map(riverRowKey);
+    const keys = buildRiver([card(slot(at(9)))], [gap(at(9), at(10))]).map(riverRowKey);
     expect(new Set(keys).size).toBe(keys.length);
   });
 });

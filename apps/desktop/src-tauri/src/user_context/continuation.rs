@@ -16,7 +16,7 @@ use super::derivation::{category_label, format_utc_ms, truncate_chars};
 /// How close a neighbour must end before (or start after) the window to be
 /// offered for continuation. Matches the away-gap the Day spine draws (5 min):
 /// past that the user stepped away, and a resumed video is a new Activity.
-const CONTINUATION_GAP_MS: i64 = 5 * 60 * 1000;
+pub(crate) const CONTINUATION_GAP_MS: i64 = 5 * 60 * 1000;
 
 /// At most this many neighbours are offered, nearest first.
 const MAX_NEIGHBOURS: usize = 4;
