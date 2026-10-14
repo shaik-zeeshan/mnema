@@ -154,6 +154,13 @@ export function fmtDuration(ms: number): string {
   return m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
 }
 
+/** App-time rows worth listing: no rows that `fmtDuration` would print as
+ *  "0m". Lock-screen processes never reach here — the backend usage charts
+ *  count lock-screen time as away (`FrameMetadataSnapshot::is_lock_screen`). */
+export function listedAppRows<T extends { app: string; activeMs: number }>(rows: T[]): T[] {
+  return rows.filter((r) => Math.round(r.activeMs / 60000) > 0);
+}
+
 // Chart axis tops, in minutes: each quarters into clean tick labels (5m … 6h).
 const AXIS_STEPS_MIN = [20, 40, 60, 120, 240, 480, 720, 960, 1440];
 

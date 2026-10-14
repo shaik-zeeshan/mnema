@@ -50,6 +50,7 @@
     deepFocusDelta,
     focusCounts,
     focusHeat,
+    listedAppRows,
   } from "$lib/insights/lede-stats";
   import { addDays, capsuleLabel, densityFromHeatmap, isoWeek, parseIso, toIso } from "$lib/components/date-input";
   import DateInput from "$lib/components/DateInput.svelte";
@@ -177,8 +178,10 @@
   let correctingActivity = $state<Set<number>>(new Set());
 
   // ── Apps (+ icons for the All-apps modal) ─────────────────────────────
+  // The listed apps; the tracked total still sums every row.
+  const listedApps = $derived(listedAppRows(usage?.timePerApp ?? []));
   const allApps = $derived.by(() =>
-    (usage?.timePerApp ?? []).map((a) => ({
+    listedApps.map((a) => ({
       app: a.app,
       activeMs: a.activeMs,
       frameCount: a.frameCount,
@@ -636,8 +639,8 @@
     deltaMs: trackedDeltaMs,
     dailyAvgMs: capturedDays ? ledeStats.trackedMs / capturedDays : 0,
     capturedDays,
-    appCount: usage?.timePerApp.length ?? 0,
-    topApp: usage?.timePerApp[0]?.app ?? null,
+    appCount: listedApps.length,
+    topApp: listedApps[0]?.app ?? null,
     noAppTime,
     partlyRemoved: retention?.kind === "partly",
     nothing: nothingCaptured,
@@ -721,7 +724,7 @@
     {categories}
     {focus}
     {heat}
-    apps={usage?.timePerApp ?? []}
+    apps={listedApps}
     usage={{ loading: !statusLoaded || freeLoading, failed: usageFailed ? freeError : null, noAppNote: noAppTime?.note ?? null }}
     engine={{ loading: engineTilesLoading, failed: engineError, emptyNote: engineTileEmpty }}
     onRetryUsage={() => void loadFree()}

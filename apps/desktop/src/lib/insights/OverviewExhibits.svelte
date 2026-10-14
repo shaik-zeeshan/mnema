@@ -285,7 +285,9 @@
     animation-delay: calc(200ms + var(--d) * 40ms);
   }
   .apps {
-    grid-template-columns: 82px 1fr auto;
+    /* Names take their natural width; the bar keeps a floor and gives way
+       first, so a name only ellipsizes when the panel is truly narrow. */
+    grid-template-columns: minmax(0, max-content) minmax(48px, 1fr) auto;
   }
   .apps dt {
     overflow: hidden;

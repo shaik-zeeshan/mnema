@@ -1,6 +1,6 @@
 // @ts-nocheck — run under `bun test` (bun:test types aren't in svelte-check's tsconfig).
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { activityColumns, axisMax, deepFocusDelta, fmtAxisTick, focusHeat } from "./lede-stats";
+import { activityColumns, axisMax, deepFocusDelta, fmtAxisTick, focusHeat, listedAppRows } from "./lede-stats";
 import { setTimeFormat } from "$lib/time-format";
 
 // Day-column labels follow the Time format setting; pin 24-hour here only.
@@ -66,5 +66,16 @@ describe("focusHeat", () => {
     const rows = focusHeat([act(5, 9, 10, "deep"), act(6, 9, 10, "deep"), act(13, 9, 10, "mixed")], at(1, 0), at(32, 0), "month");
     expect(rows.map((r) => r.label)).toEqual(["W41", "W42"]);
     expect(rows[0].cells[4]).toEqual({ band: "deep", minutes: 60 });
+  });
+});
+
+describe("listedAppRows", () => {
+  it("drops rows that print as 0m", () => {
+    const rows = [
+      { app: "Code", activeMs: 3 * 3600e3 },
+      { app: "Ice", activeMs: 29e3 },
+      { app: "Terminal", activeMs: 30e3 },
+    ];
+    expect(listedAppRows(rows).map((r) => r.app)).toEqual(["Code", "Terminal"]);
   });
 });

@@ -17,7 +17,7 @@
   import { retentionVerdict } from "$lib/insights/retention";
   import { captureSession } from "$lib/session.svelte";
   import { categoryLabel, humanizeMs, windowFor } from "$lib/insights/activity-helpers";
-  import { computeLedeStats } from "$lib/insights/lede-stats";
+  import { computeLedeStats, listedAppRows } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, capturedHoursByDay, categoryMix, weekDays } from "$lib/insights/journal-view";
   import { formatClock, localizeClockTimes } from "$lib/time-format";
@@ -591,7 +591,7 @@
       {week}
       dayStartMs={range.startMs}
       {mix}
-      apps={[...(usage?.timePerApp ?? [])].sort((a, b) => b.activeMs - a.activeMs).slice(0, 5)}
+      apps={listedAppRows([...(usage?.timePerApp ?? [])]).sort((a, b) => b.activeMs - a.activeMs).slice(0, 5)}
       {hot}
       onHot={(id) => (hot = id)}
       onPickDay={(ms) => (dayIso = toIso(new Date(ms)))}

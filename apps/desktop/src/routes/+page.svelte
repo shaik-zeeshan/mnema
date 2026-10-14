@@ -3564,6 +3564,10 @@
     if (!activePreviewPath) return;
     stageActionsOpenedByKeyboard = openedByKeyboard;
     stageActionsMenuOpen = true;
+    // Load OCR quietly (overlay stays hidden) so "Copy text" knows whether the
+    // frame has any text. A frame already loaded keeps its state.
+    const frame = timelineActive;
+    if (frame && ocrFrameId !== frame.id) void loadOcrForActiveFrame(false);
   }
 
   function closeFrameActions(): void {
@@ -5415,7 +5419,7 @@
     }
   }
 
-  async function loadOcrForActiveFrame(): Promise<void> {
+  async function loadOcrForActiveFrame(reveal = true): Promise<void> {
     const frame = timelineActive;
     if (!frame) return;
     // Bump the generation so any in-flight fetch for a prior call is dropped
@@ -5430,7 +5434,7 @@
     ocrObservations = [];
     ocrProviderLabel = null;
     ocrSourceFrame = frame;
-    ocrVisible = true;
+    ocrVisible = reveal;
     ocrRerunLoading = false;
 
     try {
@@ -5664,6 +5668,11 @@
         ? "hide OCR"
         : "show OCR",
   );
+
+  // "Copy text" in the ⋯ menu: enabled only once this frame's OCR has text.
+  const ocrForActiveFrame = $derived(timelineActive != null && ocrFrameId === timelineActive.id);
+  const ocrHasText = $derived(ocrForActiveFrame && ocrStatus === "success" && ocrObservations.length > 0);
+  const ocrReading = $derived(ocrForActiveFrame && ocrStatus === "running");
 
   const ocrUsingEarlierFrame = $derived(
     !!timelineActive && !!ocrSourceFrame && ocrSourceFrame.id !== timelineActive.id,
@@ -6340,17 +6349,15 @@
                 aria-busy={frameImageActionBusy === "download"}
                 use:tip={"Download image (D)"}
               ><IconDownload width="14" height="14" />{frameImageActionBusy === "download" ? "Saving…" : "Download image"}<span class="mx-menu__meta">D</span></button>
-              {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
-                <button
-                  type="button"
-                  class="timeline__stage-action-menu-item"
-                  onclick={copyAllRecognizedText}
-                  disabled={ocrCopyAllBusy}
-                  aria-busy={ocrCopyAllBusy}
-                  aria-label="Copy all recognized text"
-                  use:tip={"Copy all recognized on-screen text"}
-                ><IconScanText width="14" height="14" />{ocrCopyAllBusy ? "Copying text…" : "Copy text"}</button>
-              {/if}
+              <button
+                type="button"
+                class="timeline__stage-action-menu-item"
+                onclick={copyAllRecognizedText}
+                disabled={!ocrHasText || ocrCopyAllBusy}
+                aria-busy={ocrCopyAllBusy || ocrReading}
+                aria-label="Copy all recognized text"
+                use:tip={ocrHasText ? "Copy all recognized on-screen text" : ocrReading ? "Reading the frame's text…" : "No recognized text in this frame"}
+              ><IconScanText width="14" height="14" />{ocrCopyAllBusy ? "Copying text…" : ocrReading ? "Reading text…" : "Copy text"}</button>
               {#if currentFrameHost}
                 <button
                   type="button"
