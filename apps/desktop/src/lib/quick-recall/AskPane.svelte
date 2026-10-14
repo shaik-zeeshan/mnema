@@ -1,6 +1,6 @@
 <!-- Quick Recall's ask slot (recall.html `.rc-gate` / `.rc-ans` / the askx
      notices): the hero slot above the moments when a question is typed. Three
-     shapes: "Press Tab to ask <model>" when auto-answer is off for this model
+     shapes: "Press ↵ to ask <model>" when auto-answer is off for this model
      (`gate`), a notice when Ask AI can't answer (the moments stay below), or
      the answer streaming in place with its cited evidence rows numbered under
      it, then the visible moments it didn't cite. ONE turn per question over the unchanged `ask_ai_start` session: an
@@ -65,7 +65,7 @@
     view: "gate" | "ask";
     /** The scoped question (scopedQuestion); answered once it holds still. */
     question: string;
-    /** Tab asked: no pause before sending. */
+    /** Tab switched to Ask: nothing sends until ↵ (`submit`). */
     forced: boolean;
     availability: AskAiAvailability | null;
     settings: RecordingSettings | null;
@@ -147,9 +147,9 @@
   });
 
   // Answer once the question holds still; an edit cancels the turn in flight.
+  // A Tab-forced ask is a paid call the user hasn't sent yet: it waits for ↵.
   $effect(() => {
     const q = question.trim();
-    const delay = forced ? 0 : PAUSE_MS;
     if (!canAsk || q === "" || sameQuestion(q, asked)) return;
     untrack(() => {
       // An edit drops the old thread even mid-answer — it answers a question
@@ -157,11 +157,19 @@
       void cancel(true);
       turn = null;
     });
-    timer = setTimeout(() => void start(q), delay);
+    if (forced) return;
+    timer = setTimeout(() => void start(q), PAUSE_MS);
     return () => {
       if (timer !== null) clearTimeout(timer);
     };
   });
+
+  /** ↵ (or the gate / "ask instead"): send the question now. */
+  export function submit(): void {
+    if (!waiting) return;
+    if (timer !== null) clearTimeout(timer);
+    void start(question.trim());
+  }
 
   async function start(q: string): Promise<void> {
     asked = q;
@@ -366,7 +374,8 @@
           if (e.metaKey || e.ctrlKey) {
             if (s.frameId != null) void search.openCapturedFrameUrl(s.frameId);
           } else void openSource(s);
-        } else if (turn?.phase === "done") void openInChat();
+        } else if (waiting) submit();
+        else if (turn?.phase === "done") void openInChat();
         else if (turn?.phase === "error") void start(asked);
         return true;
       case "c":
@@ -383,10 +392,11 @@
 
   /** The keys that work right now, for the foot. */
   export function footKeys(): [string, string][] {
-    if (view === "gate") return nav ? [["↵", "open"]] : [["⇥", "ask"], ["↓", "moments"]];
+    if (view === "gate") return nav ? [["↵", "open"]] : [["↵", "ask"], ["↓", "moments"]];
     if (notice) return [["↓", "moments"], ["⇥", "just search"]];
     if (sel > 0) return [["↵", "open"], ...(onLook ? [["space", "look"] as [string, string]] : [])];
-    if (waiting || live) return [["esc", live ? "stop" : "clear"]];
+    if (waiting && !live) return [["↵", "ask"], ["esc", "clear"]];
+    if (live) return [["esc", "stop"]];
     if (turn?.phase === "error") return [["↵", "retry"], ["esc", "clear"]];
     if (cite > 0) return [["←→", "source"], ...(onLook ? [["space", "look"] as [string, string]] : []), ["↵", "continue in chat"]];
     return [
@@ -437,7 +447,7 @@
 {#if view === "gate"}
   <button type="button" class="rc-gate" onclick={onAsk}>
     <IconSparkle width="15" height="15" aria-hidden="true" />
-    <span class="rc-gate__t">Press <kbd>Tab</kbd> to ask <b>{engine.model ?? "Ask AI"}</b></span>
+    <span class="rc-gate__t">Press <kbd>↵</kbd> to ask <b>{engine.model ?? "Ask AI"}</b></span>
     <span class="rc-gate__why"
       >{autoMode === "never" || engine.local ? "Answers only when you ask" : "Cloud model — answers only when you ask"}</span
     >
@@ -466,12 +476,12 @@
     </div>
   </div>
 {:else}
-  <article class="rc-ans" data-sel={sel === 0 || undefined} aria-busy={live || waiting} aria-live="polite">
+  <article class="rc-ans" data-sel={sel === 0 || undefined} aria-busy={live || (waiting && !forced)} aria-live="polite">
     <header class="rc-ans__h">
       <IconSparkle width="15" height="15" aria-hidden="true" />
       <span>Answer</span>
       {#if waiting || !turn}
-        <span class="rc-livetag rc-livetag--idle">answers when you pause</span>
+        <span class="rc-livetag rc-livetag--idle">{forced ? "press ↵ to ask" : "answers when you pause"}</span>
       {:else if turn.phase === "thinking"}
         <span class="rc-livetag">{turn.liveActivity?.label ?? "Thinking…"}</span>
       {:else if live}
@@ -497,6 +507,9 @@
         >{/if}
       {/if}
     </header>
+    <!-- A Tab-forced ask waiting for ↵ has nothing running: the hint alone,
+         no loading bars. The auto-answer pause keeps them — it fires on its own. -->
+    {#if !forced || turn}
     <div class="rc-ans__body" class:rc-ans__body--split={timelines.length > 0}>
       {#if !turn || turn.phase === "thinking" || (turn.blocks.length === 0 && turn.phase !== "error" && turn.phase !== "done")}
         <div class="rc-ans__wait">
@@ -550,6 +563,7 @@
         {/if}
       {/if}
     </div>
+    {/if}
   </article>
 
   {#if sources.length + more.length > 0}

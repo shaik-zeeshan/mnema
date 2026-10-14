@@ -87,7 +87,8 @@
   // Search ⇄ ask. A typed question (trailing ? or a leading who/what/when…) is
   // answered in place after a pause when "Answer questions automatically"
   // allows it for the model that would answer; otherwise the hero slot offers
-  // "Press Tab to ask". Tab forces either way until the bar empties.
+  // "Press ↵ to ask". Tab forces either way until the bar empties — like the
+  // titlebar's Tab it only flips the mode; a forced ask waits for ↵.
   // ---------------------------------------------------------------------------
 
   // Availability is resolved on mount (and re-probed per summon). Until it
@@ -128,10 +129,13 @@
     if (forced === "ask") void search.states.rememberQuery(true);
   }
 
-  // An explicit ask (the gate, "ask instead") goes to the top of Recent.
+  // An explicit ask (the gate, "ask instead") sends now and goes to the top
+  // of Recent. AskPane may only mount (or turn into the answer view) on this
+  // flip, so it sends after the flush.
   function askNow(): void {
     forced = "ask";
     void search.states.rememberQuery(true);
+    void tick().then(() => askPane?.submit());
   }
 
   async function loadAskAvailability(): Promise<void> {
@@ -268,7 +272,6 @@
 
   onMount(() => {
     void focusQuickRecall();
-    void search.takeSummonQuery();
     void loadAskAvailability();
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
@@ -286,6 +289,7 @@
 
     let destroyed = false;
     let unlistenFocus: (() => void) | undefined;
+    let unlistenSummon: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
     let unlistenSemanticSearchDownload: (() => void) | undefined;
 
@@ -307,15 +311,30 @@
           // loader (kicked by the `app:` derivation) repopulates on the next use.
           search.searchableApps = null;
           void tick().then(() => focusQuickRecall());
-          void search.takeSummonQuery().then((taken) => {
-            if (taken) forced = null;
-          });
         } else if (!empty) void search.states.rememberQuery(mode === "ask");
       })
       .then((fn) => {
         if (destroyed) fn();
         else unlistenFocus = fn;
       });
+
+    // The titlebar's ↵ hands its text over (windows.rs `PENDING_QUICK_RECALL_QUERY`).
+    // The event fires on every such summon — the panel may already be up and
+    // focused, so no focus change would carry it. Take once on attach too: a
+    // cold-built window was summoned before this listener existed.
+    const takeSummonQuery = () =>
+      void search.takeSummonQuery().then((taken) => {
+        if (!taken) return;
+        forced = null;
+        // A Quick Look left open would sit over the new query's results.
+        quickLook.close();
+      });
+    listen("quick_recall_query", takeSummonQuery)
+      .then((fn) => {
+        if (destroyed) fn();
+        else unlistenSummon = fn;
+      })
+      .finally(takeSummonQuery);
 
     // A meaning-search toggle / model pick saved in Settings while this window
     // stays focused: re-read the status so "keyword only" doesn't go stale.
@@ -354,6 +373,7 @@
         capture: true,
       });
       unlistenFocus?.();
+      unlistenSummon?.();
       unlistenSettings?.();
       unlistenSemanticSearchDownload?.();
     };
@@ -429,7 +449,7 @@
       {/if}
 
       <!-- The results, with the pressed pill's popover laid over them (same
-           grid cell, so the bar grows to fit it, up to its 420 px cap). -->
+           grid cell, so the bar grows to fit it, up to BarShell's cap). -->
       {@render noticeLine()}
       <div class="quick-recall__body">
         {#if filters.popoverOpen}
@@ -457,7 +477,7 @@
 {/snippet}
 
 <div class="quick-recall">
-  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} cap={quickLook.result ? 570 : 420} />
+  <BarShell bar={barRow} body={showBody ? bodyRegion : undefined} foot={footKeys} />
 </div>
 
 <style>

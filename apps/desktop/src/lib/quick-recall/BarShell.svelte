@@ -1,7 +1,8 @@
 <!-- Quick Recall bar shell (recall.html `.rc`). The window IS this bar: a
      frameless ~800px panel whose height follows its content — 60 idle (the bar
-     row alone), ≤ `cap` with a body (420 for results/answers; Quick Look passes
-     ~570). The shell measures its own border box and asks Rust to resize the
+     row alone), ≤ `cap` (640) with a body — tall enough for the best moment
+     plus a screenful of rows; Quick Look's fixed 476px body lands at ~570.
+     Rust lifts or clamps a bar too tall for a small screen. The shell measures its own border box and asks Rust to resize the
      window (`set_quick_recall_frame`), which keeps the top edge anchored so the
      bar grows downward. Nothing inside may size itself off the viewport (vh,
      height: 100%): the viewport is the window this shell is sizing.
@@ -19,7 +20,7 @@
     bar,
     body,
     foot,
-    cap = 420,
+    cap = 640,
   }: {
     bar: Snippet;
     body?: Snippet;

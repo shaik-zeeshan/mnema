@@ -1,6 +1,6 @@
 <!-- Quick Look (recall.html `.rc-look`): opens under the bar, same surface,
-     a fixed 476px tall so scrubbing never resizes the window (the page passes
-     BarShell cap 570). Screen: the frame with its matches outlined (solid =
+     a fixed 476px tall so scrubbing never resizes the window (~570 with the
+     bar and foot, under BarShell's cap). Screen: the frame with its matches outlined (solid =
      keyword, dashed = by meaning), a 7-frame strip 15 s apart, the frame's
      text, Open this frame / Copy text / Page. Audio: the line set large over
      a zoomed waveform, the transcript turns as the strip, the transcript,

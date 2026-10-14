@@ -118,7 +118,7 @@
     font: 400 var(--text-xs) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
-  /* The bar stays 420 px while the popover is open: the menu scrolls past
+  /* The bar keeps its height while the popover is open: the menu scrolls past
      232 px, and shrinks further when a notice line above takes the room, so
      Edit as text / Remove stay on screen. */
   .rc-pop .mx-menu {

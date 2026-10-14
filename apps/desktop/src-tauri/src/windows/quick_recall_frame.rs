@@ -1,5 +1,5 @@
 // Quick Recall is a bar sized to its content: the page measures itself and
-// calls `set_quick_recall_frame(height)` (60 idle, ≤ 420 with results, ~570 in
+// calls `set_quick_recall_frame(height)` (60 idle, ≤ 640 with results, ~570 in
 // Quick Look). The top edge stays at a fixed anchor — centred, ~15 % down the
 // work area — so the bar grows and shrinks downward. Size and anchor are set in
 // one native frame change; `setSize` alone keeps Cocoa's bottom-left origin and
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn the_bar_hangs_centred_from_fifteen_percent_down_at_every_height() {
         // 1440×875 work area at x=0: top edge at 131 for idle, results and Quick Look.
-        for height in [60.0, 420.0, 570.0] {
+        for height in [60.0, 570.0, 640.0] {
             assert_eq!(
                 bar_frame(0.0, 1440.0, 875.0, height),
                 (320.0, 131.0, 800.0, height)

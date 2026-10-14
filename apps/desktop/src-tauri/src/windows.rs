@@ -23,6 +23,10 @@ const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
 // the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for
 // this to cancel any resident Ask AI PI session.
 const QUICK_RECALL_DISMISSED_EVENT: &str = "quick_recall_dismissed";
+// Emitted to the Quick Recall webview when a summon parks a query, so an
+// already-open panel takes it now instead of waiting for a focus change that
+// never comes when it is already up.
+const QUICK_RECALL_QUERY_EVENT: &str = "quick_recall_query";
 
 // The Quick Recall surface is a non-activating NSPanel that emits a spurious
 // `Focused(false)` while AppKit promotes its webview to first responder on the
@@ -36,9 +40,9 @@ const QUICK_RECALL_SUMMON_BLUR_GRACE: Duration = Duration::from_millis(300);
 static LAST_QUICK_RECALL_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
 
 // Text the main window's titlebar field handed over with ↵ (recall mode). Held
-// here until the Quick Recall webview reads it on summon/focus, so a cold-built
-// window (whose listeners aren't attached yet) still gets it. One slot: a newer
-// summon replaces an unread one.
+// here until the Quick Recall webview takes it — on `QUICK_RECALL_QUERY_EVENT`,
+// or once its listener attaches, so a cold-built window still gets it. One
+// slot: a newer summon replaces an unread one.
 static PENDING_QUICK_RECALL_QUERY: Mutex<Option<String>> = Mutex::new(None);
 
 // One-shot suppression of the very next Quick Recall blur-dismiss. The frontend
@@ -1481,11 +1485,12 @@ pub fn summon_quick_recall_window_command(
         None => build_quick_recall_window(&app)?,
     };
     summon_quick_recall_window(&window);
+    let _ = window.emit(QUICK_RECALL_QUERY_EVENT, ());
     Ok(())
 }
 
-/// The handed-over titlebar query, once. The Quick Recall page reads it on mount
-/// and on every focus.
+/// The handed-over titlebar query, once. The Quick Recall page reads it when
+/// its listener attaches and on every `QUICK_RECALL_QUERY_EVENT`.
 #[tauri::command]
 pub fn take_quick_recall_query() -> Option<String> {
     PENDING_QUICK_RECALL_QUERY.lock().ok()?.take()
