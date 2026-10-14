@@ -68,24 +68,39 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 
 /// Conversations whose cancel arrived BEFORE their turn registered its in-flight
 /// flag — the "cancel at the very start of a request" race. The frontend reveals
-/// the Stop button the instant a turn is sent, but the backend registers the
-/// cancel flag only after an async access-readiness check (`ask_ai_start` /
-/// `ask_ai_followup`). A cancel landing in that window finds no flag via
-/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id here and
-/// the imminent `register_inflight` consumes it, bringing the turn up already
-/// cancelled so it short-circuits before any model call.
-static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+/// the Stop button the instant a turn is sent, but `ask_ai_start` /
+/// `ask_ai_followup` run on the async runtime, so a Stop's `ask_ai_cancel` can be
+/// scheduled first. A cancel landing in that window finds no flag via
+/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id + arrival
+/// time here and the imminent `register_inflight` consumes it, bringing the turn
+/// up already cancelled so it short-circuits before any model call.
+///
+/// The entry expires after [`PENDING_CANCEL_TTL`]: a no-flag cancel is just as
+/// often a STALE one aimed at a turn that already finished (Quick Recall's
+/// teardown after "Continue in Chat"), and an unexpiring entry pre-cancelled the
+/// user's next, unrelated Chat follow-up — a blank answer and no saved row.
+static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<HashMap<String, std::time::Instant>>> =
+    OnceLock::new();
 
-fn ask_ai_pending_cancel() -> &'static Mutex<std::collections::HashSet<String>> {
-    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+/// How long a pending cancel waits for its turn to register. The race it covers
+/// is two commands scheduled out of order (milliseconds).
+// ponytail: fixed window; a cancel request carrying the turn it targets would
+// remove the heuristic, add when a real race outlasts it.
+const PENDING_CANCEL_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn ask_ai_pending_cancel() -> &'static Mutex<HashMap<String, std::time::Instant>> {
+    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Record a cancel that arrived before the conversation's turn registered. The
-/// next `register_inflight` for this id will consume the entry and start its flag
-/// already set. Used by `ask_ai_cancel` only when `take_inflight` found no flag.
+/// Record a cancel that arrived before the conversation's turn registered. A
+/// `register_inflight` for this id within [`PENDING_CANCEL_TTL`] consumes the
+/// entry and starts its flag already set. Used by `ask_ai_cancel` only when
+/// `take_inflight` found no flag.
 fn record_cancel_before_register(conversation_id: &str) {
     if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
-        pending.insert(conversation_id.to_string());
+        // Expired entries can never apply; drop them so stale ids don't pile up.
+        pending.retain(|_, at| at.elapsed() < PENDING_CANCEL_TTL);
+        pending.insert(conversation_id.to_string(), std::time::Instant::now());
     }
 }
 
@@ -96,14 +111,20 @@ fn record_cancel_before_register(conversation_id: &str) {
 /// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
 fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
+    register_inflight_at(conversation_id, std::time::Instant::now())
+}
+
+fn register_inflight_at(conversation_id: &str, now: std::time::Instant) -> Arc<AtomicBool> {
     // Consume a cancel that raced ahead of this registration (see
     // ASK_AI_PENDING_CANCEL): the turn comes up already cancelled and stops at its
     // first check, before any model call. Consume exactly once so the pending entry
-    // never poisons a later, legitimate turn for the same conversation.
+    // never poisons a later, legitimate turn for the same conversation, and only
+    // while fresh — an expired one was aimed at an earlier turn.
     let pre_cancelled = ask_ai_pending_cancel()
         .lock()
-        .map(|mut pending| pending.remove(conversation_id))
-        .unwrap_or(false);
+        .ok()
+        .and_then(|mut pending| pending.remove(conversation_id))
+        .is_some_and(|at| now.saturating_duration_since(at) < PENDING_CANCEL_TTL);
     let cancel = Arc::new(AtomicBool::new(pre_cancelled));
     if let Ok(mut map) = ask_ai_inflight().lock() {
         if let Some(previous) = map.insert(conversation_id.to_string(), cancel.clone()) {
@@ -1803,6 +1824,48 @@ async fn persist_resolve_failure(
     .await
 }
 
+/// Saves a turn stopped before the model ran as a `done` row with no answer —
+/// what finalize saves for a Stop that lands mid-turn — so the frontend's turn
+/// count and Retry (`delete_last_turn`) match the store (CH-04). An abandoned
+/// Quick Recall first question is deleted instead, exactly as at finalize.
+async fn persist_stopped_before_model(
+    infra: &AppInfraState,
+    conversation_id: &str,
+    title: &str,
+    origin: &str,
+    stored_origin: Option<&str>,
+    turn_index: i64,
+    question: &str,
+) {
+    persist_turn(
+        infra,
+        conversation_id,
+        title,
+        origin,
+        turn_index,
+        question,
+        "",
+        None,
+        Some(&[]),
+        &[],
+        &[],
+        "done",
+        None,
+    )
+    .await;
+    abandoned::discard_if_abandoned(
+        infra,
+        conversation_id,
+        origin,
+        stored_origin,
+        turn_index,
+        false,
+        "",
+        &[],
+    )
+    .await;
+}
+
 /// The single stateless-per-turn Ask AI driver used by BOTH start and follow-up.
 ///
 /// Loads the conversation's completed history + engine pin from the store,
@@ -1953,7 +2016,21 @@ async fn run_ask_ai_turn(
     //    is registered yet (that happens at step 4), so emit a direct terminal
     //    `ask_ai_update` Done — version 1, this turn's index — so any
     //    already-attached frontend view for this turn settles instead of hanging.
+    //    The row is saved first (CH-04), so the frontend's turn count and a
+    //    Retry still match the store.
     if cancel.load(Ordering::SeqCst) {
+        persist_stopped_before_model(
+            &infra,
+            &conversation_id,
+            &title,
+            &origin,
+            existing.as_ref().map(|c| c.origin.as_str()),
+            turn_index,
+            &question,
+        )
+        .await;
+        let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+        remove_inflight_if_owner(&conversation_id, &cancel);
         let _ = app_handle.emit(
             ASK_AI_UPDATE_EVENT,
             serde_json::json!({
@@ -1963,7 +2040,6 @@ async fn run_ask_ai_turn(
                 "update": TurnUpdate::Done,
             }),
         );
-        remove_inflight_if_owner(&conversation_id, &cancel);
         return;
     }
 
@@ -2899,6 +2975,67 @@ mod tests {
                     conv.turns[0].error_message.as_deref(),
                     Some("no_default_model")
                 );
+            });
+    }
+    #[test]
+    fn a_turn_stopped_before_the_model_is_saved_unless_abandoned() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let infra: AppInfraState = Arc::new(
+                    ::app_infra::AppInfra::initialize(dir.path())
+                        .await
+                        .expect("infra"),
+                );
+                // A follow-up (turn 1) stopped before the model ran keeps its
+                // row, so the next send and a Retry agree with the store.
+                persist_turn(
+                    &infra,
+                    "c1",
+                    "T",
+                    "quick_recall",
+                    0,
+                    "q0",
+                    "a0",
+                    None,
+                    Some(&[]),
+                    &[],
+                    &[],
+                    "done",
+                    None,
+                )
+                .await;
+                persist_stopped_before_model(
+                    &infra,
+                    "c1",
+                    "",
+                    "quick_recall",
+                    Some("quick_recall"),
+                    1,
+                    "q1",
+                )
+                .await;
+                let conv = infra
+                    .conversation()
+                    .get_conversation("c1")
+                    .await
+                    .expect("read")
+                    .expect("conversation exists");
+                assert_eq!(conv.turns.len(), 2);
+                assert_eq!(conv.turns[1].question, "q1");
+                assert_eq!(conv.turns[1].phase, "done");
+
+                // An abandoned Quick Recall first question leaves nothing behind.
+                persist_stopped_before_model(&infra, "c2", "T", "quick_recall", None, 0, "q").await;
+                assert!(infra
+                    .conversation()
+                    .get_conversation("c2")
+                    .await
+                    .expect("read")
+                    .is_none());
             });
     }
     use app_infra::brokered_access::{
@@ -4165,6 +4302,27 @@ model believes the narrower contract: {}",
             !next.load(Ordering::SeqCst),
             "a pending cancel must apply to one registration only, not future turns"
         );
+        let _ = take_inflight(id);
+    }
+
+    #[test]
+    fn a_stale_cancel_for_a_finished_turn_does_not_cancel_a_later_follow_up() {
+        // The blank Chat follow-up: Quick Recall's teardown cancels its thread
+        // after the answer finished and "Continue in Chat" handed it over. No
+        // flag is registered, so `ask_ai_cancel` records it as pending — and the
+        // user's first follow-up in Chat, seconds later, came up cancelled: Done
+        // with no answer, no row saved, Retry → "turn 1 is not the last turn".
+        let id = "inflight-stale-cancel-conv";
+        record_cancel_before_register(id);
+        let follow_up = register_inflight_at(id, std::time::Instant::now() + PENDING_CANCEL_TTL);
+        assert!(
+            !follow_up.load(Ordering::SeqCst),
+            "a cancel older than the start/cancel race window must not cancel a new turn"
+        );
+        let _ = take_inflight(id);
+        // And it is consumed, not left to hit a turn after this one.
+        let next = register_inflight(id);
+        assert!(!next.load(Ordering::SeqCst));
         let _ = take_inflight(id);
     }
 

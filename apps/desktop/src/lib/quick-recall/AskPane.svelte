@@ -203,7 +203,12 @@
   async function cancel(discard = false): Promise<void> {
     const id = liveId;
     if (id === null) return;
+    // Only a running turn has anything to stop. A settled one may be Chat's
+    // thread now ("Continue in Chat"); cancelling it on teardown stopped the
+    // user's next follow-up there.
+    const running = live;
     liveId = null;
+    if (!running) return;
     try {
       await invoke("ask_ai_cancel", { request: { conversationId: id, discard } });
     } catch {
@@ -216,11 +221,12 @@
   // before any answer, the backend discards the thread — nothing to continue.
   async function stop(): Promise<void> {
     if (!turn || !live) return;
+    const stopping = cancel(); // reads `live` before the phase flips below
     if (turn.blocks.length === 0) threadId = null;
     turn.phase = "done";
     turn.liveActivity = null;
     turn.stoppedEarly = true;
-    await cancel();
+    await stopping;
   }
 
   // Exactly-next applies; a gap re-snapshots, or re-reads a turn that finished.

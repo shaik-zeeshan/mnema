@@ -231,7 +231,9 @@ pub async fn delete_last_turn(
     turn_index: i64,
 ) -> Result<(), String> {
     if crate::ask_ai::turn_in_flight(&conversation_id) {
-        return Err("a turn is still running".to_string());
+        return Err(
+            "an answer is still being written. Wait for it to finish, then try again.".to_string(),
+        );
     }
     let deleted = infra
         .conversation()
@@ -239,9 +241,11 @@ pub async fn delete_last_turn(
         .await
         .map_err(|e| e.to_string())?;
     if !deleted {
-        return Err(format!(
-            "turn {turn_index} is not the last turn of conversation {conversation_id}"
-        ));
+        // Shown verbatim in the Regenerate alert: plain words, no ids.
+        return Err(
+            "this answer isn't the latest one in the chat any more. Reopen the chat and try again."
+                .to_string(),
+        );
     }
 
     let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
