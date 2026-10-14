@@ -25,6 +25,11 @@ export const LOG_TAIL_LINES = 500;
 /** Logs are written at human pace; each tick re-reads the file Rust-side. */
 const LOG_POLL_MS = 2000;
 
+function sameTail(a: AppLogTailDto | null, b: AppLogTailDto): boolean {
+	return a != null && a.path === b.path && a.exists === b.exists &&
+		a.lines.length === b.lines.length && a.lines.every((line, i) => line === b.lines[i]);
+}
+
 export function createLogTailStore(poll: PollFn, init: { needle?: string } = {}) {
 	let file = $state<AppLogFile>("rust");
 	let level = $state<LogLevelFilter>("all");
@@ -42,7 +47,8 @@ export function createLogTailStore(poll: PollFn, init: { needle?: string } = {})
 			const next = await invoke<AppLogTailDto>("tail_app_log", { file: requested, lines: LOG_TAIL_LINES });
 			// A file switch landed while this was in flight; that request owns the view.
 			if (requested !== file) return;
-			tail = next;
+			// An unchanged poll must not re-derive and re-render every row.
+			if (!sameTail(tail, next)) tail = next;
 			error = null;
 		} catch (err) {
 			// A missing log is `exists: false`, not a throw.

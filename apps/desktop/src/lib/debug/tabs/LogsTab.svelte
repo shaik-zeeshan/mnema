@@ -163,7 +163,9 @@
   .dv-feats .mx-btn { --_h: 22px; --_px: 8px; flex: none; }
   .dv-tail { min-height: 0; overflow: auto; margin: 0 calc(-1 * var(--s-4)); padding: 4px 0 8px; border-top: 1px solid var(--mx-hairline);
     background: var(--app-surface-subtle); font: 450 var(--text-sm)/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
-  .dv-line { display: grid; grid-template-columns: 82px 38px minmax(0, 1fr); column-gap: 8px; padding: 2px var(--s-4); color: var(--app-text-muted); cursor: copy; }
+  .dv-line { display: grid; grid-template-columns: 82px 38px minmax(0, 1fr); column-gap: 8px; padding: 2px var(--s-4); color: var(--app-text-muted); cursor: copy;
+    /* Skip layout/paint for off-screen rows; `auto` remembers each row's real (wrapped) height once seen. */
+    content-visibility: auto; contain-intrinsic-size: auto 22px; }
   .dv-line:hover { background: var(--mx-wash); }
   .dv-line__t { color: var(--app-text-subtle); }
   .dv-line__l { color: var(--app-text-subtle); font-size: var(--text-xs); line-height: 16.5px; }
