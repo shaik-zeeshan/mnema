@@ -2498,6 +2498,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
         infra,
         &recordings_root,
         &active_workspace_dirs,
+        hidden_workspace_repair_retention_cutoff(app_handle),
     )) {
         Ok(result) => {
             // Debug: `removed` is repeated in the "startup maintenance finished" Info line.
@@ -2764,6 +2765,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
                 &infra,
                 &recordings_root,
                 &active_workspace_dirs,
+                hidden_workspace_repair_retention_cutoff(&app_handle),
             );
             pin_mut!(shutdown_changed, repair);
             let repair_result = match select(shutdown_changed, repair).await {
@@ -2951,15 +2953,26 @@ async fn repair_hidden_segment_workspaces_once(
     infra: &::app_infra::AppInfra,
     recordings_root: &Path,
     active_workspace_dirs: &BTreeSet<String>,
+    retention_cutoff: Option<String>,
 ) -> ::app_infra::Result<::app_infra::HiddenSegmentWorkspaceRepairResult> {
     infra
         .repair_hidden_segment_workspaces_with_context(
             recordings_root,
             &::app_infra::HiddenSegmentWorkspaceRepairContext {
                 active_workspace_dirs: active_workspace_dirs.clone(),
+                retention_cutoff,
             },
         )
         .await
+}
+
+/// The Retention Cleanup cutoff for the user's current policy, so the repair
+/// ages out orphaned visible segments exactly as retention would. `None` when
+/// retention is Never (or settings aren't managed yet), which keeps them.
+fn hidden_workspace_repair_retention_cutoff(app_handle: &tauri::AppHandle) -> Option<String> {
+    let settings = app_handle.try_state::<crate::native_capture::RecordingSettingsState>()?;
+    let policy = retention_policy_from_settings(settings, None);
+    ::app_infra::cutoff_ended_before(app_retention_policy(policy), local_now_for_retention())
 }
 
 fn active_workspace_dirs_for_hidden_workspace_repair(
@@ -7805,10 +7818,14 @@ mod tests {
             )
             .expect("visible segment should be written");
 
-            let result =
-                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
-                    .await
-                    .expect("repair should succeed");
+            let result = repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                &BTreeSet::new(),
+                None,
+            )
+            .await
+            .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 1);
@@ -7834,10 +7851,14 @@ mod tests {
             fs::write(frames_dir.join("frame-1.jpg"), b"fake frame")
                 .expect("workspace frame artifact should be created");
 
-            let result =
-                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
-                    .await
-                    .expect("repair should succeed");
+            let result = repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                &BTreeSet::new(),
+                None,
+            )
+            .await
+            .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 0);
@@ -7873,6 +7894,7 @@ mod tests {
                 &infra,
                 &recordings_root,
                 &BTreeSet::from([workspace_dir.to_string_lossy().to_string()]),
+                None,
             )
             .await
             .expect("repair should succeed");

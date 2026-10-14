@@ -467,6 +467,26 @@ impl FrameBatchStore {
         })
     }
 
+    /// Whether any `capture_segments` row owns this workspace or its visible
+    /// segment. A row means Retention / Delete Recent Capture own those files,
+    /// so the orphan reclaim in `hidden_segment_workspace` must leave them be.
+    pub(crate) async fn capture_segment_row_exists_for_workspace(
+        &self,
+        workspace_dir: &str,
+        visible_segment_path: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM capture_segments \
+             WHERE workspace_dir_path = ?1 OR media_file_path = ?2 \
+             LIMIT 1",
+        )
+        .bind(workspace_dir)
+        .bind(visible_segment_path)
+        .fetch_optional(self.db.read())
+        .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn repair_hidden_segment_workspaces(
         &self,
         recordings_root: &Path,

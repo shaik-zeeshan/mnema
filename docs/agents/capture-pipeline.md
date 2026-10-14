@@ -42,6 +42,7 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 ## Hidden Segment Workspace Cleanup
 
 - Cleanup safety depends on the sibling `<session>-segment-####.mov`. If missing **or unopenable** (e.g. missing `moov`), preserve non-empty hidden workspaces. Empty/no-reference hidden workspaces are safe to remove.
+- Orphaned workspaces (`OrphanedFrameArtifacts`): frame images the DB never recorded (no frame rows, no `capture_segments` row) next to a finalized `.mov`, newest image >24 h old. Nothing re-ingests frames from disk and Retention / Delete Recent Capture only see DB rows, so repair deletes the images, and the `.mov` + `.frame-index.bin` once older than the Retention Cleanup cutoff (kept when retention is Never). Anything with a `capture_segments` row is never touched.
 - Repair headlessly: `cargo run -p app-infra --bin repair_hidden_segment_workspaces -- <saveDirectory>`
 - Tauri app runs repair at startup + every 5 minutes in the background.
 

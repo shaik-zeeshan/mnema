@@ -62,7 +62,7 @@ pub use audio_segments::{
 /// data model (the raw URL is local-only, used only by `open_captured_url`).
 pub use brokered_access::guard_url as guard_browser_url;
 pub use capture_retention::{
-    delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
+    cutoff_ended_before, delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
     RetentionCleanupSummary, RetentionPolicy, ScreenCaptureSegmentWindow,
 };
