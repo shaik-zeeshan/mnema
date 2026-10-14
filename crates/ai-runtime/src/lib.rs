@@ -223,6 +223,35 @@ impl AiRuntimeError {
 }
 
 impl AiRuntimeError {
+    /// A log-safe detail line: the error's head (status code, error class)
+    /// with no model output, prompt fragment or provider body. A schema
+    /// mismatch logs serde's category and position only — its message quotes
+    /// the model's answer, which paraphrases captured content. Everything
+    /// else is cut at the first quote, brace or `with message:`, where rig and
+    /// serde start echoing payload. Capped at 200 chars.
+    pub fn log_detail(&self) -> String {
+        use rig_agent::extractor::ExtractionError;
+        if let AiRuntimeError::Extraction(ExtractionError::DeserializationError(error)) = self {
+            return format!(
+                "structured extraction failed: model output didn't match the schema \
+                 ({:?} error at line {} column {})",
+                error.classify(),
+                error.line(),
+                error.column()
+            );
+        }
+        let raw = self.to_string();
+        let head = raw
+            .split("with message:")
+            .next()
+            .unwrap_or_default()
+            .split(['"', '\'', '`', '{', '['])
+            .next()
+            .unwrap_or_default()
+            .trim_end();
+        head.chars().take(200).collect()
+    }
+
     /// A stable machine-readable bucket for this failure, so a UI can pick the
     /// one action that helps: `settings` (fix the config), `quota`, `auth`,
     /// `context_too_long` (start a new chat), `unreachable`, or `retryable`.
@@ -629,6 +658,36 @@ mod tests {
             .expect("runtime should build");
         let reachable = runtime.block_on(ping_endpoint("http://127.0.0.1:1"));
         assert!(!reachable);
+    }
+
+    #[test]
+    fn log_detail_never_quotes_model_output_or_provider_body() {
+        // A model that answers with a quoted string instead of an object: serde's
+        // message quotes that string, which summarises the user's activity.
+        let serde = serde_json::from_str::<std::collections::HashMap<String, String>>(
+            r#""Spent the afternoon drafting a resignation letter""#,
+        )
+        .unwrap_err();
+        let extraction = AiRuntimeError::Extraction(
+            rig_agent::extractor::ExtractionError::DeserializationError(serde),
+        );
+        let detail = extraction.log_detail();
+        assert!(!detail.contains("resignation"), "{detail}");
+        assert!(detail.contains("line 1"), "{detail}");
+
+        let provider = AiRuntimeError::AgentLoop(
+            "CompletionError: ProviderError: Invalid status code 400 Bad Request with message: \
+             {\"error\":\"your prompt: secret plans\"}"
+                .to_string(),
+        );
+        let detail = provider.log_detail();
+        assert!(detail.contains("400 Bad Request"), "{detail}");
+        assert!(!detail.contains("secret"), "{detail}");
+
+        let tool = AiRuntimeError::AgentLoop(
+            "ToolCallError: JsonError: invalid type: string \"search for my divorce\"".to_string(),
+        );
+        assert!(!tool.log_detail().contains("divorce"));
     }
 
     #[test]

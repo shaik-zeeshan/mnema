@@ -103,17 +103,26 @@ pub enum CliInputs {
 pub struct DebugHealthInputs {
     pub now_ms: i64,
     pub capture: CaptureHealthDto,
-    pub privacy_excluded_app_count: usize,
-    pub privacy_filter_applied: bool,
+    /// Apps the latest privacy decision excludes that the live screen filter
+    /// doesn't hide yet (decided but not applied).
+    pub privacy_unhidden_app_count: usize,
     /// Only processors with at least one job appear; a missing lane is idle.
     pub pipeline: Vec<::app_infra::ProcessorPipelineStatus>,
     pub transcription_provider: &'static str,
+    pub ocr_enabled: bool,
+    pub transcription_enabled: bool,
+    pub speakers_enabled: bool,
     pub semantic_enabled: bool,
+    /// The selected Semantic Search Model is on disk. Without one the worker
+    /// idles and search is keyword-only, however long the backlog grows.
+    pub semantic_model_installed: bool,
     pub semantic: SemanticIndexStatusDto,
     pub ai: AiEngineInputs,
     pub user_context: UserContextInputs,
     pub cli: CliInputs,
     pub startup: Option<StartupReport>,
+    /// Deferred startup unwound before it could file `startup`.
+    pub startup_panicked: bool,
 }
 
 // ── Slow inputs, cached ────────────────────────────────────────────────────
@@ -126,12 +135,19 @@ struct SlowInputs {
     ai_status: Option<Result<(), String>>,
     uc_last_run_failed: bool,
     uc_last_derived_at_ms: Option<i64>,
-    digest_range_end_ms: Option<i64>,
+    digest_fresh: Option<bool>,
     cli: CliInputs,
 }
 
 // ponytail: one process-wide slot; the window is the only caller.
 static SLOW: Mutex<Option<(Instant, SlowInputs)>> = Mutex::new(None);
+
+/// Excluded apps the latest decision wants hidden that the applied filter
+/// doesn't hide. (The applied decision's own `privacy_filter_applied` is just
+/// "its list is non-empty", so it can't tell this.)
+pub(crate) fn unhidden_app_count(decided: &[String], applied: &[String]) -> usize {
+    decided.iter().filter(|id| !applied.contains(id)).count()
+}
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -213,12 +229,18 @@ async fn read_slow(
         .and_then(|runs| runs.into_iter().next())
         .is_some_and(|run| run.status == "failed");
     let uc_last_derived_at_ms = store.last_derived_at_ms().await.ok().flatten();
-    let digest_range_end_ms = store
-        .latest_day_digest()
-        .await
-        .ok()
-        .flatten()
-        .map(|digest| digest.range_end_ms);
+    // Fresh = some day digest covers now. Not "the latest-generated one ends
+    // after now": regenerating yesterday's would make today's look missing.
+    let digest_fresh = match store.list_day_digests_in_range(now, now + 1).await {
+        Ok(covering) if !covering.is_empty() => Some(true),
+        Ok(_) => store
+            .latest_day_digest()
+            .await
+            .ok()
+            .flatten()
+            .map(|_| false),
+        Err(_) => None,
+    };
     // Local midnight from the frontend-stamped offset (UTC when never stamped);
     // the `time` crate can't read the local offset soundly here.
     let offset_ms = store
@@ -234,7 +256,7 @@ async fn read_slow(
         ai_status,
         uc_last_run_failed,
         uc_last_derived_at_ms,
-        digest_range_end_ms,
+        digest_fresh,
         cli: read_cli(app_handle, day_start_ms).await,
     }
 }
@@ -292,11 +314,21 @@ pub async fn get_debug_health(
     Ok(roll_up(&DebugHealthInputs {
         now_ms: now,
         capture,
-        privacy_excluded_app_count: privacy.currently_excluded_bundle_ids.len(),
-        privacy_filter_applied: privacy.privacy_filter_applied,
+        privacy_unhidden_app_count: unhidden_app_count(
+            &privacy.latest_decision.excluded_bundle_ids,
+            &privacy.currently_excluded_bundle_ids,
+        ),
         pipeline,
         transcription_provider: transcription_label(settings.transcription.provider),
+        ocr_enabled: settings.ocr.enabled,
+        transcription_enabled: settings.transcription.enabled,
+        // Speaker splitting runs on transcription output, so it needs both.
+        speakers_enabled: settings.transcription.enabled
+            && settings.speaker_analysis.separate_speakers,
         semantic_enabled: settings.semantic_search.enabled,
+        semantic_model_installed: app_handle.path().app_data_dir().is_ok_and(|dir| {
+            crate::semantic_search_worker::selected_model_available(&dir, &settings.semantic_search)
+        }),
         semantic,
         ai: AiEngineInputs {
             enabled: settings.ai_runtime.enabled,
@@ -310,9 +342,10 @@ pub async fn get_debug_health(
             enabled: settings.user_context.enabled,
             last_run_failed: slow.uc_last_run_failed,
             last_derived_at_ms: slow.uc_last_derived_at_ms,
-            digest_fresh: slow.digest_range_end_ms.map(|end| end > now),
+            digest_fresh: slow.digest_fresh,
         },
         cli: slow.cli,
         startup,
+        startup_panicked: crate::app_infra::startup_panicked(),
     }))
 }

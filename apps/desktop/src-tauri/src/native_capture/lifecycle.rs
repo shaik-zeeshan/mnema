@@ -67,6 +67,17 @@ pub(crate) struct RecordingLifecycle {
     /// not capture state; [`RecordingLifecycle::start`] resets it per session.
     system_audio_start_retry_at_ms: Option<u64>,
     system_audio_start_retry_delay_ms: u64,
+    /// Per-source "already warned" flags for inactivity resumes the tick
+    /// retries every second; see [`super::debug_log::streak_level`].
+    resume_failure_logged: ResumeFailureLogged,
+}
+
+#[derive(Debug, Default)]
+struct ResumeFailureLogged {
+    microphone: bool,
+    system_audio: bool,
+    screen: bool,
+    all: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +270,7 @@ impl RecordingLifecycle {
 
         self.system_audio_start_retry_at_ms = None;
         self.system_audio_start_retry_delay_ms = 0;
+        self.resume_failure_logged = ResumeFailureLogged::default();
 
         start_capture_runtime(
             &mut self.runtime,
@@ -746,11 +758,15 @@ impl RecordingLifecycle {
             .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
-                super::debug_log::log_warn(format!(
-                    "failed to resume microphone capture after activity: [{}] {}",
-                    error.code, error.message
-                ));
+                super::debug_log::log_at(
+                    super::debug_log::streak_level(&mut self.resume_failure_logged.microphone),
+                    &format!(
+                        "failed to resume microphone capture after activity: [{}] {}",
+                        error.code, error.message
+                    ),
+                );
             } else {
+                self.resume_failure_logged.microphone = false;
                 let mic_eval = self
                     .runtime
                     .inactivity
@@ -796,11 +812,15 @@ impl RecordingLifecycle {
             .should_resume_system_audio_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_system_audio_from_inactivity(&mut self.runtime) {
-                super::debug_log::log_warn(format!(
-                    "failed to resume system audio capture after activity: [{}] {}",
-                    error.code, error.message
-                ));
+                super::debug_log::log_at(
+                    super::debug_log::streak_level(&mut self.resume_failure_logged.system_audio),
+                    &format!(
+                        "failed to resume system audio capture after activity: [{}] {}",
+                        error.code, error.message
+                    ),
+                );
             } else {
+                self.resume_failure_logged.system_audio = false;
                 let sa_eval = self
                     .runtime
                     .inactivity
@@ -850,10 +870,12 @@ impl RecordingLifecycle {
                 .should_resume_screen_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_screen_from_inactivity(&mut self.runtime, Some(app_handle)) {
-                if handle_inactivity_resume_error(&mut self.runtime, error) {
+                let level = super::debug_log::streak_level(&mut self.resume_failure_logged.screen);
+                if handle_inactivity_resume_error(&mut self.runtime, error, level) {
                     return TickOutcome::StopLoop;
                 }
             } else if !self.runtime.inactivity.is_screen_paused() {
+                self.resume_failure_logged.screen = false;
                 // Ok with the screen still paused means the resume was deferred
                 // (no drawable display yet) — nothing to announce.
                 let screen_eval = self
@@ -902,10 +924,12 @@ impl RecordingLifecycle {
             .should_resume_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_runtime_from_inactivity(&mut self.runtime) {
-                if handle_inactivity_resume_error(&mut self.runtime, error) {
+                let level = super::debug_log::streak_level(&mut self.resume_failure_logged.all);
+                if handle_inactivity_resume_error(&mut self.runtime, error, level) {
                     return TickOutcome::StopLoop;
                 }
             } else {
+                self.resume_failure_logged.all = false;
                 super::debug_log::log_info(format!(
                     "resumed native capture after activity (effective_idle_ms={}, effective_source={}, idle_timeout_seconds={})",
                     effective_idle.idle_ms,

@@ -46,6 +46,10 @@ pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 /// before it can finish — never merely because a user quit the app a few times.
 pub(crate) const RECLAIM_ATTEMPT_CEILING: i64 = 10;
 
+/// `last_error` of the queued OCR jobs failed in bulk when the user turns OCR
+/// off. A cancellation by choice, so it isn't a recent failure.
+pub(crate) const OCR_DISABLED_ERROR: &str = "OCR is disabled";
+
 /// Maximum number of genuine failures (tracked by `failure_count`) a failed **OCR Job** may
 /// accumulate before it is left terminally failed. A transient OCR failure on a frame that a
 /// later equivalent frame deferred to (via OCR Fallback Eligibility) is bounded-retried so the
@@ -999,6 +1003,7 @@ impl ProcessingStore {
                     SUM(status = 'failed') AS failed, \
                     SUM(CASE WHEN status = 'failed' \
                               AND finished_at >= datetime('now', '-24 hours') \
+                              AND last_error IS NOT ?1 \
                              THEN 1 ELSE 0 END) AS failed_last_24h, \
                     AVG(CASE WHEN status = 'completed' \
                               AND started_at IS NOT NULL \
@@ -1009,6 +1014,7 @@ impl ProcessingStore {
              GROUP BY processor \
              ORDER BY processor ASC",
         )
+        .bind(OCR_DISABLED_ERROR)
         .fetch_all(self.db.read())
         .await?;
 
@@ -4045,6 +4051,28 @@ mod tests {
                 Some("recent"),
                 "the newest error wins"
             );
+        });
+    }
+
+    /// Jobs failed in bulk because the user turned OCR off are a choice, not a failure: they
+    /// stay in the lifetime total but don't light the recent-failure signal.
+    #[test]
+    fn pipeline_status_skips_ocr_disabled_cancellations_in_recent_failures() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+            seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
+            store
+                .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, OCR_DISABLED_ERROR)
+                .await
+                .expect("queued OCR jobs should fail");
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+            let ocr = status_for(&statuses, OCR_PROCESSOR);
+            assert_eq!(ocr.failed, 1);
+            assert_eq!(ocr.failed_last_24h, 0);
         });
     }
 

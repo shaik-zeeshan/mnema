@@ -60,6 +60,14 @@ describe("stats", () => {
 		expect(durationStat(9800)).toEqual(["9.8", "s"]);
 		expect(durationStat(640)).toEqual(["640", "ms"]);
 	});
+
+	it("picks the unit after rounding, never \"1000k\" or \"60.0 s\"", () => {
+		expect(tokenStat(999_949)).toEqual(["999.9", "k"]);
+		expect(tokenStat(999_950)).toEqual(["1", "M"]);
+		expect(durationStat(59_949)).toEqual(["59.9", "s"]);
+		expect(durationStat(59_950)).toEqual(["1.0", "min"]);
+		expect(durationStat(999.6)).toEqual(["1.0", "s"]);
+	});
 });
 
 const run = (over = {}) => ({

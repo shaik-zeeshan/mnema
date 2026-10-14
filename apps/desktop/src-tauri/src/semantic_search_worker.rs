@@ -161,7 +161,7 @@ const BACKLOG_COUNT_EVERY_N_WORK_PASSES: u32 = 16;
 /// the worker surfaces a
 /// "model appears corrupt — reinstall" signal on the model-status telemetry
 /// channel and idles instead of hammering the doomed load.
-const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
+pub(crate) const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 
 /// CPU pacing (the "Backfill CPU pacing" cross-cutting concern): a minimum
 /// inter-batch cooldown so a large historical backfill does not sustain a

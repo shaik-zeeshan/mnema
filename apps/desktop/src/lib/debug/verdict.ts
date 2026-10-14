@@ -49,6 +49,15 @@ export function verdict(rows: VerdictRow[]): Verdict {
 	return { tone: "ok", text: "Everything is running" };
 }
 
+/**
+ * The verdict line over the health store. A failing read wins over the rows:
+ * those are the last good poll, and a stale "Everything is running" lies.
+ */
+export function healthVerdict(rows: VerdictRow[], error: string | null): Verdict {
+	if (error) return { tone: "danger", text: "Can’t read health" };
+	return rows.length > 0 ? verdict(rows) : { tone: "off", text: "Checking…" };
+}
+
 /** "2h 14m" / "14m" — how long the current recording has run. */
 export function formatRunning(ms: number): string {
 	const minutes = Math.max(0, Math.floor(ms / 60_000));

@@ -11,6 +11,7 @@ import type {
 } from "$lib/types/debug";
 import type { QuickRecallIndexStatus } from "$lib/types/app-infra";
 import { formatWait, gb } from "$lib/debug/capture-view";
+import { isTransientError } from "$lib/debug/detail/jobs";
 
 /** `{ num }` renders as `<span class="num">`. */
 export type Part = string | { num: string };
@@ -141,7 +142,8 @@ export function catchingUp(i: PopInput): CatchingUp {
   if (audio && clips > 0) {
     const n = { num: String(clips) };
     const word = ` ${plural(clips, "clip")}`;
-    if (audio.retrying > 0 && i.transcriptionProvider === "deepgram") {
+    const deepgramDown = !!i.deepgramAuthError || isTransientError(audio.lastError);
+    if (audio.retrying > 0 && i.transcriptionProvider === "deepgram" && deepgramDown) {
       rows.push({
         ...fill("Transcribing", "warn", [n, `${word} waiting`]),
         ...(i.deepgramAuthError

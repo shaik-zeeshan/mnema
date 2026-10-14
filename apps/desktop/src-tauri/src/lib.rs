@@ -47,7 +47,9 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind, WEBVIEW_TARGET};
 
 pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
 const APP_LOG_MAX_FILE_BYTES: u128 = 5 * 1024 * 1024;
-const APP_LOG_KEPT_FILES: usize = 5;
+/// Rotated files kept *besides* the active `rust.log` (`KeepSome(n)` keeps n
+/// archives plus the live file), so 4 = five files in all.
+const APP_LOG_KEPT_FILES: usize = 4;
 
 const APP_LOG_TARGET_PREFIXES: &[&str] = &[
     "mnema",

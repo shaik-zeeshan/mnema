@@ -6,7 +6,7 @@ import type { FeatureHealthDto } from "$lib/types";
 import { formatClock } from "$lib/time-format";
 import type { DevTab } from "./state/controller.svelte";
 import type { ProcessorKey } from "./detail/specs";
-import { FEATURE_ROWS, toneOf, verdict, type Tone } from "./verdict";
+import { FEATURE_ROWS, healthVerdict, toneOf, verdict, type Tone } from "./verdict";
 
 export { toneOf };
 
@@ -58,7 +58,8 @@ export function group(rows: FeatureHealthDto[]): RowGroup[] {
 }
 
 /** The mini footer: the worst row as "Name: why", else the verdict sentence. */
-export function miniFooter(rows: FeatureHealthDto[]): { tone: Tone; text: string } {
+export function miniFooter(rows: FeatureHealthDto[], error: string | null = null): { tone: Tone; text: string } {
+	if (error) return healthVerdict(rows, error);
 	const v = verdict(rows);
 	const worst =
 		v.tone === "danger" || v.tone === "warn" || v.tone === "info"

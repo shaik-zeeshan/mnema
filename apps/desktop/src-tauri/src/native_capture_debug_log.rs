@@ -104,10 +104,22 @@ pub(crate) fn log_error(message: impl AsRef<str>) {
     log_at(tauri_plugin_log::log::Level::Error, message.as_ref());
 }
 
+/// Level for one failure of an operation retried every tick: Warn the first
+/// time, Debug while the same streak keeps failing, so a stuck source writes
+/// one Warn to the app log instead of one per tick. Reset `logged` to `false`
+/// on success.
+pub(crate) fn streak_level(logged: &mut bool) -> tauri_plugin_log::log::Level {
+    if std::mem::replace(logged, true) {
+        tauri_plugin_log::log::Level::Debug
+    } else {
+        tauri_plugin_log::log::Level::Warn
+    }
+}
+
 /// Logs under the caller's module (`mnema_lib::semantic_search_worker`), not this
 /// file's, so the app log and the Developer window can tell sources apart.
 #[track_caller]
-fn log_at(level: tauri_plugin_log::log::Level, message: &str) {
+pub(crate) fn log_at(level: tauri_plugin_log::log::Level, message: &str) {
     let target = caller_target(std::panic::Location::caller().file());
     tauri_plugin_log::log::log!(target: &target, level, "{message}");
 }
@@ -167,6 +179,18 @@ mod tests {
 
         set_app_debug_logging_enabled(false);
         assert!(!APP_DEBUG_LOGGING_ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn streak_level_warns_once_per_failure_streak() {
+        use tauri_plugin_log::log::Level;
+
+        let mut logged = false;
+        assert_eq!(streak_level(&mut logged), Level::Warn);
+        assert_eq!(streak_level(&mut logged), Level::Debug);
+        assert_eq!(streak_level(&mut logged), Level::Debug);
+        logged = false; // the operation succeeded
+        assert_eq!(streak_level(&mut logged), Level::Warn);
     }
 
     #[test]

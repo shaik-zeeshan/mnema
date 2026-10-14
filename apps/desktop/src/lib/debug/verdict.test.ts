@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig, so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { formatRunning, toneOf, verdict } from "./verdict";
+import { formatRunning, healthVerdict, toneOf, verdict } from "./verdict";
 
 const row = (feature, severity, reason = `${feature} ${severity}`) => ({ feature, severity, reason });
 const RECORDING = [row("screen", "ok"), row("microphone", "ok"), row("systemAudio", "ok")];
@@ -36,6 +36,14 @@ describe("verdict", () => {
 
 	it("is quiet when everything is ok", () => {
 		expect(verdict([...RECORDING, row("reading", "ok")])).toEqual({ tone: "ok", text: "Everything is running" });
+	});
+});
+
+describe("healthVerdict", () => {
+	it("a failing read wins over the last good rows", () => {
+		expect(healthVerdict(RECORDING, "boom")).toEqual({ tone: "danger", text: "Can’t read health" });
+		expect(healthVerdict(RECORDING, null)).toEqual({ tone: "ok", text: "Everything is running" });
+		expect(healthVerdict([], null)).toEqual({ tone: "off", text: "Checking…" });
 	});
 });
 

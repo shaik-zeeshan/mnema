@@ -861,6 +861,7 @@ fn capture_session_options(
         };
     }
 
+    let channel_closed_logged = std::sync::atomic::AtomicBool::new(false);
     capture_screen::ScreenCaptureSessionOptions {
         frame_export: Some(capture_screen::ScreenFrameExportConfig {
             minimum_interval: capture_screen::DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL,
@@ -871,9 +872,13 @@ fn capture_session_options(
                 match try_forward_frame_artifact(&frame_artifact_tx, artifact, metadata_snapshot) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
-                        super::debug_log::log_warn(
-                            "failed to forward native frame artifact for persistence: worker channel closed",
-                        );
+                        // The worker is gone for this session; say so once, not
+                        // once per exported frame.
+                        if !channel_closed_logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            super::debug_log::log_error(
+                                "failed to forward native frame artifact for persistence: worker channel closed",
+                            );
+                        }
                     }
                 }
             }),
@@ -4394,6 +4399,7 @@ fn should_fail_runtime_on_inactivity_resume_error(error: &CaptureErrorResponse) 
 pub(super) fn handle_inactivity_resume_error(
     runtime: &mut NativeCaptureRuntime,
     error: CaptureErrorResponse,
+    retry_log_level: tauri_plugin_log::log::Level,
 ) -> bool {
     if should_fail_runtime_on_inactivity_resume_error(&error) {
         super::debug_log::log_error(format!(
@@ -4404,10 +4410,13 @@ pub(super) fn handle_inactivity_resume_error(
         return true;
     }
 
-    super::debug_log::log_warn(format!(
-        "failed to resume native capture after activity; keeping session paused for retry: [{}] {}",
-        error.code, error.message
-    ));
+    super::debug_log::log_at(
+        retry_log_level,
+        &format!(
+            "failed to resume native capture after activity; keeping session paused for retry: [{}] {}",
+            error.code, error.message
+        ),
+    );
 
     false
 }

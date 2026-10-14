@@ -19,6 +19,7 @@
   import {
     errorTitle,
     isTransientError,
+    jobLogNeedle,
     jobModel,
     jobProvider,
     jobState,
@@ -144,7 +145,7 @@
     </button>
   {/if}
   <span class="mx-spacer"></span>
-  <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Show in log" use:tip={"Show in log"} onclick={() => controller.showInLog(`job ${job.id}`)}>
+  <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Show in log" use:tip={"Show in log"} onclick={() => controller.showInLog(jobLogNeedle(job.id))}>
     <IconLog width="14" height="14" aria-hidden="true" />
   </button>
   <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Copy job id" use:tip={copied ? "Copied" : "Copy id"} onclick={copyId}>

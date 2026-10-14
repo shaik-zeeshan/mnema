@@ -27,8 +27,9 @@ async function refresh(): Promise<void> {
   inFlight = true;
   const next = await invoke<CaptureHealthDto>("get_capture_health").catch(() => null);
   inFlight = false;
-  // Released while in flight: don't resurrect a stale value.
-  if (refCount > 0) _health.value = next;
+  // Released while in flight: don't resurrect a stale value. A failed poll
+  // keeps the last good value rather than blanking every reader.
+  if (refCount > 0 && next) _health.value = next;
 }
 
 /** Start (or join) the poll; the returned fn releases it. The last release clears the value. */

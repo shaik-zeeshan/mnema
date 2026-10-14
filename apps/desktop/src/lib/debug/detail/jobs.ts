@@ -28,11 +28,12 @@ export function jobState(
 	// is not waiting its turn and is not serving a backoff. It burns no attempt
 	// while it waits, which is the whole point of claim-time gating — but without
 	// its own state it looks identical to a queued job that is about to run.
-	// Checked before the backoff so a job that is both parked and deferred reads
-	// as parked: the model is the reason it will not run next.
-	if (job.modelLocked) return "preparing";
+	// Checked after the backoff: the lane's `retrying` count (pipeline_status)
+	// counts every deferred queued job, locked or not, so the Retrying filter
+	// must list the same rows its count promises.
 	const next = parseJobTs(job.nextAttemptAt);
-	return next != null && next > nowMs ? "retrying" : "queued";
+	if (next != null && next > nowMs) return "retrying";
+	return job.modelLocked ? "preparing" : "queued";
 }
 
 /** `4m 12s` / `18s` — a backoff window, not a wall clock. */
@@ -112,6 +113,16 @@ export function jobModel(payloadJson: string | null | undefined): string | null 
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * "Show in log"'s filter. Lines that name a processing job say "processing job N"
+ * (the retry-requested line, AppInfraError messages); a bare "job N" also hits
+ * app-infra's unrelated "cpu job N" lines.
+ * ponytail: substring match, so job 12 also shows job 123's lines.
+ */
+export function jobLogNeedle(id: number): string {
+	return `processing job ${id}`;
 }
 
 /** "deepgram" → "Deepgram". */

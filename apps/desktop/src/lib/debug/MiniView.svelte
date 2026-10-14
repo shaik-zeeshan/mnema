@@ -17,7 +17,7 @@
       return { feature, label, tone: severity ? toneOf(severity) : "off" };
     }),
   );
-  const foot = $derived(miniFooter(entries));
+  const foot = $derived(miniFooter(entries, controller.health.error));
 
   let lanes = $state<ProcessorPipelineStatus[] | null>(null);
   $effect(() =>

@@ -39,7 +39,7 @@
   $effect(() => {
     const onKeydown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
-      if (nav.processor == null && nav.jobId == null) return;
+      if (controller.mode !== "full" || (nav.processor == null && nav.jobId == null)) return;
       event.preventDefault();
       controller.back();
     };

@@ -61,15 +61,18 @@ fn ok() -> DebugHealthInputs {
                 resume_threshold_bytes: Some(9 * GIB),
             },
         },
-        privacy_excluded_app_count: 0,
-        privacy_filter_applied: false,
+        privacy_unhidden_app_count: 0,
         pipeline: vec![
             lane_status(::app_infra::OCR_PROCESSOR, 4),
             lane_status(::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR, 1),
             lane_status(::app_infra::SPEAKER_ANALYSIS_PROCESSOR, 0),
         ],
         transcription_provider: "Deepgram",
+        ocr_enabled: true,
+        transcription_enabled: true,
+        speakers_enabled: true,
         semantic_enabled: true,
+        semantic_model_installed: true,
         semantic: SemanticIndexStatusDto {
             vector_count: 12_480,
             backlog_count: 0,
@@ -103,6 +106,7 @@ fn ok() -> DebugHealthInputs {
             workspaces_removed: Some(0),
             ..Default::default()
         }),
+        startup_panicked: false,
     }
 }
 
@@ -295,11 +299,36 @@ fn an_absent_lane_is_idle_not_broken() {
 }
 
 #[test]
+fn turned_off_processing_lanes_read_off_not_failed() {
+    let mut inputs = ok();
+    // Turning OCR off fails every queued OCR job; that's the user's choice.
+    let mut ocr = lane_status(::app_infra::OCR_PROCESSOR, 0);
+    ocr.failed_last_24h = 1_234;
+    inputs.pipeline = vec![ocr];
+    inputs.ocr_enabled = false;
+    inputs.speakers_enabled = false;
+    let report = roll_up(&inputs);
+    assert_eq!(sev(&report, F::Reading), S::Off);
+    assert_eq!(sev(&report, F::Speakers), S::Off);
+    assert_eq!(sev(&report, F::Transcription), S::Ok);
+}
+
+#[test]
+fn unhidden_apps_are_decided_minus_applied() {
+    use crate::debug_health::unhidden_app_count;
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    // A filter that failed to apply leaves the applied list behind the decision.
+    assert_eq!(unhidden_app_count(&ids(&["a", "b"]), &ids(&[])), 2);
+    assert_eq!(unhidden_app_count(&ids(&["a", "b"]), &ids(&["a"])), 1);
+    assert_eq!(unhidden_app_count(&ids(&["a"]), &ids(&["a", "b"])), 0);
+}
+
+#[test]
 fn privacy_folds_into_screen() {
     let mut inputs = ok();
-    inputs.privacy_excluded_app_count = 2;
+    inputs.privacy_unhidden_app_count = 2;
     assert_eq!(sev(&roll_up(&inputs), F::Screen), S::Warn);
-    inputs.privacy_filter_applied = true;
+    inputs.privacy_unhidden_app_count = 0;
     assert_eq!(sev(&roll_up(&inputs), F::Screen), S::Ok);
 
     inputs.capture.suspension = Some(CaptureSuspensionDto {
@@ -335,14 +364,56 @@ fn low_disk_warns_capture_and_disk() {
 }
 
 #[test]
+fn disk_while_stopped_warns_at_the_popovers_5_gb() {
+    // Not recording: no live thresholds. 1.1 GB free used to read
+    // "Plenty of room, pauses below 1 GB" though a start would be refused.
+    let mut inputs = ok();
+    inputs.capture.recording = false;
+    inputs.capture.disk.pause_threshold_bytes = None;
+    inputs.capture.disk.resume_threshold_bytes = None;
+    inputs.capture.disk.free_bytes = Some(GIB + GIB / 10);
+    let report = roll_up(&inputs);
+    assert_eq!(sev(&report, F::Disk), S::Warn);
+    assert!(!get(&report, F::Disk).reason.contains("1 GB"));
+    inputs.capture.disk.free_bytes = Some(6 * GIB);
+    assert_eq!(sev(&roll_up(&inputs), F::Disk), S::Ok);
+}
+
+#[test]
 fn meaning_index_rules() {
     let mut inputs = ok();
     inputs.semantic.quarantined_count = Some(3);
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Warn);
-    inputs.semantic.consecutive_load_failures = Some(2);
+    // Below the worker's cap the load is retried on its own.
+    inputs.semantic.consecutive_load_failures = Some(1);
+    assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Warn);
+    inputs.semantic.consecutive_load_failures =
+        Some(crate::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES);
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Error);
     inputs.semantic_enabled = false;
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Off);
+}
+
+#[test]
+fn meaning_index_without_a_model_is_off_not_healthy() {
+    // The default install: on, no model, the backlog only grows.
+    let mut inputs = ok();
+    inputs.semantic_model_installed = false;
+    inputs.semantic.backlog_count = 5_000;
+    assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Off);
+    inputs.capture.recording = false;
+    assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Off);
+}
+
+#[test]
+fn startup_that_crashed_is_an_error_not_a_wait() {
+    let mut inputs = ok();
+    inputs.startup = None;
+    inputs.ai.status = None;
+    inputs.startup_panicked = true;
+    let report = roll_up(&inputs);
+    assert_eq!(sev(&report, F::Startup), S::Error);
+    assert_eq!(sev(&report, F::AiEngine), S::Error);
 }
 
 #[test]

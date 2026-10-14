@@ -1688,8 +1688,27 @@ pub(crate) struct StartupReport {
 
 static STARTUP_REPORT: OnceLock<StartupReport> = OnceLock::new();
 
+/// Set when deferred startup unwound: the report then never lands and no
+/// workers spawned, which "still running" would otherwise disguise.
+static STARTUP_PANICKED: AtomicBool = AtomicBool::new(false);
+
 pub(crate) fn startup_report() -> Option<StartupReport> {
     STARTUP_REPORT.get().cloned()
+}
+
+pub(crate) fn startup_panicked() -> bool {
+    STARTUP_PANICKED.load(Ordering::Relaxed)
+}
+
+/// Flags [`STARTUP_PANICKED`] if dropped during an unwind.
+struct StartupPanicFlag;
+
+impl Drop for StartupPanicFlag {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            STARTUP_PANICKED.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Runs every startup task that does not need to complete before the window is
@@ -1705,6 +1724,7 @@ pub(crate) fn startup_report() -> Option<StartupReport> {
 /// (inside `run_startup_maintenance`) completes before the processing workers
 /// spawn — it is only safe while nothing is executing those jobs (ADR 0020).
 pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
+    let _panic_flag = StartupPanicFlag;
     // Defense in depth against a quit requested before deferred startup even
     // began (see also the gate in `run_deferred_startup`): if a graceful exit is
     // already in progress, there is nothing to spin up. Bail before running any

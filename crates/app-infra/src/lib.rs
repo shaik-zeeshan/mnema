@@ -1505,7 +1505,7 @@ impl AppInfra {
 
     pub async fn fail_queued_ocr_jobs_because_disabled(&self) -> Result<u64> {
         self.processing
-            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, "OCR is disabled")
+            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, processing::OCR_DISABLED_ERROR)
             .await
     }
 

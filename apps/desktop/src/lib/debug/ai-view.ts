@@ -57,15 +57,17 @@ export function engineView(status: AiRuntimeStatus | null, error: string | null)
 }
 
 /** A stat value split into number and unit: 18240 → ["18.2", "k"]. */
+// Unit cut-offs sit where the rounded value would reach the next unit, so
+// 999,950 reads "1M", not "1000k" (and 59,950 ms "1.0 min", not "60.0 s").
 export function tokenStat(n: number): [string, string] {
 	if (n < 1000) return [String(n), ""];
-	if (n < 1_000_000) return [(n / 1000).toFixed(1).replace(/\.0$/, ""), "k"];
+	if (n < 999_950) return [(n / 1000).toFixed(1).replace(/\.0$/, ""), "k"];
 	return [(n / 1_000_000).toFixed(1).replace(/\.0$/, ""), "M"];
 }
 
 export function durationStat(ms: number): [string, string] {
-	if (ms < 1000) return [String(Math.round(ms)), "ms"];
-	if (ms < 60_000) return [(ms / 1000).toFixed(1), "s"];
+	if (ms < 999.5) return [String(Math.round(ms)), "ms"];
+	if (ms < 59_950) return [(ms / 1000).toFixed(1), "s"];
 	return [(ms / 60_000).toFixed(1), "min"];
 }
 

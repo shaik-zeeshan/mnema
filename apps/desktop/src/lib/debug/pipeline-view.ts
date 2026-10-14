@@ -6,6 +6,7 @@
 
 import type { AppJobDto, ProcessorPipelineStatus, RecordingSettings, SemanticIndexStatusDto } from "$lib/types";
 import { DETAIL_SPECS, PROCESSOR_KEYS, type ProcessorKey } from "./detail/specs";
+import { isTransientError } from "./detail/jobs";
 import { toneOf, type Tone } from "./verdict";
 
 /** A node line, optionally toned. */
@@ -129,7 +130,7 @@ export function engineWords(key: ProcessorKey, settings: RecordingSettings | nul
 			? (config.modelId ?? "Meaning index")
 			: (PROVIDER_NAME[config.provider] ?? config.provider.replaceAll("_", " "));
 	if (!CLOUD.has(config.provider)) return `${name}, on this Mac`;
-	return lane && lane.retrying > 0 ? `${name}, cloud · can’t be reached` : `${name}, cloud`;
+	return lane && lane.retrying > 0 && isTransientError(lane.lastError) ? `${name}, cloud · can’t be reached` : `${name}, cloud`;
 }
 
 function avg(seconds: number | null): string {

@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import {
 	errorTitle,
 	filterCounts,
+	jobLogNeedle,
 	jobMessage,
 	jobProvider,
 	jobState,
@@ -47,12 +48,11 @@ describe("jobState", () => {
 		expect(jobState({ ...job("queued", null), modelLocked: true }, NOW)).toBe("preparing");
 	});
 
-	// Precedence matters: a parked job may also carry a stale backoff from before
-	// its model went away. The model is the reason it will not run next, so that
-	// is what the row must say.
-	it("prefers 'preparing' over 'retrying' when a parked job also has a backoff", () => {
+	// Precedence matters: the backend's `retrying` count includes deferred jobs
+	// whatever their model lock, so the Retrying filter must list them too.
+	it("prefers 'retrying' over 'preparing' when a parked job also has a backoff", () => {
 		expect(jobState({ ...job("queued", "2026-07-15 14:36:00"), modelLocked: true }, NOW)).toBe(
-			"preparing",
+			"retrying",
 		);
 	});
 
@@ -137,6 +137,14 @@ describe("subject + timeline target", () => {
 		expect(timelineTarget({ subjectType: "audio_segment", subjectId: 2291 })).toEqual({ kind: "audio", frameId: null, audioSegmentId: 2291 });
 		expect(timelineTarget({ subjectType: "frame", subjectId: 7 })).toEqual({ kind: "frame", frameId: 7, audioSegmentId: null });
 		expect(timelineTarget({ subjectType: "other", subjectId: 7 })).toBeNull();
+	});
+});
+
+describe("jobLogNeedle", () => {
+	it("matches the processing-job log line, not app-infra's cpu job lines", () => {
+		const needle = jobLogNeedle(42);
+		expect("processing job 42 retry requested from developer window".includes(needle)).toBe(true);
+		expect("[app-infra][jobs] captured panic in cpu job 42 (ocr): boom".includes(needle)).toBe(false);
 	});
 });
 

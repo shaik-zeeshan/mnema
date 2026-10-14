@@ -6,7 +6,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { formatClock } from "$lib/time-format";
   import { getDebugController } from "./state/controller.svelte";
-  import { formatRunning, verdict } from "./verdict";
+  import { formatRunning, healthVerdict } from "./verdict";
 
   const controller = getDebugController();
   const { health, capture } = controller;
@@ -16,11 +16,7 @@
     getVersion().then((v) => (version = v)).catch(() => {});
   });
 
-  const v = $derived.by(() => {
-    if (health.entries.length > 0) return verdict(health.entries);
-    if (health.error) return { tone: "danger" as const, text: "Can’t read health" };
-    return { tone: "off" as const, text: "Checking…" };
-  });
+  const v = $derived(healthVerdict(health.entries, health.error));
 
   // Earliest per-source start = when this recording began. Ticks with the
   // health poll, so it stops counting while paused (the right side says so).

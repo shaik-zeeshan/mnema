@@ -184,14 +184,14 @@ fn screen(inputs: &DebugHealthInputs) -> FeatureHealthDto {
         return paused(F::Screen, source);
     }
     // Privacy folds into Screen: apps that should be hidden but aren't.
-    if inputs.privacy_excluded_app_count > 0 && !inputs.privacy_filter_applied {
+    if inputs.privacy_unhidden_app_count > 0 {
         return row(
             F::Screen,
             S::Warn,
             format!(
                 "{} not hidden right now",
                 plural(
-                    inputs.privacy_excluded_app_count as i64,
+                    inputs.privacy_unhidden_app_count as i64,
                     "excluded app is",
                     "excluded apps are"
                 )
@@ -287,32 +287,44 @@ fn audio(
 fn disk(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     let disk = &inputs.capture.disk;
     let free = disk.free_bytes.map(gb);
-    // Thresholds follow the live session; while not recording, the floor.
-    let pause = disk
-        .pause_threshold_bytes
-        .unwrap_or(disk.reserve_floor_bytes);
-    let resume = disk
-        .resume_threshold_bytes
-        .unwrap_or(disk.reserve_floor_bytes);
     if low_disk(inputs) {
         return row(F::Disk, S::Warn, "Recording paused, disk almost full", free);
     }
-    match disk.free_bytes {
-        None => row(F::Disk, S::Info, "Couldn\u{2019}t read free space", None),
-        Some(bytes) if bytes < resume => row(
+    // Thresholds follow the live session. While not recording they're unknown
+    // (the pause point is the floor plus the next segment's estimate), so warn
+    // at the status popover's 5 GB instead of naming a number that's wrong.
+    match (
+        disk.free_bytes,
+        disk.pause_threshold_bytes,
+        disk.resume_threshold_bytes,
+    ) {
+        (None, ..) => row(F::Disk, S::Info, "Couldn\u{2019}t read free space", None),
+        (Some(bytes), Some(pause), Some(resume)) => {
+            let (severity, why) = if bytes < resume {
+                (S::Warn, "Getting low")
+            } else {
+                (S::Ok, "Plenty of room")
+            };
+            row(
+                F::Disk,
+                severity,
+                format!("{why}, pauses below {}", gb(pause)),
+                free,
+            )
+        }
+        (Some(bytes), ..) if bytes < LOW_DISK_WARN_BYTES => row(
             F::Disk,
             S::Warn,
-            format!("Getting low, pauses below {}", gb(pause)),
+            format!("Getting low, under {} free", gb(LOW_DISK_WARN_BYTES)),
             free,
         ),
-        Some(_) => row(
-            F::Disk,
-            S::Ok,
-            format!("Plenty of room, pauses below {}", gb(pause)),
-            free,
-        ),
+        (Some(_), ..) => row(F::Disk, S::Ok, "Plenty of room", free),
     }
 }
+
+/// Where the not-recording Disk row warns; matches the status popover's
+/// `LOW_DISK_WARN_BYTES` (`lib/shell/status-pop.ts`).
+const LOW_DISK_WARN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 // ── Pipeline lanes ─────────────────────────────────────────────────────────
 
@@ -342,11 +354,15 @@ fn retry_reason(provider: Option<&str>, last_error: Option<&str>) -> String {
 fn lane(
     inputs: &DebugHealthInputs,
     feature: F,
+    enabled: bool,
     processor: &str,
     noun: &str,
     verb: &str,
     provider: Option<&str>,
 ) -> FeatureHealthDto {
+    if !enabled {
+        return row(feature, S::Off, "Turned off", Some("off".into()));
+    }
     // An absent lane is idle: the query is a `GROUP BY`, so zero jobs = no row.
     let lane = inputs
         .pipeline
@@ -398,13 +414,31 @@ fn meaning_index(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     if !inputs.semantic_enabled {
         return row(F::MeaningIndex, S::Off, "Turned off", Some("off".into()));
     }
+    if !inputs.semantic_model_installed {
+        return row(
+            F::MeaningIndex,
+            S::Off,
+            "No model installed, search is keyword-only",
+            Some("off".into()),
+        );
+    }
     let semantic = &inputs.semantic;
     let behind = Some(format!("{} behind", thousands(semantic.backlog_count)));
-    if semantic.last_load_error.is_some() || semantic.consecutive_load_failures.unwrap_or(0) > 0 {
+    let load_failures = semantic.consecutive_load_failures.unwrap_or(0);
+    // The worker gives up at its cap; below it, the next pass retries the load.
+    if load_failures >= crate::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES {
         return row(
             F::MeaningIndex,
             S::Error,
             "Model won\u{2019}t load, search is keyword-only",
+            behind,
+        );
+    }
+    if load_failures > 0 || semantic.last_load_error.is_some() {
+        return row(
+            F::MeaningIndex,
+            S::Warn,
+            "Model didn\u{2019}t load, retrying",
             behind,
         );
     }
@@ -475,6 +509,7 @@ fn ai_engine(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     }
     let provider = ai.provider.unwrap_or("The provider");
     let (severity, why) = match ai.status.as_ref() {
+        None if inputs.startup_panicked => (S::Error, STARTUP_CRASHED.to_string()),
         None => (S::Info, "Waiting for startup checks".to_string()),
         Some(Ok(())) => (S::Ok, format!("{provider}, ready")),
         Some(Err(reason)) => ai_reason(reason, provider),
@@ -562,8 +597,13 @@ fn startup_pass_label(code: &str) -> &'static str {
     }
 }
 
+const STARTUP_CRASHED: &str = "Startup checks crashed, restart Mnema";
+
 fn startup(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     let Some(report) = inputs.startup.as_ref() else {
+        if inputs.startup_panicked {
+            return row(F::Startup, S::Error, STARTUP_CRASHED, None);
+        }
         return row(F::Startup, S::Info, "Running startup checks", None);
     };
     let duration = Some(format!("{:.1} s", report.duration_ms as f64 / 1000.0));
@@ -619,6 +659,7 @@ pub fn roll_up(inputs: &DebugHealthInputs) -> Vec<FeatureHealthDto> {
         lane(
             inputs,
             F::Reading,
+            inputs.ocr_enabled,
             ::app_infra::OCR_PROCESSOR,
             "frame",
             "read",
@@ -627,6 +668,7 @@ pub fn roll_up(inputs: &DebugHealthInputs) -> Vec<FeatureHealthDto> {
         lane(
             inputs,
             F::Transcription,
+            inputs.transcription_enabled,
             ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
             "recording",
             "transcribed",
@@ -635,6 +677,7 @@ pub fn roll_up(inputs: &DebugHealthInputs) -> Vec<FeatureHealthDto> {
         lane(
             inputs,
             F::Speakers,
+            inputs.speakers_enabled,
             ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
             "recording",
             "split by speaker",

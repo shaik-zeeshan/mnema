@@ -149,7 +149,7 @@ describe("mockup states", () => {
     const tip = "Can't reach ChatGPT right now — your sign-in is fine. Resumes on its own.";
     const i = input({
       transcriptionProvider: "deepgram",
-      pipeline: [lane("ocr"), lane("audio_transcription", { queued: 3, retrying: 3 })],
+      pipeline: [lane("ocr"), lane("audio_transcription", { queued: 3, retrying: 3, lastError: "connection refused" })],
       engine: { label: "offline", error: true, tip },
     });
     expect(catchingUp(i)).toEqual({
@@ -241,6 +241,13 @@ describe("catching up", () => {
     ).rows[0];
     expect(t.note).toEqual(["Deepgram rejected your key."]);
     expect(t.action).toEqual({ label: "Transcription settings", settings: "transcription" });
+  });
+  test("Deepgram retrying a non-network error stays neutral", () => {
+    const lastError = "invalid data found when processing input (moov atom not found)";
+    const t = catchingUp(
+      input({ transcriptionProvider: "deepgram", pipeline: [lane("audio_transcription", { queued: 1, retrying: 1, lastError })] }),
+    ).rows[0];
+    expect(t).toEqual({ name: "Transcribing", dot: "ring", tone: null, value: [{ num: "1" }, " clip"], note: ["Retrying on its own."] });
   });
   test("other provider retrying stays neutral", () => {
     const t = catchingUp(input({ pipeline: [lane("audio_transcription", { queued: 1, retrying: 1 })] })).rows[0];

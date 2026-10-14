@@ -94,6 +94,12 @@ pub struct TapHealth {
     pub sample_rate_hz: Option<u32>,
 }
 
+/// A watchdog trip with no tap up is the backoff retrying a rebuild whose
+/// start failed, not a fresh cause.
+fn is_retry_of_failed_start(tap_alive: bool, reason: RebuildReason) -> bool {
+    !tap_alive && reason == RebuildReason::ZeroWatchdog
+}
+
 /// The tap generation's live state, shared with the IOProc's queue.
 struct Generation {
     builder: SystemAudioSampleBuilder,
@@ -462,9 +468,14 @@ impl SystemAudioCaptureSession {
             self.rebuilds
         );
         let rate_before = self.tap_sample_rate_hz();
-        self.last_reason = Some(reason);
+        // A failed start leaves no tap, so no sound, so the watchdog trips and
+        // retries. That retry is still about the original cause (a dead or
+        // switched device), not "a long silence"; keep the reason on show.
+        if !is_retry_of_failed_start(self.tap.is_some(), reason) {
+            self.last_reason = Some(reason);
+            self.last_detail = None;
+        }
         self.last_rebuild_at = Some(SystemTime::now());
-        self.last_detail = None;
 
         // Full teardown of *both* tap and aggregate before anything else: it is
         // the only recovery the macOS-26 wedge responds to, and it is what makes
@@ -647,6 +658,15 @@ mod tests {
         );
         assert!(!poll_watchdog(&shared, start + secs(58)));
         assert!(poll_watchdog(&shared, start + secs(59)));
+    }
+
+    #[test]
+    fn a_watchdog_retry_of_a_failed_start_keeps_the_original_reason() {
+        assert!(is_retry_of_failed_start(false, RebuildReason::ZeroWatchdog));
+        // A live tap that went quiet is a real silence.
+        assert!(!is_retry_of_failed_start(true, RebuildReason::ZeroWatchdog));
+        // A new device event is a new cause even with no tap up.
+        assert!(!is_retry_of_failed_start(false, RebuildReason::DeviceDied));
     }
 
     #[test]

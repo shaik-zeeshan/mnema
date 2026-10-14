@@ -1089,16 +1089,16 @@ pub async fn get_or_generate_digest(
     let batch = match extracted {
         Ok(batch) => batch,
         Err(error) => {
-            // Log the failure kind plus the raw provider/transport error cut to
-            // 200 chars (the user-facing message is a lossy one-liner; the raw
-            // text's head carries the status code needed to tell "thinking mode
-            // rejected tool_choice" apart from a bad key or an outage). Cut
-            // because the body can echo prompt or output fragments, and user
-            // logs leave the machine.
+            // Log the failure kind plus the error's head (the user-facing
+            // message is a lossy one-liner; the head carries the status code
+            // needed to tell "thinking mode rejected tool_choice" apart from a
+            // bad key or an outage). `log_detail` drops the body and any quoted
+            // model output: both echo captured content, and user logs leave the
+            // machine.
             crate::native_capture::debug_log::log_warn(format!(
                 "digest: extraction FAILED for {range_kind} [{range_start_ms}..{range_end_ms}) ({}): {}",
                 error.failure_kind(),
-                truncate_chars(&error.to_string(), 200)
+                error.log_detail()
             ));
             // The ledger keeps the raw provider/transport detail for debugging;
             // the surface gets the one-sentence classification (rate limit,

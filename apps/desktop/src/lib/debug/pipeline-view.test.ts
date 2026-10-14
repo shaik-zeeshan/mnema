@@ -58,7 +58,7 @@ describe("processorRows", () => {
 	it("names the engine, flags an unreachable cloud provider, formats the average", () => {
 		const rows = processorRows(
 			ISSUES_HEALTH,
-			lanesOf({ audio_transcription: lane("audio_transcription", { queued: 3, retrying: 3, averageCompletedSecondsLast24h: 6.24 }), ocr: lane("ocr", { averageCompletedSecondsLast24h: 0.04 }) }),
+			lanesOf({ audio_transcription: lane("audio_transcription", { queued: 3, retrying: 3, averageCompletedSecondsLast24h: 6.24, lastError: "request timed out" }), ocr: lane("ocr", { averageCompletedSecondsLast24h: 0.04 }) }),
 			settings("deepgram"),
 		);
 		expect(rows.map((r) => r.key)).toEqual(["reading", "transcription", "speakers", "meaningIndex"]);
@@ -67,6 +67,11 @@ describe("processorRows", () => {
 		expect(rows[3]).toMatchObject({ why: "nomic-embed-text-v1.5, on this Mac", metric: "" });
 		expect(engineWords("transcription", settings("parakeet"), null)).toBe("Parakeet, on this Mac");
 		expect(engineWords("transcription", null, null)).toBe("");
+	});
+
+	it("does not call a cloud lane unreachable when its retries are not network errors", () => {
+		const l = lane("audio_transcription", { queued: 1, retrying: 1, lastError: "invalid data found when processing input (moov atom not found)" });
+		expect(engineWords("transcription", settings("deepgram"), l)).toBe("Deepgram, cloud");
 	});
 });
 
