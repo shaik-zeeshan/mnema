@@ -38,7 +38,9 @@
   const CAP = 10;
   const ATTN_CAP = 5;
 
-  // Each live conclusion lands in at most one group; pinned first, then confidence.
+  // Each live conclusion lands in at most one group, latest change first. Every
+  // date is evidence time (formed/supported = the cited activities' start), so a
+  // backlog distilled later doesn't read as new; fading is the decay write.
   const deltas = $derived.by(() => {
     const inRange = (ms: number) => ms >= startMs && ms < endMs;
     const out: Record<Kind, Conclusion[]> = { formed: [], strengthened: [], fading: [] };
@@ -49,8 +51,15 @@
       // `updatedAtMs` is the best available proxy for when the fade happened.
       else if (c.status === "faded" && inRange(c.updatedAtMs)) out.fading.push(c);
     }
-    const order = (a: Conclusion, b: Conclusion) => Number(b.pinned) - Number(a.pinned) || b.confidence - a.confidence;
-    return (["formed", "strengthened", "fading"] as Kind[]).map((kind) => ({ kind, rows: out[kind].sort(order) }));
+    const at: Record<Kind, (c: Conclusion) => number> = {
+      formed: (c) => c.formedAtMs,
+      strengthened: (c) => c.lastSupportedAtMs,
+      fading: (c) => c.updatedAtMs,
+    };
+    return (["formed", "strengthened", "fading"] as Kind[]).map((kind) => ({
+      kind,
+      rows: out[kind].sort((a, b) => at[kind](b) - at[kind](a) || b.confidence - a.confidence),
+    }));
   });
   const total = $derived(deltas.reduce((t, g) => t + g.rows.length, 0));
   // One cap across all groups; group heads keep the full counts.
@@ -156,8 +165,8 @@
       {/each}
       {#if total > CAP}
         <p class="more">
-          <span class="mx-label num">showing {CAP} of {total}</span>
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={onOpenSubjects}>View all in Subjects</button>
+          <span class="mx-label num">{CAP} latest</span>
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={onOpenSubjects}>See all</button>
         </p>
       {/if}
     {/if}

@@ -1063,13 +1063,8 @@ pub async fn distill_conclusions(
             }
         }
 
-        // started / last_supported = the most recent supporting Activity time
-        // (fallback: now if none resolved, though support_refs is non-empty here).
-        let last_supported_at_ms = support_refs
-            .iter()
-            .filter_map(|id| started_at_by_id.get(id).copied())
-            .max()
-            .unwrap_or(now);
+        let (formed_at_ms, last_supported_at_ms) =
+            support_span_ms(&support_refs, &started_at_by_id, now);
 
         // Confidence is resolved INSIDE the store's transaction as the
         // reinforcement ratchet (#9/#10): a new Conclusion forms at
@@ -1127,7 +1122,7 @@ pub async fn distill_conclusions(
                         support_refs.len(),
                         contradict_refs.len(),
                     ),
-                    formed_at_ms: last_supported_at_ms,
+                    formed_at_ms,
                     last_supported_at_ms,
                 },
                 support_refs.len(),
@@ -1378,6 +1373,24 @@ fn matching_dismissal<'a>(
         dismissal.subject.eq_ignore_ascii_case(subject)
             && dismissal.statement.eq_ignore_ascii_case(statement)
     })
+}
+
+/// A Conclusion's evidence-time span: `(formed, last_supported)` = the earliest
+/// and latest start of its supporting Activities. Both are dated by the activity
+/// the belief came from, never by when distillation ran (a backlog distilled days
+/// later keeps its activity dates), and "formed" is when that evidence began.
+/// `now` only if none resolve (support_refs is pre-filtered to known ids).
+fn support_span_ms(
+    support_refs: &[i64],
+    started_at_by_id: &HashMap<i64, i64>,
+    now: i64,
+) -> (i64, i64) {
+    let starts = || {
+        support_refs
+            .iter()
+            .filter_map(|id| started_at_by_id.get(id).copied())
+    };
+    (starts().min().unwrap_or(now), starts().max().unwrap_or(now))
 }
 
 /// Filter a list of Activity-id refs to the ones present in `valid_ids`,

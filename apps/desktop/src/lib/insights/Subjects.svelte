@@ -187,7 +187,10 @@
     for (const r of displayRows) out[convictionTierId(r)].push(r.subject);
     return out;
   });
-  const conclusionTotal = $derived(conclusions?.length ?? 0);
+  // "Conclusions" is always the visible set (Context's "Inferred", the status
+  // count): faded rows stay listed under their subject but aren't counted.
+  const isVisible = (c: Conclusion) => c.status === "visible";
+  const conclusionTotal = $derived(conclusions?.filter(isVisible).length ?? 0);
 
   // A set filter scopes the whole page below the lede to its matches.
   const listed = $derived(searching ? searchResults : displayRows);
@@ -198,7 +201,7 @@
     listed.slice(0, mapAll ? undefined : MAP_PAGE).map((r) => ({
       subject: r.subject,
       headline: r.headline,
-      count: r.conclusions.length,
+      count: r.conclusions.filter(isVisible).length,
       now: r.topConfidence,
       then: r.then,
       // One tick per distinct whole percent: a subject can hold 1,000+ conclusions.

@@ -1844,11 +1844,12 @@ impl UserContextStore {
         ))
     }
 
-    /// Number of non-dismissed Conclusions (the status-surface count).
+    /// Number of visible Conclusions — the one "conclusions" count every surface
+    /// shows (faded, dismissed and superseded rows are history, not conclusions).
     pub async fn count_conclusions(&self) -> Result<i64> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count FROM user_context_conclusions \
-             WHERE status NOT IN ('dismissed', 'superseded')",
+             WHERE status = 'visible'",
         )
         .fetch_one(self.db.read())
         .await?;
@@ -3582,8 +3583,8 @@ mod tests {
         assert_eq!(with_faded[0].id, visible);
         assert_eq!(with_faded[1].id, faded);
 
-        // count_conclusions excludes dismissed only.
-        assert_eq!(store.count_conclusions().await.expect("count"), 2);
+        // count_conclusions is the visible set only — faded is history.
+        assert_eq!(store.count_conclusions().await.expect("count"), 1);
         });
     }
 

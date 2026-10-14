@@ -367,8 +367,8 @@
         </div>
         <div class="mx-stat">
           <span class="mx-stat__label">Conclusions</span>
-          <span class="mx-stat__value">{shown.length}</span>
-          <span class="mx-stat__delta">{aboveFloor} above the display floor</span>
+          <span class="mx-stat__value">{aboveFloor}</span>
+          <span class="mx-stat__delta">{shown.length - aboveFloor} faded below the display floor</span>
         </div>
         <div class="mx-stat">
           <span class="mx-stat__label">Evidence</span>

@@ -175,6 +175,19 @@ fn dismissed_block_marks_supersede_rows_as_already_replaced() {
 }
 
 #[test]
+fn support_span_dates_by_supporting_activity_time_not_now() {
+    let started: HashMap<i64, i64> = [(1, 3_000), (2, 1_000), (3, 2_000)].into();
+    // Formed = earliest supporting activity, last supported = latest; the
+    // distillation run time (`now`) never leaks in while any ref resolves.
+    assert_eq!(
+        support_span_ms(&[1, 2, 3], &started, 99_000),
+        (1_000, 3_000)
+    );
+    assert_eq!(support_span_ms(&[3], &started, 99_000), (2_000, 2_000));
+    assert_eq!(support_span_ms(&[], &started, 99_000), (99_000, 99_000));
+}
+
+#[test]
 fn filter_known_refs_drops_unknown_and_dedups() {
     let valid: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
     // 9 is not in the set; the second `2` is a duplicate; order preserved.
