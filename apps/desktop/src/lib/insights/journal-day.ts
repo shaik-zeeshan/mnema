@@ -210,9 +210,19 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	for (let i = 1; i < coveredFrameTs.length; i++) {
 		const startMs = coveredFrameTs[i - 1];
 		const endMs = coveredFrameTs[i];
-		if (endMs - startMs >= AWAY_GAP_MIN_MS) {
-			gaps.push({ ...clamp({ startMs, endMs }), audio: audioIn(startMs, endMs) });
-		}
+		if (endMs - startMs < AWAY_GAP_MIN_MS) continue;
+		const gap = { ...clamp({ startMs, endMs }), audio: audioIn(startMs, endMs) };
+		// A lone frame between two gaps (a brief wake) makes them touch; that's
+		// one absence, not two stacked "Away" rows — unless an activity was
+		// written up over that frame, which must stay between them.
+		const last = gaps[gaps.length - 1];
+		const wakeWrittenUp = slots.some(
+			({ activity: a }) => a.startedAtMs <= startMs && startMs < Math.max(a.endedAtMs, a.startedAtMs + 1),
+		);
+		if (last && last.endMs === gap.startMs && !wakeWrittenUp) {
+			last.endMs = gap.endMs;
+			last.audio ||= gap.audio;
+		} else gaps.push(gap);
 	}
 
 	const failed = input.failedWindows

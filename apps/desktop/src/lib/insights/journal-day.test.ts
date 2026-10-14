@@ -56,6 +56,18 @@ describe("away-gap detection", () => {
     expect(model.gaps[0].endMs - model.gaps[0].startMs).toBeGreaterThanOrEqual(AWAY_GAP_MIN_MS);
   });
 
+  it("merges gaps that touch at a lone frame into one away-gap", () => {
+    // cluster [0..10min], lone frame at 17min, cluster [41..50min].
+    const frames = [...framesEvery(at(0), at(10), MIN), frame(at(17)), ...framesEvery(at(41), at(50), MIN)];
+    const model = buildJournalDay(baseInput({ frames, coveredUntilMs: at(60) }));
+    expect(model.gaps).toHaveLength(1);
+    expect(model.gaps[0].startMs).toBe(at(9));
+    expect(model.gaps[0].endMs).toBe(at(41));
+    // An activity written up over the lone frame keeps the two gaps apart.
+    const split = buildJournalDay(baseInput({ frames, coveredUntilMs: at(60), activities: [activity(at(17), at(17) + 30_000)] }));
+    expect(split.gaps).toHaveLength(2);
+  });
+
   it("does not flag sub-threshold gaps between frames", () => {
     // frames 4 min apart — below the 5-min threshold, so no away-gap.
     const frames = framesEvery(at(0), at(40), 4 * MIN);

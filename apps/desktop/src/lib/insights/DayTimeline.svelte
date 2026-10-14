@@ -464,12 +464,11 @@
   </div>
 {/snippet}
 
-<div class="in-jctl" use:inBar>
-  <DateInput mode="day" value={dayIso} align="end" {density} onchange={(r) => (dayIso = r.start)} />
-  <button type="button" class="mx-btn" disabled={atLatest} onclick={() => (dayIso = toIso(new Date()))}>Today</button>
-</div>
-
 <section class="in-jwrap" aria-label="Journal">
+  <div class="in-jctl" use:inBar>
+    <DateInput mode="day" value={dayIso} align="end" {density} onchange={(r) => (dayIso = r.start)} />
+    <button type="button" class="mx-btn" disabled={atLatest} onclick={() => (dayIso = toIso(new Date()))}>Today</button>
+  </div>
   {#if !riverLoadedOnce}
     <div aria-busy="true">
       <span class="mx-sr">Loading the day</span>

@@ -63,7 +63,7 @@
         <span><span class="in-sw" style="--c: var(--chart-grey-3)"></span>capture runs</span>
         <span>no activities · categories and focus need AI</span>
       {:else}
-        <span>activity by category</span>
+        <span>focus strip</span>
         {#each Object.values(FOCUS) as [token, label] (token)}
           <span><span class="in-sw" style="--c: var({token})"></span>{label.toLowerCase()}</span>
         {/each}

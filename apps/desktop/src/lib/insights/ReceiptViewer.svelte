@@ -23,6 +23,7 @@
   import { setPendingTimelineFocus } from "$lib/timeline/pending-focus";
   import {
     countCaptureSegments,
+    receiptFootage,
     framesPerSecond,
     initialPosterIndex,
     isAudibleSpeed,
@@ -520,12 +521,12 @@
         {/if}
         {#if currentMeta?.appName}<span class="in-screen__app">{currentMeta.appName}{currentMeta.windowTitle ? ` — ${currentMeta.windowTitle}` : ""}</span>{/if}
       </div>
-      {@render controls()}
+      <!-- One frame and no audio: nothing to play or scrub. -->
+      {#if strip.length > 1 || turns.length > 0}{@render controls()}{/if}
     </div>
     {@render turnList()}
     <div class="in-rfoot">
-      {strip.length} frame{strip.length === 1 ? "" : "s"} across {segmentCount} capture segment{segmentCount === 1 ? "" : "s"}
-      · {frameEvidence.length} frames + {audioEvidence.length} spoken segments cited
+      {receiptFootage(strip.length, segmentCount, frameEvidence.length, audioEvidence.length)}
     </div>
   {/if}
 </div>

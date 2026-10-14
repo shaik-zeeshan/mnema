@@ -10,6 +10,7 @@ import {
   countCaptureSegments,
   SPEEDS,
   isAudibleSpeed,
+  receiptFootage,
 } from "./receipt-playback";
 
 describe("LruCache eviction order", () => {
@@ -150,5 +151,14 @@ describe("countCaptureSegments", () => {
   });
   it("is 0 for no frames", () => {
     expect(countCaptureSegments([])).toBe(0);
+  });
+});
+
+describe("receiptFootage", () => {
+  it("pluralises each part and omits zero counts and a lone segment", () => {
+    expect(receiptFootage(1, 1, 1, 0)).toBe("1 frame · 1 frame cited");
+    expect(receiptFootage(12, 2, 3, 1)).toBe("12 frames across 2 capture segments · 3 frames + 1 spoken segment cited");
+    expect(receiptFootage(5, 1, 0, 2)).toBe("5 frames · 2 spoken segments cited");
+    expect(receiptFootage(5, 1, 0, 0)).toBe("5 frames");
   });
 });
