@@ -37,8 +37,8 @@
         {verb}{label.trim() ? ` ${label.trim()}` : " with OAuth"}
       </button>
       <p class="oauth__reassure">
-        Opens your browser to approve. Nothing is pasted here — only the returned token lands in your
-        macOS keychain.
+        Opens your browser to approve. Nothing is pasted here — only the returned token is kept,
+        stored encrypted on this Mac.
       </p>
     </div>
   {:else if stage === "authorizing"}

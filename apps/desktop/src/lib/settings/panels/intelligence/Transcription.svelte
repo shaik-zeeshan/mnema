@@ -235,7 +235,7 @@
   {#if rec.draftTranscriptionProvider === "deepgram"}
     <SettingRow
       label="Deepgram API key"
-      description={deepgramKeyPresent ? "Key saved to the macOS keychain." : "Paste the API key from your Deepgram account."}
+      description={deepgramKeyPresent ? "Key stored encrypted on this Mac." : "Paste the API key from your Deepgram account."}
       full
     >
       {#snippet control()}

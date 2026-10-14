@@ -6,6 +6,7 @@
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { formatLastDerived, distillationWithheldLine } from "$lib/settings/state/user-context.svelte";
+  import { POLICY_DAYS } from "$lib/insights/retention";
   import type { DerivationBudgetTier } from "$lib/types";
   import IconCheck from "~icons/lucide/check";
   import IconInfo from "~icons/lucide/info";
@@ -44,6 +45,18 @@
       refreshing = false;
     }
   }
+
+  // Backfill reaches `backfillWindowDays` back (worker.rs `backfill_floor_ms`),
+  // but nothing older than the retention window survives to be derived from.
+  const keepDays = $derived(POLICY_DAYS[rec.draftRetentionPolicy] ?? Infinity);
+  const reachDays = $derived(Math.min(rec.draftUserContextBackfillWindowDays, keepDays));
+  const historyReach = $derived(
+    rec.draftUserContextBackfillGoDeeper
+      ? keepDays === Infinity
+        ? "Reaches back to your first capture."
+        : `Reaches back about ${keepDays} days — everything you keep.`
+      : `Reaches back about ${reachDays} ${reachDays === 1 ? "day" : "days"}. Turn on to include everything you keep.`,
+  );
 
   const budgetGate = $derived(
     c.userContextCloudDefault ? null : c.userContextLocalDefault ? "Local models use fixed pacing." : "Choose a cloud default model first.",
@@ -140,7 +153,7 @@
 
   <SettingRow
     label="Derive all of history"
-    description="Reaches back about {rec.draftUserContextBackfillWindowDays} {rec.draftUserContextBackfillWindowDays === 1 ? 'day' : 'days'}."
+    description={historyReach}
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftUserContextBackfillGoDeeper} ariaLabel="Go deeper — derive all of history" />

@@ -414,7 +414,7 @@
   {/if}
   {#if storageBytes}
     {#if trackedMs !== null}<span class="mx-sep"></span>{/if}
-    <span class="num">{formatBytes(storageBytes)}</span>
+    <span><span class="num">{formatBytes(storageBytes)}</span> stored</span>
   {/if}
   {#if localOnly}
     {#if trackedMs !== null || storageBytes}<span class="mx-sep"></span>{/if}

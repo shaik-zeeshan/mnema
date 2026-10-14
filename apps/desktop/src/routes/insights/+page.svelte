@@ -279,6 +279,7 @@
         openDismissed={contextOpenDismissed}
         onOpenSubject={openSubject}
         providerKind={aiStatus?.defaultProviderKind ?? null}
+        providerName={aiStatus?.defaultModel ? providerLabel(aiStatus.defaultModel.provider) : null}
       />
     {/if}
   </section>

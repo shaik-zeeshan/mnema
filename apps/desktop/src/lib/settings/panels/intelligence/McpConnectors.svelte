@@ -103,7 +103,7 @@
   // The row's description line when no OAuth state sub-line applies.
   const hintFor = (badge: McpRowBadge, server: McpServerConfig): string =>
     badge === "secret"
-      ? "Secret in keychain"
+      ? "Secret stored encrypted"
       : badge === "authorized"
         ? "Authorized"
         : server.transport === "stdio"
@@ -261,7 +261,7 @@
         </SettingRow>
       </div>
     {/each}
-    <SettingRow label="Add a connector" description="Secrets live only in the macOS keychain; removing a connector deletes its secret.">
+    <SettingRow label="Add a connector" description="Secrets are stored encrypted on this Mac, never in settings; removing a connector deletes its secret.">
       {#snippet control()}
         <button class="mx-btn" type="button" onclick={openPicker}><IconPlus width="13" height="13" aria-hidden="true" />Add connector…</button>
       {/snippet}

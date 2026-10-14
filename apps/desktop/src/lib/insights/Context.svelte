@@ -18,7 +18,8 @@
   import type { AiProviderKind, AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
   import { aiProviderKindLabel, isCloudAiProviderKind } from "$lib/settings/state/ai-providers";
   import { humanizeError } from "$lib/format-error";
-  import ContextSide, { GUARDED, TOPICS, topicColor } from "$lib/insights/ContextSide.svelte";
+  import ContextSide, { GUARDED } from "$lib/insights/ContextSide.svelte";
+  import { TOPICS, topicColor } from "$lib/insights/context-topics";
   import IconPlus from "~icons/lucide/plus";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
@@ -35,8 +36,10 @@
     /** The default model's provider kind — where statements go (null: no default).
      * The shell owns it and re-reads it on Settings / sign-in changes. */
     providerKind?: AiProviderKind | null;
+    /** That provider instance's display name (e.g. "openrouter"); falls back to the kind. */
+    providerName?: string | null;
   }
-  let { openDismissed = false, onOpenSubject, providerKind = null }: Props = $props();
+  let { openDismissed = false, onOpenSubject, providerKind = null, providerName = null }: Props = $props();
 
   // Per-statement limit (ruling #15); the add/update commands enforce it too.
   const MAX_CHARS = 280;
@@ -269,10 +272,10 @@
         {#if providerKind}
           <div class="in-compose__priv">
             {#if isCloudAiProviderKind(providerKind)}
-              <IconCloud width="13" height="13" aria-hidden="true" />Goes to {aiProviderKindLabel(providerKind)} each time Mnema
+              <IconCloud width="13" height="13" aria-hidden="true" />Goes to {providerName ?? aiProviderKindLabel(providerKind)} each time Mnema
               forms conclusions · stays on this Mac with a local model.
             {:else}
-              <IconLaptop width="13" height="13" aria-hidden="true" />Stays on this Mac — {aiProviderKindLabel(providerKind)} forms
+              <IconLaptop width="13" height="13" aria-hidden="true" />Stays on this Mac — {providerName ?? aiProviderKindLabel(providerKind)} forms
               conclusions locally.
             {/if}
           </div>

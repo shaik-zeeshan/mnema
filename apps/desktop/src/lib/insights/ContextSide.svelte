@@ -1,14 +1,4 @@
 <script lang="ts" module>
-  /** The fixed authored-context topics (IMPLEMENTATION.md §8 #9), each on a
-   *  category swatch: Work · Preferences · People · Goals, or none. */
-  export const TOPICS: { name: string; color: string }[] = [
-    { name: "Work", color: "var(--cat-creating)" },
-    { name: "Preferences", color: "var(--cat-organizing)" },
-    { name: "People", color: "var(--cat-communication)" },
-    { name: "Goals", color: "var(--cat-learning)" },
-  ];
-  export const topicColor = (t: string | null) =>
-    TOPICS.find((x) => x.name === t)?.color ?? "var(--chart-grey-3)";
   /** guardrail.rs `SensitiveCategory` — five, in enum order. */
   const SENSITIVE: [string, string?][] = [
     ["health & mental health"],
@@ -22,13 +12,14 @@
 
 <script lang="ts">
   // Context side column (insights.html renderContext `.in-side`): what the
-  // dossier is built from (authored per topic, counted client-side; inferred is
+  // dossier is built from (authored per topic via `topicCounts`; inferred is
   // the grey share of the total), the strongest inferred views, the guardrail,
   // and the Dismissed archive. Presentational — Context owns the data.
   import { tip } from "$lib/components/tooltip";
   import type { AuthoredContext, Conclusion, DismissedView } from "$lib/types/recording";
   import IconLock from "~icons/lucide/lock";
   import IconInbox from "~icons/lucide/inbox";
+  import { topicCounts } from "$lib/insights/context-topics";
 
   interface Props {
     authored: AuthoredContext[];
@@ -46,8 +37,8 @@
 
   const n = $derived(authored.length);
   const inferredCount = $derived(inferred?.length ?? 0);
-  const byTopic = $derived(TOPICS.map((t) => authored.filter((s) => s.topic === t.name).length));
-  const maxTopic = $derived(Math.max(1, ...byTopic));
+  const byTopic = $derived(topicCounts(authored));
+  const maxTopic = $derived(Math.max(1, ...byTopic.map((t) => t.count)));
   // Same pick as before the redesign: the top 3 visible conclusions by confidence.
   const strongest = $derived([...(inferred ?? [])].sort((a, b) => b.confidence - a.confidence).slice(0, 3));
 
@@ -73,13 +64,13 @@
       <span><span class="in-sw in-sw--hatch" style="--c:var(--chart-grey-4)"></span>inferred <b>{inferredCount}</b></span>
     </div>
     {#if n}
-      {#each TOPICS as t, i (t.name)}
+      {#each byTopic as t, i (t.name)}
         <div class="in-mix__row">
           <span><span class="in-sw" style="--c:{t.color}"></span>{t.name}</span>
-          <div class="in-mix__bar" style="width:{(byTopic[i] / maxTopic) * 100}%;--c:{t.color}">
-            {#if byTopic[i]}<i class="a" style="--d:{i}"></i>{/if}
+          <div class="in-mix__bar" style="width:{(t.count / maxTopic) * 100}%;--c:{t.color}">
+            {#if t.count}<i class="a" style="--d:{i}"></i>{/if}
           </div>
-          <span class="num"><b>{byTopic[i]}</b></span>
+          <span class="num"><b>{t.count}</b></span>
         </div>
       {/each}
     {/if}
