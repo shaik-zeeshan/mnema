@@ -274,9 +274,6 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
 /// `%2F`/`%2f` into sub-parts (see `process_segment`) and run the same arming
 /// logic across the sub-parts.
 fn redact_path(path: &str) -> String {
-    let mut redacted_count = 0usize;
-    let mut passed_count = 0usize;
-
     let segments: Vec<&str> = path.split('/').collect();
     let mut out: Vec<String> = Vec::with_capacity(segments.len());
     // Track the previous NON-EMPTY raw sub-part as the arming predecessor;
@@ -287,21 +284,12 @@ fn redact_path(path: &str) -> String {
             out.push(String::new());
             continue;
         }
-        let processed = process_segment(
-            segment,
-            &mut prev_keyword,
-            &mut redacted_count,
-            &mut passed_count,
-        );
-        out.push(processed);
+        out.push(process_segment(segment, &mut prev_keyword));
     }
 
-    // Observability: one debug line per call. Never logs URL contents at info
-    // level; the counts keep the residual observable.
-    log::debug!(
-        "brokered url_guard positional-arming: redacted={redacted_count} passed={passed_count}"
-    );
-
+    // ponytail: no per-URL log line. This runs once per search hit and per
+    // indexed document (thousands of lines a day); add a per-call summary at
+    // the caller if redaction rates ever need watching in the field.
     out.join("/")
 }
 
@@ -518,12 +506,7 @@ fn host_is_local_name(host: &str) -> bool {
 ///
 /// `prev_keyword` is threaded through so arming carries across the whole
 /// segment (and into the next segment via the last sub-part).
-fn process_segment(
-    segment: &str,
-    prev_keyword: &mut Option<String>,
-    redacted_count: &mut usize,
-    passed_count: &mut usize,
-) -> String {
+fn process_segment(segment: &str, prev_keyword: &mut Option<String>) -> String {
     // Split on `%2F`/`%2f` (encoded slash), `;` (matrix / path-parameter
     // delimiter, e.g. `;jsessionid=<token>`), and `=` (so the VALUE of a
     // `name=value` path parameter becomes its own sub-part, with `name` as its
@@ -564,17 +547,14 @@ fn process_segment(
             // opaque `len >= 12` token regardless of character class (hyphens
             // included — the hyphen-word-slug exemption is dropped here).
             rebuilt.push_str(ARMED_TOKEN_PLACEHOLDER);
-            *redacted_count += 1;
         } else if !carrier_rescues && is_backstop_token(part) {
             // High-entropy backstop: an opaque token with no armed predecessor
             // that the carrier did not rescue. UUIDs, all-hex SHAs, and
             // hyphen-word slugs are excluded inside `is_backstop_token`.
             rebuilt.push_str(ARMED_TOKEN_PLACEHOLDER);
-            *redacted_count += 1;
         } else {
             // Known-shape redaction within this single sub-part.
             rebuilt.push_str(&redact_known_shape(part));
-            *passed_count += 1;
         }
         // The current (raw) sub-part becomes the predecessor for the next one
         // (within this segment and, for the last sub-part, the next segment).

@@ -162,12 +162,16 @@ impl Database {
         )?
         .key();
 
-        // Observability: a non-empty `-wal` sidecar at open time implies the
-        // Owner exited uncleanly (it would otherwise have checkpointed and
-        // truncated the WAL on a clean close).
+        // Debug, not Warn: a non-empty `-wal` is the normal state while the Owner
+        // is running (it only truncates the WAL on a clean close), which is
+        // exactly when Ask AI and most CLI calls open a brokered reader. Only
+        // with the Owner gone does it point at an unclean exit, and the reader
+        // can't tell those apart without probing the Owner's directory lock
+        // (which could race the app's own startup). Either way the recovery
+        // read below folds the WAL in, so nothing needs attention.
         if wal_sidecar_is_non_empty(&database_path) {
-            capture_runtime::warn_log!(
-                "[app-infra] brokered reader opening with non-empty -wal (owner exited uncleanly?)"
+            capture_runtime::debug_log!(
+                "[app-infra] brokered reader opening with non-empty -wal (owner running or exited uncleanly)"
             );
         }
 
