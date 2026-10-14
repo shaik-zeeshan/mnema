@@ -108,12 +108,6 @@
   [data-theme="light"] .settings-shell .debug-log-status__path {
     color: var(--app-text-muted);
   }
-  [data-theme="light"] .settings-shell .debug-log-status__dot {
-    background: var(--app-text-faint);
-  }
-  [data-theme="light"] .settings-shell .debug-log-status__dot--on {
-    background: var(--app-accent);
-  }
 
   .settings-shell .privacy-disclosure {
     display: grid;

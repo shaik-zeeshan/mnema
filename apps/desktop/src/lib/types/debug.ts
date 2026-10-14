@@ -3,7 +3,7 @@
 // Hand-mirrored from Rust per repo convention (no codegen). Sources:
 //   • `DebugSeverity` / `DebugFeature` / `FeatureHealthDto`
 //       → apps/desktop/src-tauri/src/debug_health.rs
-//   • `AppLogFile` / `AppLogTailDto`
+//   • `AppLogTailDto`
 //       → apps/desktop/src-tauri/src/debug_status.rs (tail_app_log)
 //   • `ProcessorPipelineStatus` / `ProcessingJobListing`
 //       → crates/app-infra/src/processing/store.rs
@@ -47,9 +47,6 @@ export interface FeatureHealthDto {
 }
 
 // ─── Log tail (tail_app_log) ───────────────────────────────────────────────
-
-/** The two logs the app writes. Wire: serde `rename_all = "camelCase"`. */
-export type AppLogFile = "rust" | "nativeCapture";
 
 export interface AppLogTailDto {
 	/** Resolved on-disk path — shown so the reader knows where this came from. */

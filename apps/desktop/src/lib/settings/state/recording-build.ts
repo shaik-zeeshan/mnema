@@ -161,7 +161,6 @@ export interface RecordingDraftState {
   draftSystemAudioActivitySensitivity: number;
   draftMicrophoneVadAdapter: MicrophoneVadAdapter;
 
-  draftNativeCaptureDebugLoggingEnabled: boolean;
   draftDeveloperOptionsEnabled: boolean;
   draftPreviewCacheTtlSeconds: number;
 
@@ -376,7 +375,6 @@ export function buildRecDomainRequest(
     case "developer":
       return {
         developerOptionsEnabled: rec.draftDeveloperOptionsEnabled,
-        nativeCaptureDebugLoggingEnabled: rec.draftNativeCaptureDebugLoggingEnabled,
       };
     case "access":
       return {
@@ -520,7 +518,6 @@ export function buildRecDomainRequestFromSettings(
     case "developer":
       return {
         developerOptionsEnabled: s.developerOptionsEnabled ?? false,
-        nativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled ?? false,
       };
     case "access":
       return {

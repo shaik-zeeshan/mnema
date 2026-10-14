@@ -102,7 +102,6 @@
   const loadSemanticSearchModelStatus = () => c.loadSemanticSearchModelStatus();
   const loadSemanticSearchSupportedModels = () => c.loadSemanticSearchSupportedModels();
   const loadPersonProfileCount = () => c.loadPersonProfileCount();
-  const loadDebugLogStatus = () => c.logs.loadDebugLogStatus();
   const loadGeneralLogStatus = () => c.logs.loadGeneralLogStatus();
   const loadAppUpdateStatus = () => c.about.loadAppUpdateStatus();
   const loadThirdPartyNotices = () => c.about.loadThirdPartyNotices();
@@ -429,7 +428,6 @@
       void loadSemanticSearchModelStatus();
       void loadSemanticSearchSupportedModels();
       void loadPersonProfileCount();
-      loadDebugLogStatus();
       loadGeneralLogStatus();
       loadAppUpdateStatus();
       void loadThirdPartyNotices();

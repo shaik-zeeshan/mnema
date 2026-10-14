@@ -31,9 +31,9 @@ use capture_types::{
     AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
     CaptureOutputFiles, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
     CaptureSources, CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
-    NativeCaptureDebugLogStatus, NativeCaptureSessionResponse, OcrProvider, OcrSettings,
-    RecordingSettings, RecordingSettingsDomainUpdateResponse, ScreenResolution,
-    ScreenResolutionPreset, SettingsOwnershipDomain, StartNativeCaptureRequest,
+    NativeCaptureSessionResponse, OcrProvider, OcrSettings, RecordingSettings,
+    RecordingSettingsDomainUpdateResponse, ScreenResolution, ScreenResolutionPreset,
+    SettingsOwnershipDomain, StartNativeCaptureRequest,
     UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
     UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest,
@@ -46,8 +46,7 @@ use capture_types::{
 use capture_vad::configured_adapter_as_str;
 use settings::{
     apply_recording_settings_domain_mutation, apply_recording_settings_domain_patch,
-    apply_recording_settings_update, current_auto_start,
-    current_native_capture_debug_logging_enabled, current_recording_settings,
+    apply_recording_settings_update, current_auto_start, current_recording_settings,
     initialize_recording_settings_state_from_disk, RecordingSettingsDomainPatch,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1794,11 +1793,10 @@ fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str
 
 fn recording_settings_overview(settings: &RecordingSettings) -> String {
     format!(
-        "sources={}, auto_start={}, save_directory='{}', debug_logging={}, preview_cache_ttl_seconds={}, follow_timeline_live={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
+        "sources={}, auto_start={}, save_directory='{}', preview_cache_ttl_seconds={}, follow_timeline_live={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
         format_capture_source_flags(&capture_sources_from_settings(settings)),
         settings.auto_start,
         settings.save_directory,
-        settings.native_capture_debug_logging_enabled,
         settings.preview_cache_ttl_seconds,
         settings.follow_timeline_live,
         settings.segment_duration_seconds,
@@ -1833,14 +1831,6 @@ fn describe_recording_settings_changes(
         changes.push(format!(
             "auto_start {} -> {}",
             previous.auto_start, next.auto_start
-        ));
-    }
-
-    if previous.native_capture_debug_logging_enabled != next.native_capture_debug_logging_enabled {
-        changes.push(format!(
-            "debug_logging {} -> {}",
-            previous.native_capture_debug_logging_enabled,
-            next.native_capture_debug_logging_enabled
         ));
     }
 
@@ -2991,10 +2981,6 @@ pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     let loaded = initialize_recording_settings_state_from_disk(app_handle, settings_state.inner());
 
     debug_log::set_app_debug_logging_enabled(loaded.settings.developer_options_enabled);
-    debug_log::configure(
-        app_handle,
-        loaded.settings.native_capture_debug_logging_enabled,
-    );
     log_loaded_recording_settings(loaded.source, &loaded.settings);
 }
 
@@ -3048,46 +3034,11 @@ fn finish_recording_settings_update(
     let previous_settings = update.previous_settings;
     let previous_save_directory = update.previous_save_directory;
     let save_directory_changed = update.save_directory_changed;
-    let debug_logging_enabled_changed = update.debug_logging_enabled_changed;
-
-    if previous_settings.native_capture_debug_logging_enabled
-        && !settings.native_capture_debug_logging_enabled
-    {
-        log_recording_settings_changes(&previous_settings, &settings);
-
-        if save_directory_changed {
-            debug_log::log_info(format!(
-                "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
-                previous_save_directory, settings.save_directory
-            ));
-        }
-    }
 
     debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
-    debug_log::configure(app_handle, settings.native_capture_debug_logging_enabled);
+    log_recording_settings_changes(&previous_settings, &settings);
 
-    if !previous_settings.native_capture_debug_logging_enabled
-        && settings.native_capture_debug_logging_enabled
-    {
-        reset_capture_log_snapshots();
-    }
-
-    if settings.native_capture_debug_logging_enabled {
-        if debug_logging_enabled_changed {
-            debug_log::log_info(format!(
-                "native capture debug logging {}",
-                if previous_settings.native_capture_debug_logging_enabled {
-                    "re-enabled"
-                } else {
-                    "enabled"
-                }
-            ));
-        }
-
-        log_recording_settings_changes(&previous_settings, &settings);
-    }
-
-    if save_directory_changed && settings.native_capture_debug_logging_enabled {
+    if save_directory_changed {
         debug_log::log_info(format!(
             "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
             previous_save_directory, settings.save_directory
@@ -3309,36 +3260,6 @@ pub fn get_recording_settings(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> RecordingSettings {
     current_recording_settings(state.inner())
-}
-
-#[tauri::command]
-pub fn get_native_capture_debug_log_status(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
-) -> NativeCaptureDebugLogStatus {
-    let enabled = current_native_capture_debug_logging_enabled(state.inner());
-
-    debug_log::status(&app_handle, enabled)
-}
-
-#[tauri::command]
-pub fn open_native_capture_debug_log(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
-) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
-    let enabled = current_native_capture_debug_logging_enabled(state.inner());
-
-    debug_log::open(&app_handle, enabled)
-}
-
-#[tauri::command]
-pub fn delete_native_capture_debug_log(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
-) -> Result<NativeCaptureDebugLogStatus, CaptureErrorResponse> {
-    let enabled = current_native_capture_debug_logging_enabled(state.inner());
-
-    debug_log::delete(&app_handle, enabled)
 }
 
 #[tauri::command]

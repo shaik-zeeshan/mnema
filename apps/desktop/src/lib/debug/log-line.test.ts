@@ -30,12 +30,6 @@ describe("parseLogLine", () => {
 		expect(plain?.message).toBe("embedded 64 passages");
 	});
 
-	it("parses a capture-log line (unix ms, no level)", () => {
-		const ms = Date.UTC(2026, 9, 13, 15, 1, 26, 5);
-		const line = parseLogLine(`[${ms}] screen: segment 2296 finalized`);
-		expect(line).toEqual({ time: `${localHms(new Date(ms))}.005`, level: null, target: null, prefix: "screen:", message: "segment 2296 finalized" });
-	});
-
 	it("returns null for a continuation line", () => {
 		expect(parseLogLine("   0: std::backtrace::Backtrace::create")).toBeNull();
 		expect(parseLogLine("")).toBeNull();

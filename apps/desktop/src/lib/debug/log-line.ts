@@ -1,18 +1,17 @@
 // One app-log line, parsed for the Logs tab. Pure, so `bun test` can import it
 // (a runes module can't be).
 //
-// Two on-disk shapes:
-//   rust.log                  `[2026-10-13][15:01:26][mnema_lib::semantic_search_worker][INFO] message`
-//   native-capture-debug.log  `[1760367686123] message`   (unix ms, no level)
+// rust.log lines look like
+//   `[2026-10-13][15:01:26][mnema_lib::semantic_search_worker][INFO] message`
 // Anything else (a panic backtrace, a multi-line message) is a continuation line.
 
 export interface LogLine {
 	/** Local wall clock, `HH:MM:SS` (+ `.mmm` when the source has millis). */
 	time: string;
-	/** `INFO` / `WARN` / `ERROR` / `DEBUG` / `TRACE`; null in the capture log. */
-	level: string | null;
-	/** The real module path, e.g. `capture_system_audio::rebuild`; null in the capture log. */
-	target: string | null;
+	/** `INFO` / `WARN` / `ERROR` / `DEBUG` / `TRACE`. */
+	level: string;
+	/** The real module path, e.g. `capture_system_audio::rebuild`. */
+	target: string;
 	/** The bold lead: the message's own tag (`system-audio-tap:`, `[app-infra]`), else the target's last segment. */
 	prefix: string;
 	/** The message without its tag. */
@@ -21,7 +20,6 @@ export interface LogLine {
 
 const RUST_LINE =
 	/^\[(\d{4})-(\d{2})-(\d{2})\]\[(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?\]\[([^\]]*)\]\[([A-Z]+)\] ?(.*)$/;
-const CAPTURE_LINE = /^\[(\d{10,})\] ?(.*)$/;
 /** A leading `tag:` or `[tag]` — the convention the capture crates and app-infra log with. */
 const MESSAGE_TAG = /^(\[[\w:.-]+\]|[\w.-]+:)\s+(.*)$/;
 
@@ -47,10 +45,6 @@ export function parseLogLine(raw: string): LogLine | null {
 		const date = new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +s, ms));
 		const lastSegment = target.split("::").pop() ?? target;
 		return { time: localClock(date, frac != null), level, target, ...split(text, lastSegment) };
-	}
-	const capture = CAPTURE_LINE.exec(raw);
-	if (capture) {
-		return { time: localClock(new Date(Number(capture[1])), true), level: null, target: null, ...split(capture[2], "") };
 	}
 	return null;
 }

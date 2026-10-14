@@ -9,7 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::Manager;
 
 use crate::app_infra::AppInfraState;
@@ -145,18 +145,6 @@ pub async fn list_user_context_derivation_runs(
         .map_err(|error| format!("failed to list derivation runs: {error}"))
 }
 
-/// Which log file to tail. A closed enum, never a caller-supplied path: the
-/// debug page can only reach the two logs the app itself writes, so there is no
-/// path-traversal surface (`../../../etc/passwd` does not deserialize).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AppLogFile {
-    /// The `tauri-plugin-log` application log (`rust.log`).
-    Rust,
-    /// The native-capture debug log (`native-capture-debug.log`).
-    NativeCapture,
-}
-
 /// The last `lines` lines of one app log.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -232,27 +220,23 @@ fn tail_lines(path: &std::path::Path, lines: usize) -> std::io::Result<Vec<Strin
         .collect())
 }
 
-fn app_log_path(app_handle: &tauri::AppHandle, file: AppLogFile) -> Result<PathBuf, String> {
-    match file {
-        AppLogFile::Rust => app_handle
-            .path()
-            .app_log_dir()
-            .map(|dir| dir.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
-            .map_err(|error| format!("failed to resolve application log path: {error}")),
-        AppLogFile::NativeCapture => Ok(
-            crate::native_capture::debug_log::native_capture_debug_log_path(app_handle),
-        ),
-    }
+/// The `tauri-plugin-log` application log (`rust.log`). The path is fixed, never
+/// caller-supplied, so the debug page has no path-traversal surface.
+fn app_log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_handle
+        .path()
+        .app_log_dir()
+        .map(|dir| dir.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
+        .map_err(|error| format!("failed to resolve application log path: {error}"))
 }
 
 // Async so the file read runs off the main thread.
 #[tauri::command]
 pub async fn tail_app_log(
     app_handle: tauri::AppHandle,
-    file: AppLogFile,
     lines: Option<usize>,
 ) -> Result<AppLogTailDto, String> {
-    let path = app_log_path(&app_handle, file)?;
+    let path = app_log_path(&app_handle)?;
     let lines = lines.unwrap_or(200).clamp(1, MAX_TAIL_LINES);
     let tail = tail_lines(&path, lines)
         .map_err(|error| format!("failed to read log '{}': {error}", path.display()))?;
@@ -376,20 +360,5 @@ mod tests {
         let whole = tail_lines(&log, usize::MAX).expect("whole file should read");
         assert_eq!(whole.len(), count + 1);
         assert_eq!(whole[0], "line 00000000 padding padding pad");
-    }
-
-    #[test]
-    fn app_log_file_deserializes_only_the_two_known_logs() {
-        assert_eq!(
-            serde_json::from_str::<AppLogFile>("\"rust\"").expect("rust log should parse"),
-            AppLogFile::Rust
-        );
-        assert_eq!(
-            serde_json::from_str::<AppLogFile>("\"nativeCapture\"")
-                .expect("native capture log should parse"),
-            AppLogFile::NativeCapture
-        );
-        // No caller-supplied path can reach the reader.
-        assert!(serde_json::from_str::<AppLogFile>("\"../../etc/passwd\"").is_err());
     }
 }

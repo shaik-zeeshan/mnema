@@ -16,24 +16,17 @@
   const logs = c.logs;
 
   // ─── c.logs read aliases ────────────────────────────────────────────────
-  const debugLogStatus = $derived(logs.debugLogStatus);
-  const loadingDebugLogStatus = $derived(logs.loadingDebugLogStatus);
-  const openingDebugLog = $derived(logs.openingDebugLog);
-  const deletingDebugLog = $derived(logs.deletingDebugLog);
-  const debugLogDeleted = $derived(logs.debugLogDeleted);
   const generalLogStatus = $derived(logs.generalLogStatus);
   const loadingGeneralLogStatus = $derived(logs.loadingGeneralLogStatus);
   const openingGeneralLog = $derived(logs.openingGeneralLog);
   const deletingGeneralLog = $derived(logs.deletingGeneralLog);
   const generalLogDeleted = $derived(logs.generalLogDeleted);
 
-  // NOTE: `debugLogError` / `generalLogError` are written by the markup, so they
-  // reference the store directly (`logs.X`, which has setters) rather than
-  // read-only `$derived` aliases.
+  // NOTE: `generalLogError` is written by the markup, so it references the
+  // store directly (`logs.generalLogError`, which has a setter) rather than a
+  // read-only `$derived` alias.
 
   // ─── method wrappers ────────────────────────────────────────────────────
-  const openDebugLog = () => logs.openDebugLog();
-  const deleteDebugLog = () => logs.deleteDebugLog();
   const openGeneralLog = () => logs.openGeneralLog();
   const deleteGeneralLog = () => logs.deleteGeneralLog();
 
@@ -71,88 +64,6 @@
       {/snippet}
     </SettingRow>
   </div>
-
-  <SettingRow
-    label="Native capture debug logging"
-    description="Write native capture diagnostic output to a log file on disk for troubleshooting. Changes auto-save and apply immediately."
-  >
-    {#snippet control()}
-      <Switch bind:checked={rec.draftNativeCaptureDebugLoggingEnabled} ariaLabel="Native capture debug logging" />
-    {/snippet}
-  </SettingRow>
-
-  {#if debugLogStatus || loadingDebugLogStatus || logs.debugLogError}
-    <SettingRow label="Native capture log" description="Where diagnostic output is written on disk." full>
-      {#snippet control()}
-        <div class="dev-log">
-          {#if debugLogStatus}
-            <div class="debug-log-status">
-              <div class="debug-log-status__row">
-                <span class="debug-log-status__label">Status</span>
-                <span class="debug-log-status__value">
-                  {#if debugLogStatus.enabled}
-                    <span class="debug-log-status__dot debug-log-status__dot--on"></span> Active
-                  {:else}
-                    <span class="debug-log-status__dot"></span> Inactive
-                  {/if}
-                </span>
-              </div>
-              <div class="debug-log-status__row">
-                <span class="debug-log-status__label">Path</span>
-                <span class="debug-log-status__path" use:tip={debugLogStatus.path}>{debugLogStatus.path}</span>
-              </div>
-              <div class="debug-log-status__row">
-                <span class="debug-log-status__label">File</span>
-                <span class="debug-log-status__value">{debugLogStatus.exists ? "Exists on disk" : "Not found"}</span>
-              </div>
-            </div>
-
-            <div class="debug-log-actions">
-              <button
-                type="button"
-                class="mx-btn mx-btn--sm"
-                onclick={openDebugLog}
-                disabled={openingDebugLog}
-                aria-busy={openingDebugLog}
-              >
-                {#if openingDebugLog}
-                  <ButtonSpinner />Opening…
-                {:else if debugLogStatus.exists}
-                  Open Log File
-                {:else}
-                  Open Containing Folder
-                {/if}
-              </button>
-              {#if debugLogStatus.exists}
-                <button
-                  type="button"
-                  class="mx-btn mx-btn--danger mx-btn--sm"
-                  onclick={deleteDebugLog}
-                  disabled={deletingDebugLog}
-                  aria-busy={deletingDebugLog}
-                >
-                  {#if deletingDebugLog}<ButtonSpinner />Deleting…{:else}Delete Log File{/if}
-                </button>
-              {/if}
-              {#if debugLogDeleted}
-                <span class="saved-badge">✓ Deleted</span>
-              {/if}
-            </div>
-          {:else if loadingDebugLogStatus}
-            <p class="loading-text">Loading log status…</p>
-          {/if}
-
-          {#if logs.debugLogError}
-            <div class="inline-error">
-              <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
-              <span class="inline-error__msg">{logs.debugLogError}</span>
-              <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}><IconClear width="14" height="14" aria-hidden="true" /></button>
-            </div>
-          {/if}
-        </div>
-      {/snippet}
-    </SettingRow>
-  {/if}
 
   <SettingRow
     label="General application log"

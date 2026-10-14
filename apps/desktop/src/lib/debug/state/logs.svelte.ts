@@ -1,8 +1,7 @@
 // Log tail state for the Logs tab.
 //
 // `tail_app_log` is a poll-and-replace snapshot: there is no server-side
-// filtering and no tail-follow push. So this store owns which file to read,
-// the poll, and the client-side level / feature / text filters over the lines
+// filtering and no tail-follow push. So this store owns the poll, and the client-side level / feature / text filters over the lines
 // the backend hands back.
 //
 // Created inside the tab (not on the controller), so it lives and polls only
@@ -13,7 +12,7 @@ import { humanizeError } from "$lib/format-error";
 import { LOG_FEATURE_PATTERNS, type LogFeature } from "../log-filter";
 import { groupLogLines, levelMatches, type LogLevelFilter } from "../log-line";
 import type { PollFn } from "./controller.svelte";
-import type { AppLogFile, AppLogTailDto } from "$lib/types";
+import type { AppLogTailDto } from "$lib/types";
 
 /**
  * Lines requested per poll. The backend clamps to 1..=2000; this is the whole
@@ -31,7 +30,6 @@ function sameTail(a: AppLogTailDto | null, b: AppLogTailDto): boolean {
 }
 
 export function createLogTailStore(poll: PollFn, init: { needle?: string } = {}) {
-	let file = $state<AppLogFile>("rust");
 	let level = $state<LogLevelFilter>("all");
 	let feature = $state<LogFeature | null>(null);
 	/** Free-text substring filter (case-insensitive), e.g. a job id. */
@@ -42,11 +40,8 @@ export function createLogTailStore(poll: PollFn, init: { needle?: string } = {})
 	let error = $state<string | null>(null);
 
 	async function fetch() {
-		const requested = file;
 		try {
-			const next = await invoke<AppLogTailDto>("tail_app_log", { file: requested, lines: LOG_TAIL_LINES });
-			// A file switch landed while this was in flight; that request owns the view.
-			if (requested !== file) return;
+			const next = await invoke<AppLogTailDto>("tail_app_log", { lines: LOG_TAIL_LINES });
 			// An unchanged poll must not re-derive and re-render every row.
 			if (!sameTail(tail, next)) tail = next;
 			error = null;
@@ -67,15 +62,6 @@ export function createLogTailStore(poll: PollFn, init: { needle?: string } = {})
 	});
 
 	return {
-		get file() { return file; },
-		set file(next: AppLogFile) {
-			if (next === file) return;
-			file = next;
-			// Drop the old file's lines rather than showing them under the new name.
-			tail = null;
-			error = null;
-			void fetch();
-		},
 		get level() { return level; },
 		set level(next: LogLevelFilter) { level = next; },
 		get feature() { return feature; },

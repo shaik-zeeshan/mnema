@@ -74,7 +74,7 @@ export async function collectDiagnostics(health: DiagnosticsHealthRow[]): Promis
 		getVersion(),
 		invoke<ProcessorPipelineStatus[]>("get_processing_pipeline_status"),
 		invoke<SemanticIndexStatusDto>("get_semantic_index_status"),
-		invoke<AppLogTailDto>("tail_app_log", { file: "rust", lines: DIAGNOSTICS_LOG_LINES }),
+		invoke<AppLogTailDto>("tail_app_log", { lines: DIAGNOSTICS_LOG_LINES }),
 	]);
 	return formatDiagnostics({
 		version: ok(version),

@@ -182,19 +182,6 @@
     font-family: var(--font-mono);
   }
 
-  .settings-shell .debug-log-status__dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-text-faint);
-    flex-shrink: 0;
-  }
-
-  .settings-shell .debug-log-status__dot--on {
-    background: var(--app-accent);
-  }
-
   .settings-shell .debug-log-actions {
     display: flex;
     align-items: center;

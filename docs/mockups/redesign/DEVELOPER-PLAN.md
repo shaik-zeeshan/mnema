@@ -857,8 +857,8 @@ Each row has the five severities and the `metric` / `metricAtMs` column (Wire co
 
 ## F6 — Logs tab
 **Goal:** the tail fills the tab.
-- Bar row 1: source segment "App log | Capture log" and level segment "All | Warnings | Errors".
-- Bar row 2: a "Filter lines" `.mx-search`, a "Follow" switch, and Reveal in Finder.
+- Bar row 1: level segment "All | Warnings | Errors", a "Follow" switch, and Reveal in Finder. (The "App log | Capture log" source segment was dropped with the duplicate capture log.)
+- Bar row 2: a "Filter lines" `.mx-search`.
 - A horizontally scrolling chip row of features, "Everything" plus 9.
 - Lines in mono grid columns `time · level · message`, with a bold prefix.
 - WARN and ERROR rows tinted with tone backgrounds (no side bars). Click a line to copy it (the " copied" suffix for 1.2 s).

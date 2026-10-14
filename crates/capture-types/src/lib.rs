@@ -92,6 +92,7 @@ mod tests {
     #[test]
     fn recording_settings_deserialize_defaults_audio_sensitivity_vad_and_supports_alias_mode_field()
     {
+        // `nativeCaptureDebugLoggingEnabled` was removed; files that still carry it must load.
         let settings: RecordingSettings = serde_json::from_str(
             r#"{
                 "captureScreen": true,
@@ -103,6 +104,7 @@ mod tests {
                 "videoBitrate": { "mode": "preset", "preset": "medium" },
                 "saveDirectory": "/tmp",
                 "autoStart": false,
+                "nativeCaptureDebugLoggingEnabled": true,
                 "pauseCaptureOnInactivity": true,
                 "idleTimeoutSeconds": 10,
                 "inactivityActivityMode": "system_input_or_screen_or_audio"
@@ -121,10 +123,6 @@ mod tests {
         assert_eq!(
             settings.microphone_vad_adapter,
             default_microphone_vad_adapter()
-        );
-        assert_eq!(
-            settings.native_capture_debug_logging_enabled,
-            default_native_capture_debug_logging_enabled()
         );
         assert_eq!(
             settings.developer_options_enabled,
@@ -162,7 +160,6 @@ mod tests {
             video_bitrate: default_video_bitrate(),
             save_directory: "/tmp".to_string(),
             auto_start: false,
-            native_capture_debug_logging_enabled: false,
             developer_options_enabled: false,
             preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
             follow_timeline_live: false,
@@ -372,10 +369,6 @@ mod tests {
         )
         .expect("request should deserialize");
 
-        assert_eq!(
-            request.native_capture_debug_logging_enabled,
-            default_native_capture_debug_logging_enabled()
-        );
         assert_eq!(
             request.developer_options_enabled,
             default_developer_options_enabled()
@@ -775,8 +768,7 @@ mod tests {
                 video_bitrate: default_video_bitrate(),
                 save_directory: "/tmp".to_string(),
                 auto_start: false,
-                native_capture_debug_logging_enabled: false,
-                developer_options_enabled: false,
+                    developer_options_enabled: false,
                 preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
                 follow_timeline_live: false,
                 retention_policy: default_retention_policy(),

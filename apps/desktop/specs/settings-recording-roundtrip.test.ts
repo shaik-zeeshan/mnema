@@ -52,7 +52,6 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   autoStart: true,
   screenResolution: { mode: "preset", preset: "1080p" },
   videoBitrate: { mode: "preset", preset: "medium", customMbps: null },
-  nativeCaptureDebugLoggingEnabled: false,
   pauseCaptureOnInactivity: true,
   idleTimeoutSeconds: 300,
   activityMode: "system_input_or_screen_or_audio",
@@ -176,7 +175,6 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftSystemAudioActivitySensitivity: s.systemAudioActivitySensitivity,
     draftMicrophoneVadAdapter: s.audioSpeechDetection.detector,
 
-    draftNativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled,
     draftDeveloperOptionsEnabled: s.developerOptionsEnabled,
     draftPreviewCacheTtlSeconds: s.previewCacheTtlSeconds,
 

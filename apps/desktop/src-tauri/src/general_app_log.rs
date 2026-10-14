@@ -1,4 +1,3 @@
-use capture_runtime::delete_debug_log_files;
 use capture_types::{CaptureErrorResponse, GeneralAppLogStatus};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -46,7 +45,10 @@ fn delete_log_file_at_path(path: &Path) -> Result<(), CaptureErrorResponse> {
         code: "app_log_delete_failed".to_string(),
         message: format!("Failed to delete general application log: {error}"),
     };
-    delete_debug_log_files(path).map_err(to_error)?;
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(to_error(error)),
+        _ => {}
+    }
     // The log plugin rotates into `rust_<date>.log` siblings; delete those too.
     let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
         return Ok(());
@@ -176,12 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn delete_log_file_at_path_removes_existing_file_and_backups() {
+    fn delete_log_file_at_path_removes_existing_file_and_rotations() {
         let dir = TestDir::new("delete");
         let log_path = dir.path().join("rust.log");
         fs::write(&log_path, "current").expect("log file should write");
-        fs::write(log_path.with_file_name("rust.log.1"), "backup")
-            .expect("backup log file should write");
         let rotated = log_path.with_file_name("rust_2026-10-13_14-20-01.log");
         fs::write(&rotated, "rotated").expect("rotated log file should write");
         let unrelated = log_path.with_file_name("rusty.log");
@@ -189,7 +189,6 @@ mod tests {
 
         delete_log_file_at_path(&log_path).expect("log file should be deleted");
         assert!(!log_path.exists());
-        assert!(!log_path.with_file_name("rust.log.1").exists());
         assert!(!rotated.exists());
         assert!(unrelated.exists());
 

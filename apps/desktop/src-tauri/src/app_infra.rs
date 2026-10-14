@@ -6657,7 +6657,6 @@ mod tests {
     #[test]
     fn video_preview_exact_miss_log_includes_requested_actual_and_delta() {
         let dir = TestDir::new("frame-preview-exact-miss-log");
-        let log_path = dir.path().join("native-capture-debug.log");
         let requested = cidre::cm::Time::with_secs(1.5, 600);
         // Six video ticks past the requested time (timescale 600 => 10ms) so the
         // delta clears FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS and is logged.
@@ -6685,8 +6684,7 @@ mod tests {
             metadata_snapshot: None,
         };
 
-        capture_runtime::configure_debug_log(true, Some(log_path.clone()));
-        log_video_preview_exact_miss(
+        let contents = video_preview_exact_miss_message(
             Path::new("/tmp/session-preview-segment-0001.mov"),
             &frame,
             true,
@@ -6694,10 +6692,8 @@ mod tests {
             1.5,
             requested,
             actual,
-        );
-        capture_runtime::configure_debug_log(false, None);
-
-        let contents = fs::read_to_string(&log_path).expect("exact miss log file should exist");
+        )
+        .expect("a 10ms miss should be logged");
         assert!(contents.contains("[DEBUG-frame-preview] event=video_exact_miss"));
         assert!(contents.contains("path=/tmp/session-preview-segment-0001.mov"));
         assert!(contents.contains("frame_id=2"));

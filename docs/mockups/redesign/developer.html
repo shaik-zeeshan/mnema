@@ -21,7 +21,9 @@
          · startup maintenance report (mnema-deferred-startup logs only today)
          · retry one job now, skipping backoff (only reprocess_* exist)
          · ChatGPT token expiry (chatgpt_auth.rs) — not drawn
-       Needs config: core:window:allow-set-always-on-top + allow-set-size for label `debug` (capabilities/default.json). */
+       Needs config: core:window:allow-set-always-on-top + allow-set-size for label `debug` (capabilities/default.json).
+       Logs shows the app log (rust.log) only: the "App log | Capture log" segment was dropped with the duplicate
+       native-capture-debug.log (every capture line already lands in rust.log with level and target). */
 
     /* --- Desk + mockup switcher (not product UI) --- */
     .dv-desk { position: relative; min-height: 100vh; display: grid; grid-auto-flow: column; justify-content: center; align-items: start;
@@ -571,14 +573,13 @@
       <!-- ===== Logs ===== -->
       <div class="dv-logbar" data-view="logs">
         <div class="dv-logbar__row">
-          <div class="mx-seg" role="group" aria-label="Log file" id="dv-logsrc"><button value="app" aria-pressed="true">App log</button><button value="capture">Capture log</button></div>
-          <span class="mx-spacer"></span>
           <div class="mx-seg" role="group" aria-label="Level" id="dv-loglvl"><button value="all" aria-pressed="true">All</button><button value="warn">Warnings</button><button value="error">Errors</button></div>
+          <span class="mx-spacer"></span>
+          <label class="dv-follow"><input type="checkbox" class="mx-switch" checked />Follow</label>
+          <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Reveal in Finder" data-tip="Reveal in Finder"><svg width="14" height="14"><use href="#dv-folder"/></svg></button>
         </div>
         <div class="dv-logbar__row">
           <label class="mx-search"><svg width="13" height="13"><use href="#i-search"/></svg><input id="dv-logq" placeholder="Filter lines" autocomplete="off" spellcheck="false" /></label>
-          <label class="dv-follow"><input type="checkbox" class="mx-switch" checked />Follow</label>
-          <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Reveal in Finder" data-tip="Reveal in Finder"><svg width="14" height="14"><use href="#dv-folder"/></svg></button>
         </div>
         <div class="dv-feats" id="dv-feats" role="group" aria-label="Feature">
           <button class="mx-btn mx-btn--ghost mx-btn--sm" aria-pressed="true" value="">Everything</button>
@@ -814,18 +815,9 @@
     ["14:10:03.118", "INFO", "user_context:", "derivation run 3311 completed (4 activities)", "uc"],
     ["10:04:51.207", "ERROR", "transcription:", "job 48177 failed after 3 tries: decode: moov atom not found (segment 2291)", "transcription"],
   ];
-  const CAP_LOG = [
-    ["14:31:07.630", "INFO", "system-audio-tap:", "writer opened at 16000 Hz (aggregate nominal rate), segment 2298", "capture"],
-    ["14:31:07.409", "INFO", "system-audio-tap:", "device \"AirPods Pro\" nominal rate changed 48000 → 16000 Hz", "capture"],
-    ["14:30:12.550", "INFO", "screen:", "segment 2296 finalized (5m 00s, 150 frames)", "capture"],
-    ["14:29:40.101", "INFO", "microphone:", "level −34 dBFS, speech 41%", "capture"],
-    ["14:18:44.903", "INFO", "privacy:", "exclusion list hit: 1Password", "privacy"],
-    ["14:12:30.001", "INFO", "system-audio-tap:", "silence watchdog reset by sound", "capture"],
-    ["11:02:19.774", "WARN", "system-audio-tap:", "rebuilding tap (reason: sample-rate change)", "capture"],
-  ];
-  const lf = { src: "app", lvl: "all", feat: "", q: "" };
+  const lf = { lvl: "all", feat: "", q: "" };
   function renderLogs() {
-    const lines = (lf.src === "app" ? APP_LOG : CAP_LOG).filter(([, l, p, m, f]) =>
+    const lines = APP_LOG.filter(([, l, p, m, f]) =>
       (lf.lvl === "all" || (lf.lvl === "warn" ? l !== "INFO" : l === "ERROR")) && (!lf.feat || f === lf.feat) &&
       (!lf.q || `${p} ${m}`.toLowerCase().includes(lf.q.toLowerCase())));
     $("#dv-tail").innerHTML = lines.length ? lines.map(([t, l, p, m]) =>
@@ -839,7 +831,6 @@
     navigator.clipboard?.writeText(l.textContent).catch(() => {});
     l.classList.add("is-copied"); setTimeout(() => l.classList.remove("is-copied"), 1200);
   });
-  $("#dv-logsrc").addEventListener("mx-change", (e) => { lf.src = e.target.querySelector("[aria-pressed=true]").value; renderLogs(); });
   $("#dv-loglvl").addEventListener("mx-change", (e) => { lf.lvl = e.target.querySelector("[aria-pressed=true]").value; renderLogs(); });
   $("#dv-logq").addEventListener("input", (e) => { lf.q = e.target.value; renderLogs(); });
   $("#dv-feats").addEventListener("click", (e) => {

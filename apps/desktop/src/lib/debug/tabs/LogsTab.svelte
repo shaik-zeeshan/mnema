@@ -1,7 +1,7 @@
 <!--
-  Logs tab (docs/mockups/redesign/developer.html ?state=logs): file + level
-  segments, filter / follow / reveal, feature chips, and the tail filling the
-  rest of the tab. Lines are oldest first, so Follow sticks to the bottom.
+  Logs tab (docs/mockups/redesign/developer.html ?state=logs): the app log
+  (rust.log) with a level segment, follow / reveal, filter, feature chips, and
+  the tail filling the rest of the tab. Lines are oldest first, so Follow sticks to the bottom.
 -->
 <script lang="ts">
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -11,7 +11,6 @@
   import IconFile from "~icons/lucide/file-text";
   import Segmented from "$lib/components/Segmented.svelte";
   import { tip } from "$lib/components/tooltip";
-  import type { AppLogFile } from "$lib/types";
   import type { LogFeature } from "../log-filter";
   import type { LogLevelFilter } from "../log-line";
   import { getDebugController } from "../state/controller.svelte";
@@ -22,10 +21,6 @@
   const logs = createLogTailStore(controller.poll, { needle: controller.nav.logNeedle });
   $effect(() => logs.startPolling());
 
-  const FILES = [
-    { value: "rust", label: "App log" },
-    { value: "nativeCapture", label: "Capture log" },
-  ];
   const LEVELS = [
     { value: "all", label: "All" },
     { value: "warn", label: "Warnings" },
@@ -74,9 +69,19 @@
 
 <div class="dv-logbar">
   <div class="dv-logbar__row">
-    <Segmented options={FILES} value={logs.file} ariaLabel="Log file" onValueChange={(v) => (logs.file = v as AppLogFile)} />
-    <span class="mx-spacer"></span>
     <Segmented options={LEVELS} value={logs.level} ariaLabel="Level" onValueChange={(v) => (logs.level = v as LogLevelFilter)} />
+    <span class="mx-spacer"></span>
+    <label class="dv-follow">
+      <input type="checkbox" role="switch" class="mx-switch" checked={logs.follow} onchange={(e) => (logs.follow = e.currentTarget.checked)} />Follow
+    </label>
+    <button
+      type="button"
+      class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
+      aria-label="Reveal in Finder"
+      use:tip={"Reveal in Finder"}
+      disabled={!logs.tail?.exists}
+      onclick={() => logs.tail && void revealItemInDir(logs.tail.path)}
+    ><IconFolder width="14" height="14" aria-hidden="true" /></button>
   </div>
   <div class="dv-logbar__row">
     <label class="mx-search">
@@ -89,17 +94,6 @@
         oninput={(e) => (logs.needle = controller.nav.logNeedle = e.currentTarget.value)}
       />
     </label>
-    <label class="dv-follow">
-      <input type="checkbox" role="switch" class="mx-switch" checked={logs.follow} onchange={(e) => (logs.follow = e.currentTarget.checked)} />Follow
-    </label>
-    <button
-      type="button"
-      class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
-      aria-label="Reveal in Finder"
-      use:tip={"Reveal in Finder"}
-      disabled={!logs.tail?.exists}
-      onclick={() => logs.tail && void revealItemInDir(logs.tail.path)}
-    ><IconFolder width="14" height="14" aria-hidden="true" /></button>
   </div>
   <div class="dv-feats" role="group" aria-label="Feature">
     {#each FEATURES as chip (chip.label)}

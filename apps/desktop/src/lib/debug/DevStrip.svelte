@@ -142,7 +142,7 @@
 
   async function revealLogs() {
     try {
-      const { path } = await invoke<AppLogTailDto>("tail_app_log", { file: "rust", lines: 1 });
+      const { path } = await invoke<AppLogTailDto>("tail_app_log", { lines: 1 });
       await revealItemInDir(path);
     } catch (err) {
       showToast({ tone: "danger", text: `Couldn’t reveal logs · ${humanizeError(err)}` });
