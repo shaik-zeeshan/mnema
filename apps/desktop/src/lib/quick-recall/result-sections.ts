@@ -3,9 +3,11 @@
 // `search_capture` call returns. Plain TS so it's bun-testable without Svelte.
 import type { AudioSearchResultDto, FrameSearchResultDto } from "../types/app-infra";
 import { formatClock } from "$lib/time-format";
+import { countLabel } from "./recall-states";
 
 // Per-call fetch limits (fetch once, expand client-side; anything the backend
-// reports beyond these via hasMoreFrames/Audio is deliberately ignored).
+// reports beyond these via hasMoreFrames/Audio is not fetched, only shown as a
+// "+" on the counts — see `momentBreakdown`).
 export const FRAME_FETCH_LIMIT = 24;
 export const AUDIO_FETCH_LIMIT = 12;
 
@@ -64,4 +66,21 @@ export function momentTime(at: Date, now: Date = new Date()): string {
     return `${at.toLocaleDateString(undefined, { weekday: "short" })} ${time}`;
   }
   return at.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// "24+ screen · 12 audio · 4 days" over everything fetched: a kind whose fetch
+// cap was hit (`hasMore…`) has more than it shows, so its count reads "N+".
+export function momentBreakdown(
+  frames: number,
+  audio: number,
+  days: number,
+  hasMore: { frames: boolean; audio: boolean },
+): string {
+  return [
+    frames > 0 && `${countLabel(frames, hasMore.frames)} screen`,
+    audio > 0 && `${countLabel(audio, hasMore.audio)} audio`,
+    `${days} day${days === 1 ? "" : "s"}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

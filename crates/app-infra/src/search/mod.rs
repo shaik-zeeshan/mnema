@@ -65,8 +65,10 @@ mod honesty;
 #[cfg(test)]
 mod hours_filter_check;
 mod match_boxes;
+mod moments;
 mod projection;
 mod retrieval;
+mod stopwords;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

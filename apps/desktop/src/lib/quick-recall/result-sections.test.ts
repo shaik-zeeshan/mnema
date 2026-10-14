@@ -1,7 +1,13 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { mergeByRank, momentTime, moreRowLabel, visibleCount } from "./result-sections";
+import {
+  mergeByRank,
+  momentBreakdown,
+  momentTime,
+  moreRowLabel,
+  visibleCount,
+} from "./result-sections";
 
 const frame = (id, rank, at = "2026-10-06T10:00:00Z") => ({ groupKey: `f${id}`, rank, groupStartAt: at });
 const clip = (id, rank, at = "2026-10-06T10:00:00Z") => ({ groupKey: `a${id}`, rank, absoluteStartAt: at });
@@ -60,5 +66,12 @@ describe("momentTime", () => {
   test("older is the date", () => {
     const at = new Date(2026, 8, 20, 9, 0);
     expect(momentTime(at, now)).toBe(at.toLocaleDateString(undefined, { month: "short", day: "numeric" }));
+  });
+});
+
+describe("momentBreakdown", () => {
+  test("a kind that hit its fetch cap reads N+, an uncapped one stays exact", () => {
+    expect(momentBreakdown(24, 12, 3, { frames: true, audio: false })).toBe("24+ screen · 12 audio · 3 days");
+    expect(momentBreakdown(5, 0, 1, { frames: false, audio: false })).toBe("5 screen · 1 day");
   });
 });

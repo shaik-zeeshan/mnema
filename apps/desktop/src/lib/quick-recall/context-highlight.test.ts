@@ -27,6 +27,14 @@ describe("residualTerms", () => {
     expect(residualTerms("stripe OR handle_event -draft")).toEqual(["stripe", "handle", "event"]);
   });
 
+  test("drops filler words, unless quoted or the whole query is filler (as query.rs)", () => {
+    expect(residualTerms("kvm switch on amazon")).toEqual(["switch", "amazon", "kvm"]);
+    expect(residualTerms("on the")).toEqual(["the", "on"]);
+    expect(residualTerms('"switch on" desk')).toEqual(["switch", "desk", "on"]);
+    // Per OR group: an all-filler group keeps its words.
+    expect(residualTerms("the OR kvm on")).toEqual(["the", "kvm"]);
+  });
+
   test("empty residual query yields no terms", () => {
     expect(residualTerms("")).toEqual([]);
   });

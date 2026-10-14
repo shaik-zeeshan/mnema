@@ -13,7 +13,8 @@
     OPTION_ID_PREFIX,
   } from "$lib/quick-recall/searchStore.svelte";
   import { quickLook } from "$lib/quick-recall/detailStore.svelte";
-  import { moreRowLabel } from "$lib/quick-recall/result-sections";
+  import { momentBreakdown, moreRowLabel } from "$lib/quick-recall/result-sections";
+  import { countLabel } from "$lib/quick-recall/recall-states";
   import { parseCapturedAt } from "$lib/format-time";
 
   let {
@@ -34,23 +35,21 @@
 
   const best = $derived(search.visibleResults[0]);
   const moreLabel = $derived(moreRowLabel(search.totalResultCount, search.expanded));
-  // "N screen · N audio · N days" over everything fetched.
-  const breakdown = $derived.by(() => {
-    const days = new Set(
-      search.ranked.map((r) =>
-        parseCapturedAt(
-          r.kind === "frame" ? r.frame.groupStartAt : r.audio.absoluteStartAt,
-        ).toDateString(),
-      ),
-    ).size;
-    return [
-      search.frames.length > 0 && `${search.frames.length} screen`,
-      search.audio.length > 0 && `${search.audio.length} audio`,
-      `${days} day${days === 1 ? "" : "s"}`,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  });
+  // "N screen · N audio · N days" over everything fetched ("N+" when capped).
+  const breakdown = $derived(
+    momentBreakdown(
+      search.frames.length,
+      search.audio.length,
+      new Set(
+        search.ranked.map((r) =>
+          parseCapturedAt(
+            r.kind === "frame" ? r.frame.groupStartAt : r.audio.absoluteStartAt,
+          ).toDateString(),
+        ),
+      ).size,
+      { frames: search.hasMoreFrames, audio: search.hasMoreAudio },
+    ),
+  );
 </script>
 
 <div
@@ -103,8 +102,11 @@
     {/if}
     {#if search.visibleResults.length > first}
       <div class="quick-recall__sec" role="presentation">
-        {#if rowsOnly}Moments<span class="mono">{search.totalResultCount}</span
-          >{:else}More moments<span class="mono">{search.totalResultCount - 1}</span><span
+        {#if rowsOnly}Moments<span class="mono"
+            >{countLabel(search.totalResultCount, search.capped)}</span
+          >{:else}More moments<span class="mono"
+            >{countLabel(search.totalResultCount - 1, search.capped)}</span
+          ><span
             class="mono">{breakdown}</span
           >{/if}
       </div>

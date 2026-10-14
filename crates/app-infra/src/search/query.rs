@@ -12,6 +12,7 @@ use super::dates::{
     end_of_day_rfc3339, local_today_date, open_lower_bound_rfc3339, open_upper_bound_rfc3339,
     resolve_day_or_period, resolve_point_date, start_of_day_rfc3339,
 };
+use super::stopwords::is_stopword;
 use super::types::{
     normalize_app_name_for_search, NormalizedAppRefinement, NormalizedDateRange,
     NormalizedSearchRefinements, SearchAppRefinement, SearchAppRefinementKind,
@@ -131,7 +132,10 @@ pub(super) fn normalize_search_refinements(
         Some(value) => {
             let value = value.trim().to_string();
             if value.is_empty() {
-                errors.push(whole_query_parse_error("empty_value", "url must be non-empty"));
+                errors.push(whole_query_parse_error(
+                    "empty_value",
+                    "url must be non-empty",
+                ));
                 None
             } else {
                 Some(value)
@@ -367,6 +371,9 @@ pub(crate) struct ParsedQuery {
     pub(crate) residual_query: String,
     /// Strict validation problems found during parsing.
     pub(crate) errors: Vec<SearchParseError>,
+    /// The lowercased positive words the FTS body matches (stopwords dropped as
+    /// [`drop_stopword_tokens`] drops them) — what a highlighter should mark.
+    pub(crate) match_terms: Vec<String>,
 }
 
 /// One tokenizer token, carrying the original character span for error
@@ -563,9 +570,65 @@ pub(crate) fn parse_search_query(raw: &str) -> ParsedQuery {
         .map(|token| token.raw.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    parsed.fts_body = fts_body_for_tokens(&residual_tokens, &mut parsed.errors);
+    let body_tokens = drop_stopword_tokens(residual_tokens);
+    parsed.match_terms = match_terms(&body_tokens);
+    parsed.fts_body = fts_body_for_tokens(&body_tokens, &mut parsed.errors);
 
     parsed
+}
+
+fn is_positive_word(token: &QueryToken) -> bool {
+    token.quoted || (token.text != "OR" && !token.text.starts_with('-'))
+}
+
+/// Drops filler words ("on", "the") from each `OR` group — unless that would
+/// leave the group with nothing positive to match, so an all-stopword query
+/// still searches. Quoted phrases and `term*` prefixes are never dropped.
+fn drop_stopword_tokens(tokens: Vec<QueryToken>) -> Vec<QueryToken> {
+    let is_or = |token: &QueryToken| !token.quoted && token.text == "OR";
+    let droppable = |token: &QueryToken| {
+        !token.quoted
+            && is_positive_word(token)
+            && !token.text.ends_with('*')
+            && is_stopword(&token.text)
+    };
+    // Per `OR` group: does a positive word survive the drop?
+    let group_can_drop: Vec<bool> = tokens
+        .split(|token| is_or(token))
+        .map(|group| {
+            group
+                .iter()
+                .any(|token| is_positive_word(token) && !droppable(token))
+        })
+        .collect();
+    let mut group = 0;
+    tokens
+        .into_iter()
+        .filter(|token| {
+            if is_or(token) {
+                group += 1;
+                return true;
+            }
+            !(group_can_drop[group] && droppable(token))
+        })
+        .collect()
+}
+
+/// The lowercased, deduped words (two chars or more) of the positive tokens —
+/// operators, `OR` and `-exclusions` excluded.
+fn match_terms(tokens: &[QueryToken]) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for word in tokens
+        .iter()
+        .filter(|token| is_positive_word(token))
+        .flat_map(|token| token.text.split(|ch: char| !ch.is_alphanumeric()))
+    {
+        let word = word.to_lowercase();
+        if word.chars().count() >= 2 && !terms.contains(&word) {
+            terms.push(word);
+        }
+    }
+    terms
 }
 
 /// Applies one recognized field operator to the parsed refinements.
@@ -991,6 +1054,30 @@ mod tests {
     }
 
     #[test]
+    fn filler_stopwords_drop_from_matching_unless_quoted_or_all_filler() {
+        let parsed = parse_search_query("kvm switch on amazon");
+        assert_eq!(parsed.fts_body, "\"kvm\" \"switch\" \"amazon\"");
+        assert_eq!(parsed.match_terms, vec!["kvm", "switch", "amazon"]);
+        // The residual (shown, embedded for meaning) keeps every word.
+        assert_eq!(parsed.residual_query, "kvm switch on amazon");
+
+        // A whole-stopword query still searches its words.
+        let all_filler = parse_search_query("the who");
+        assert_eq!(all_filler.fts_body, "\"the\" \"who\"");
+        assert_eq!(all_filler.match_terms, vec!["the", "who"]);
+
+        // A quoted stopword is the user asking for it.
+        let quoted = parse_search_query("\"on\" call");
+        assert_eq!(quoted.fts_body, "(\"on\" \"call\")");
+        assert_eq!(quoted.match_terms, vec!["on", "call"]);
+
+        // Per OR group: an all-filler group keeps its words, the OR survives.
+        let grouped = parse_search_query("the OR kvm on");
+        assert!(grouped.errors.is_empty());
+        assert_eq!(grouped.fts_body, "(\"the\") OR (\"kvm\")");
+    }
+
+    #[test]
     fn quoted_phrase_body_operator_forces_literal_phrase() {
         let parsed = parse_search_query("\"hello world\"");
         assert!(parsed.errors.is_empty());
@@ -1024,10 +1111,10 @@ mod tests {
         assert!(parsed.errors.is_empty());
         assert_eq!(parsed.fts_body, "(\"foo\") OR (\"bar\")");
 
-        // lowercase `or` is a literal AND term, never a group split.
+        // lowercase `or` is never a group split (and, as filler, not a term).
         let lower = parse_search_query("foo or bar");
         assert!(lower.errors.is_empty());
-        assert_eq!(lower.fts_body, "\"foo\" \"or\" \"bar\"");
+        assert_eq!(lower.fts_body, "\"foo\" \"bar\"");
     }
 
     #[test]
@@ -1941,7 +2028,12 @@ mod tests {
                 ))
                 .await
                 .expect("system segment should insert");
-            for segment in [&mic, &system] {
+            // Different words: the same words at the same time would be a mic
+            // echo of the system audio, which search folds into one moment.
+            for (segment, text) in [
+                (&mic, "spoken target audio"),
+                (&system, "played target clip"),
+            ] {
                 let job = infra
                     .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
                         segment.id,
@@ -1951,7 +2043,7 @@ mod tests {
                 complete_job(
                     &infra,
                     job,
-                    ProcessingResultDraft::new().with_result_text("spoken target audio"),
+                    ProcessingResultDraft::new().with_result_text(text),
                 )
                 .await;
             }

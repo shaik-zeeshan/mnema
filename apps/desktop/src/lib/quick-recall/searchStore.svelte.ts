@@ -62,6 +62,9 @@ export class SearchStore {
 
   frames = $state<FrameSearchResultDto[]>([]);
   audio = $state<AudioSearchResultDto[]>([]);
+  // The backend had more than the fetch cap of that kind: counts read "24+".
+  hasMoreFrames = $state(false);
+  hasMoreAudio = $state(false);
   loading = $state(false);
   errorMessage = $state<string | null>(null);
   // The query string that the currently-displayed results belong to.
@@ -217,6 +220,8 @@ export class SearchStore {
       this.searchGeneration += 1;
       this.frames = [];
       this.audio = [];
+      this.hasMoreFrames = false;
+      this.hasMoreAudio = false;
       this.loading = false;
       this.errorMessage = null;
       this.resultsQuery = "";
@@ -286,6 +291,8 @@ export class SearchStore {
       }
       this.frames = response.frames;
       this.audio = response.audio;
+      this.hasMoreFrames = response.hasMoreFrames;
+      this.hasMoreAudio = response.hasMoreAudio;
       this.resultsQuery = trimmed;
       // Capture the parsed scope so chip/error/limit derivations update.
       this.appliedRefinements = response.appliedRefinements;
@@ -305,6 +312,8 @@ export class SearchStore {
       }
       this.frames = [];
       this.audio = [];
+      this.hasMoreFrames = false;
+      this.hasMoreAudio = false;
       this.resultsQuery = trimmed;
       this.loading = false;
       this.selectedIndex = -1;
@@ -442,9 +451,11 @@ export class SearchStore {
     this.ranked.slice(0, visibleCount(this.ranked.length, this.expanded)),
   );
   // The selection space (visible rows only); `totalResultCount` is everything
-  // fetched (the bar's "N moments", the SR announcement).
+  // fetched (the bar's "N moments", the SR announcement) — a lower bound when
+  // `capped` (a fetch cap was hit), so counts render as "36+".
   resultCount = $derived(this.visibleResults.length);
   totalResultCount = $derived(this.ranked.length);
+  capped = $derived(this.hasMoreFrames || this.hasMoreAudio);
 
   // The selected result (kind + DTO) — select = PREVIEW; nothing opens until
   // Enter.
@@ -652,6 +663,8 @@ export class SearchStore {
     this.clearQuery();
     this.frames = [];
     this.audio = [];
+    this.hasMoreFrames = false;
+    this.hasMoreAudio = false;
     this.resultsQuery = "";
     this.errorMessage = null;
     this.loading = false;

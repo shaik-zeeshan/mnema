@@ -77,25 +77,17 @@ impl SearchStore {
     }
 }
 
-/// The residual query's positive words, lowercased (operators, `OR` and
-/// `-exclusions` dropped). By meaning, each word ≥ 4 chars is cut to a 4-char
-/// stem so "pricing" finds "Prices".
+/// The words the query's FTS body matches (`ParsedQuery::match_terms`:
+/// operators, `OR`, `-exclusions` and filler stopwords dropped). By meaning,
+/// each word ≥ 4 chars is cut to a 4-char stem so "pricing" finds "Prices".
 fn query_terms(raw: &str, by_meaning: bool) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
-    for word in parse_search_query(raw)
-        .residual_query
-        .split_whitespace()
-        .filter(|token| *token != "OR" && !token.starts_with('-'))
-        .flat_map(|token| token.split(|ch: char| !ch.is_alphanumeric()))
-    {
-        let word = word.to_lowercase();
+    for word in parse_search_query(raw).match_terms {
         let term = if by_meaning {
             if word.chars().count() < 4 {
                 continue;
             }
             word.chars().take(4).collect()
-        } else if word.chars().count() < 2 {
-            continue;
         } else {
             word
         };
@@ -165,6 +157,13 @@ mod tests {
             vec!["pricing", "page"]
         );
         assert_eq!(query_terms("pricing page", true), vec!["pric", "page"]);
+        // Filler words are not boxed — unless quoted or the whole query.
+        assert_eq!(
+            query_terms("kvm switch on desk", false),
+            vec!["kvm", "switch", "desk"]
+        );
+        assert_eq!(query_terms("\"switch on\"", false), vec!["switch", "on"]);
+        assert_eq!(query_terms("on the", false), vec!["on", "the"]);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
+use super::moments::{merge_same_minute_screen_moments, rank_audio_moments};
 use super::projection::{normalized_source_session_id, timestamp_plus_ms};
 use super::retrieval::{AudioHit, FrameHit};
 use super::{AudioSearchResult, FrameSearchResult};
@@ -140,7 +141,7 @@ pub(super) fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
             .total_cmp(b_rank)
             .then_with(|| b.group_end_at.cmp(&a.group_end_at))
     });
-    results.into_iter().map(|(_rank, result)| result).collect()
+    merge_same_minute_screen_moments(results.into_iter().map(|(_rank, result)| result).collect())
 }
 
 fn frame_hits_are_equivalent(left: &FrameHit, right: &FrameHit) -> bool {
@@ -218,37 +219,29 @@ pub(super) fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResul
         let text_hit = group.iter().find(|hit| !hit.found_by_meaning);
         let found_by_meaning = text_hit.is_none();
         let snippet = text_hit.unwrap_or(first).snippet.clone();
-        results.push((
-            first.rank,
-            AudioSearchResult {
-                rank: first.rank,
-                group_key: format!(
-                    "audio:{}:{}-{}",
-                    first.audio_segment.id, span_start_ms, span_end_ms
-                ),
-                audio_segment: first.audio_segment.clone(),
-                source_kind: first.source_kind.clone(),
-                span_start_ms,
-                span_end_ms,
-                absolute_start_at,
-                absolute_end_at,
-                match_count: group.len() as u32,
-                snippet,
-                aligned_frame: None,
-                secret_redaction_count,
-                has_secret_redactions: secret_redaction_count > 0,
-                found_by_meaning,
-            },
-        ));
+        results.push(AudioSearchResult {
+            rank: first.rank,
+            group_key: format!(
+                "audio:{}:{}-{}",
+                first.audio_segment.id, span_start_ms, span_end_ms
+            ),
+            audio_segment: first.audio_segment.clone(),
+            source_kind: first.source_kind.clone(),
+            span_start_ms,
+            span_end_ms,
+            absolute_start_at,
+            absolute_end_at,
+            match_count: group.len() as u32,
+            snippet,
+            aligned_frame: None,
+            secret_redaction_count,
+            has_secret_redactions: secret_redaction_count > 0,
+            found_by_meaning,
+        });
     }
 
-    results.sort_by(|(a_rank, a), (b_rank, b)| {
-        a_rank
-            .total_cmp(b_rank)
-            .then_with(|| b.absolute_start_at.cmp(&a.absolute_start_at))
-            .then_with(|| a.group_key.cmp(&b.group_key))
-    });
-    Ok(results.into_iter().map(|(_rank, result)| result).collect())
+    // Ranks rescored + echoes dropped, then sorted best-first.
+    Ok(rank_audio_moments(results))
 }
 
 pub(super) fn map_audio_hit(row: SqliteRow) -> Result<AudioHit> {

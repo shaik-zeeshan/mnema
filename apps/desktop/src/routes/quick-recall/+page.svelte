@@ -193,7 +193,7 @@
     if (search.showEmpty) {
       return `No matches for ${search.resultsQuery}.`;
     }
-    return `${search.totalResultCount} ${search.totalResultCount === 1 ? "result" : "results"} for ${search.resultsQuery}.`;
+    return `${search.totalResultCount}${search.capped ? "+" : ""} ${search.totalResultCount === 1 && !search.capped ? "result" : "results"} for ${search.resultsQuery}.`;
   });
 
   // A search or Ask AI operation is in flight — that counts as activity, so the

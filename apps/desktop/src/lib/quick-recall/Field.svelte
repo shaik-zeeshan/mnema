@@ -9,6 +9,7 @@
   import { quickRecallSearch as search } from "./searchStore.svelte";
   import { mirrorSegments } from "./natural-tokens";
   import { pillLabel, pillOperators } from "./filter-chips";
+  import { countLabel } from "./recall-states";
   import { quickLook, lookKeys } from "./detailStore.svelte";
 
   // The token the backend rejected, while the shown results are this query's.
@@ -207,7 +208,8 @@
   {:else}
     {#if search.totalResultCount > 0}
       <span
-        ><b>{search.totalResultCount}</b> moment{search.totalResultCount === 1 ? "" : "s"}</span
+        ><b>{countLabel(search.totalResultCount, search.capped)}</b> moment{search.totalResultCount ===
+          1 && !search.capped ? "" : "s"}</span
       >
     {/if}
     {#if askAvailable && search.operatorQuery}
