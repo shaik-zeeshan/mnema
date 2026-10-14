@@ -110,7 +110,8 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         },
         video_bitrate: default_video_bitrate(),
         save_directory: default_save_directory(),
-        auto_start: false,
+        // On: a fresh install that forgets to press Record loses whole days.
+        auto_start: true,
         developer_options_enabled: default_developer_options_enabled(),
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: default_follow_timeline_live(),

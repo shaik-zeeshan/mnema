@@ -94,7 +94,7 @@ export class OnboardingController {
   draftSaveDirectory = $state("");
   draftPreviewCacheTtlSeconds = $state(3600);
   draftRetentionPolicy = $state<RetentionPolicy>("never");
-  draftAutoStart = $state(false);
+  draftAutoStart = $state(true);
   draftPauseCaptureOnInactivity = $state(false);
   draftIdleTimeoutSeconds = $state(30);
   draftActivityMode = $state<ActivityMode>("system_input_or_screen_or_audio");

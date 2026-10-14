@@ -485,6 +485,8 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     crl_refresh::spawn_crl_refresh(app_handle.clone());
     crl_refresh::start_daily_crl_timer(app_handle.clone());
     licensing::receipt_refresh::start_receipt_refresh_timer(app_handle.clone());
+    // Checks onboarding itself each tick, so it also covers a same-session finish.
+    native_capture::not_recording_reminder::spawn_not_recording_reminder(app_handle.clone());
     if onboarding_complete {
         native_capture::maybe_auto_start_native_capture(app_handle);
         app_updates::start_update_check_timer(app_handle);
@@ -778,6 +780,7 @@ pub fn run() {
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,
+            native_capture::not_recording_reminder::snooze_not_recording_reminder,
             native_capture::list_privacy_app_candidates,
             native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,

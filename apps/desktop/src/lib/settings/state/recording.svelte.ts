@@ -161,7 +161,7 @@ export class RecordingStore {
   draftSegmentDuration = $state(60);
   draftFrameRate = $state(0.5);
   draftSaveDirectory = $state("");
-  draftAutoStart = $state(false);
+  draftAutoStart = $state(true);
 
   // Resolution drafts
   draftResolutionMode = $state<ResolutionMode>("original");

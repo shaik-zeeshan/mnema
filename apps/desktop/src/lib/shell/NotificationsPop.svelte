@@ -4,9 +4,11 @@
   // of +layout.svelte; the store, actions, ages, focus return and live regions
   // are unchanged — only the skin is the kit's `mx-pop mx-notifs`.
   import { tick } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import { tip } from "$lib/components/tooltip";
   import { getFocusableElements, trapTabKey } from "$lib/keyboard";
   import { openSettings } from "$lib/surface-windows";
+  import { captureControls, startCapture } from "$lib/capture-controls.svelte";
   import {
     appNotifications,
     clearAppNotification,
@@ -14,6 +16,7 @@
     dismissAppNotificationError,
     noteAppNotificationError,
     reloadAppNotifications,
+    snoozeNotRecordingReminder,
     type AppNotification,
   } from "$lib/notifications.svelte";
 
@@ -67,6 +70,17 @@
       return;
     }
     if (await clearAppNotification(n.id)) open = false;
+  }
+
+  // Clicking the native "Mnema isn't recording" banner opens the bell.
+  $effect(() => {
+    const unlisten = listen("open_app_notifications", () => (open = true));
+    return () => void unlisten.then((stop) => stop()).catch(() => {});
+  });
+
+  async function startFromReminder(n: AppNotification): Promise<void> {
+    await startCapture(); // reports its own failure
+    if (captureControls.isRunning && (await clearAppNotification(n.id))) open = false;
   }
 
   // Relative age per row, re-evaluated every 30 s while the popover is open.
@@ -194,7 +208,12 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
           </button>
           <p class="mx-notif__text">{n.message}</p>
-          {#if n.action?.type === "open_settings_tab"}
+          {#if n.action?.type === "not_recording_reminder"}
+            <div class="mx-notif__acts">
+              <button type="button" class="mx-btn mx-btn--sm" onclick={() => void startFromReminder(n)}>Start</button>
+              <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => void snoozeNotRecordingReminder()}>Snooze for today</button>
+            </div>
+          {:else if n.action?.type === "open_settings_tab"}
             <div class="mx-notif__acts">
               <button type="button" class="mx-btn mx-btn--sm" onclick={() => void runAction(n)}>{actionLabel(n)}</button>
             </div>

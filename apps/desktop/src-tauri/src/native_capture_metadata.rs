@@ -439,6 +439,19 @@ pub(crate) fn collect_native_active_window_snapshot() -> NativeActiveWindowSnaps
     }
 }
 
+/// Whether the lock screen (`loginwindow`) holds the foreground.
+#[cfg(target_os = "macos")]
+pub(crate) fn frontmost_app_is_lock_screen() -> bool {
+    frontmost_running_app_snapshot().is_some_and(|(_, app_bundle_id, app_name)| {
+        FrameMetadataSnapshot {
+            app_bundle_id,
+            app_name,
+            ..FrameMetadataSnapshot::default()
+        }
+        .is_lock_screen()
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn frontmost_running_app_snapshot() -> Option<(i32, Option<String>, Option<String>)> {
     let running_apps = cidre::ns::Workspace::shared().running_apps();

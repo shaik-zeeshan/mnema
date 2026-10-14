@@ -12,6 +12,7 @@ mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
 mod microphone;
+pub(crate) mod not_recording_reminder;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
 pub(crate) mod privacy;
@@ -170,6 +171,8 @@ const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppNotificationAction {
     OpenSettingsTab { tab: String },
+    /// "Start" + "Snooze for today" (see `not_recording_reminder`).
+    NotRecordingReminder,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -581,7 +581,7 @@ fn ocr_unavailable_notification_opens_ocr_settings_tab() {
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
             assert_eq!(tab, "processing");
         }
-        None => panic!("OCR warning should include settings CTA"),
+        _ => panic!("OCR warning should include settings CTA"),
     }
 }
 
@@ -615,7 +615,7 @@ fn audio_transcription_unavailable_notification_opens_transcription_settings_tab
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
             assert_eq!(tab, "transcription");
         }
-        None => panic!("transcription warning should include settings CTA"),
+        _ => panic!("transcription warning should include settings CTA"),
     }
 }
 

@@ -112,6 +112,9 @@
             Output will be scaled to the exact dimensions you specify.
           {/if}
         </p>
+        {#if rec.draftResolutionMode === "preset" && rec.draftResolutionPreset === "720p"}
+          <p class="group-hint">Code and small text may be hard to read at 720p.</p>
+        {/if}
       </div>
     {/snippet}
   </SettingRow>
