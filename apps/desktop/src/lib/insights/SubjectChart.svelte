@@ -1,12 +1,12 @@
 <script lang="ts">
-  // Subject detail "Confidence over time" (insights.html `.in-cc`): every
-  // conclusion's Confidence History on one time axis (earliest formation →
-  // now). The selected line is strong with a 7% area, the rest grey; one dot
+  // Subject detail "Confidence over time" (insights.html `.in-cc`): the top 10
+  // conclusions' Confidence History plus the selected one's, on a time axis
+  // fitted to the data those lines carry (`chartScope`). The selected line is strong with a 7% area, the rest grey; one dot
   // per supporting evidence on the selected line, an accent dot at formation.
   // y ticks are the shared Subjects cuts plus the dashed display floor.
   import type { Conclusion, ConfidenceSnapshot } from "$lib/types/recording";
   import { tip } from "$lib/components/tooltip";
-  import { chartPoints, chartX, interpolateConfidence, type ChartPoint } from "$lib/insights/subjectTimeline";
+  import { chartPoints, chartScope, chartX, interpolateConfidence, type ChartPoint } from "$lib/insights/subjectTimeline";
   import { DISPLAY_FLOOR, INITIAL_BASE, STRONGLY_HELD } from "$lib/insights/subjectsTiers";
 
   interface Props {
@@ -21,22 +21,17 @@
   const pct = (v: number) => Math.round(v * 100);
   const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-  // A conclusion with no retained history still draws one point at formation.
-  const historyOf = (c: Conclusion): ConfidenceSnapshot[] => {
-    const h = histories.get(c.id);
-    return h?.length ? h : [{ snapshotAtMs: c.formedAtMs, confidence: c.confidence }];
-  };
-
-  const toMs = Date.now();
-  const fromMs = $derived(
-    Math.min(toMs, ...conclusions.map((c) => Math.min(c.formedAtMs, historyOf(c)[0].snapshotAtMs))),
-  );
+  const scope = $derived(chartScope(conclusions, histories, selectedId));
+  const fromMs = $derived(scope.fromMs);
+  const toMs = $derived(scope.toMs);
+  const toLabel = $derived(new Date(toMs).toDateString() === new Date().toDateString() ? "today" : day(toMs));
 
   const path = (pts: ChartPoint[]) =>
     pts.map((p, i) => `${i ? "L" : "M"}${(p.x * W).toFixed(1)} ${((1 - p.y) * H).toFixed(1)}`).join(" ");
 
-  const selected = $derived(conclusions.find((c) => c.id === selectedId) ?? null);
-  const selPts = $derived(selected ? chartPoints(historyOf(selected), fromMs, toMs) : []);
+  const selLine = $derived(scope.lines.find((l) => l.conclusion.id === selectedId) ?? null);
+  const selected = $derived(selLine?.conclusion ?? null);
+  const selPts = $derived(selLine ? chartPoints(selLine.history, fromMs, toMs) : []);
   const area = $derived(
     selPts.length ? `${path(selPts)} L${(selPts[selPts.length - 1].x * W).toFixed(1)} ${H} L${(selPts[0].x * W).toFixed(1)} ${H}Z` : "",
   );
@@ -44,8 +39,8 @@
   // Dots on the selected line: its formation (accent), then each supporting
   // Activity at its start time, read off the line.
   const dots = $derived.by(() => {
-    if (!selected) return [];
-    const h = historyOf(selected);
+    if (!selected || !selLine) return [];
+    const h = selLine.history;
     const at = (ms: number) => ({ x: chartX(ms, fromMs, toMs), y: interpolateConfidence(h, ms, selected.confidence) });
     const out = [{ ...at(selected.formedAtMs), origin: true, label: `Formed · ${pct(at(selected.formedAtMs).y)}%` }];
     for (const ref of selected.evidence) {
@@ -86,9 +81,9 @@
       stroke-dasharray="3 4"
       vector-effect="non-scaling-stroke"
     />
-    {#each conclusions as c (c.id)}
-      {#if c.id !== selectedId}
-        <path d={path(chartPoints(historyOf(c), fromMs, toMs))} stroke="var(--chart-grey-2)" vector-effect="non-scaling-stroke" />
+    {#each scope.lines as l (l.conclusion.id)}
+      {#if l.conclusion.id !== selectedId}
+        <path d={path(chartPoints(l.history, fromMs, toMs))} stroke="var(--chart-grey-2)" vector-effect="non-scaling-stroke" />
       {/if}
     {/each}
     {#if selPts.length}
@@ -108,7 +103,7 @@
     ></i>
   {/each}
 </div>
-<div class="in-cc__x"><span>{day(fromMs)}</span><span>{midMonth}</span><span>today</span></div>
+<div class="in-cc__x"><span>{day(fromMs)}</span><span>{midMonth}</span><span>{toLabel}</span></div>
 
 <style>
   /* insights.html `.in-cc`. */

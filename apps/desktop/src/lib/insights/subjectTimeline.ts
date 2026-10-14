@@ -248,3 +248,34 @@ export function chartPoints(
   if (last && last.x < 1) pts.push({ x: 1, y: last.y });
   return pts;
 }
+
+const DAY_MS = 86_400_000;
+
+/** What the subject chart draws: the top `limit` conclusions (input arrives
+ *  confidence-desc) plus the selected one, and the time axis fitted to the data
+ *  those lines carry — formation, snapshots, last support, the selected one's
+ *  evidence — never less than a day. A missing history draws one point at
+ *  formation. Pure. */
+export function chartScope(
+  conclusions: readonly Conclusion[],
+  histories: ReadonlyMap<number, readonly ConfidenceSnapshot[]>,
+  selectedId: number | null,
+  limit = 10,
+): { lines: { conclusion: Conclusion; history: readonly ConfidenceSnapshot[] }[]; fromMs: number; toMs: number } {
+  const picked = conclusions.slice(0, limit);
+  const sel = conclusions.find((c) => c.id === selectedId);
+  if (sel && !picked.includes(sel)) picked.push(sel);
+  const lines = picked.map((c) => {
+    const h = histories.get(c.id);
+    return { conclusion: c, history: h?.length ? h : [{ snapshotAtMs: c.formedAtMs, confidence: c.confidence }] };
+  });
+  const times = lines.flatMap(({ conclusion: c, history }) => [
+    c.formedAtMs,
+    c.lastSupportedAtMs,
+    ...history.map((s) => s.snapshotAtMs),
+    ...(c === sel ? c.evidence.flatMap((e) => (e.activityStartedAtMs == null ? [] : [e.activityStartedAtMs])) : []),
+  ]);
+  const toMs = times.length ? Math.max(...times) : Date.now();
+  const fromMs = Math.min(toMs - DAY_MS, ...times);
+  return { lines, fromMs, toMs };
+}

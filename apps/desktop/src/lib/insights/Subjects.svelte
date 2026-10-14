@@ -23,6 +23,8 @@
     type Axis,
     type ConvictionTier,
     type TierSubject,
+    MAP_PAGE,
+    TIER_PAGE,
     buildTiers,
     convictionTierId,
     debounce,
@@ -30,6 +32,9 @@
     deriveTrend,
     fortnightAgo,
     isSparse,
+    movePts,
+    pageOf,
+    rankMovers,
     subjectsDiff,
   } from "$lib/insights/subjectsTiers";
   import { rankSubjects } from "$lib/insights/subjectSearch";
@@ -84,15 +89,18 @@
   // runs on. A non-empty query swaps the tiers for one relevance-ranked list.
   let searchQuery = $state("");
   let appliedQuery = $state("");
-  const applySearch = debounce((q: string) => (appliedQuery = q), 200);
+  const applySearch = debounce((q: string) => {
+    appliedQuery = q;
+    setShown("search", null);
+  }, 200);
   function clearSearch(): void {
     applySearch.cancel();
     searchQuery = appliedQuery = "";
   }
 
   // Per-tier paging: TIER_PAGE rows at a time so a crowded tier never floods
-  // the surface. Reassign the Map so the $state reacts.
-  const TIER_PAGE = 10;
+  // the surface (search results page the same way, as tier "search"). Reassign
+  // the Map so the $state reacts.
   let tierShown = $state<Map<string, number>>(new Map());
   const shownCount = (id: string) => tierShown.get(id) ?? TIER_PAGE;
   function setShown(id: string, n: number | null): void {
@@ -115,12 +123,17 @@
   let atTop = $state(true);
   let rootEl = $state<HTMLElement | null>(null);
 
+  // Keyed case-insensitively, as the store is (`subject COLLATE NOCASE`: its
+  // count, the subject page's read, the dedup index) — so "Mnema" and "mnema"
+  // are one subject here and in the tab badge. Shown under the first spelling
+  // seen (the list arrives confidence-desc, so the lead's).
   function groupSubjects(list: Conclusion[]): Map<string, Conclusion[]> {
     const groups = new Map<string, Conclusion[]>();
     for (const c of list) {
-      const bucket = groups.get(c.subject);
+      const key = c.subject.toLowerCase();
+      const bucket = groups.get(key);
       if (bucket) bucket.push(c);
-      else groups.set(c.subject, [c]);
+      else groups.set(key, [c]);
     }
     return groups;
   }
@@ -129,7 +142,8 @@
     if (!conclusions) return [];
     const now = Date.now();
     const out: SubjectRow[] = [];
-    for (const [subject, cs] of groupSubjects(conclusions)) {
+    for (const cs of groupSubjects(conclusions).values()) {
+      const subject = cs[0].subject;
       const history = trajectories.get(subject);
       const points = new Map([...(history ?? [])].map(([id, h]) => [id, h.map((s) => s.confidence)]));
       const sorted = [...cs].sort((a, b) => b.confidence - a.confidence);
@@ -175,25 +189,25 @@
   });
   const conclusionTotal = $derived(conclusions?.length ?? 0);
 
+  // A set filter scopes the whole page below the lede to its matches.
+  const listed = $derived(searching ? searchResults : displayRows);
+
+  // The map shows the top MAP_PAGE subjects until "Show all N".
+  let mapAll = $state(false);
   const mapRows = $derived<MapRow[]>(
-    (searching ? searchResults : displayRows).map((r) => ({
+    listed.slice(0, mapAll ? undefined : MAP_PAGE).map((r) => ({
       subject: r.subject,
       headline: r.headline,
       count: r.conclusions.length,
       now: r.topConfidence,
       then: r.then,
-      others: r.conclusions.slice(1).map((c) => c.confidence),
+      // One tick per distinct whole percent: a subject can hold 1,000+ conclusions.
+      others: [...new Set(r.conclusions.slice(1).map((c) => Math.round(c.confidence * 100)))].map((p) => p / 100),
       faded: r.faded,
     })),
   );
 
-  // Whole points the lead moved this fortnight; null = formed inside it.
-  const movePts = (r: SubjectRow) => (r.then === null ? null : Math.round(r.topConfidence * 100) - Math.round(r.then * 100));
-  const moving = $derived(
-    displayRows
-      .filter((r) => movePts(r) !== 0)
-      .sort((a, b) => (movePts(b) ?? 999) - (movePts(a) ?? 999)),
-  );
+  const moving = $derived(rankMovers(listed));
 
   const pct = (c: number) => Math.round(Math.max(0, Math.min(1, c)) * 100);
   const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -201,9 +215,9 @@
   // Subject display order for any list — the same grouping + sort the page
   // shows — so a staged reload is diffed in the order the reader sees.
   function displayedSubjectOrder(list: Conclusion[]): string[] {
-    return [...groupSubjects(list)]
-      .map(([subject, cs]) => ({
-        subject,
+    return [...groupSubjects(list).values()]
+      .map((cs) => ({
+        subject: cs[0].subject,
         faded: cs.every((c) => c.status === "faded"),
         topConfidence: Math.max(...cs.map((c) => c.confidence)),
       }))
@@ -251,10 +265,11 @@
     pendingCount = 0;
   }
 
-  // A failed fetch leaves that subject on its flat baseline.
+  // A failed fetch leaves that subject on its flat baseline. One read per
+  // grouped subject, under the name its row is keyed by.
   async function loadTrajectories(list: Conclusion[]): Promise<void> {
     const gen = ++trajectoriesGen;
-    const next = await loadSubjectHistories(list.map((c) => c.subject));
+    const next = await loadSubjectHistories([...groupSubjects(list).values()].map((cs) => cs[0].subject));
     if (gen === trajectoriesGen) trajectories = next;
   }
 
@@ -323,6 +338,21 @@
     <span class="num">{pct(r.topConfidence)}%</span>
     <IconRight class="arrow" width="14" height="14" aria-hidden="true" />
   </button>
+{/snippet}
+
+{#snippet pagedTier(id: string, title: string, note: string, faded: boolean, items: SubjectRow[])}
+  {@const page = pageOf(items, shownCount(id), TIER_PAGE)}
+  <div class="in-tier" class:in-tier--faded={faded}>
+    <p class="in-group">{title} {#if note}<span class="in-group__note">{note}</span>{/if}</p>
+    {#each page.visible as r (r.subject)}{@render subjRow(r)}{/each}
+    {#if page.more > 0}
+      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(id, shownCount(id) + TIER_PAGE)}>
+        Show {page.more} more
+      </button>
+    {:else if page.less}
+      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(id, null)}>Show less</button>
+    {/if}
+  </div>
 {/snippet}
 
 <section class="subjects" aria-label="Subjects" bind:this={rootEl}>
@@ -411,35 +441,27 @@
     </div>
   {:else}
     <SubjectsLede subjectCount={displayRows.length} conclusionCount={conclusionTotal} {names} />
-    <ConvictionMap rows={mapRows} query={appliedQuery.trim()} onOpen={onOpenSubject} onClear={clearSearch} />
+    <ConvictionMap rows={mapRows} query={appliedQuery.trim()} onOpen={onOpenSubject} onClear={clearSearch}>
+      {#if listed.length > MAP_PAGE}
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => (mapAll = !mapAll)}>
+          {mapAll ? `Show top ${MAP_PAGE}` : `Show all ${listed.length}`}
+        </button>
+      {/if}
+    </ConvictionMap>
 
     <div class="in-feed">
       <div class="mx-reveal" style="--i:4">
         {#if searching}
+          <!-- No matches: the map above carries the empty state + Clear. -->
           {#if searchResults.length}
-            <div class="in-tier">
-              <p class="in-group">{searchResults.length} match{searchResults.length === 1 ? "" : "es"}</p>
-              {#each searchResults as r (r.subject)}{@render subjRow(r)}{/each}
-            </div>
+            {@render pagedTier("search", `${searchResults.length} match${searchResults.length === 1 ? "" : "es"}`, "", false, searchResults)}
           {/if}
         {:else if sparse}
           <div class="in-tier">{#each displayRows as r (r.subject)}{@render subjRow(r)}{/each}</div>
           <p class="mx-body-sm">Tiers appear once there are five or more subjects.</p>
         {:else}
           {#each tiers as tier (tier.id)}
-            {@const visible = shownCount(tier.id)}
-            {@const hidden = tier.items.length - Math.min(visible, tier.items.length)}
-            <div class="in-tier" class:in-tier--faded={tier.faded}>
-              <p class="in-group">{tier.title} · {tier.items.length} <span class="in-group__note">{tier.note}</span></p>
-              {#each tier.items.slice(0, visible) as r (r.subject)}{@render subjRow(r)}{/each}
-              {#if hidden > 0}
-                <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(tier.id, visible + TIER_PAGE)}>
-                  Show {Math.min(TIER_PAGE, hidden)} more
-                </button>
-              {:else if visible > TIER_PAGE}
-                <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(tier.id, null)}>Show less</button>
-              {/if}
-            </div>
+            {@render pagedTier(tier.id, `${tier.title} · ${tier.items.length}`, tier.note, tier.faded, tier.items)}
           {/each}
         {/if}
       </div>

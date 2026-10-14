@@ -1,7 +1,8 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { FORTNIGHT_MS, fortnightAgo, subjectsHeadline } from "./subjectsTiers";
+import { FORTNIGHT_MS, fortnightAgo, pageOf, rankMovers, subjectsHeadline } from "./subjectsTiers";
+import { rankSubjects } from "./subjectSearch";
 
 const none = { strong: [], forming: [], shaping: [], fading: [] };
 
@@ -33,5 +34,42 @@ describe("fortnightAgo", () => {
   });
   test("no history falls back to today's confidence (no tail)", () => {
     expect(fortnightAgo({ formedAtMs: 0, confidence: 0.5 }, [], NOW)).toBe(0.5);
+  });
+});
+
+describe("pageOf", () => {
+  const xs = Array.from({ length: 45 }, (_, i) => i);
+  test("first page, then a capped 'more', then 'less' once everything is out", () => {
+    expect(pageOf(xs, 20, 20)).toMatchObject({ more: 20, less: false });
+    expect(pageOf(xs, 20, 20).visible).toHaveLength(20);
+    expect(pageOf(xs, 40, 20)).toMatchObject({ more: 5, less: false });
+    expect(pageOf(xs, 60, 20)).toMatchObject({ more: 0, less: true });
+    expect(pageOf(xs.slice(0, 7), 20, 20)).toMatchObject({ more: 0, less: false });
+  });
+});
+
+describe("rankMovers", () => {
+  const row = (subject, now, then, sinceMs = 0) => ({ subject, topConfidence: now, then, sinceMs });
+  test("real movers by size first, then newest 'formed', flat dropped, capped", () => {
+    const rows = [
+      row("new-old", 0.4, null, 1),
+      row("up5", 0.55, 0.5),
+      row("flat", 0.5, 0.5),
+      row("down20", 0.3, 0.5),
+      row("new-recent", 0.4, null, 9),
+    ];
+    expect(rankMovers(rows).map((r) => r.subject)).toEqual(["down20", "up5", "new-recent", "new-old"]);
+    expect(rankMovers(rows, 2).map((r) => r.subject)).toEqual(["down20", "up5"]);
+  });
+});
+
+describe("rankSubjects as a filter", () => {
+  const s = (subject, ...statements) => ({ subject, conclusions: statements.map((statement) => ({ statement })) });
+  const rows = [s("AI tools", "Uses Claude daily"), s("Rust", "Writes Rust at work"), s("Fitness", "Runs in the morning")];
+  test("a set query keeps only matches — even one too short to rank", () => {
+    expect(rankSubjects(rows, "rust").map((r) => r.subject)).toEqual(["Rust"]);
+    expect(rankSubjects(rows, "ai").map((r) => r.subject)).toEqual(["AI tools"]);
+    expect(rankSubjects(rows, "zz")).toEqual([]);
+    expect(rankSubjects(rows, "   ")).toEqual(rows);
   });
 });

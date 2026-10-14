@@ -1,7 +1,8 @@
 <script lang="ts">
   // Subject detail (insights.html `openSubject`): crumb with a ghost Ask, the
   // subject lede + four stats, "Confidence over time" beside the conclusions
-  // list, then "Why Mnema believes this" beside the "This conclusion" panel.
+  // list (paged), with "Why Mnema believes this" and the "This conclusion" panel
+  // under the chart — beside the list, so a long list never buries them.
   // Owns the fetch, the realtime refresh, selection, Pin / delayed-commit
   // Dismiss, and the Timeline hand-off. Each conclusion keeps its OWN
   // confidence — the subject is never rolled up into one score.
@@ -18,7 +19,7 @@
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import SubjectChart from "$lib/insights/SubjectChart.svelte";
   import { buildTimeline } from "$lib/insights/subjectTimeline";
-  import { debounce, deriveTrend, fortnightAgo } from "$lib/insights/subjectsTiers";
+  import { CONCLUSION_PAGE, debounce, deriveTrend, fortnightAgo, pageOf } from "$lib/insights/subjectsTiers";
   import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
   import { relativeTime } from "$lib/insights/conversationStore.svelte";
   import { fmtDuration } from "$lib/insights/lede-stats";
@@ -47,6 +48,17 @@
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
+  let sideEl = $state<HTMLElement>();
+
+  // Wide layout keeps the evidence sticky beside the list; stacked (narrow) puts
+  // it below the list, so bring it into view on pick.
+  function select(id: number): void {
+    selectedId = id;
+    if (sideEl && getComputedStyle(sideEl).position !== "sticky") {
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      sideEl.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+    }
+  }
   let pinBusy = $state(false);
   let destroyed = false;
 
@@ -90,6 +102,9 @@
   const shown = $derived(
     (view?.conclusions ?? []).filter((c) => !dismissal.has(c.id)).sort((a, b) => b.confidence - a.confidence),
   );
+  // The list pages CONCLUSION_PAGE rows at a time; a new subject starts over.
+  let clShown = $state(CONCLUSION_PAGE);
+  const clPage = $derived(pageOf(shown, clShown, CONCLUSION_PAGE));
   const selected = $derived(shown.find((c) => c.id === selectedId) ?? shown[0] ?? null);
   const selIndex = $derived(selected ? shown.indexOf(selected) : -1);
   const lead = $derived(shown[0] ?? null);
@@ -253,6 +268,7 @@
 
   $effect(() => {
     subject;
+    clShown = CONCLUSION_PAGE;
     void loadSubject();
     // `user_context_changed` fires per derivation pass; coalesce bursts.
     const debouncedReload = debounce(() => void loadSubject(), 500);
@@ -371,30 +387,37 @@
       <div class="mx-panel in-week mx-reveal" style="--i:3">
         <div class="in-sec">
           <span class="mx-kicker">Confidence over time</span><span class="mx-spacer"></span>
-          <span class="mx-label">selected conclusion · others in grey · ● evidence</span>
+          <span class="mx-label">selected conclusion · {shown.length > 11 ? "top 10" : "others"} in grey · ● evidence</span>
         </div>
         <SubjectChart conclusions={shown} {histories} selectedId={selected.id} />
       </div>
-      <div class="mx-reveal" style="--i:4">
+      <div class="in-cls-col mx-reveal" style="--i:4">
         <div class="in-sec">
           <span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span>
           <span class="mx-label">{shown.length} · by confidence</span>
         </div>
         <div class="in-cls">
-          {#each shown as c (c.id)}
+          {#each clPage.visible as c (c.id)}
             {@const d = fortnightDelta(c)}
-            <button type="button" class="in-cl" aria-pressed={c.id === selected.id} onclick={() => (selectedId = c.id)}>
+            <button type="button" class="in-cl" aria-pressed={c.id === selected.id} onclick={() => select(c.id)}>
               <span class="num">{pct(c.confidence)}%</span>
               <span>{c.statement}</span>
               <small class:in-up={(d ?? 0) > 0} class:in-down={(d ?? 0) < 0}>{d === null ? "new" : signed(d)}</small>
             </button>
           {/each}
         </div>
+        {#if clPage.more > 0}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown += CONCLUSION_PAGE)}>
+            Show {clPage.more} more
+          </button>
+        {:else if clPage.less}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown = CONCLUSION_PAGE)}>Show less</button>
+        {/if}
       </div>
-    </div>
 
-    <div class="in-feed mx-reveal" style="--i:5">
-      <div>
+      <!-- Sticky beside the list (wide) so picking a conclusion far down keeps its evidence in view. -->
+      <div class="in-side" bind:this={sideEl}>
+      <div class="in-why mx-reveal" style="--i:5">
         <span class="mx-kicker">Why Mnema believes this · {selIndex + 1} of {shown.length}</span>
         <h2 class="in-cd__statement">{selected.statement}</h2>
         <div class="in-cd__acts">
@@ -436,7 +459,7 @@
           {/each}
         </ol>
       </div>
-      <div class="mx-panel mx-panel--inset in-guard">
+      <div class="mx-panel mx-panel--inset in-guard mx-reveal" style="--i:6">
         <div class="in-sec"><span class="mx-kicker">This conclusion</span></div>
         <dl class="mx-spec">
           <div><dt>confidence</dt><dd class="num">{pct(selected.confidence)}%</dd></div>
@@ -451,6 +474,7 @@
             >Open evidence in Timeline<IconArrow width="13" height="13" aria-hidden="true" /></button
           >
         {/if}
+      </div>
       </div>
     </div>
   {/if}
@@ -488,8 +512,22 @@
   .lede { font-size: var(--text-lg); }
   .lede span { color: var(--app-text-subtle); }
   .in-lede-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
-  .in-ex { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); margin-bottom: var(--s-7); }
-  .in-feed { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+  /* Chart, then "Why" and "This conclusion" down the left; the (paged) list
+     spans the right, its extra height absorbed by the last row. */
+  .in-ex {
+    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
+    grid-template-areas: "chart list" "side list"; gap: var(--s-6); align-items: start;
+  }
+  .in-ex > .in-week { grid-area: chart; }
+  .in-cls-col { grid-area: list; }
+  /* Sticks under the 56px Insights bar; scrolls inside itself when the evidence
+     timeline is taller than the window. ponytail: 100vh over-counts the titlebar
+     by a few px — the inner scroll absorbs it. */
+  .in-side {
+    grid-area: side; display: grid; gap: var(--s-6); align-self: start;
+    position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain;
+  }
+  .in-cls__more { margin: var(--s-2) 0 0 -9px; }
   .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
   .in-week { padding: var(--s-5); }
   .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
@@ -539,7 +577,8 @@
   .mx-toasts { position: fixed; }
 
   @container mx-window (max-width: 1180px) {
-    .in-ex, .in-feed { grid-template-columns: 1fr; }
+    .in-ex { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "chart" "list" "side"; }
+    .in-side { position: static; max-height: none; overflow: visible; }
   }
   @media (prefers-reduced-motion: reduce) {
     .in-tl li { animation: none; }

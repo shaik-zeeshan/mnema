@@ -18,6 +18,7 @@
   // subject on a 0–100% track banded at the shared tier cuts: the dot is the lead
   // conclusion now, the tail runs back to where it sat 14 days ago (from its real
   // Confidence History), and ticks mark the subject's other conclusions.
+  import type { Snippet } from "svelte";
   import { tip } from "$lib/components/tooltip";
   import IconSearch from "~icons/lucide/search";
   import { DISPLAY_FLOOR, INITIAL_BASE, STRONGLY_HELD } from "$lib/insights/subjectsTiers";
@@ -28,8 +29,10 @@
     query: string;
     onOpen: (subject: string) => void;
     onClear: () => void;
+    /** Footer under the rows (Subjects' "Show all N"). */
+    children?: Snippet;
   }
-  let { rows, query, onOpen, onClear }: Props = $props();
+  let { rows, query, onOpen, onClear, children }: Props = $props();
 
   const pct = (c: number) => Math.round(Math.max(0, Math.min(1, c)) * 100);
   const [FLOOR, BASE, HELD] = [DISPLAY_FLOOR, INITIAL_BASE, STRONGLY_HELD].map(pct);
@@ -105,6 +108,7 @@
       </div>
     {/if}
   </div>
+  {#if children && rows.length}<div class="in-map__more">{@render children()}</div>{/if}
 </div>
 
 <style>
@@ -295,6 +299,9 @@
   }
   .in-map__val small.new {
     color: var(--app-accent);
+  }
+  .in-map__more {
+    padding-top: var(--s-3);
   }
   .in-map__legend {
     display: flex;

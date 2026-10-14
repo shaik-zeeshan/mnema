@@ -10,6 +10,7 @@ import type {
 import {
   buildTimeline,
   chartPoints,
+  chartScope,
   chartX,
   interpolateConfidence,
   type TimelineEvent,
@@ -298,5 +299,18 @@ describe("chartPoints", () => {
       { x: 1, y: 0.5 },
     ]);
     expect(chartPoints([], 1_000, 5_000)).toEqual([]);
+  });
+});
+
+describe("chartScope", () => {
+  const D = 86_400_000;
+  test("draws the top N plus the selected, on an axis fitted to their data", () => {
+    const cs = [1, 2, 3, 4].map((id) => conclusion({ id, formedAtMs: id * 10 * D, lastSupportedAtMs: id * 10 * D, evidence: [] }));
+    const histories = new Map([[2, [{ snapshotAtMs: 15 * D, confidence: 0.4 }, { snapshotAtMs: 25 * D, confidence: 0.5 }]]]);
+    const scope = chartScope(cs, histories, 4, 2);
+    expect(scope.lines.map((l) => l.conclusion.id)).toEqual([1, 2, 4]);
+    expect([scope.fromMs, scope.toMs]).toEqual([10 * D, 40 * D]);
+    // One point in time still spans a day.
+    expect(chartScope(cs.slice(0, 1), new Map(), 1)).toMatchObject({ fromMs: 9 * D, toMs: 10 * D });
   });
 });

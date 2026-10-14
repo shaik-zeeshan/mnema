@@ -247,3 +247,39 @@ export function fortnightAgo(
   if (lead.formedAtMs > then) return null;
   return interpolateConfidence(history, then, lead.confidence);
 }
+
+// ---- Paging + "Moving this fortnight" (pure, testable) ----------------------
+
+export const TIER_PAGE = 10; // subject rows per tier (and per search page)
+export const MAP_PAGE = 12; // conviction-map rows before "Show all N"
+export const MOVING_LIMIT = 8; // "Moving this fortnight" rows
+export const CONCLUSION_PAGE = 20; // a subject page's conclusion rows
+
+/** The first `shown` of `items`, how many the next "Show N more" adds, and
+ *  whether "Show less" applies (everything is out, past the first page). */
+export function pageOf<T>(items: readonly T[], shown: number, step: number): { visible: T[]; more: number; less: boolean } {
+  const visible = items.slice(0, shown);
+  const hidden = items.length - visible.length;
+  return { visible, more: Math.min(step, hidden), less: hidden === 0 && shown > step };
+}
+
+interface Mover {
+  topConfidence: number;
+  then: number | null; // lead's confidence 14 days ago; null = formed this fortnight
+  sinceMs: number;
+}
+
+/** Whole points the lead moved this fortnight; null = formed inside it. */
+export function movePts(r: Mover): number | null {
+  return r.then === null ? null : Math.round(r.topConfidence * 100) - Math.round(r.then * 100);
+}
+
+/** "Moving this fortnight": real ±pts movers by size of the move, then the
+ *  subjects formed inside the fortnight (newest first) to fill; flat rows drop.
+ *  Capped, since on a young dossier nearly every subject "formed" this fortnight. */
+export function rankMovers<T extends Mover>(rows: readonly T[], limit = MOVING_LIMIT): T[] {
+  const moved = rows.filter((r) => (movePts(r) ?? 0) !== 0);
+  moved.sort((a, b) => Math.abs(movePts(b) ?? 0) - Math.abs(movePts(a) ?? 0));
+  const formed = rows.filter((r) => r.then === null).sort((a, b) => b.sinceMs - a.sinceMs);
+  return [...moved, ...formed].slice(0, limit);
+}
