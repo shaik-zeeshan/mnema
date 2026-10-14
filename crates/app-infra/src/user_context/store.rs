@@ -1677,8 +1677,13 @@ impl UserContextStore {
     }
 
     /// Bounded read powering the KNOWN SUBJECTS block's per-subject conclusion
-    /// listing. For each subject in `subjects`, its non-dismissed conclusions ordered
-    /// confidence-desc (ties → lowest id), capped at `per_subject_cap` per subject.
+    /// listing. For each subject in `subjects`, at most `per_subject_cap` of its
+    /// non-dismissed conclusions, alternating the strongest (confidence-desc, ties
+    /// → lowest id) with the most recently supported, skipping any statement that
+    /// is a lexical near-duplicate of one already picked. Confidence alone is not
+    /// enough: every long-lived belief saturates at the same ceiling, so a
+    /// confidence-only list degenerates to the subject's OLDEST rows — often
+    /// rewordings of one belief — and hides what the subject is about now.
     /// Returns (subject, id, statement, confidence) tuples. Thin cousin of
     /// `list_conclusions_for_subject` — no evidence hydration.
     pub async fn list_conclusions_for_subjects(
@@ -1694,23 +1699,51 @@ impl UserContextStore {
             if trimmed.is_empty() || !seen.insert(trimmed.to_lowercase()) {
                 continue;
             }
-            let rows = sqlx::query(
-                "SELECT id, statement, confidence FROM user_context_conclusions \
-                 WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
-                 ORDER BY confidence DESC, id ASC LIMIT ?2",
-            )
-            .bind(subject)
-            .bind(per_subject_cap)
-            .fetch_all(self.db.read())
-            .await?;
-            for row in rows {
-                out.push((
-                    subject.clone(),
-                    row.get::<i64, _>("id"),
-                    row.get::<String, _>("statement"),
-                    row.get::<f64, _>("confidence"),
-                ));
+            let mut legs = Vec::with_capacity(2);
+            for order in [
+                "confidence DESC, id ASC",
+                "last_supported_at_ms DESC, id DESC",
+            ] {
+                let rows = sqlx::query(&format!(
+                    "SELECT id, statement, confidence FROM user_context_conclusions \
+                     WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
+                     ORDER BY {order} LIMIT ?2",
+                ))
+                .bind(subject)
+                .bind(per_subject_cap)
+                .fetch_all(self.db.read())
+                .await?;
+                legs.push(
+                    rows.into_iter()
+                        .map(|row| {
+                            (
+                                row.get::<i64, _>("id"),
+                                row.get::<String, _>("statement"),
+                                row.get::<f64, _>("confidence"),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                );
             }
+            let (strongest, recent) = (&legs[0], &legs[1]);
+            let mut picked: Vec<(i64, String, f64)> = Vec::new();
+            let interleaved = (0..strongest.len().max(recent.len()))
+                .flat_map(|i| [strongest.get(i), recent.get(i)])
+                .flatten();
+            for (id, statement, confidence) in interleaved {
+                if picked.len() as i64 >= per_subject_cap {
+                    break;
+                }
+                let duplicate = picked.iter().any(|(picked_id, picked, _)| {
+                    picked_id == id || super::conclusion_dedup::is_lexical_duplicate(picked, statement)
+                });
+                if !duplicate {
+                    picked.push((*id, statement.clone(), *confidence));
+                }
+            }
+            out.extend(picked.into_iter().map(|(id, statement, confidence)| {
+                (subject.clone(), id, statement, confidence)
+            }));
         }
         Ok(out)
     }

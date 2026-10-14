@@ -1863,6 +1863,8 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
             );
         }
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
+        // Before the User Context worker spawns below, so no distillation races it.
+        crate::user_context::conclusion_guard::run_dedup_startup_pass(&infra);
     }));
     if post_maintenance.is_err() {
         report.errors.push("post_maintenance_panic");

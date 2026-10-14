@@ -15,6 +15,7 @@ mod activity_continuation;
 mod activity_meta;
 mod capture_bounds;
 pub mod capture_source;
+pub mod conclusion_dedup;
 pub mod confidence;
 pub mod guardrail;
 pub mod recurrence;
@@ -22,6 +23,7 @@ pub mod store;
 pub mod subject_vectors;
 
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
+pub use conclusion_dedup::ConclusionDedupSummary;
 pub use recurrence::{
     build_recurrence_digest, recurrence_digest_window_start_ms, RECURRENCE_DIGEST_WINDOW_DAYS,
 };

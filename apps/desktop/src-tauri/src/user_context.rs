@@ -29,6 +29,7 @@
 //!   conclusions / subject view / digest / run-now).
 
 pub mod commands;
+pub(crate) mod conclusion_guard;
 mod continuation;
 pub mod derivation;
 pub mod digest;

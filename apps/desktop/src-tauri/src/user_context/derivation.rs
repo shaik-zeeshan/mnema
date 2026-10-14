@@ -976,6 +976,8 @@ pub async fn distill_conclusions(
     let now = now_ms();
     let mut upserted = 0usize;
     let mut gate_drops = app_infra::DistillationGateDrops::default();
+    let mut duplicate_guard = super::conclusion_guard::DuplicateGuard::new(app_handle);
+    let mut guard_merged = 0usize;
     for conclusion in &batch.conclusions {
         let subject = conclusion.subject.trim();
         let statement = conclusion.statement.trim();
@@ -1089,15 +1091,25 @@ pub async fn distill_conclusions(
             });
         }
 
-        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
-        // showed it to the model — a hallucinated / not-shown id becomes None. The
-        // store re-validates subject/dismissed defensively, so this is just "don't
-        // forward an id we never presented".
-        let reinforces_id = conclusion.reinforces_id.filter(|id| shown_ids.contains(id));
         // Supersede (ADR 0046): forward the cited id only if we actually showed it
-        // — same drop-hallucinated rule as reinforces_id. The store enforces
+        // — a hallucinated / not-shown id becomes None. The store enforces
         // same-subject / not-pinned / self-block / retire-only-downward strength.
         let supersedes_id = conclusion.supersedes_id.filter(|id| shown_ids.contains(id));
+        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
+        // showed it to the model (same drop-hallucinated rule). A belief that cites
+        // nothing goes through the duplicate guard first: if it restates an
+        // existing conclusion of the same subject, reinforce that one instead of
+        // inserting a reworded copy.
+        let reinforces_id = match conclusion.reinforces_id.filter(|id| shown_ids.contains(id)) {
+            Some(id) => Some(id),
+            None => {
+                let duplicate = duplicate_guard
+                    .find_duplicate(store, subject, statement, supersedes_id)
+                    .await?;
+                guard_merged += usize::from(duplicate.is_some());
+                duplicate
+            }
+        };
 
         // Single transaction: upsert (with the ratcheted confidence) + evidence
         // replacement commit/roll back together, so an error between them can
@@ -1135,6 +1147,11 @@ pub async fn distill_conclusions(
         upserted += 1;
     }
 
+    if guard_merged > 0 {
+        crate::native_capture::debug_log::log(format!(
+            "conclusion distillation: duplicate guard turned {guard_merged} new belief(s) into reinforcements"
+        ));
+    }
     Ok(ConclusionDistillationOutcome {
         upserted,
         gate_drops,
@@ -1268,8 +1285,10 @@ const KNOWN_SUBJECTS_LEXICAL_LIMIT: i64 = 20;
 const KNOWN_SUBJECTS_CHAR_CAP: usize = 8_000;
 
 /// Per-subject cap on how many existing conclusions are shown under a KNOWN SUBJECTS
-/// handle (confidence-desc). Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
-const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 12;
+/// handle (strongest + most recent, paraphrases skipped — see
+/// `list_conclusions_for_subjects`), so a subject's block stops growing with it.
+/// Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
+const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 15;
 
 /// Render the KNOWN SUBJECTS prompt block (slices 5/6): the candidate Subject
 /// handles the user already has, fed to the engine with an instruction to reuse a
