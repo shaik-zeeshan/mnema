@@ -509,7 +509,9 @@ button.mx-chip:hover { border-color: var(--app-border-hover); }
    .mx-progress__meta = label + mono numbers above the bar. */
 .mx-spin { --_s: 14px; flex: none; display: inline-block; width: var(--_s); height: var(--_s); border-radius: 50%;
   border: 1.5px solid color-mix(in srgb, currentColor 22%, transparent); border-top-color: currentColor;
-  vertical-align: -2px; } /* static ring — no rotation; the text beside it says what is happening */
+  vertical-align: -2px; animation: mx-spin 0.8s linear infinite; }
+/* Global (unscoped) so component-scoped spinners can reference it by name too. */
+@keyframes mx-spin { to { transform: rotate(360deg); } }
 .mx-spin--sm { --_s: 10px; }
 .mx-spin--lg { --_s: 20px; border-width: 2px; }
 .mx-progress { position: relative; height: 4px; border-radius: 2px; background: var(--mx-wash-strong); overflow: hidden; }
@@ -622,7 +624,7 @@ button.mx-chip:hover { border-color: var(--app-border-hover); }
 /* ponytail: scoped to kit classes, not the kit's global `*` kill-switch — the app's
    own reduced-motion rules stay where they are. */
 @media (prefers-reduced-motion: reduce) {
-  :is(.mx-reveal, .mx-toast, .mx-helper) { animation: none; }
+  :is(.mx-reveal, .mx-toast, .mx-helper, .mx-spin) { animation: none; }
   .mx-toast__timer { display: none; }
   .mx-progress--indeterminate > i { opacity: 0.35; }
   :is(.mx-tip, .mx-pop, .mx-btn, .mx-progress > i) { transition: none; }

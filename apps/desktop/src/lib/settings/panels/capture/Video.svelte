@@ -212,5 +212,9 @@
 
   .resolution-pending-notice__icon--spin {
     display: inline-flex;
+    animation: mx-spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .resolution-pending-notice__icon--spin { animation: none; }
   }
 </style>

@@ -242,12 +242,16 @@
     border-radius: 50%;
     border: 1.5px solid color-mix(in srgb, var(--app-warn) 30%, transparent);
     border-top-color: var(--app-warn);
+    animation: mx-spin 0.8s linear infinite;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .frame-ocr-box,
     .frame-ocr-text {
       transition: none;
+    }
+    .frame-ocr-spinner {
+      animation: none;
     }
   }
 </style>

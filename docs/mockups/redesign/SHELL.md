@@ -297,6 +297,6 @@ Tokens: `--font-sans`, `--font-mono` (kit rules use these; `--mx-sans`/`--mx-mon
 - No page-level button, radio, segmented or date-stepper skins — use the kit. No radio circles.
 - **No left-border / left-bar selection indicators** (no `border-left`, `inset 2px 0 0`, or `::before` bar on a selected row). Use `--mx-selected`.
 - No large green fills, no green glow except live.
-- No bounce, no layout-property animation, and **no looping animation of any kind** — not the REC dot (steady dot + static ring), not skeletons (static blocks), not spinners (static ring beside text), not indeterminate bars (static hatch). Motion is one-shot only: enter/exit, state change, progress that tracks real data.
+- No bounce, no layout-property animation, and **no looping animation** — not the REC dot (steady dot + static ring), not skeletons (static blocks), not indeterminate bars (static hatch). The one exception is spinners: `mx-spin` rotates (founder ruling 2026-10-14 — a still ring read as frozen), always beside text. Motion is one-shot only: enter/exit, state change, progress that tracks real data.
 - No page-level empty/error/toast/banner/notice/progress skins (`.tl-toast`, `.rc-toast`, `.ac-note`, `.ac-empty`, `.up-progress`, `.ob-inline.is-warn` …) — use States.
 - No texture inside panels; don't redefine kit classes — extend with page-prefixed ones.

@@ -44,7 +44,7 @@
 </script>
 
 <!-- Kit ghost icon button (settings mockup's mic "Reload"); in flight the icon
-     becomes the kit's static `.mx-spin` ring, like every other busy control. -->
+     becomes the kit's `.mx-spin` ring, like every other busy control. -->
 <button
   class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm"
   type="button"

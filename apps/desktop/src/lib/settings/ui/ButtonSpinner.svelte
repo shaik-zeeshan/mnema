@@ -1,7 +1,7 @@
 <script lang="ts">
   // Inline busy spinner shown beside a button label while an action is in
-  // flight (download / cancel / delete). A static Lucide loader — the kit never
-  // loops an animation (SHELL.md), the label beside it carries the state.
+  // flight (download / cancel / delete). A spinning Lucide loader (the kit's
+  // global `mx-spin` keyframes); the label beside it carries the state.
   //
   // Extracted from the `.btn-spinner` svg every settings panel used to inline
   // and duplicate. The spinner svg is rendered by a child (icon) component, so
@@ -17,6 +17,10 @@
     display: inline-flex;
     margin-right: 6px;
     vertical-align: -2px;
+    animation: mx-spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .btn-spinner { animation: none; }
   }
   .btn-spinner :global(svg) {
     width: 13px;

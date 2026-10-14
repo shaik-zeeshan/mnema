@@ -395,6 +395,7 @@
     border-radius: 50%;
     border: 1px solid transparent;
     border-top-color: var(--app-accent);
+    animation: mx-spin 0.8s linear infinite;
   }
   /* Installed-but-unconfirmed: a dashed glyph, deliberately not a checkmark. */
   .receipt-glyph--pending {
