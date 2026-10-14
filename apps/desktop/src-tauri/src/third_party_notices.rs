@@ -47,6 +47,22 @@ pub struct ThirdPartyNotices {
 const KIND_SPEAKER: &str = "Speaker Diarization";
 const KIND_TRANSCRIPTION: &str = "Transcription";
 const KIND_OCR: &str = "OCR";
+const KIND_FONT: &str = "Fonts";
+
+/// The two UI fonts bundled under `static/fonts/` (license text in `OFL.txt`).
+/// Fixed files rather than a manifest, so listed by hand.
+const BUNDLED_FONTS: [(&str, &str, &str); 2] = [
+    (
+        "font/hanken-grotesk",
+        "Hanken Grotesk",
+        "https://github.com/marcologous/hanken-grotesk",
+    ),
+    (
+        "font/spline-sans-mono",
+        "Spline Sans Mono",
+        "https://github.com/SorkinType/SplineSansMono",
+    ),
+];
 
 /// Build a notice entry from the descriptor's attribution fields, applying a
 /// sensible fallback license label when the descriptor carries none. Entries
@@ -118,6 +134,16 @@ pub fn collect_third_party_notices() -> ThirdPartyNotices {
         ));
     }
 
+    for (component, display_name, source_url) in BUNDLED_FONTS {
+        entries.push(make_entry(
+            component.to_string(),
+            KIND_FONT,
+            display_name.to_string(),
+            Some("OFL-1.1".to_string()),
+            Some(source_url.to_string()),
+        ));
+    }
+
     let plain_text = render_plain_text(&entries);
     ThirdPartyNotices {
         entries,
@@ -130,11 +156,11 @@ fn render_plain_text(entries: &[ThirdPartyNoticeEntry]) -> String {
     let mut out = String::new();
     out.push_str("THIRD-PARTY NOTICES\n");
     out.push_str(
-        "Mnema bundles or downloads the on-device models listed below. Each is\n\
-         attributed to its upstream project under the stated license.\n",
+        "Mnema bundles or downloads the on-device models and fonts listed below.\n\
+         Each is attributed to its upstream project under the stated license.\n",
     );
 
-    for kind in [KIND_SPEAKER, KIND_TRANSCRIPTION, KIND_OCR] {
+    for kind in [KIND_SPEAKER, KIND_TRANSCRIPTION, KIND_OCR, KIND_FONT] {
         let group: Vec<&ThirdPartyNoticeEntry> =
             entries.iter().filter(|entry| entry.kind == kind).collect();
         if group.is_empty() {
@@ -183,6 +209,7 @@ mod tests {
         assert!(has_kind(KIND_SPEAKER), "missing speaker diarization entries");
         assert!(has_kind(KIND_TRANSCRIPTION), "missing transcription entries");
         assert!(has_kind(KIND_OCR), "missing OCR entries");
+        assert!(has_kind(KIND_FONT), "missing bundled font entries");
     }
 
     #[test]
@@ -246,6 +273,7 @@ mod tests {
         assert!(notices.plain_text.contains(KIND_SPEAKER));
         assert!(notices.plain_text.contains(KIND_TRANSCRIPTION));
         assert!(notices.plain_text.contains(KIND_OCR));
+        assert!(notices.plain_text.contains(KIND_FONT));
         // Each structured entry's display name should appear in the bundle.
         for entry in &notices.entries {
             assert!(

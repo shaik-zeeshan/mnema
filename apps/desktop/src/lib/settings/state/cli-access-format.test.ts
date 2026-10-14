@@ -14,8 +14,9 @@ const {
   formatOutcome,
   formatCommand,
   formatActivityDetail,
-  grantStatus,
-  grantStatusLabel,
+  formatScopeChip,
+  grantLapse,
+  lastCommandByTool,
 } = await import("./cli-access.svelte");
 
 const grant = (over) => ({
@@ -48,40 +49,48 @@ describe("scope rendering", () => {
   });
 });
 
-describe("permission row status", () => {
-  // The relative-time half is `Intl.RelativeTimeFormat` on the SYSTEM locale, so
-  // the wording is asserted by shape, not by an English string this suite would
-  // fail on under any other locale.
-  test("blocked dates the block; active dates its last use", () => {
-    const now = Date.UTC(2026, 0, 10);
-    const dayAgo = now - 24 * 60 * 60 * 1000;
+describe("idle lapse meter", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.UTC(2026, 9, 10);
 
-    expect(grantStatus(grant({ blocked: true }))).toBe("blocked");
-    expect(grantStatus(grant())).toBe("active");
-
-    // Both rows label their own timestamp. The name line carries a BLOCKED
-    // badge, but a bare relative time beside an active row's "Used 3 hours ago"
-    // would leave the reader unable to tell last-use from block-time.
-    const blocked = grantStatusLabel(grant({ blocked: true, blockedAtUnixMs: dayAgo }), now);
-    expect(blocked.startsWith("Blocked ")).toBe(true);
-    expect(blocked).not.toBe("Blocked");
-
-    // The active row must date the LAST USE, not the block slot — reading the
-    // wrong field is how every live tool would read "Used 56 years ago".
-    const used = grantStatusLabel(grant({ lastUsedAtUnixMs: dayAgo }), now);
-    expect(used).toBe(`Used ${blocked.slice("Blocked ".length)}`);
+  // last use + 30 days − now, rounded UP: a tool used 26 days ago has 4 days
+  // left, and one used a minute ago still reads the full 30.
+  test("counts down from the last use, not from creation", () => {
+    const used26 = grantLapse(grant({ createdAtUnixMs: now - 90 * DAY, lastUsedAtUnixMs: now - 26 * DAY }), now);
+    expect(used26.label).toBe("Lapses in 4 days");
+    expect(used26.soon).toBe(true);
+    expect(used26.fraction).toBeCloseTo(4 / 30);
+    const fresh = grantLapse(grant({ lastUsedAtUnixMs: now - 60_000 }), now);
+    expect(fresh.label).toBe("Lapses in 30 days");
+    expect(fresh.soon).toBe(false);
   });
 
-  // `blockedAtUnixMs` is `Option<u64>` on the wire, so `null` is reachable for
-  // any row blocked by a build that did not stamp it. `56 years ago` is what a
-  // naive read of a null gives; the row drops the time cell instead.
-  // The BLOCKED badge on the name line already states the state, so an unstamped
-  // block adds nothing here — and must never render a date from the epoch, which
-  // is what a naive read of the null gives ("Blocked 56 years ago").
-  test("a block with no timestamp adds nothing, never a date from the epoch", () => {
-    expect(grantStatusLabel(grant({ blocked: true, blockedAtUnixMs: null }), Date.UTC(2026, 0, 10))).toBe(
-      "",
-    );
+  // The backend prunes a row at 30 days, so a poll can briefly hold one at or
+  // past the line: it reads "today" and an empty bar, never a negative count.
+  test("the last day and an overdue row read 'today', never negative", () => {
+    expect(grantLapse(grant({ lastUsedAtUnixMs: now - 29.5 * DAY }), now).label).toBe("Lapses today");
+    const over = grantLapse(grant({ lastUsedAtUnixMs: now - 31 * DAY }), now);
+    expect(over.label).toBe("Lapses today");
+    expect(over.fraction).toBe(0);
+  });
+
+  test("scope chips are lowercase time windows", () => {
+    expect(formatScopeChip("all_retained_history")).toBe("all retained");
+    expect(formatScopeChip({ recent_days: { days: 7 } })).toBe("last 7 days");
+    expect(formatScopeChip({ recent_days: { days: 1 } })).toBe("last day");
+  });
+});
+
+describe("last ran", () => {
+  const ev = (who, cmd, at) => ({ toolIdentity: who, normalizedToolIdentity: who, commandType: cmd, timestampUnixMs: at, resultCount: 0, scopeClass: "", outcome: null });
+
+  // Keyed by the normalized identity the grant row carries, newest event wins
+  // whatever the file order, and a refused command still counts as what it ran.
+  test("newest command per tool, by normalized identity", () => {
+    const map = lastCommandByTool([ev("codex", "search", 5), ev("claude code", "show_text", 9), ev("codex", "timeline", 7), ev("codex", "speakers", 6)]);
+    expect(map.get("codex")).toBe("timeline");
+    expect(map.get("claude code")).toBe("show-text");
+    expect(map.size).toBe(2);
   });
 });
 

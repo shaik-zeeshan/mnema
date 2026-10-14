@@ -139,15 +139,6 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
     }
   }
 
-  async function openGeckoAccessSettings(): Promise<void> {
-    deps.setError(null);
-    try {
-      await invoke("open_browser_url_accessibility_settings");
-    } catch (err) {
-      deps.setError(serializeError(err));
-    }
-  }
-
   async function recheckGeckoAccess(): Promise<void> {
     if (recheckingGeckoAccess) return;
     deps.setError(null);
@@ -205,7 +196,6 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
     permissionTone,
     loadGeckoUrlAccess,
     requestGeckoAccess,
-    openGeckoAccessSettings,
     recheckGeckoAccess,
   };
 }

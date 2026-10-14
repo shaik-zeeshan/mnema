@@ -58,6 +58,17 @@
     type VoiceEnrollmentOutcome,
   } from "$lib/voice-enrollment";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconCheck from "~icons/lucide/check";
+  import IconMic from "~icons/lucide/mic";
+
+  /** Notice titles for the three rejections (the body is `rejectionMessage`). */
+  const REJECTION_TITLE: Record<string, string> = {
+    tooShort: "Too short to learn from",
+    noSpeech: "Too quiet to hear",
+    multipleSpeakers: "More than one voice",
+  };
 
   let {
     flow,
@@ -216,259 +227,174 @@
   });
 </script>
 
-<h1 class="ob-sr-only">Voice</h1>
-
-<div class="split">
-  <div class="col">
+<div class="ob-main">
+  <div class="ob-split">
     {#if canEnroll}
-      <p class="ob-disp sm">Fifteen seconds so Mnema can use your name.</p>
-      <p class="ob-fine why">Otherwise your side is filed as “Speaker&nbsp;1”.</p>
-    {:else}
-      <p class="ob-disp sm">Not yet — and that is fine.</p>
-      <p class="ob-fine why">This step waits for you, never the other way round.</p>
-    {/if}
-  </div>
+      <div class="ob-head">
+        <span class="mx-kicker">Voice</span>
+        <h1 class="mx-display">Fifteen seconds so Mnema can use your name.</h1>
+        <p class="ob-fine">Otherwise your side is filed as “Speaker&nbsp;1”.</p>
+      </div>
 
-  <div class="col mid">
-    {#if canEnroll}
-      <span class="ob-m">Read this out loud</span>
-      <p class="quote">“{ENROLLMENT_SENTENCE}”</p>
+      <div class="mx-panel ob-instr">
+        <span class="mx-label">Read this out loud</span>
+        <p class="ob-quote">“{ENROLLMENT_SENTENCE}”</p>
 
-      <div class="reading">
-        <div class="meter" class:live={busy} aria-hidden="true">
-          {#each levels as level, index (index)}
-            <i class:lit={level > 0.04} style="height:{4 + Math.round(level * 34)}px"></i>
-          {/each}
+        <div class="ob-take">
+          <!-- Real polled levels; they stop moving the moment the take does. -->
+          <div class="ob-meter" class:voice={takeNumber > 0 || busy} aria-hidden="true">
+            {#each levels as level, index (index)}
+              <i style="height:{4 + Math.round(level * 36)}px"></i>
+            {/each}
+          </div>
+          <span class="num" role="status">{takeLine}</span>
         </div>
-        <span class="ob-fine ob-num" role="status">{takeLine}</span>
-      </div>
 
-      {#if phase === "enrolled"}
-        <p class="callout ok"><b>Enrolled.</b> Mnema will pick your voice out from now on.</p>
-      {:else if failure}
-        <p class="callout bad"><b>That didn’t record.</b> {failure}</p>
-      {:else if rejection && rejection.status !== "enrolled"}
-        <!-- Words shared with Settings; only the callout treatment is local. -->
-        <p class="callout">{rejectionMessage(rejection)}</p>
-      {/if}
-
-      <!-- The instrument's own buttons stay with the instrument; everything that
-           LEAVES this screen lives in the footer below. -->
-      <div class="ob-acts acts">
         {#if phase === "enrolled"}
-          <button class="ob-btn" onclick={recordTake}>Record again</button>
-        {:else}
-          <button class="ob-btn primary" onclick={recordTake} disabled={busy}>
-            {#if phase === "recording"}
-              Recording…
-            {:else if phase === "judging"}
-              Checking…
-            {:else if takeNumber === 0}
-              Record fifteen seconds
-            {:else}
-              Record again
-            {/if}
-          </button>
+          <div class="mx-notice" data-tone="ok">
+            <span class="mx-notice__icon"><IconCheck width="15" height="15" /></span>
+            <b class="mx-notice__title">Enrolled.</b>
+            <p class="mx-notice__text">Mnema will pick your voice out from now on.</p>
+          </div>
+        {:else if failure}
+          <div class="mx-notice" data-tone="danger">
+            <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+            <b class="mx-notice__title">That didn’t record.</b>
+            <p class="mx-notice__text">{failure}</p>
+          </div>
+        {:else if rejection && rejection.status !== "enrolled"}
+          <!-- Words shared with Settings (`rejectionMessage`); only the title is local. -->
+          <div class="mx-notice" data-tone="warn">
+            <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+            <b class="mx-notice__title">{REJECTION_TITLE[rejection.status]}</b>
+            <p class="mx-notice__text">{rejectionMessage(rejection)}</p>
+          </div>
         {/if}
+
+        <!-- The instrument's own button stays with the instrument; everything
+             that LEAVES this screen lives in the footer. -->
+        <div class="ob-acts">
+          {#if phase === "enrolled"}
+            <button class="mx-btn" onclick={recordTake}>Record again</button>
+          {:else}
+            <button class="mx-btn mx-btn--primary" onclick={recordTake} disabled={busy} aria-busy={busy || undefined}>
+              <IconMic width="14" height="14" />
+              {#if phase === "recording"}
+                Recording…
+              {:else if phase === "judging"}
+                Checking…
+              {:else if takeNumber === 0}
+                Record fifteen seconds
+              {:else}
+                Record again
+              {/if}
+            </button>
+          {/if}
+        </div>
       </div>
     {:else}
-      <p class="ob-lead">{notReadyReason}</p>
-
-      {#if readiness === "downloading"}
-        <div class="track"><i class="sheen" style="width:{downloadPercent}%"></i></div>
-        {#if downloadLine}
-          <p class="ob-fine ob-num bytes">{downloadLine}</p>
+      <div class="ob-head">
+        <h1 class="mx-display">Not yet — and that is fine.</h1>
+        <p class="ob-fine">This step waits for you, never the other way round.</p>
+      </div>
+      <div class="ob-head">
+        <p class="mx-prose">{notReadyReason}</p>
+        {#if readiness === "downloading"}
+          <div class="ob-track"><b style:width="{downloadPercent}%"></b></div>
+          {#if downloadLine}<p class="ob-fine num">{downloadLine}</p>{/if}
+          <p class="ob-fine">A card will be waiting on your dashboard the moment it is ready.</p>
         {/if}
-      {/if}
-
-      {#if readiness === "downloading"}
-        <p class="ob-fine after">A card will be waiting on your dashboard the moment it is ready.</p>
-      {/if}
+      </div>
     {/if}
   </div>
 </div>
 
-<div class="ob-foot">
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <span class="ob-fine spacer">
-      The voiceprint never leaves this device, and recognition labels many turns — not every turn.
-    </span>
-    <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-    {#if canEnroll}
-      {#if phase === "enrolled"}
-        <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
-      {:else}
-        <button class="ob-btn" onclick={onSkip}>Skip — you can do this later in Settings</button>
-      {/if}
+<footer class="ob-foot">
+  <p class="ob-foot__note">
+    The voiceprint never leaves this device, and recognition labels many turns — not every turn.
+  </p>
+  <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+  {#if canEnroll}
+    {#if phase === "enrolled"}
+      <button class="mx-btn mx-btn--primary" onclick={onContinue}>
+        Continue<IconArrow class="ob-btn-arrow" width="14" height="14" />
+      </button>
     {:else}
-      <!-- Both land on the same step; the difference is what the user is told
-           will happen next, which is why the mockup keeps both. -->
-      <button class="ob-btn ghost" onclick={onSkip}>Skip voice entirely</button>
-      <button class="ob-btn primary" onclick={onSkip}>Set this up later&nbsp; →</button>
+      <button class="mx-btn" onclick={onSkip}>Skip — you can do this later in Settings</button>
     {/if}
-  </div>
-</div>
+  {:else}
+    <!-- Both land on the same step; the difference is what the user is told
+         will happen next, which is why the mockup keeps both. -->
+    <button class="mx-btn mx-btn--ghost" onclick={onSkip}>Skip voice entirely</button>
+    <button class="mx-btn mx-btn--primary" onclick={onSkip}>
+      Set this up later<IconArrow class="ob-btn-arrow" width="14" height="14" />
+    </button>
+  {/if}
+</footer>
 
 <style>
-  /* Mockup frames 07a/07b (`chosen-cinematic-rewind.html` 1510-1643, scoped
-     style 1442-1507). Colours are `--app-*` tokens; the mockup's hexes are
-     dark-theme only. */
-  .split {
+  .ob-split {
     display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 44px;
-    /* Centred against each other: the statement is three lines, the instrument
-       is a dozen, and top-aligning them left a gap under the first. */
+    grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+    gap: var(--s-7);
     align-items: center;
-    flex: 1;
-    min-height: 0;
   }
-  .col {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
+  .ob-split .mx-display {
+    font-size: 34px;
   }
-  .why {
-    margin-top: 16px;
+  .ob-instr {
+    display: grid;
+    gap: var(--s-4);
+    padding: var(--s-5);
   }
-
-  /* The mockup's quote was a 21px one-liner. The real sentence is the shared
-     three-sentence read (`ENROLLMENT_SENTENCE`) — the recorder captures a fixed
-     15 s, so a shorter read would leave most of every clip as silence. At the
-     mockup's size it wrapped to six lines and pushed the rejection callout past
-     the 920x620 minimum window (`.split` clips, it does not scroll). 17px over a wider
-     measure lands it at five, which fits with any callout showing. */
-  .quote {
-    font-size: 17px;
-    line-height: 1.55;
+  .ob-quote {
+    margin: 0;
+    font: 400 17px / 1.55 var(--font-sans);
     color: var(--app-text-strong);
-    letter-spacing: -0.01em;
-    max-width: 60ch;
-    margin: 12px 0 0;
+    max-width: 50ch;
     text-wrap: pretty;
   }
-
-  .reading {
+  .ob-take {
     display: flex;
-    align-items: flex-end;
-    gap: 22px;
-    margin-top: 30px;
+    align-items: center;
+    gap: var(--s-4);
   }
-
-  /* Functional feedback, not ambient motion: the bars are real polled levels
-     and they stop moving the moment the take does. */
-  .meter {
-    display: flex;
-    align-items: flex-end;
-    gap: 3px;
-    height: 44px;
-    flex: none;
-  }
-  .meter i {
-    width: 3px;
-    background: var(--app-border-hover);
-    display: block;
-    border-radius: 1px;
-    height: 4px;
-    transition: height 140ms linear;
-  }
-  .meter i.lit {
-    background: var(--app-text-subtle);
-  }
-  .meter.live i.lit {
-    background: var(--app-accent);
-  }
-
-  .callout {
-    border-left: 2px solid var(--app-warn);
-    background: var(--app-warn-bg);
-    padding: 12px 16px;
+  .ob-take .num {
     font-size: var(--text-base);
-    color: var(--app-text);
-    line-height: 1.65;
-    margin: 26px 0 0;
-    max-width: 62ch;
+    color: var(--app-text-muted);
   }
-  .callout b {
-    font-weight: 400;
-    color: var(--app-warn);
+  .ob-meter {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 44px;
   }
-  .callout.ok {
-    border-left-color: var(--app-accent);
-    background: var(--app-accent-bg);
+  .ob-meter i {
+    width: 3px;
+    border-radius: 2px;
+    background: var(--chart-grey-2);
+    transition: height 120ms var(--ease-quart);
   }
-  .callout.ok b {
-    color: var(--app-accent-strong);
+  .ob-meter.voice i {
+    background: var(--app-source-mic);
   }
-  .callout.bad {
-    border-left-color: var(--app-danger);
-    background: var(--app-danger-bg);
-  }
-  .callout.bad b {
-    color: var(--app-danger);
-  }
-
-  .acts {
-    margin-top: 26px;
-  }
-
-  .track {
-    height: 3px;
-    background: var(--app-border-strong);
-    margin-top: 26px;
+  .ob-track {
     max-width: 420px;
-    position: relative;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--app-surface-hover);
     overflow: hidden;
-    border-radius: 2px;
   }
-  .track i {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--app-text-strong);
+  .ob-track b {
     display: block;
-    border-radius: 2px;
-    transition: width 240ms linear;
+    height: 100%;
+    background: var(--app-accent);
+    transition: width 120ms linear;
   }
-  .track i.sheen::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    width: 60px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-text-strong) 60%, transparent),
-      transparent
-    );
-    animation: sheen 3.4s ease-in-out infinite;
-  }
-  @keyframes sheen {
-    0% {
-      transform: translateX(-70px);
-    }
-    100% {
-      transform: translateX(430px);
-    }
-  }
-  .bytes {
-    margin-top: 12px;
-  }
-  .after {
-    margin-top: 16px;
-  }
-
-  /* The footer is the shell's `.ob-foot`. The honesty line keeps `.ob-fine`'s
-     measure so it wraps INSIDE the row rather than pushing the buttons onto a
-     second line at the 920px minimum. */
-
   @media (prefers-reduced-motion: reduce) {
-    .meter i,
-    .track i {
+    .ob-meter i,
+    .ob-track b {
       transition: none;
-    }
-    .track i.sheen::after {
-      animation: none;
     }
   }
 </style>

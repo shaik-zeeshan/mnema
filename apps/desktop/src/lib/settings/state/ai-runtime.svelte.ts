@@ -25,6 +25,66 @@ import type {
   McpServerConfig,
 } from "$lib/types";
 
+// ─── Per-provider reachability (Settings › Providers) ─────────────────────────
+// One live `verify_ai_provider` round trip per instance (the check onboarding's
+// readiness rests on), run once per app session on the first open of the panel
+// and again on that row's "Test again". Module-level on purpose: the settings
+// controller (and this store) is rebuilt on every visit, and "once per session"
+// must survive that.
+
+export type Reachability =
+  | { status: "checking" }
+  | { status: "reachable" }
+  | { status: "failed"; reason: string };
+
+let reachabilityById = $state<Record<string, Reachability>>({});
+let reachabilityCheckedThisSession = false;
+// Newest probe per id wins: a slow rejected probe must not land after a newer one.
+const reachabilityTickets = new Map<string, number>();
+
+export function providerReachability(id: string): Reachability | undefined {
+  return reachabilityById[id];
+}
+
+/** `verify_ai_provider` against the draft list, so an unsaved base URL counts. */
+export async function testProvider(id: string, providers: AiProviderConfig[]): Promise<void> {
+  const ticket = (reachabilityTickets.get(id) ?? 0) + 1;
+  reachabilityTickets.set(id, ticket);
+  reachabilityById = { ...reachabilityById, [id]: { status: "checking" } };
+  let next: Reachability;
+  try {
+    await invoke("verify_ai_provider", { request: { provider: id, providers: $state.snapshot(providers) } });
+    next = { status: "reachable" };
+  } catch (error) {
+    next = { status: "failed", reason: humanizeError(error) };
+  }
+  if (reachabilityTickets.get(id) === ticket) reachabilityById = { ...reachabilityById, [id]: next };
+}
+
+/** First open of Providers this session: test every row that has something to test. */
+export function testProvidersOnce(providers: AiProviderConfig[]): void {
+  if (reachabilityCheckedThisSession) return;
+  reachabilityCheckedThisSession = true;
+  // ChatGPT's listing is static (gated on the token set), so it proves nothing
+  // about reachability; its row speaks from the runtime status instead.
+  for (const p of providers) if (p.kind !== "chatgpt") void testProvider(p.id, providers);
+}
+
+/** The key or endpoint changed, so the old verdict describes nothing. */
+export function forgetReachability(id: string): void {
+  reachabilityTickets.set(id, (reachabilityTickets.get(id) ?? 0) + 1);
+  const { [id]: _dropped, ...rest } = reachabilityById;
+  reachabilityById = rest;
+}
+
+/** Row copy for a failed verify (`classify_listing_failure`'s short reasons). */
+export function reachabilityFailureText(reason: string): string {
+  const r = reason.toLowerCase();
+  if (r === "authentication failed") return "rejected this key";
+  if (r === "unreachable") return "couldn’t reach it";
+  return r;
+}
+
 export interface AiRuntimeStoreDeps {
   // The current connected provider instances (page draft state).
   getProviders: () => AiProviderConfig[];
@@ -47,6 +107,8 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   let aiRuntimeStatusError = $state<string | null>(null);
   let aiProviderKeyInputs = $state<Record<string, string>>({});
   let aiProviderKeySavedByProvider = $state<Record<string, boolean>>({});
+  // Last 4 characters of each saved API key (`…4f2a`) — never more crosses IPC.
+  let aiProviderKeyEndings = $state<Record<string, string>>({});
   // Provider id whose key save/clear is currently in flight (one at a time).
   let aiProviderKeySavingProvider = $state<string | null>(null);
   // Per-id in-flight guard so a rapid double-invoke for the SAME provider id
@@ -160,6 +222,18 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       else presenceWrittenBy.set(id, seq);
     }
     aiProviderKeySavedByProvider = { ...aiProviderKeySavedByProvider, ...probed };
+
+    // Key endings, for API-key kinds only: a ChatGPT slot holds an OAuth token
+    // set, not a key. Best effort — a failed read just shows no ending.
+    const endings: Record<string, string> = {};
+    for (const p of deps.getProviders()) {
+      if (p.kind === "chatgpt" || !deps.isCloudProviderKind(p.kind) || !aiProviderKeySavedByProvider[p.id]) continue;
+      const end = await invoke<string | null>("ai_runtime_provider_key_ending", {
+        request: { provider: p.id },
+      }).catch(() => null);
+      if (end) endings[p.id] = end;
+    }
+    if (seq === presenceRefreshSeq) aiProviderKeyEndings = endings;
   }
 
   // Is this provider instance still in the draft list? A key save that lost the
@@ -189,8 +263,9 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       await invoke("ai_runtime_set_provider_key", { request: { provider, key } });
       aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
       // The key just changed for this provider, so any prior "Connection
-      // succeeded" banner no longer reflects the config that would be tested.
+      // succeeded" banner (or row reachability) no longer reflects the config.
       resetTestResult();
+      forgetReachability(provider);
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
       deps.loadAskAiAvailability();
@@ -217,7 +292,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     aiProviderKeyInFlight.add(provider);
     try {
       const confirmed = await confirm(
-        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the macOS keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
+        `Deleting the API key for “${deps.labelForProvider(provider)}” deletes it from this Mac right away. Any AI feature using this provider will stop working until you enter a new key.`,
         {
           title: "Delete this API key?",
           kind: "warning",
@@ -244,6 +319,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: "" };
       // Clearing the key invalidates any prior "Connection succeeded" banner.
       resetTestResult();
+      forgetReachability(provider);
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
       deps.loadAskAiAvailability();
@@ -275,6 +351,8 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   // already gone from the draft list, so resolve it while it may still match).
   async function clearKeyForRemovedProvider(id: string): Promise<void> {
     const label = deps.labelForProvider(id);
+    // A re-added instance of the same kind reuses the bare kind as its id.
+    forgetReachability(id);
     try {
       await invoke("ai_runtime_clear_provider_key", { request: { provider: id } });
       const { [id]: _cleared, ...rest } = aiProviderKeySavedByProvider;
@@ -356,7 +434,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     mcpSecretInFlight.add(id);
     try {
       const confirmed = await confirm(
-        `Deleting the saved secret for this connector removes it from the macOS keychain right away. The connector will stop authenticating until you enter a new secret.`,
+        `Deleting the saved secret for this connector deletes it from this Mac right away. The connector will stop authenticating until you enter a new secret.`,
         {
           title: "Delete this secret?",
           kind: "warning",
@@ -497,6 +575,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       aiProviderKeyInputs = { ...aiProviderKeyInputs, [provider]: value };
     },
     get aiProviderKeySavedByProvider() { return aiProviderKeySavedByProvider; },
+    get aiProviderKeyEndings() { return aiProviderKeyEndings; },
     get aiProviderKeySavingProvider() { return aiProviderKeySavingProvider; },
     get aiProviderKeyErrors() { return aiProviderKeyErrors; },
     get aiRuntimeTestRunning() { return aiRuntimeTestRunning; },

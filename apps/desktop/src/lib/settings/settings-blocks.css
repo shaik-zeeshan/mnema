@@ -138,61 +138,6 @@
     font-weight: 700;
   }
 
-  /* ── Bitrate compatibility notice ─────────────────────────────────── */
-  .settings-shell .bitrate-compat-notice {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 9px 12px;
-    background: var(--app-info-bg);
-    border: 1px solid var(--app-info-border);
-    border-radius: 4px;
-  }
-
-  .settings-shell .bitrate-compat-notice__icon {
-    font-size: 11px;
-    color: var(--app-info-strong);
-    flex-shrink: 0;
-    margin-top: 1px;
-  }
-
-  .settings-shell .bitrate-compat-notice__text {
-    font-size: 10px;
-    color: var(--app-info-strong);
-    letter-spacing: 0.02em;
-    line-height: 1.55;
-  }
-
-  /* ── Audio activity notice ────────────────────────────────────────── */
-  .settings-shell .audio-activity-notice {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 9px 12px;
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 4px;
-  }
-
-  .settings-shell .audio-activity-notice__icon {
-    font-size: 11px;
-    color: var(--app-accent);
-    flex-shrink: 0;
-    margin-top: 1px;
-  }
-
-  .settings-shell .audio-activity-notice__text {
-    font-size: 10px;
-    color: var(--app-accent-strong);
-    letter-spacing: 0.02em;
-    line-height: 1.55;
-  }
-
-  .settings-shell .audio-activity-notice__text strong {
-    color: var(--app-accent);
-    font-weight: 700;
-  }
-
   /* ── Debug log status ────────────────────────────────────────────── */
   .settings-shell .debug-log-status {
     display: flex;
@@ -234,20 +179,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-  }
-
-  .settings-shell .debug-log-status__dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-text-faint);
-    flex-shrink: 0;
-  }
-
-  .settings-shell .debug-log-status__dot--on {
-    background: var(--app-accent);
+    font-family: var(--font-mono);
   }
 
   .settings-shell .debug-log-actions {
@@ -261,20 +193,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
-  }
-
-  /* A reload icon shares a row with .btn--sm text pills here (Providers
-     "Test connection", Access "Install CLI"). Standalone in a section header
-     the icon is a 30px square, but the pills render shorter with a softer 8px
-     radius, leaving the square looking oversized and mismatched. Level the
-     pair inside a row: lift the pills to the icon's control height and round
-     the icon to the pills' radius so they read as peers. */
-  .settings-shell .row-actions .btn--sm {
-    min-height: 30px;
-  }
-
-  .settings-shell .row-actions .settings-icon-btn {
-    border-radius: 8px;
   }
 
   .settings-shell .error-text {
@@ -295,39 +213,6 @@
     gap: 8px;
   }
 
-  /* Connected AI providers (ADR 0034): one bordered row per provider kind,
-     holding its endpoint/base-URL and key controls. */
-  .settings-shell .provider-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .settings-shell .provider-row {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
-  }
-  .settings-shell .provider-row__head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .settings-shell .provider-row__name {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text);
-  }
   .settings-shell .provider-row__tag {
     font-size: 10px;
     text-transform: uppercase;
@@ -336,9 +221,6 @@
     border: 1px solid var(--app-border);
     border-radius: 999px;
     color: var(--app-text-muted);
-  }
-  .settings-shell .provider-row__remove {
-    margin-left: auto;
   }
 
   .settings-shell .grant-row {
@@ -434,59 +316,5 @@
 
   .settings-shell .grant-row__sep {
     color: var(--app-text-faint);
-  }
-
-  /* Enable hands a tool a standing, no-expiry read of the user's history, so it
-     must not resolve to the same muted outline as Refresh and Reveal in Finder —
-     `.btn--sm` is declared after `.btn--ghost` at equal specificity and re-sets
-     color/border, which is exactly how it lost its identity. Accent outline in
-     the approval window's `.btn--allow` vocabulary, never a filled go-green
-     primary: the Enable confirmation dialog is the friction, and a loud fill
-     would invite the click it is meant to slow down.
-     The `[data-theme="light"]` twin is a specificity fix, not a light variant
-     (same reason as `.user-context-wipe__btn` below): settings-theme.css is
-     imported LAST, so its `[data-theme="light"] .settings-shell .btn--ghost`
-     (0,3,0) would otherwise wash the tint out in light mode. */
-  .settings-shell .btn.grant-row__enable,
-  [data-theme="light"] .settings-shell .btn.grant-row__enable {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-
-  .settings-shell .btn.grant-row__enable:not(:disabled):hover,
-  [data-theme="light"] .settings-shell .btn.grant-row__enable:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-  }
-
-  /* ── Wipe User Context (destructive end of the User Context block) ── */
-  .settings-shell .user-context-wipe {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    margin-top: 0.25rem;
-    padding-top: 0.75rem;
-    border-top: 1px solid var(--app-border);
-  }
-
-  /* A subtly destructive ghost button: ghost shape, danger-tinted text so it
-     reads as a recovery/destructive control without the full filled-danger
-     weight of a Delete button. */
-  /* The `[data-theme="light"]` half is a specificity fix, not a light variant:
-     settings-theme.css is imported LAST and its `[data-theme="light"]
-     .settings-shell .btn--ghost` (0,3,0) out-specifies the plain rule, so on a
-     ghost-shaped danger button the tint silently vanished in light mode. */
-  .settings-shell .btn.user-context-wipe__btn,
-  [data-theme="light"] .settings-shell .btn.user-context-wipe__btn {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-  }
-
-  .settings-shell .btn.user-context-wipe__btn:not(:disabled):hover,
-  [data-theme="light"] .settings-shell .btn.user-context-wipe__btn:not(:disabled):hover {
-    background: var(--app-danger-bg-soft);
-    border-color: var(--app-danger);
-    color: var(--app-danger);
   }
 

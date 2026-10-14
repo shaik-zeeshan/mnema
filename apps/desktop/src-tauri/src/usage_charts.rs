@@ -48,3 +48,19 @@ pub async fn capture_presence(
         .map_err(|e| e.to_string())?;
     Ok(CapturePresence { screen, audio })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CapturePresence;
+
+    /// The wire shape `Overview.svelte` reads (`{ screen, audio }`).
+    #[test]
+    fn capture_presence_serializes_to_the_ts_shape() {
+        let value = serde_json::to_value(CapturePresence {
+            screen: true,
+            audio: false,
+        })
+        .unwrap();
+        assert_eq!(value, serde_json::json!({ "screen": true, "audio": false }));
+    }
+}

@@ -1,8 +1,9 @@
 <!--
   Onboarding AI setup (issue #195, slice 11).
 
-  Ported from `docs/onboarding/mockups/input-components/parts/aisetup.part.html`
-  — that mockup is the design of record; behaviour and copy come from it.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Change settings → AI
+  features): the fork is two `mx-choice` tiles, then a kit-control connect row,
+  the data-path wire, the scan table and one `mx-panel` per connection.
 
   Three things it changes about the shipping surface:
    · "Later" is the PRIMARY path. Skipping is a first-class informed choice that
@@ -19,13 +20,15 @@
   the vault, and the field is cleared — nothing renders it, so it reaches no
   markup, no aria-label, no title and no URL.
 
-  Motion: none ambient. The only animation is model chips arriving, which is real
-  progress, and it is dropped under prefers-reduced-motion.
+  Motion: none ambient; a kit spinner only while a request is in flight.
 -->
 <script lang="ts">
-  import { tick, untrack } from "svelte";
+  import { tick, untrack, type Snippet } from "svelte";
   import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
-  import Switch from "$lib/components/Switch.svelte";
+  import AiModelPicker from "./AiModelPicker.svelte";
+  import AiScanList from "./AiScanList.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
   import {
     AI_LOCAL_DEFAULT_ENDPOINTS,
     aiProviderKindLabel,
@@ -66,7 +69,14 @@
     ai,
     aiEnabled,
     onToggleAi,
-  }: { ai: AiSetupStore; aiEnabled: boolean; onToggleAi: (on: boolean) => void } = $props();
+    notices,
+  }: {
+    ai: AiSetupStore;
+    aiEnabled: boolean;
+    onToggleAi: (on: boolean) => void;
+    /** The caller's in-place warnings, drawn between the lead and the fork. */
+    notices?: Snippet;
+  } = $props();
 
   // ── The ports a local scan asks about ─────────────────────────────────────
   // The two default endpoints plus the port LM Studio and friends serve an
@@ -100,7 +110,6 @@
   let status = $state("");
   let statusKind = $state<"" | "ok" | "err">("");
   let editing = $state<string | null>(null);
-  let pickerOpen = $state(false);
   let keyField = $state<HTMLInputElement | null>(null);
   let editKeyField = $state<HTMLInputElement | null>(null);
   let editUrlField = $state<HTMLInputElement | null>(null);
@@ -138,7 +147,6 @@
       return total + (verification?.status === "live" ? verification.models.length : 0);
     }, 0),
   );
-  const scanFound = $derived((scan ?? []).filter((row) => row.models !== null));
 
   function verificationOf(id: string): AiVerification | undefined {
     return ai.aiVerifications[id];
@@ -146,19 +154,6 @@
   function modelsOf(id: string): string[] {
     const verification = verificationOf(id);
     return verification?.status === "live" ? verification.models : [];
-  }
-  /** Why a provider's group in the readout is empty. */
-  function emptyPoolReason(id: string): string {
-    const verification = verificationOf(id);
-    return verification?.status === "error" ? verification.reason : "no models listed yet";
-  }
-  function lampClass(id: string): string {
-    switch (verificationOf(id)?.status) {
-      case "live": return "live";
-      case "error": return "bad";
-      case "checking": return "busy";
-      default: return "";
-    }
   }
   function isDefault(providerId: string, model?: string): boolean {
     const ref = ai.draftAiDefaultModel;
@@ -219,7 +214,7 @@
     const verification = verificationOf(id);
     if (verification?.status === "live") {
       setStatus(
-        `✓ ${plural(verification.models.length, "model")} listed in ${verification.latencyMs} ms`,
+        `${plural(verification.models.length, "model")} listed in ${verification.latencyMs} ms`,
         "ok",
       );
       // First engine to answer seeds the default model, so the common case
@@ -228,7 +223,7 @@
         ai.draftAiDefaultModel = { provider: id, model: verification.models[0] };
       }
     } else if (verification?.status === "error") {
-      setStatus(`✗ ${verification.reason}`, "err");
+      setStatus(verification.reason, "err");
     } else {
       setStatus("");
     }
@@ -314,7 +309,6 @@
 
   function pick(providerId: string | null, model: string | null): void {
     ai.draftAiDefaultModel = providerId && model ? { provider: providerId, model } : null;
-    pickerOpen = false;
   }
 
   function chooseLater(): void {
@@ -323,84 +317,79 @@
   }
 </script>
 
-{#if mode === null}
-  <!-- ── The fork: skipping is the primary path ─────────────────────────── -->
-  <span class="ob-m">AI features · optional</span>
-  <p class="ob-fine lead">
-    Ask AI, daily digests and User Context need a reasoning engine. Recording, search,
-    transcription and speaker names do not — they work either way.
-  </p>
-  <div class="choose">
-    <button class="ob-btn primary loud" type="button" onclick={chooseLater}>
-      Set this up later
-    </button>
-    <button class="ob-btn loud" type="button" onclick={() => (mode = "now")}>
-      I have a key — set it up now
-    </button>
-  </div>
-  <div class="loss">
-    <span>Skipping downloads nothing and needs no account.</span>
-    <span>Everything else on this screen keeps working exactly the same.</span>
-    <span>One switch in Settings → Intelligence turns it on whenever you want it.</span>
-  </div>
-{:else if mode === "later"}
-  <!-- ── Skipped: exactly what stays dark, and where to turn it on ──────── -->
-  <span class="ob-m">AI features · off</span>
-  <div class="row first">
-    <div class="grow">
-      <div class="t">These three stay dark</div>
-      <div class="d">
-        <b>Ask AI</b> (no questions about your day), <b>daily digests</b> (nothing is written
-        each evening) and <b>User Context</b> (nothing is distilled about you).
-      </div>
-    </div>
-    <Switch checked={false} ariaLabel="AI features" onCheckedChange={() => (mode = "now")} />
-  </div>
-  <div class="row">
-    <div class="grow">
-      <div class="t">These keep working</div>
-      <div class="d">
-        Recording, timeline, search, transcription, speaker names, privacy exclusions.
-      </div>
-    </div>
-  </div>
-  <p class="ob-fine">
-    Turn it on later at <b>Settings → Intelligence → AI features</b>. Nothing needs re-running.
-  </p>
-  <div class="ob-acts">
-    <button class="ob-btn sm" type="button" onclick={() => (mode = "now")}>
-      Actually, set it up now
-    </button>
-  </div>
-{:else}
-  <!-- ── Connecting ─────────────────────────────────────────────────────── -->
-  <span class="ob-m">AI features</span>
-
-  <div class="row first">
-    <div class="grow">
-      <div class="t">AI features</div>
-      <div class="d">
-        {ai.aiConfigReady && ai.draftAiDefaultModel
-          ? `Ready — ${ai.draftAiDefaultModel.model} will answer.`
-          : ai.aiConfigMissing}
-      </div>
-    </div>
-    <Switch checked={aiEnabled} ariaLabel="AI features" onCheckedChange={onToggleAi} />
+<div class="ob-ai">
+  <div class="ob-head">
+    <span class="mx-kicker">{mode === "later" ? "AI features · off" : "AI features · optional"}</span>
+    <p class="ob-fine">
+      Ask AI, daily digests and User Context need a reasoning engine. Recording, search,
+      transcription and speaker names do not — they work either way.
+    </p>
   </div>
 
-  <div class="row block">
-    <div class="t">{providers.length ? "Connect another engine" : "Connect an engine"}</div>
-    <div class="d gap">
-      {local
-        ? "If one is already running here, nothing has to be typed."
-        : oauth
-          ? "Your own ChatGPT Plus/Pro plan. Sign in in the browser — no API key."
-          : "Your own account. There is no Save — the key proves itself."}
+  {@render notices?.()}
+
+  <!-- ── The fork: two tiles; skipping is a first-class choice ────────────── -->
+  <div class="mx-choice" role="radiogroup" aria-label="AI features">
+    <label class="mx-choice__opt">
+      <input type="radio" name="ob-ai-mode" value="later" checked={mode === "later"} onchange={chooseLater} />
+      <span class="mx-choice__title">Set this up later</span>
+      <span class="mx-choice__desc">Skipping downloads nothing and needs no account.</span>
+    </label>
+    <label class="mx-choice__opt">
+      <input type="radio" name="ob-ai-mode" value="now" checked={mode === "now"} onchange={() => (mode = "now")} />
+      <span class="mx-choice__title">I have a key — set it up now</span>
+      <span class="mx-choice__desc">A local engine on this Mac, or your own cloud account.</span>
+    </label>
+  </div>
+
+  {#if mode === "later"}
+    <!-- ── Skipped: exactly what stays dark, and where to turn it on ──────── -->
+    <div class="ob-ai-row">
+      <div>
+        <div class="t">These three stay dark</div>
+        <div class="d">
+          <b>Ask AI</b> (no questions about your day), <b>daily digests</b> (nothing is written each
+          evening) and <b>User Context</b> (nothing is distilled about you).
+        </div>
+      </div>
+      <input type="checkbox" role="switch" class="mx-switch" checked={false} aria-label="AI features"
+        onchange={() => (mode = "now")} />
+    </div>
+    <p class="ob-fine">
+      These keep working: recording, timeline, search, transcription, speaker names, privacy exclusions.
+    </p>
+    <p class="ob-fine">
+      Turn it on later at <b>Settings → Intelligence → AI features</b>. Nothing needs re-running.
+    </p>
+  {:else if mode === "now"}
+    <!-- ── Connecting ─────────────────────────────────────────────────────── -->
+    <div class="ob-ai-row">
+      <div>
+        <div class="t">AI features</div>
+        <div class="d">
+          {ai.aiConfigReady && ai.draftAiDefaultModel
+            ? `Ready — ${ai.draftAiDefaultModel.model} will answer.`
+            : ai.aiConfigMissing}
+        </div>
+      </div>
+      <input type="checkbox" role="switch" class="mx-switch" checked={aiEnabled} aria-label="AI features"
+        onchange={(e) => onToggleAi(e.currentTarget.checked)} />
     </div>
 
-    <div class="line">
+    <div>
+      <div class="t">{providers.length ? "Connect another engine" : "Connect an engine"}</div>
+      <div class="d">
+        {local
+          ? "If one is already running here, nothing has to be typed."
+          : oauth
+            ? "Your own ChatGPT Plus/Pro plan. Sign in in the browser — no API key."
+            : "Your own account. There is no Save — the key proves itself."}
+      </div>
+    </div>
+
+    <div class="ob-acts">
       <select
-        class="fld"
+        class="ob-select"
         aria-label="Provider"
         bind:value={kind}
         onchange={() => {
@@ -416,22 +405,19 @@
         </optgroup>
       </select>
       {#if local}
-        <button class="ob-btn sm" type="button" disabled={scanning} onclick={() => void runScan()}>
+        <button class="mx-btn" type="button" disabled={scanning} onclick={() => void runScan()}>
           {scanning ? "Scanning…" : scan ? "Scan again" : "Scan this Mac"}
         </button>
       {:else if oauth}
         {#if !chatgptInstance}
           <button
-            class="ob-btn sm"
+            class="mx-btn"
             type="button"
             onclick={async () => {
               chatgptAutostart = true;
               ai.addProvider("chatgpt");
               // One-shot: the connect component reads the flag once, on mount.
-              // Left armed, every later remount of this block (toggling the
-              // kind select, re-entering the step) starts ANOTHER device login
-              // — a fresh code that invalidates the one the user is typing,
-              // plus a second detached 15-minute poll.
+              // Left armed, every later remount starts ANOTHER device login.
               await tick();
               chatgptAutostart = false;
             }}
@@ -443,9 +429,10 @@
         <!-- No `value` binding: the string is read from this node once and cleared. -->
         <input
           bind:this={keyField}
-          class="fld"
+          class="mx-input ob-key"
           type="password"
           aria-label="API key"
+          aria-invalid={statusKind === "err" || undefined}
           autocomplete="off"
           spellcheck="false"
           data-1p-ignore
@@ -453,12 +440,22 @@
           placeholder="paste your key — it verifies itself"
           oninput={onKeyInput}
         />
+        <button
+          class="mx-btn"
+          type="button"
+          onclick={() => {
+            if (debounce) clearTimeout(debounce);
+            void connectCloud();
+          }}
+        >
+          Verify now
+        </button>
       {/if}
     </div>
 
     {#if compat}
       <input
-        class="fld top"
+        class="mx-input ob-key"
         aria-label="Base URL"
         autocomplete="off"
         spellcheck="false"
@@ -468,708 +465,293 @@
     {/if}
 
     <!-- Not while the same instance's CARD is open below: two mounted connect
-         components for one provider means two Connect buttons, and starting a
-         login in either bumps the backend generation — leaving the other
-         showing a code that is already dead, with no signal that it is. -->
+         components for one provider means two live device codes. -->
     {#if oauth && chatgptInstance && editing !== chatgptInstance.id}
-      <div class="top">
-        <ChatgptConnect
-          providerId={chatgptInstance.id}
-          connected={!!ai.aiProviderKeySaved[chatgptInstance.id]}
-          autostart={chatgptAutostart}
-          onchange={() => chatgptInstance && void onChatgptChanged(chatgptInstance.id)}
-        />
-      </div>
+      <ChatgptConnect
+        providerId={chatgptInstance.id}
+        connected={!!ai.aiProviderKeySaved[chatgptInstance.id]}
+        autostart={chatgptAutostart}
+        onchange={() => chatgptInstance && void onChatgptChanged(chatgptInstance.id)}
+      />
     {/if}
 
-    <div class="flow" class:out={!local}>
-      <span>this Mac</span>
-      <span class="wire"></span>
-      <span>{flowHost}</span>
+    {#if status}
+      <span class="mx-inline" data-tone={statusKind === "ok" ? "ok" : statusKind === "err" ? "danger" : undefined} role="status">
+        {#if statusKind === "ok"}<IconCheck width="13" height="13" />{:else if statusKind === "err"}<IconAlert
+            width="13"
+            height="13"
+          />{:else}<span class="mx-spin mx-spin--sm"></span>{/if}{status}
+      </span>
+    {/if}
+
+    <div class="ob-wire" class:out={!local}>
+      <span>this Mac</span><i></i><span>{flowHost}</span>
       <span>{local ? "· nothing leaves" : "· prompts and their context leave"}</span>
     </div>
 
     {#if local && scan}
-      <div class="scan">
-        {#each scan as row (row.port)}
-          <div class="sr">
-            <span
-              class="lamp"
-              class:live={row.state === "live"}
-              class:busy={row.state === "trying"}
-              class:bad={row.state === "dead"}
-            ></span>
-            <span class="addr">localhost:{row.port} · {row.name}</span>
-            {#if row.models}<span class="pill ok">{plural(row.models.length, "model")}</span>{/if}
-            <span class="ms">
-              {row.latencyMs != null
-                ? `${row.latencyMs} ms`
-                : row.state === "trying"
-                  ? "…"
-                  : "no answer"}
-            </span>
-            {#if row.models}
-              {#if alreadyConnected(row.port)}
-                <span class="pill">connected</span>
-              {:else}
-                <button
-                  class="ob-btn sm"
-                  type="button"
-                  onclick={() => void connectLocal(row.kind, `http://localhost:${row.port}`)}
-                >
-                  Use this
-                </button>
-              {/if}
-            {/if}
-          </div>
-        {/each}
-      </div>
-      {#if !scanning && scanFound.length === 0}
-        <p class="ob-fine top">
-          Nothing is listening on the usual ports — that is an answer, not an error. Start Ollama
-          and scan again, point at an engine on your network below, or pick a cloud account above.
-        </p>
-      {/if}
+      <AiScanList rows={scan} {scanning} connected={alreadyConnected} onUse={(k, url) => void connectLocal(k, url)} />
     {/if}
 
     {#if local}
-      <div class="line top">
+      <div class="ob-acts">
         <input
-          class="fld"
+          class="mx-input ob-key"
           aria-label="Endpoint on another machine"
           autocomplete="off"
           spellcheck="false"
           placeholder="or an engine on your network — studio.local:11434"
           bind:value={manualUrl}
         />
-        <button class="ob-btn sm" type="button" onclick={() => void connectManual()}>
-          Connect
-        </button>
-      </div>
-    {:else if !oauth}
-      <div class="ob-acts top">
-        <button
-          class="ob-btn sm"
-          type="button"
-          onclick={() => {
-            if (debounce) clearTimeout(debounce);
-            void connectCloud();
-          }}
-        >
-          Verify now
-        </button>
+        <button class="mx-btn" type="button" onclick={() => void connectManual()}>Connect</button>
       </div>
     {/if}
 
-    {#if status}
-      <p class="ob-fine status" class:ok={statusKind === "ok"} class:err={statusKind === "err"}>
-        {status}
+    <!-- ── The connections. From the second on, they rack. ─────────────────── -->
+    {#if rack}
+      <p class="ob-fine">
+        {plural(providers.length, "connection")} — each one is its own instance with its own key, its own
+        endpoint and its own model list.
       </p>
     {/if}
-  </div>
-
-  <!-- ── The connections. From the second on, they rack. ─────────────────── -->
-  {#if rack}
-    <p class="ob-fine top">
-      {plural(providers.length, "connection")} — each one is its own instance with its own key,
-      its own endpoint and its own model list.
-    </p>
-  {/if}
-  {#each racked as provider (provider.id)}
-    <div class="prov" class:pinned={rack && isDefault(provider.id)}>
-      <div class="prov-head">
-        <span class="lamp {lampClass(provider.id)}"></span>
-        <span class="name">{ai.aiProviderInstanceLabel(provider)}</span>
-        {#if isDefault(provider.id)}<span class="pill info">default</span>{/if}
-        <span
-          class="pill"
-          class:ok={verificationOf(provider.id)?.status === "live"}
-          class:bad={verificationOf(provider.id)?.status === "error"}
-        >
-          {aiVerificationWord(verificationOf(provider.id))}
-        </span>
-        {#if isCloudAiProviderKind(provider.kind) && ai.aiProviderKeySaved[provider.id]}
-          <span class="pill" title="stored in the app vault, day.mnema.vault">
-            {provider.kind === "chatgpt" ? "✓ signed in" : "✓ key in vault"}
+    {#each racked as provider (provider.id)}
+      {@const v = verificationOf(provider.id)}
+      <div class="mx-panel ob-prov">
+        <div class="ob-prov__head">
+          <span class="ob-lamp" class:live={v?.status === "live"} class:bad={v?.status === "error"}></span>
+          <span class="name">{ai.aiProviderInstanceLabel(provider)}</span>
+          {#if isDefault(provider.id)}<span class="mx-chip mx-chip--info">default</span>{/if}
+          <span class="mx-chip" class:mx-chip--accent={v?.status === "live"} class:mx-chip--danger={v?.status === "error"}>
+            {aiVerificationWord(v)}
           </span>
-        {/if}
-      </div>
-
-      {#if modelsOf(provider.id).length > 0}
-        <div class="models">
-          {#each modelsOf(provider.id) as model (model)}
-            <button
-              class="mchip"
-              type="button"
-              aria-pressed={isDefault(provider.id, model)}
-              onclick={() => pick(provider.id, model)}
-            >
-              {model}
-            </button>
-          {/each}
+          {#if isCloudAiProviderKind(provider.kind) && ai.aiProviderKeySaved[provider.id]}
+            <span class="mx-chip" title="stored in the app vault, day.mnema.vault">
+              <IconCheck width="11" height="11" />{provider.kind === "chatgpt" ? "signed in" : "key in vault"}
+            </span>
+          {/if}
         </div>
-      {/if}
 
-      {#if editing === provider.id}
-        {#if provider.kind === "chatgpt"}
-          <!-- Editing a ChatGPT card is a re-login, not a key replacement. -->
-          <div class="top">
+        {#if modelsOf(provider.id).length > 0}
+          <div class="ob-acts">
+            {#each modelsOf(provider.id) as model (model)}
+              <button
+                class="mx-btn mx-btn--sm"
+                type="button"
+                aria-pressed={isDefault(provider.id, model)}
+                onclick={() => pick(provider.id, model)}
+              >
+                {model}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        {#if editing === provider.id}
+          {#if provider.kind === "chatgpt"}
+            <!-- Editing a ChatGPT card is a re-login, not a key replacement. -->
             <ChatgptConnect
               providerId={provider.id}
               connected={!!ai.aiProviderKeySaved[provider.id]}
               onchange={() => void onChatgptChanged(provider.id)}
             />
-          </div>
-          <div class="ob-acts top">
-            <button class="ob-btn sm ghost" type="button" onclick={() => (editing = null)}>
-              Done
-            </button>
-          </div>
-        {:else}
-        <div class="line top">
-          {#if isCloudAiProviderKind(provider.kind)}
-            <input
-              bind:this={editKeyField}
-              class="fld"
-              type="password"
-              aria-label="Replacement API key"
-              autocomplete="off"
-              spellcheck="false"
-              data-1p-ignore
-              data-lpignore="true"
-              placeholder="a key is stored — type a new one to replace it"
-            />
+            <div class="ob-acts">
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => (editing = null)}>
+                Done
+              </button>
+            </div>
           {:else}
-            <input
-              bind:this={editUrlField}
-              class="fld"
-              aria-label="Endpoint"
-              autocomplete="off"
-              spellcheck="false"
-              value={provider.baseUrl}
-              placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
-            />
+            <div class="ob-acts">
+              {#if isCloudAiProviderKind(provider.kind)}
+                <input
+                  bind:this={editKeyField}
+                  class="mx-input ob-key"
+                  type="password"
+                  aria-label="Replacement API key"
+                  autocomplete="off"
+                  spellcheck="false"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  placeholder="a key is stored — type a new one to replace it"
+                />
+              {:else}
+                <input
+                  bind:this={editUrlField}
+                  class="mx-input ob-key"
+                  aria-label="Endpoint"
+                  autocomplete="off"
+                  spellcheck="false"
+                  value={provider.baseUrl}
+                  placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
+                />
+              {/if}
+              <button class="mx-btn mx-btn--sm" type="button" onclick={() => void saveEdit(provider)}>
+                Connect &amp; verify
+              </button>
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => (editing = null)}>
+                Cancel
+              </button>
+            </div>
           {/if}
-          <button class="ob-btn sm" type="button" onclick={() => void saveEdit(provider)}>
-            Connect &amp; verify
-          </button>
-          <button class="ob-btn sm ghost" type="button" onclick={() => (editing = null)}>
-            Cancel
-          </button>
-        </div>
-        {/if}
-      {:else}
-        <div class="ob-acts top">
-          <button
-            class="ob-btn sm"
-            type="button"
-            onclick={async () => {
-              await ai.verifyProvider(provider.id);
-              reportVerification(provider.id);
-            }}
-          >
-            Test
-          </button>
-          <button class="ob-btn sm" type="button" onclick={() => (editing = provider.id)}>
-            Edit
-          </button>
-          <button
-            class="ob-btn sm ghost"
-            type="button"
-            disabled={ai.aiProviderRemoving}
-            onclick={() => void ai.removeProvider(provider.id)}
-          >
-            Remove
-          </button>
-        </div>
-      {/if}
-    </div>
-  {/each}
-
-  <!-- ── The readout. Disabled until a provider exists. ──────────────────── -->
-  <div class="row">
-    <div class="grow">
-      <div class="t">Default model</div>
-      <div class="d">
-        {providers.length === 0
-          ? "Nothing to choose from yet — connect an engine first."
-          : "Only models a connected engine listed just now."}
-      </div>
-    </div>
-    <details class="picker" bind:open={pickerOpen}>
-      <summary
-        aria-disabled={providers.length === 0}
-        aria-haspopup="listbox"
-        onclick={(event) => {
-          if (providers.length === 0) event.preventDefault();
-        }}
-      >
-        <span class:ph={!ai.draftAiDefaultModel}>
-          {ai.draftAiDefaultModel?.model ?? "Choose a default model"}
-        </span>
-        <span aria-hidden="true">▾</span>
-      </summary>
-      <div class="pop" role="listbox" aria-label="Default model">
-        <button
-          class="opt"
-          type="button"
-          role="option"
-          aria-selected={ai.draftAiDefaultModel === null}
-          onclick={() => pick(null, null)}
-        >
-          <span>No default model</span><span class="side">AI stays off</span>
-        </button>
-        {#each providers as provider (provider.id)}
-          <div class="grp">
-            <span>{ai.aiProviderInstanceLabel(provider)}</span>
-            <span>{aiVerificationWord(verificationOf(provider.id))}</span>
-          </div>
-          {#each modelsOf(provider.id) as model (model)}
+        {:else}
+          <div class="ob-acts">
             <button
-              class="opt"
+              class="mx-btn mx-btn--sm"
               type="button"
-              role="option"
-              aria-selected={isDefault(provider.id, model)}
-              onclick={() => pick(provider.id, model)}
+              onclick={async () => {
+                await ai.verifyProvider(provider.id);
+                reportVerification(provider.id);
+              }}
             >
-              <span>{model}</span><span class="side"></span>
+              Test
             </button>
-          {:else}
-            <div class="opt empty">{emptyPoolReason(provider.id)}</div>
-          {/each}
-        {/each}
+            <button class="mx-btn mx-btn--sm" type="button" onclick={() => (editing = provider.id)}>Edit</button>
+            <button
+              class="mx-btn mx-btn--ghost mx-btn--sm"
+              type="button"
+              disabled={ai.aiProviderRemoving}
+              onclick={() => void ai.removeProvider(provider.id)}
+            >
+              Remove
+            </button>
+          </div>
+        {/if}
       </div>
-    </details>
-  </div>
+    {/each}
 
-  <!-- `aiRestoredModelNote` is printed once, at screen level, so it survives all
-       three modes (fork, "later", "now"). -->
-  <!-- Only where a key was actually typed. ChatGPT signs in in the browser, so
-       "the key goes into the vault … this window forgets the string" describes
-       nothing that happened, on the one flow with no key field. -->
-  {#if providers.some((p) => isCloudAiProviderKind(p.kind) && p.kind !== "chatgpt")}
-    <p class="ob-fine top">{VAULT_NOTE}</p>
-  {/if}
-  {#if chatgptInstance}
-    <p class="ob-fine top">
-      The ChatGPT sign-in token is stored in the app's encrypted vault
-      (day.mnema.vault, unlocked by one keychain item) — never in a config file.
-      Usage counts against your own plan.
-    </p>
-  {/if}
-  {#if liveProviders.length > 0}
-    <p class="ob-fine top">
-      {plural(liveModelCount, "model")} across {plural(liveProviders.length, "verified engine")}.
-    </p>
-  {/if}
+    <!-- ── The readout. Disabled until a provider exists. ──────────────────── -->
+    <div class="ob-ai-row">
+      <div>
+        <div class="t">Default model</div>
+        <div class="d">
+          {providers.length === 0
+            ? "Nothing to choose from yet — connect an engine first."
+            : "Only models a connected engine listed just now."}
+        </div>
+      </div>
+      <AiModelPicker {ai} {providers} />
+    </div>
 
-  <div class="ob-acts top">
-    <button class="ob-btn sm ghost" type="button" onclick={chooseLater}>
-      Never mind — set this up later
-    </button>
-  </div>
-{/if}
+    <!-- Only where a key was actually typed. ChatGPT signs in in the browser. -->
+    {#if providers.some((p) => isCloudAiProviderKind(p.kind) && p.kind !== "chatgpt")}
+      <p class="ob-fine">{VAULT_NOTE}</p>
+    {/if}
+    {#if chatgptInstance}
+      <p class="ob-fine">
+        The ChatGPT sign-in token is stored in the app's encrypted vault (day.mnema.vault, unlocked by
+        one keychain item) — never in a config file. Usage counts against your own plan.
+      </p>
+    {/if}
+    {#if liveProviders.length > 0}
+      <p class="ob-fine">
+        {plural(liveModelCount, "model")} across {plural(liveProviders.length, "verified engine")}.
+      </p>
+    {/if}
+  {/if}
+</div>
 
 <style>
-  .lead {
-    margin: 7px 0 0;
+  .ob-ai {
+    display: grid;
+    gap: var(--s-4);
+    justify-items: stretch;
   }
-  .top {
-    margin-top: 10px;
+  .ob-ai > :global(.mx-inline) {
+    justify-self: start;
   }
-
-  /* rows */
-  .row {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    justify-content: space-between;
-    padding: 11px 0;
-    border-top: 1px solid var(--app-border);
-  }
-  .row.first {
-    border-top: 0;
-  }
-  .row.block {
-    display: block;
+  .ob-ai-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--s-4);
+    padding: 10px 0;
+    border-top: 1px solid var(--mx-hairline);
+    border-bottom: 1px solid var(--mx-hairline);
   }
   .t {
+    font: 500 var(--text-md) / 1.25 var(--font-sans);
     color: var(--app-text-strong);
-    font-size: var(--text-md);
   }
   .d {
+    margin-top: 2px;
+    font: 400 var(--text-base) / 1.35 var(--font-sans);
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
-    max-width: 48ch;
+    text-wrap: pretty;
   }
-  .d.gap {
-    margin-bottom: 9px;
-  }
-  .d b {
-    color: var(--app-text-strong);
-    font-weight: 400;
-  }
-  .grow {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  /* `Switch` is a Settings-row component: its wrapper is `width: 100%` because
-     there it owns the label and the description too. Used here as a BARE toggle
-     beside the row's own `.t`/`.d`, that 100% became the flex basis and ate the
-     row — `.grow` was squeezed to 211px (description wrapped to two lines) and
-     the 36px track was stranded a quarter of the way across, with 769px of
-     nothing to its right. The mockup draws the switch flush with the row's
-     right edge (`revision-2.html:3589`), which is what shrink-wrapping the cell
-     restores. Same shape as the chain's `auto` control column in
-     `FeatureSwitches`. */
-  .row > :global(.switch-wrapper) {
-    width: auto;
-    flex: none;
-  }
-
-  /* fields */
-  .fld {
-    font: inherit;
-    font-size: var(--text-sm);
+  .d b,
+  .ob-fine b {
+    font-weight: 500;
     color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 7px;
-    height: var(--ob-ctl-h);
-    padding: 0 12px;
-    width: 100%;
-    min-width: 0;
   }
-  .fld::placeholder {
-    color: var(--app-text-faint);
-  }
-  select.fld {
+  .ob-select {
+    appearance: none;
+    height: var(--h-md);
+    min-width: 220px;
+    padding: 0 30px 0 var(--s-3);
     cursor: pointer;
+    border-radius: var(--r-md);
+    border: 1px solid var(--app-border-strong);
+    color: var(--app-text-strong);
+    font: 400 var(--text-md) / 1 var(--font-sans);
+    background: var(--app-surface-raised) no-repeat;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--app-text-subtle) 50%),
+      linear-gradient(-45deg, transparent 50%, var(--app-text-subtle) 50%);
+    background-size: 5px 5px, 5px 5px;
+    background-position: right 15px center, right 10px center;
   }
-  .line {
+  .ob-select:focus-visible {
+    outline: 2px solid var(--app-accent);
+    outline-offset: 1px;
+  }
+  .ob-key {
+    width: 300px;
+    max-width: 100%;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+  }
+  .ob-wire {
     display: flex;
-    gap: 8px;
     align-items: center;
-    flex-wrap: wrap;
-  }
-  .line > .fld {
-    flex: 1 1 200px;
-  }
-  .line > select.fld {
-    flex: 0 1 200px;
-  }
-  /* A button standing on a field's row is the FIELD's height, not the inline
-     one — that mismatch is the whole "assembled from parts" complaint. */
-  .line > :global(.ob-btn) {
-    min-height: var(--ob-ctl-h);
-  }
-  .fld:focus-visible,
-  summary:focus-visible,
-  .mchip:focus-visible,
-  .opt:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  /* the fork */
-  .choose {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-top: 14px;
-  }
-  @media (max-width: 600px) {
-    .choose {
-      grid-template-columns: 1fr;
-    }
-  }
-  .loud {
-    padding: 17px 16px;
-    font-size: var(--text-md);
-    /* A whole-pixel line box, not a 1.4 ratio of a fractional font size —
-       that pair put these two cards on 54.19px. 17 + 20 + 17 = 54. */
-    line-height: 20px;
-  }
-  .loss {
-    margin-top: 13px;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-  }
-  .loss span {
-    font-size: var(--text-sm);
+    gap: var(--s-2);
+    font: 400 var(--text-sm) / 1 var(--font-mono);
     color: var(--app-text-subtle);
-    display: flex;
-    gap: 9px;
   }
-  .loss span::before {
-    content: "—";
-    color: var(--app-text-faint);
-  }
-
-  /* data-path line — one persistent line, not a fork */
-  .flow {
-    margin-top: 10px;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    font-size: var(--text-xs);
-    color: var(--app-text-muted);
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 8px;
-    padding: 8px 11px;
-  }
-  .flow .wire {
-    flex: 1 1 40px;
+  .ob-wire i {
+    width: 64px;
     height: 1px;
-    background: repeating-linear-gradient(
-      90deg,
-      var(--app-text-faint) 0 5px,
-      transparent 5px 10px
-    );
+    background: repeating-linear-gradient(90deg, var(--app-border-hover) 0 4px, transparent 4px 7px);
   }
-  .flow.out {
-    color: var(--app-info);
-    border-color: var(--app-info-border);
+  .ob-wire.out {
+    color: var(--app-warn);
   }
-  .flow.out .wire {
-    background: repeating-linear-gradient(90deg, var(--app-info) 0 5px, transparent 5px 10px);
-  }
-
-  /* lamps + pills */
-  .lamp {
-    width: 8px;
-    height: 8px;
+  .ob-lamp {
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    flex: 0 0 auto;
-    background: var(--app-text-faint);
-    display: inline-block;
+    flex: none;
+    background: var(--chart-grey-2);
   }
-  .lamp.live {
+  .ob-lamp.live {
     background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
-  .lamp.bad {
+  .ob-lamp.bad {
     background: var(--app-danger);
   }
-  .lamp.busy {
-    background: var(--app-warn);
+  .ob-prov {
+    display: grid;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
   }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    padding: 3px 9px;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .pill.ok {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  .pill.bad {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-  }
-  .pill.info {
-    color: var(--app-info);
-    border-color: var(--app-info-border);
-    background: var(--app-info-bg);
-  }
-
-  /* the verdict line — no progress bar: a real probe has no progress stream,
-     and an indeterminate one would be ambient motion. */
-  .status {
-    margin-top: 7px;
-  }
-  .status.ok {
-    color: var(--app-accent);
-  }
-  .err {
-    color: var(--app-danger);
-  }
-
-  /* scan ladder */
-  .scan {
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    overflow: hidden;
-    margin-top: 10px;
-  }
-  .sr {
+  .ob-prov__head {
     display: flex;
     align-items: center;
-    gap: 10px;
-    height: var(--ob-ctl-h);
-    padding: 0 12px;
-    font-size: var(--text-sm);
-  }
-  .sr + .sr {
-    border-top: 1px solid var(--app-border);
-  }
-  .addr {
-    color: var(--app-text-muted);
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .ms {
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* connection card / rack */
-  .prov {
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    padding: 11px 12px;
-    margin-top: 8px;
-    background: var(--app-surface-subtle);
-  }
-  .prov.pinned {
-    border-color: var(--app-accent-border);
-  }
-  .prov-head {
-    display: flex;
-    align-items: center;
-    gap: 9px;
     flex-wrap: wrap;
+    gap: var(--s-2);
   }
-  .prov-head .name {
+  .ob-prov__head .name {
+    font: 500 var(--text-md) / 1.2 var(--font-sans);
     color: var(--app-text-strong);
-    font-size: var(--text-sm);
-    flex: 1 1 140px;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .models {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 9px;
-  }
-  .mchip {
-    font: inherit;
-    font-size: var(--text-xs);
-    border: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
-    border-radius: 999px;
-    padding: 4px 10px;
-    cursor: pointer;
-  }
-  .mchip:hover {
-    border-color: var(--app-border-hover);
-  }
-  .mchip[aria-pressed="true"] {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-
-  /* default-model readout (native <details>) */
-  .picker {
-    position: relative;
-    width: 290px;
-    max-width: 100%;
-    flex: 0 1 auto;
-  }
-  .picker > summary {
-    list-style: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: var(--text-sm);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 7px;
-    height: var(--ob-ctl-h);
-    padding: 0 12px;
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-  }
-  .picker > summary::-webkit-details-marker {
-    display: none;
-  }
-  .picker > summary[aria-disabled="true"] {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-  .picker > summary .ph {
-    color: var(--app-text-faint);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pop {
-    position: absolute;
-    z-index: 10;
-    right: 0;
-    min-width: 100%;
-    width: max-content;
-    max-width: 360px;
-    margin-top: 4px;
-    max-height: 250px;
-    overflow: auto;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
-    padding: 6px;
-  }
-  .grp {
-    font-size: var(--text-xs);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    padding: 8px 8px 4px;
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .opt {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    text-align: left;
-    font: inherit;
-    font-size: var(--text-sm);
-    color: var(--app-text);
-    background: transparent;
-    border: 0;
-    border-radius: 6px;
-    padding: 7px 8px;
-    cursor: pointer;
-  }
-  .opt:hover {
-    background: var(--app-surface-hover);
-  }
-  .opt.empty {
-    color: var(--app-text-faint);
-    cursor: default;
-  }
-  .opt[aria-selected="true"] {
-    color: var(--app-accent);
-  }
-  .opt .side {
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
+    margin-right: var(--s-2);
   }
 </style>

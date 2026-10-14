@@ -1,10 +1,9 @@
 // The Permissions screen's gate predicates.
 //
-// Extracted from `PermissionsScreen.svelte` so they can be tested: Screen
-// Recording is the flow's third hard gate (see the header of `gates.ts`) and the
-// ONLY one that can strand a user — `advance()` refuses while it is unmet. It
-// lives outside `gates.ts` because it reads live OS state rather than resolved
-// settings, but that is no reason for it to be untestable component internals.
+// Extracted from `PermissionsScreen.svelte` so they can be tested. A denial
+// gates nothing (see the header of `gates.ts`); the ONE hold is the relaunch a
+// screen grant made in this process needs. It lives outside `gates.ts` because
+// it reads live OS state rather than resolved settings.
 //
 // The `"unsupported"` case is the one that matters most and is easy to lose: a
 // machine that cannot report Screen Recording at all must pass, not block. The
@@ -35,17 +34,18 @@ export interface ScreenGate {
 }
 
 /**
- * The Screen Recording gate.
+ * The Screen Recording moment's exit.
  *
- * `needsRelaunch` blocks just as hard as a missing grant: the permission reads
- * granted while ScreenCaptureKit *in this process* still cannot use it, so
- * continuing would only reach the Finale and fail there on a stale stream.
+ * Only `needsRelaunch` holds: the permission reads granted while
+ * ScreenCaptureKit *in this process* still cannot use it, so continuing would
+ * only reach the Finale and fail there on a stale stream. A denial continues —
+ * the session runs audio-only (or idle) and the Finale says so.
  */
 export function screenGate(
   value: PermissionValue | undefined,
   needsRelaunch: boolean,
 ): ScreenGate {
   if (needsRelaunch) return { ready: false, primaryLabel: "Relaunch to continue" };
-  if (!isGranted(value)) return { ready: false, primaryLabel: "Screen recording required" };
+  if (isDenied(value)) return { ready: true, primaryLabel: "Continue without screen recording" };
   return { ready: true, primaryLabel: "Continue" };
 }

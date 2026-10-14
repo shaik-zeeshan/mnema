@@ -1,34 +1,7 @@
 // Pure query-token helpers for Quick Recall's search mode (extracted from the
 // quick-recall +page.svelte in the search-mode extraction slice — no behavior
-// change). Everything here is a pure function of its inputs: tokenizing the raw
-// query, inspecting the trailing token, and formatting operator values/dates.
-
-// Split `raw` into whitespace-delimited tokens, but keep a double-quoted run
-// as ONE token so a quoted operator value containing spaces (e.g.
-// `app:"Google Chrome"`) is never shredded mid-value. An unterminated quote
-// still flushes its trailing run rather than dropping it.
-export function tokenizeQuery(raw: string): string[] {
-  const tokens: string[] = [];
-  let current = "";
-  let inQuotes = false;
-  for (const ch of raw) {
-    if (ch === '"') {
-      inQuotes = !inQuotes;
-      current += ch;
-    } else if (!inQuotes && /\s/.test(ch)) {
-      if (current.length > 0) {
-        tokens.push(current);
-        current = "";
-      }
-    } else {
-      current += ch;
-    }
-  }
-  if (current.length > 0) {
-    tokens.push(current);
-  }
-  return tokens;
-}
+// change). Everything here is a pure function of its inputs: inspecting the
+// trailing token and formatting operator values/dates.
 
 // The trailing whitespace-delimited token of `query` (the partial the user is
 // typing at the caret). Empty when `query` ends in whitespace.

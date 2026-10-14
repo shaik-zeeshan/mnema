@@ -317,12 +317,12 @@ fn recording_settings_fixture() -> RecordingSettings {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
+        time_format: Default::default(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
@@ -354,12 +354,12 @@ fn update_recording_settings_request_fixture() -> UpdateRecordingSettingsRequest
         video_bitrate: settings.video_bitrate,
         save_directory: settings.save_directory,
         auto_start: settings.auto_start,
-        native_capture_debug_logging_enabled: settings.native_capture_debug_logging_enabled,
         developer_options_enabled: settings.developer_options_enabled,
         preview_cache_ttl_seconds: settings.preview_cache_ttl_seconds,
         follow_timeline_live: settings.follow_timeline_live,
         retention_policy: settings.retention_policy,
         appearance: settings.appearance,
+        time_format: settings.time_format,
         ocr: settings.ocr,
         transcription: settings.transcription,
         speaker_analysis: settings.speaker_analysis,
@@ -581,7 +581,7 @@ fn ocr_unavailable_notification_opens_ocr_settings_tab() {
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
             assert_eq!(tab, "processing");
         }
-        None => panic!("OCR warning should include settings CTA"),
+        _ => panic!("OCR warning should include settings CTA"),
     }
 }
 
@@ -615,7 +615,7 @@ fn audio_transcription_unavailable_notification_opens_transcription_settings_tab
         Some(AppNotificationAction::OpenSettingsTab { tab }) => {
             assert_eq!(tab, "transcription");
         }
-        None => panic!("transcription warning should include settings CTA"),
+        _ => panic!("transcription warning should include settings CTA"),
     }
 }
 
@@ -1257,10 +1257,10 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         capture_microphone: true,
         save_directory: "/tmp/updated".to_string(),
         auto_start: true,
-        native_capture_debug_logging_enabled: true,
         preview_cache_ttl_seconds: 0,
         follow_timeline_live: true,
         appearance: AppearanceSetting::Dark,
+        time_format: Default::default(),
         segment_duration_seconds: 120,
         screen_frame_rate: 24.0,
         screen_resolution: ScreenResolution::Preset {
@@ -1286,7 +1286,6 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         .iter()
         .any(|change| change.contains("save_directory")));
     assert!(changes.contains(&"auto_start false -> true".to_string()));
-    assert!(changes.contains(&"debug_logging false -> true".to_string()));
     assert!(changes.contains(&format!(
         "preview_cache_ttl_seconds {} -> 0",
         default_preview_cache_ttl_seconds()
@@ -1489,20 +1488,6 @@ fn validate_recording_settings_accepts_audio_activity_mode_and_sensitivity() {
 }
 
 #[test]
-fn validate_recording_settings_preserves_native_capture_debug_logging_flag() {
-    let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
-        capture_screen: true,
-        capture_microphone: false,
-        capture_system_audio: false,
-        native_capture_debug_logging_enabled: true,
-        ..update_recording_settings_request_fixture()
-    })
-    .expect("debug logging flag should round-trip through validation");
-
-    assert!(settings.native_capture_debug_logging_enabled);
-}
-
-#[test]
 fn validate_recording_settings_preserves_developer_options_flag() {
     let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
         capture_screen: true,
@@ -1583,12 +1568,12 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
+        time_format: Default::default(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
@@ -1631,12 +1616,12 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         },
         save_directory: "/tmp".to_string(),
         auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
+        time_format: Default::default(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),
@@ -1675,12 +1660,12 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         video_bitrate: default_video_bitrate(),
         save_directory: "/tmp".to_string(),
         auto_start: false,
-        native_capture_debug_logging_enabled: false,
         developer_options_enabled: false,
         preview_cache_ttl_seconds: default_preview_cache_ttl_seconds(),
         follow_timeline_live: false,
         retention_policy: default_retention_policy(),
         appearance: default_appearance(),
+        time_format: Default::default(),
         ocr: default_ocr_settings(),
         transcription: default_audio_transcription_settings(),
         speaker_analysis: default_speaker_analysis_settings(),

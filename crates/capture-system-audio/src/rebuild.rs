@@ -23,7 +23,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use capture_types::CaptureErrorResponse;
 use capture_writers::derive_audio_activity_level_from_sample_buf;
@@ -68,7 +68,7 @@ pub enum RebuildReason {
 }
 
 impl RebuildReason {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::DefaultOutputDeviceChanged => "default_output_device_changed",
             Self::DeviceSampleRateChanged => "device_sample_rate_changed",
@@ -77,6 +77,27 @@ impl RebuildReason {
             Self::ZeroWatchdog => "zero_watchdog",
         }
     }
+}
+
+/// A read-only snapshot of a session's rebuild history, for the developer
+/// window. Session-scoped: a new session starts from zero.
+#[derive(Debug, Clone)]
+pub struct TapHealth {
+    pub rebuilds: u64,
+    pub last_reason: Option<RebuildReason>,
+    pub last_rebuild_at: Option<SystemTime>,
+    /// For a sample-rate rebuild, the rates either side ("48000 → 16000 Hz").
+    pub last_detail: Option<String>,
+    pub next_silence_check_in: Option<Duration>,
+    pub watchdog_delay: Duration,
+    /// The rate the live generation writes at; `None` while no tap is up.
+    pub sample_rate_hz: Option<u32>,
+}
+
+/// A watchdog trip with no tap up is the backoff retrying a rebuild whose
+/// start failed, not a fresh cause.
+fn is_retry_of_failed_start(tap_alive: bool, reason: RebuildReason) -> bool {
+    !tap_alive && reason == RebuildReason::ZeroWatchdog
 }
 
 /// The tap generation's live state, shared with the IOProc's queue.
@@ -281,7 +302,7 @@ fn rebuild_listener_block(
             shared.request_rebuild(reason);
         }));
         if requested.is_err() {
-            capture_runtime::debug_log!("{LOG_PREFIX} {label} panicked");
+            capture_runtime::error_log!("{LOG_PREFIX} {label} panicked");
         }
     })
 }
@@ -301,6 +322,9 @@ pub struct SystemAudioCaptureSession {
     tap: Option<SystemAudioTapSession>,
     listeners: Option<DeviceChangeListeners>,
     rebuilds: u64,
+    last_reason: Option<RebuildReason>,
+    last_rebuild_at: Option<SystemTime>,
+    last_detail: Option<String>,
     stopped: bool,
 }
 
@@ -328,6 +352,9 @@ impl SystemAudioCaptureSession {
             tap: None,
             listeners: None,
             rebuilds: 0,
+            last_reason: None,
+            last_rebuild_at: None,
+            last_detail: None,
             stopped: false,
         };
         session.start_generation()?;
@@ -399,6 +426,26 @@ impl SystemAudioCaptureSession {
         self.rebuilds
     }
 
+    /// Cheap: plain field copies plus one brief watchdog lock.
+    pub fn health(&self) -> TapHealth {
+        let watchdog = self.shared.lock_watchdog();
+        TapHealth {
+            rebuilds: self.rebuilds,
+            last_reason: self.last_reason,
+            last_rebuild_at: self.last_rebuild_at,
+            last_detail: self.last_detail.clone(),
+            next_silence_check_in: (!self.stopped).then(|| watchdog.next_check_in(Instant::now())),
+            watchdog_delay: watchdog.delay(),
+            sample_rate_hz: self.tap_sample_rate_hz(),
+        }
+    }
+
+    fn tap_sample_rate_hz(&self) -> Option<u32> {
+        self.tap
+            .as_ref()
+            .map(|tap| tap.asbd().sample_rate.round() as u32)
+    }
+
     /// Tears the tap down and closes the in-flight segment. Terminal: a stopped
     /// session never rebuilds, so a late tick cannot resurrect a tap the user
     /// asked to be rid of.
@@ -407,7 +454,7 @@ impl SystemAudioCaptureSession {
         self.teardown_generation();
         let replaced = self.shared.lock_generation().take();
         self.finalize(replaced.map(|generation| generation.output));
-        capture_runtime::debug_log!(
+        capture_runtime::info_log!(
             "{LOG_PREFIX} stopped session after {} rebuild(s)",
             self.rebuild_count()
         );
@@ -415,11 +462,20 @@ impl SystemAudioCaptureSession {
 
     fn rebuild(&mut self, reason: RebuildReason) -> Result<(), CaptureErrorResponse> {
         self.rebuilds += 1;
-        capture_runtime::debug_log!(
+        capture_runtime::warn_log!(
             "{LOG_PREFIX} rebuilding tap generation (reason={}, rebuild={})",
             reason.as_str(),
             self.rebuilds
         );
+        let rate_before = self.tap_sample_rate_hz();
+        // A failed start leaves no tap, so no sound, so the watchdog trips and
+        // retries. That retry is still about the original cause (a dead or
+        // switched device), not "a long silence"; keep the reason on show.
+        if !is_retry_of_failed_start(self.tap.is_some(), reason) {
+            self.last_reason = Some(reason);
+            self.last_detail = None;
+        }
+        self.last_rebuild_at = Some(SystemTime::now());
 
         // Full teardown of *both* tap and aggregate before anything else: it is
         // the only recovery the macOS-26 wedge responds to, and it is what makes
@@ -428,7 +484,13 @@ impl SystemAudioCaptureSession {
         let replaced = self.shared.lock_generation().take();
         self.finalize(replaced.map(|generation| generation.output));
 
-        self.start_generation()
+        let started = self.start_generation();
+        if reason == RebuildReason::DeviceSampleRateChanged {
+            if let (Some(before), Some(after)) = (rate_before, self.tap_sample_rate_hz()) {
+                self.last_detail = Some(format!("{before} → {after} Hz"));
+            }
+        }
+        started
     }
 
     fn start_generation(&mut self) -> Result<(), CaptureErrorResponse> {
@@ -596,6 +658,15 @@ mod tests {
         );
         assert!(!poll_watchdog(&shared, start + secs(58)));
         assert!(poll_watchdog(&shared, start + secs(59)));
+    }
+
+    #[test]
+    fn a_watchdog_retry_of_a_failed_start_keeps_the_original_reason() {
+        assert!(is_retry_of_failed_start(false, RebuildReason::ZeroWatchdog));
+        // A live tap that went quiet is a real silence.
+        assert!(!is_retry_of_failed_start(true, RebuildReason::ZeroWatchdog));
+        // A new device event is a new cause even with no tap up.
+        assert!(!is_retry_of_failed_start(false, RebuildReason::DeviceDied));
     }
 
     #[test]

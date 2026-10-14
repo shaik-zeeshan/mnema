@@ -176,6 +176,7 @@ impl SpeakersParams {
         BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
             name: self.name,
             limit: self.limit,
+            ..Default::default()
         })
     }
 }

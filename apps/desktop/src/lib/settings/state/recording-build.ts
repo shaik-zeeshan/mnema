@@ -29,6 +29,7 @@ import type {
   AiEngineRef,
   McpServerConfig,
   AppearanceSetting,
+  TimeFormatSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -44,6 +45,7 @@ import type {
   RetentionPolicy,
   VideoBitrateMode,
   VideoBitratePreset,
+  QuickRecallAutoAnswer,
 } from "$lib/types";
 import type {
   AutosaveRecordingDomain,
@@ -159,7 +161,6 @@ export interface RecordingDraftState {
   draftSystemAudioActivitySensitivity: number;
   draftMicrophoneVadAdapter: MicrophoneVadAdapter;
 
-  draftNativeCaptureDebugLoggingEnabled: boolean;
   draftDeveloperOptionsEnabled: boolean;
   draftPreviewCacheTtlSeconds: number;
 
@@ -173,6 +174,7 @@ export interface RecordingDraftState {
   draftAskAiEnabled: boolean;
   draftAskAiWebFetchEnabled: boolean;
   draftAskAiModel: string;
+  draftQuickRecallAutoAnswer: QuickRecallAutoAnswer;
   // The effective persisted tool-call cap (0 = no cap), derived from the
   // limit toggle + numeric value.
   effectiveAskAiMaxToolCalls: number;
@@ -188,6 +190,7 @@ export interface RecordingDraftState {
   draftUserContextBackfillGoDeeper: boolean;
 
   draftAppearance: AppearanceSetting;
+  draftTimeFormat: TimeFormatSetting;
 
   draftOcrEnabled: boolean;
   draftOcrProvider: OcrProvider;
@@ -349,6 +352,7 @@ export function buildRecDomainRequest(
     case "display":
       return {
         appearance: rec.draftAppearance,
+        timeFormat: rec.draftTimeFormat,
         followTimelineLive: rec.draftFollowTimelineLive,
       };
     case "metadata":
@@ -371,7 +375,6 @@ export function buildRecDomainRequest(
     case "developer":
       return {
         developerOptionsEnabled: rec.draftDeveloperOptionsEnabled,
-        nativeCaptureDebugLoggingEnabled: rec.draftNativeCaptureDebugLoggingEnabled,
       };
     case "access":
       return {
@@ -379,6 +382,7 @@ export function buildRecDomainRequest(
         askAiWebFetchEnabled: rec.draftAskAiWebFetchEnabled,
         askAiMaxToolCalls: rec.effectiveAskAiMaxToolCalls,
         askAiModel: rec.draftAskAiModel,
+        quickRecallAutoAnswer: rec.draftQuickRecallAutoAnswer,
       };
     case "ai_runtime":
       // `defaultModel` is tri-state on the wire; the card always sends the
@@ -441,6 +445,7 @@ export function buildRecDomainRequestFromSettings(
     case "display":
       return {
         appearance: s.appearance ?? "system",
+        timeFormat: s.timeFormat ?? "system",
         followTimelineLive: s.followTimelineLive ?? false,
       };
     case "metadata":
@@ -513,7 +518,6 @@ export function buildRecDomainRequestFromSettings(
     case "developer":
       return {
         developerOptionsEnabled: s.developerOptionsEnabled ?? false,
-        nativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled ?? false,
       };
     case "access":
       return {
@@ -527,6 +531,7 @@ export function buildRecDomainRequestFromSettings(
           s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
         ),
         askAiModel: s.access?.askAiModel ?? "",
+        quickRecallAutoAnswer: s.access?.quickRecallAutoAnswer ?? "localOnly",
       };
     case "ai_runtime":
       return {

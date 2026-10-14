@@ -2,7 +2,6 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import SelectMenu from "$lib/components/Select.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -10,7 +9,10 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
+  import ModelDownloadRow from "$lib/settings/ui/ModelDownloadRow.svelte";
+  import { downloadMeta } from "$lib/settings/ui/model-download";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
   import type { OcrTesseractPageSegmentationMode, OcrTesseractPreprocessMode } from "$lib/types";
@@ -27,18 +29,14 @@
   const ocrDownloadError = $derived(models.ocrDownloadError);
   const deletingUnusedOcrModels = $derived(models.deletingUnusedOcrModels);
   const deleteUnusedOcrModelsMessage = $derived(models.deleteUnusedOcrModelsMessage);
-  const deletedUnusedOcrModelLabels = $derived(models.deletedUnusedOcrModelLabels);
-  const skippedUnusedOcrModelLabels = $derived(models.skippedUnusedOcrModelLabels);
-  const skippedOcrProcessingJobModelLabels = $derived(models.skippedOcrProcessingJobModelLabels);
   const deleteUnusedOcrModelsError = $derived(models.deleteUnusedOcrModelsError);
 
   // Controller derived selectors.
   const ocrProviderOptions = $derived(c.ocrProviderOptions);
   const ocrModelOptions = $derived(c.ocrModelOptions);
-  const selectedOcrModel = $derived(c.selectedOcrModel);
+  const m = $derived(c.selectedOcrModel);
   const selectedOcrDownloadProgress = $derived(c.selectedOcrDownloadProgress);
   const selectedOcrDownloadRunning = $derived(c.selectedOcrDownloadRunning);
-  const selectedOcrDownloadPercent = $derived(c.selectedOcrDownloadPercent);
 
   // Controller / store action methods.
   const loadOcrModelStatus = () => c.loadOcrModelStatus();
@@ -47,12 +45,13 @@
   const startSelectedOcrModelDownload = () => c.startSelectedOcrModelDownload();
   const cancelSelectedOcrModelDownload = () => c.cancelSelectedOcrModelDownload();
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
+  const deleteUnusedDesc = "Removes app-managed OCR model files except the selected one.";
 </script>
 
 <SettingGroup
   id="settings-section-ocr"
   title="OCR &amp; Previews"
-  hint="Choose the OCR engine, inspect model availability, and tune preview caching."
+  hint="Engine, model and preview caching."
 >
   {#snippet actions()}
     <ReloadButton
@@ -65,59 +64,52 @@
 
   <SettingRow
     label="Enable OCR"
-    description="Automatically queue OCR for captured screen frames when the selected engine is available"
+    description="Queue OCR for captured screen frames when the selected engine is available. While on, recording waits for the engine."
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full>
+  <SettingRow label="Provider" description="Existing OCR results stay visible after switching.">
     {#snippet control()}
-      <RadioGroup
+      <Segmented
+        md
         value={rec.draftOcrProvider}
         onValueChange={chooseOcrProvider}
         disabled={!rec.draftOcrEnabled}
+        ariaLabel="OCR provider"
         options={ocrProviderOptions.length > 0 ? ocrProviderOptions : [
-          { value: "apple_vision", label: "Apple Vision", description: "Model status is loading" },
-          { value: "tesseract", label: "Tesseract", description: "Model status is loading" },
+          { value: "apple_vision", label: "Apple Vision" },
+          { value: "tesseract", label: "Tesseract" },
         ]}
       />
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Model" full>
-    {#snippet control()}
-      <Combobox
-        value={rec.draftOcrModelId ?? "__os_managed__"}
-        onValueChange={chooseOcrModel}
-        disabled={!rec.draftOcrEnabled}
-        searchPlaceholder="Search models…"
-        options={ocrModelOptions.length > 0 ? ocrModelOptions : [
-          { value: rec.draftOcrModelId ?? "__os_managed__", label: "Loading model options" },
-        ]}
-      />
-    {/snippet}
-  </SettingRow>
-
-  {#if rec.draftOcrProvider === "tesseract"}
-    <SettingRow label="Language" full>
+  <!-- ponytail: a one-model provider (Apple Vision, the bundled Tesseract)
+       has nothing to pick, so the row only appears when there is a choice. -->
+  {#if ocrModelOptions.length > 1}
+    <SettingRow label="Model">
       {#snippet control()}
-        <Combobox
-          value={rec.draftOcrLanguage || "eng"}
-          onValueChange={(v) => (rec.draftOcrLanguage = v)}
-          disabled={!rec.draftOcrEnabled}
-          options={OCR_LANGUAGE_OPTIONS}
-          searchPlaceholder="Search languages…"
-        />
+        <div class="ocr-ctl">
+          <Combobox
+            value={rec.draftOcrModelId ?? "__os_managed__"}
+            onValueChange={chooseOcrModel}
+            disabled={!rec.draftOcrEnabled}
+            searchPlaceholder="Search models…"
+            options={ocrModelOptions}
+          />
+        </div>
       {/snippet}
     </SettingRow>
   {/if}
 
   {#if rec.draftOcrProvider === "apple_vision"}
-    <SettingRow label="Recognition mode" full>
+    <SettingRow label="Recognition mode">
       {#snippet control()}
         <Segmented
+          md
           bind:value={rec.draftOcrRecognitionMode}
           disabled={!rec.draftOcrEnabled}
           ariaLabel="Recognition mode"
@@ -128,21 +120,31 @@
         />
       {/snippet}
     </SettingRow>
-    <SettingRow
-      label="Language correction"
-      description="Let Apple Vision spend extra work correcting recognized text using language models"
-    >
+    <SettingRow label="Language correction">
       {#snippet control()}
         <Switch bind:checked={rec.draftOcrLanguageCorrection} disabled={!rec.draftOcrEnabled} ariaLabel="Language correction" />
       {/snippet}
     </SettingRow>
   {:else if rec.draftOcrProvider === "tesseract"}
+    <SettingRow label="Language">
+      {#snippet control()}
+        <div class="ocr-ctl">
+          <Combobox
+            value={rec.draftOcrLanguage || "eng"}
+            onValueChange={(v) => (rec.draftOcrLanguage = v)}
+            disabled={!rec.draftOcrEnabled}
+            options={OCR_LANGUAGE_OPTIONS}
+            searchPlaceholder="Search languages…"
+          />
+        </div>
+      {/snippet}
+    </SettingRow>
     <SettingRow
       label="Page segmentation"
-      description="Use Auto for mixed layouts, Single block for paragraph regions, Single line for titles/labels, Single word for isolated tokens, and Sparse text for screenshots with scattered text."
-      full
+      description="Auto for mixed layouts; Sparse text for screenshots with scattered text."
     >
       {#snippet control()}
+        <div class="ocr-ctl">
         <SelectMenu
           value={rec.draftOcrTesseractPageSegmentationMode}
           onValueChange={(value) => { rec.draftOcrTesseractPageSegmentationMode = value as OcrTesseractPageSegmentationMode; }}
@@ -155,15 +157,16 @@
             { value: "sparse_text", label: "Sparse text" },
           ]}
         />
+        </div>
       {/snippet}
     </SettingRow>
     <SettingRow
       label="Image preprocessing"
-      description="Grayscale usually works best for clean UI text. Thresholded black/white can help when edges are muddy or contrast is weak."
-      full
+      description="Grayscale suits clean UI text. Thresholded black/white helps when edges are muddy or contrast is weak."
     >
       {#snippet control()}
         <Segmented
+          md
           value={rec.draftOcrTesseractPreprocessMode}
           onValueChange={(value) => { rec.draftOcrTesseractPreprocessMode = value as OcrTesseractPreprocessMode; }}
           disabled={!rec.draftOcrEnabled}
@@ -177,14 +180,15 @@
     </SettingRow>
     <SettingRow
       label="Upscale before OCR"
-      description="Tesseract works best around 300 DPI. For tiny screenshots, 2× upscaling is a good first step before trying 3× or 4×."
-      full
+      description="Tesseract works best around 300 DPI. For tiny text try 2× before 3× or 4×."
     >
       {#snippet control()}
         <Segmented
+          md
           value={String(rec.draftOcrTesseractUpscaleFactor)}
           onValueChange={(value) => { rec.draftOcrTesseractUpscaleFactor = parseInt(value, 10) || 1; }}
           disabled={!rec.draftOcrEnabled}
+          mono
           ariaLabel="Upscale before OCR"
           options={[
             { value: "1", label: "1×" },
@@ -197,159 +201,94 @@
     </SettingRow>
     <SettingRow
       label="Character whitelist"
-      description="Tesseract works best with dark, high-contrast text on a light background. For tiny screenshots, try 2× upscaling first; if edges are muddy, try thresholded preprocessing or a narrow whitelist."
-      full
+      description="Optional. Only these characters are recognised."
     >
       {#snippet control()}
         <input
           id="ocr-tesseract-whitelist"
-          class="text-input"
+          class="mx-input num ocr-ctl"
           aria-label="Tesseract character whitelist"
           bind:value={rec.draftOcrTesseractCharWhitelist}
           disabled={!rec.draftOcrEnabled}
-          placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+          placeholder="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
         />
       {/snippet}
     </SettingRow>
   {/if}
 
-  <SettingRow label="OCR availability" full>
-    {#snippet control()}
-      <p class="group-hint">
-        {rec.draftOcrEnabled
-          ? "If screen capture is enabled, recording start is blocked until the selected OCR provider is available."
-          : "Screen recording can start without OCR while this is disabled."}
-        Existing OCR results remain visible after switching engines.
-      </p>
-    {/snippet}
-  </SettingRow>
+  {#if ocrModelError}
+    <ModelDownloadRow label="Model status" error={`Couldn’t load OCR model status: ${ocrModelError}`} />
+  {:else if !m}
+    <ModelDownloadRow
+      label="Model status"
+      description={loadingOcrModelStatus ? "Checking installed OCR models…" : undefined}
+      warning={loadingOcrModelStatus ? null : "No OCR model status is available for the selected provider."}
+    />
+  {:else if m.management !== "app_managed"}
+    <ModelDownloadRow
+      label="Model status"
+      description="Managed by macOS — nothing to download."
+      status={m.available ? "available" : null}
+      chip={m.available ? null : { text: "unavailable", tone: "warn" }}
+      warning={m.runtimeMessage}
+    />
+  {:else if selectedOcrDownloadRunning}
+    <ModelDownloadRow
+      label="Model status"
+      progress={downloadMeta(m.displayName, selectedOcrDownloadProgress)}
+      onCancel={cancelSelectedOcrModelDownload}
+      cancelling={cancellingOcrDownload}
+    />
+  {:else}
+    {@const failed = m.status === "failed" || !!ocrDownloadError}
+    <ModelDownloadRow
+      label="Model status"
+      description={!m.available && !failed && m.missingFiles.length > 0
+        ? `${m.missingFiles.length} ${m.missingFiles.length === 1 ? "file" : "files"} missing — download to complete this model.`
+        : `${m.displayName} · ${m.available ? "installed" : failed ? "not installed" : ocrStatusLabel(m).toLowerCase()}${m.download ? ` · ${formatBytes(m.download.byteSize)}` : ""}`}
+      status={m.available ? "available" : null}
+      chip={m.available ? null : failed ? { text: "failed", tone: "danger" } : { text: m.status === "missing" ? "missing" : "unavailable", tone: "warn" }}
+      error={ocrDownloadError ?? m.failureMessage}
+      warning={m.runtimeMessage ?? (!m.available && !m.download
+        ? m.provider === "tesseract"
+          ? "This provider still needs a Mnema-published self-contained runtime bundle before in-app download can work."
+          : "This app-managed OCR bundle is missing, and the current manifest does not ship a downloadable artifact yet."
+        : null)}
+      download={!m.available && m.download
+        ? { bytes: m.download.byteSize, starting: startingOcrDownload, onclick: startSelectedOcrModelDownload }
+        : null}
+      info={m}
+      folder={{ path: models.ocrModelStatus?.modelsDirectory, reveal: m.available ? m.installPath : null }}
+    />
+  {/if}
 
-  <SettingRow label="Selected model status" full divider={false}>
-    {#snippet control()}
-      <div class="ocr-stack">
-        {#if ocrModelError}
-          <p class="group-hint group-hint--warn">Failed to load OCR model status: {ocrModelError}</p>
-        {:else if selectedOcrModel}
-          <div class="model-status" class:model-status--available={selectedOcrModel.available}>
-            <div>
-              <div class="model-status__title">{selectedOcrModel.displayName}</div>
-              <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
-            </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedOcrModel.available}
-            >{selectedOcrModel.available ? "available" : "unavailable"}</span>
-          </div>
-          <p class="group-hint">{selectedOcrModel.description}</p>
-          {#if selectedOcrModel.runtimeMessage}
-            <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
-          {/if}
-          {#if selectedOcrModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedOcrModel.installPath}</span></p>
-          {/if}
-          <ModelMissingFiles files={selectedOcrModel.missingFiles} />
-          {#if selectedOcrModel.failureMessage}
-            <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedOcrModel.failureMessage}</p>
-          {/if}
-          {#if selectedOcrModel.licenseLabel || selectedOcrModel.sourceUrl}
-            <p class="group-hint">
-              {#if selectedOcrModel.licenseLabel}<strong>License:</strong> {selectedOcrModel.licenseLabel}. {/if}
-              {#if selectedOcrModel.sourceUrl}<strong>Source:</strong> {selectedOcrModel.sourceUrl}{/if}
-            </p>
-          {/if}
-          {#if selectedOcrModel.management === "app_managed"}
-            {#if selectedOcrModel.download}
-              {#if selectedOcrDownloadRunning}
-                <div class="download-progress" aria-live="polite">
-                  <div class="download-progress__bar">
-                    <span style={`width: ${selectedOcrDownloadPercent ?? 8}%`}></span>
-                  </div>
-                  <p class="group-hint">
-                    {selectedOcrDownloadProgress?.status ?? "downloading"}
-                    {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
-                    {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
-                  </p>
-                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
-                    {#if cancellingOcrDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
-                  </button>
-                </div>
-              {:else}
-                <button type="button" class="btn btn--primary" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
-                  {#if startingOcrDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
-                </button>
-              {/if}
-            {:else if !selectedOcrModel.available}
-              <p class="group-hint group-hint--warn">
-                {#if selectedOcrModel.provider === "tesseract"}
-                  This provider still needs a Mnema-published self-contained runtime bundle before in-app download can work.
-                {:else}
-                  This app-managed OCR bundle is missing, and the current manifest does not ship a downloadable artifact yet.
-                {/if}
-              </p>
-            {/if}
-            {#if ocrDownloadError}
-              <p class="group-hint group-hint--warn">Download failed: {ocrDownloadError}</p>
-            {/if}
-          {:else}
-            <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
-          {/if}
-          <div class="debug-log-actions">
-            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
-              {#if deletingUnusedOcrModels}<ButtonSpinner />Deleting…{:else}Delete unused OCR models{/if}
-            </button>
-          </div>
-          <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
-          {#if deleteUnusedOcrModelsMessage}
-            <div class="cleanup-result" aria-live="polite">
-              <strong>{deleteUnusedOcrModelsMessage}</strong>
-              {#if deletedUnusedOcrModelLabels.length > 0}
-                <p>Deleted:</p>
-                <ul>
-                  {#each deletedUnusedOcrModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if skippedUnusedOcrModelLabels.length > 0}
-                <p>Skipped active downloads:</p>
-                <ul>
-                  {#each skippedUnusedOcrModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if skippedOcrProcessingJobModelLabels.length > 0}
-                <p>Skipped running jobs:</p>
-                <ul>
-                  {#each skippedOcrProcessingJobModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-            </div>
-          {/if}
+  {#if m}
+    {#if deleteUnusedOcrModelsMessage || deleteUnusedOcrModelsError}
+      <SettingRow label="Delete unused models" description={deleteUnusedDesc} full>
+        {#snippet aside()}{@render deleteUnused()}{/snippet}
+        {#snippet control()}
           {#if deleteUnusedOcrModelsError}
-            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedOcrModelsError}</p>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />Delete failed: {deleteUnusedOcrModelsError}</span>
+          {:else}
+            <span class="mx-inline" data-tone="ok" aria-live="polite"><IconCheck width="13" height="13" />{deleteUnusedOcrModelsMessage}</span>
           {/if}
-        {:else if loadingOcrModelStatus}
-          <p class="group-hint">Checking installed OCR models…</p>
-        {:else}
-          <p class="group-hint group-hint--warn">No OCR model status is available for the selected provider.</p>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
-</SettingGroup>
+        {/snippet}
+      </SettingRow>
+    {:else}
+      <SettingRow label="Delete unused models" description={deleteUnusedDesc}>
+        {#snippet control()}{@render deleteUnused()}{/snippet}
+      </SettingRow>
+    {/if}
+  {/if}
 
-<SettingGroup title="Preview Cache">
   <SettingRow
     label="Cache duration"
-    description="In-memory cache for frame and image previews. Cached entries expire automatically after the selected duration."
-    full
-    divider={false}
+    description={rec.draftPreviewCacheTtlSeconds === 0
+      ? "Disabled — previews are fetched fresh every time."
+      : "In-memory cache for frame and image previews."}
   >
     {#snippet control()}
-      <div class="ocr-stack">
+      <div class="ocr-ctl">
         <SelectMenu
           value={String(rec.draftPreviewCacheTtlSeconds)}
           onValueChange={(v) => { rec.draftPreviewCacheTtlSeconds = parseInt(v, 10); }}
@@ -362,29 +301,26 @@
             { value: "86400", label: "24 hours" },
           ]}
         />
-        {#if rec.draftPreviewCacheTtlSeconds === 0}
-          <p class="group-hint"><strong>Disabled</strong> — previews are fetched fresh every time.</p>
-        {/if}
       </div>
     {/snippet}
   </SettingRow>
 </SettingGroup>
 
+{#snippet deleteUnused()}
+  <button
+    type="button"
+    class="mx-btn mx-btn--ghost"
+    onclick={requestDeleteUnusedOcrModels}
+    disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning}
+    aria-busy={deletingUnusedOcrModels}
+  >
+    {#if deletingUnusedOcrModels}<ButtonSpinner />Deleting…{:else}Delete unused{/if}
+  </button>
+{/snippet}
+
 <style>
-  /* Wide rows stack a control over hints and the bordered model-status /
-     download / cleanup sub-blocks; the primitives only gap whole rows. */
-  .ocr-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
+  /* Right-aligned selects/comboboxes keep a readable width (.st-select). */
+  .ocr-ctl {
+    width: 240px;
   }
-
-  /* Render filesystem paths in mono so they read as machine values, matching
-     the Developer log path treatment. */
-  .model-path {
-    font-family: var(--app-font-mono);
-    word-break: break-all;
-  }
-
 </style>

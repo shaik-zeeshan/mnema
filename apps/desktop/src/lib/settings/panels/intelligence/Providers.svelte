@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
-  import { tip } from "$lib/components/tooltip";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+  import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import ChatgptConnect from "$lib/components/ChatgptConnect.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
-  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ProviderRow from "./ProviderRow.svelte";
+  import { runtimeReasonTone } from "./provider-row-state";
+  import { testProvidersOnce } from "$lib/settings/state/ai-runtime.svelte";
+  import type { AiProviderKind } from "$lib/types";
   import IconCheck from "~icons/lucide/check";
   import IconAlert from "~icons/lucide/triangle-alert";
+  import IconInfo from "~icons/lucide/info";
+  import IconPlus from "~icons/lucide/plus";
+  import IconSparkles from "~icons/lucide/sparkles";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -20,7 +23,7 @@
   /** Presence + status + model list, after the vault credential changed. */
   function refreshAfterChatgptChange(): void {
     void aiRuntime.handleChatgptConnectionChange();
-    void loadSettingsModels();
+    void c.loadSettingsModels();
   }
 
   // A ChatGPT sign-in lands up to 15 minutes after the click, by which time the
@@ -42,368 +45,243 @@
     };
   });
 
+  // Each row's reachability, once per app session on the first open of this
+  // panel once settings have loaded — never while AI features are off. Rows
+  // re-check on their own "Test again".
+  $effect(() => {
+    if (!rec.recordingSettings || !rec.draftAiEnabled) return;
+    untrack(() => testProvidersOnce(rec.draftAiProviders));
+  });
 
-  // Re-exported constants the markup references verbatim.
-  const AI_PROVIDER_KINDS = c.AI_PROVIDER_KINDS;
-  const AI_LOCAL_DEFAULT_ENDPOINTS = c.AI_LOCAL_DEFAULT_ENDPOINTS;
+  const status = $derived(aiRuntime.aiRuntimeStatus);
+  const statusLoading = $derived(aiRuntime.aiRuntimeStatusLoading);
+  const testResult = $derived(aiRuntime.aiRuntimeTestResult);
+  const testError = $derived(aiRuntime.aiRuntimeTestError);
+  const testRunning = $derived(aiRuntime.aiRuntimeTestRunning);
+  const reasonLabel = (reason: string | null | undefined) => aiRuntime.aiRuntimeReasonLabel(reason);
 
-  // Store-read aliases.
-  const aiProviderKeySavedByProvider = $derived(aiRuntime.aiProviderKeySavedByProvider);
-  const aiProviderKeySavingProvider = $derived(aiRuntime.aiProviderKeySavingProvider);
-  const aiProviderKeyErrors = $derived(aiRuntime.aiProviderKeyErrors);
-  const aiProviderKeyInputs = $derived(aiRuntime.aiProviderKeyInputs);
-  const aiRuntimeStatus = $derived(aiRuntime.aiRuntimeStatus);
-  const aiRuntimeStatusLoading = $derived(aiRuntime.aiRuntimeStatusLoading);
-  const aiRuntimeStatusError = $derived(aiRuntime.aiRuntimeStatusError);
-  const aiRuntimeTestRunning = $derived(aiRuntime.aiRuntimeTestRunning);
-  const aiRuntimeTestResult = $derived(aiRuntime.aiRuntimeTestResult);
-  const aiRuntimeTestError = $derived(aiRuntime.aiRuntimeTestError);
-  const aiProviderRemovalError = $derived(aiRuntime.aiProviderRemovalError);
+  // "Nothing is ready yet" = setup is incomplete. A provider that is set up but
+  // failing (reconnect, unreachable) speaks on its own row instead.
+  const notReady = $derived(
+    rec.draftAiEnabled &&
+      !statusLoading &&
+      !!status &&
+      !status.available &&
+      /^(no_providers|no_default_model|provider_not_connected|no_provider_key)/i.test(status.reason ?? ""),
+  );
 
-  // Controller derived selectors.
-  const anyCloudAiProviderConnected = $derived(c.anyCloudAiProviderConnected);
-  const aiModelValue = $derived(c.aiModelValue);
-  const settingsModelLoader = $derived(c.settingsModelLoader);
-  const settingsModelFailureRows = $derived(c.settingsModelFailureRows);
-  const settingsModelRetryTargets = $derived(c.settingsModelRetryTargets);
-  const settingsModelsError = $derived(c.settingsModelsError);
+  // One provider row open at a time; a just-added instance opens itself.
+  let openId = $state<string | null>(null);
+  let addOpen = $state(false);
+  let addAnchor = $state<HTMLElement | null>(null);
 
-  // Controller helper functions.
-  const isCloudAiProviderKind = (k: string) => c.isCloudAiProviderKind(k);
-  const aiProviderKindLabel = (k: string) => c.aiProviderKindLabel(k);
-  // Instance-aware label: resolves a per-instance id (e.g. "anthropic-2") to its
-  // custom label / host, not the bare kind. Used for runtime-status + test-result
-  // lines that carry an instance id (ADR 0035), where aiProviderKindLabel would
-  // fall through to the raw id for a 2nd+ same-kind instance.
-  const aiProviderLabelById = (id: string) => c.aiProviderLabelById(id);
-  const aiProviderKindDescription = (k: Parameters<typeof c.aiProviderKindDescription>[0]) =>
-    c.aiProviderKindDescription(k);
-  const aiProviderInstanceLabel = (p: Parameters<typeof c.aiProviderInstanceLabel>[0]) =>
-    c.aiProviderInstanceLabel(p);
-  const addAiProvider = (k: Parameters<typeof c.addAiProvider>[0]) => c.addAiProvider(k);
-  const removeAiProvider = (id: string) => void c.removeAiProvider(id);
-  const loadSettingsModels = () => c.loadSettingsModels();
+  function addProvider(kind: AiProviderKind): void {
+    addOpen = false;
+    const before = rec.draftAiProviders.length;
+    c.addAiProvider(kind);
+    if (rec.draftAiProviders.length > before) openId = rec.draftAiProviders.at(-1)?.id ?? null;
+  }
 
-  // Store action methods.
-  const aiRuntimeReasonLabel = (reason: string | null | undefined) =>
-    aiRuntime.aiRuntimeReasonLabel(reason);
-  const loadAiRuntimeStatus = () => aiRuntime.loadAiRuntimeStatus();
-  const saveAiProviderKey = (p: string) => aiRuntime.saveAiProviderKey(p);
-  const clearAiProviderKey = (p: string) => aiRuntime.clearAiProviderKey(p);
-  const runAiRuntimeTestConnection = () => aiRuntime.runAiRuntimeTestConnection();
+  const kindList = c.AI_PROVIDER_KINDS.map((k) => c.aiProviderKindLabel(k)).join(", ") + ".";
 </script>
 
-<SettingGroup
-  id="settings-section-intelligence"
-  title="Providers"
-  hint="Connect the AI providers Mnema can use and choose one global default model. Every AI feature inherits the default; a chat thread or feature override can refine it."
->
+<svelte:window
+  onclick={(e) => {
+    if (addOpen && addAnchor && !addAnchor.contains(e.target as Node)) addOpen = false;
+  }}
+  onkeydown={(e) => {
+    if (addOpen && e.key === "Escape") addOpen = false;
+  }}
+/>
+
+{#snippet addMenu(small: boolean)}
+  <div class="mx-pop-anchor" bind:this={addAnchor}>
+    <button
+      class="mx-btn"
+      class:mx-btn--sm={small}
+      type="button"
+      aria-haspopup="menu"
+      aria-expanded={addOpen}
+      disabled={c.aiProviderRemoving}
+      onclick={() => (addOpen = !addOpen)}
+    ><IconPlus width="13" height="13" aria-hidden="true" />Add provider…</button>
+    {#if addOpen}
+      <div class="mx-pop" data-open role="menu" aria-label="Add provider">
+        <ul class="mx-menu">
+          {#each c.AI_PROVIDER_KINDS as kind (kind)}
+            <li
+              role="menuitem"
+              tabindex="0"
+              title={c.aiProviderKindDescription(kind)}
+              onclick={() => addProvider(kind)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  addProvider(kind);
+                }
+              }}
+            >
+              {c.aiProviderKindLabel(kind)}
+              <span class="mx-menu__meta">{c.isCloudAiProviderKind(kind) ? "cloud" : "local"}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet modelPicker()}
+  <div class="pv-picker">
+    <ModelPickerMenu
+      label={c.aiModelValue || "Choose a default model"}
+      title={c.aiModelValue || "Choose a default model"}
+      ariaLabel="Global default model"
+      block
+      placeholder={rec.draftAiDefaultModel === null}
+      disabled={rec.draftAiProviders.length === 0}
+      modelPool={c.settingsModelLoader.pool}
+      providers={rec.draftAiProviders}
+      firstProvider={rec.draftAiDefaultModel?.provider ?? null}
+      sentinelLabel="No default model"
+      sentinelSelected={rec.draftAiDefaultModel === null}
+      selectedProvider={rec.draftAiDefaultModel?.provider ?? null}
+      selectedModel={rec.draftAiDefaultModel?.model ?? null}
+      loading={c.settingsModelLoader.loading}
+      failures={c.settingsModelFailureRows}
+      onretry={() => void c.settingsModelLoader.load(c.settingsModelRetryTargets)}
+      bind:open={c.aiModelOpen}
+      onopen={() => void c.loadSettingsModels()}
+      onselect={(engine) => {
+        rec.draftAiDefaultModel = engine;
+        // The last test-connection line named the previously-tested model;
+        // changing the default would leave it misrepresenting the config.
+        aiRuntime.resetTestResult();
+      }}
+    />
+  </div>
+{/snippet}
+
+{#snippet modelsError()}
+  <span class="mx-inline" data-tone="warn" role="alert">
+    <IconInfo width="13" height="13" aria-hidden="true" />Couldn’t list every provider’s models — you can still type any model id.
+  </span>
+{/snippet}
+
+<SettingGroup id="settings-section-intelligence" title="Providers" hint="One global default model; every AI feature inherits it.">
+  {#if notReady}
+    <div class="pv-notice">
+      <div class="mx-notice" data-tone="warn" role="status">
+        <span class="mx-notice__icon"><IconInfo width="15" height="15" /></span>
+        <b class="mx-notice__title">AI features are on, but nothing is ready yet</b>
+        <p class="mx-notice__text">{reasonLabel(status?.reason)} Connect a provider and choose a default model below.</p>
+      </div>
+    </div>
+  {/if}
+
   <SettingRow
     label="Enable AI features"
-    description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model. Off by default."
-    full
-    divider={false}
+    description="The master switch for everything AI in Mnema. While off, nothing is sent to any AI model."
   >
-    {#snippet aside()}
+    {#snippet control()}
       <Switch
         bind:checked={rec.draftAiEnabled}
         ariaLabel="Enable AI features"
         onCheckedChange={(checked) => {
-          // A "Connection succeeded" banner must never sit next to a disabled
+          // A "Connection succeeded" line must never sit next to a disabled
           // master switch, so clear it when AI features are turned off.
           if (!checked) aiRuntime.resetTestResult();
         }}
       />
     {/snippet}
-    {#snippet control()}
-      <div class="privacy-disclosure">
-        <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
-        <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
-      </div>
-      <!-- Near-the-switch readiness cue: the full runtime-status pill lives in the
-           Status group far below, so a user who flips the master switch on with
-           nothing configured gets no nearby signal. Echo the "still not ready"
-           condition right under the switch so the next step (connect a provider /
-           pick a default model) is obvious. -->
-      {#if rec.draftAiEnabled && !aiRuntimeStatusLoading && aiRuntimeStatus && !aiRuntimeStatus.available}
-        <p class="group-hint group-hint--warn" role="status">
-          AI features are on, but nothing is ready yet. {aiRuntimeReasonLabel(aiRuntimeStatus.reason)} Connect a provider and choose a default model below.
-        </p>
-      {/if}
-    {/snippet}
   </SettingRow>
-</SettingGroup>
 
-<SettingGroup title="Connected providers">
-  <SettingRow label="Providers" full divider={false}>
-    {#snippet control()}
-      <div class="prov-stack">
-        {#if rec.draftAiProviders.length === 0}
-          <p class="group-hint">No providers connected yet. Connect one below, then choose a default model.</p>
-        {:else}
-          <ul class="provider-list">
-            {#each rec.draftAiProviders as provider (provider.id)}
-              <li class="provider-row">
-                <div class="provider-row__head">
-                  <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
-                  <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
-                  {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
-                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />{provider.kind === "chatgpt" ? "connected" : "key in keychain"}</span>
-                  {/if}
-                  <button
-                    class="btn btn--danger btn--sm provider-row__remove"
-                    type="button"
-                    disabled={aiProviderKeySavingProvider !== null || c.aiProviderRemoving}
-                    onclick={() => removeAiProvider(provider.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-                <label class="field-label" for="ai-provider-label-{provider.id}">Label</label>
-                <input
-                  id="ai-provider-label-{provider.id}"
-                  class="text-input"
-                  autocomplete="off"
-                  placeholder={aiProviderKindLabel(provider.kind)}
-                  bind:value={provider.label}
-                />
-                {#if provider.kind === "openai_compatible"}
-                  <label class="field-label" for="ai-provider-base-url-{provider.id}">Base URL</label>
-                  <input
-                    id="ai-provider-base-url-{provider.id}"
-                    class="text-input"
-                    class:text-input--empty={provider.baseUrl.trim().length === 0}
-                    autocomplete="off"
-                    placeholder="https://api.fireworks.ai/inference/v1"
-                    aria-invalid={provider.baseUrl.trim().length === 0}
-                    bind:value={provider.baseUrl}
-                    oninput={() => aiRuntime.resetTestResult()}
-                  />
-                  {#if provider.baseUrl.trim().length === 0}
-                    <p class="group-hint group-hint--warn">OpenAI-compatible providers need a base URL.</p>
-                  {/if}
-                {:else if !isCloudAiProviderKind(provider.kind)}
-                  <label class="field-label" for="ai-provider-endpoint-{provider.id}">Endpoint</label>
-                  <input
-                    id="ai-provider-endpoint-{provider.id}"
-                    class="text-input"
-                    autocomplete="off"
-                    placeholder={AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind] ?? "http://localhost"}
-                    bind:value={provider.baseUrl}
-                    oninput={() => aiRuntime.resetTestResult()}
-                  />
-                  <p class="group-hint">Leave empty to use the default endpoint {AI_LOCAL_DEFAULT_ENDPOINTS[provider.kind]}. No key, no egress.</p>
-                {/if}
-                {#if provider.kind === "chatgpt"}
-                  <!-- The one cloud kind with no key field: an OAuth device-code
-                       login stores a token set in the same vault slot, so key
-                       presence doubles as "connected". -->
-                  <ChatgptConnect
-                    providerId={provider.id}
-                    connected={!!aiProviderKeySavedByProvider[provider.id]}
-                    onchange={refreshAfterChatgptChange}
-                  />
-                {:else if isCloudAiProviderKind(provider.kind)}
-                  <label class="field-label" for="ai-provider-key-{provider.id}">API key</label>
-                  <input
-                    id="ai-provider-key-{provider.id}"
-                    class="text-input"
-                    class:text-input--error={!!aiProviderKeyErrors[provider.id]}
-                    type="password"
-                    autocomplete="off"
-                    placeholder={aiProviderKeySavedByProvider[provider.id] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
-                    aria-invalid={!!aiProviderKeyErrors[provider.id]}
-                    aria-describedby={aiProviderKeyErrors[provider.id] ? `ai-provider-key-error-${provider.id}` : undefined}
-                    disabled={aiProviderKeySavingProvider === provider.id}
-                    bind:value={
-                      () => aiProviderKeyInputs[provider.id] ?? "",
-                      (value) => {
-                        aiRuntime.setProviderKeyInput(provider.id, value);
-                      }
-                    }
-                  />
-                  <div class="row-actions">
-                    <button
-                      class="btn btn--ghost btn--sm"
-                      type="button"
-                      disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.id] ?? "").trim().length === 0}
-                      aria-busy={aiProviderKeySavingProvider === provider.id}
-                      onclick={() => saveAiProviderKey(provider.id)}
-                    >
-                      {#if aiProviderKeySavingProvider === provider.id}<ButtonSpinner />Saving{:else}Save key{/if}
-                    </button>
-                    <button
-                      class="btn btn--ghost btn--sm"
-                      type="button"
-                      disabled={aiProviderKeySavingProvider !== null || !aiProviderKeySavedByProvider[provider.id]}
-                      onclick={() => clearAiProviderKey(provider.id)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                  {#if aiProviderKeyErrors[provider.id]}
-                    <p class="error-text" id="ai-provider-key-error-{provider.id}" role="alert">{aiProviderKeyErrors[provider.id]}</p>
-                  {:else if (aiProviderKeyInputs[provider.id] ?? "").trim().length > 0 && aiProviderKeySavingProvider !== provider.id}
-                    <!-- Unlike the autosaving Label/Base URL fields, the API key
-                         only reaches the keychain on an explicit "Save key" click.
-                         A typed-but-unsaved key is lost on navigate-away, so warn
-                         while the input is dirty so the user can't leave thinking
-                         the provider is connected. -->
-                    <p class="group-hint group-hint--warn">Unsaved API key — click <strong>Save key</strong> to store it in the keychain.</p>
-                  {/if}
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <div class="row-actions">
-          {#each AI_PROVIDER_KINDS as kind (kind)}
-            <button
-              class="btn btn--ghost btn--sm"
-              type="button"
-              disabled={c.aiProviderRemoving}
-              use:tip={aiProviderKindDescription(kind)}
-              onclick={() => addAiProvider(kind)}
-            >
-              + {aiProviderKindLabel(kind)}
-            </button>
-          {/each}
-        </div>
-        <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
-        {#if aiProviderRemovalError}
-          <p class="error-text" role="alert">{aiProviderRemovalError}</p>
-        {/if}
-        {#if anyCloudAiProviderConnected}
-          <div class="cloud-egress-disclosure" role="note">
-            <span class="cloud-egress-disclosure__icon" aria-hidden="true"><IconAlert /></span>
-            <div class="cloud-egress-disclosure__body">
-              <strong>Cloud egress consent</strong>
-              <p>
-                With a cloud provider connected and AI features on, <em>redacted</em> OCR and
-                transcript text is sent to that provider over HTTPS, billed to your own key.
-                Your on-device data — frames, audio, and the assembled dossier — never leaves
-                this machine. The master switch above is your explicit opt-in, separate from
-                the per-feature toggles below.
-              </p>
-            </div>
-          </div>
-        {/if}
+  {#if rec.draftAiProviders.length === 0}
+    <div class="pv-empty">
+      <div class="mx-empty mx-empty--compact">
+        <span class="mx-empty__glyph"><IconSparkles width="14" height="14" /></span>
+        <b class="mx-empty__title">No providers connected yet</b>
+        <p class="mx-empty__text">Connect one, then choose a default model.</p>
+        <div class="mx-empty__acts">{@render addMenu(true)}</div>
       </div>
-    {/snippet}
-  </SettingRow>
-</SettingGroup>
-
-<SettingGroup title="Default model">
-  <SettingRow label="Global default model" full divider={false}>
-    {#snippet control()}
-      <div class="prov-stack">
-        <ModelPickerMenu
-          label={aiModelValue || "Choose a default model"}
-          title={aiModelValue || "Choose a default model"}
-          ariaLabel="Global default model"
-          block
-          placeholder={rec.draftAiDefaultModel === null}
-          disabled={rec.draftAiProviders.length === 0}
-          modelPool={settingsModelLoader.pool}
-          providers={rec.draftAiProviders}
-          firstProvider={rec.draftAiDefaultModel?.provider ?? null}
-          sentinelLabel="No default model"
-          sentinelSelected={rec.draftAiDefaultModel === null}
-          selectedProvider={rec.draftAiDefaultModel?.provider ?? null}
-          selectedModel={rec.draftAiDefaultModel?.model ?? null}
-          loading={settingsModelLoader.loading}
-          failures={settingsModelFailureRows}
-          onretry={() => void settingsModelLoader.load(settingsModelRetryTargets)}
-          bind:open={c.aiModelOpen}
-          onopen={() => void loadSettingsModels()}
-          onselect={(engine) => {
-            rec.draftAiDefaultModel = engine;
-            // The last test-connection banner named the previously-tested model;
-            // changing the default model would leave it misrepresenting the
-            // current config, so clear it.
-            aiRuntime.resetTestResult();
-          }}
-        />
-        {#if settingsModelsError}
-          <p class="group-hint group-hint--warn" role="alert">
-            Could not list every provider's models — check keys/base URLs/endpoints above, then use Retry in the menu. You can still type any model id.
-          </p>
-          <p class="error-text">{aiRuntimeReasonLabel(settingsModelsError)}</p>
-        {:else}
-          <p class="group-hint">
-            One merged list across every connected provider. Open the menu to search, or type any model id and pick the provider to attribute it to.
-          </p>
-        {/if}
+    </div>
+  {:else}
+    {#each rec.draftAiProviders as provider (provider.id)}
+      <ProviderRow
+        {provider}
+        open={openId === provider.id}
+        ontoggle={(open) => (openId = open ? provider.id : null)}
+        onchatgptchange={refreshAfterChatgptChange}
+      />
+    {/each}
+    {#if aiRuntime.aiProviderRemovalError}
+      <div class="pv-notice">
+        <span class="mx-inline" data-tone="danger" role="alert">
+          <IconAlert width="13" height="13" aria-hidden="true" />{aiRuntime.aiProviderRemovalError}
+        </span>
       </div>
-    {/snippet}
-  </SettingRow>
-</SettingGroup>
+    {/if}
+    <SettingRow label="Add a provider" description={kindList}>
+      {#snippet control()}{@render addMenu(false)}{/snippet}
+    </SettingRow>
+  {/if}
 
-<SettingGroup title="Status">
-  <SettingRow label="AI runtime" full divider={false}>
+  <SettingRow
+    label="Global default model"
+    description="Used by every AI feature unless it sets its own override."
+    control={modelPicker}
+    below={c.settingsModelsError ? modelsError : undefined}
+  />
+
+  <SettingRow label="AI runtime">
     {#snippet control()}
-      <div class="prov-stack">
-        <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
-          <div>
-            <div class="model-status__title">{aiRuntimeStatus?.available ? "AI runtime is ready" : "AI runtime isn’t ready yet"}</div>
-            <div class="model-status__meta">
-              {#if aiRuntimeStatusLoading}
-                Checking providers…
-              {:else if aiRuntimeStatus?.available}
-                Default model {aiRuntimeStatus.defaultModel
-                  ? `${aiProviderLabelById(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
-                  : "(none)"} is configured and reachable.
-              {:else}
-                {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
-              {/if}
-            </div>
-          </div>
-          <span
-            class="model-status__pill"
-            class:model-status__pill--ok={aiRuntimeStatus?.available}
-          >{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
-        </div>
-        {#if aiRuntimeStatusError}
-          <p class="error-text" role="alert">{aiRuntimeStatusError}</p>
+        <button
+          class="mx-btn"
+          type="button"
+          disabled={testRunning || rec.draftAiDefaultModel === null}
+          aria-busy={testRunning}
+          onclick={() => aiRuntime.runAiRuntimeTestConnection()}
+        >
+          {#if testRunning}<span class="mx-spin mx-spin--sm"></span>Testing…{:else}Test connection{/if}
+        </button>
+    {/snippet}
+    {#snippet below()}
+      <div class="pv-runtime" aria-live="polite">
+        {#if testRunning}
+          <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Testing the default model…</span>
+        {:else if testError}
+          <span class="mx-inline" data-tone="danger" role="alert">
+            <IconAlert width="13" height="13" aria-hidden="true" />Test connection failed — {reasonLabel(testError)}
+          </span>
+        {:else if testResult}
+          <span class="mx-inline" data-tone={testResult.ok ? "ok" : "danger"}>
+            {#if testResult.ok}<IconCheck width="13" height="13" aria-hidden="true" />{:else}<IconAlert width="13" height="13" aria-hidden="true" />{/if}
+            {testResult.message || "Connection succeeded."} {c.aiProviderLabelById(testResult.provider)} · {testResult.model || "(none)"}
+          </span>
+          {#if testResult.rawJson}
+            <details class="pv-raw">
+              <summary>Raw response</summary>
+              <pre>{testResult.rawJson}</pre>
+            </details>
+          {/if}
+        {:else if statusLoading && !status}
+          <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Checking providers…</span>
+        {:else if status?.available}
+          <span class="mx-inline" data-tone="ok">
+            <IconCheck width="13" height="13" aria-hidden="true" />Default model {status.defaultModel
+              ? `${c.aiProviderLabelById(status.defaultModel.provider)} · ${status.defaultModel.model}`
+              : "(none)"} is configured and reachable.
+          </span>
+        {:else if status}
+          <span class="mx-inline" data-tone={runtimeReasonTone(status.reason)}>
+            {#if runtimeReasonTone(status.reason) === "danger"}<IconAlert width="13" height="13" aria-hidden="true" />{:else}<IconInfo width="13" height="13" aria-hidden="true" />{/if}
+            Isn’t ready — {reasonLabel(status.reason)}
+          </span>
         {/if}
-        <div class="row-actions">
-          <button
-            class="btn btn--ghost btn--sm"
-            type="button"
-            disabled={aiRuntimeTestRunning || rec.draftAiDefaultModel === null}
-            aria-busy={aiRuntimeTestRunning}
-            onclick={runAiRuntimeTestConnection}
-          >
-            {#if aiRuntimeTestRunning}<ButtonSpinner />Testing{:else}Test connection{/if}
-          </button>
-          <ReloadButton
-            onclick={loadAiRuntimeStatus}
-            busy={aiRuntimeStatusLoading}
-            title="Refresh"
-            label="Refresh AI runtime status"
-          />
-        </div>
-        <p class="group-hint">
-          Test connection runs one structured round trip against the global default model — it
-          verifies that provider's key/endpoint even while AI features are off.
-        </p>
-        {#if aiRuntimeTestResult}
-          <div class="cleanup-result" aria-live="polite">
-            <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
-            <p>Provider: {aiProviderLabelById(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
-            {#if aiRuntimeTestResult.rawJson}
-              <details class="ai-runtime-details">
-                <summary>Raw response</summary>
-                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
-              </details>
-            {/if}
-          </div>
-        {/if}
-        {#if aiRuntimeTestError}
-          <div role="alert">
-            <p class="group-hint group-hint--warn">Test connection failed.</p>
-            <p class="error-text">{aiRuntimeTestError}</p>
-          </div>
+        {#if aiRuntime.aiRuntimeStatusError}
+          <span class="mx-inline" data-tone="danger" role="alert">
+            <IconAlert width="13" height="13" aria-hidden="true" />{aiRuntime.aiRuntimeStatusError}
+          </span>
         {/if}
       </div>
     {/snippet}
@@ -411,14 +289,44 @@
 </SettingGroup>
 
 <style>
-  /* Full-width rows stack the toggle/picker over disclosures, the bordered
-     provider cards, status, and test-result sub-blocks; the primitives only
-     gap whole rows, so each control slot manages its own internal rhythm. */
-  .prov-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 100%;
+  /* A full-width notice / empty state between rows, on the rows' left edge. */
+  .pv-notice,
+  .pv-empty {
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--mx-hairline);
   }
 
+  .pv-empty .mx-empty {
+    max-width: none;
+    padding: 0;
+  }
+
+  .pv-picker {
+    width: 280px;
+  }
+
+  .pv-runtime {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .pv-raw summary {
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
+  }
+
+  .pv-raw pre {
+    margin: 6px 0 0;
+    max-height: 160px;
+    overflow: auto;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    font: 400 var(--text-sm)/1.4 var(--font-mono);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 </style>

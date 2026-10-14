@@ -1,41 +1,20 @@
 <script lang="ts">
-  import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import IconRestore from "~icons/lucide/rotate-ccw";
-  import IconRestoreAll from "~icons/lucide/list-restart";
-  import IconClear from "~icons/lucide/x";
   import IconAlert from "~icons/lucide/triangle-alert";
+  import type { EditableShortcutAction } from "$lib/keyboard-bindings.svelte";
 
   const c = getSettingsController();
   const keyboard = c.keyboard;
 
-  // ─── Store-derived read aliases (keep markup bare) ───────────────────────────
   const keyboardBindingsSettings = $derived(keyboard.keyboardBindingsSettings);
   const keyboardShortcutIssues = $derived(keyboard.keyboardShortcutIssues);
   const keyboardShortcutSaveBlocked = $derived(keyboard.keyboardShortcutSaveBlocked);
   const shortcutCaptureActionId = $derived(keyboard.shortcutCaptureActionId);
   const savingKeyboardBindings = $derived(keyboard.savingKeyboardBindings);
-
-  // ─── Helper functions (preserve `this`) ──────────────────────────────────────
-  const loadKeyboardBindingsSettings = () => keyboard.loadKeyboardBindingsSettings();
-  const restoreDefaultShortcuts = () => keyboard.restoreDefaultShortcuts();
-  const shortcutCategoryLabel = (category: string) => keyboard.shortcutCategoryLabel(category);
-  const shortcutCategoryActions = (category: string) => keyboard.shortcutCategoryActions(category);
-  const shortcutDraftBinding = (actionId: Parameters<typeof keyboard.shortcutDraftBinding>[0]) =>
-    keyboard.shortcutDraftBinding(actionId);
-  const shortcutIssueFor = (actionId: Parameters<typeof keyboard.shortcutIssueFor>[0]) =>
-    keyboard.shortcutIssueFor(actionId);
-  const shortcutKeyTokens = (binding: string) => keyboard.shortcutKeyTokens(binding);
-  const startShortcutCapture = (actionId: Parameters<typeof keyboard.startShortcutCapture>[0]) =>
-    keyboard.startShortcutCapture(actionId);
-  const clearShortcut = (actionId: Parameters<typeof keyboard.clearShortcut>[0]) =>
-    keyboard.clearShortcut(actionId);
-  const resetShortcut = (actionId: Parameters<typeof keyboard.resetShortcut>[0]) =>
-    keyboard.resetShortcut(actionId);
 
   // Category order — single source for both the rendered list and the
   // first-conflict scan (so "Jump to conflict" lands on the row the user sees
@@ -43,12 +22,12 @@
   const SHORTCUT_CATEGORIES = ["global", "app", "dashboard", "audioDrawer"] as const;
 
   // The first action (in visual order) that currently carries an issue. The
-  // conflict banner is global, but the offending row can be scrolled off in a
+  // conflict notice is global, but the offending row can be scrolled off in a
   // sibling category — so anchor a jump on this id.
   const firstConflictActionId = $derived.by(() => {
     for (const category of SHORTCUT_CATEGORIES) {
-      for (const action of shortcutCategoryActions(category)) {
-        if (shortcutIssueFor(action.id)) return action.id;
+      for (const action of keyboard.shortcutCategoryActions(category)) {
+        if (keyboard.shortcutIssueFor(action.id)) return action.id;
       }
     }
     return null;
@@ -62,7 +41,8 @@
     row.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
   }
 
-  // ─── Window-capture keydown/pointerdown effect (verbatim from legacy) ─────────
+  // While a row listens, every keydown goes to it (Esc cancels, Backspace/Delete
+  // clears) and a pointerdown anywhere else cancels.
   $effect(() => {
     const actionId = keyboard.shortcutCaptureActionId;
     if (actionId === null) return;
@@ -81,137 +61,141 @@
   });
 </script>
 
+{#snippet chord(action: EditableShortcutAction, issue: string | null)}
+  {@const listening = shortcutCaptureActionId === action.id}
+  {@const tokens = keyboard.shortcutKeyTokens(keyboard.shortcutDraftBinding(action.id))}
+  <button
+    class="mx-btn kb-btn"
+    class:kb-btn--issue={issue !== null}
+    type="button"
+    data-shortcut-capture={action.id}
+    aria-pressed={listening}
+    disabled={savingKeyboardBindings}
+    aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
+    onclick={(event) => { keyboard.startShortcutCapture(action.id); event.currentTarget.focus(); }}
+  >
+    {#if listening}
+      <span class="mx-spin mx-spin--sm"></span>Press keys…
+    {:else if tokens}
+      <span class="kb-keys">{#each tokens as token, i (i)}<kbd>{token}</kbd>{/each}</span>
+    {:else}
+      Set shortcut
+    {/if}
+  </button>
+{/snippet}
+
 <SettingGroup
   id="settings-section-shortcuts"
   title="Keyboard Shortcuts"
-  hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears. Changes save automatically."
+  hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears."
+  loading={keyboardBindingsSettings === null && !keyboard.keyboardLoadError}
 >
   {#snippet actions()}
     <ReloadButton
-      onclick={loadKeyboardBindingsSettings}
+      onclick={() => keyboard.loadKeyboardBindingsSettings()}
       disabled={savingKeyboardBindings}
       label="Reload shortcuts from saved settings"
     />
-    <button
-      class="settings-icon-btn"
-      type="button"
-      use:tip={"Restore all defaults"}
-      aria-label="Restore all default shortcuts"
-      onclick={restoreDefaultShortcuts}
-      disabled={savingKeyboardBindings}
-    >
-      <IconRestoreAll aria-hidden="true" />
-    </button>
   {/snippet}
 
-  {#if keyboardBindingsSettings === null}
-    <p class="loading-text">Loading shortcuts…</p>
+  {#if keyboard.keyboardLoadError}
+    <div class="mx-notice kb-notice" data-tone="danger" role="alert">
+      <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+      <b class="mx-notice__title">Couldn’t load shortcuts</b>
+      <p class="mx-notice__text">{keyboard.keyboardLoadError}</p>
+      <div class="mx-notice__acts">
+        <button type="button" class="mx-btn mx-btn--sm" onclick={() => keyboard.loadKeyboardBindingsSettings()}>Retry</button>
+      </div>
+    </div>
   {:else}
+    <!-- No rows on a load failure: they'd show the defaults, not your shortcuts, and
+         with no loaded baseline an edit never reads as dirty, so it silently wouldn't save. -->
+
+    {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
+      <div class="mx-notice kb-notice" data-tone="danger" role="alert">
+        <span class="mx-notice__icon"><IconAlert width="15" height="15" /></span>
+        <b class="mx-notice__title">Shortcuts not saved</b>
+        <p class="mx-notice__text">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</p>
+        {#if firstConflictActionId !== null}
+          <div class="mx-notice__acts">
+            <button type="button" class="mx-btn mx-btn--sm" onclick={jumpToConflict}>Jump to conflict</button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <SettingRow
       label="Global shortcuts"
-      description="Use system-wide shortcuts for recording and showing Mnema while it is in the background. Background shortcuts require Command/Control or Alt; foreground shortcuts are ignored while typing in text fields."
+      description="Work from any app while Mnema is in the background. Background shortcuts need Command/Control or Option."
     >
       {#snippet control()}
         <Switch bind:checked={keyboard.draftGlobalShortcutsEnabled} ariaLabel="Global shortcuts" />
       {/snippet}
     </SettingRow>
 
-    {#if keyboardShortcutSaveBlocked && Object.keys(keyboardShortcutIssues).length > 0}
-      <div class="shortcuts-error-row">
-        <div class="inline-error" role="alert">
-          <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
-          <span class="inline-error__msg">Resolve shortcut conflicts or invalid shortcuts before changes are saved.</span>
-          {#if firstConflictActionId !== null}
-            <button type="button" class="btn btn--ghost btn--sm shortcuts-jump" onclick={jumpToConflict}>
-              Jump to conflict
-            </button>
-          {/if}
-        </div>
-      </div>
-    {/if}
+    {#each SHORTCUT_CATEGORIES as category (category)}
+      <h3 class="kb-cat">{keyboard.shortcutCategoryLabel(category)}</h3>
+      {#each keyboard.shortcutCategoryActions(category) as action (action.id)}
+        {@const issue = keyboard.shortcutIssueFor(action.id)}
+        {#if issue}
+          <!-- The issue line sits under the copy, so the chord moves to `aside`. -->
+          <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description} full>
+            {#snippet aside()}{@render chord(action, issue)}{/snippet}
+            {#snippet control()}
+              <span class="mx-inline" data-tone="danger"><IconAlert width="13" height="13" />{issue}</span>
+            {/snippet}
+          </SettingRow>
+        {:else}
+          <SettingRow id={`shortcut-row-${action.id}`} label={action.label} description={action.description}>
+            {#snippet control()}{@render chord(action, null)}{/snippet}
+          </SettingRow>
+        {/if}
+      {/each}
+    {/each}
+
+    <SettingRow label="Restore all default shortcuts" description="Asks first.">
+      {#snippet control()}
+        <button
+          type="button"
+          class="mx-btn"
+          disabled={savingKeyboardBindings}
+          onclick={() => keyboard.restoreDefaultShortcuts()}
+        >
+          Restore defaults
+        </button>
+      {/snippet}
+    </SettingRow>
   {/if}
 </SettingGroup>
 
-{#if keyboardBindingsSettings !== null}
-  {#each SHORTCUT_CATEGORIES as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)} bare nested>
-      <div class="shortcut-editor-list">
-        {#each shortcutCategoryActions(category) as action (action.id)}
-          {@const binding = shortcutDraftBinding(action.id)}
-          {@const issue = shortcutIssueFor(action.id)}
-          {@const tokens = shortcutKeyTokens(binding)}
-          {@const listening = shortcutCaptureActionId === action.id}
-          <div id={`shortcut-row-${action.id}`} class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
-            <div class="shortcut-editor-row__main">
-              <span class="shortcut-editor-row__title">{action.label}</span>
-              <span class="shortcut-editor-row__description">{action.description}</span>
-              {#if issue}
-                <span class="shortcut-editor-row__error">{issue}</span>
-              {/if}
-            </div>
-            <div class="shortcut-editor-row__controls">
-              <button
-                class="shortcut-capture"
-                class:shortcut-capture--recording={listening}
-                class:shortcut-capture--empty={!tokens && !listening}
-                type="button"
-                data-shortcut-capture={action.id}
-                disabled={savingKeyboardBindings}
-                aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
-                onclick={(event) => { startShortcutCapture(action.id); event.currentTarget.focus(); }}
-              >
-                {#if listening}
-                  <span class="shortcut-capture__pulse" aria-hidden="true"></span>
-                  <span class="shortcut-capture__hint">Press keys…</span>
-                {:else if tokens}
-                  <span class="shortcut-capture__keys">
-                    {#each tokens as token, i (i)}
-                      <kbd class="shortcut-cap">{token}</kbd>
-                    {/each}
-                  </span>
-                {:else}
-                  <span class="shortcut-capture__hint">Set shortcut</span>
-                {/if}
-              </button>
-              <button
-                class="settings-icon-btn"
-                type="button"
-                use:tip={"Reset to default"}
-                aria-label={`Reset ${action.label} to default`}
-                disabled={savingKeyboardBindings}
-                onclick={() => resetShortcut(action.id)}
-              >
-                <IconRestore aria-hidden="true" />
-              </button>
-              <button
-                class="settings-icon-btn"
-                type="button"
-                use:tip={"Clear shortcut"}
-                aria-label={`Clear ${action.label}`}
-                disabled={savingKeyboardBindings || !binding}
-                onclick={() => clearShortcut(action.id)}
-              >
-                <IconClear aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-        {/each}
-      </div>
-    </SettingGroup>
-  {/each}
-{/if}
-
 <style>
-  /* The inline shortcut-conflict alert is a full-width banner, not a labeled
-     row — break it out of the row grid so it spans the group. */
-  .shortcuts-error-row {
-    padding: 12px 0;
+  .kb-notice {
+    margin: var(--s-3) 0;
   }
 
-  /* "Jump to conflict" sits at the trailing edge of the banner so the message
-     keeps the lead and the action reads as the escape hatch. */
-  .shortcuts-jump {
-    margin-left: auto;
-    flex-shrink: 0;
+  /* Quiet category sub-header between row runs. */
+  .kb-cat {
+    margin: 0;
+    padding: var(--s-5) 0 var(--s-2);
+    font: 500 var(--text-base)/1.3 var(--font-sans);
+    color: var(--app-text-muted);
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+
+  .kb-btn--issue {
+    --_bd: var(--app-danger-border);
+  }
+
+  /* Mockup `.st-keys`: the chord's caps inside the button. */
+  .kb-keys {
+    display: inline-flex;
+    gap: 3px;
+  }
+
+  .kb-keys kbd {
+    margin: 0;
+    min-width: 20px;
+    height: 20px;
+    font-size: var(--text-sm);
   }
 </style>

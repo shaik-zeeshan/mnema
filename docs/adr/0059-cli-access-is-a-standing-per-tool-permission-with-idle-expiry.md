@@ -10,6 +10,8 @@ not. Amends the grant shape of
 [ADR 0041](0041-single-writer-owner-and-read-only-brokered-readers.md)'s
 in-process brokered reader intact.
 
+Amended (2026-10-11): Block in the approval window creates a blocked row for a never-granted tool (`block_identity`, `last_used_at_unix_ms = 0`, never touching an existing row's scope or id); Enable on such a row deletes it so the next request re-asks, and `--no-prompt` reports `access_blocked` for a blocked tool.
+
 ## Context
 
 ADR 0014 made a CLI Access Grant a time-boxed ticket: an identity-scoped,

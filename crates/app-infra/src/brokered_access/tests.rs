@@ -86,6 +86,7 @@ fn test_conclusion(
         evidence: Vec::new(),
         replaced_statement: None,
         replaced_at_ms: None,
+        formed_evidence_count: None,
     }
 }
 
@@ -1046,9 +1047,13 @@ fn two_frame_one_audio_response() -> SearchCaptureResponse {
             audio_sources: Vec::new(),
             screen_source: false,
             speaker: None,
+            hours: None,
         },
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     }
 }
 
@@ -1236,6 +1241,9 @@ fn frame_search_response_with_browser_url(
         applied_refinements: SearchCaptureRefinements::default(),
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     }
 }
 
@@ -1343,6 +1351,9 @@ fn broker_search_audio_result_has_no_context_or_url() {
         applied_refinements: SearchCaptureRefinements::default(),
         residual_query: "target".to_string(),
         parse_errors: Vec::new(),
+        index_empty: false,
+        semantic_degraded: false,
+        untranscribed_segments_in_range: 0,
     };
 
     let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
@@ -3692,6 +3703,7 @@ async fn discover_speakers(
         BrokerSpeakersRequest {
             name: name.map(str::to_string),
             limit,
+            ..Default::default()
         },
     )
     .await
@@ -4021,6 +4033,81 @@ fn broker_speakers_never_names_a_person_heard_outside_the_grant_scope() {
     });
 }
 
+/// A request's own `from`/`to` (a Chat's date range) narrows the roster inside
+/// a wider grant: someone heard only outside the window is not named.
+#[test]
+fn broker_speakers_from_to_excludes_people_heard_outside_the_window() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-window");
+        let save_dir = temp_save_dir("speakers-window");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "mnema CLI",
+            BrokerGrantScope::RecentDays { days: 7 },
+        )
+        .expect("grant should create");
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        let bo = infra
+            .create_person_profile("Bo", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        let hour_ms = 60 * 60 * 1000;
+        let day_ms = 24 * hour_ms;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "inside-window",
+            now.saturating_sub(hour_ms),
+            now,
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn("speaker_00", 0, 1_000)],
+        )
+        .await;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "outside-window",
+            now.saturating_sub(3 * day_ms),
+            now.saturating_sub(3 * day_ms - hour_ms),
+            vec![speaker_cluster("speaker_00", &[0.0, 1.0])],
+            vec![speaker_turn("speaker_00", 0, 60_000)],
+        )
+        .await;
+        assign_cluster(&infra, "inside-window", "speaker_00", ada.id).await;
+        assign_cluster(&infra, "outside-window", "speaker_00", bo.id).await;
+
+        let roster = broker_speakers(
+            &config_dir,
+            &infra,
+            std::slice::from_ref(&grant),
+            BrokerSpeakersRequest {
+                from: Some(format_unix_ms(now.saturating_sub(day_ms))),
+                to: Some(format_unix_ms(now)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("speakers should run")
+        .expect("the grant should authorize the roster");
+
+        assert_eq!(
+            roster_shape(&roster),
+            vec![(Some("Ada"), "person", 1_000)],
+            "Bo, louder but three days back, is outside the one-day window"
+        );
+        // Unbounded, the same grant names both.
+        let all = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+        assert_eq!(all.speakers.len(), 2, "{all:?}");
+    });
+}
+
 /// Both counts hang off ONE handle, because a person confirmed on one cluster and
 /// merely voice-matched on another is one person. The split is how an agent weighs
 /// how much of the answer is guesswork before it filters — an unnamed voice has
@@ -4251,6 +4338,7 @@ fn broker_speakers_is_audited_without_recording_who_it_named() {
                 BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
                     name: Some("ada".to_string()),
                     limit: None,
+                    ..Default::default()
                 }),
             )
             .await
@@ -7906,4 +7994,71 @@ fn the_clamp_marker_names_the_narrowest_scope_that_serves_the_window_not_the_one
         BrokerGrantScope::AllRetainedHistory,
         "past the slack the marker is back to the band that contains the bound"
     );
+}
+
+fn explicit(label: &str) -> BrokerClientIdentity {
+    BrokerClientIdentity::new(label, BrokerClientIdentitySource::Explicit).unwrap()
+}
+
+/// Block on a tool's FIRST request must persist: Deny is an in-memory reply, so
+/// without a row the tool re-opens the window on every command.
+#[test]
+fn blocking_an_unseen_tool_creates_a_blocked_never_granted_row() {
+    let config_dir = temp_config_dir("block-unseen");
+    let grant = block_identity(&config_dir, explicit("Claude Code")).expect("block stores");
+
+    assert_eq!(stored_grants(&config_dir), vec![grant.clone()]);
+    assert!(grant.blocked && grant.blocked_at_unix_ms.is_some());
+    assert_eq!(grant.last_used_at_unix_ms, 0, "never granted");
+    assert_eq!(grant.scope, BrokerGrantScope::LAST_DAY);
+    assert!(!grant_is_active(&grant, now_unix_ms()));
+
+    // The prune keeps it, and a stale window's approval can't clear it.
+    let upsert = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_7_DAYS)
+        .expect("the stale approval still resolves");
+    assert!(upsert.blocked);
+    assert_eq!(stored_grants(&config_dir).len(), 1);
+}
+
+/// Blocking a tool that already holds a row flips the block and nothing else:
+/// its scope and id survive, so Enable restores exactly what it had.
+#[test]
+fn blocking_a_granted_tool_keeps_its_scope_and_id() {
+    let config_dir = temp_config_dir("block-seen");
+    let original = create_grant(&config_dir, "Claude Code", BrokerGrantScope::LAST_7_DAYS)
+        .expect("approval stores");
+
+    let blocked = block_identity(&config_dir, explicit("claude-code")).expect("block stores");
+    assert_eq!(blocked.id, original.id);
+    assert_eq!(blocked.scope, BrokerGrantScope::LAST_7_DAYS);
+    assert_eq!(blocked.last_used_at_unix_ms, original.last_used_at_unix_ms);
+    assert_eq!(blocked.label, original.label);
+    assert!(blocked.blocked);
+    assert_eq!(stored_grants(&config_dir), vec![blocked.clone()]);
+
+    // Re-blocking is a no-op that keeps the original block time.
+    let again = block_identity(&config_dir, explicit("Claude Code")).expect("re-block");
+    assert_eq!(again, blocked);
+
+    // Enable on a once-granted row restores it; it is NOT deleted.
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock"));
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].id, original.id);
+    assert!(grant_is_active(&stored[0], now_unix_ms()));
+}
+
+/// Enable on a row blocked before it was ever granted deletes it, so the next
+/// request opens the consent window instead of silently holding `lastDay`.
+#[test]
+fn unblocking_a_never_granted_row_deletes_it() {
+    let config_dir = temp_config_dir("unblock-never-granted");
+    block_identity(&config_dir, explicit("Claude Code")).expect("block stores");
+    create_grant(&config_dir, "Codex", BrokerGrantScope::LAST_DAY).expect("other tool");
+
+    assert!(unblock_client(&config_dir, "Claude Code").expect("unblock"));
+    let stored = stored_grants(&config_dir);
+    assert_eq!(stored.len(), 1, "only the other tool's row: {stored:?}");
+    assert_eq!(stored[0].normalized_label, "codex");
+    assert!(!unblock_client(&config_dir, "Claude Code").expect("nothing left"));
 }

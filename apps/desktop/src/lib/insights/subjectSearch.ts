@@ -11,7 +11,7 @@
 
 // Trivial words dropped from the query so they don't dominate the overlap.
 // Mirrors RECALL_STOPWORDS in brokered_access.rs.
-const STOPWORDS = new Set<string>([
+export const STOPWORDS = new Set<string>([
   "the", "and", "for", "are", "was", "were", "that", "this", "with", "what",
   "when", "where", "who", "why", "how", "did", "does", "have", "has", "had",
   "you", "your", "they", "them", "from", "about", "into", "over", "been",
@@ -137,6 +137,16 @@ function overlap(
   return score;
 }
 
+/** Rows where some word of the name or a statement starts with a query word,
+ *  in input order. Whitespace-only = passthrough. */
+function prefixMatches<T extends SubjectSearchable>(rows: T[], query: string): T[] {
+  const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const qs = words(query);
+  if (!query.trim()) return rows;
+  const hit = (text: string) => words(text).some((w) => qs.some((q) => w.startsWith(q)));
+  return rows.filter((r) => hit(r.subject) || r.conclusions.some((c) => hit(c.statement)));
+}
+
 /** Minimal shape a searchable subject row exposes. A SubjectRow satisfies it. */
 export interface SubjectSearchable {
   subject: string;
@@ -147,13 +157,15 @@ export interface SubjectSearchable {
  *  one query token (score > 0), ordered by relevance descending. Ties keep the
  *  input order (so pass already-sorted rows — e.g. confidence desc — and equal
  *  scores fall back to that). An empty/whitespace query returns `rows`
- *  unchanged so callers can treat "no search" as a passthrough. */
+ *  unchanged so callers can treat "no search" as a passthrough; one with no
+ *  rankable token ("ai", "go", a stopword) falls back to a word-prefix filter —
+ *  a set query never passes the whole list through. */
 export function rankSubjects<T extends SubjectSearchable>(
   rows: T[],
   query: string,
 ): T[] {
   const tokens = queryTokens(query);
-  if (tokens.length === 0) return rows;
+  if (tokens.length === 0) return prefixMatches(rows, query);
 
   // Pre-split each row once: name words, and the full document (name + all
   // statements) used for both df and the base overlap.

@@ -18,6 +18,8 @@ export interface ConversationSummary {
   turnCount: number;
   /** The first turn's question, truncated. */
   preview: string;
+  /** Pinned to the top of the history list (not the per-chat engine pin). */
+  pinned: boolean;
 }
 
 /** One persisted question/answer turn, in `turnIndex` order. */
@@ -38,6 +40,12 @@ export interface ConversationTurn {
   /** `"streaming"` | `"done"` | `"error"`. */
   phase: string;
   errorMessage: string | null;
+  /** A failed turn's `TurnUpdate::Error.kind`; null on success and old turns. */
+  errorKind: TurnErrorKind | null;
+  /** The engine that wrote this answer (provider instance id + model id); null
+   *  on turns from before it was recorded. */
+  provider: string | null;
+  model: string | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -53,12 +61,24 @@ export interface Conversation {
   provider?: string | null;
   /** Pinned model id within `provider`, or null/absent when unpinned. */
   model?: string | null;
+  /** Pinned to the top of the history list (as on `ConversationSummary`). */
+  pinned: boolean;
   turns: ConversationTurn[];
 }
 
 /** The conversation door that owns a saved turn: the Insights Chat workspace or
  *  the Quick Recall launcher (both now persist to the shared store — #111). */
 export type ConversationOrigin = "chat" | "quick_recall";
+
+/** A Chat turn's scope (CH3, `AskAiScope`): the window the data tools may read
+ *  (inclusive unix ms; both absent = all time) and whether Mnema's notes about
+ *  the user are offered. Resent on every Chat turn, never persisted; Quick
+ *  Recall sends none. */
+export interface AskAiScope {
+  fromMs?: number;
+  toMs?: number;
+  aboutYou: boolean;
+}
 
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
 // The BACKEND-OWNED render model for a streaming Ask AI turn, mirroring the Rust
@@ -131,6 +151,9 @@ export interface TurnView {
   liveActivity: ToolActivityEntry | null;
   sources: unknown;
   errorMessage: string | null;
+  /** The engine answering this turn (provider instance id + model id). */
+  provider: string | null;
+  model: string | null;
   /** Tokens occupying the model's context window after the turn's latest
    *  completion request, or null when the provider reported no usage. */
   contextTokens: number | null;
@@ -203,6 +226,9 @@ export interface AskAiSource {
    *  "github.com/owner/repo/commit/9fceb…"), or null for audio / no URL. The
    *  raw URL stays in Rust; only this guarded form is ever shown. */
   url: string | null;
+  /** The search match the model read (`<mark>` runs kept); an activity's
+   *  title. Absent on timeline sources and answers saved before it existed. */
+  snippet?: string | null;
   startedAt: string;
   endedAt: string;
   sourceKind: "microphone" | "system" | null;
@@ -241,6 +267,26 @@ export function shortModelLabel(model: string): string {
   const trimmed = model.trim();
   const tail = trimmed.split("/").pop()?.trim() ?? "";
   return tail.length > 0 ? tail : trimmed;
+}
+
+const titleCase = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
+/** A friendly name for a model id ("claude-sonnet-4-5-20250929" → "Claude
+ *  Sonnet 4.5", "gpt-5-mini" → "GPT-5 mini"). Unknown ids come back as their
+ *  short label untouched. Display only — `contextWindowForModel` keeps
+ *  matching `shortModelLabel`'s raw output. */
+export function modelDisplayName(model: string): string {
+  const short = shortModelLabel(model);
+  const id = short.replace(/-(\d{8}|\d{4}-\d{2}-\d{2}|latest)$/i, "");
+  const claude = (family: string, major: string, minor: string | undefined) =>
+    `Claude ${titleCase(family.toLowerCase())} ${major}${minor ? `.${minor}` : ""}`;
+  const modern = id.match(/^claude-([a-z]+)-(\d+)(?:-(\d+))?$/i); // claude-sonnet-4-5
+  if (modern) return claude(modern[1], modern[2], modern[3]);
+  const older = id.match(/^claude-(\d+)(?:-(\d+))?-([a-z]+)$/i); // claude-3-5-sonnet
+  if (older) return claude(older[3], older[1], older[2]);
+  const gpt = id.match(/^gpt-([\d.]+o?)(?:-(.+))?$/i);
+  if (gpt) return `GPT-${gpt[1]}${gpt[2] ? ` ${gpt[2].replace(/-/g, " ")}` : ""}`;
+  return short;
 }
 
 // ponytail: known-family fallback table for the composer occupancy ring, used

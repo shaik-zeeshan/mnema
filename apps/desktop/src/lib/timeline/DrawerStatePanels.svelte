@@ -59,8 +59,8 @@
     footnote={provenanceFootnote || noSpeechNotice}
   >
     {#snippet actions()}
-      <button type="button" class="btn" onclick={onPlayAnyway}>Play it anyway</button>
-      <button type="button" class="btn" disabled={rerunDisabled} onclick={onRerun}
+      <button type="button" class="mx-btn mx-btn--sm" onclick={onPlayAnyway}>Play it anyway</button>
+      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" disabled={rerunDisabled} onclick={onRerun}
         >Rerun analysis</button
       >
     {/snippet}
@@ -72,7 +72,7 @@
     footnote={provenanceFootnote}
   >
     {#snippet actions()}
-      <button type="button" class="btn btn--primary" disabled={rerunDisabled} onclick={onRerun}
+      <button type="button" class="mx-btn mx-btn--sm" disabled={rerunDisabled} onclick={onRerun}
         >{rerunLoading ? "Retrying…" : "Retry transcription"}</button
       >
     {/snippet}
@@ -85,12 +85,12 @@
     footnote={provenanceFootnote}
   >
     {#snippet actions()}
-      <button type="button" class="btn btn--primary" onclick={onReadWithoutSpeakers}
+      <button type="button" class="mx-btn mx-btn--sm" onclick={onReadWithoutSpeakers}
         >Read without speakers</button
       >
       <button
         type="button"
-        class="btn"
+        class="mx-btn mx-btn--ghost mx-btn--sm"
         disabled={speakerRetryDisabled}
         onclick={onRetrySpeakers}
         >{speakerRetryLoading ? "Retrying…" : "Retry speaker analysis"}</button
@@ -103,46 +103,9 @@
     body="It was captured before this pass was turned on. Running it now costs about ten seconds and changes nothing else."
   >
     {#snippet actions()}
-      <button type="button" class="btn btn--primary" disabled={rerunDisabled} onclick={onRerun}
+      <button type="button" class="mx-btn mx-btn--sm" disabled={rerunDisabled} onclick={onRerun}
         >{rerunLoading ? "Starting…" : "Run speaker analysis"}</button
       >
     {/snippet}
   </DrawerNotice>
 {/if}
-
-<style>
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .btn:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn--primary {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-  }
-</style>

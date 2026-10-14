@@ -1,9 +1,9 @@
 <!--
   Screen 3 / 8 — Capture & Storage. THE ONLY SCREEN IN THE FLOW WITH HARD GATES.
 
-  Two surfaces, no rows: `<CaptureSentence>` (capture rate + retention + folder,
-  and every failure/repair those three can produce) and `<ExcludedApps>` (the
-  "Never recorded" line, which IS the control). Both live in
+  Four spec rows and a verdict panel: `<CaptureSentence>` (capture rate +
+  retention + folder, and every failure/repair those three can produce) with
+  `<ExcludedApps>` slotted in as the fourth row ("Never recorded"). Both live in
   `$lib/onboarding/`; this file is wiring plus the footer.
 
   CONTRACT
@@ -49,6 +49,8 @@
   import CaptureSentence from "$lib/onboarding/CaptureSentence.svelte";
   import ExcludedApps from "$lib/onboarding/ExcludedApps.svelte";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconArrow from "~icons/lucide/arrow-right";
 
   let {
     flow,
@@ -135,12 +137,13 @@
   });
 </script>
 
-<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without this
-     the heading and both surfaces sat at the top with ~200px of hole under them. -->
-<div class="scene">
-  <h1 class="ob-disp sm">Four things to settle.</h1>
+<div class="ob-main">
+  <div class="ob-col">
+    <div class="ob-head">
+      <span class="mx-kicker">Capture &amp; Storage</span>
+      <h1 class="mx-display">Four things to settle.</h1>
+    </div>
 
-  <div class="blocks">
     <CaptureSentence
       frameRate={c.draftFrameRate}
       onFrameRateChange={(fps) => (c.draftFrameRate = fps)}
@@ -157,97 +160,32 @@
       semanticSearchOn={flow.features.semanticSearch}
       onDisableSemanticSearch={() => flow.toggleFeature("semanticSearch")}
       onError={(message) => (c.errorMessage = message)}
-    />
+    >
+      {#snippet rows()}
+        <ExcludedApps privacy={c.appPrivacyExclusion} />
+      {/snippet}
+    </CaptureSentence>
 
-    <div class="privacy">
-      <ExcludedApps privacy={c.appPrivacyExclusion} />
-    </div>
-  </div>
-</div>
-
-<div class="ob-foot">
-  <!-- The storage gates print themselves inside the sentence, in the same order
-       `captureStorageBlockReason` tests them. The footer only carries what the
-       sentence does not own, and the held action row. -->
-  {#if rangeField}
-    <div class="field bad range">
-      <span class="path">{rangeField.value}</span>
-      <span class="mark">{rangeField.range}</span>
-    </div>
-  {/if}
-
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <button class="ob-btn ghost spacer" onclick={onBack}>← Back</button>
-    {#if !flow.canContinue}
-      <span class="ob-blocked">Continue held</span>
+    <!-- The storage gates print themselves in the verdict panel, in the same
+         order `captureStorageBlockReason` tests them. This is the one block the
+         panel does not own: a custom value typed on *Change settings*. -->
+    {#if rangeField}
+      <span class="mx-inline" data-tone="danger">
+        <IconAlert width="13" height="13" /><b>{rangeField.value}</b> — allowed {rangeField.range}
+      </span>
     {/if}
-    <button class="ob-btn primary" onclick={onContinue} disabled={!flow.canContinue}>
-      Your settings&nbsp; →
-    </button>
+
+    <p class="ob-fine">
+      Estimate measured on a real Mac: 270 MB a day at one snapshot every 3 s, pause-on-inactivity on.
+    </p>
   </div>
 </div>
 
-<style>
-  /* Same idiom as ChangeSettingsScreen's `.scene` and SetupScreen's `.mid`:
-     `safe center` centres the heading and both surfaces while they fit, and
-     falls back to top-aligned the moment they do not — so a long "Never
-     recorded" list scrolls from its first line instead of losing its head off
-     the top of the stage. No `gap`: `.blocks` already carries its own margin. */
-  .scene {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    justify-content: safe center;
-    /* See `--ob-bleed`: the capture sentence's peek rule sits 14px into the
-       gutter, and a pane that does not reserve it scrolls sideways instead. */
-    padding-inline: var(--ob-bleed);
-    margin-inline: calc(-1 * var(--ob-bleed));
-  }
-  .blocks {
-    display: flex;
-    flex-direction: column;
-    gap: 26px;
-    margin-top: 30px;
-  }
-  /* Full width, not the old 196px-label grid: `<ExcludedApps>` prints its own
-     "Never recorded" label and its sentence needs the whole measure. */
-  .privacy {
-    border-top: 1px solid var(--app-border);
-    padding-top: 18px;
-  }
-
-  /* The custom-value refusal, marked on the field with its range spelled out. */
-  .field {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    padding: 9px 12px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text);
-    font-size: var(--text-base);
-  }
-  .field.bad {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-  }
-  .field .path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .field .mark {
-    color: var(--app-danger);
-    font-size: var(--text-sm);
-    white-space: nowrap;
-  }
-  .field.range {
-    width: fit-content;
-    margin-bottom: 16px;
-  }
-</style>
+<footer class="ob-foot">
+  <p class="ob-foot__note"></p>
+  <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+  {#if !flow.canContinue}<span class="mx-chip mx-chip--warn">continue held</span>{/if}
+  <button class="mx-btn mx-btn--primary" onclick={onContinue} disabled={!flow.canContinue}>
+    Your settings<IconArrow class="ob-btn-arrow" width="14" height="14" />
+  </button>
+</footer>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { hourCycle } from "$lib/time-format";
   import { join, appConfigDir } from "@tauri-apps/api/path";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -6,49 +7,47 @@
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
     type BrokerGrant,
-    grantStatus,
-    formatGrantScope,
+    IDENTITY_SOURCE,
+    formatScopeChip,
     formatGrantScopeProse,
-    grantStatusLabel,
     formatGrantTime,
     formatCommand,
     formatActivityDetail,
     formatOutcome,
+    grantLapse,
   } from "$lib/settings/state/cli-access.svelte";
   import { describeError } from "$lib/settings/state/format";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
-  import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
+  import IconTerminal from "~icons/lucide/square-terminal";
+  import IconBan from "~icons/lucide/ban";
+  import IconFolder from "~icons/lucide/folder";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconRetry from "~icons/lucide/rotate-ccw";
 
   const c = getSettingsController();
   const cliAccess = c.cliAccess;
 
-  const brokerGrants = $derived(cliAccess.brokerGrants);
-  const brokerGrantLoading = $derived(cliAccess.brokerGrantLoading);
-  const brokerGrantSaving = $derived(cliAccess.brokerGrantSaving);
-  const isGrantSaving = (id: string) => cliAccess.isGrantSaving(id);
-  const brokerGrantError = $derived(cliAccess.brokerGrantError);
-  const brokerHistory = $derived(cliAccess.brokerHistory);
-  const brokerHistoryLoading = $derived(cliAccess.brokerHistoryLoading);
-  const brokerHistoryError = $derived(cliAccess.brokerHistoryError);
-  const mnemaCliStatus = $derived(cliAccess.mnemaCliStatus);
-  const mnemaCliLoading = $derived(cliAccess.mnemaCliLoading);
-  const mnemaCliInstalling = $derived(cliAccess.mnemaCliInstalling);
-  const mnemaCliError = $derived(cliAccess.mnemaCliError);
+  const grants = $derived(cliAccess.brokerGrants);
+  const active = $derived(grants.filter((g) => !g.blocked));
+  const blocked = $derived(grants.filter((g) => g.blocked));
+  const grantError = $derived(cliAccess.brokerGrantError);
+  const history = $derived(cliAccess.brokerHistory);
+  const historyError = $derived(cliAccess.brokerHistoryError);
+  const cli = $derived(cliAccess.mnemaCliStatus);
+  const cliError = $derived(cliAccess.mnemaCliError);
+  const installing = $derived(cliAccess.mnemaCliInstalling);
 
   const refresh = () => {
     void cliAccess.loadBrokerGrants();
     void cliAccess.loadBrokerHistory();
   };
-  const loadMnemaCliStatus = () => cliAccess.loadMnemaCliStatus();
-  const installMnemaCli = () => cliAccess.installMnemaCli();
 
   // Permissions have NO backend change event: one can be approved from the CLI
   // Access Request window, or blocked elsewhere, while this panel sits open.
   // This panel only mounts while the Data group is the active surface, so a lazy
   // poll + window-focus refetch keeps the list honest, and a ticking `now` keeps
-  // the relative times from freezing at mount. All torn down on unmount.
+  // the relative times and lapse meters from freezing at mount.
   let now = $state(Date.now());
   $effect(() => {
     // First (and only) loader for the activity list — nothing loads it at
@@ -56,284 +55,463 @@
     void cliAccess.loadBrokerHistory();
     const tick = setInterval(() => (now = Date.now()), 15000);
     const poll = setInterval(refresh, 30000);
-    const onFocus = () => refresh();
-    window.addEventListener("focus", onFocus);
+    window.addEventListener("focus", refresh);
     return () => {
       clearInterval(tick);
       clearInterval(poll);
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("focus", refresh);
     };
   });
 
-  // Blocking is reversible and costs the user nothing, so it stays unconfirmed.
-  // ENABLING is the irreversible-ish direction: it restores a standing, no-expiry
-  // permission at whatever scope the row still remembers (All retained history
-  // survives a block), with no re-consent and no approval window — so that is the
-  // side that asks.
-  async function enableGrant(grant: BrokerGrant) {
-    const ok = await confirm(
-      `${grant.label} will be able to read ${formatGrantScopeProse(grant.scope)} again, with no expiry, until you block it.`,
-      { title: "Enable CLI access again?", kind: "warning", okLabel: "Enable access", cancelLabel: "Keep blocked" },
-    );
-    if (ok) await cliAccess.setGrantBlocked(grant, false);
+  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  // A row blocked from its very first request was never granted anything:
+  // `lastUsedAtUnixMs` is 0 and its scope is a placeholder. Unblocking it
+  // deletes the row, so the tool's next request opens the approval window.
+  const neverGranted = (g: BrokerGrant) => g.lastUsedAtUnixMs === 0;
+
+  // Blocking is reversible and costs nothing, so it stays unconfirmed. Unblocking
+  // a once-granted row restores a standing permission at the scope it remembers,
+  // with no approval window — so that side asks. A never-granted row grants
+  // nothing on unblock (it asks again), so it needs no confirm.
+  async function unblock(grant: BrokerGrant) {
+    if (!neverGranted(grant)) {
+      const ok = await confirm(
+        `${grant.label} will be able to read ${formatGrantScopeProse(grant.scope)} again, with no expiry, until you block it.`,
+        { title: "Enable CLI access again?", kind: "warning", okLabel: "Enable access", cancelLabel: "Keep blocked" },
+      );
+      if (!ok) return;
+    }
+    await cliAccess.setGrantBlocked(grant, false);
   }
 
   // The audit file lives beside the permission file in the app config dir; the
   // JS `appConfigDir()` resolves the same path the Rust side writes to.
   let revealError = $state<string | null>(null);
-
   async function revealAuditFile() {
     revealError = null;
     try {
       await revealItemInDir(await join(await appConfigDir(), "broker-audit.json"));
     } catch (err) {
-      // Every interaction needs a response, and this one fails for a real reason:
-      // `revealItemInDir` rejects when broker-audit.json does not exist yet — the
-      // state the button is rendered in when the read errored.
+      // `revealItemInDir` rejects when broker-audit.json does not exist yet.
       revealError = describeError(err);
     }
   }
 </script>
 
-<SettingGroup
-  id="settings-section-access"
-  title="Access"
-  hint="Let local command-line tools read your Mnema history, one standing permission per tool."
->
-  <SettingRow label="CLI Access" full divider={false}>
-    {#snippet control()}
-      <!-- The agent-access section is the `?focus=cliAccess` deeplink target: it
-           must be focusable (the shell calls `.focus({ preventScroll: true })`).
-           The bordered `.settings-stack` sub-block is the intended card-like
-           surface for the CLI status + access list + activity. -->
-      <div bind:this={c.agentAccessSection} class="agent-access" tabindex="-1">
-        <div class="settings-stack">
-          <div class="privacy-disclosure">
-            <p>CLI Access lets local tools read your searchable Mnema text — screen text, audio transcripts, and timeline results — plus the app and window each result came from and a sanitized host and path for web pages.</p>
-            <p>It never returns media file paths, raw database rows, or full URLs with their query strings. A tool keeps its access until you block it here, and it lapses on its own after 30 days unused.</p>
-          </div>
-          {#if mnemaCliStatus}
-            {#if !mnemaCliStatus.installed}
-              <p class="group-hint group-hint--warn">mnema is not installed at {mnemaCliStatus.installPath} — install the CLI before local tools can request access.</p>
-            {:else if !mnemaCliStatus.installDirInPath}
-              <p class="group-hint group-hint--warn">mnema is installed at {mnemaCliStatus.installPath}, but {mnemaCliStatus.installDir} is not in PATH for this app session.</p>
-            {:else}
-              <p class="group-hint">mnema installed at {mnemaCliStatus.installPath}.</p>
-            {/if}
-          {/if}
-          <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
-              {#if mnemaCliInstalling}<ButtonSpinner />Installing…{:else}{mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
-            </button>
-            <ReloadButton
-              onclick={() => { refresh(); void loadMnemaCliStatus(); }}
-              busy={brokerGrantLoading || mnemaCliLoading}
-              disabled={brokerGrantSaving}
-              title="Refresh"
-              label="Refresh CLI access status"
-            />
-          </div>
-          {#if mnemaCliError}
-            <p class="error-text">{mnemaCliError}</p>
-          {/if}
-          {#if brokerGrantError}
-            <p class="error-text">{brokerGrantError}</p>
-          {/if}
+{#snippet sourceChip(g: BrokerGrant)}
+  {@const s = IDENTITY_SOURCE[g.identitySource] ?? IDENTITY_SOURCE.defaulted}
+  <!-- Reference, not a trust verdict: neutral here (the request window warn-tints it). -->
+  <span class="mx-chip" use:tip={s.detail}>{s.label}</span>
+{/snippet}
 
-          <!-- Not "Tools with access": this list deliberately keeps blocked rows, so the
-               heading has to cover a row that has none. -->
-          <p class="group-label access-subhead">Tool permissions</p>
-          {#if brokerGrantLoading && brokerGrants.length === 0}
-            <p class="group-hint">Loading tools…</p>
-          {:else if brokerGrants.length > 0}
-            <ul class="grant-list" aria-label="Tool permissions">
-              {#each brokerGrants as grant (grant.id)}
-                {@const status = grantStatus(grant)}
-                {@const saving = isGrantSaving(grant.id)}
-                {@const statusTime = grantStatusLabel(grant, now)}
-                <li class="grant-row" class:grant-row--inactive={status === "blocked"}>
-                  <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
-                  <div class="grant-row__meta">
-                    <span class="grant-row__head">
-                      <span class="grant-row__name" use:tip={grant.label}>{grant.label}</span>
-                      <!-- Blocked is a state the USER put the row in, not a fault:
-                           a red dot on a dimmed row is this app's vocabulary for
-                           broken, so the state reads as a badge on the name line. -->
-                      {#if status === "blocked"}<span class="provider-row__tag grant-row__tag">Blocked</span>{/if}
-                    </span>
-                    <span class="grant-row__detail">
-                      <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
-                      {#if statusTime}
-                        <span class="grant-row__sep" aria-hidden="true">·</span>
-                        <span use:tip={new Date(grant.blocked && grant.blockedAtUnixMs ? grant.blockedAtUnixMs : grant.lastUsedAtUnixMs).toLocaleString()}>{statusTime}</span>
-                      {/if}
-                    </span>
-                  </div>
-                  {#if status === "blocked"}
-                    <!-- Accent outline, not the muted ghost that Refresh and
-                         Reveal in Finder resolve to: this is the one control in
-                         the panel that hands a tool a standing, no-expiry read of
-                         the user's history, and weight should track consequence.
-                         Deliberately not a filled primary — the confirm dialog in
-                         `enableGrant` is the real gate. -->
-                    <button
-                      class="btn btn--ghost btn--sm grant-row__enable"
-                      type="button"
-                      disabled={saving}
-                      aria-busy={saving}
-                      onclick={() => enableGrant(grant)}
-                    >
-                      {#if saving}<ButtonSpinner />Enabling…{:else}Enable{/if}
-                    </button>
-                  {:else}
-                    <!-- Subtly-destructive ghost, not filled danger: blocking is the
-                         safe, reversible direction and must not be the loudest
-                         control in the list. -->
-                    <button
-                      class="btn btn--ghost btn--sm user-context-wipe__btn"
-                      type="button"
-                      disabled={saving}
-                      aria-busy={saving}
-                      onclick={() => cliAccess.setGrantBlocked(grant, true)}
-                    >
-                      {#if saving}<ButtonSpinner />Blocking…{:else}Block{/if}
-                    </button>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {:else if !brokerGrantError}
-            <!-- Only when the file was actually read: with `brokerGrantError` set
-                 this list is unknown, not empty, and the error above says so. -->
-            <p class="group-hint">No tools have access yet. Tools you approve will appear here.</p>
-          {/if}
+{#snippet toolRow(g: BrokerGrant)}
+  {@const saving = cliAccess.isGrantSaving(g.id)}
+  {#if g.blocked}
+    <div class="ac-tool is-blocked">
+      <span class="ac-glyph"><IconBan width="15" height="15" /></span>
+      <div class="ac-tool__main">
+        <div class="ac-tool__name"><span class="ac-tool__label" use:tip={g.label}>{g.label}</span>{@render sourceChip(g)}</div>
+        <div class="ac-tool__meta">
+          {#if neverGranted(g)}Never allowed{:else}Remembers <span class="mx-chip">{formatScopeChip(g.scope)}</span>{/if}
+          {#if g.blockedAtUnixMs}<i>·</i> <span use:tip={new Date(g.blockedAtUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>blocked {day(g.blockedAtUnixMs)}</span>{/if}
+          {#if neverGranted(g)}<i>·</i> will ask again if unblocked{/if}
+        </div>
+      </div>
+      <div class="ac-idle ac-idle--blocked"><b>Never lapses</b></div>
+      <button class="mx-btn mx-btn--sm" type="button" disabled={saving} aria-busy={saving} onclick={() => unblock(g)}>
+        {#if saving}<span class="mx-spin mx-spin--sm"></span>Unblocking…{:else}{neverGranted(g) ? "Unblock" : "Unblock…"}{/if}
+      </button>
+    </div>
+  {:else}
+    {@const lapse = grantLapse(g, now)}
+    {@const cmd = cliAccess.lastCommands.get(g.normalizedLabel)}
+    <div class="ac-tool">
+      <span class="ac-glyph"><IconTerminal width="15" height="15" /></span>
+      <div class="ac-tool__main">
+        <div class="ac-tool__name"><span class="ac-tool__label" use:tip={g.label}>{g.label}</span>{@render sourceChip(g)}</div>
+        <div class="ac-tool__meta">
+          <span class="mx-chip">{formatScopeChip(g.scope)}</span>
+          <i>·</i> <span use:tip={new Date(g.lastUsedAtUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>used {formatGrantTime(g.lastUsedAtUnixMs, now)}</span>
+          {#if cmd}<i>·</i> last ran <code>{cmd}</code>{/if}
+        </div>
+      </div>
+      <div class="ac-idle" class:is-soon={lapse.soon} use:tip={`Lapses ${day(lapse.atMs)} if unused — the next request asks again`}>
+        <b>{lapse.label}</b><span class="ac-idle__bar" style:--left="{lapse.fraction * 100}%"><i></i></span>
+      </div>
+      <button
+        class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm"
+        type="button"
+        disabled={saving}
+        aria-busy={saving}
+        use:tip={"Revoke and refuse its future requests"}
+        onclick={() => cliAccess.setGrantBlocked(g, true)}
+      >
+        {#if saving}<span class="mx-spin mx-spin--sm"></span>Blocking…{:else}Block{/if}
+      </button>
+    </div>
+  {/if}
+{/snippet}
 
-          <div class="group-label access-subhead access-subhead--split">
-            <span>Recent activity</span>
-            {#if brokerHistory.length > 0 || brokerHistoryError}
-              <button class="btn btn--ghost btn--sm" type="button" onclick={revealAuditFile}>Reveal log in Finder</button>
-            {/if}
-          </div>
-          {#if brokerHistoryError}
-            <!-- Unconditional, exactly like `brokerGrantError` above: a failed
-                 refresh after a good load leaves rows on screen, and painting
-                 stale rows as current is the same lie as "Nothing yet". -->
-            <p class="error-text">{brokerHistoryError}</p>
-          {/if}
-          {#if revealError}
-            <p class="error-text">{revealError}</p>
-          {/if}
-          {#if brokerHistory.length > 0}
-            <ul class="activity-list" aria-label="Recent CLI activity">
-              {#each brokerHistory as event, index (`${event.timestampUnixMs}-${index}`)}
-                <li class="activity-row" class:activity-row--refused={!!formatOutcome(event.outcome)}>
-                  <span class="activity-row__tool" use:tip={event.toolIdentity}>{event.toolIdentity}</span>
-                  <code class="activity-row__command">{formatCommand(event.commandType)}</code>
-                  <span class="activity-row__detail">{formatActivityDetail(event)}</span>
-                  <span class="activity-row__time" use:tip={new Date(event.timestampUnixMs).toLocaleString()}>{formatGrantTime(event.timestampUnixMs, now)}</span>
-                </li>
-              {/each}
-            </ul>
-          {:else if brokerHistoryLoading}
-            <p class="group-hint">Loading activity…</p>
-          {:else if brokerHistoryError}
-            <!-- The error is already rendered above; say nothing more here rather
-                 than claiming an empty log. -->
+<!-- The `?focus=cliAccess` deeplink target: the shell scrolls to it and calls
+     `.focus({ preventScroll: true })`, so it must be a focusable element. -->
+<div bind:this={c.agentAccessSection} class="agent-access" tabindex="-1">
+  <SettingGroup id="settings-section-access" title="CLI Access" hint="One standing permission per tool. Unused for 30 days, it lapses." bare>
+    <p class="ac-lede">Local tools and AI agents can read your searchable Mnema text — screen text, transcripts and timeline results, with the app and window each came from. Never media files, raw database rows or full web addresses.</p>
+    <div class="ac-rows">
+      <SettingRow label="mnema command">
+        {#snippet below()}
+          {#if installing}
+            <p class="ac-desc">Linking <span class="ac-path">{cli?.installPath ?? "mnema"}</span>…</p>
+          {:else if cliError}
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{cliError}</span>
+          {:else if cli && !cli.installed}
+            <span class="mx-inline" data-tone="warn"><IconAlert width="13" height="13" />Not installed at <span class="ac-path">{cli.installPath}</span> — install it before tools can ask for access.</span>
+          {:else if cli && !cli.installDirInPath}
+            <span class="mx-inline" data-tone="warn"><IconAlert width="13" height="13" />Installed at <span class="ac-path">{cli.installPath}</span>, but <span class="ac-path">{cli.installDir}</span> isn’t on PATH for this session.</span>
+          {:else if cli}
+            <p class="ac-desc">Installed at <span class="ac-path">{cli.installPath}</span>.</p>
           {:else}
-            <p class="group-hint">Nothing yet. Commands run by tools with access are recorded here.</p>
+            <p class="ac-desc">Checking the install…</p>
+          {/if}
+        {/snippet}
+        {#snippet control()}
+          <button class="mx-btn" type="button" disabled={installing || cliAccess.mnemaCliLoading} aria-busy={installing} onclick={() => cliAccess.installMnemaCli()}>
+            {#if installing}<span class="mx-spin mx-spin--sm"></span>Installing…{:else}{#if cliError}<IconRetry width="13" height="13" />{/if}{cli?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
+          </button>
+        {/snippet}
+      </SettingRow>
+    </div>
+
+    {#if grants.length === 0}
+      <div class="ac-sec">
+        <div class="ac-sec__head"><b>Tools with access</b></div>
+        <div class="ac-list">
+          {#if grantError}
+            <div class="mx-empty mx-empty--compact" data-tone="danger">
+              <span class="mx-empty__glyph"><IconAlert width="14" height="14" /></span>
+              <b class="mx-empty__title">Couldn’t load CLI Access permissions</b>
+              <p class="mx-empty__text">{grantError} Tools keep the access they had; this list refreshes every 30 s.</p>
+              <div class="mx-empty__acts">
+                <button class="mx-btn mx-btn--sm" type="button" disabled={cliAccess.brokerGrantLoading} aria-busy={cliAccess.brokerGrantLoading} onclick={refresh}><IconRetry width="12" height="12" />Retry</button>
+              </div>
+            </div>
+          {:else if cliAccess.brokerGrantLoading}
+            <div aria-busy="true">
+              <span class="mx-sr">Loading tools…</span>
+              {#each [0, 1] as i (i)}
+                <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+              {/each}
+            </div>
+          {:else}
+            <div class="mx-empty mx-empty--compact">
+              <span class="mx-empty__glyph"><IconTerminal width="14" height="14" /></span>
+              <b class="mx-empty__title">No tool has access</b>
+              <p class="mx-empty__text">The first time an agent runs a command like <code>mnema search</code>, a window asks you. Tools you allow — or block — show up here.</p>
+            </div>
           {/if}
         </div>
       </div>
-    {/snippet}
-  </SettingRow>
-</SettingGroup>
+    {:else}
+      {#if grantError}
+        <!-- Rows on screen are from the last good read (or a write just failed):
+             say so rather than painting them as current. -->
+        <span class="mx-inline ac-stale" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{grantError}</span>
+      {/if}
+      {#if active.length > 0}
+        <div class="ac-sec">
+          <div class="ac-sec__head"><b>Tools with access <span class="num mx-label">{active.length}</span></b><p class="ac-sec__hint">Each lapses 30 days after its last use.</p></div>
+          <div class="ac-list">{#each active as g (g.id)}{@render toolRow(g)}{/each}</div>
+        </div>
+      {/if}
+      {#if blocked.length > 0}
+        <div class="ac-sec">
+          <div class="ac-sec__head"><b>Blocked <span class="num mx-label">{blocked.length}</span></b><p class="ac-sec__hint">Refused before any window opens. Never lapses.</p></div>
+          <div class="ac-list">{#each blocked as g (g.id)}{@render toolRow(g)}{/each}</div>
+        </div>
+      {/if}
+    {/if}
+
+    <div class="ac-sec">
+      <div class="ac-sec__head">
+        <b>Recent activity</b>
+        {#if history.length > 0 || historyError}
+          <button class="mx-btn mx-btn--ghost mx-btn--sm ac-sec__act" type="button" onclick={revealAuditFile}><IconFolder width="13" height="13" />Reveal log in Finder</button>
+        {/if}
+      </div>
+      {#if historyError}
+        <!-- Unconditional: a failed refresh after a good load leaves rows on
+             screen, and painting stale rows as current is the same lie as "Nothing yet". -->
+        <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{historyError}</span>
+      {/if}
+      {#if revealError}
+        <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{revealError}</span>
+      {/if}
+      {#if history.length > 0}
+        <!-- ponytail: last 20 rows, no paging. The whole file is one Reveal away. -->
+        <ul class="ac-log" aria-label="Recent CLI activity">
+          {#each history as event, index (`${event.timestampUnixMs}-${index}`)}
+            <li>
+              <b use:tip={event.toolIdentity}>{event.toolIdentity}</b>
+              <code>{formatCommand(event.commandType)}</code>
+              <span class:is-refused={!!formatOutcome(event.outcome)}>{formatActivityDetail(event)}</span>
+              <span class="num" use:tip={new Date(event.timestampUnixMs).toLocaleString(undefined, { hourCycle: hourCycle() })}>{formatGrantTime(event.timestampUnixMs, now)}</span>
+            </li>
+          {/each}
+        </ul>
+      {:else if cliAccess.brokerHistoryLoading}
+        <div aria-busy="true"><span class="mx-sr">Loading activity…</span><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div></div>
+      {:else if !historyError}
+        <p class="mx-body-sm ac-none">Nothing yet. Commands run by tools with access are recorded here.</p>
+      {/if}
+    </div>
+  </SettingGroup>
+</div>
 
 <style>
-  /* Focus target wrapper for the `?focus=cliAccess` deeplink — `bind:this`
-     needs a real element, and `tabindex=-1` makes `.focus()` land here without
-     a visible outline. */
-  .agent-access {
-    width: 100%;
-  }
-
   .agent-access:focus {
     outline: none;
   }
 
-  /* The section reads top to bottom: install status → tools with access → what
-     they did. These two labels are what make that order legible. Type comes from
-     the shared `.group-label` (every other section label in Settings); this class
-     only adds the layout. */
-  /* `.settings-stack` puts 10px between every child, so a label needs clearly
-     more space above it than below it or proximity binds it to the block it is
-     meant to separate from. 14px + the stack gap = 24px above, 10px below. */
-  .access-subhead {
-    margin: 14px 0 0;
+  .ac-lede {
+    margin: 0 0 var(--s-3);
+    font-size: var(--text-base);
+    line-height: 1.5;
+    color: var(--app-text-muted);
   }
 
-  .access-subhead--split {
+  .ac-rows {
+    border-top: 1px solid var(--app-border);
+  }
+
+  .ac-desc {
+    margin: 0;
+    font-size: var(--text-base);
+    line-height: 1.5;
+    color: var(--app-text-muted);
+  }
+
+  .ac-path {
+    font: 450 var(--text-sm) / 1 var(--font-mono);
+    color: var(--app-text);
+  }
+
+  /* Sub-sections under the CLI Access head (mockup `.ac-sec`). */
+  .ac-sec {
+    display: grid;
+    gap: 0;
+    margin-top: var(--s-5);
+  }
+
+  .ac-sec__head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+    padding-bottom: var(--s-2);
+  }
+
+  .ac-sec__head b {
+    font: 500 var(--text-md) / 1.3 var(--font-sans);
+    color: var(--app-text-strong);
+  }
+
+  .ac-sec__hint {
+    margin: 0;
+    font-size: var(--text-base);
+    color: var(--app-text-subtle);
+  }
+
+  .ac-sec__act {
+    margin-left: auto;
+  }
+
+  .ac-stale {
+    margin-top: var(--s-4);
+  }
+
+  /* Tool rows: name + provenance · scope · last use · idle meter · action. */
+  .ac-list {
+    border: 1px solid var(--app-border);
+    border-radius: var(--r-md);
+    background: var(--app-surface);
+  }
+
+  .ac-list :global(.mx-skel-row) {
+    padding: 12px 14px;
+  }
+
+  .ac-list code {
+    font: 450 var(--text-sm) / 1 var(--font-mono);
+    padding: 2px 5px;
+    border-radius: var(--r-xs);
+    background: var(--mx-wash);
+    color: var(--app-text);
+  }
+
+  .ac-tool {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr) 132px auto;
+    align-items: center;
+    gap: var(--s-3);
+    padding: 12px var(--s-3) 12px 14px;
+    border-top: 1px solid var(--mx-hairline);
+  }
+
+  .ac-tool:first-child {
+    border-top: 0;
+  }
+
+  .ac-tool > .mx-btn {
+    justify-self: end;
+  }
+
+  .ac-glyph {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-md);
+    background: var(--mx-wash);
+    color: var(--app-text-muted);
+    box-shadow: inset 0 0 0 1px var(--mx-hairline);
+  }
+
+  .ac-tool.is-blocked .ac-glyph {
+    color: var(--app-danger-text);
+    background: var(--app-danger-bg);
+    box-shadow: inset 0 0 0 1px var(--app-danger-border);
+  }
+
+  .ac-tool__main {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .ac-tool__name {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    gap: var(--s-2);
+    min-width: 0;
+    font: 500 var(--text-md) / 1.2 var(--font-sans);
+    color: var(--app-text-strong);
   }
 
-  /* One grid for the whole list with `subgrid` rows, so the command, outcome and
-     time columns line up down the list instead of each row sizing its own. */
-  .activity-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
-  }
-
-  /* ponytail: last ~20 rows, no paging or filtering. The whole file is one
-     Reveal in Finder click away if someone needs more. */
-  .activity-row {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: subgrid;
-    gap: 8px;
-    align-items: baseline;
-    padding: 8px 2px;
-    border-bottom: 1px solid var(--app-border);
-    color: var(--app-text-muted);
-    font-size: 12px;
-    line-height: 1.35;
-    /* The result-count column is genuinely mixed ("88 results" / "Denied"), so it
-       stays left-aligned — tabular figures are what stop the digits wobbling. */
-    font-variant-numeric: tabular-nums;
-  }
-
-  .activity-row:last-child {
-    border-bottom: none;
-  }
-
-  .activity-row__tool {
+  .ac-tool__label {
     overflow: hidden;
-    color: var(--app-text);
-    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .activity-row__command {
-    color: var(--app-text);
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 10px;
+  .ac-tool.is-blocked .ac-tool__name {
+    color: var(--app-text-muted);
   }
 
-  .activity-row--refused .activity-row__detail {
-    color: var(--app-warn);
-    font-weight: 600;
-  }
-
-  /* WHEN a tool read your history is audit evidence, not decoration:
-     --app-text-faint is documented as sub-AA placeholder-only (1.57:1 on dark). */
-  .activity-row__time {
+  .ac-tool__meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font: 400 var(--text-base) / 1.3 var(--font-sans);
     color: var(--app-text-subtle);
-    font-size: 10px;
+  }
+
+  .ac-tool__meta i {
+    font-style: normal;
+    color: var(--app-text-faint);
+  }
+
+  .ac-tool__meta code {
+    padding: 0;
+    background: none;
+    color: var(--app-text-muted);
+  }
+
+  /* Idle meter: what is left of the 30-day idle window. Lapsing is benign
+     disuse (ADR 0059), not a fault: "soon" only gets stronger ink, no warn. */
+  .ac-idle {
+    display: grid;
+    gap: 5px;
+  }
+
+  .ac-idle b {
+    font: 400 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-muted);
     white-space: nowrap;
+  }
+
+  .ac-idle.is-soon b {
+    color: var(--app-text-strong);
+  }
+
+  .ac-idle--blocked b {
+    color: var(--app-text-subtle);
+  }
+
+  .ac-idle__bar {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--mx-wash-strong);
+    overflow: hidden;
+  }
+
+  .ac-idle__bar i {
+    display: block;
+    height: 100%;
+    width: var(--left);
+    border-radius: 2px;
+    background: var(--chart-grey-4);
+  }
+
+  /* Activity (audit): one grid with subgrid rows so the columns line up. */
+  .ac-log {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ac-log li {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    gap: var(--s-4);
+    padding: 9px 2px;
+    border-bottom: 1px solid var(--mx-hairline);
+    font: 400 var(--text-base) / 1.3 var(--font-sans);
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ac-log b {
+    overflow: hidden;
+    font-weight: 500;
+    color: var(--app-text);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ac-log code {
+    font: 450 var(--text-sm) / 1 var(--font-mono);
+    color: var(--app-text);
+  }
+
+  /* WHEN a tool read your history is audit evidence: subtle, never faint. */
+  .ac-log .num {
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .ac-log .is-refused {
+    color: var(--app-warn);
+    font-weight: 500;
+  }
+
+  .ac-none {
+    margin: 0;
   }
 </style>

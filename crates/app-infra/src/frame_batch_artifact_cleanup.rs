@@ -8,7 +8,7 @@ pub(crate) fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io:
     for frame in frames {
         let path = Path::new(&frame.file_path);
         if !is_safe_frame_artifact_path(path) {
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[app-infra][frame-batches] skipping cleanup of frame artifact with unsafe path: {}",
                 frame.file_path
             );
@@ -17,7 +17,7 @@ pub(crate) fn cleanup_frame_artifacts(frames: &[Frame]) -> Vec<(String, std::io:
         let hidden_segment_workspace_dir = hidden_segment_workspace_dir_for_frame(path);
         if let Some(segment_dir) = hidden_segment_workspace_dir {
             if !is_managed_hidden_segment_workspace_dir(segment_dir) {
-                capture_runtime::debug_log!(
+                capture_runtime::warn_log!(
                     "[app-infra][frame-batches] skipping cleanup of hidden segment workspace frame outside managed recordings subtree: {}",
                     frame.file_path
                 );

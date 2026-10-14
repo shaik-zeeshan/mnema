@@ -11,7 +11,7 @@
   // when the turn settles (`isStreaming` flips to false).
   import { onDestroy } from "svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { isOpenableHref, renderMarkdown } from "$lib/markdown";
+  import { closeDanglingBold, isOpenableHref, renderMarkdown } from "$lib/markdown";
 
   let {
     source,
@@ -27,13 +27,16 @@
   // recomputes only when one of those tracked inputs changes, and lives per
   // instance so each turn renders independently. While streaming we pass
   // `highlight: false` (plain, escaped code); once settled we re-render once with
-  // full highlighting.
+  // full highlighting. A still-open `**` is closed while streaming only, so a
+  // half-arrived bold never flashes raw asterisks.
   //
   // SECURITY: this HTML is trusted ONLY because `markdown.ts` is the sanctioned
   // hardening boundary (`html: false`, image strip, link allowlist, highlight.js
   // escaping). This component must not introduce any other unescaped injection.
   let html = $derived(
-    source.length > 0 ? renderMarkdown(source, { highlight: !isStreaming }) : "",
+    source.length > 0
+      ? renderMarkdown(isStreaming ? closeDanglingBold(source) : source, { highlight: !isStreaming })
+      : "",
   );
 
   // Per-instance timer for the copy button's transient "Copied" label, cleared
@@ -383,20 +386,16 @@
     font-weight: 600;
   }
 
-  /* ── Streaming caret ─────────────────────────────────────────────────── */
-  .answer-prose.is-streaming::after {
-    content: "▍";
-    color: var(--app-accent);
-    animation: answer-caret 1s step-end infinite;
-  }
-  @keyframes answer-caret {
-    50% {
-      opacity: 0;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .answer-prose.is-streaming::after {
-      animation: none;
-    }
+  /* ── Streaming caret: a static block at the insertion point (the end of
+     the last paragraph), never a looping blink. ───────────────────────── */
+  .answer-prose.is-streaming > :global(:last-child)::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 15px;
+    margin-left: 2px;
+    vertical-align: -2px;
+    border-radius: 1px;
+    background: var(--app-accent);
   }
 </style>

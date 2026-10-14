@@ -2,10 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { humanizeError } from "$lib/format-error";
 
-export type AppNotificationAction = {
-	type: "open_settings_tab";
-	tab: "about" | "processing" | "transcription" | "speakers" | "shortcuts";
-};
+export type AppNotificationAction =
+	| {
+			type: "open_settings_tab";
+			tab: "about" | "processing" | "transcription" | "speakers" | "shortcuts";
+	  }
+	// "Mnema isn't recording": Start + Snooze for today.
+	| { type: "not_recording_reminder" };
 
 export interface AppNotification {
 	id: string;
@@ -103,5 +106,18 @@ export async function clearAppNotifications(): Promise<boolean> {
 	} catch (err) {
 		actionError = humanizeError(err);
 		return false;
+	}
+}
+
+/** Silence the not-recording reminder until the user's next local midnight. */
+export async function snoozeNotRecordingReminder(): Promise<void> {
+	const midnight = new Date();
+	midnight.setHours(24, 0, 0, 0);
+	try {
+		// The backend clears the row and emits the change event.
+		await invoke("snooze_not_recording_reminder", { untilUnixMs: midnight.getTime() });
+		actionError = null;
+	} catch (err) {
+		actionError = humanizeError(err);
 	}
 }

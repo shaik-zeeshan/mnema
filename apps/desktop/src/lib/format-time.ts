@@ -1,3 +1,5 @@
+import { hourCycle } from "$lib/time-format";
+
 /** Parse a capture timestamp that may arrive as either a SQLite-style
  *  "YYYY-MM-DD HH:MM:SS" string or an ISO "YYYY-MM-DDTHH:MM:SS" string into a
  *  `Date`. The space form is normalized to the `T` form so `new Date` parses it
@@ -41,5 +43,6 @@ export function formatTimestampCompact(ts: string): string {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    hourCycle: hourCycle(),
   });
 }

@@ -159,6 +159,8 @@ export interface FrameSummaryDto {
 export interface FrameRangeRequest {
 	capturedAtStart: string;
 	capturedAtEnd: string;
+	/** `list_frame_summaries_in_range` only: drop lock-screen frames (time away). */
+	excludeLockScreen?: boolean;
 }
 
 export interface ListFramesRequest {
@@ -200,6 +202,29 @@ export interface SearchCaptureRefinements {
 	// `source:screen` — restricts results to captured frames (screen), the
 	// frame-side counterpart of audioSources. Mutually exclusive with them.
 	screenSource?: boolean;
+	/** `hours:H-H` — local time-of-day window; see {@link SearchHoursRefinement}. */
+	hours?: SearchHoursRefinement;
+}
+
+/**
+ * Local time of day, `startHour <= hour < endHour` (0–24). Wraps past midnight
+ * when `startHour > endHour` (`hours:22-6`). A hit is placed by its start.
+ */
+export interface SearchHoursRefinement {
+	startHour: number;
+	endHour: number;
+}
+
+/**
+ * One Quick Recall recent query (`get_quick_recall_recent_queries` /
+ * `set_quick_recall_recent_queries`, newest first, at most 8). `at` = unix ms.
+ * Kept in the encrypted DB; pruned by Retention, cleared by Wipe User Context,
+ * untouched by Delete Recent Capture.
+ */
+export interface RecentQuery {
+	text: string;
+	ask: boolean;
+	at: number;
 }
 
 export interface SearchDateRangeRefinement {
@@ -237,9 +262,88 @@ export interface SearchCaptureResponse {
 	appliedRefinements: SearchCaptureRefinements;
 	residualQuery: string;
 	parseErrors: SearchParseError[];
+	/** Nothing is indexed at all — "nothing captured yet", not "no match". */
+	indexEmpty: boolean;
+	/** The meaning tier failed; this page is keyword-only. */
+	semanticDegraded: boolean;
+	/**
+	 * Audio segments in the searched range still queued or being transcribed
+	 * (audio is searchable only once transcribed). 0 when the audio pass was
+	 * skipped by an app / window-title / `source:screen` filter.
+	 */
+	untranscribedSegmentsInRange: number;
+}
+
+/**
+ * `count_search_facet` — which pill's refinement to swap out. Buckets: `app`
+ * → bundle id (or name) with the display name as `label`, frames only; `source`
+ * → "screen" | "microphone" | "system_audio"; `day` → local "YYYY-MM-DD";
+ * `partOfDay` → "morning" 5–12 | "afternoon" 12–18 | "evening" 18–24 | "night" 0–5.
+ */
+export type SearchFacet = "app" | "source" | "day" | "partOfDay";
+
+export interface CountSearchFacetRequest {
+	/** The same query `search_capture` ran, operators included. */
+	query: string;
+	refinements?: SearchCaptureRefinements;
+	facet: SearchFacet;
+}
+
+export interface SearchFacetBucket {
+	key: string;
+	label: string;
+	count: number;
+}
+
+export interface SearchFacetCounts {
+	facet: SearchFacet;
+	/** Every result with the facet's refinement removed ("Any app 9"). */
+	total: number;
+	/** A kind hit the 50-result cap: counts are lower bounds ("50+"). */
+	capped: boolean;
+	/** Most results first. */
+	buckets: SearchFacetBucket[];
+}
+
+/** `get_quick_recall_index_status` — what the partial / no-results states say. */
+export interface QuickRecallIndexStatus {
+	/** Frames captured but not yet read (OCR queued or running). */
+	queuedFrames: number;
+	/** Capture time of the oldest unread frame, unix ms. */
+	oldestQueuedMs: number | null;
+	/** Meaning search is on but still embedding history. */
+	semanticBuilding: boolean;
+	/** 0–100; null when meaning search is off (no model) = "keyword only". */
+	semanticIndexedPercent: number | null;
+}
+
+/**
+ * One matched OCR line on a frame, normalised 0–1 with a TOP-LEFT origin.
+ * `keyword` = contains a query word (outline solid); `meaning` = a meaning-only
+ * hit's word-stem match (dashed). Empty list = no geometry or no match: show the
+ * whole frame.
+ */
+export interface MatchBox {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+	kind: "keyword" | "meaning";
+}
+
+/** `get_frame_match_boxes` — boxes for any frame (Quick Look neighbours). */
+export interface GetFrameMatchBoxesRequest {
+	frameId: number;
+	query: string;
+	byMeaning?: boolean;
 }
 
 export interface FrameSearchResultDto {
+	/**
+	 * Relevance, LOWER is better. Comparable with {@link AudioSearchResultDto.rank}
+	 * for a two-pointer merge (tie → newer, then frame). Never calibrated (ADR 0036).
+	 */
+	rank: number;
 	groupKey: string;
 	representativeFrame: FrameDto;
 	groupStartAt: string;
@@ -267,9 +371,13 @@ export interface FrameSearchResultDto {
 	 * highlighted keyword snippet.
 	 */
 	foundByMeaning: boolean;
+	/** Where the query's words sit on `representativeFrame`, at most 6. */
+	matchBoxes: MatchBox[];
 }
 
 export interface AudioSearchResultDto {
+	/** Relevance, LOWER is better (see {@link FrameSearchResultDto.rank}). */
+	rank: number;
 	groupKey: string;
 	audioSegment: AudioSegmentDto;
 	sourceKind: AudioSegmentSourceKind;
@@ -415,42 +523,6 @@ export interface SpeakerClusterDto {
 export type FrameBatchStatus = "open" | "closed" | "processing" | "completed" | "failed";
 export type ProcessingJobStatus = "queued" | "running" | "completed" | "failed";
 
-export type SegmentWorkspaceCleanupDisposition =
-	| "referenced_by_incomplete_batch"
-	| "referenced_by_nonterminal_ocr"
-	| "missing_visible_segment_sibling"
-	| "dead_segment_without_artifacts"
-	| "pending_frame_artifacts"
-	| "completed_only"
-	| "no_references";
-
-export interface HiddenSegmentWorkspacePathsDto {
-	workspaceDir: string;
-	framesDir: string;
-	visibleSegmentPath: string;
-}
-
-export interface SegmentWorkspaceBatchReferenceDto {
-	batchId: number;
-	status: FrameBatchStatus;
-}
-
-export interface SegmentWorkspaceOcrReferenceDto {
-	frameId: number;
-	jobId: number;
-	status: ProcessingJobStatus;
-}
-
-export interface SegmentWorkspaceCleanupDebugInfoDto {
-	paths: HiddenSegmentWorkspacePathsDto;
-	disposition: SegmentWorkspaceCleanupDisposition;
-	safeToRemove: boolean;
-	visibleSegmentExists: boolean;
-	frameCount: number;
-	batchReferences: SegmentWorkspaceBatchReferenceDto[];
-	nonterminalOcrReferences: SegmentWorkspaceOcrReferenceDto[];
-}
-
 export interface ProcessingJobDto {
 	id: number;
 	subjectType: string;
@@ -466,6 +538,8 @@ export interface ProcessingJobDto {
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
+	/** Queued but its model is downloading/absent ("Preparing"). Resolved by the job commands. */
+	modelLocked: boolean;
 }
 
 export interface ProcessingResultDto {
@@ -604,4 +678,17 @@ export interface AppJobDto {
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
+}
+
+/** `get_storage_usage` (`managed_storage_layout.rs` ↔ app-infra `StorageUsage`). */
+export interface StorageUsage {
+	screenBytes: number;
+	microphoneBytes: number;
+	systemAudioBytes: number;
+	indexBytes: number;
+	modelsBytes: number;
+	/** Distinct recording days on disk — the per-day rate's denominator. */
+	captureDays: number;
+	/** Null when the volume could not be read. */
+	freeBytes: number | null;
 }

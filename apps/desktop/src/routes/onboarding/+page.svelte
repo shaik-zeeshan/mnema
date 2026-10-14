@@ -1,7 +1,7 @@
 <!--
   The onboarding shell (issue #195, slice 5).
 
-  Window chrome (traffic-light dots, the step label, the playhead ruler and
+  Window chrome (the 52px strip: lights, the step name, the flow ruler and
   "N / 8") is identical on every screen, so it is built once here. The eight
   screens under `screens/` are swapped into the stage; each one owns its content
   and nothing else. Navigation, persistence, the two hard gates and the atomic
@@ -12,8 +12,9 @@
 -->
 <script lang="ts">
   import { untrack } from "svelte";
+  import { closeCurrentWindow } from "$lib/surface-windows";
   import "./onboarding-shell.css";
-  import { OnboardingFlow, STEP_COUNT } from "./onboarding-flow.svelte";
+  import { OnboardingFlow, RULER, STEP_COUNT } from "./onboarding-flow.svelte";
   import WelcomeScreen from "./screens/WelcomeScreen.svelte";
   import PermissionsScreen from "./screens/PermissionsScreen.svelte";
   import CaptureStorageScreen from "./screens/CaptureStorageScreen.svelte";
@@ -25,11 +26,6 @@
 
   const flow = new OnboardingFlow();
   const c = flow.controller;
-
-  // Playhead geometry, ported from the mockup: a 144px track with eight ticks
-  // at 9px + 18px each. The fill and the head both sit at the current step.
-  const TICKS = Array.from({ length: STEP_COUNT }, (_, i) => 9 + i * 18);
-  const headX = $derived(TICKS[flow.stepPosition - 1] ?? TICKS[0]);
 
   const announcement = $derived(
     `Step ${flow.stepPosition} of ${STEP_COUNT}: ${flow.stepLabel}.`,
@@ -99,22 +95,28 @@
 <div class="ob-win">
   <span class="ob-sr-only" role="status" aria-live="polite">{announcement}</span>
 
-  <div class="ob-bar">
-    <div class="ob-dots" aria-hidden="true"><i></i><i></i><i></i></div>
-    <span class="ob-name">{flow.stepLabel}</span>
-    <div class="ob-ph">
-      <div class="ob-ph-track" aria-hidden="true">
-        {#each TICKS as x (x)}
-          <i class="ob-ph-tick" style="left:{x}px"></i>
-        {/each}
-        <b class="ob-ph-fill" style="width:{headX}px"></b>
-        <em class="ob-ph-head" style="left:{headX}px"></em>
-      </div>
-      <span class="ob-ph-lbl">
-        {flow.stepPosition} / {STEP_COUNT}{flow.stepSuffix ? ` ${flow.stepSuffix}` : ""}
-      </span>
+  <!-- The window is undecorated and this strip replaces the shell's Close chip
+       and drag region: the first light IS the close button (the other two are
+       drawn), and every non-control part of the strip drags the window. -->
+  <header class="ob-bar" data-tauri-drag-region>
+    <div class="ob-lights" data-tauri-drag-region>
+      <button type="button" aria-label="Close window" onclick={() => void closeCurrentWindow()}></button>
+      <i aria-hidden="true"></i><i aria-hidden="true"></i>
     </div>
-  </div>
+    <span class="ob-bar__name" data-tauri-drag-region>
+      {flow.stepLabel}{#if flow.stepSuffix}<small>{flow.stepSuffix}</small>{/if}
+    </span>
+    <div class="ob-rail" aria-hidden="true" data-tauri-drag-region>
+      {#each RULER as tick (tick.position)}
+        <i
+          data-opt={tick.optional || undefined}
+          data-done={tick.position < flow.stepPosition || undefined}
+          data-cur={tick.position === flow.stepPosition || undefined}
+        ></i>
+      {/each}
+    </div>
+    <span class="ob-bar__count" aria-hidden="true" data-tauri-drag-region><b>{flow.stepPosition}</b> / {STEP_COUNT}</span>
+  </header>
 
   <div class="ob-stage" bind:this={stage} tabindex="-1">
     {#if flow.step === "welcome"}

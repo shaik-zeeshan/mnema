@@ -6,7 +6,21 @@
 // `bun test` (same reason `capture-rate.ts` / `segmented-nav.ts` sit beside
 // their components).
 
-import type { DebugFeature } from "$lib/types";
+/**
+ * The log-chip vocabulary. Deliberately its own type, not `DebugFeature`: the
+ * health rows are re-cut by the backend (12 plain rows) while these stay
+ * keyword buckets over raw log text.
+ */
+export type LogFeature =
+	| "capture"
+	| "privacy"
+	| "ocr"
+	| "transcription"
+	| "diarization"
+	| "embeddings"
+	| "aiRuntime"
+	| "userContext"
+	| "jobsAndStorage";
 
 /**
  * Feature → line matcher for the filter chips.
@@ -20,7 +34,7 @@ import type { DebugFeature } from "$lib/types";
  * No `/g` flag anywhere: a global regex carries `lastIndex` between `.test()`
  * calls and would skip matching lines at random.
  */
-export const LOG_FEATURE_PATTERNS: Record<DebugFeature, RegExp> = {
+export const LOG_FEATURE_PATTERNS: Record<LogFeature, RegExp> = {
 	capture: /capture|segment|session|frame|display|screen|recording|microphone|audio/i,
 	privacy: /privacy|exclusion|excluded|redact|inactivity|idle/i,
 	ocr: /\bocr\b|recognition|recognizer|vision|tesseract/i,
@@ -31,17 +45,3 @@ export const LOG_FEATURE_PATTERNS: Record<DebugFeature, RegExp> = {
 	userContext: /user context|user_context|distill|derivation|subject|belief|digest/i,
 	jobsAndStorage: /\bjobs?\b|worker|migration|sqlite|database|storage|cleanup|retention/i,
 };
-
-/** The rows to render: every line when no chip is picked, else the matches. */
-export function filterLogLines(lines: string[], feature: DebugFeature | null): string[] {
-	if (feature == null) return lines;
-	const pattern = LOG_FEATURE_PATTERNS[feature];
-	return lines.filter((line) => pattern.test(line));
-}
-
-/** ERROR/WARN tint for one line — cheap enough to run per row, per poll. */
-export function logLineClass(line: string): string {
-	if (line.includes("[ERROR]")) return "log-line log-line--err";
-	if (line.includes("[WARN]")) return "log-line log-line--warn";
-	return "log-line";
-}

@@ -25,6 +25,10 @@ use app_infra::{
 };
 use app_infra::user_context::{confidence, guardrail};
 
+use super::activity_spans::{place, too_thin_for_summary, Placement, Span};
+use super::continuation::CONTINUATION_GAP_MS;
+use super::evidence_tags::strip_evidence_tags;
+
 /// System instruction for the Activity-segmentation pass. Kept terse: the
 /// detailed item formatting + the return shape live in the per-call prompt and
 /// the `DerivedActivityBatch` JSON schema.
@@ -33,12 +37,14 @@ on-screen text and spoken transcripts and segment it into semantic Activity epis
 Activity is a coherent unit of work or intent — its boundaries are INTENT SHIFTS (for example \
 \"stopped wrestling the deploy, started writing the design doc\"), NOT app switches or fixed time \
 windows. A single Activity may span multiple apps, and a single app may host several Activities. \
-Do not emit one Activity per app or per time slice. For each Activity give a short title, a one \
+Do not emit one Activity per app or per time slice. Items about the same video, page or topic \
+belong to ONE Activity even when the user alternates between watching it and reading about it; \
+never return two Activities about the same subject that overlap in time. For each Activity give a short title, a one \
 or two sentence summary of what the user was doing and how, and an optional category from this \
 fixed taxonomy or omit it when unsure: creating (producing anything — code, documents, designs, \
 slides, music), communication (asynchronous text — email, chat, messages), meetings (real-time \
-conversation — calls, video meetings), research (reading or searching in service of the current \
-task), learning (deliberate skill-building for its own sake — courses, tutorials), organizing \
+conversation the user takes part in — calls, video meetings; never a video, podcast or stream they \
+only watch), research (reading or searching in service of the current task), learning (deliberate skill-building for its own sake — courses, tutorials), organizing \
 (structuring work or time — calendar, task managers, planning, admin paperwork), personal (life \
 errands regardless of subject — shopping, banking, health, travel), entertainment (videos, games, \
 social feeds, browsing for fun). Category boundaries: synchronous conversation is meetings while \
@@ -54,7 +60,9 @@ the one moment someone should see first to recognize the Activity (must be one o
 own evidence tags). Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
-summaries to the work/task itself. Return the structured result.";
+summaries to the work/task itself. Write titles and summaries without a subject, starting with a \
+verb; never write 'the user', 'they' or 'their'; name the project or site. The f<id>/a<id> tags go \
+only in evidence_refs and headline_ref, never in a title or summary. Return the structured result.";
 
 /// Per-item text cap so a single noisy capture cannot dominate the prompt budget.
 const ITEM_TEXT_CHAR_CAP: usize = 1200;
@@ -102,6 +110,11 @@ pub struct DerivedActivity {
     /// store falls back to the chronologically earliest evidence frame.
     #[serde(default)]
     pub headline_ref: Option<String>,
+    /// The id of an ONGOING ACTIVITY (a neighbouring window's Activity shown in
+    /// the prompt) this one carries on. Set → that row is extended instead of a
+    /// new one inserted; an id that was not shown is ignored (insert).
+    #[serde(default)]
+    pub continues_id: Option<i64>,
 }
 
 /// The structured batch the engine returns for one capture window.
@@ -124,6 +137,8 @@ pub fn estimate_tokens(text: &str) -> i64 {
 pub struct ActivityDerivationOutcome {
     /// Number of Activities inserted into the store.
     pub inserted: usize,
+    /// Number of neighbouring Activities extended instead (continuation).
+    pub extended: usize,
     /// Best-effort estimated input tokens (preamble + prompt).
     pub input_tokens: i64,
     /// Best-effort estimated output tokens (serialized extracted batch).
@@ -141,17 +156,17 @@ fn item_tag(subject_type: &str, subject_id: i64) -> String {
 }
 
 /// Map an audio item's `source_kind` to the prompt tag telling the model WHO
-/// spoke: `you` = the user's own voice (microphone), `other-side` = the other
-/// party (system audio). `None` for frames or an unknown/absent source, so no
-/// tag is rendered. This is the ADR 0050 attribution signal — it keeps words
-/// spoken TO the user (system audio) from being read as words the user said.
+/// spoke: `you` = the user's own voice (microphone), `computer` = sound the Mac
+/// played (system audio: a call's other side OR a video/podcast). `None` for
+/// frames or an unknown/absent source. The ADR 0050 attribution signal; not
+/// `other-side`, which made the model read every video as a conversation.
 fn source_tag(subject_type: &str, source_kind: Option<&str>) -> Option<&'static str> {
     if subject_type != "audio_segment" {
         return None;
     }
     match source_kind {
         Some("microphone") => Some("you"),
-        Some("system_audio") => Some("other-side"),
+        Some("system_audio") => Some("computer"),
         _ => None,
     }
 }
@@ -255,7 +270,7 @@ pub(crate) fn truncate_chars(text: &str, cap: usize) -> String {
 /// (`2026-06-11 16:42 UTC`). The capture store is all UTC, so every time the
 /// model sees here is UTC; labeling it explicitly keeps the model from guessing
 /// a timezone. Done by hand to avoid pulling in a format-description.
-fn format_utc_ms(ms: i64) -> String {
+pub(crate) fn format_utc_ms(ms: i64) -> String {
     let dt = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
     let date = dt.date();
@@ -307,9 +322,13 @@ fn build_prompt(window: &CaptureWindow) -> String {
 Each item is tagged with an id (f<id> = on-screen text frame, a<id> = audio transcript segment), \
 its capture time, and (when known) the app/URL it came from. All times are UTC. Audio (a<id>) \
 items also carry a speaker source tag: source=you means the user's OWN voice (microphone), \
-source=other-side means the OTHER party (system audio). Attribute speech by this tag — never \
-render another party's words as the user's own, and never render the user's words as someone \
-else's. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
+source=computer means sound the computer played (system audio) — the other side of a call, OR a \
+video, podcast, stream or music. Decide which from the frames around it: it is a conversation only \
+when a call or meeting app is on screen or the user's own voice answers it; otherwise it is media \
+the user is watching or listening to, and it belongs in the same Activity as the frames showing \
+that media. Attribute speech by this tag — never render computer audio as words the user said, \
+and never render the user's words as someone else's. The tags are for you: write \"watched a video \
+about X\", never \"computer audio\" or \"computer-played\", in a title or summary. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
 distinct anonymized voices within that one segment (the labels are local to that item only, not \
 identities). Segment these items into Activity episodes by intent shift and return \
 DerivedActivityBatch.\n\n",
@@ -431,6 +450,7 @@ pub async fn derive_activities(
     if window.items.is_empty() {
         return Ok(ActivityDerivationOutcome {
             inserted: 0,
+            extended: 0,
             input_tokens: 0,
             output_tokens: 0,
         });
@@ -457,7 +477,13 @@ pub async fn derive_activities(
         .await
         .map_err(|error| error.to_string())?;
 
+    // Activities neighbouring windows already wrote, offered for continuation.
+    let neighbours =
+        super::continuation::neighbours_for_window(store, window.start_ms, window.end_ms).await?;
+    let neighbour_ids: std::collections::HashSet<i64> = neighbours.iter().map(|a| a.id).collect();
+
     let mut prompt = build_prompt(&window);
+    prompt.push_str(&super::continuation::neighbour_block(&neighbours));
     prompt.push_str(&build_corrections_block(&corrections));
     let input_tokens = estimate_tokens(ACTIVITY_PREAMBLE) + estimate_tokens(&prompt);
 
@@ -470,7 +496,28 @@ pub async fn derive_activities(
         .map(|json| estimate_tokens(&json))
         .unwrap_or(0);
 
-    let mut inserted = 0usize;
+    let (inserted, extended) =
+        persist_batch(store, &window, &tag_to_captured_at, &neighbour_ids, &batch).await?;
+    Ok(ActivityDerivationOutcome {
+        inserted,
+        extended,
+        input_tokens,
+        output_tokens,
+    })
+}
+
+/// Persist one engine batch for a NON-EMPTY window, returning
+/// `(inserted, extended)`. A batch that grounds nothing (no activities, or all
+/// ungrounded) is an `Err`, so the worker records the window `failed` and the
+/// Retry pass re-derives it instead of a `completed` run hiding the hole.
+async fn persist_batch(
+    store: &UserContextStore,
+    window: &CaptureWindow,
+    tag_to_captured_at: &HashMap<String, i64>,
+    neighbour_ids: &std::collections::HashSet<i64>,
+    batch: &DerivedActivityBatch,
+) -> Result<(usize, usize), String> {
+    let mut drafts: Vec<(Option<i64>, NewActivity)> = Vec::new();
     for activity in &batch.activities {
         // Resolve evidence refs that are actually present in the window, dedup,
         // and pull each capture time.
@@ -524,12 +571,9 @@ pub async fn derive_activities(
             .max()
             .unwrap_or(window.end_ms);
 
-        let title = activity.title.trim();
-        let title = if title.is_empty() { "Activity" } else { title };
-
         let draft = NewActivity {
-            title: title.to_string(),
-            summary: activity.summary.trim().to_string(),
+            title: strip_evidence_tags(activity.title.trim(), tag_to_captured_at),
+            summary: strip_evidence_tags(activity.summary.trim(), tag_to_captured_at),
             category: parse_category(&activity.category),
             focus: parse_focus(&activity.focus),
             started_at_ms,
@@ -538,18 +582,72 @@ pub async fn derive_activities(
             evidence,
         };
 
-        store
+        let continues = activity
+            .continues_id
+            .filter(|id| neighbour_ids.contains(id));
+        drafts.push((continues, draft));
+    }
+
+    // Place oldest first (longer first on a tie) against the time stored
+    // Activities and this batch's earlier writes already hold, so no two
+    // Activities overlap (see `activity_spans`).
+    drafts.sort_by_key(|(_, d)| (d.started_at_ms, d.started_at_ms - d.ended_at_ms));
+    let mut claimed: Vec<(i64, Span)> = store
+        .list_activities_in_range(
+            window.start_ms.saturating_sub(CONTINUATION_GAP_MS),
+            window.end_ms.saturating_add(CONTINUATION_GAP_MS),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|a| (a.id, (a.started_at_ms, a.ended_at_ms)))
+        .collect();
+    let mut inserted = 0usize;
+    let mut extended = 0usize;
+    for (continues, mut draft) in drafts {
+        let span = (draft.started_at_ms, draft.ended_at_ms);
+        // Continuation: extend the neighbour (blank title or summary keep the
+        // stored ones). Anything else is a new row over the time `place` gave it.
+        match place(span, continues, &claimed) {
+            Placement::Insert(piece) => (draft.started_at_ms, draft.ended_at_ms) = piece,
+            Placement::Extend(id) => {
+                if store
+                    .extend_activity_with_evidence(id, draft.clone())
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    if let Some(held) = claimed.iter_mut().find(|c| c.0 == id) {
+                        held.1 = (held.1 .0.min(span.0), held.1 .1.max(span.1));
+                    }
+                    extended += 1;
+                    continue;
+                }
+                // A vanished row falls through to insert.
+            }
+        }
+        if draft.title.is_empty() {
+            draft.title = "Activity".to_string();
+        }
+        if too_thin_for_summary(&draft.evidence) {
+            draft.summary.clear();
+        }
+        let stored = (draft.started_at_ms, draft.ended_at_ms);
+        let id = store
             .insert_activity_with_evidence(draft)
             .await
             .map_err(|error| error.to_string())?;
+        claimed.push((id, stored));
         inserted += 1;
     }
 
-    Ok(ActivityDerivationOutcome {
-        inserted,
-        input_tokens,
-        output_tokens,
-    })
+    // ponytail: no minimum-item guard; add `window.items.len() >= 3` if
+    // near-empty windows start reading "failed". (Lock-screen-only windows
+    // can't: `read_capture_window` drops lock-screen frames, so they read as
+    // empty and are skipped before reaching here.)
+    if inserted + extended == 0 {
+        return Err("The model returned no Activities grounded in this window.".to_string());
+    }
+    Ok((inserted, extended))
 }
 
 // === #94: Conclusion distillation =========================================
@@ -607,8 +705,12 @@ fn conclusion_preamble() -> String {
     )
 }
 
-/// Number of recent Activities pulled into one distillation pass.
+/// Most Activities one distillation pass sends (changed + context).
 const DISTILLATION_ACTIVITY_LIMIT: i64 = 60;
+
+/// Already-distilled recent Activities sent alongside the changed ones, so a
+/// pass over two new episodes still sees what the user was just doing.
+const DISTILLATION_CONTEXT_ACTIVITIES: i64 = 5;
 
 /// Per-summary text cap so one verbose Activity summary cannot dominate the
 /// prompt budget.
@@ -739,28 +841,41 @@ pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
 /// the run-now command) owns recording the single `derivation_run` ledger row
 /// (kind `'conclusion'`) from the returned [`ConclusionDistillationOutcome`].
 ///
-/// Distillation is a no-op below two Activities: intent / belief signal needs at
-/// least a couple of episodes to form a non-flimsy Conclusion.
+/// Incremental: the pass sends only Activities inserted or extended since the
+/// last successful pass (the durable watermark), plus a few recent ones for
+/// context, and advances the watermark on success. Nothing changed → no-op with
+/// no engine call. Distillation is also a no-op below two Activities: intent /
+/// belief signal needs at least a couple of episodes to form a non-flimsy
+/// Conclusion.
 pub async fn distill_conclusions(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
     app_handle: &tauri::AppHandle,
     subject_vectors: &SubjectVectorStore,
 ) -> Result<ConclusionDistillationOutcome, String> {
-    let activities = store
-        .activities_for_distillation(DISTILLATION_ACTIVITY_LIMIT)
+    let input = store
+        .distillation_input(
+            DISTILLATION_ACTIVITY_LIMIT - DISTILLATION_CONTEXT_ACTIVITIES,
+            DISTILLATION_CONTEXT_ACTIVITIES,
+        )
         .await
         .map_err(|error| error.to_string())?;
+    let (changed_count, context_count) = (input.changed.len(), input.context.len());
+    let mut activities = input.changed;
+    activities.extend(input.context);
+    // The prompt lists Activities newest first.
+    activities.sort_by(|a, b| (b.started_at_ms, b.id).cmp(&(a.started_at_ms, a.id)));
 
-    // Nothing to distill from a single (or zero) Activity.
-    if activities.len() < 2 {
+    // Nothing changed since the last pass, or nothing to distill from a single
+    // Activity.
+    let Some(next_watermark) = input.next_watermark.filter(|_| activities.len() >= 2) else {
         return Ok(ConclusionDistillationOutcome {
             upserted: 0,
             gate_drops: Default::default(),
             input_tokens: 0,
             output_tokens: 0,
         });
-    }
+    };
 
     // Dismissal State (#99): every Conclusion the user has rejected, with which
     // evidence and when. This feeds BOTH the prompt (a soft "do not reconstitute"
@@ -915,6 +1030,8 @@ pub async fn distill_conclusions(
     let now = now_ms();
     let mut upserted = 0usize;
     let mut gate_drops = app_infra::DistillationGateDrops::default();
+    let mut duplicate_guard = super::conclusion_guard::DuplicateGuard::new(app_handle);
+    let mut guard_merged = 0usize;
     for conclusion in &batch.conclusions {
         let subject = conclusion.subject.trim();
         let statement = conclusion.statement.trim();
@@ -998,13 +1115,8 @@ pub async fn distill_conclusions(
             }
         }
 
-        // started / last_supported = the most recent supporting Activity time
-        // (fallback: now if none resolved, though support_refs is non-empty here).
-        let last_supported_at_ms = support_refs
-            .iter()
-            .filter_map(|id| started_at_by_id.get(id).copied())
-            .max()
-            .unwrap_or(now);
+        let (formed_at_ms, last_supported_at_ms) =
+            support_span_ms(&support_refs, &started_at_by_id, now);
 
         // Confidence is resolved INSIDE the store's transaction as the
         // reinforcement ratchet (#9/#10): a new Conclusion forms at
@@ -1028,15 +1140,25 @@ pub async fn distill_conclusions(
             });
         }
 
-        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
-        // showed it to the model — a hallucinated / not-shown id becomes None. The
-        // store re-validates subject/dismissed defensively, so this is just "don't
-        // forward an id we never presented".
-        let reinforces_id = conclusion.reinforces_id.filter(|id| shown_ids.contains(id));
         // Supersede (ADR 0046): forward the cited id only if we actually showed it
-        // — same drop-hallucinated rule as reinforces_id. The store enforces
+        // — a hallucinated / not-shown id becomes None. The store enforces
         // same-subject / not-pinned / self-block / retire-only-downward strength.
         let supersedes_id = conclusion.supersedes_id.filter(|id| shown_ids.contains(id));
+        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
+        // showed it to the model (same drop-hallucinated rule). A belief that cites
+        // nothing goes through the duplicate guard first: if it restates an
+        // existing conclusion of the same subject, reinforce that one instead of
+        // inserting a reworded copy.
+        let reinforces_id = match conclusion.reinforces_id.filter(|id| shown_ids.contains(id)) {
+            Some(id) => Some(id),
+            None => {
+                let duplicate = duplicate_guard
+                    .find_duplicate(store, subject, statement, supersedes_id)
+                    .await?;
+                guard_merged += usize::from(duplicate.is_some());
+                duplicate
+            }
+        };
 
         // Single transaction: upsert (with the ratcheted confidence) + evidence
         // replacement commit/roll back together, so an error between them can
@@ -1052,7 +1174,7 @@ pub async fn distill_conclusions(
                         support_refs.len(),
                         contradict_refs.len(),
                     ),
-                    formed_at_ms: last_supported_at_ms,
+                    formed_at_ms,
                     last_supported_at_ms,
                 },
                 support_refs.len(),
@@ -1074,6 +1196,23 @@ pub async fn distill_conclusions(
         upserted += 1;
     }
 
+    if guard_merged > 0 {
+        crate::native_capture::debug_log::log(format!(
+            "conclusion distillation: duplicate guard turned {guard_merged} new belief(s) into reinforcements"
+        ));
+    }
+    crate::native_capture::debug_log::log(format!(
+        "conclusion distillation sent {} activities ({changed_count} new or extended, \
+         {context_count} context)",
+        changed_count + context_count
+    ));
+    // A failed write only means the next pass re-sends these Activities.
+    if let Err(error) = store.set_distillation_watermark(next_watermark).await {
+        crate::native_capture::debug_log::log_warn(format!(
+            "conclusion distillation could not save its watermark: {error}"
+        ));
+    }
+
     Ok(ConclusionDistillationOutcome {
         upserted,
         gate_drops,
@@ -1088,13 +1227,14 @@ fn now_ms() -> i64 {
 }
 
 /// Total char budget for the USER-AUTHORED CONTEXT block (#107). Statements are
-/// included newest-first (the store lists them that way) until adding the next one
-/// would exceed this cap; the remaining (older) statements are dropped. Bounds the
-/// prompt growth from a user who authors many statements.
-const AUTHORED_CONTEXT_CHAR_CAP: usize = 2_000;
+/// included most-recently-edited first (the store lists them by `updated_at_ms`)
+/// until adding the next one would exceed this cap; the remaining (older)
+/// statements are dropped and the Context surface flags them `inPrompt: false`.
+/// ≈1,000 tokens per pass, next to a ≈36k-char activity block.
+const AUTHORED_CONTEXT_CHAR_CAP: usize = 4_000;
 
 /// The ONE counting rule for the authored-context budget: per statement (in the
-/// store's newest-first order), its prompt line if it is read, else `None`. Blank
+/// store's most-recently-edited-first order), its prompt line if it is read, else `None`. Blank
 /// statements are skipped; the newest non-blank one is always included; the scan
 /// stops at the first statement that would overflow the cap, so everything older
 /// is out too. The Context surface's `inPrompt` flag reads this same rule.
@@ -1125,7 +1265,7 @@ pub(crate) fn authored_prompt_lines(authored: &[AuthoredContext]) -> Vec<Option<
 /// self-asserted statements, fed to the engine as authoritative context that should
 /// steer which Conclusions form and what Subjects matter — clearly labeled as
 /// user-asserted, distinct from the derived Activity evidence above. Statements
-/// arrive newest-first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
+/// arrive most-recently-edited first and are kept until [`AUTHORED_CONTEXT_CHAR_CAP`] is reached
 /// (older ones are dropped). Empty (no trailing block) when the user has authored
 /// none, so a default dossier's prompt is unchanged.
 fn build_authored_context_block(authored: &[AuthoredContext]) -> String {
@@ -1206,8 +1346,10 @@ const KNOWN_SUBJECTS_LEXICAL_LIMIT: i64 = 20;
 const KNOWN_SUBJECTS_CHAR_CAP: usize = 8_000;
 
 /// Per-subject cap on how many existing conclusions are shown under a KNOWN SUBJECTS
-/// handle (confidence-desc). Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
-const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 12;
+/// handle (strongest + most recent, paraphrases skipped — see
+/// `list_conclusions_for_subjects`), so a subject's block stops growing with it.
+/// Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
+const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 15;
 
 /// Render the KNOWN SUBJECTS prompt block (slices 5/6): the candidate Subject
 /// handles the user already has, fed to the engine with an instruction to reuse a
@@ -1297,6 +1439,24 @@ fn matching_dismissal<'a>(
     })
 }
 
+/// A Conclusion's evidence-time span: `(formed, last_supported)` = the earliest
+/// and latest start of its supporting Activities. Both are dated by the activity
+/// the belief came from, never by when distillation ran (a backlog distilled days
+/// later keeps its activity dates), and "formed" is when that evidence began.
+/// `now` only if none resolve (support_refs is pre-filtered to known ids).
+fn support_span_ms(
+    support_refs: &[i64],
+    started_at_by_id: &HashMap<i64, i64>,
+    now: i64,
+) -> (i64, i64) {
+    let starts = || {
+        support_refs
+            .iter()
+            .filter_map(|id| started_at_by_id.get(id).copied())
+    };
+    (starts().min().unwrap_or(now), starts().max().unwrap_or(now))
+}
+
 /// Filter a list of Activity-id refs to the ones present in `valid_ids`,
 /// preserving order and dropping duplicates.
 fn filter_known_refs(refs: &[i64], valid_ids: &std::collections::HashSet<i64>) -> Vec<i64> {
@@ -1309,674 +1469,5 @@ fn filter_known_refs(refs: &[i64], valid_ids: &std::collections::HashSet<i64>) -
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The engine schema must not contain `$ref`/`$defs`: reference-less
-    /// structured-output backends reject `Error resolving schema reference`.
-    /// `#[schemars(inline)]` on the nested item types keeps both batch schemas
-    /// flat — guard that here so a future field/type change cannot silently
-    /// reintroduce a `$ref`.
-    #[test]
-    fn batch_schemas_are_reference_free() {
-        // Walk the JSON structurally: a real reference is an object *key*
-        // (`$ref`/`$defs`), not the literal text that appears inside a
-        // `description` copied from these types' doc comments.
-        fn has_reference(value: &serde_json::Value) -> bool {
-            match value {
-                serde_json::Value::Object(map) => {
-                    map.contains_key("$ref")
-                        || map.contains_key("$defs")
-                        || map.values().any(has_reference)
-                }
-                serde_json::Value::Array(items) => items.iter().any(has_reference),
-                _ => false,
-            }
-        }
-
-        for schema in [
-            serde_json::to_value(schemars::schema_for!(DerivedActivityBatch)).unwrap(),
-            serde_json::to_value(schemars::schema_for!(DistilledConclusionBatch)).unwrap(),
-        ] {
-            assert!(!has_reference(&schema), "schema has a reference: {schema}");
-        }
-    }
-
-    #[test]
-    fn parses_frame_and_audio_refs() {
-        assert_eq!(parse_ref("f12"), Some(("frame", 12)));
-        assert_eq!(parse_ref(" a3 "), Some(("audio_segment", 3)));
-        assert_eq!(parse_ref("x9"), None);
-        assert_eq!(parse_ref("frame"), None);
-    }
-
-    #[test]
-    fn parses_known_categories_only() {
-        for (raw, expected) in [
-            ("creating", ActivityCategory::Creating),
-            ("communication", ActivityCategory::Communication),
-            ("meetings", ActivityCategory::Meetings),
-            ("research", ActivityCategory::Research),
-            ("learning", ActivityCategory::Learning),
-            ("organizing", ActivityCategory::Organizing),
-            ("personal", ActivityCategory::Personal),
-            ("entertainment", ActivityCategory::Entertainment),
-        ] {
-            assert_eq!(parse_category(&Some(raw.to_string())), Some(expected), "{raw}");
-        }
-        assert_eq!(parse_category(&Some("unknown".to_string())), None);
-        assert_eq!(parse_category(&Some("  ".to_string())), None);
-        assert_eq!(parse_category(&None), None);
-    }
-
-    #[test]
-    fn parse_category_aliases_legacy_spellings() {
-        for (raw, expected) in [
-            ("coding", ActivityCategory::Creating),
-            ("Coding", ActivityCategory::Creating),
-            ("design", ActivityCategory::Creating),
-            ("testing", ActivityCategory::Creating),
-            ("distractions", ActivityCategory::Entertainment),
-        ] {
-            assert_eq!(parse_category(&Some(raw.to_string())), Some(expected), "{raw}");
-        }
-    }
-
-    #[test]
-    fn parses_known_focus_levels_only() {
-        assert_eq!(parse_focus(&Some("Deep".to_string())), Some(FocusLevel::Deep));
-        assert_eq!(parse_focus(&Some(" mixed ".to_string())), Some(FocusLevel::Mixed));
-        assert_eq!(
-            parse_focus(&Some("distracted".to_string())),
-            Some(FocusLevel::Distracted)
-        );
-        assert_eq!(parse_focus(&Some("unknown".to_string())), None);
-        assert_eq!(parse_focus(&None), None);
-    }
-
-    fn correction(
-        id: i64,
-        title: &str,
-        category: Option<ActivityCategory>,
-        focus: Option<FocusLevel>,
-    ) -> ActivityCorrection {
-        ActivityCorrection {
-            activity_id: id,
-            title: title.to_string(),
-            summary: format!("{title} summary"),
-            corrected_category: category,
-            corrected_focus: focus,
-            corrected_at_ms: 1_000,
-        }
-    }
-
-    #[test]
-    fn corrections_block_is_empty_without_corrections() {
-        assert!(build_corrections_block(&[]).is_empty());
-    }
-
-    #[test]
-    fn corrections_block_lists_each_correction_with_labels() {
-        let corrections = vec![
-            correction(
-                1,
-                "Scrolled social media",
-                Some(ActivityCategory::Entertainment),
-                Some(FocusLevel::Distracted),
-            ),
-            // A correction that unset both labels renders as "unset".
-            correction(2, "Misc", None, None),
-        ];
-        let block = build_corrections_block(&corrections);
-        assert!(block.contains("USER CORRECTIONS"));
-        assert!(block.contains("never re-assign the label they corrected away"));
-        assert!(block.contains("category=entertainment focus=distracted"));
-        assert!(block.contains("Scrolled social media"));
-        assert!(block.contains("category=unset focus=unset"));
-    }
-
-    #[test]
-    fn corrections_block_respects_char_cap() {
-        let long = "x".repeat(200);
-        let corrections: Vec<ActivityCorrection> = (0..50)
-            .map(|i| {
-                correction(i, &long, Some(ActivityCategory::Creating), Some(FocusLevel::Deep))
-            })
-            .collect();
-        let block = build_corrections_block(&corrections);
-        assert!(block.contains("USER CORRECTIONS"));
-        assert!(
-            block.chars().count() < CORRECTION_FEEDBACK_CHAR_CAP + 800,
-            "block stays bounded by the char cap (+header/one-line slack)"
-        );
-    }
-
-    #[test]
-    fn truncates_long_text_on_char_boundary() {
-        let text = "a".repeat(ITEM_TEXT_CHAR_CAP + 50);
-        let truncated = truncate_chars(&text, ITEM_TEXT_CHAR_CAP);
-        // cap chars + the ellipsis.
-        assert_eq!(truncated.chars().count(), ITEM_TEXT_CHAR_CAP + 1);
-    }
-
-    #[test]
-    fn supersedes_id_defaults_to_none_when_absent() {
-        // ADR 0046: a draft with no supersedes_id (the common case) parses to None,
-        // exactly like reinforces_id — the `#[serde(default)]` must hold.
-        let json = r#"{"subject":"Rust","statement":"Rust is compiled","support_refs":[1,2]}"#;
-        let parsed: DistilledConclusion = serde_json::from_str(json).expect("parse");
-        assert_eq!(parsed.supersedes_id, None);
-        assert_eq!(parsed.reinforces_id, None);
-        // And it round-trips when present.
-        let with = r#"{"subject":"Rust","statement":"x","support_refs":[1],"supersedes_id":7}"#;
-        let parsed: DistilledConclusion = serde_json::from_str(with).expect("parse");
-        assert_eq!(parsed.supersedes_id, Some(7));
-    }
-
-    #[test]
-    fn dismissed_block_marks_supersede_rows_as_already_replaced() {
-        // ADR 0046 Slice 3H: user Dismiss rows read as "rejected", machine
-        // supersede rows as "already replaced"; both stay in the block.
-        let mut user = dismissal("Rust", "Rust is interpreted", "1,2", 2);
-        user.source = "user".to_string();
-        let mut sup = dismissal("Go", "Go has classes", "3,4", 2);
-        sup.source = "supersede".to_string();
-        let block = build_dismissed_conclusions_block(&[user, sup]);
-        assert!(block.contains("(rejected) subject=Rust"));
-        assert!(block.contains("(already replaced) subject=Go"));
-    }
-
-    #[test]
-    fn filter_known_refs_drops_unknown_and_dedups() {
-        let valid: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
-        // 9 is not in the set; the second `2` is a duplicate; order preserved.
-        let filtered = filter_known_refs(&[2, 9, 1, 2, 3], &valid);
-        assert_eq!(filtered, vec![2, 1, 3]);
-        // No valid refs at all => empty (the caller skips ungrounded conclusions).
-        assert!(filter_known_refs(&[9, 10], &valid).is_empty());
-    }
-
-    fn dismissal(subject: &str, statement: &str, fingerprint: &str, count: i64) -> DismissalState {
-        DismissalState {
-            subject: subject.to_string(),
-            statement: statement.to_string(),
-            evidence_fingerprint: fingerprint.to_string(),
-            evidence_activity_count: count,
-            dismissed_at_ms: 1_000,
-            source: "user".to_string(),
-        }
-    }
-
-    #[test]
-    fn matching_dismissal_is_case_insensitive_on_subject_and_statement() {
-        let dismissals = vec![dismissal("Apple", "Interested in Apple", "1,2", 2)];
-        // Exact match on both, case-insensitively.
-        assert!(matching_dismissal(&dismissals, "apple", "INTERESTED IN APPLE").is_some());
-        // A different statement (even same subject) does not match.
-        assert!(matching_dismissal(&dismissals, "Apple", "Loves Apple").is_none());
-        // A different subject does not match.
-        assert!(matching_dismissal(&dismissals, "Rust", "Interested in Apple").is_none());
-    }
-
-    fn authored(id: i64, text: &str, topic: Option<&str>) -> AuthoredContext {
-        AuthoredContext {
-            id,
-            text: text.to_string(),
-            topic: topic.map(str::to_string),
-            created_at_ms: 1_000,
-            updated_at_ms: 1_000,
-        }
-    }
-
-    #[test]
-    fn authored_context_block_is_empty_without_statements() {
-        assert!(build_authored_context_block(&[]).is_empty());
-        // All-blank statements also yield no block.
-        assert!(build_authored_context_block(&[authored(1, "   ", None)]).is_empty());
-    }
-
-    #[test]
-    fn authored_context_block_labels_statements_and_topics() {
-        let items = vec![
-            authored(2, "I care about typography", None),
-            authored(1, "I'm a designer", Some("role")),
-        ];
-        let block = build_authored_context_block(&items);
-        assert!(block.contains("USER-AUTHORED CONTEXT"));
-        assert!(block.contains("ASSERTED by the user"));
-        assert!(block.contains("- I care about typography"));
-        assert!(block.contains("- (topic: role) I'm a designer"));
-        // Never cited as Activity evidence.
-        assert!(block.contains("do not cite them as support_refs"));
-    }
-
-    #[test]
-    fn authored_context_block_respects_char_cap() {
-        // Many long statements; the block must stay bounded by the cap (plus the
-        // single header + one over-budget line that the !lines.is_empty() guard
-        // allows once).
-        let long = "x".repeat(300);
-        let items: Vec<AuthoredContext> = (0..50)
-            .map(|i| authored(i, &long, None))
-            .collect();
-        let block = build_authored_context_block(&items);
-        // The header is always present; the statement body stays near the cap and
-        // does not include all 50 * 300 chars.
-        assert!(block.contains("USER-AUTHORED CONTEXT"));
-        assert!(
-            block.chars().count() < AUTHORED_CONTEXT_CHAR_CAP + 600,
-            "block stays bounded by the char cap (+header/one-line slack)"
-        );
-    }
-
-    #[test]
-    fn authored_in_prompt_follows_the_distillation_counting_rule() {
-        let in_prompt = |items: &[AuthoredContext]| -> Vec<bool> {
-            authored_prompt_lines(items).iter().map(Option::is_some).collect()
-        };
-        // Newest is always included, even alone over the cap.
-        let huge = "x".repeat(AUTHORED_CONTEXT_CHAR_CAP + 50);
-        assert_eq!(in_prompt(&[authored(1, &huge, None), authored(0, "short", None)]), [true, false]);
-        // Stop at the first overflow: a short older statement that WOULD fit after
-        // the overflowing one is still out.
-        let big = "y".repeat(1_200);
-        let items = [
-            authored(3, &big, None),
-            authored(2, &big, None),
-            authored(1, "tiny", None),
-        ];
-        assert_eq!(in_prompt(&items), [true, false, false]);
-        // The block contains exactly the in-prompt lines.
-        let block = build_authored_context_block(&items);
-        assert_eq!(block.matches(&big).count(), 1);
-        assert!(!block.contains("tiny"));
-        // Blank statements are never read.
-        assert_eq!(in_prompt(&[authored(2, "  ", None), authored(1, "a", None)]), [false, true]);
-    }
-
-    #[test]
-    fn dismissed_conclusions_block_is_empty_without_dismissals() {
-        assert!(build_dismissed_conclusions_block(&[]).is_empty());
-    }
-
-    #[test]
-    fn dismissed_conclusions_block_lists_each_rejection() {
-        let dismissals = vec![
-            dismissal("Apple", "Interested in Apple", "1,2", 2),
-            dismissal("Vim", "Prefers Vim", "3,4", 2),
-        ];
-        let block = build_dismissed_conclusions_block(&dismissals);
-        assert!(block.contains("DISMISSED CONCLUSIONS"));
-        assert!(block.contains("subject=Apple statement=Interested in Apple"));
-        assert!(block.contains("subject=Vim statement=Prefers Vim"));
-        // The instruction enforces the high-bar / never-same-evidence rule.
-        assert!(block.contains("substantially MORE and NEWER"));
-    }
-
-    #[test]
-    fn known_subjects_block_is_empty_without_handles() {
-        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
-        assert!(build_known_subjects_block(&[], &empty).is_empty());
-        // All-blank handles also yield no block (prompt unchanged).
-        assert!(build_known_subjects_block(&["   ".to_string()], &empty).is_empty());
-    }
-
-    #[test]
-    fn known_subjects_block_renders_handles_and_header() {
-        let handles = vec!["Apple".to_string(), "async communication".to_string()];
-        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
-        let block = build_known_subjects_block(&handles, &empty);
-        assert!(block.contains("KNOWN SUBJECTS"));
-        // The reuse-verbatim instruction frames the block.
-        assert!(block.contains("VERBATIM"));
-        assert!(block.contains("reinforces the existing subject"));
-        // One `- {handle}` line per handle, in order.
-        assert!(block.contains("- Apple"));
-        assert!(block.contains("- async communication"));
-    }
-
-    #[test]
-    fn known_subjects_block_nests_conclusions_in_order() {
-        let handles = vec!["Apple".to_string()];
-        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
-        // Confidence-desc order is the caller's job; the block preserves push order.
-        map.insert(
-            "Apple".to_string(),
-            vec![
-                (7, "Interested in Apple silicon".to_string()),
-                (9, "Follows Apple keynotes".to_string()),
-            ],
-        );
-        let block = build_known_subjects_block(&handles, &map);
-        assert!(block.contains("- Apple\n"));
-        // Indented `id: statement` lines nested under the handle, in order.
-        let first = block.find("    7: Interested in Apple silicon").unwrap();
-        let second = block.find("    9: Follows Apple keynotes").unwrap();
-        assert!(first < second, "conclusion lines keep their given order");
-        // The instruction explains the reinforces-by-id semantics.
-        assert!(block.contains("reinforces_id"));
-    }
-
-    #[test]
-    fn known_subjects_block_degrades_overflowing_subject_to_handle_only() {
-        // Two subjects, each with one very long conclusion line. Sized so the first
-        // subject's full block fits but the second's conclusion line overflows the cap,
-        // forcing the second down to handle-only.
-        let long = "x".repeat(KNOWN_SUBJECTS_CHAR_CAP * 3 / 4);
-        let handles = vec!["First".to_string(), "Second".to_string()];
-        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
-        map.insert("First".to_string(), vec![(1, long.clone())]);
-        map.insert("Second".to_string(), vec![(2, long)]);
-        let block = build_known_subjects_block(&handles, &map);
-        // First subject keeps its conclusion line...
-        assert!(block.contains("    1: xxx"), "first subject's conclusion shown");
-        // ...but the second degrades to handle-only (its `2:` line dropped).
-        assert!(block.contains("- Second\n"), "second handle still present");
-        assert!(
-            !block.contains("    2: "),
-            "overflowing subject degrades to handle-only"
-        );
-    }
-
-    #[test]
-    fn known_subjects_block_respects_char_cap() {
-        // Many handles; the block stays bounded by the cap (plus the header + the
-        // single over-budget line the lines.is_empty() guard allows once).
-        let handles: Vec<String> = (0..2_000).map(|i| format!("subject-{i:05}")).collect();
-        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
-        let block = build_known_subjects_block(&handles, &empty);
-        assert!(block.contains("KNOWN SUBJECTS"));
-        assert!(
-            block.chars().count() < KNOWN_SUBJECTS_CHAR_CAP + 700,
-            "block stays bounded by the char cap (+header/one-line slack)"
-        );
-    }
-
-    #[test]
-    fn conclusion_preamble_instructs_reuse_of_known_subject_handles() {
-        let preamble = conclusion_preamble();
-        assert!(preamble.contains("KNOWN SUBJECTS"));
-        assert!(preamble.contains("reuse that handle VERBATIM"));
-        assert!(preamble.contains("genuinely new subject"));
-    }
-
-    #[test]
-    fn resurface_gate_drops_same_evidence_and_below_bar() {
-        // The fresh fingerprint for the same evidence set matches the dismissal's,
-        // so the same-evidence drop fires regardless of count.
-        let d = dismissal("Apple", "Interested in Apple", &evidence_fingerprint(&[1, 2]), 2);
-        let dismissals = vec![d];
-
-        // Same evidence as rejected → must be recognized as a same-evidence match.
-        let same = evidence_fingerprint(&[2, 1]);
-        let matched = matching_dismissal(&dismissals, "apple", "interested in apple")
-            .expect("matches");
-        assert_eq!(same, matched.evidence_fingerprint, "same evidence => drop");
-
-        // Different (more) evidence: fingerprint differs, and the resurface bar
-        // gates on the support count vs the prior 2 (needs ≥ 4 at 2.0×).
-        assert_ne!(evidence_fingerprint(&[1, 2, 3, 4]), matched.evidence_fingerprint);
-        assert!(!confidence::meets_resurface_bar(3, matched.evidence_activity_count));
-        assert!(confidence::meets_resurface_bar(4, matched.evidence_activity_count));
-    }
-
-    #[test]
-    fn distillation_uses_the_confidence_policy_formation_bar() {
-        // The formation bar (#95) gates distillation: a single supporting
-        // Activity is below the bar and must not form a Conclusion.
-        assert!(!confidence::meets_formation_bar(1));
-        assert!(confidence::meets_formation_bar(2));
-        // And the wired initial_confidence rises with support, drops on contradiction.
-        assert!(
-            confidence::initial_confidence(3, 0) > confidence::initial_confidence(2, 0)
-        );
-        assert!(
-            confidence::initial_confidence(3, 1) < confidence::initial_confidence(3, 0)
-        );
-    }
-
-    // === ADR 0050: source-aware, name-blind audio derivation ================
-
-    /// Build a minimal audio [`CaptureWindowItem`] for the prompt-builder tests.
-    fn audio_item(
-        id: i64,
-        t: i64,
-        text: &str,
-        source: &str,
-        turns: Vec<(i64, String)>,
-    ) -> app_infra::CaptureWindowItem {
-        app_infra::CaptureWindowItem {
-            subject_type: "audio_segment".to_string(),
-            subject_id: id,
-            captured_at_ms: t,
-            text: text.to_string(),
-            app_label: None,
-            url: None,
-            source_kind: Some(source.to_string()),
-            speaker_turns: turns,
-        }
-    }
-
-    #[test]
-    fn speaker_turns_map_clusters_to_a_b_deterministically() {
-        // Two distinct cluster ids → Speaker A / Speaker B in first-appearance
-        // order; a repeat of the first cluster reuses "Speaker A".
-        let rendered = render_speaker_turns(&[
-            (42, "hello".to_string()),
-            (7, "hi there".to_string()),
-            (42, "how are you".to_string()),
-        ]);
-        assert_eq!(
-            rendered,
-            "Speaker A: hello\nSpeaker B: hi there\nSpeaker A: how are you\n"
-        );
-        // Empty / whitespace-only turns render nothing.
-        assert!(render_speaker_turns(&[]).is_empty());
-        assert!(render_speaker_turns(&[(1, "   ".to_string())]).is_empty());
-    }
-
-    #[test]
-    fn whitespace_turn_consumes_no_speaker_label() {
-        // Invariant 3 (ADR 0050): a whitespace-only turn is skipped BEFORE the
-        // A/B label index is computed, so it never burns a Speaker slot on a
-        // LATER distinct cluster. Cluster 1 is whitespace → gets NO label; the
-        // first REAL voice (cluster 2) is still Speaker A, not Speaker B.
-        assert_eq!(
-            render_speaker_turns(&[(1, "   ".to_string()), (2, "hi".to_string())]),
-            "Speaker A: hi\n"
-        );
-        // Contrast: a REAL first turn does take Speaker A, pushing the next
-        // distinct cluster to Speaker B — proving the label index tracks the
-        // order of real (non-whitespace) turns.
-        assert_eq!(
-            render_speaker_turns(&[(1, "hey".to_string()), (2, "hi".to_string())]),
-            "Speaker A: hey\nSpeaker B: hi\n"
-        );
-    }
-
-    #[test]
-    fn source_tag_maps_only_known_audio_sources() {
-        assert_eq!(source_tag("audio_segment", Some("microphone")), Some("you"));
-        assert_eq!(
-            source_tag("audio_segment", Some("system_audio")),
-            Some("other-side")
-        );
-        // Unknown / absent source, and any non-audio subject, get no tag.
-        assert_eq!(source_tag("audio_segment", None), None);
-        assert_eq!(source_tag("audio_segment", Some("bogus")), None);
-        assert_eq!(source_tag("frame", Some("microphone")), None);
-    }
-
-    #[test]
-    fn build_prompt_tags_source_and_renders_anonymous_turns() {
-        let window = CaptureWindow {
-            start_ms: 1_000,
-            end_ms: 2_000,
-            items: vec![
-                audio_item(
-                    1,
-                    1_100,
-                    "let me walk you through it",
-                    "microphone",
-                    vec![(10, "let me walk you through it".to_string())],
-                ),
-                audio_item(
-                    2,
-                    1_200,
-                    "sounds good thanks",
-                    "system_audio",
-                    vec![(20, "sounds good".to_string()), (21, "thanks".to_string())],
-                ),
-            ],
-        };
-        let prompt = build_prompt(&window);
-        // The mic item is tagged `you`; the system-audio item `other-side`.
-        assert!(prompt.contains("[a1] t="));
-        assert!(prompt.contains("source=you"));
-        assert!(prompt.contains("[a2] t="));
-        assert!(prompt.contains("source=other-side"));
-        // The two distinct voices in the system-audio segment render as A/B.
-        assert!(prompt.contains("Speaker A: sounds good"));
-        assert!(prompt.contains("Speaker B: thanks"));
-        // The intro explains the attribution rule.
-        assert!(prompt.contains("never render another party's words as the user's own"));
-    }
-
-    #[test]
-    fn build_prompt_separates_items_with_a_blank_line() {
-        // Invariant 4: consecutive items stay separated by a blank line so the
-        // model can tell one item's body from the next's. This guards the
-        // trailing-newline layout: a future edit that drops a per-item newline
-        // must not silently merge two items into one undelimited block.
-        let window = CaptureWindow {
-            start_ms: 0,
-            end_ms: 10,
-            items: vec![
-                audio_item(1, 1, "alpha", "microphone", vec![]),
-                audio_item(2, 2, "beta", "microphone", vec![]),
-            ],
-        };
-        let prompt = build_prompt(&window);
-        // First item body ends "...alpha"; the second begins "[a2]". Between them
-        // there must be exactly a blank line — a "\n\n" boundary.
-        let first = prompt.find("alpha").expect("first item body present");
-        let second = prompt.find("[a2]").expect("second item header present");
-        assert!(first < second, "items render in order");
-        assert_eq!(
-            &prompt[first + "alpha".len()..second],
-            "\n\n",
-            "items must be separated by exactly a blank line"
-        );
-    }
-
-    #[test]
-    fn speaker_turns_can_never_carry_a_recognized_person_name() {
-        // NAMES-NEVER-TO-CLOUD guard (ADR 0050). The prompt-builder's turn input is
-        // `(cluster_id, text)` — there is NO name field — so a recognized person's
-        // display name is UNREPRESENTABLE by construction: even if, on device, a
-        // cluster maps to person "Jane Doe", only the anonymous label + the
-        // already-redacted transcript text can ever be rendered. Here neither the
-        // text nor the turns contain the sentinel, and the built prompt must not
-        // either.
-        const SENTINEL: &str = "Jane Doe";
-        let turns = vec![(99, "thanks for the update".to_string())];
-        let rendered = render_speaker_turns(&turns);
-        assert!(rendered.contains("Speaker A: thanks for the update"));
-        assert!(!rendered.contains(SENTINEL), "a name leaked into turns: {rendered}");
-
-        let window = CaptureWindow {
-            start_ms: 0,
-            end_ms: 10,
-            items: vec![audio_item(1, 5, "thanks for the update", "system_audio", turns)],
-        };
-        let prompt = build_prompt(&window);
-        assert!(!prompt.contains(SENTINEL), "a name leaked into the prompt");
-        // The anonymous label is present; the identity is not.
-        assert!(prompt.contains("Speaker A:"));
-    }
-
-    // === Recurrence Digest / local-clock prompt (Slice 3) ===================
-
-    fn distill_activity(id: i64, started_at_ms: i64, cat: Option<ActivityCategory>) -> capture_types::Activity {
-        capture_types::Activity {
-            id,
-            title: format!("activity {id}"),
-            summary: String::new(),
-            category: cat,
-            focus: None,
-            started_at_ms,
-            ended_at_ms: started_at_ms + 60_000,
-            created_at_ms: started_at_ms,
-            evidence: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn offset_label_formats_signed_hh_mm() {
-        assert_eq!(offset_label(330), "UTC+05:30");
-        assert_eq!(offset_label(-480), "UTC-08:00");
-        assert_eq!(offset_label(0), "UTC+00:00");
-    }
-
-    #[test]
-    fn distillation_prompt_labels_times_local_with_offset() {
-        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
-        let prompt = build_distillation_prompt(&acts, Some(330 * 60_000));
-        assert!(prompt.contains("Times are local (UTC+05:30)."), "prompt: {prompt}");
-        // The rendered digits must actually shift, not just the label: the epoch
-        // instant at +05:30 reads 1970-01-01 05:30 local.
-        assert!(
-            prompt.contains("[id=1] t=1970-01-01 05:30 UTC+05:30"),
-            "prompt: {prompt}"
-        );
-        assert!(!prompt.contains("All times are UTC."));
-
-        // A negative offset shifts backward across the day boundary.
-        let prompt = build_distillation_prompt(&acts, Some(-480 * 60_000));
-        assert!(
-            prompt.contains("[id=1] t=1969-12-31 16:00 UTC-08:00"),
-            "prompt: {prompt}"
-        );
-    }
-
-    #[test]
-    fn distillation_prompt_falls_back_to_utc_without_offset() {
-        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
-        let prompt = build_distillation_prompt(&acts, None);
-        assert!(prompt.contains("All times are UTC."), "prompt: {prompt}");
-        assert!(prompt.contains(" UTC\n") || prompt.contains(" UTC"));
-    }
-
-    #[test]
-    fn preamble_carries_the_observation_posture_invariant() {
-        // Regression guard: the neutral-observation wording for focus routines must
-        // survive verbatim (never a productivity judgment).
-        assert!(conclusion_preamble().contains("neutral observation of the user's rhythm"));
-    }
-
-    #[test]
-    fn diarized_turns_cannot_blow_the_per_item_prompt_budget() {
-        // ITEM_TEXT_CHAR_CAP caps the flat transcript "so a single noisy capture
-        // cannot dominate the prompt budget". The diarized turns re-render the SAME
-        // transcript beneath it; if they were uncapped, one long segment would
-        // defeat the cap. A single long single-speaker segment: its flat text
-        // truncates to ITEM_TEXT_CHAR_CAP, so its turn rendering must be bounded by
-        // the same cap — the item's total transcript contribution stays within a
-        // small multiple of the cap.
-        let long = "lorem ipsum ".repeat(2_000); // ~24k chars
-        let window = CaptureWindow {
-            start_ms: 0,
-            end_ms: 10,
-            items: vec![audio_item(1, 5, &long, "system_audio", vec![(1, long.clone())])],
-        };
-        let prompt = build_prompt(&window);
-        // Fixed intro/header + one item whose flat text AND turn rendering are each
-        // capped at ITEM_TEXT_CHAR_CAP → at most a small multiple of the cap.
-        let budget = 4 * ITEM_TEXT_CHAR_CAP;
-        assert!(
-            prompt.chars().count() <= budget,
-            "one audio item produced a {}-char prompt (budget {budget}); diarized turns bypass ITEM_TEXT_CHAR_CAP",
-            prompt.chars().count()
-        );
-    }
-}
+#[path = "derivation_tests.rs"]
+mod tests;

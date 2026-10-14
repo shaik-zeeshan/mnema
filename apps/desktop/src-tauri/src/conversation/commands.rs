@@ -95,6 +95,8 @@ pub async fn search_conversations(
 pub struct SetConversationEngineRequest {
     /// Frontend-generated UUID (the stable cross-restart identity).
     pub conversation_id: String,
+    /// The calling door (`"chat"`), stored only if this call creates the row.
+    pub origin: String,
     /// The engine provider id to pin, or `None` to clear.
     #[serde(default)]
     pub provider: Option<String>,
@@ -115,6 +117,7 @@ pub async fn set_conversation_engine(
         .conversation()
         .set_conversation_engine(
             &request.conversation_id,
+            &request.origin,
             request.provider.as_deref(),
             request.model.as_deref(),
             now_ms(),
@@ -137,11 +140,16 @@ pub struct SetConversationTitleRequest {
     pub conversation_id: String,
     /// The new title. Trimmed; an empty/whitespace-only title is rejected.
     pub title: String,
+    /// The calling door. When set, a missing row is created first (Chat's
+    /// header can rename before the first save lands); when absent, a missing
+    /// conversation is an error.
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
-/// Persist the user-set title for an existing conversation. Rejects an empty
-/// (post-trim) title and a missing conversation (a rename never creates a
-/// row). Emits [`CONVERSATION_CHANGED_EVENT`].
+/// Persist the user-set title for a conversation. Rejects an empty
+/// (post-trim) title and, unless `origin` is given, a missing conversation.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
 #[tauri::command]
 pub async fn set_conversation_title(
     app_handle: tauri::AppHandle,
@@ -153,6 +161,13 @@ pub async fn set_conversation_title(
         return Err("conversation title must not be empty".to_string());
     }
 
+    if let Some(origin) = request.origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&request.conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let renamed = infra
         .conversation()
         .set_user_title(&request.conversation_id, title, now_ms())
@@ -163,6 +178,74 @@ pub async fn set_conversation_title(
             "conversation {} not found",
             request.conversation_id
         ));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Pin (or unpin) a chat to the top of the history list. Touches no
+/// timestamp (pinning is not activity). A missing row is created only when
+/// `origin` is given (Chat's header, before the first save lands), otherwise
+/// it is an error. Not the per-chat engine pin — that is
+/// [`set_conversation_engine`]. Emits [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn set_conversation_pinned(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+    pinned: bool,
+    origin: Option<String>,
+) -> Result<(), String> {
+    if let Some(origin) = origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let found = infra
+        .conversation()
+        .set_pinned(&conversation_id, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err(format!("conversation {conversation_id} not found"));
+    }
+
+    let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Delete a conversation's trailing turn so Regenerate / Retry can re-send
+/// the same question into the same `turn_index`. Errors (deleting nothing)
+/// when `turn_index` is not the last turn, or while a turn is still running —
+/// its next save would re-insert the deleted row. The phase check lives here,
+/// not in the store, so a crash-orphaned `streaming` row stays retryable.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
+#[tauri::command]
+pub async fn delete_last_turn(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    conversation_id: String,
+    turn_index: i64,
+) -> Result<(), String> {
+    if crate::ask_ai::turn_in_flight(&conversation_id) {
+        return Err(
+            "an answer is still being written. Wait for it to finish, then try again.".to_string(),
+        );
+    }
+    let deleted = infra
+        .conversation()
+        .delete_last_turn(&conversation_id, turn_index)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !deleted {
+        // Shown verbatim in the Regenerate alert: plain words, no ids.
+        return Err(
+            "this answer isn't the latest one in the chat any more. Reopen the chat and try again."
+                .to_string(),
+        );
     }
 
     let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());

@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<title>Mnema redesign — backend changes</title>
+<link rel="stylesheet" href="kit.css" />
+<script src="kit.js"></script>
+<style>
+  body { margin: 0; background: var(--app-bg); color: var(--app-text); font-family: var(--font-sans); }
+  .bk { max-width: 1040px; margin: 0 auto; padding: 64px 32px 96px; }
+  .bk-top { display: flex; align-items: center; gap: 12px; margin-bottom: 40px; }
+  .bk-top a { color: var(--app-text-muted); text-decoration: none; font-size: var(--text-md); }
+  .bk-top a:hover { color: var(--app-text-strong); }
+  .bk-lede { max-width: 64ch; margin: 12px 0 28px; }
+  .bk-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--app-border); border: 1px solid var(--app-border); border-radius: 8px; overflow: hidden; margin-bottom: 48px; }
+  .bk-sum div { background: var(--app-surface); padding: 16px 18px; }
+  .bk-sum b { display: block; font: 500 28px/1.1 var(--font-sans); color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+  .bk-sum span { font-size: var(--text-sm); color: var(--app-text-subtle); }
+  h2 { font: 600 20px/1.3 var(--font-sans); color: var(--app-text-strong); margin: 48px 0 6px; }
+  h2 + p { margin: 0 0 16px; color: var(--app-text-muted); font-size: var(--text-md); }
+  .bk-list { border-top: 1px solid var(--app-border); }
+  .bk-item { display: grid; grid-template-columns: 220px 1fr; gap: 24px; padding: 18px 0; border-bottom: 1px solid var(--app-border); }
+  .bk-item h3 { margin: 0 0 8px; font: 600 var(--text-md)/1.4 var(--font-sans); color: var(--app-text-strong); }
+  .bk-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .bk-item p, .bk-item li { margin: 0; font-size: var(--text-md); line-height: 1.6; color: var(--app-text); }
+  .bk-item ul { margin: 6px 0 0; padding-left: 18px; }
+  .bk-item .why { margin-top: 8px; color: var(--app-text-muted); font-size: var(--text-base); }
+  code { font: 400 0.92em/1 var(--font-mono); color: var(--app-text-strong); background: var(--app-surface-raised); border: 1px solid var(--app-border); border-radius: 4px; padding: 1px 4px; }
+  .t { font: 500 var(--text-xs)/1 var(--font-mono); padding: 4px 6px; border-radius: 4px; border: 1px solid var(--app-border); color: var(--app-text-muted); white-space: nowrap; }
+  .t--rust { color: var(--app-info); border-color: var(--app-info-border); background: var(--app-info-bg); }
+  .t--mig { color: var(--app-warn); border-color: var(--app-warn-border); background: var(--app-warn-bg); }
+  .t--prompt { color: var(--app-source-screen); border-color: var(--app-source-screen-border); background: var(--app-source-screen-bg); }
+  .t--query { color: var(--app-source-mic); border-color: var(--app-source-mic-border); background: var(--app-source-mic-bg); }
+  .t--dec { color: var(--app-danger-text); border-color: var(--app-danger-border); background: var(--app-danger-bg); }
+  .t--release { color: var(--app-source-sysaudio); border-color: var(--app-source-sysaudio-border); background: var(--app-source-sysaudio-bg); }
+  .bk-none { columns: 2; column-gap: 32px; padding: 0; margin: 0; list-style: none; }
+  .bk-none li { break-inside: avoid; padding: 10px 0; border-bottom: 1px solid var(--app-border); font-size: var(--text-md); }
+  .bk-none li span { display: block; color: var(--app-text-muted); font-size: var(--text-base); margin-top: 2px; }
+  .bk-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 8px; font-size: var(--text-sm); color: var(--app-text-subtle); }
+  @media (max-width: 760px) { .bk-item { grid-template-columns: 1fr; gap: 8px; } .bk-sum { grid-template-columns: 1fr 1fr; } .bk-none { columns: 1; } }
+</style>
+</head>
+<body>
+<main class="bk">
+  <div class="bk-top"><a href="index.html">← Redesign kit</a><span class="mx-spacer"></span><a href="IMPLEMENTATION.md">Full report (IMPLEMENTATION.md)</a></div>
+
+  <span class="mx-kicker">Backend changes</span>
+  <h1 class="mx-display">What the redesign needs from Rust.</h1>
+  <p class="mx-prose bk-lede">Most of the redesign is frontend. These are the pieces that need a new command, a prompt change, a migration, or a release-pipeline change. Everything else on the screens can be built from data the app already returns.</p>
+
+  <div class="bk-sum">
+    <div><b>25</b><span>needed for the mockups as drawn</span></div>
+    <div><b>8</b><span>new features, each behind a decision</span></div>
+    <div><b>9</b><span>small or possibly existing — verify first</span></div>
+    <div><b>15</b><span>areas with no backend work</span></div>
+    <div><b>13</b><span>existing app bugs found (frontend)</span></div>
+    <div><b>4</b><span>additive migrations (never edit applied ones)</span></div>
+  </div>
+
+  <div class="bk-legend">
+    <span class="t t--rust">rust</span> new command or logic
+    <span class="t t--query">query</span> new derived data, no LLM
+    <span class="t t--prompt">prompt</span> LLM prompt / schema
+    <span class="t t--mig">migration</span> new column or table
+    <span class="t t--release">release</span> release pipeline
+    <span class="t t--dec">decision</span> needs your ruling first
+  </div>
+
+  <h2>1 · Needed for the mockups as drawn</h2>
+  <p>Without these, a drawn element shows placeholder data or has to be cut.</p>
+  <div class="bk-list">
+    <div class="bk-item">
+      <div><h3>Digest headline with a turn</h3><div class="bk-tags"><span class="t t--prompt">prompt</span><span class="t t--mig">migration</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: one joined string, no migration.</strong> Overview and Journal show a full-sentence headline with a dimmed second clause ("— until Thursday's calls took the whole day back"). Today the headline is ≤6 words, no punctuation.</p>
+        <ul>
+          <li>Rewrite the headline rule in <code>user_context/digest.rs:49-51</code>: a full sentence with <em>no dash in it</em>, plus an optional <code>turn</code> field on <code>DigestNarrative</code> (serde default ""). The store writes <code>headline — turn</code> into the existing <code>headline</code> column; raise <code>HEADLINE_CHAR_CAP</code> at <code>:607</code> to 140; the lede greys everything after the first " — ". No new column, no DTO change; the output guardrail at <code>:941</code> sees the joined string.</li>
+          <li>The fingerprint already has a shape tag: bump <code>v2</code> → <code>v3</code> in <code>store.rs:2767</code> so cached rows regenerate.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Times and apps in digest prose</h3><div class="bk-tags"><span class="t t--prompt">prompt</span><span class="t t--query">query</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: times yes, apps not now.</strong> The mockup prose says "between 9 and 12" and "since 09:20" (no digest sample names an app). The model never sees start times or app names.</p>
+        <ul>
+          <li>Extend each activity line in <code>digest.rs:252-275</code> with local <code>HH:MM–HH:MM</code> (offset from <code>range_start_ms</code>, as today). Prompt-only; no query.</li>
+          <li>App names stay out until the prose needs them (then: frame evidence → <code>search_documents.app_name</code>, migration <code>0017</code>).</li>
+        </ul>
+        <p class="why">No new exposure either way: derivation already sends per-frame app names, URL hosts and minute timestamps to the same engine (<code>derivation.rs:302-357</code>), and Ask AI sends window titles too. The guardrail at <code>:749-755</code> filters title + summary only — it never saw apps or times.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Apps and speakers per activity</h3><div class="bk-tags"><span class="t t--query">query</span><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Journal cards show app chips and "2 speakers". Activities don't store apps.</p>
+        <ul>
+          <li>Same frame → app join as above; <code>audio_segment</code> evidence → speaker turns (migration <code>0010</code>).</li>
+          <li>Expose on the activity DTO, or as one batch command for a day's activities.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Indexing status for Quick Recall</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The no-results state says "Still reading your last 4 min — 38 frames queued. Anything after 16:36 may not show up yet", so an empty result isn't mistaken for "never captured". Only the debug window has this data today.</p>
+        <ul><li>One user-facing command combining <code>count_queued_or_running_processing_jobs_for_processor</code> (<code>crates/app-infra/src/lib.rs:1923</code>) with the backlog from <code>get_semantic_index_status</code> (<code>src-tauri/src/debug_status.rs:87</code>). The same command feeds the “Meaning still building” state; today OCR backlog and semantic build progress are debug-only (<code>debug_pipeline.rs:37</code>, <code>debug_status.rs:87</code>).</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Match position in search results</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Quick Recall zooms the best-moment crop onto the matched words and outlines them on the frame in Quick Look (solid = keyword, dashed = by meaning). <code>FrameSearchResultDto</code> has a snippet but no position.</p>
+        <ul>
+          <li>The OCR geometry is already stored: <code>processing_results.structured_payload_json</code> (zstd JSON of <code>OcrObservation</code> + <code>OcrBoundingBox</code>, migration <code>0003</code>). No migration needed.</li>
+          <li>For the representative frame, match the query terms against the observations and return normalised boxes, e.g. <code>matchBoxes: [{x, y, w, h, kind: "keyword"}]</code>, capped at a few per hit. For meaning-only hits, return the box of the observation the matched chunk came from.</li>
+          <li>Quick Look's neighbouring frames need the same boxes, so expose this as a per-frame call too (<code>frameId</code> + query).</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Time-of-day filter (<code>hours:</code>)</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>"pricing page last Tuesday afternoon" becomes the pills Arc · Tue Oct 6 · afternoon, sent as <code>date:2026-10-06 hours:12-18</code>. <code>search/query.rs</code> only parses <code>app source date after before</code>.</p>
+        <ul><li>Add an <code>hours:H-H</code> operator and refinement, read in local time (same offset handling as <code>search/dates.rs</code>), applied to frames and audio spans.</li></ul>
+        <p class="why">Weekday names ("last Tuesday") don't need Rust: the frontend resolves them to an ISO <code>date:</code>.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Result counts per pill option</h3><div class="bk-tags"><span class="t t--query">query</span><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Clicking a pill (Arc, Tue Oct 6, On a call) lists the alternatives with how many moments each would return ("Zed 4 · Slack 2 · Any app 9"); the no-results rows say "Drop 'Arc' · 1 moment". <code>search_capture</code> returns capped results plus <code>hasMoreFrames/Audio</code>, never totals.</p>
+        <ul><li>A facet-count command (or an opt-in <code>counts</code> field on <code>search_capture</code>): the same residual query and refinements, with one refinement swapped out, grouped by app / source / day / part of day. COUNT over the grouped matches only — no snippets, no previews.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>A Quick Recall window sized to its content</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Confirmed: the window grows and shrinks with what it shows. It is a frameless, transparent ~800px bar: 60px idle, up to ~420px with results, ~570px in Quick Look. <code>AppWindow::QuickRecall</code> (<code>windows.rs:279</code>) is a fixed 1120×720 window (min 960×600) that <code>summon_quick_recall_window</code> centres.</p>
+        <ul>
+          <li>Drop the 1120×720 size and the min size. The frontend measures its content and calls <code>getCurrentWindow().setSize(new LogicalSize(800, h))</code> on every height change, or calls one Rust command that sets the frame.</li>
+          <li>Anchor the top edge at a fixed spot (centred, ~15% down the screen) so it grows downward. Replace <code>window.center()</code> on summon; if <code>setSize</code> keeps the Cocoa bottom-left origin, re-anchor with <code>setPosition</code> in the same step.</li>
+          <li>Permissions: <code>core:window:default</code> does <b>not</b> include <code>allow-set-size</code>. <code>capabilities/default.json</code> already grants <code>core:window:allow-set-size</code> to the <code>quick-recall</code> label, so keep it. Add <code>core:window:allow-set-position</code> if the frontend re-anchors. A Rust command needs neither.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>"Answer questions automatically" setting</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Quick Recall detects a question and streams an answer when you pause, which spends a model call. Settings → Ask AI gets a three-way choice: Always · Only with local models (default) · Never. When it's off for the current model, Quick Recall shows "Press Tab to ask &lt;model&gt;" instead of answering.</p>
+        <ul>
+          <li>New settings key <code>quickRecallAutoAnswer: "always" | "localOnly" | "never"</code> on <code>AccessSettings</code> beside <code>askAiEnabled</code> (<code>capture-types/src/recording.rs:514</code>, serde default <code>localOnly</code>), plus <code>UpdateAccessSettingsRequest</code> and the TS mirror. JSON settings, no migration.</li>
+          <li>"Local" means the resolved model's provider kind is <code>is_local()</code> (Ollama, Llamafile).</li>
+          <li>An edit must cancel the in-flight <code>ask_ai</code> turn rather than queue a second one.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Update size before download</h3><div class="bk-tags"><span class="t t--release">release</span><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The update window shows "0.1.23 → 0.1.24 · 38 MB" up front. The feed has no size; <code>contentLengthBytes</code> only exists mid-download.</p>
+        <ul><li>Add the artifact size to <code>latest.json</code> in the release pipeline and read it in the update check.</li></ul>
+        <p class="why">Or drop the size from the Available state — no backend work.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Display unavailable on the session</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The status bar draws "screen · display asleep" while mic and system audio keep recording (ADR 0021). <code>CaptureSession</code> has no flag for it: the reason <code>capture_display_unavailable</code> (<code>native_capture/runtime.rs:73</code>) only reaches the frontend as <code>runtimeSources.screen.reason</code> inside the debug command <code>get_idle_debug</code> (<code>native_capture/activity.rs:384-402</code>), and no notification is pushed.</p>
+        <ul><li>Expose the suspension kind on the session (or a user-facing runtime-sources command) and emit it on <code>native_capture_session_changed</code> when it starts and ends.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Why a mic or system-audio lane is degraded</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>"System audio reconnecting" and "possibly blocked" lanes are drawn. <code>RuntimeSourceStatus.reason</code> for microphone and system audio is always <code>None</code> when requested (<code>activity.rs:409-428</code>), so a tap rebuild, the zero-watchdog or a lost device is invisible.</p>
+        <ul><li>Set a reason (<code>tap_rebuilding</code>, <code>device_lost</code>, …) from the system-audio adapter and mic controller, on the same user-facing path as the display flag above.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Engine health in the bell</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The mockups pair the status-bar <code>mx-engine</code> pill with one notification row ("ChatGPT needs you to sign in again · Reconnect"). No <code>AppNotification</code> is ever pushed for engine health, and there is no engine-status change event — pages only learn of <code>needs_reconnect:</code> / <code>provider_unreachable:</code> when a call fails.</p>
+        <ul>
+          <li>Push and clear one notification per provider from the live resolver; emit an engine-status event the shell can listen to.</li>
+          <li><code>AppNotificationAction.tab</code> only allows <code>about | processing | transcription | speakers | shortcuts</code> (<code>notifications.svelte.ts:5-8</code>), so rows can't deep-link to Providers, License, Storage or Privacy. Widen it on both sides.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Why a segment has no transcript</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The drawer draws model-missing, not-transcribed, transcription-off and "waiting for network" as separate states. None can be told apart today.</p>
+        <ul>
+          <li>An admission refusal writes no job row (<code>AudioSegmentTranscriptionAdmission::should_enqueue_for</code>, <code>crates/app-infra/src/lib.rs:214</code>), so "model missing" and "never queued" look identical. Return a reason when no job exists.</li>
+          <li>A cloud-unreachable job is requeued with free-text <code>last_error</code> (<code>processing/runtime.rs:115-123</code>, <code>store.rs:1984</code>) and stays <code>queued</code>, which the Timeline shows as running (<code>+page.svelte:1627-1629</code>). Add a reason code (e.g. <code>waiting_network</code>) to the job DTO.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Why there is no read</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Insights draws "too few activities", "derivation off", "engine not set up" and "read failed" differently. <code>get_user_context_digest</code> returns <code>None</code> for derivation off, engine not ready, fewer than 2 activities and a guardrail trip alike (<code>user_context/digest.rs:726, 732, 761, 951</code>). Model errors already return <code>Err</code>, and the forced re-read already errors on engine resolve (<code>:876-882</code>).</p>
+        <ul><li>Return <code>{digest?, reason?}</code> with a small reason enum instead of a bare <code>Option</code>.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Stopped and interrupted turns</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Chat draws "Stopped by you" and "Interrupted (app quit mid-turn)".</p>
+        <ul>
+          <li>A user stop persists the partial answer as <code>done</code> (<code>ask_ai.rs:2400-2424</code>); <code>TurnView</code> has no stopped flag (<code>capture-types/src/conversation.rs:177</code>). Persist a <code>stopped</code> phase (TEXT column, no migration).</li>
+          <li>Turns left <code>streaming</code> when the app quits are never reconciled, so reopening the chat leaves the composer on Stop (<code>Chat.svelte:460</code>). Add a startup pass that marks them <code>interrupted</code> — crash-state healing, so permanent, not legacy.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Typed turn errors</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Chat draws rate-limited, chat-too-long, empty answer, needs reconnect and offline as different cards. <code>TurnUpdate::Error</code> carries a bare <code>message</code> string (<code>conversation.rs:229</code>), and engine-setup failures send raw codes like <code>needs_reconnect:chatgpt</code> as that message (<code>ask_ai.rs:1810-1823</code>).</p>
+        <ul><li>Add a <code>kind</code> (<code>rate_limited | context_overflow | empty | needs_reconnect | unreachable | other</code>) plus the provider id; keep <code>message</code> for "other". Mirror in the TS type.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Turn metadata: steps, tokens, model</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--mig">migration</span></div></div>
+      <div>
+        <p>Each answer draws "N steps · 3.4s", a token bar against the model's window, and the model that answered.</p>
+        <ul>
+          <li>No context window for ChatGPT (<code>ai_runtime.rs:488</code> sets <code>None</code>), and Anthropic / Ollama listings don't fill it either; only OpenAI-compatible and Fireworks listings do.</li>
+          <li><code>contextTokens</code> is streamed but never persisted, so a reopened chat has no bar.</li>
+          <li><code>ToolActivityEntry</code> has no result count or duration (<code>conversation.rs:156</code>); the model is not recorded per turn.</li>
+          <li>One additive migration: <code>context_tokens</code> and <code>model_ref</code> on the turn row; counts and durations ride in the existing tool-activity JSON.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Inline citations and gone sources</h3><div class="bk-tags"><span class="t t--prompt">prompt</span><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Answers draw inline <code>[n]</code> markers tied to numbered sources, and a "source no longer stored" state. The model emits no citations; sources are capped at 6 frames / 4 audio (<code>ask_ai.rs:346-347</code>) and nothing checks that a cited id still exists after retention or Delete Recent Capture.</p>
+        <ul>
+          <li>Prompt the model to cite tool-result ids; map them to numbered sources in <code>answer_view.rs</code>.</li>
+          <li>Check source existence on snapshot / <code>get_conversation</code> and flag missing ones.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Storage usage by source</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>Settings → Storage splits usage into screen / mic / system audio / index, and the status bar shows a size. Confirmed: no storage-usage number is returned anywhere (<code>Storage.svelte</code> only shows the location). Sum segment file sizes per source plus the DB and model folders; cache it, it walks the disk.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Ollama: not running vs not installed</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>Settings and onboarding draw "Ollama isn't running", "isn't installed" and "running, no models". All collapse to <code>local_endpoint_unreachable</code> (<code>ai-runtime.svelte.ts:69-102</code>). Check for the app bundle / binary when the endpoint is down, and return a distinct code when <code>/api/tags</code> answers with zero models.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Model downloads: offline, disk full, resume</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Onboarding Setup draws offline (waiting), disk filled mid-download, and resume. Downloads have no pause/resume, no offline state and no partial resume; a full disk is a raw error string (<code>Ocr.svelte:291</code>) except for semantic search, which has a typed <code>InsufficientDiskSpace</code> (<code>semantic_search_models.rs:256</code>).</p>
+        <ul><li>Lift the typed disk-space and offline errors into the shared download path for OCR, transcription and speaker models; resume from the partial file via HTTP Range.</li></ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Update window states</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>The update window draws check-failed, download-failed, install-failed, a re-check while open, and "Newest covered" in the out-of-window state.</p>
+        <ul>
+          <li>No re-check action from the window: it only installs and restarts (<code>routes/update/+page.svelte</code>; <code>update-window.ts:21-29</code>).</li>
+          <li>All three failures are one <code>failed</code> state; <code>error.kind</code> (<code>network | feed | verification | install …</code>) separates install, but a network failure during the check and during the download look the same. Add the phase.</li>
+          <li>No "newest covered build" field on the status.</li>
+          <li>Renew exists only in Settings → License (<code>licensing-panel.ts:21</code>), not in the update window — frontend, once the out-of-window state opens (§2).</li>
+        </ul>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Voice enrollment: mic busy</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>Onboarding draws "The microphone is in use by another app". <code>VoiceEnrollmentOutcomeDto</code> is <code>Enrolled | TooShort | NoSpeech | MultipleSpeakers</code> (<code>voice_enrollment.rs:35-43</code>); a busy mic comes back as a raw error and "too quiet" as <code>NoSpeech</code>. Add a <code>MicUnavailable</code> outcome (the drawn "too quiet" copy already matches <code>NoSpeech</code>).</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Why search results may be partial</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div>
+        <p>Quick Recall draws "nothing captured yet", "meaning off · keyword only" and "audio not transcribed yet". <code>SearchCaptureResponse</code> (<code>lib/types/app-infra.ts:230</code>) can't say any of these.</p>
+        <ul>
+          <li>Empty index vs no matches: add an <code>indexEmpty</code> flag.</li>
+          <li>A failed semantic fetch logs and silently falls back to keywords (<code>search/retrieval.rs:183</code>); return <code>semanticDegraded</code>.</li>
+          <li>Audio is only indexed once transcribed (<code>search/projection.rs:249-254</code>); return a count of untranscribed segments in range.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <h2>2 · New features — each behind a decision</h2>
+  <p>Drawn in the mockups but not in the app. Rule on these before building.</p>
+  <div class="bk-list">
+    <div class="bk-item">
+      <div><h3>Chat context panel</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--query">query</span><span class="t t--dec">decision</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: build the slim version.</strong> Scope = time range + an "About you" switch, resent with every turn. No per-source toggles and no pre-send token meter; the exact post-answer <code>ContextTokens</code> number stays. Today Ask AI scopes nothing up front; the model picks its own bounds per tool call.</p>
+        <ul>
+          <li>Add optional <code>scope {fromMs, toMs, aboutYou}</code> to <code>AskAiStartRequest</code> (<code>ask_ai.rs:971</code>) and <code>AskAiFollowupRequest</code> (<code>:1001</code>). No migration: each turn is rebuilt from scratch.</li>
+          <li>In the tool executor (<code>ask_ai.rs:1922-1996</code>): fill in or narrow <code>from</code>/<code>to</code> on <code>search</code>, <code>timeline</code>, <code>activities</code>, <code>recall_context</code> — one pure clamp function + one test. In <code>build_ask_ai_tools</code> (<code>:1317</code>): omit <code>recall_context</code> when "About you" is off.</li>
+          <li>Out-of-scope tools: app control unchanged (reads no data); <code>fetch_url</code> and <code>mcp__*</code> are not limited by the scope and are named in the "Goes to" line.</li>
+        </ul>
+        <p class="why">Dropped: source toggles (<code>activities</code>/<code>recall_context</code> mix screen + audio, so they can't honour them) and the pre-send meter (what is sent depends on what the model reads; Anthropic/OpenAI/ChatGPT report no window — it could only say "up to"). Privacy line verified: Mnema's own tools return text only, never image/audio bytes or paths; MCP results pass through as-is, so the line names connectors when they're on.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Pinned chats</h3><div class="bk-tags"><span class="t t--mig">migration</span><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: build.</strong> The chat list has a Pinned group. Conversations have no pinned column: add one (additive migration, copy <code>0025</code>'s pinned-conclusions pattern) plus a <code>set_conversation_pinned</code> command, and sort <code>pinned DESC, updated_at_ms DESC</code> in both <code>list_conversations</code> and <code>search_conversations</code> (the list loads only 60 rows). Pinning never touches the timestamps; pinned chats still follow retention. ≈8 files.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Recent queries in Quick Recall</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: build; Delete Recent Capture does not clear them.</strong> No query history exists today. One JSON key <code>quick_recall.recent_queries</code> in the encrypted <code>app_settings</code> table (last 8 of <code>{text, ask, at}</code>) with its own get/set commands (no generic accessor exists). It takes the conversations' contract (migration <code>0028</code> header): Retention prunes entries past its cutoff beside <code>delete_conversations_older_than</code> (<code>capture_retention.rs:492-500</code>); Wipe User Context deletes the key (<code>user_context/commands.rs:797-801</code>); Delete Recent Capture (<code>app_infra.rs:3759-3983</code>) leaves it alone, as it leaves conversations. ⌫ on a selected Recent row removes one entry (frontend, same set command). Not localStorage. ≈4 files, no migration.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>One ranked list in Quick Recall</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: merge by <code>rank</code> on the frontend, the broker's rule.</strong> Frames and audio share one FTS5 table and one BM25 formula (<code>retrieval.rs:407/560</code>); under hybrid both kinds are RRF-fused on the same scale (<code>:306-351</code>). The only backend change is exposing <code>rank: f64</code> on <code>FrameSearchResultDto</code> / <code>AudioSearchResultDto</code> (<code>app_infra.rs:894-940</code> drop it) plus the TS mirror; <code>result-sections.ts</code> then merges two-pointer (lower rank first; tie → newer, then frame, as <code>brokered_access.rs:3644-3650</code>). No search-engine change; no kind weight without measuring the BM25 length bias first (ADR 0036).</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Block a tool on first request</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: add <code>block_identity</code>, a second row-creating writer for standing rejections only.</strong> The CLI access request has a Block button; <code>block_client</code> only flips rows that exist (<code>brokered_access.rs:2216-2221</code>), and Deny persists nothing (in-memory channel reply only), so an unknown tool can re-open the window every command. Build: in <code>brokered_access.rs</code>, under one <code>with_grants_lock</code> — row exists → flip <code>blocked</code> + <code>blocked_at_unix_ms</code> only; no row → create <code>{id: random, scope: LAST_DAY, blocked: true, blocked_at: now, last_used: 0}</code>; never touch an existing <code>scope</code> or <code>id</code>. Plus a channel command that answers the pending request with <code>blocked</code>, its registration, and the button. Grants live in <code>broker-grants.json</code> — no migration.</p>
+        <p class="why">Why this doesn't break ADR 0059: the ADR promises one row per tool, id preserved on widen (opaque ids are signed against it), and a rejection that is standing. A blocked-first row keeps all three — a blocked row is never "active" and never issues opaque ids, so the id-preservation reason behind "upsert is the only row-creating writer" is moot for it. Reword CLAUDE.md / AGENTS.md line 27 + the code comment to name both writers; one-line ADR amendment. Follow-ons in the same change: Enable on a never-granted row (<code>last_used == 0</code>) deletes it so the next request re-asks instead of silently granting last-day access (today's Enable dialog says "…able to read … <em>again</em>"); <code>--no-prompt</code> reports "blocked" instead of "approval required, retryable".</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Permission helper window</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: build it; Screen Recording no longer gates onboarding.</strong> A small always-on-top, <em>non-activating</em> window floated by every "Open System Settings" (onboarding Permissions, Finale idle / audio-only, the main window's status-bar flag) with the app icon, "Turn on Mnema in the &lt;list&gt; list" and a live check. Build: a new <code>AppWindow</code> label (in <code>AppWindow::ALL</code> + <code>capabilities/default.json</code> — the window test enforces both); reuse the Quick Recall NSPanel reclass (<code>windows.rs:654-740</code>: <code>NSWindowStyleMaskNonactivatingPanel</code>, so System Settings keeps focus) + always-on-top + visible on all spaces; poll <code>get_capture_permissions</code> every ~1 s while open and close on grant. No new data.</p>
+        <p class="why">Why no drag in the first cut: after a Deny, macOS already lists Mnema in Screen Recording / Microphone with the switch off — the needed action is "flip the switch". Drag-out is for when Mnema is <em>absent</em> from the list (TCC reset, Accessibility before any request, a prompt that never fired); a webview can't hand System Settings a file, so that needs a native <code>NSDraggingSession</code> with the bundle's file URL (<code>cocoa</code> is already linked; <code>tauri-plugin-drag</code> wraps it). Gate change: <code>screenGate</code> passes on a denial (start request already ANDs source × grant, <code>onboarding-start-request.ts:26</code>; backend only checks the grant when the screen source is on, <code>segments.rs:5421-5433</code>); the <code>needsRelaunch</code> hold stays.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Out-of-window update notice</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: open it once per remote version, persisted; window only.</strong> "0.1.24 is past your update window" never opens today: <code>decide_remote_update</code> (<code>app_updates.rs:440-457</code>) sets <code>notify: false</code> for <code>availableOutOfWindow</code>. Build: notify out of window too, but skip the "ready to install" bell (<code>:537-549</code>) and open the window (<code>:562-568</code>); gate on a new <code>notified_out_of_window_version</code> field beside <code>channel</code> in <code>app-update-settings.json</code> (<code>:105-117</code>) — persisted, unlike the in-memory in-window gate, because only a renewal ends the state. Licensing <code>publish</code> (<code>licensing.rs:138-152</code>) also runs a silent <code>run_update_check(.., false)</code> so Refresh / renewal flips the window at once. No "newest covered build" field: the row is dropped from the drawing. The fresh-install-past-window gate stays Settings-only. ≈4 files.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Context "Steering" stat</h3><div class="bk-tags"><span class="t t--mig">migration</span><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: drop the stat; no link.</strong> "Steering 3 · conclusions backed by …" would need a join from authored statements to conclusions plus an extraction field asking the model to cite them (<code>derivation.rs:1112</code> only labels statements <code>(topic: X)</code> in the prompt; conclusions link to Activities as evidence, <code>0023</code>). The mockup already lists the strongest inferred views instead (top 3 by confidence, <code>Context.svelte:95-101</code>). <strong>Per-topic mix bar: buildable without backend work</strong> — its rows count <em>authored</em> statements by topic, and the authored topic becomes a fixed choice (Work · Preferences · People · Goals · none; commands accept only those; column stays <code>TEXT</code>, no migration). Inferred conclusions still carry no topic and don't need one here.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Regenerate an answer</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: replace in place, latest answer only; old answer discarded; never offered on earlier turns.</strong> Chat draws a "Regenerating" state. Only a failed last turn can be retried today (<code>Chat.svelte:694-700</code>). Build: a store method <code>delete_last_turn</code> (guarded to the trailing index — <code>UNIQUE (conversation_row_id, turn_index)</code> and <code>save_turn</code>'s no-overwrite rule make mid-thread replace expensive) + a Tauri command, then re-send the same question so it takes the same index back. Retry on a failed last turn uses the same path, which fixes its turn-numbering bug (a mid-answer failure is already saved as an <code>error</code> row, so Retry's new turn lands at n+1). ≈4 files, no migration.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Authored context sent unfiltered, truncated silently</h3><div class="bk-tags"><span class="t t--rust">rust</span><span class="t t--dec">decision</span></div></div>
+      <div>
+        <p><strong>Decided 2026-10-10: no keyword filter on the user's own words; make the egress honest and the cap visible.</strong> Context statements go to the provider as written: the guardrail filters the engine's output, not this input (<code>user_context/derivation.rs:773-803</code>). Past <code>AUTHORED_CONTEXT_CHAR_CAP</code> = 2,000 chars the oldest statements are dropped (<code>:1094-1119</code>) with no signal in the UI.</p>
+        <ul>
+          <li>Provider line under the Context composer ("Goes to &lt;provider&gt; each time Mnema forms conclusions · stays on this Mac with a local model"): add the default provider's <em>kind</em> to <code>AiRuntimeStatus</code> (<code>ai_runtime.rs:21-29</code>, reuse the <code>worker.rs:1123-1131</code> lookup) + TS mirror. Fix the four copy spots that imply statements stay local (<code>Context.svelte:311, 638</code>, <code>Providers.svelte:283-286</code>, <code>UserContext.svelte:65</code>).</li>
+          <li>Cap → 4,000 (<code>derivation.rs:1094</code>); 280-char limit per statement in the textarea and in <code>commands.rs:683/714</code>; selection loop (<code>:1103-1121</code>) becomes a <code>pub(crate)</code> fn returning included ids so <code>list_user_context_authored</code> can add <code>used: bool</code>; order by <code>updated_at_ms</code> so an edit keeps a statement in. No migration.</li>
+        </ul>
+        <p class="why">Why not filter: the keyword guardrail is noisy both ways and would silently delete deliberate instructions ("I have ADHD — keep answers short"). Cost of the raise: ≈500 extra tokens per pass, next to a ≈36k-char activity block.</p>
+      </div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Update channel picker</h3><div class="bk-tags"><span class="t t--dec">decision</span></div></div>
+      <div><p><strong>Decided 2026-10-10: dropped from the mockup; nothing changes in the app.</strong> Settings → Updates drew a Stable / Preview picker; the app hides it on purpose (<code>showUpdateChannelPicker = false</code>, <code>About.svelte:45</code>, "until preview builds exist"). Only stable builds ship: zero <code>-preview</code> tags, <code>preview/latest.json</code> is a 404, and prereleases build with a placeholder licence key (<code>ENV.md:79-81</code>). The flag, the channel code and the release lane stay dormant; the row comes back when a real preview release exists and prerelease licensing is decided.</p></div>
+    </div>
+  </div>
+
+  <h2>3 · Small or possibly existing — verify first</h2>
+  <p>Probably covered by existing commands; check before writing anything.</p>
+  <div class="bk-list">
+    <div class="bk-item">
+      <div><h3>Capture density per day</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>The date picker's ruler and calendar dots, and the month grid. Check whether <code>get_usage_charts</code> covers per-day capture; otherwise one small aggregate query over capture segments.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Status bar and recall totals</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>"today 6h 12m" in the new status bar and "anything after 16:36 may not show up yet" in Quick Recall's no-results line. Today's capture total likely exists in usage data; the cut-off is the newest indexed document time.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Name a speaker from search</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>The audio drawer's one search box creates a new person or links a saved one. Confirm the existing name/link commands cover create-from-search before calling it UI-only.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Neighbouring frames for Quick Look</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>Quick Look shows a strip of 7 frames 15 s apart around the match; ←/→ scrubs it and ↵ opens the scrubbed frame. <code>list_frame_summaries_in_range</code> (match time ± 90 s, picking the frame nearest each 15 s step) plus <code>get_frame_scrub_previews</code> (small thumbnails, one larger for the stage) should cover it. The frame's text comes from <code>list_processing_results</code>, as <code>detailStore.svelte.ts</code> already does.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Digest comparisons</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>Deep-focus change vs last period, top-category %, day mix, per-day (or 2-hour) category columns, "through 15:08". None is computed today (<code>lib/insights/lede-stats.ts</code> has only <code>trackedDelta</code>). Computable on the frontend from previous-window activities + <code>get_usage_charts</code>; add a batch command only if that's too many round trips.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Low-disk early warning</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>Low disk is only reported once capture has paused. Free bytes and the resume threshold (<code>native_capture/disk_space.rs:136</code>, <code>classify_free_space</code>) aren't exposed, so nothing can warn earlier or say "resumes at 5 GB free". The drawn banner doesn't need it; add it if the copy grows a number.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Start of history vs retention</h3><div class="bk-tags"><span class="t t--query">query</span></div></div>
+      <div><p>The Timeline draws "Start of history". <code>list_frames</code> returns a bare page (<code>app_infra.rs:4716</code>), so the end shows only as an empty page; that is enough. Copy like "older than 30 days is removed" can read the retention policy from <code>get_recording_settings</code>; only "your first recording" vs "trimmed by retention" would need the oldest-ever capture time.</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Onboarding relaunch resume</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>The relaunch after granting Screen Recording keeps only the step (<code>localStorage</code> <code>mnema.onboarding.step</code>, <code>onboarding-flow.svelte.ts:97, 457</code>); capture choices made before it are lost, and "needs relaunch" is a frontend guess. Persist the draft (localStorage is enough) and, if the guess misfires, expose the real "this process can't use the grant yet" check. The real app also holds Continue on "Relaunch to continue" (<code>permissions-gate.ts:48</code>) — that ruling is already listed in IMPLEMENTATION.md (Onboarding).</p></div>
+    </div>
+    <div class="bk-item">
+      <div><h3>Deactivate this Mac</h3><div class="bk-tags"><span class="t t--rust">rust</span></div></div>
+      <div><p>There is no license deactivate command or UI; only <code>reset_license_devices</code> / <code>get_license_devices</code> exist (<code>licensing/reset.rs:68, 92</code>). Not drawn in the mockups — add only if moving a license between Macs should be self-serve.</p></div>
+    </div>
+  </div>
+
+  <h2>4 · No backend work</h2>
+  <p>Frontend only, or the command already exists.</p>
+  <ul class="bk-none">
+    <li>Fonts, buttons, choice tiles, date input, flat style<span>All CSS / Svelte components.</span></li>
+    <li>Titlebar and status bar<span>Overlay titlebar already in <code>windows.rs</code>; moves existing controls.</span></li>
+    <li>Timeline restyle and speaker strip<span>Built from turns the drawer already loads.</span></li>
+    <li>Insights layout, period picker, day spine<span>Day/week/month already matches <code>RangeMode</code>.</span></li>
+    <li>Subjects headline<span>Template over existing tiers (recommended), not a new LLM pass.</span></li>
+    <li>Chat as its own page<span><code>/chat</code> route in the main window; no new window or capability.</span></li>
+    <li>Settings full-window mode<span>Already a route with "Back to app".</span></li>
+    <li>Delete Recent Capture in Settings<span><strong>Decided 2026-10-10: build it, tray unchanged.</strong> <code>delete_recent_capture</code> exists (<code>app_infra.rs:4182</code>, windows 60/300/900 only); the Timeline already handles the <code>delete_recent_capture</code> change event. Frontend-only: the Storage row + plugin-dialog confirm with the tray's wording.</span></li>
+    <li>Onboarding<span>All figures come from existing manifests and formulas.</span></li>
+    <li>CLI access management list<span><code>identitySource</code> is already sent; add it to the TS type.</span></li>
+    <li>Keyword vs meaning per hit<span><code>foundByMeaning</code> is already on frame and audio results (<code>search/grouping.rs</code>).</span></li>
+    <li>Recording state in Quick Recall<span><code>get_capture_permissions</code> already returns the session (<code>capture-controls.svelte.ts:138-143</code>); pair it with <code>native_capture_session_changed</code>.</span></li>
+    <li>Screen and mic permission rows in Settings, mic state in voice enrollment<span><code>get_capture_permissions</code> / <code>request_capture_permission</code> exist; Settings just never calls them.</span></li>
+    <li>"last ran <code>cmd</code>" per CLI tool<span>Newest event per tool from <code>list_cli_access_history</code>.</span></li>
+    <li>Audio on the rail for screen-off sessions<span>Audio segments are already listable; the rail is frame-indexed, so the zero-frame branch draws an empty lane (<code>+page.svelte:6738-6769</code>). A layout change.</span></li>
+  </ul>
+
+  <h2>5 · Existing app bugs found (frontend)</h2>
+  <p>Found while drawing the feedback states. Not backend work, and not caused by the redesign — they're in the app today.</p>
+  <ul class="bk-none">
+    <li>Display asleep reads as "starting…"<span>The titlebar lane ignores <code>reason</code>: session not active → <code>starting</code> (<code>+layout.svelte:437-443</code>). Needs the §1 flag to fix properly.</span></li>
+    <li>Untranscribed segment says "Speaker analysis hasn't run"<span>Any transcript status other than loading/running/empty/error/success falls to <code>not-run</code> (<code>audio-drawer-view.ts:633</code>), whose panel is about speakers (<code>DrawerStatePanels.svelte:102</code>).</span></li>
+    <li>Journal load failure shows "Nothing captured"<span><code>loadRange</code> swallows errors (<code>DayTimeline.svelte:147-173</code>); a failed first load renders <code>JournalRiver.svelte:214</code>'s empty day.</span></li>
+    <li>Month heatmap rows labelled by weekday<span>One row per day, labelled <code>weekday: "short"</code> (<code>Overview.svelte:496</code>), so a month shows four or five "Mon" rows.</span></li>
+    <li>Chat list failure looks like "no chats"<span><code>refreshHistory</code> catches into an empty list (<code>conversationStore.svelte.ts:146-148</code>).</span></li>
+    <li>Unknown chat id opens an empty chat<span><code>get_conversation</code> → <code>null</code> just arms the id (<code>Chat.svelte:426-429</code>); a deleted chat's link shows a blank thread under that id.</span></li>
+    <li>Raw error codes in the chat error card<span><code>update.message</code> goes straight into the card (<code>Chat.svelte:1046, 1360-1363</code>), e.g. <code>needs_reconnect:chatgpt</code>.</span></li>
+    <li>Quick Recall ignores a missing frame<span>It receives <code>missingReason</code> (<code>frame_preview.rs:567</code>) but renders the glyph fallback (<code>detailStore.svelte.ts:115-124</code>).</span></li>
+    <li>Quick Recall Ask: reconnect / unreachable fall to generic copy<span><code>friendlyAskReason</code> has no <code>needs_reconnect:</code> / <code>provider_unreachable:</code> cases (<code>quick-recall/+page.svelte:568-587</code>).</span></li>
+    <li>Quick Recall shows the raw search error<span>"failed to search captured content: …" (<code>app_infra.rs:5044</code>) is shown as-is.</span></li>
+    <li>Voice enrollment shows raw errors<span><code>voice.error</code> printed verbatim (<code>VoiceEnrollment.svelte:153-155</code>).</span></li>
+    <li>Start-capture failure leaves no trace<span>Only a one-off native dialog (<code>capture-controls.svelte.ts:45-47</code>); the status bar returns to "not recording" with no error.</span></li>
+    <li>Failed onboarding download leaves its feature on<span>Only Cancel turns the feature off; a failure shows Retry and keeps it on (<code>SetupScreen.svelte:210, 246</code>).</span></li>
+  </ul>
+</main>
+</body>
+</html>

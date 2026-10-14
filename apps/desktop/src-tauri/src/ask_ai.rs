@@ -34,7 +34,7 @@ use app_infra::brokered_access::{
     BrokerSearchRequest, BrokerSearchResult, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
-use capture_types::{AiRuntimeSettings, TurnSnapshot, TurnUpdate, TurnView};
+use capture_types::{AiRuntimeSettings, AskAiScope, TurnSnapshot, TurnUpdate, TurnView};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
@@ -42,9 +42,11 @@ use crate::app_infra::AppInfraState;
 use crate::ask_ai::answer_view::AnswerView;
 use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
 
+mod abandoned;
 pub(crate) mod answer_view;
 pub(crate) mod app_control;
 pub(crate) mod mcp;
+mod scope;
 pub(crate) mod tool_activity;
 pub(crate) mod web_fetch;
 
@@ -66,24 +68,39 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 
 /// Conversations whose cancel arrived BEFORE their turn registered its in-flight
 /// flag — the "cancel at the very start of a request" race. The frontend reveals
-/// the Stop button the instant a turn is sent, but the backend registers the
-/// cancel flag only after an async access-readiness check (`ask_ai_start` /
-/// `ask_ai_followup`). A cancel landing in that window finds no flag via
-/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id here and
-/// the imminent `register_inflight` consumes it, bringing the turn up already
-/// cancelled so it short-circuits before any model call.
-static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+/// the Stop button the instant a turn is sent, but `ask_ai_start` /
+/// `ask_ai_followup` run on the async runtime, so a Stop's `ask_ai_cancel` can be
+/// scheduled first. A cancel landing in that window finds no flag via
+/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id + arrival
+/// time here and the imminent `register_inflight` consumes it, bringing the turn
+/// up already cancelled so it short-circuits before any model call.
+///
+/// The entry expires after [`PENDING_CANCEL_TTL`]: a no-flag cancel is just as
+/// often a STALE one aimed at a turn that already finished (Quick Recall's
+/// teardown after "Continue in Chat"), and an unexpiring entry pre-cancelled the
+/// user's next, unrelated Chat follow-up — a blank answer and no saved row.
+static ASK_AI_PENDING_CANCEL: OnceLock<Mutex<HashMap<String, std::time::Instant>>> =
+    OnceLock::new();
 
-fn ask_ai_pending_cancel() -> &'static Mutex<std::collections::HashSet<String>> {
-    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+/// How long a pending cancel waits for its turn to register. The race it covers
+/// is two commands scheduled out of order (milliseconds).
+// ponytail: fixed window; a cancel request carrying the turn it targets would
+// remove the heuristic, add when a real race outlasts it.
+const PENDING_CANCEL_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn ask_ai_pending_cancel() -> &'static Mutex<HashMap<String, std::time::Instant>> {
+    ASK_AI_PENDING_CANCEL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Record a cancel that arrived before the conversation's turn registered. The
-/// next `register_inflight` for this id will consume the entry and start its flag
-/// already set. Used by `ask_ai_cancel` only when `take_inflight` found no flag.
+/// Record a cancel that arrived before the conversation's turn registered. A
+/// `register_inflight` for this id within [`PENDING_CANCEL_TTL`] consumes the
+/// entry and starts its flag already set. Used by `ask_ai_cancel` only when
+/// `take_inflight` found no flag.
 fn record_cancel_before_register(conversation_id: &str) {
     if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
-        pending.insert(conversation_id.to_string());
+        // Expired entries can never apply; drop them so stale ids don't pile up.
+        pending.retain(|_, at| at.elapsed() < PENDING_CANCEL_TTL);
+        pending.insert(conversation_id.to_string(), std::time::Instant::now());
     }
 }
 
@@ -94,14 +111,20 @@ fn record_cancel_before_register(conversation_id: &str) {
 /// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
 fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
+    register_inflight_at(conversation_id, std::time::Instant::now())
+}
+
+fn register_inflight_at(conversation_id: &str, now: std::time::Instant) -> Arc<AtomicBool> {
     // Consume a cancel that raced ahead of this registration (see
     // ASK_AI_PENDING_CANCEL): the turn comes up already cancelled and stops at its
     // first check, before any model call. Consume exactly once so the pending entry
-    // never poisons a later, legitimate turn for the same conversation.
+    // never poisons a later, legitimate turn for the same conversation, and only
+    // while fresh — an expired one was aimed at an earlier turn.
     let pre_cancelled = ask_ai_pending_cancel()
         .lock()
-        .map(|mut pending| pending.remove(conversation_id))
-        .unwrap_or(false);
+        .ok()
+        .and_then(|mut pending| pending.remove(conversation_id))
+        .is_some_and(|at| now.saturating_duration_since(at) < PENDING_CANCEL_TTL);
     let cancel = Arc::new(AtomicBool::new(pre_cancelled));
     if let Ok(mut map) = ask_ai_inflight().lock() {
         if let Some(previous) = map.insert(conversation_id.to_string(), cancel.clone()) {
@@ -117,13 +140,29 @@ fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
 /// different `Arc`).
 fn remove_inflight_if_owner(conversation_id: &str, cancel: &Arc<AtomicBool>) {
     if let Ok(mut map) = ask_ai_inflight().lock() {
-        if map
-            .get(conversation_id)
-            .is_some_and(|flag| Arc::ptr_eq(flag, cancel))
-        {
-            map.remove(conversation_id);
+        match map.get(conversation_id) {
+            // A newer turn owns the id now — its mark is not ours to drop.
+            Some(flag) if !Arc::ptr_eq(flag, cancel) => {}
+            owned => {
+                if owned.is_some() {
+                    map.remove(conversation_id);
+                }
+                // With our flag gone no cancel can mark us any more; drop a mark
+                // that landed after finalize read it. Under the lock, so none
+                // slips in between.
+                abandoned::take_superseded(conversation_id);
+            }
         }
     }
+}
+
+/// Whether a turn is still running for this conversation (its in-flight flag
+/// is registered). `delete_last_turn` refuses while it is: the running turn's
+/// next save would re-insert the row it deleted.
+pub(crate) fn turn_in_flight(conversation_id: &str) -> bool {
+    ask_ai_inflight()
+        .lock()
+        .is_ok_and(|map| map.contains_key(conversation_id))
 }
 
 /// Take (remove and return) the in-flight flag for a conversation. Used by
@@ -789,6 +828,9 @@ struct ResolvedAskAiSource {
     /// Guarded host+path of the page behind this source (already sanitized +
     /// secret-redacted at the broker boundary). Frame sources only; audio → None.
     url: Option<String>,
+    /// The search result's text match (`<mark>` runs kept) — the evidence row's
+    /// second line. An activity's title; `None` for a timeline interval.
+    snippet: Option<String>,
     started_at: String,
     ended_at: String,
     // Audio Search Result Anchor: sub-segment match timing + aligned frame for
@@ -866,6 +908,7 @@ where
             // Guarded host+path of the cited page (frame sources only; audio:
             // null). Already sanitized + secret-redacted at the broker boundary.
             "url": source.url,
+            "snippet": source.snippet,
             "startedAt": source.started_at,
             "endedAt": source.ended_at,
             // Audio Search Result Anchor: sub-segment match span + aligned frame
@@ -940,6 +983,7 @@ async fn handle_reference_captures(
             // The broker already guarded this URL when it built the search
             // result context (frame results only); copy it through verbatim.
             url: result.context.as_ref().and_then(|c| c.url.clone()),
+            snippet: Some(result.snippet.clone()).filter(|s| !s.trim().is_empty()),
             started_at: result.started_at.clone(),
             ended_at: result.ended_at.clone(),
             // Audio Search Result Anchor retained from the search result the
@@ -994,6 +1038,9 @@ pub struct AskAiStartRequest {
     /// IANA zone name for display in the temporal grounding. Optional.
     #[serde(default)]
     time_zone: Option<String>,
+    /// Chat's scope (CH3), resent every turn; absent = unscoped.
+    #[serde(default)]
+    scope: Option<AskAiScope>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1007,12 +1054,19 @@ pub struct AskAiFollowupRequest {
     /// See [`AskAiStartRequest::time_zone`].
     #[serde(default)]
     time_zone: Option<String>,
+    /// See [`AskAiStartRequest::scope`].
+    #[serde(default)]
+    scope: Option<AskAiScope>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AskAiCancelRequest {
     conversation_id: String,
+    /// The question was edited into a new one (Quick Recall): drop the thread
+    /// even if a partial answer already arrived (see `abandoned`).
+    #[serde(default)]
+    discard: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1177,17 +1231,39 @@ such tools are present, the user has configured no connectors — do not mention
     preamble
 }
 
+/// Appended to the preamble for a Quick Recall question: the panel is read at a
+/// glance, so the answer must fit without scrolling. Last in the preamble so it
+/// overrides the general "you MAY include a block" guidance above.
+const QUICK_RECALL_GLANCE: &str = "THIS QUESTION COMES FROM QUICK RECALL, a small glance panel: \
+the user reads your answer in one look and must never have to scroll. Answer in AT MOST 2 short \
+sentences (about 40 words), and the FIRST words must be the answer itself — the exact name, time, \
+app, number, or phrase they are after, in **bold**. No greeting, no restating the question, no \
+headings, no tables, no caveats or offers to help further. A list only for at most 3 items of a few \
+words each. No fenced mnema-* block, except ONE ```mnema-bars block of at most 5 bars when the \
+question asks for a ranking or breakdown — then the block IS the answer, with at most one sentence \
+beside it. The moments behind your answer are shown under it, so do not describe them in prose — \
+still call `reference_captures`. If the full answer would be longer, give the gist and stop; the \
+user can continue in Chat for detail.\n";
+
 /// Assemble the per-turn **prompt**: the temporal grounding followed by the bare
 /// question. The model gathers all capture context itself through tool calls. The
 /// system instruction lives in the preamble (see [`build_ask_ai_preamble`]);
 /// conversation history is fed separately to the agent loop, so it is NOT in the
 /// prompt.
-fn build_ask_ai_prompt(question: &str, now_ms: i64, clock: &ClientClock) -> String {
+fn build_ask_ai_prompt(
+    question: &str,
+    now_ms: i64,
+    clock: &ClientClock,
+    scope: Option<&AskAiScope>,
+) -> String {
     let mut prompt = String::new();
 
     // Temporal grounding leads the prompt so the model anchors relative dates and
     // knows the local↔UTC relationship before reading any captures.
     prompt.push_str(&build_temporal_grounding(now_ms, clock));
+    if let Some(scope) = scope {
+        prompt.push_str(&scope::scope_prompt_line(scope, clock.utc_offset_minutes));
+    }
 
     prompt.push_str(&format!("Question: {question}"));
     prompt
@@ -1545,7 +1621,7 @@ async fn persist_turn(
     tool_activities: &[serde_json::Value],
     sources: &[serde_json::Value],
     phase: &str,
-    error_message: Option<&str>,
+    error: Option<(&str, &str)>,
 ) -> bool {
     let tool_activities_json = serde_json::to_string(tool_activities).unwrap_or_else(|_| "[]".into());
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".into());
@@ -1563,14 +1639,14 @@ async fn persist_turn(
             &tool_activities_json,
             &sources_json,
             phase,
-            error_message,
+            error,
             now_ms(),
         )
         .await
     {
         Ok(()) => true,
         Err(error) => {
-            tauri_plugin_log::log::warn!(
+            tauri_plugin_log::log::error!(
                 "Ask AI failed to persist turn {turn_index} for {conversation_id} (phase {phase}): {error}"
             );
             false
@@ -1667,8 +1743,12 @@ async fn generate_conversation_title(
     {
         Ok(extracted) => extracted,
         Err(error) => {
+            // Kind + the error's head only: the raw provider error can echo
+            // prompt fragments, and user logs leave the machine.
             tauri_plugin_log::log::warn!(
-                "Ask AI title generation failed for {conversation_id}: {error}"
+                "Ask AI title generation failed for {conversation_id} ({}): {}",
+                error.failure_kind(),
+                error.log_detail()
             );
             return;
         }
@@ -1739,9 +1819,51 @@ async fn persist_resolve_failure(
         &[],
         &[],
         "error",
-        Some(reason),
+        Some((reason, resolve_failure_kind(reason))),
     )
     .await
+}
+
+/// Saves a turn stopped before the model ran as a `done` row with no answer —
+/// what finalize saves for a Stop that lands mid-turn — so the frontend's turn
+/// count and Retry (`delete_last_turn`) match the store (CH-04). An abandoned
+/// Quick Recall first question is deleted instead, exactly as at finalize.
+async fn persist_stopped_before_model(
+    infra: &AppInfraState,
+    conversation_id: &str,
+    title: &str,
+    origin: &str,
+    stored_origin: Option<&str>,
+    turn_index: i64,
+    question: &str,
+) {
+    persist_turn(
+        infra,
+        conversation_id,
+        title,
+        origin,
+        turn_index,
+        question,
+        "",
+        None,
+        Some(&[]),
+        &[],
+        &[],
+        "done",
+        None,
+    )
+    .await;
+    abandoned::discard_if_abandoned(
+        infra,
+        conversation_id,
+        origin,
+        stored_origin,
+        turn_index,
+        false,
+        "",
+        &[],
+    )
+    .await;
 }
 
 /// The single stateless-per-turn Ask AI driver used by BOTH start and follow-up.
@@ -1767,6 +1889,7 @@ async fn run_ask_ai_turn(
     origin: String,
     title: String,
     clock: ClientClock,
+    scope: Option<AskAiScope>,
     cancel: Arc<AtomicBool>,
 ) {
     // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
@@ -1844,14 +1967,14 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config_live(
+    let config_result = crate::ai_runtime::resolve_engine_ref_live(
         &settings.ai_runtime,
         pin_ref,
         settings.access.ask_ai_model.as_deref(),
     )
     .await;
-    let config = match config_result {
-        Ok(config) => config,
+    let (engine_provider, config) = match config_result {
+        Ok(resolved) => resolved,
         Err(reason) => {
             // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
             // `ask_ai_update` error (no live view exists for `emit_live_update` to
@@ -1870,6 +1993,9 @@ async fn run_ask_ai_turn(
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+            // Clear the flag before the terminal emit, so a Retry on this row
+            // never meets "a turn is still running" (see `emit_terminal`).
+            remove_inflight_if_owner(&conversation_id, &cancel);
             let _ = app_handle.emit(
                 ASK_AI_UPDATE_EVENT,
                 serde_json::json!({
@@ -1882,7 +2008,6 @@ async fn run_ask_ai_turn(
                     },
                 }),
             );
-            remove_inflight_if_owner(&conversation_id, &cancel);
             return;
         }
     };
@@ -1891,7 +2016,21 @@ async fn run_ask_ai_turn(
     //    is registered yet (that happens at step 4), so emit a direct terminal
     //    `ask_ai_update` Done — version 1, this turn's index — so any
     //    already-attached frontend view for this turn settles instead of hanging.
+    //    The row is saved first (CH-04), so the frontend's turn count and a
+    //    Retry still match the store.
     if cancel.load(Ordering::SeqCst) {
+        persist_stopped_before_model(
+            &infra,
+            &conversation_id,
+            &title,
+            &origin,
+            existing.as_ref().map(|c| c.origin.as_str()),
+            turn_index,
+            &question,
+        )
+        .await;
+        let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+        remove_inflight_if_owner(&conversation_id, &cancel);
         let _ = app_handle.emit(
             ASK_AI_UPDATE_EVENT,
             serde_json::json!({
@@ -1901,9 +2040,13 @@ async fn run_ask_ai_turn(
                 "update": TurnUpdate::Done,
             }),
         );
-        remove_inflight_if_owner(&conversation_id, &cancel);
         return;
     }
+
+    let engine_model = match &config {
+        ai_engine::EngineConfig::Cloud { model, .. }
+        | ai_engine::EngineConfig::Local { model, .. } => model.clone(),
+    };
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
     //    can read the in-flight partial.
@@ -1932,6 +2075,22 @@ async fn run_ask_ai_turn(
     {
         conversation_announced.store(true, Ordering::SeqCst);
         let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+        // Stamp the engine answering this turn, so a later model switch never
+        // relabels this answer. Best-effort, like every persist here.
+        if let Err(error) = infra
+            .conversation()
+            .set_turn_engine(
+                &conversation_id,
+                turn_index,
+                &engine_provider,
+                &engine_model,
+            )
+            .await
+        {
+            tauri_plugin_log::log::warn!(
+                "Ask AI failed to stamp the engine on turn {turn_index} for {conversation_id}: {error}"
+            );
+        }
     }
 
     // Register the in-memory LiveTurn alongside the initial streaming row, at the
@@ -1952,6 +2111,8 @@ async fn run_ask_ai_turn(
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
+            provider: Some(engine_provider),
+            model: Some(engine_model),
             context_tokens: None,
         },
     );
@@ -2008,6 +2169,8 @@ async fn run_ask_ai_turn(
                         .map_err(|error| format!("failed to serialize reference ack: {error}"));
                 }
 
+                // CH3: clamp captured-history windows into the chat's scope.
+                let params = scope::scope_tool_params(scope.as_ref(), &tool, params)?;
                 // Data tool: record the activity, run it through the broker seam,
                 // retain any search results, return the JSON result as a string.
                 if let Ok(mut buffer) = tool_activities.lock() {
@@ -2064,10 +2227,19 @@ async fn run_ask_ai_turn(
     let mcp_manager = (*app_handle.state::<mcp::McpManager>()).clone();
     let (mcp_tools, mcp_notes) = mcp_manager.tools_for_turn(&app_handle).await;
 
-    let tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
+    let mut tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
+    if scope.is_some_and(|scope| !scope.about_you) {
+        tools.retain(|tool| tool.name != "recall_context");
+    }
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
-    let preamble = build_ask_ai_preamble(&mcp_notes);
-    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock);
+    let mut preamble = build_ask_ai_preamble(&mcp_notes);
+    // Quick Recall only ever asks a thread's first turn; later turns come from
+    // Chat (a follow-up still sends the default `quick_recall` origin), which
+    // gets full-length answers.
+    if origin == "quick_recall" && turn_index == 0 {
+        preamble.push_str(QUICK_RECALL_GLANCE);
+    }
+    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock, scope.as_ref());
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2080,6 +2252,10 @@ async fn run_ask_ai_turn(
     // `ask_ai_reasoning` events and accumulate here so every persist (partial /
     // done / error) writes the snapshot through `save_turn`'s `reasoning` arg.
     let reasoning: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    // Spawned partial persists, awaited before a discard so none lands after
+    // the delete and re-creates the row.
+    let partial_persists: Arc<Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>> =
+        Arc::new(Mutex::new(Vec::new()));
     let mut deltas_since_persist = 0usize;
     let mut chars_since_persist = 0usize;
     // Captured for the `ToolCall` arm's tool-activity labelling: the recall-range
@@ -2106,6 +2282,7 @@ async fn run_ask_ai_turn(
         let infra = Arc::clone(&infra);
         let conversation_announced = Arc::clone(&conversation_announced);
         let answer = Arc::clone(&answer);
+        let partial_persists = Arc::clone(&partial_persists);
         let answer_view = Arc::clone(&answer_view);
         let reasoning = Arc::clone(&reasoning);
         let tool_activities = Arc::clone(&tool_activities);
@@ -2115,11 +2292,13 @@ async fn run_ask_ai_turn(
         let question = question.clone();
         move |event: ai_engine::AgentLoopEvent| match event {
             ai_engine::AgentLoopEvent::Delta(text) => {
-                // On the FIRST delta advance the phase to "streaming" and clear any
-                // live tool-activity line. Reading the
-                // current live_activity first avoids a no-op version bump when
-                // there is nothing to clear.
-                {
+                // On the FIRST visible delta advance the phase to "streaming" and
+                // clear any live tool-activity line. Whitespace doesn't count: a
+                // model often sends a bare newline before its tool calls, and
+                // flipping then hid the step line behind an empty answer. Reading
+                // the current live_activity first avoids a no-op version bump
+                // when there is nothing to clear.
+                if !text.trim().is_empty() {
                     let (was_thinking, had_live) = ask_ai_live_turns()
                         .lock()
                         .ok()
@@ -2176,7 +2355,9 @@ async fn run_ask_ai_turn(
                 };
                 // Throttled partial persist for reattach. Spawned so persistence
                 // never blocks the synchronous stream callback.
-                if let Some(answer_so_far) = answer_so_far {
+                // Blank text is never persisted; non-blank partials are tracked
+                // in `partial_persists` so a discard can wait them out.
+                if let Some(answer_so_far) = answer_so_far.filter(|a| !a.trim().is_empty()) {
                     let infra = Arc::clone(&infra);
                     let app_handle = app_handle.clone();
                     let conversation_announced = Arc::clone(&conversation_announced);
@@ -2205,7 +2386,7 @@ async fn run_ask_ai_turn(
                         .lock()
                         .map(|v| v.blocks().to_vec())
                         .unwrap_or_default();
-                    tauri::async_runtime::spawn(async move {
+                    let handle = tauri::async_runtime::spawn(async move {
                         let persisted = persist_turn(
                             &infra,
                             &conversation_id,
@@ -2233,6 +2414,10 @@ async fn run_ask_ai_turn(
                             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
                         }
                     });
+                    if let Ok(mut handles) = partial_persists.lock() {
+                        handles.retain(|h| !h.inner().is_finished());
+                        handles.push(handle);
+                    }
                 }
             }
             ai_engine::AgentLoopEvent::Reasoning(text) => {
@@ -2259,7 +2444,8 @@ async fn run_ask_ai_turn(
                 // set it as the live activity line. Icon resolution is async, so it
                 // is spawned and re-emits an enriched live line if/when it resolves.
                 let now = now_ms();
-                let mut entry = tool_activity::format_tool_activity(
+                let mut entry = scope::scoped_tool_activity(
+                    scope.as_ref(),
                     &name,
                     &params,
                     now,
@@ -2398,7 +2584,13 @@ async fn run_ask_ai_turn(
     // turn; emit the terminal DIRECTLY anyway — continuing THIS turn's own version
     // sequence (`last_version + 1`) so the frontend view for this `turn_index`
     // settles ("Writing…" resolves) with no version gap.
+    // Every terminal path has persisted its final row by the time it emits, so
+    // clear our in-flight flag FIRST: once the frontend sees Done/Error it may
+    // `delete_last_turn` (Regenerate/Retry), which refuses while a turn is in
+    // flight. Only our own flag goes — a displacing newer turn holds a
+    // different `Arc` and must survive our teardown.
     let emit_terminal = |update: TurnUpdate, last_version: &mut u64| {
+        remove_inflight_if_owner(&conversation_id, &cancel);
         match emit_live_update(&app_handle, &conversation_id, turn_token, update.clone()) {
             Some(version) => *last_version = version,
             None => {
@@ -2416,6 +2608,35 @@ async fn run_ask_ai_turn(
             }
         }
     };
+
+    // A cancelled Quick Recall question that never got an answer, or was edited
+    // into a new one, is deleted rather than kept (see `abandoned`); a
+    // displacing newer turn owns the rows.
+    let superseded = abandoned::take_superseded(&conversation_id);
+    let cancelled = run_result.is_ok()
+        && cancel.load(Ordering::SeqCst)
+        && !abandoned::displaced(&conversation_id, &cancel);
+    if cancelled {
+        let handles = partial_persists
+            .lock()
+            .map(|mut h| std::mem::take(&mut *h))
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+    let discarded = cancelled
+        && abandoned::discard_if_abandoned(
+            &infra,
+            &conversation_id,
+            &origin,
+            existing.as_ref().map(|c| c.origin.as_str()),
+            turn_index,
+            superseded,
+            &final_answer,
+            &final_blocks,
+        )
+        .await;
 
     match run_result {
         Ok(()) if !cancel.load(Ordering::SeqCst) && final_answer.trim().is_empty() => {
@@ -2451,7 +2672,7 @@ async fn run_ask_ai_turn(
                 &final_tool_activities,
                 &final_sources,
                 "error",
-                Some(&message),
+                Some((&message, "retryable")),
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2462,6 +2683,12 @@ async fn run_ask_ai_turn(
                 },
                 &mut last_version,
             );
+        }
+        Ok(()) if discarded => {
+            // An abandoned Quick Recall question: the conversation is gone, so
+            // the history list drops it; the view still settles.
+            let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
+            emit_terminal(TurnUpdate::Done, &mut last_version);
         }
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
@@ -2502,15 +2729,20 @@ async fn run_ask_ai_turn(
             }
         }
         Err(error) => {
-            // Display a plain-language sentence; keep the raw provider/transport
-            // detail (status codes, JSON body) in the log for debugging.
+            // Display a plain-language sentence; log the failure kind plus
+            // the error's head (status code, error class) — never the body,
+            // which can echo prompt or answer fragments, and user logs leave
+            // the machine.
             tauri_plugin_log::log::warn!(
-                "Ask AI agent loop failed for {conversation_id}: {error}"
+                "Ask AI agent loop failed for {conversation_id} ({}): {}",
+                error.failure_kind(),
+                error.log_detail()
             );
             // Worded for the engine that failed: on the ChatGPT subscription
             // backend a rejected credential is a sign-in problem, and there is
             // no API key field to send the user to.
             let message = error.user_facing_message_for(config.cloud_provider());
+            let kind = error.failure_kind();
             persist_turn(
                 &infra,
                 &conversation_id,
@@ -2524,7 +2756,7 @@ async fn run_ask_ai_turn(
                 &final_tool_activities,
                 &final_sources,
                 "error",
-                Some(&message),
+                Some((&message, kind)),
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2532,18 +2764,16 @@ async fn run_ask_ai_turn(
             emit_terminal(
                 TurnUpdate::Error {
                     message: message.clone(),
-                    kind: Some(error.failure_kind().to_string()),
+                    kind: Some(kind.to_string()),
                 },
                 &mut last_version,
             );
         }
     }
 
-    // Remove only our own in-flight flag: a newer turn that displaced us holds a
-    // different `Arc` and must survive our teardown.
-    remove_inflight_if_owner(&conversation_id, &cancel);
-    // Likewise remove our LiveTurn ONLY if we still own it — a displacing newer
-    // turn registered a different token and its entry must survive our teardown.
+    // Remove our LiveTurn ONLY if we still own it — a displacing newer turn
+    // registered a different token and its entry must survive our teardown.
+    // (The in-flight flag already went in `emit_terminal`.)
     remove_live_turn_if_owner(&conversation_id, turn_token);
 }
 
@@ -2560,6 +2790,7 @@ pub async fn ask_ai_start(
         prior_transcript: _,
         utc_offset_minutes,
         time_zone,
+        scope,
     } = request;
 
     // Register the in-flight cancel flag FIRST — before the async readiness check —
@@ -2593,6 +2824,7 @@ pub async fn ask_ai_start(
         origin,
         title,
         clock,
+        scope,
         cancel,
     ));
 
@@ -2616,6 +2848,7 @@ pub async fn ask_ai_followup(
         question,
         utc_offset_minutes,
         time_zone,
+        scope,
     } = request;
     let question = question.trim().to_string();
     if question.is_empty() {
@@ -2644,6 +2877,7 @@ pub async fn ask_ai_followup(
         ASK_AI_DEFAULT_ORIGIN.to_string(),
         String::new(),
         clock,
+        scope,
         cancel,
     ));
 
@@ -2664,7 +2898,18 @@ pub async fn ask_ai_cancel(
     // sits behind an async access-readiness check). Record it as pending so the
     // imminent registration brings the turn up already cancelled instead of
     // dropping the cancel and letting the turn run to completion.
-    match take_inflight(&request.conversation_id) {
+    // A pre-registration cancel never writes a row, so only a running turn
+    // needs the discard mark. It is set under the in-flight lock, before the
+    // flag: the turn either sees it at finalize or clears it once its own flag
+    // is gone (see `remove_inflight_if_owner`), so a late mark never lingers.
+    let taken = ask_ai_inflight().lock().ok().and_then(|mut map| {
+        let cancel = map.remove(&request.conversation_id)?;
+        if request.discard {
+            abandoned::mark_superseded(&request.conversation_id);
+        }
+        Some(cancel)
+    });
+    match taken {
         Some(cancel) => cancel.store(true, Ordering::SeqCst),
         None => record_cancel_before_register(&request.conversation_id),
     }
@@ -2730,6 +2975,67 @@ mod tests {
                     conv.turns[0].error_message.as_deref(),
                     Some("no_default_model")
                 );
+            });
+    }
+    #[test]
+    fn a_turn_stopped_before_the_model_is_saved_unless_abandoned() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let infra: AppInfraState = Arc::new(
+                    ::app_infra::AppInfra::initialize(dir.path())
+                        .await
+                        .expect("infra"),
+                );
+                // A follow-up (turn 1) stopped before the model ran keeps its
+                // row, so the next send and a Retry agree with the store.
+                persist_turn(
+                    &infra,
+                    "c1",
+                    "T",
+                    "quick_recall",
+                    0,
+                    "q0",
+                    "a0",
+                    None,
+                    Some(&[]),
+                    &[],
+                    &[],
+                    "done",
+                    None,
+                )
+                .await;
+                persist_stopped_before_model(
+                    &infra,
+                    "c1",
+                    "",
+                    "quick_recall",
+                    Some("quick_recall"),
+                    1,
+                    "q1",
+                )
+                .await;
+                let conv = infra
+                    .conversation()
+                    .get_conversation("c1")
+                    .await
+                    .expect("read")
+                    .expect("conversation exists");
+                assert_eq!(conv.turns.len(), 2);
+                assert_eq!(conv.turns[1].question, "q1");
+                assert_eq!(conv.turns[1].phase, "done");
+
+                // An abandoned Quick Recall first question leaves nothing behind.
+                persist_stopped_before_model(&infra, "c2", "T", "quick_recall", None, 0, "q").await;
+                assert!(infra
+                    .conversation()
+                    .get_conversation("c2")
+                    .await
+                    .expect("read")
+                    .is_none());
             });
     }
     use app_infra::brokered_access::{
@@ -3083,7 +3389,7 @@ model believes the narrower contract: {}",
 
     #[test]
     fn prompt_is_grounding_then_question() {
-        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default());
+        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default(), None);
         // The temporal grounding leads; the bare question trails. No capture
         // context is ever injected — the model gathers it with tool calls.
         assert!(prompt.starts_with("Temporal grounding: "));
@@ -3406,6 +3712,7 @@ model believes the narrower contract: {}",
             app_name: Some("Xcode".to_string()),
             window_title: Some("ContentView.swift".to_string()),
             url: Some("github.com/owner/repo".to_string()),
+            snippet: Some("the <mark>pricing</mark> page".to_string()),
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: None,
@@ -3422,6 +3729,7 @@ model believes the narrower contract: {}",
             app_name: Some("Zoom".to_string()),
             window_title: None,
             url: None,
+            snippet: None,
             started_at: started_at.to_string(),
             ended_at: ended_at.to_string(),
             span_start_ms: Some(3_000),
@@ -3498,6 +3806,7 @@ model believes the narrower contract: {}",
                     app_name: None,
                     window_title: None,
                     url: None,
+                    snippet: None,
                     started_at: result.started_at.clone(),
                     ended_at: result.ended_at.clone(),
                     span_start_ms: result.span_start_ms,
@@ -3652,6 +3961,11 @@ model believes the narrower contract: {}",
         assert_eq!(frame["alignedFrameId"], serde_json::Value::Null);
         // Frame sources carry the guarded host+path; audio sources null it.
         assert_eq!(frame["url"], serde_json::json!("github.com/owner/repo"));
+        // The text match rides along for the evidence row's second line.
+        assert_eq!(
+            frame["snippet"],
+            serde_json::json!("the <mark>pricing</mark> page")
+        );
 
         let audio = &sources[1];
         assert_eq!(audio["kind"], serde_json::json!("audio"));
@@ -3659,6 +3973,7 @@ model believes the narrower contract: {}",
         assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert_eq!(audio["url"], serde_json::Value::Null);
+        assert_eq!(audio["snippet"], serde_json::Value::Null);
         // Mic-vs-system now rides the search result's kind, not a DB post-pass.
         assert_eq!(audio["sourceKind"], serde_json::json!("microphone"));
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));
@@ -3837,6 +4152,20 @@ model believes the narrower contract: {}",
         .expect("extra fields are ignored");
         assert_eq!(request.conversation_id, "conv-2");
         assert_eq!(request.question, "more");
+        assert_eq!(request.scope, None);
+
+        let request: AskAiFollowupRequest = serde_json::from_str(
+            r#"{"conversationId":"c","question":"q","scope":{"fromMs":1,"toMs":2,"aboutYou":false}}"#,
+        )
+        .expect("a scoped follow-up deserializes");
+        assert_eq!(
+            request.scope,
+            Some(AskAiScope {
+                from_ms: Some(1),
+                to_ms: Some(2),
+                about_you: false
+            })
+        );
     }
 
     #[test]
@@ -3977,6 +4306,27 @@ model believes the narrower contract: {}",
     }
 
     #[test]
+    fn a_stale_cancel_for_a_finished_turn_does_not_cancel_a_later_follow_up() {
+        // The blank Chat follow-up: Quick Recall's teardown cancels its thread
+        // after the answer finished and "Continue in Chat" handed it over. No
+        // flag is registered, so `ask_ai_cancel` records it as pending — and the
+        // user's first follow-up in Chat, seconds later, came up cancelled: Done
+        // with no answer, no row saved, Retry → "turn 1 is not the last turn".
+        let id = "inflight-stale-cancel-conv";
+        record_cancel_before_register(id);
+        let follow_up = register_inflight_at(id, std::time::Instant::now() + PENDING_CANCEL_TTL);
+        assert!(
+            !follow_up.load(Ordering::SeqCst),
+            "a cancel older than the start/cancel race window must not cancel a new turn"
+        );
+        let _ = take_inflight(id);
+        // And it is consumed, not left to hit a turn after this one.
+        let next = register_inflight(id);
+        assert!(!next.load(Ordering::SeqCst));
+        let _ = take_inflight(id);
+    }
+
+    #[test]
     fn cancel_with_live_turn_takes_flag_and_skips_pending() {
         // When a flag IS registered, cancel takes + sets it (existing behavior) and
         // must NOT leave a pending entry that would poison the next turn.
@@ -3997,6 +4347,16 @@ model believes the narrower contract: {}",
     }
 
     #[test]
+    fn turn_in_flight_tracks_the_registered_flag() {
+        let id = "inflight-delete-guard-conv";
+        assert!(!turn_in_flight(id));
+        let cancel = register_inflight(id);
+        assert!(turn_in_flight(id), "delete_last_turn must refuse mid-turn");
+        remove_inflight_if_owner(id, &cancel);
+        assert!(!turn_in_flight(id));
+    }
+
+    #[test]
     fn remove_if_owner_spares_a_displacing_turn() {
         let id = "inflight-owner-conv";
         let first = register_inflight(id);
@@ -4005,6 +4365,21 @@ model believes the narrower contract: {}",
         remove_inflight_if_owner(id, &first);
         let still = take_inflight(id).expect("newer flag should still be registered");
         assert!(Arc::ptr_eq(&still, &second));
+    }
+
+    #[test]
+    fn a_late_superseded_mark_is_dropped_with_the_turns_flag() {
+        let id = "inflight-late-superseded-conv";
+        let ours = register_inflight(id);
+        // A displaced turn finishing leaves the newer turn's mark alone.
+        let newer = register_inflight(id);
+        abandoned::mark_superseded(id);
+        remove_inflight_if_owner(id, &ours);
+        assert!(abandoned::take_superseded(id));
+        // The owner finishing drops a mark that arrived after its finalize.
+        abandoned::mark_superseded(id);
+        remove_inflight_if_owner(id, &newer);
+        assert!(!abandoned::take_superseded(id));
     }
 
     // ── LiveTurn store / versioned transport (Slice 4) ───────────────────────
@@ -4026,6 +4401,8 @@ model believes the narrower contract: {}",
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
+            provider: None,
+            model: None,
             context_tokens: None,
         }
     }

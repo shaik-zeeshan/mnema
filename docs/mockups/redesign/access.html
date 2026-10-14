@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — CLI Access</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* CLI Access. Prefix: ac- (approval window) · st- (Settings shell, copied from settings.html).
+       Views (?view=…, or #…; on-page switcher): request · unnamed · widen · submitting · submit-failed · expired · blocked ·
+       loading · load-failed · no-request (approval window) | manage · manage-loading · manage-error · empty · cli-missing (Settings).
+       ?theme=light for renders.
+       Real seams: routes/access/request/+page.svelte (window, AppWindow::CliAccessRequest 520×600),
+       lib/settings/panels/data/Access.svelte + state/cli-access.svelte.ts (Settings), ADR 0059. */
+
+    /* --- Desk + mockup switcher (not product UI) -------------------------- */
+    .ac-desk { position: relative; min-height: 100vh; display: grid; place-items: center; padding: 64px var(--s-6) var(--s-6); }
+    .ac-desk[data-win="manage"] { place-items: start center; }
+    .ac-switch { position: absolute; top: 14px; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: var(--s-3); z-index: 60;
+      padding: 2px 2px 2px 10px; border-radius: var(--r-md); border: 1px dashed var(--app-border-strong); }
+    .ac-switch .mx-label { white-space: nowrap; }
+    .ac-switch select { appearance: none; height: var(--h-sm); min-width: 220px; padding: 0 26px 0 10px; border-radius: var(--r-sm);
+      border: 1px solid var(--app-border-strong); background: var(--app-surface-raised); color: var(--app-text-strong); font: 400 var(--text-base)/1 var(--font-sans); cursor: pointer; }
+    .ac-desk [data-for] { display: none; }
+    .ac-desk[data-win="request"] [data-for~="request"], .ac-desk[data-win="manage"] [data-for~="manage"] { display: grid; }
+    [data-mv][hidden], [data-rq][hidden] { display: none !important; }
+    .ac-desk:has(> .ac-caption:not([hidden])) { grid-auto-flow: column; justify-content: center; gap: var(--s-6); }
+    .ac-caption { width: 340px; }
+    .ac-caption .mx-notice { grid-template-columns: auto 1fr; align-items: start; }
+    .ac-err .mx-inline { flex-wrap: nowrap; align-items: flex-start; }
+    .ac-err .mx-inline svg { margin-top: 3px; }
+    .ac-dlg .mx-empty { padding: var(--s-6) var(--s-5); }
+
+    /* --- Approval window: a small focused floating window ------------------ */
+    .mx-window.ac-dlg { width: 520px; height: auto; min-height: 0; grid-template-rows: var(--mx-titlebar-h) auto auto; background: var(--app-surface); }
+    .ac-strip { position: relative; display: flex; align-items: center; border-bottom: 1px solid var(--mx-hairline); user-select: none; }
+    .ac-strip:hover .mx-lights i:nth-child(1) { background: var(--app-status-running-dot); }
+    .ac-strip:hover .mx-lights i:nth-child(2) { background: var(--app-status-paused-dot); }
+    .ac-strip:hover .mx-lights i:nth-child(3) { background: var(--app-source-mic); }
+    .ac-strip__title { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+      font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+
+    .ac-body { display: grid; gap: var(--s-4); padding: var(--s-5) var(--s-5) var(--s-4); }
+    .ac-head { display: grid; gap: 6px; }
+    .ac-head .mx-h2 { text-wrap: balance; }
+    .ac-head .mx-body-sm { margin: 0; }
+
+    /* Who is asking: the focal block. Neutral — never green for an unverified identity. */
+    .ac-who { display: grid; gap: var(--s-3); padding: 14px var(--s-4); }
+    .ac-who__top { display: flex; align-items: center; gap: var(--s-3); }
+    .ac-glyph { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--r-md);
+      background: var(--mx-wash); color: var(--app-text-muted); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+    .ac-who__name { display: grid; gap: 3px; min-width: 0; }
+    .ac-who__name .mx-h3 { overflow-wrap: anywhere; }
+    .ac-who__age { margin-left: auto; font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; }
+    .ac-cmd { display: block; padding: 7px 10px; border-radius: var(--r-sm); background: var(--app-surface-subtle); border: 1px solid var(--mx-hairline);
+      font: 450 var(--text-sm)/1.45 var(--font-mono); color: var(--app-text); overflow-wrap: anywhere; }
+    .ac-cmd b { font-weight: 500; color: var(--app-text-strong); }
+    .ac-cmd span { color: var(--app-text-subtle); }
+
+    /* Notes use the kit States (mx-notice / mx-inline); only spacing is page-local. */
+    .ac-body .mx-notice { padding: 8px 10px; }
+    .ac-body .mx-notice__icon { width: 24px; height: 24px; }
+    .ac-body .mx-notice__text b { color: var(--app-text-strong); font-weight: 600; }
+    .mx-notice[hidden], .mx-inline[hidden] { display: none; }
+    .ac-hint { font-size: var(--text-sm); color: var(--app-text-subtle); }
+    .ac-err { padding: 0 var(--s-5) var(--s-3); }
+
+    .ac-scope { display: grid; gap: var(--s-2); }
+    .ac-scope__label { display: flex; align-items: baseline; gap: var(--s-2); }
+    .ac-scope__label .mx-label { color: var(--app-text-muted); }
+    .ac-scope .mx-choice__opt { padding-top: 9px; padding-bottom: 9px; }
+    .ac-scope .mx-choice__desc { font-size: var(--text-sm); }
+    .ac-was { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-muted); }
+
+    .ac-foot { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-5) var(--s-4); border-top: 1px solid var(--mx-hairline); }
+    .ac-foot[hidden] { display: none; }
+
+    /* Receipt after the click (Allow already exists; Block is new). */
+    .ac-receipt { display: grid; justify-items: start; gap: var(--s-2); padding: var(--s-6) var(--s-5) var(--s-5); }
+    .ac-receipt[hidden], .ac-body[hidden] { display: none; }
+    .ac-receipt__icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; margin-bottom: var(--s-1);
+      color: var(--app-accent); background: var(--app-accent-bg); box-shadow: inset 0 0 0 1px var(--app-accent-border); }
+    .ac-receipt[data-tone="danger"] .ac-receipt__icon { color: var(--app-danger-strong); background: var(--app-danger-bg); box-shadow: inset 0 0 0 1px var(--app-danger-border); }
+    .ac-receipt[data-tone="neutral"] .ac-receipt__icon { color: var(--app-text-muted); background: var(--mx-wash); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+    .ac-receipt .mx-prose { font-size: var(--text-md); }
+    .ac-receipt .mx-prose b { color: var(--app-text-strong); font-weight: 600; }
+
+    /* --- Settings shell (trimmed copy of settings.html; same st- names so it maps to the same components) */
+    .mx-window.st-window { grid-template-rows: 1fr; height: calc(100vh - 96px); }
+    .st-layout { display: grid; grid-template-columns: 252px minmax(0, 1fr); height: 100%; min-height: 0; }
+    .st-side { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--mx-hairline);
+      background: color-mix(in srgb, var(--app-surface) 62%, var(--app-bg)); }
+    [data-theme="light"] .st-side { background: color-mix(in srgb, var(--app-fg) 3.5%, var(--app-bg)); }
+    .st-side__top { height: 52px; flex: none; display: flex; align-items: center; user-select: none; }
+    .st-side__top .mx-lights { padding-left: 16px; }
+    .st-side__head { display: grid; gap: var(--s-3); padding: 0 var(--s-3) var(--s-3); }
+    .st-back { justify-self: start; margin-left: -6px; }
+    .st-back svg { color: var(--app-text-subtle); }
+    .st-side .mx-search { padding-left: 10px; background: color-mix(in srgb, var(--app-fg) 4%, transparent); border-color: var(--mx-hairline); }
+    .st-side .mx-search input { font-size: var(--text-base); }
+    .st-nav { flex: 1; min-height: 0; overflow: auto; display: grid; align-content: start; gap: 2px; padding: var(--s-1) var(--s-3) var(--s-4); }
+    .st-group__btn { display: flex; align-items: center; gap: 10px; width: 100%; height: 32px; padding: 0 var(--s-2) 0 5px;
+      border: 0; border-radius: var(--r-md); background: none; text-align: left; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text); }
+    .st-group__btn[aria-current="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    .st-tile { flex: none; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px;
+      color: var(--t); background: color-mix(in srgb, var(--t) 13%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t) 22%, transparent); }
+    .st-group__btn[aria-current="true"] .st-tile { color: var(--app-bg); background: var(--t); box-shadow: none; }
+    [data-theme="light"] .st-group__btn[aria-current="true"] .st-tile { color: var(--app-surface); }
+    .st-subnav { position: relative; display: grid; gap: 1px; margin: 2px 0 6px 16px; padding-left: 13px; }
+    .st-subnav::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 1px; background: var(--mx-hairline); }
+    .st-subnav a { display: block; padding: 5px var(--s-2); border-radius: var(--r-sm); font: 400 var(--text-base)/1.25 var(--font-sans); color: var(--app-text-subtle); text-decoration: none; }
+    .st-subnav a[aria-current="true"] { color: var(--app-text-strong); font-weight: 500; background: var(--mx-selected); }
+    .st-side__foot { flex: none; display: grid; gap: 8px; padding: var(--s-3) var(--s-4) var(--s-4); border-top: 1px solid var(--mx-hairline); }
+    .st-foot__rec { display: flex; align-items: center; gap: var(--s-2); }
+    .st-foot__rec .mx-rec { height: 18px; padding: 0 7px 0 6px; gap: 6px; font: 500 var(--text-xs)/1 var(--font-mono); }
+    .st-foot__meta { font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .st-content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 52px minmax(0, 1fr); }
+    .st-bar { display: flex; align-items: center; gap: var(--s-3); padding: 0 var(--s-5) 0 var(--s-7); user-select: none; }
+    .st-bar__crumb { display: flex; align-items: center; gap: 6px; font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .st-bar__crumb span { color: var(--app-text-subtle); font-weight: 400; }
+    .st-bar__crumb span::before { content: "›"; margin-right: 6px; color: var(--app-text-faint); }
+    .st-main { padding: var(--s-4) var(--s-7) var(--s-8); min-width: 0; overflow: auto; }
+    .st-page { max-width: 760px; }
+    .st-page__head { display: grid; gap: var(--s-2); margin-bottom: var(--s-6); }
+    .st-section { margin-bottom: var(--s-7); }
+    .st-section[hidden] { display: none; }
+    .st-section__head { display: flex; align-items: baseline; gap: var(--s-3); padding-bottom: var(--s-2); }
+    .st-section__head .mx-h3 { font-size: var(--text-md); }
+    .st-section__head .mx-btn { margin-left: auto; align-self: center; }
+    .st-section__hint { margin: 0; font-size: var(--text-base); color: var(--app-text-subtle); }
+    .st-rows { border-top: 1px solid var(--app-border); }
+    .st-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-6); padding: 14px 0; border-bottom: 1px solid var(--mx-hairline); }
+    .st-row__label { font: 500 var(--text-md)/1.35 var(--font-sans); color: var(--app-text-strong); display: flex; align-items: center; gap: var(--s-2); }
+    .st-row__desc { margin: 3px 0 0; font-size: var(--text-base); line-height: 1.5; color: var(--app-text-muted); max-width: 52ch; }
+    .st-row__ctl { display: flex; align-items: center; gap: var(--s-2); justify-self: end; }
+    .st-path { font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text); }
+
+    /* Tool rows: name + provenance · scope · last use · idle-expiry meter · action */
+    .ac-list { border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface); }
+    .ac-tool { display: grid; grid-template-columns: 32px minmax(0, 1fr) 132px auto; align-items: center; gap: var(--s-3);
+      padding: 12px var(--s-3) 12px 14px; border-top: 1px solid var(--mx-hairline); }
+    .ac-tool:first-child { border-top: 0; }
+    .ac-tool__main { display: grid; gap: 5px; min-width: 0; }
+    .ac-tool__name { display: flex; align-items: center; gap: var(--s-2); font: 500 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .ac-tool__meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font: 400 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-subtle); }
+    .ac-tool__meta i { font-style: normal; color: var(--app-text-faint); }
+    .ac-tool__meta code { font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text-muted); }
+    .ac-tool.is-blocked .ac-tool__name { color: var(--app-text-muted); }
+    .ac-tool.is-blocked .ac-glyph { color: var(--app-danger-text); background: var(--app-danger-bg); box-shadow: inset 0 0 0 1px var(--app-danger-border); }
+    .ac-tool .mx-pop-anchor { justify-self: end; }
+    /* Idle meter: how much of the 30-day idle window is left. Not a calendar expiry. */
+    .ac-idle { display: grid; gap: 5px; }
+    .ac-idle b { font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); white-space: nowrap; }
+    .ac-idle__bar { height: 3px; border-radius: 2px; background: var(--mx-wash-strong); overflow: hidden; }
+    .ac-idle__bar i { display: block; height: 100%; width: var(--left); border-radius: 2px; background: var(--chart-grey-4); }
+    /* Lapsing is benign disuse (ADR 0059), not a fault: the soon state only gets stronger ink, no warn color. */
+    .ac-idle.is-soon b { color: var(--app-text-strong); }
+    .ac-idle--blocked b { color: var(--app-text-subtle); }
+    .ac-tool .mx-btn--danger.mx-btn--ghost { --_fg: var(--app-danger-text); }
+
+    /* Unblock confirm (stands in for the plugin-dialog confirm the app uses) */
+    .ac-confirm { width: 300px; padding: var(--s-4); display: grid; gap: var(--s-3); }
+    .ac-confirm p { margin: 0; }
+    .ac-confirm__actions { display: flex; justify-content: flex-end; gap: var(--s-2); }
+
+    /* Activity (audit) */
+    .ac-log { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; margin: 0; padding: 0; list-style: none; }
+    .ac-log li { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; gap: var(--s-4);
+      padding: 9px 2px; border-bottom: 1px solid var(--mx-hairline); font: 400 var(--text-base)/1.3 var(--font-sans); color: var(--app-text-muted); }
+    .ac-log b { font-weight: 500; color: var(--app-text); }
+    .ac-log code { font: 450 var(--text-sm)/1 var(--font-mono); color: var(--app-text); }
+    .ac-log .num { font-size: var(--text-sm); color: var(--app-text-subtle); text-align: right; }
+    .ac-log .is-refused { color: var(--app-warn); font-weight: 500; }
+
+    .ac-list .mx-empty code { font: 450 var(--text-sm)/1 var(--font-mono); padding: 2px 5px; border-radius: var(--r-xs); background: var(--mx-wash); color: var(--app-text); }
+    .ac-list .mx-skel-row { padding: 12px 14px; }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="ac-terminal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></symbol>
+    <symbol id="ac-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="ac-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="ac-octagon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.7 3h6.6l4.7 4.7v6.6L15.3 21H8.7L4 16.3V9.7Z"/><path d="M12 8v4M12 16h.01"/></symbol>
+    <symbol id="ac-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="ac-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="ac-ban" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="m5.6 5.6 12.8 12.8"/></symbol>
+    <symbol id="ac-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="ac-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="ac-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="ac-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="st-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 6-6 6 6 6"/></symbol>
+    <symbol id="st-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="st-capture" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="st-data" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    <symbol id="st-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></symbol>
+  </defs>
+</svg>
+
+<div class="ac-desk" id="ac-desk" data-win="request">
+  <!-- Mockup-only switcher (not product UI) -->
+  <label class="ac-switch">
+    <span class="mx-label">Mockup view</span>
+    <select id="ac-views" aria-label="Mockup view">
+      <optgroup label="Approval window"><option value="request">Request · inferred identity</option><option value="unnamed">Request · unnamed tool</option><option value="widen">Scope widen</option>
+        <option value="submitting">Allowing…</option><option value="submit-failed">Save failed</option><option value="expired">Tool stopped waiting (timed out)</option><option value="blocked">Blocked in Settings meanwhile</option>
+        <option value="loading">Loading request</option><option value="load-failed">Couldn’t load request</option><option value="no-request">No request waiting</option></optgroup>
+      <optgroup label="Settings → Data → CLI Access"><option value="manage">Tools list</option><option value="manage-loading">Loading</option><option value="manage-error">Failed to load</option><option value="empty">No tools yet</option><option value="cli-missing">CLI not installed</option></optgroup>
+    </select>
+  </label>
+
+  <!-- ================= Approval window (request + widen) ================= -->
+  <div class="mx-window ac-dlg" data-for="request widen" role="dialog" aria-modal="true" aria-labelledby="ac-title">
+    <div class="ac-strip" data-tauri-drag-region>
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="ac-strip__title">CLI Access</span>
+    </div>
+
+    <div class="ac-body" data-rq="loading" aria-busy="true"><span class="mx-sr">Loading access request…</span>
+      <div class="mx-skel mx-skel--title"></div>
+      <div class="mx-panel mx-panel--inset ac-who"><div class="mx-skel-row" style="padding:0"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div></div>
+      <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div></div>
+    <div data-rq="failed"><div class="mx-empty" data-tone="danger"><span class="mx-empty__glyph"><svg width="18" height="18"><use href="#ac-alert"/></svg></span>
+      <h2 class="mx-empty__title">Couldn’t load the request</h2><p class="mx-empty__text">The access service didn’t answer. The tool is still waiting — try again.</p>
+      <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#ac-refresh"/></svg>Retry</button></div></div></div>
+    <div data-rq="none"><div class="mx-empty"><span class="mx-empty__glyph"><svg width="18" height="18"><use href="#ac-clock"/></svg></span>
+      <h2 class="mx-empty__title">No request waiting</h2><p class="mx-empty__text">There’s no pending CLI Access request right now. You can close this window.</p></div></div>
+
+    <div class="ac-body" id="ac-body" data-rq="form">
+      <header class="ac-head">
+        <span class="mx-kicker" id="ac-kicker">Access request</span>
+        <h1 class="mx-h2" id="ac-title"></h1>
+        <p class="mx-body-sm" id="ac-lede"></p>
+      </header>
+
+      <section class="mx-panel mx-panel--inset ac-who" aria-label="Requesting tool">
+        <div class="ac-who__top">
+          <span class="ac-glyph"><svg width="16" height="16"><use href="#ac-terminal"/></svg></span>
+          <div class="ac-who__name">
+            <div style="display:flex;align-items:center;gap:8px"><span class="mx-h3" id="ac-tool"></span><span class="mx-chip" id="ac-source"></span></div>
+          </div>
+          <time class="ac-who__age" id="ac-age" data-tip="Waiting — the tool gives up after 2 min">just now</time>
+        </div>
+        <code class="ac-cmd" id="ac-cmd"></code>
+        <div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="13" height="13"><use href="#ac-alert"/></svg></span>
+          <p class="mx-notice__text">This name is reported by the tool and can’t be verified. Any program that can run <b>mnema</b> can use it.</p></div>
+      </section>
+
+      <fieldset class="ac-scope" style="border:0;margin:0;padding:0;min-width:0">
+        <legend class="ac-scope__label" style="padding:0;margin-bottom:8px"><span class="mx-label">What it can read</span></legend>
+        <div class="ac-was" id="ac-was" hidden></div>
+        <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="What it can read" id="ac-scopes">
+          <label class="mx-choice__opt"><input type="radio" name="scope" value="lastDay" />
+            <span class="mx-choice__title">Last day <span class="mx-choice__tag"></span></span>
+            <span class="mx-choice__desc">Only text captured in the last 24 hours.</span></label>
+          <label class="mx-choice__opt"><input type="radio" name="scope" value="last7Days" />
+            <span class="mx-choice__title">Last 7 days <span class="mx-choice__tag"></span></span>
+            <span class="mx-choice__desc">Text captured in the last 7 days.</span></label>
+          <label class="mx-choice__opt"><input type="radio" name="scope" value="allRetained" />
+            <span class="mx-choice__title">All retained <span class="mx-choice__tag"></span></span>
+            <span class="mx-choice__desc">Your entire retained capture history.</span></label>
+        </div>
+        <div class="mx-notice" data-tone="danger" id="ac-broad" hidden style="margin-top:8px"><span class="mx-notice__icon"><svg width="13" height="13"><use href="#ac-octagon"/></svg></span>
+          <p class="mx-notice__text"><b>Reads your entire history.</b> Everything Mnema has retained — every app, every window, every transcript.</p></div>
+        <p class="ac-hint" id="ac-hint" style="margin:8px 0 0"></p>
+      </fieldset>
+
+      <div class="mx-notice"><span class="mx-notice__icon"><svg width="13" height="13"><use href="#ac-clock"/></svg></span>
+        <p class="mx-notice__text"><b>Standing until idle.</b> <span id="ac-terms"></span> If it goes unused for <span class="num">30</span> days, the permission lapses and the next request asks again.</p></div>
+    </div>
+    <!-- action error (+page.svelte:629-640): sits above the footer, keeps the form -->
+    <div class="ac-err" id="ac-err" role="alert" hidden><span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#ac-alert"/></svg><span id="ac-err-text"></span></span></div>
+
+    <!-- After the click -->
+    <div class="ac-receipt" id="ac-receipt" role="status" aria-live="polite" hidden>
+      <span class="ac-receipt__icon"><svg width="18" height="18"><use id="ac-r-icon" href="#ac-check"/></svg></span>
+      <h2 class="mx-h2" id="ac-r-title"></h2>
+      <p class="mx-prose" id="ac-r-body"></p>
+      <p class="mx-body-sm" style="margin:0">Manage it in Settings → Data → CLI Access.</p>
+    </div>
+
+    <footer class="ac-foot" id="ac-foot" data-rq="form">
+      <button class="mx-btn mx-btn--ghost mx-btn--danger" id="ac-block" data-tip="Refuse this tool now and every time — no window, no asking" data-tip-pos="top"><svg width="14" height="14"><use href="#ac-ban"/></svg>Block</button>
+      <span class="mx-spacer"></span>
+      <button class="mx-btn" id="ac-deny">Deny<kbd>Esc</kbd></button>
+      <!-- Deliberately NOT --primary: a consent click gets no green pull. Accent lives in the icon only. -->
+      <button class="mx-btn" id="ac-allow"><svg class="mx-btn__accent" width="14" height="14"><use href="#ac-lock"/></svg><span>Allow access</span></button>
+    </footer>
+    <footer class="ac-foot" data-rq="loading failed none"><span class="mx-spacer"></span><button class="mx-btn">Close</button></footer>
+    <footer class="ac-foot" id="ac-foot-done" hidden>
+      <button class="mx-btn mx-btn--ghost mx-btn--sm" id="ac-reset"><svg width="13" height="13"><use href="#ac-refresh"/></svg>Replay request</button>
+      <span class="mx-spacer"></span>
+      <button class="mx-btn" id="ac-close">Close</button>
+    </footer>
+  </div>
+
+  <div class="ac-caption" data-mv="blocked" hidden>
+    <div class="mx-notice" data-tone="info"><span class="mx-notice__icon"><svg width="13" height="13"><use href="#ac-ban"/></svg></span>
+      <b class="mx-notice__title">A tool that’s already blocked never gets this window</b>
+      <p class="mx-notice__text">The block is checked first and refused silently. The tool’s terminal shows: <code class="num">Mnema access for this client is blocked. Only Mnema can lift it: Settings → Data → Access.</code> This state is the rarer race: you blocked it in Settings while its window was open.</p></div>
+  </div>
+
+  <!-- ================= Settings → Data → CLI Access ================= -->
+  <div class="mx-window st-window" data-for="manage">
+    <div class="st-layout">
+      <aside class="st-side" aria-label="Settings sections">
+        <div class="st-side__top" data-tauri-drag-region><div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div></div>
+        <div class="st-side__head">
+          <a class="mx-btn mx-btn--ghost mx-btn--sm st-back" href="timeline.html"><svg width="14" height="14"><use href="#st-back"/></svg>Back to app<kbd>Esc</kbd></a>
+          <label class="mx-search"><svg width="13" height="13"><use href="#i-search"/></svg><input placeholder="Search settings" aria-label="Search settings" /><kbd>/</kbd></label>
+        </div>
+        <nav class="st-nav">
+          <button class="st-group__btn"><span class="st-tile" style="--t:var(--chart-grey-4)"><svg width="13" height="13"><use href="#st-sliders"/></svg></span>General</button>
+          <button class="st-group__btn"><span class="st-tile" style="--t:var(--app-source-screen)"><svg width="13" height="13"><use href="#st-capture"/></svg></span>Capture</button>
+          <button class="st-group__btn"><span class="st-tile" style="--t:var(--cat-learning)"><svg width="13" height="13"><use href="#i-sparkle"/></svg></span>Intelligence</button>
+          <div>
+            <button class="st-group__btn" aria-current="true"><span class="st-tile" style="--t:var(--cat-organizing)"><svg width="13" height="13"><use href="#st-data"/></svg></span>Data</button>
+            <div class="st-subnav"><a href="settings.html#s-storage">Storage</a><a href="#manage" aria-current="true">CLI Access</a></div>
+          </div>
+          <button class="st-group__btn"><span class="st-tile" style="--t:var(--cat-research)"><svg width="13" height="13"><use href="#st-info"/></svg></span>About</button>
+        </nav>
+        <div class="st-side__foot">
+          <div class="st-foot__rec"><span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC <span class="num">02:14:07</span></span></div>
+          <div class="st-foot__meta">Mnema <span class="num">0.1.23</span> · stable</div>
+        </div>
+      </aside>
+
+      <section class="st-content">
+        <header class="st-bar" data-tauri-drag-region>
+          <div class="st-bar__crumb"><b>Data</b><span>CLI Access</span></div>
+        </header>
+        <div class="st-main">
+          <article class="st-page">
+            <header class="st-page__head">
+              <h1 class="mx-h1">CLI Access</h1>
+              <p class="mx-prose">Local tools and AI agents can read your searchable Mnema text — screen text, transcripts and timeline results, with the app and window each came from. Never media files, raw database rows or full web addresses. One standing permission per tool.</p>
+            </header>
+
+            <section class="st-section">
+              <div class="st-rows">
+                <div class="st-row" data-mv="manage manage-loading manage-error empty"><div><div class="st-row__label">mnema command</div>
+                  <p class="st-row__desc">Installed at <span class="st-path">/usr/local/bin/mnema</span>.</p></div>
+                  <div class="st-row__ctl"><button class="mx-btn">Reinstall CLI</button></div></div>
+                <div class="st-row" data-mv="cli-missing"><div><div class="st-row__label">mnema command</div>
+                  <span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#ac-alert"/></svg>Not installed at <span class="st-path">/usr/local/bin/mnema</span> — install it before tools can ask for access.</span></div>
+                  <div class="st-row__ctl"><button class="mx-btn">Install CLI</button></div></div>
+              </div>
+            </section>
+
+            <section class="st-section" id="ac-active-sec" data-mv="manage cli-missing">
+              <div class="st-section__head"><h2 class="mx-h3">Tools with access <span class="num mx-label" id="ac-active-n"></span></h2>
+                <p class="st-section__hint">Each lapses <span class="num">30</span> days after its last use.</p></div>
+              <div class="ac-list" id="ac-active"></div>
+            </section>
+
+            <section class="st-section" id="ac-blocked-sec" data-mv="manage cli-missing">
+              <div class="st-section__head"><h2 class="mx-h3">Blocked <span class="num mx-label" id="ac-blocked-n"></span></h2>
+                <p class="st-section__hint">Refused before any window opens. Never lapses.</p></div>
+              <div class="ac-list" id="ac-blocked"></div>
+            </section>
+
+            <section class="st-section" data-mv="empty manage-loading manage-error">
+              <div class="st-section__head"><h2 class="mx-h3">Tools with access</h2></div>
+              <div class="ac-list" data-mv="empty"><div class="mx-empty mx-empty--compact">
+                  <span class="mx-empty__glyph"><svg width="14" height="14"><use href="#ac-terminal"/></svg></span>
+                  <b class="mx-empty__title">No tool has access</b>
+                  <p class="mx-empty__text">The first time an agent runs a command like <code>mnema search</code>, a window asks you. Tools you allow — or block — show up here.</p></div></div>
+              <div class="ac-list" data-mv="manage-loading" aria-busy="true"><span class="mx-sr">Loading tools…</span>
+                <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+                <div class="mx-skel-row"><div class="mx-skel mx-skel--circle"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div></div>
+              <div class="ac-list" data-mv="manage-error"><div class="mx-empty mx-empty--compact" data-tone="danger">
+                  <span class="mx-empty__glyph"><svg width="14" height="14"><use href="#ac-alert"/></svg></span>
+                  <b class="mx-empty__title">Couldn’t load CLI Access permissions</b>
+                  <p class="mx-empty__text">database is locked. Tools keep the access they had; this list refreshes every 30 s.</p>
+                  <div class="mx-empty__acts"><button class="mx-btn mx-btn--sm"><svg width="12" height="12"><use href="#ac-refresh"/></svg>Retry</button></div></div></div>
+            </section>
+
+            <section class="st-section">
+              <div class="st-section__head"><h2 class="mx-h3">Recent activity</h2>
+                <button class="mx-btn mx-btn--ghost mx-btn--sm" data-mv="manage cli-missing manage-error"><svg width="13" height="13"><use href="#ac-folder"/></svg>Reveal log in Finder</button></div>
+              <ul class="ac-log" aria-label="Recent CLI activity" data-mv="manage cli-missing manage-error">
+                <li><b>Claude Code</b><code>search</code><span>14 results</span><span class="num" data-tip="Oct 10, 10:42">12 min ago</span></li>
+                <li><b>Claude Code</b><code>show-text</code><span>1 result</span><span class="num" data-tip="Oct 10, 10:41">13 min ago</span></li>
+                <li><b>Codex</b><code>timeline</code><span class="is-refused">Out of scope</span><span class="num" data-tip="Oct 7, 16:05">3 days ago</span></li>
+                <li><b>Codex</b><code>search</code><span>6 results</span><span class="num" data-tip="Oct 7, 16:04">3 days ago</span></li>
+                <li><b>curl-wrapper</b><code>search</code><span class="is-refused">Denied</span><span class="num" data-tip="Sep 30, 21:12">10 days ago</span></li>
+              </ul>
+              <p class="mx-body-sm" data-mv="empty" style="margin:0">Nothing yet. Commands run by tools with access are recorded here.</p>
+              <div aria-busy="true" data-mv="manage-loading"><span class="mx-sr">Loading activity…</span><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div></div>
+            </section>
+          </article>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const desk = $("#ac-desk");
+  // View → which window, which request, and which body state (+page.svelte:456-640).
+  const VIEWS = {
+    request: { req: "request" }, unnamed: { req: "unnamed" }, widen: { req: "widen" },
+    submitting: { req: "request", busy: true },
+    "submit-failed": { req: "request", err: "Couldn’t save this permission — nothing was granted. Try again, or deny the request." },
+    expired: { req: "request", age: "Requested 2 min ago", gone: true,
+      err: "This request is no longer valid — the requesting tool stopped waiting. You can close this window." },
+    blocked: { req: "widen", gone: true, err: "This tool is blocked in Settings. Unblock it there first." },
+    loading: { rq: "loading" }, "load-failed": { rq: "failed" }, "no-request": { rq: "none" },
+    manage: { win: "manage" }, "manage-loading": { win: "manage" }, "manage-error": { win: "manage" }, empty: { win: "manage" }, "cli-missing": { win: "manage" },
+  };
+  const q = new URLSearchParams(location.search);
+  let view = q.get("view") || location.hash.slice(1);
+  if (q.get("empty") === "1" && view === "manage") view = "empty";
+  if (!VIEWS[view]) view = "request";
+  const inView = (el) => el.dataset.mv.split(" ").includes(view);
+
+  // Real identity provenance (BrokerClientIdentitySource) → chip. Warn when not explicit/env.
+  const SOURCE = {
+    explicit: ["Declared", "Identity declared by the tool", false],
+    env: ["From env", "Identity from an environment variable", false],
+    inferred: ["Inferred", "Identity inferred from the process", true],
+    defaulted: ["Unnamed", "No identity provided", true],
+  };
+  const SCOPE = { lastDay: "Last day", last7Days: "Last 7 days", allRetained: "All retained" };
+  const PROSE = { lastDay: "your last 24 hours", last7Days: "your last 7 days", allRetained: "your entire retained history" };
+  const RANK = { lastDay: 0, last7Days: 1, allRetained: 2 };
+
+  // PendingCliAccessRequestDto shape: client{label,source}, command, minimumScope, preferredScope, currentScope.
+  const REQ = {
+    request: { tool: "Claude Code", source: "inferred", cmd: '<b>mnema search</b> --query "pricing page draft" <span>--limit 20</span>',
+      min: "lastDay", pref: "last7Days", current: null },
+    unnamed: { tool: "mnema CLI", source: "defaulted", cmd: '<b>mnema search</b> --query "invoice" <span>--json</span>',
+      min: "lastDay", pref: "lastDay", current: null },
+    widen: { tool: "Codex", source: "inferred", cmd: '<b>mnema timeline</b> --from 2026-10-04 <span>--to 2026-10-10</span>',
+      min: "last7Days", pref: "last7Days", current: "lastDay" },
+  };
+
+  function renderRequest(kind) {
+    const v = VIEWS[kind]; kind = v.req;
+    const r = REQ[kind];
+    const [chip, tip, warn] = SOURCE[r.source];
+    $("#ac-kicker").textContent = r.current ? "More history needed" : "Access request";
+    $("#ac-title").textContent = r.current ? `${r.tool} needs more of your history` : `${r.tool} wants to read your Mnema history`;
+    $("#ac-lede").textContent = r.current
+      ? `Its command reaches back further than ${PROSE[r.current]}. Allowing updates the permission it already has — results it’s holding keep working.`
+      : "A command-line tool is asking for standing access to your searchable Mnema text.";
+    $("#ac-tool").textContent = r.tool;
+    const src = $("#ac-source");
+    src.textContent = chip; src.dataset.tip = tip; src.className = `mx-chip${warn ? " mx-chip--warn" : ""}`;
+    $("#ac-cmd").innerHTML = r.cmd;
+    $("#ac-terms").textContent = `${r.tool} keeps this until you block it.`;
+    const was = $("#ac-was");
+    was.hidden = !r.current;
+    if (r.current) was.innerHTML = `Already allowed <span class="mx-chip">${SCOPE[r.current]}</span><svg width="13" height="13"><use href="#ac-arrow"/></svg>now asks for <span class="mx-chip mx-chip--accent">${SCOPE[r.pref]}</span>`;
+    if (r.current) was.style.marginBottom = "8px";
+    document.querySelectorAll("#ac-scopes input").forEach((inp) => {
+      const v = inp.value, tag = inp.closest("label").querySelector(".mx-choice__tag");
+      inp.disabled = RANK[v] < RANK[r.min];
+      inp.checked = v === r.min; // pre-select the narrowest scope that works — never the tool's ask
+      tag.textContent = v === r.current ? "current" : v === r.pref && r.pref !== r.min ? "asked for" : v === r.min && r.current ? "needed" : "";
+    });
+    $("#ac-body").hidden = false; $("#ac-receipt").hidden = true;
+    $("#ac-foot").hidden = false; $("#ac-foot-done").hidden = true;
+    $("#ac-block").innerHTML = `<svg width="14" height="14"><use href="#ac-ban"/></svg>Block`;
+    $("#ac-age").textContent = v.age || "just now";
+    syncScope();
+    // Action states: in flight (both buttons + scopes disabled), failed (inline error, retryable), gone (only Close).
+    const allow = $("#ac-allow"), deny = $("#ac-deny");
+    $("#ac-err").hidden = !v.err; $("#ac-err-text").textContent = v.err || "";
+    allow.toggleAttribute("aria-busy", !!v.busy); allow.disabled = !!v.busy || !!v.gone;
+    if (v.busy) allow.innerHTML = `<span class="mx-spin mx-spin--sm"></span><span>Allowing…</span>`;
+    else if (!allow.querySelector(".mx-btn__accent")) allow.innerHTML = `<svg class="mx-btn__accent" width="14" height="14"><use href="#ac-lock"/></svg><span></span>`, syncScope();
+    deny.disabled = !!v.busy; $("#ac-block").disabled = !!v.busy || !!v.gone;
+    deny.innerHTML = v.gone ? "Close" : "Deny<kbd>Esc</kbd>";
+    document.querySelectorAll("#ac-scopes input").forEach((i) => { if (v.busy || v.gone) i.disabled = true; });
+    requestAnimationFrame(() => deny.focus()); // safe anchor: never Allow
+  }
+
+  function selected() { return document.querySelector("#ac-scopes input:checked").value; }
+  const cur = () => REQ[VIEWS[view].req];
+  function syncScope() {
+    const r = cur(), s = selected(), broad = s === "allRetained";
+    $("#ac-broad").hidden = !broad;
+    const hint = $("#ac-hint");
+    hint.hidden = broad;
+    hint.textContent = r.current
+      ? `Deny keeps ${SCOPE[r.current]} — this command fails.`
+      : RANK[s] < RANK[r.pref] ? `${r.tool} asked for ${PROSE[r.pref]}. Start narrow — it asks again if it needs more.` : "";
+    $("#ac-allow span").textContent = broad ? "Allow full-history access" : r.current ? `Allow ${SCOPE[s].toLowerCase()}` : "Allow access";
+  }
+  $("#ac-scopes").addEventListener("change", syncScope);
+
+  function receipt(tone, icon, title, body) {
+    $("#ac-body").hidden = true; $("#ac-foot").hidden = true; $("#ac-err").hidden = true;
+    const rc = $("#ac-receipt");
+    rc.hidden = false; rc.dataset.tone = tone;
+    $("#ac-r-icon").setAttribute("href", icon);
+    $("#ac-r-title").textContent = title; $("#ac-r-body").innerHTML = body;
+    $("#ac-foot-done").hidden = false; $("#ac-close").focus();
+  }
+  $("#ac-allow").addEventListener("click", () => {
+    const r = cur(), s = selected(), broad = s === "allRetained";
+    receipt(broad ? "danger" : "accent", broad ? "#ac-octagon" : "#ac-check",
+      r.current ? `${r.tool} can now read ${PROSE[s]}` : "Access granted",
+      r.current
+        ? "Same permission, widened in place. Results it already has keep working."
+        : `<b>${r.tool}</b> can read <b>${PROSE[s]}</b> until you block it. Unused for 30 days, it lapses.`);
+  });
+  $("#ac-block").addEventListener("click", () => {
+    const r = cur();
+    receipt("danger", "#ac-ban", `${r.tool} is blocked`,
+      `Its requests are refused right away — this window won’t open for it again.${r.current ? ` Its ${SCOPE[r.current]} access stops too.` : ""} Unblock it any time.`);
+  });
+  const deny = () => {
+    if (VIEWS[view].gone) return renderRequest(view);
+    const r = cur();
+    receipt("neutral", "#ac-x", "Denied", `${r.tool}’s command was refused${r.current ? `; it keeps ${PROSE[r.current]}` : ""}. It can ask again next time. <span class="mx-label">(In the app this window just closes.)</span>`);
+  };
+  $("#ac-deny").addEventListener("click", deny);
+  $("#ac-reset").addEventListener("click", () => renderRequest(view));
+  $("#ac-close").addEventListener("click", () => renderRequest(view));
+  // Esc denies; Enter is intentionally not bound to Allow.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && VIEWS[view].req && !$("#ac-foot").hidden) { e.preventDefault(); deny(); }
+  });
+
+  // ---------------- Settings list ----------------
+  const DAY = 864e5, IDLE = 30 * DAY, NOW = Date.parse("2026-10-10T10:54:00");
+  const ago = (ms) => { const m = Math.round((NOW - ms) / 6e4); return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
+  const day = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  // BrokerGrant rows (label, identitySource, scope, lastUsedAtUnixMs, blocked, blockedAtUnixMs) + last command from the audit file.
+  const grants = [
+    { id: "g1", label: "Claude Code", source: "inferred", scope: "last7Days", last: NOW - 12 * 6e4, cmd: "search" },
+    { id: "g2", label: "Codex", source: "inferred", scope: "lastDay", last: NOW - 3 * DAY, cmd: "timeline" },
+    { id: "g3", label: "Raycast notes", source: "explicit", scope: "allRetained", last: NOW - 26 * DAY, cmd: "search" },
+    { id: "g4", label: "mnema CLI", source: "defaulted", scope: "lastDay", last: NOW - 5 * 36e5, cmd: "speakers" },
+    { id: "g5", label: "curl-wrapper", source: "env", scope: "allRetained", last: NOW - 41 * DAY, blocked: NOW - 10 * DAY, cmd: "search" },
+  ];
+  // In the list provenance is reference, not a trust decision — neutral chips (the request window warn-tints it).
+  const chip = (s) => { const [t, tip] = SOURCE[s]; return `<span class="mx-chip" data-tip="${tip}">${t}</span>`; };
+  const scopeChip = (s) => `<span class="mx-chip">${SCOPE[s].toLowerCase()}</span>`;
+
+  function row(g) {
+    if (g.blocked) return `<div class="ac-tool is-blocked">
+        <span class="ac-glyph"><svg width="15" height="15"><use href="#ac-ban"/></svg></span>
+        <div class="ac-tool__main"><div class="ac-tool__name">${g.label} ${chip(g.source)}</div>
+          <div class="ac-tool__meta">Remembers ${scopeChip(g.scope)} <i>·</i> blocked ${day(g.blocked)}</div></div>
+        <div class="ac-idle ac-idle--blocked"><b>Never lapses</b></div>
+        <div class="mx-pop-anchor"><button class="mx-btn mx-btn--sm" data-pop="ac-pop-${g.id}">Unblock…</button>
+          <div class="mx-pop ac-confirm" id="ac-pop-${g.id}" role="dialog" aria-label="Enable CLI access again?">
+            <h3 class="mx-h3">Enable CLI access again?</h3>
+            <p class="mx-body-sm">${g.label} will be able to read ${PROSE[g.scope]} again, with no expiry, until you block it.</p>
+            <div class="ac-confirm__actions"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-keep>Keep blocked</button><button class="mx-btn mx-btn--sm" data-unblock="${g.id}">Enable access</button></div>
+          </div></div>
+      </div>`;
+    const left = Math.max(0, IDLE - (NOW - g.last)), d = Math.ceil(left / DAY);
+    return `<div class="ac-tool">
+        <span class="ac-glyph"><svg width="15" height="15"><use href="#ac-terminal"/></svg></span>
+        <div class="ac-tool__main"><div class="ac-tool__name">${g.label} ${chip(g.source)}</div>
+          <div class="ac-tool__meta">${scopeChip(g.scope)} <i>·</i> used ${ago(g.last)} <i>·</i> last ran <code>${g.cmd}</code></div></div>
+        <div class="ac-idle${d <= 7 ? " is-soon" : ""}" data-tip="Lapses ${day(g.last + IDLE)} if unused — the next request asks again" data-tip-pos="top">
+          <b>${d <= 1 ? "Lapses today" : `Lapses in <span class="num">${d}</span> days`}</b><span class="ac-idle__bar" style="--left:${(left / IDLE) * 100}%"><i></i></span></div>
+        <button class="mx-btn mx-btn--ghost mx-btn--danger mx-btn--sm" data-block="${g.id}" data-tip="Revoke and refuse its future requests" data-tip-pos="top">Block</button>
+      </div>`;
+  }
+  function renderList() {
+    const act = grants.filter((g) => !g.blocked), blk = grants.filter((g) => g.blocked);
+    $("#ac-active").innerHTML = act.map(row).join("");
+    $("#ac-blocked").innerHTML = blk.map(row).join("");
+    $("#ac-active-n").textContent = act.length; $("#ac-blocked-n").textContent = blk.length;
+    $("#ac-active-sec").hidden = !act.length || !inView($("#ac-active-sec")); $("#ac-blocked-sec").hidden = !blk.length || !inView($("#ac-blocked-sec"));
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-block]"), u = e.target.closest("[data-unblock]"), k = e.target.closest("[data-keep]");
+    // Block: reversible, unconfirmed. Unblock: confirmed, and restamps last use (fresh 30-day idle window).
+    if (b) { const g = grants.find((x) => x.id === b.dataset.block); g.blocked = NOW; renderList(); }
+    if (u) { const g = grants.find((x) => x.id === u.dataset.unblock); delete g.blocked; g.last = NOW; renderList(); }
+    if (k) k.closest(".mx-pop").removeAttribute("data-open");
+  });
+
+  // ---------------- view switch ----------------
+  const setView = (v) => {
+    view = v; const cfg = VIEWS[v];
+    desk.dataset.win = cfg.win || "request";
+    document.querySelectorAll("[data-rq]").forEach((el) => (el.hidden = !el.dataset.rq.split(" ").includes(cfg.rq || "form")));
+    document.querySelectorAll("[data-mv]").forEach((el) => (el.hidden = !inView(el)));
+    if (cfg.req) renderRequest(v);
+    else { $("#ac-receipt").hidden = true; $("#ac-foot-done").hidden = true; $("#ac-err").hidden = true; }
+    renderList();
+    history.replaceState(null, "", `?view=${v}${q.get("theme") ? `&theme=${q.get("theme")}` : ""}`);
+  };
+  $("#ac-views").value = view;
+  $("#ac-views").addEventListener("change", (e) => setView(e.target.value));
+  setView(view);
+})();
+</script>
+</body>
+</html>

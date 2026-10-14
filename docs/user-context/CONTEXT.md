@@ -540,7 +540,12 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   (batched, preferring idle time or just-after-recording, the **OCR Catch-Up** pattern, off the hot
   path), while **Conclusion** re-distillation runs on a slower beat over accumulated Activities, plus
   whenever decay or fresh evidence has made a **Subject**'s conclusions stale. Cheap-and-frequent for
-  the diary, expensive-and-occasional for the dossier.
+  the diary, expensive-and-occasional for the dossier. (Oct 2026: a distillation pass runs at most
+  once per 30 minutes and only when an **Activity** was inserted or extended since the last
+  successful pass; it sends just those **Activities** — oldest change first, capped, so a
+  **History Backfill** drains in chunks, one per worker tick until caught up (a failed pass waits
+  the full 30 minutes) — plus five recent ones for context. The position is a
+  durable watermark in `app_settings`; the manual run-now skips the 30-minute wait.)
 - The **Derivation Budget** governs both cadences; for a cloud engine its intensity is the
   user-chosen named tier, for a local engine it is fixed pacing policy.
 - A **Conclusion**'s **Confidence** is recency-weighted evidence: it fades on silence and drops

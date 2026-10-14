@@ -17,10 +17,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { resolveSystemHourCycle, setTimeFormat } from "$lib/time-format";
 import type {
   AppearanceSetting,
   RecordingSettings,
-  RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
 
 export type ResolvedTheme = "light" | "dark";
@@ -98,14 +98,6 @@ export function setAppearance(appearance: AppearanceSetting): void {
   recompute();
 }
 
-export async function persistAppearance(appearance: AppearanceSetting): Promise<RecordingSettings> {
-  const updated = await invoke<RecordingSettingsDomainUpdateResponse>("update_display_settings", {
-    request: { appearance },
-  });
-  setAppearance(updated.settings.appearance ?? DEFAULT_APPEARANCE);
-  return updated.settings;
-}
-
 /**
  * Best-effort load of the persisted appearance from recording settings.
  * Failures are swallowed; the UI keeps its current (or default `system`)
@@ -120,6 +112,8 @@ export async function loadTheme(): Promise<void> {
       _appearanceRevision += 1;
       _state.appearance = s.appearance ?? DEFAULT_APPEARANCE;
     }
+    // The Time format setting rides the same settings fetch (lib/time-format).
+    setTimeFormat(s.timeFormat);
   } catch {
     // keep current value.
   } finally {
@@ -165,8 +159,10 @@ export function initTheme(): void {
     // another window persists a new appearance value.
     void listen<RecordingSettings>(RECORDING_SETTINGS_CHANGED_EVENT, (event) => {
       setAppearance(event.payload.appearance ?? DEFAULT_APPEARANCE);
+      setTimeFormat(event.payload.timeFormat);
     });
   }
 
   void loadTheme();
+  void resolveSystemHourCycle();
 }

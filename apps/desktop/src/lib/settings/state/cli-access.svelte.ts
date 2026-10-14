@@ -14,6 +14,7 @@ export type BrokerGrant = {
   id: string;
   label: string;
   normalizedLabel: string;
+  identitySource: IdentitySource;
   createdAtUnixMs: number;
   lastUsedAtUnixMs: number;
   scope: { recent_days: { days: number } } | "all_retained_history" | Record<string, unknown>;
@@ -30,6 +31,8 @@ type BrokerGrantFile = {
 // writes here at all, so every row is an external tool.
 export type BrokerAuditEvent = {
   toolIdentity: string;
+  /** The grant row's `normalizedLabel` for the same tool. */
+  normalizedToolIdentity: string;
   commandType: string;
   timestampUnixMs: number;
   resultCount: number;
@@ -54,12 +57,57 @@ export type MnemaCliStatus = {
   existingTarget: string | null;
 };
 
-export type GrantStatus = "active" | "blocked";
+// Mirrors `BrokerClientIdentitySource`. Identity is self-declared (ADR 0059), so
+// the list shows where the name came from as reference — never a trust verdict.
+export type IdentitySource = "explicit" | "env" | "inferred" | "defaulted";
+
+export const IDENTITY_SOURCE: Record<IdentitySource, { label: string; detail: string }> = {
+  explicit: { label: "Declared", detail: "Identity declared by the tool" },
+  env: { label: "From env", detail: "Identity from an environment variable" },
+  inferred: { label: "Inferred", detail: "Identity inferred from the process" },
+  defaulted: { label: "Unnamed", detail: "No identity provided" },
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Mirrors `app_infra::brokered_access::BROKER_GRANT_IDLE_TTL_MS`. */
+export const GRANT_IDLE_TTL_MS = 30 * DAY_MS;
 
 // ── Pure helpers (label/format) ─────────────────────────────────────────────
 
-export function grantStatus(grant: BrokerGrant): GrantStatus {
-  return grant.blocked ? "blocked" : "active";
+/**
+ * What is left of a permission's 30-day idle window. Not a calendar expiry:
+ * every use restamps `lastUsedAtUnixMs` and refills it.
+ */
+export function grantLapse(grant: BrokerGrant, nowMs: number = Date.now()) {
+  const atMs = grant.lastUsedAtUnixMs + GRANT_IDLE_TTL_MS;
+  const leftMs = Math.max(0, atMs - nowMs);
+  const days = Math.ceil(leftMs / DAY_MS);
+  return {
+    label: days <= 1 ? "Lapses today" : `Lapses in ${days} days`,
+    fraction: leftMs / GRANT_IDLE_TTL_MS,
+    soon: days <= 7,
+    atMs,
+  };
+}
+
+/** The scope as an inline chip: "last day", "last 7 days", "all retained". */
+export function formatScopeChip(scope: BrokerGrant["scope"]): string {
+  return scope === "all_retained_history" ? "all retained" : formatGrantScope(scope).toLowerCase();
+}
+
+/**
+ * Newest command per tool, keyed by normalized identity (the grant row's key).
+ * Reads the whole audit file, not the 20 rows the activity list shows, so a
+ * quiet tool still has its last command.
+ */
+export function lastCommandByTool(events: BrokerAuditEvent[]): Map<string, string> {
+  const newest = new Map<string, BrokerAuditEvent>();
+  for (const e of events) {
+    const key = e.normalizedToolIdentity;
+    const seen = key ? newest.get(key) : undefined;
+    if (key && (!seen || e.timestampUnixMs >= seen.timestampUnixMs)) newest.set(key, e);
+  }
+  return new Map([...newest].map(([key, e]) => [key, formatCommand(e.commandType)]));
 }
 
 export function formatGrantScope(scope: BrokerGrant["scope"]): string {
@@ -92,30 +140,6 @@ export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): str
   if (abs < 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 60000), "minute");
   if (abs < 24 * 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 3600000), "hour");
   return rtf.format(Math.round(diffMs / 86400000), "day");
-}
-
-/**
- * The row's detail-line time. A blocked row states "Blocked" as a badge on the
- * name line, so this only dates it — and says nothing at all when the block
- * carries no timestamp (`blockedAtUnixMs` is `Option<u64>`; a naive read of a
- * null reads "56 years ago").
- */
-export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now()): string {
-  if (grant.blocked) {
-    // Keep the verb even though the name line carries a BLOCKED badge: an active
-    // row reads "Used 3 hours ago", so a bare "5 hours ago" beside it is a
-    // timestamp with no referent — the reader cannot tell last-use from
-    // block-time. `blockedAtUnixMs` is Option<u64> on the wire, so a row blocked
-    // by a build that never stamped it drops the time rather than rendering an
-    // epoch date.
-    // No stamp (Option<u64> on the wire, so a row blocked by a build that never
-    // set it) means there is nothing to date, and the BLOCKED badge on the name
-    // line already carries the state — so add nothing rather than repeating it.
-    return grant.blockedAtUnixMs
-      ? `Blocked ${formatGrantTime(grant.blockedAtUnixMs, nowMs)}`
-      : "";
-  }
-  return `Used ${formatGrantTime(grant.lastUsedAtUnixMs, nowMs)}`;
 }
 
 /** Audit `outcome` → the word shown on an activity row. */
@@ -164,6 +188,7 @@ export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
   let brokerHistory = $state<BrokerAuditEvent[]>([]);
   let brokerHistoryLoading = $state(false);
   let brokerHistoryError = $state<string | null>(null);
+  let lastCommands = $state<Map<string, string>>(new Map());
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
   let mnemaCliLoading = $state(false);
   let mnemaCliInstalling = $state(false);
@@ -207,6 +232,7 @@ export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
       // newest handful. Reverse a copy — `events` is the invoke result, but
       // reversing in place still reads badly next to a re-render.
       brokerHistory = [...(response.events ?? [])].reverse().slice(0, ACTIVITY_LIMIT);
+      lastCommands = lastCommandByTool(response.events ?? []);
     } catch (err) {
       // Activity is evidence, not a control: a failed read must not blank the
       // block/enable buttons above it, so it shares no error slot with them —
@@ -273,6 +299,8 @@ export function createCliAccessStore(invokeFn: CliAccessInvoke = invoke) {
     get brokerHistory() { return brokerHistory; },
     get brokerHistoryLoading() { return brokerHistoryLoading; },
     get brokerHistoryError() { return brokerHistoryError; },
+    /** Newest command per tool (`normalizedLabel` → `show-text`), from the whole log. */
+    get lastCommands() { return lastCommands; },
     get mnemaCliStatus() { return mnemaCliStatus; },
     get mnemaCliLoading() { return mnemaCliLoading; },
     get mnemaCliInstalling() { return mnemaCliInstalling; },

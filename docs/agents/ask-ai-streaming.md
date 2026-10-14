@@ -14,8 +14,10 @@ Deep-dive on the backend-owned chat streaming contract shared by both Ask AI doo
 `ask_ai.rs` runs the agent loop, executes tools, parses the answer into typed
 blocks, formats tool labels, resolves app-icon paths, and holds the one
 authoritative, render-ready **`TurnView`** per in-flight turn in memory. The
-frontend (`Chat.svelte`, `routes/quick-recall/+page.svelte`) holds a copy of that
-`TurnView`, applies versioned updates, and renders each block by `kind`. It does
+frontend (`lib/chat/Chat.svelte` on `/chat`, and Quick Recall's
+`lib/quick-recall/AskPane.svelte`) holds a copy of that `TurnView`, applies
+versioned updates through the one shared reducer (`lib/chat/turn-model.ts`), and
+renders each block by `kind`. It does
 **no** fence parsing, tool-label formatting, icon-cache batching, or phase
 machine.
 
@@ -159,6 +161,7 @@ Tool labels + icons are ported server-side in `ask_ai/tool_activity.rs`
 - Touch the wire shapes? Update `conversation.rs` AND `conversation.ts` together and
   keep the serde round-trip test + `bun run check` green.
 - Add a new op? Add it to the `TurnUpdate` enum, the Rust `apply_update_to_view`
-  reducer, AND the frontend `applyUpdate` reducer (both doors) — they must agree.
-- Both doors (`Chat.svelte` and `quick-recall/+page.svelte`) consume the identical
-  surface; change them together.
+  reducer, AND the frontend `applyUpdate` reducer (`lib/chat/turn-model.ts`, shared
+  by both doors) — they must agree.
+- Both doors (`lib/chat/Chat.svelte` and `lib/quick-recall/AskPane.svelte`) consume
+  the identical surface; change them together.

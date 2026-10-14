@@ -4,9 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   AUDIO_CLAIM,
   excludedNote,
-  excludedSentence,
   resolveTypedApp,
-  separatorBefore,
 } from "./excluded-apps";
 
 function entry(overrides = {}) {
@@ -25,42 +23,6 @@ const seeded = [
   entry({ id: "rule-3", bundleId: "com.apple.keychainaccess", displayName: "Keychain Access" }),
 ];
 const pending = entry({ id: "rule-p", bundleId: "", displayName: "Bitwarden" });
-
-describe("separatorBefore", () => {
-  it("reads like English at one, two and three names", () => {
-    expect([0].map((i) => separatorBefore(i, 1))).toEqual([""]);
-    expect([0, 1].map((i) => separatorBefore(i, 2))).toEqual([""," or "]);
-    expect([0, 1, 2].map((i) => separatorBefore(i, 3))).toEqual(["", ", ", ", or "]);
-    expect([0, 1, 2, 3].map((i) => separatorBefore(i, 4))).toEqual(["", ", ", ", ", ", or "]);
-  });
-});
-
-describe("excludedSentence", () => {
-  it("names the empty state without pretending anything is hidden", () => {
-    expect(excludedSentence([])).toEqual({
-      lead: "Mnema records everything on your screen.",
-      tail: "",
-    });
-  });
-
-  it("leads with the exclusion while anything is still excluded", () => {
-    expect(excludedSentence(seeded).lead).toBe("Mnema never records ");
-    expect(excludedSentence([seeded[0], { ...seeded[1], enabled: false }]).lead)
-      .toBe("Mnema never records ");
-  });
-
-  // The property the whole control rests on: a struck name keeps its slot, so
-  // the sentence has to stay grammatical with EVERY name struck rather than
-  // dropping the names and reflowing.
-  it("keeps every struck name in the sentence, singular and plural", () => {
-    const allStruck = seeded.map((app) => ({ ...app, enabled: false }));
-    expect(excludedSentence(allStruck)).toEqual({
-      lead: "Mnema records everything on your screen. ",
-      tail: " are back on.",
-    });
-    expect(excludedSentence([allStruck[0]]).tail).toBe(" is back on.");
-  });
-});
 
 describe("excludedNote", () => {
   it("qualifies the audio claim — never unconditional parity", () => {

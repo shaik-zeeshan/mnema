@@ -26,6 +26,9 @@ fi
 export MNEMA_SAVE_DIRECTORY="${HOME}/.mnema-dev"
 export MNEMA_APP_CONFIG_DIR="${HOME}/Library/Application Support/day.mnema.dev"
 export MNEMA_DEV_MASTER_KEY_FILE="${MNEMA_SAVE_DIRECTORY}/dev-master-key"
+# Licensing tokens (key, receipt, trial stamp) in files too — skips the
+# day.mnema.licensing keychain prompt on every ad-hoc rebuild. Debug builds only.
+export MNEMA_LICENSE_TOKEN_DIR="${MNEMA_APP_CONFIG_DIR}/license-tokens"
 # Ad-hoc dev builds can't claim the shared keychain access group (ADR 0057),
 # so the capture index key lives in a file store outside the save dir.
 export MNEMA_CAPTURE_INDEX_KEY_DIR="${MNEMA_APP_CONFIG_DIR}/capture-index-keys"

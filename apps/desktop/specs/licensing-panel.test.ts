@@ -6,9 +6,12 @@ import { describe, expect, test } from "bun:test";
 import {
   badgeFor,
   checkoutUrlFor,
+  fmtLicenseDate,
   licensedOutOfWindow,
   safeExternalUrl,
   showBuyFor,
+  statusHintFor,
+  statusInlineFor,
   statusLineFor,
 } from "../src/lib/licensing-panel";
 import { LICENSE_CHECKOUT_URL, RENEWAL_CHECKOUT_URL } from "../src/lib/licensing";
@@ -53,14 +56,14 @@ describe("money path: checkoutUrlFor / showBuyFor", () => {
 
 describe("badgeFor", () => {
   test("per-variant labels", () => {
-    expect(badgeFor(licensed())).toEqual({ label: "Licensed", variant: "ok" });
-    expect(badgeFor(licensedPending(5))).toEqual({ label: "Activating…", variant: "neutral" });
-    expect(badgeFor(licensedOverCap())).toEqual({ label: "Device limit", variant: "warn" });
-    expect(badgeFor(LICENSED_LAPSED)).toEqual({ label: "Not activated", variant: "warn" });
-    expect(badgeFor(trial(3))).toEqual({ label: "Trial", variant: "neutral" });
-    expect(badgeFor(TRIAL_NOT_STARTED)).toEqual({ label: "Trial ready", variant: "neutral" });
-    expect(badgeFor(READ_ONLY)).toEqual({ label: "Read-only", variant: "warn" });
-    expect(badgeFor(REVOKED)).toEqual({ label: "Revoked", variant: "warn" });
+    expect(badgeFor(licensed())).toEqual({ label: "licensed", variant: "accent" });
+    expect(badgeFor(licensedPending(5))).toEqual({ label: "activating…", variant: "plain" });
+    expect(badgeFor(licensedOverCap())).toEqual({ label: "device limit", variant: "warn" });
+    expect(badgeFor(LICENSED_LAPSED)).toEqual({ label: "not activated", variant: "warn" });
+    expect(badgeFor(trial(3))).toEqual({ label: "trial", variant: "info" });
+    expect(badgeFor(TRIAL_NOT_STARTED)).toEqual({ label: "trial ready", variant: "plain" });
+    expect(badgeFor(READ_ONLY)).toEqual({ label: "read-only", variant: "warn" });
+    expect(badgeFor(REVOKED)).toEqual({ label: "revoked", variant: "warn" });
     expect(badgeFor(null)).toBeNull();
   });
 
@@ -68,6 +71,51 @@ describe("badgeFor", () => {
     for (const status of ALL_VARIANTS) {
       expect(badgeFor(status)).not.toBeNull();
     }
+  });
+});
+
+describe("statusHintFor / statusInlineFor (Settings Status row)", () => {
+  const through = fmtLicenseDate(1_731_536_000_000);
+
+  test("activated in-window owner: one composite line", () => {
+    expect(statusHintFor(licensed(), { used: 1, cap: 3 })).toBe(
+      `Licensed to Ada Lovelace · updates included through ${through} · 1 of 3 devices activated.`,
+    );
+    expect(statusHintFor(licensed({ name: "" }), null)).toBe(
+      `Licensed to owner@example.com · updates included through ${through}.`,
+    );
+    expect(statusInlineFor(licensed())).toBeNull();
+  });
+
+  test("no update expiry (i64::MAX sentinel) never prints Invalid Date", () => {
+    expect(statusHintFor(licensed({ updateThroughMs: 9223372036854775807 }), null)).toBe(
+      "Licensed to Ada Lovelace · updates included.",
+    );
+  });
+
+  test("out of window: drops the update clause, warns inline", () => {
+    const status = licensed({ inWindow: false });
+    expect(statusHintFor(status, { used: 1, cap: 3 })).toBe("Licensed to Ada Lovelace · 1 of 3 devices activated.");
+    expect(statusInlineFor(status)).toMatchObject({ tone: "warn", icon: "info" });
+    expect(statusInlineFor(status)?.text).toContain(through);
+  });
+
+  test("pending / trial copy", () => {
+    expect(statusHintFor(licensedPending(1), null)).toBe(
+      "Licensed to Ada Lovelace. Finishing activation… (1 day to connect).",
+    );
+    expect(statusHintFor(trial(3), null)).toStartWith("3 days left · ends ");
+    expect(statusHintFor(TRIAL_NOT_STARTED, null)).toBe("Free trial — starts when you first record (30 days).");
+  });
+
+  test("states that speak only through the inline / notice", () => {
+    for (const status of [READ_ONLY, REVOKED, LICENSED_LAPSED, licensedOverCap(), null]) {
+      expect(statusHintFor(status, { used: 3, cap: 3 })).toBeNull();
+    }
+    expect(statusInlineFor(READ_ONLY)).toMatchObject({ tone: "warn", icon: "lock" });
+    expect(statusInlineFor(REVOKED)).toMatchObject({ tone: "danger", icon: "alert" });
+    expect(statusInlineFor(LICENSED_LAPSED)).toMatchObject({ tone: "warn", icon: "cloud" });
+    expect(statusInlineFor(licensedOverCap())).toBeNull();
   });
 });
 

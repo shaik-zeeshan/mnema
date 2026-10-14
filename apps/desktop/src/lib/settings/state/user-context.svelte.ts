@@ -4,6 +4,7 @@
 // the page because they bind in markup and autosave through the engine.
 
 import { invoke } from "@tauri-apps/api/core";
+import { hourCycle } from "$lib/time-format";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import type {
   UserContextDerivationRunResult,
@@ -17,7 +18,7 @@ import { errorText } from "./format";
 export function formatLastDerived(ms: number | null | undefined): string {
   if (!ms) return "never";
   return new Date(ms).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hourCycle: hourCycle(),
   });
 }
 

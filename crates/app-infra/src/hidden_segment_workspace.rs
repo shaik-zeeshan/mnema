@@ -11,6 +11,8 @@ use crate::{
     AppInfraError, Result,
 };
 
+mod orphaned_segment;
+
 fn visible_segment_appears_openable(path: &Path) -> bool {
     const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
 
@@ -70,6 +72,13 @@ pub enum SegmentWorkspaceCleanupDisposition {
     /// consumed from disk. Nothing remains to preserve, so the husk workspace is
     /// safe to reclaim instead of being skipped forever.
     DeadSegmentWithoutArtifacts,
+    /// Frame images whose segment the DB never learned about: no frame rows, no
+    /// `capture_segments` row, a finalized visible recording, and the newest
+    /// image older than the live persistence channel could still deliver. No
+    /// code path will ever ingest them, and Retention / Delete Recent Capture
+    /// can't see them, so the images are reclaimed (and the `.mov` too once
+    /// it ages past the retention window — see `orphaned_segment`).
+    OrphanedFrameArtifacts,
     PendingFrameArtifacts,
     CompletedOnly,
     NoReferences,
@@ -93,11 +102,21 @@ pub struct HiddenSegmentWorkspaceRepairResult {
     pub scanned_workspace_count: u64,
     pub removed_workspace_count: u64,
     pub skipped_workspace_count: u64,
+    /// Of `removed_workspace_count`, how many were `OrphanedFrameArtifacts`.
+    pub removed_orphaned_workspace_count: u64,
+    /// Orphaned visible segments (`.mov` + sidecar) deleted this pass.
+    pub removed_orphaned_segment_count: u64,
+    /// Bytes freed by every workspace and orphaned segment removed this pass.
+    pub reclaimed_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HiddenSegmentWorkspaceRepairContext {
     pub active_workspace_dirs: BTreeSet<String>,
+    /// The Retention Cleanup cutoff (`cutoff_ended_before`) for the user's
+    /// policy; `None` when retention is Never. An orphaned visible segment is
+    /// deleted only when it was last written before this cutoff.
+    pub retention_cutoff: Option<String>,
 }
 
 #[derive(Clone)]
@@ -172,14 +191,26 @@ impl HiddenSegmentWorkspaceRepair {
         let disposition = if frame_count == 0 {
             let has_frame_artifacts =
                 hidden_workspace_has_frame_artifacts(Path::new(&paths.frames_dir));
-            if has_frame_artifacts {
-                if visible_segment_exists {
-                    SegmentWorkspaceCleanupDisposition::PendingFrameArtifacts
-                } else {
-                    SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
-                }
-            } else {
+            if !has_frame_artifacts {
                 SegmentWorkspaceCleanupDisposition::NoReferences
+            } else if !visible_segment_exists {
+                SegmentWorkspaceCleanupDisposition::MissingVisibleSegmentSibling
+            } else if visible_segment_usable
+                && orphaned_segment::frame_artifacts_are_stale(
+                    Path::new(&paths.frames_dir),
+                    std::time::SystemTime::now(),
+                )
+                && !self
+                    .frame_batches
+                    .capture_segment_row_exists_for_workspace(
+                        &paths.workspace_dir,
+                        &paths.visible_segment_path,
+                    )
+                    .await?
+            {
+                SegmentWorkspaceCleanupDisposition::OrphanedFrameArtifacts
+            } else {
+                SegmentWorkspaceCleanupDisposition::PendingFrameArtifacts
             }
         } else if !nonterminal_ocr_references.is_empty() {
             SegmentWorkspaceCleanupDisposition::ReferencedByNonterminalOcr
@@ -214,6 +245,7 @@ impl HiddenSegmentWorkspaceRepair {
                 SegmentWorkspaceCleanupDisposition::CompletedOnly
                     | SegmentWorkspaceCleanupDisposition::NoReferences
                     | SegmentWorkspaceCleanupDisposition::DeadSegmentWithoutArtifacts
+                    | SegmentWorkspaceCleanupDisposition::OrphanedFrameArtifacts
             ),
             disposition,
             visible_segment_exists,
@@ -272,8 +304,27 @@ impl HiddenSegmentWorkspaceRepair {
                 ) {
                     reclaim_dead_visible_segment(&info.paths.visible_segment_path)?;
                 }
+                // An orphan's `.mov` goes first (only once past the retention
+                // window): if we stop before the dir below, the images survive
+                // rather than leaving a `.mov` no later pass can discover.
+                if matches!(
+                    info.disposition,
+                    SegmentWorkspaceCleanupDisposition::OrphanedFrameArtifacts
+                ) {
+                    result.removed_orphaned_workspace_count += 1;
+                    let freed = orphaned_segment::reclaim_orphaned_visible_segment(
+                        &info.paths.visible_segment_path,
+                        context.retention_cutoff.as_deref(),
+                    )?;
+                    if freed > 0 {
+                        result.removed_orphaned_segment_count += 1;
+                        result.reclaimed_bytes += freed;
+                    }
+                }
+                let workspace_bytes = orphaned_segment::path_size_bytes(&workspace_dir);
                 match std::fs::remove_dir_all(&workspace_dir) {
                     Ok(()) => {
+                        result.reclaimed_bytes += workspace_bytes;
                         capture_runtime::debug_log!(
                             "[app-infra][hidden-segment-workspaces] removed workspace {} (disposition={:?}, frame_count={}, visible_segment_exists={})",
                             info.paths.workspace_dir,
@@ -305,6 +356,22 @@ impl HiddenSegmentWorkspaceRepair {
                 );
                 result.skipped_workspace_count += 1;
             }
+        }
+
+        // Info only when an orphan was healed. Routine removal of processed
+        // workspaces happens on most five-minute passes while recording, and the
+        // desktop worker already logs those counts at Debug.
+        if result.removed_orphaned_workspace_count > 0 {
+            capture_runtime::info_log!(
+                "[app-infra][hidden-segment-workspaces] reclaimed orphaned capture: {} workspace(s), {} visible segment(s); {} workspace(s) removed in total, {} bytes freed (recordings_root={}, scanned={}, skipped={})",
+                result.removed_orphaned_workspace_count,
+                result.removed_orphaned_segment_count,
+                result.removed_workspace_count,
+                result.reclaimed_bytes,
+                recordings_root.display(),
+                result.scanned_workspace_count,
+                result.skipped_workspace_count
+            );
         }
 
         Ok(result)
@@ -1300,6 +1367,7 @@ mod tests {
                         active_workspace_dirs: BTreeSet::from([workspace_dir
                             .to_string_lossy()
                             .to_string()]),
+                        ..Default::default()
                     },
                 )
                 .await
@@ -1346,6 +1414,7 @@ mod tests {
                         active_workspace_dirs: BTreeSet::from([current_workspace_dir
                             .to_string_lossy()
                             .to_string()]),
+                        ..Default::default()
                     },
                 )
                 .await

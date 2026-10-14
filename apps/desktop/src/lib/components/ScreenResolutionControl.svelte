@@ -28,6 +28,7 @@
        control. Selecting a preset writes both mode and preset; "Custom" flips
        mode to custom and reveals the width/height inputs below. -->
   <Segmented
+    md
     value={mode === "custom" ? "custom" : mode === "original" ? "original" : preset}
     onValueChange={(v) => {
       if (v === "custom") {

@@ -8,13 +8,6 @@
 
 import type { TurnView } from "./receipt-audio";
 
-/** Shared selection resolver — the "bus". The reader row selects by
- *  TurnView.key; this maps key → index (-1 if absent/null). */
-export function selectionIndex(turns: TurnView[], key: string | null): number {
-  if (key == null) return -1;
-  return turns.findIndex((t) => t.key === key);
-}
-
 /** Initial selection: the headline turn, else the first cited, else the first
  *  (null for an empty set). */
 export function defaultSelectedKey(turns: TurnView[]): string | null {

@@ -171,11 +171,8 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
   async function chooseTranscriptionProvider(provider: string) {
     if (!isSelectableTranscriptionProvider(provider)) return;
     const previousProvider = rec.draftTranscriptionProvider;
-    // Apply first so the controlled Provider RadioGroup reflects the click while the blocking
-    // consent dialog is open, then revert on cancel. The RadioGroup writes its selection into its
-    // one-way `value={draftTranscriptionProvider}` prop locally; if we returned without changing the
-    // draft, that unchanged expression would never re-sync and the control would stay stuck on
-    // "Deepgram" while the draft (and every `provider === "deepgram"` block) said otherwise.
+    // Apply first so the controlled Provider `Choice` reflects the click while the blocking
+    // consent dialog is open, then revert on cancel (the Choice only shows what the draft says).
     rec.draftTranscriptionProvider = provider;
     rec.draftTranscriptionModelId = preferredTranscriptionModelIdForProvider(provider);
     if (shouldConfirmDeepgramSwitch(provider, previousProvider)) {

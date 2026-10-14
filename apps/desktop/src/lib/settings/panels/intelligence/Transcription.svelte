@@ -3,27 +3,34 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import IconChip from "~icons/lucide/cpu";
+  import IconCloud from "~icons/lucide/cloud";
+  import IconSpeech from "~icons/lucide/audio-lines";
+  import IconLock from "~icons/lucide/lock";
   import Segmented from "$lib/components/Segmented.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
+  import ModelDownloadRow from "$lib/settings/ui/ModelDownloadRow.svelte";
+  import { downloadMeta } from "$lib/settings/ui/model-download";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCheck from "~icons/lucide/check";
+  import IconExternal from "~icons/lucide/external-link";
+  import IconCloudOff from "~icons/lucide/cloud-off";
   import {
     transcriptionStatusLabel,
     appleSpeechPermissionLabel,
     appleSpeechPermissionHint,
   } from "$lib/settings/state/models-format";
-  import { formatBytes } from "$lib/settings/state/format";
   import { TRANSCRIPTION_LANGUAGE_OPTIONS } from "$lib/settings/transcription-languages";
   import type { AudioTranscriptionMemoryMode } from "$lib/types";
 
   const c = getSettingsController();
   const rec = c.rec;
   const models = c.models;
-
 
   // Store-read aliases.
   const loadingTranscriptionModelStatus = $derived(models.loadingTranscriptionModelStatus);
@@ -33,9 +40,6 @@
   const transcriptionDownloadError = $derived(models.transcriptionDownloadError);
   const deletingUnusedTranscriptionModels = $derived(models.deletingUnusedTranscriptionModels);
   const deleteUnusedTranscriptionModelsMessage = $derived(models.deleteUnusedTranscriptionModelsMessage);
-  const deletedUnusedTranscriptionModelLabels = $derived(models.deletedUnusedTranscriptionModelLabels);
-  const skippedUnusedTranscriptionModelLabels = $derived(models.skippedUnusedTranscriptionModelLabels);
-  const skippedTranscriptionProcessingJobModelLabels = $derived(models.skippedTranscriptionProcessingJobModelLabels);
   const deleteUnusedTranscriptionModelsError = $derived(models.deleteUnusedTranscriptionModelsError);
   const requestingAppleSpeechPermission = $derived(models.requestingAppleSpeechPermission);
   const appleSpeechPermissionError = $derived(models.appleSpeechPermissionError);
@@ -43,22 +47,42 @@
   // Controller derived selectors.
   const transcriptionProviderOptions = $derived(c.transcriptionProviderOptions);
   const transcriptionModelOptions = $derived(c.transcriptionModelOptions);
-  const selectedTranscriptionModel = $derived(c.selectedTranscriptionModel);
+  const m = $derived(c.selectedTranscriptionModel);
   const selectedAppleSpeechPermissionStatus = $derived(c.selectedAppleSpeechPermissionStatus);
   const selectedAppleSpeechNeedsPermission = $derived(c.selectedAppleSpeechNeedsPermission);
   const selectedTranscriptionDownloadProgress = $derived(c.selectedTranscriptionDownloadProgress);
   const selectedTranscriptionDownloadRunning = $derived(c.selectedTranscriptionDownloadRunning);
-  const selectedTranscriptionDownloadPercent = $derived(c.selectedTranscriptionDownloadPercent);
 
   // Controller / store action methods.
   const loadTranscriptionModelStatus = () => c.loadTranscriptionModelStatus();
   const chooseTranscriptionProvider = (provider: string) => c.chooseTranscriptionProvider(provider);
+
+  // Kit `mx-choice--list` rows: what each provider IS (icon, where it runs,
+  // one line of copy). Model availability lives on the Model row below.
+  const PROVIDER_META: Record<string, { icon: typeof IconChip; tag: string; description: string }> = {
+    parakeet: { icon: IconChip, tag: "on-device", description: "Fast, English-first transcription on the Neural Engine." },
+    local_whisper: { icon: IconChip, tag: "on-device", description: "Many languages; slower and heavier on memory." },
+    apple_speech_on_device: { icon: IconSpeech, tag: "on-device", description: "Built into macOS; needs Speech Recognition permission." },
+    deepgram: { icon: IconCloud, tag: "cloud", description: "Uploads mic and system audio to your own Deepgram account. Needs an API key and your consent." },
+  };
+  const providerChoices = $derived(
+    (transcriptionProviderOptions.length > 0
+      ? transcriptionProviderOptions
+      : [
+          { value: "parakeet", label: "Parakeet" },
+          { value: "local_whisper", label: "Local Whisper" },
+          { value: "apple_speech_on_device", label: "Apple Speech" },
+          { value: "deepgram", label: "Deepgram" },
+        ]
+    ).map((o) => ({ value: o.value, label: o.label, ...PROVIDER_META[o.value] })),
+  );
   const chooseTranscriptionModel = (value: string) => c.chooseTranscriptionModel(value);
   const requestAppleSpeechPermission = () => c.requestAppleSpeechPermission();
   const openAppleSpeechPrivacySettings = () => c.openAppleSpeechPrivacySettings();
   const startSelectedTranscriptionModelDownload = () => c.startSelectedTranscriptionModelDownload();
   const cancelSelectedTranscriptionModelDownload = () => c.cancelSelectedTranscriptionModelDownload();
   const requestDeleteUnusedTranscriptionModels = () => c.requestDeleteUnusedTranscriptionModels();
+  const deleteUnusedDesc = "Removes app-managed transcription model files except the selected one.";
 
   // ─── Deepgram API-key management (panel-local; direct invoke, no controller) ──
   let deepgramKeyInput = $state("");
@@ -151,7 +175,7 @@
 <SettingGroup
   id="settings-section-transcription"
   title="Transcription"
-  hint="Local speech-to-text provider and model setup for microphone audio."
+  hint="Speech-to-text for microphone and system audio."
 >
   {#snippet actions()}
     <ReloadButton
@@ -164,18 +188,14 @@
 
   <SettingRow
     label="Enable audio transcription"
-    description="Master switch for source-specific audio transcription"
+    description="Master switch for source-specific audio transcription."
   >
     {#snippet control()}
       <Switch bind:checked={rec.draftTranscriptionEnabled} ariaLabel="Enable audio transcription" />
     {/snippet}
   </SettingRow>
 
-  <SettingRow
-    label="Transcribe microphone"
-    description="Automatically queue transcription for committed microphone audio segments"
-    disabled={!rec.draftTranscriptionEnabled}
-  >
+  <SettingRow label="Transcribe microphone" source="mic" disabled={!rec.draftTranscriptionEnabled}>
     {#snippet control()}
       <Switch
         bind:checked={rec.draftTranscriptionMicrophoneEnabled}
@@ -187,6 +207,7 @@
 
   <SettingRow
     label="Transcribe system audio"
+    source="sysaudio"
     description="Transcribe system audio only when speech is detected."
     disabled={!rec.draftTranscriptionEnabled}
   >
@@ -199,66 +220,39 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow label="Provider" full>
+  <SettingRow label="Provider" description="Switching to Deepgram asks for consent first — it uploads mic and system audio." full>
     {#snippet control()}
-      <RadioGroup
+      <Choice
+        list
         value={rec.draftTranscriptionProvider}
         onValueChange={chooseTranscriptionProvider}
-        options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
-          { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-          { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
-          { value: "deepgram", label: "Deepgram (cloud)", description: "Cloud transcription — requires an API key" },
-        ]}
-      />
-    {/snippet}
-  </SettingRow>
-
-  <SettingRow label="Model" full>
-    {#snippet control()}
-      <Combobox
-        value={rec.draftTranscriptionModelId ?? "__os_managed__"}
-        onValueChange={chooseTranscriptionModel}
-        searchPlaceholder="Search models…"
-        options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
-          { value: rec.draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
-        ]}
-      />
-    {/snippet}
-  </SettingRow>
-
-  <SettingRow
-    label="Language"
-    description="Use auto for automatic language detection, or enter a language hint such as en. Settings changes affect future audio segments; already-queued jobs keep their admitted provider/model payload."
-    full
-  >
-    {#snippet control()}
-      <Combobox
-        value={rec.draftTranscriptionLanguage || "auto"}
-        onValueChange={(v) => (rec.draftTranscriptionLanguage = v)}
-        options={TRANSCRIPTION_LANGUAGE_OPTIONS}
-        searchPlaceholder="Search languages…"
+        ariaLabel="Transcription provider"
+        options={providerChoices}
       />
     {/snippet}
   </SettingRow>
 
   {#if rec.draftTranscriptionProvider === "deepgram"}
-    <SettingRow label="Deepgram API key" full>
+    <SettingRow
+      label="Deepgram API key"
+      description={deepgramKeyPresent ? "Key stored encrypted on this Mac." : "Paste the API key from your Deepgram account."}
+      full
+    >
       {#snippet control()}
         <div class="tx-stack">
-          <label class="field-label" for="deepgram-api-key">API key</label>
-          <input
-            id="deepgram-api-key"
-            class="text-input"
-            type="password"
-            autocomplete="off"
-            placeholder={deepgramKeyPresent ? "A key is saved — enter a new one to replace it" : "Paste your Deepgram API key"}
-            disabled={deepgramSaving}
-            bind:value={deepgramKeyInput}
-          />
-          <div class="row-actions">
+          <div class="tx-key">
+            <input
+              id="deepgram-api-key"
+              class="mx-input"
+              type="password"
+              autocomplete="off"
+              aria-label="Deepgram API key"
+              placeholder={deepgramKeyPresent ? "A key is saved — enter a new one to replace it" : "Paste your Deepgram API key"}
+              disabled={deepgramSaving}
+              bind:value={deepgramKeyInput}
+            />
             <button
-              class="btn btn--ghost btn--sm"
+              class="mx-btn"
               type="button"
               disabled={deepgramSaving || deepgramKeyInput.trim().length === 0}
               aria-busy={deepgramSaving}
@@ -268,7 +262,7 @@
             </button>
             {#if deepgramKeyPresent}
               <button
-                class="btn btn--ghost btn--sm"
+                class="mx-btn"
                 type="button"
                 disabled={deepgramSaving || deepgramChecking}
                 aria-busy={deepgramChecking}
@@ -276,32 +270,134 @@
               >
                 {#if deepgramChecking}<ButtonSpinner />Checking{:else}Check connection{/if}
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" disabled={deepgramSaving} onclick={removeDeepgramKey}>
+              <button class="mx-btn mx-btn--ghost" type="button" disabled={deepgramSaving} onclick={removeDeepgramKey}>
                 Remove key
               </button>
             {/if}
           </div>
-          {#if deepgramKeyPresent}
-            <p class="group-hint">Key saved to the macOS keychain.</p>
-          {/if}
           {#if deepgramSaveError}
-            <p class="group-hint group-hint--warn" role="alert">Couldn’t save key: {deepgramSaveError}</p>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />Couldn’t save key: {deepgramSaveError}</span>
           {/if}
-          {#if deepgramCheckResult}
-            <p class="group-hint" class:group-hint--warn={!deepgramCheckResult.ok} role="status">{deepgramCheckResult.message}</p>
-          {/if}
+          <!-- The auth status is the standing rejection; the check result only
+               adds news when there is no rejection on file (else it repeats it). -->
           {#if deepgramAuthStatus}
-            <p class="group-hint group-hint--warn" role="alert">{deepgramAuthStatus}</p>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />{deepgramAuthStatus}</span>
+          {:else if deepgramCheckResult}
+            <span class="mx-inline" data-tone={deepgramCheckResult.ok ? "ok" : "warn"} role="status">
+              {#if deepgramCheckResult.ok}<IconCheck width="13" height="13" />{:else}<IconCloudOff width="13" height="13" />{/if}{deepgramCheckResult.message}
+            </span>
           {/if}
         </div>
       {/snippet}
     </SettingRow>
   {/if}
 
+  {#if transcriptionModelError}
+    <ModelDownloadRow label="Model" error={`Couldn’t load model status: ${transcriptionModelError}`} />
+  {:else if !m}
+    <ModelDownloadRow
+      label="Model"
+      description={loadingTranscriptionModelStatus ? "Checking installed transcription models…" : undefined}
+      warning={loadingTranscriptionModelStatus ? null : "No model status is available for the selected provider."}
+    />
+  {:else if selectedAppleSpeechPermissionStatus && selectedAppleSpeechPermissionStatus !== "available"}
+    <!-- Apple Speech: denied / not asked / unusable is a permission notice, never "missing". -->
+    <SettingRow label="Model" full>
+      {#snippet control()}
+        <div class="tx-stack">
+          <div class="mx-notice" data-tone="warn">
+            <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+            <b class="mx-notice__title">Apple Speech · {appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</b>
+            <p class="mx-notice__text">{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
+            {#if selectedAppleSpeechNeedsPermission}
+              <div class="mx-notice__acts">
+                {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
+                  <button
+                    type="button"
+                    class="mx-btn mx-btn--sm"
+                    onclick={requestAppleSpeechPermission}
+                    disabled={requestingAppleSpeechPermission}
+                    aria-busy={requestingAppleSpeechPermission}
+                  >
+                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
+                  </button>
+                {:else}
+                  <button type="button" class="mx-btn mx-btn--sm" onclick={openAppleSpeechPrivacySettings}>
+                    Open System Settings<IconExternal width="12" height="12" />
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </div>
+          {#if appleSpeechPermissionError}
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />Permission request failed: {appleSpeechPermissionError}</span>
+          {/if}
+        </div>
+      {/snippet}
+    </SettingRow>
+  {:else if m.management !== "app_managed"}
+    <ModelDownloadRow
+      label="Model"
+      description={rec.draftTranscriptionProvider === "deepgram"
+        ? "Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download."
+        : `${m.displayName} · ${transcriptionStatusLabel(m).toLowerCase()}`}
+      status={m.available && rec.draftTranscriptionProvider !== "deepgram" ? "available" : null}
+      chip={m.available ? null : { text: "unavailable", tone: "warn" }}
+      controls={modelSelect}
+    />
+  {:else if selectedTranscriptionDownloadRunning}
+    <ModelDownloadRow
+      label="Model"
+      description="Download is checked (sha256) before it’s marked installed."
+      progress={downloadMeta(m.displayName, selectedTranscriptionDownloadProgress)}
+      onCancel={cancelSelectedTranscriptionModelDownload}
+      cancelling={cancellingTranscriptionDownload}
+    />
+  {:else}
+    {@const failed = m.status === "failed" || !!transcriptionDownloadError}
+    <ModelDownloadRow
+      label="Model"
+      description={m.available
+        ? `${m.displayName} · installed`
+        : failed
+          ? m.displayName
+          : `${m.displayName} isn’t downloaded${m.missingFiles.length > 0 ? ` (${m.missingFiles.length} ${m.missingFiles.length === 1 ? "file" : "files"} missing)` : ""}. Audio waits until it is.`}
+      status={m.available ? "available" : null}
+      chip={m.available ? null : failed ? { text: "failed", tone: "danger" } : { text: "missing", tone: "warn" }}
+      error={transcriptionDownloadError ? `Download failed: ${transcriptionDownloadError}` : m.failureMessage}
+      warning={!m.available && !m.download
+        ? "This app-managed model is missing, but no packaged download artifact is available in the current manifest."
+        : null}
+      controls={modelSelect}
+      download={!m.available && m.download
+        ? { bytes: m.download.byteSize, starting: startingTranscriptionDownload, onclick: startSelectedTranscriptionModelDownload }
+        : null}
+      info={m}
+      folder={{ path: models.transcriptionModelStatus?.modelsDirectory, reveal: m.available ? m.installPath : null }}
+    />
+  {/if}
+
+  <SettingRow
+    label="Language"
+    description="Auto detects the spoken language, or pick a hint. Applies to future audio; queued jobs keep theirs."
+  >
+    {#snippet control()}
+      <div class="tx-ctl">
+        <Combobox
+          value={rec.draftTranscriptionLanguage || "auto"}
+          onValueChange={(v) => (rec.draftTranscriptionLanguage = v)}
+          options={TRANSCRIPTION_LANGUAGE_OPTIONS}
+          searchPlaceholder="Search languages…"
+        />
+      </div>
+    {/snippet}
+  </SettingRow>
+
   {#if rec.draftTranscriptionProvider === "parakeet"}
-    <SettingRow label="Parakeet memory mode" full>
+    <SettingRow label="Parakeet memory mode">
       {#snippet control()}
         <Segmented
+          md
           value={rec.draftTranscriptionMemoryMode}
           onValueChange={(value) => rec.draftTranscriptionMemoryMode = value as AudioTranscriptionMemoryMode}
           ariaLabel="Parakeet memory mode"
@@ -314,7 +410,7 @@
       {/snippet}
     </SettingRow>
     {#if rec.draftTranscriptionMemoryMode === "balanced"}
-      <SettingRow label="Idle unload seconds" full>
+      <SettingRow label="Idle unload" description="Free the model after this long without audio.">
         {#snippet control()}
           <Stepper
             id="transcription-idle-unload"
@@ -333,8 +429,7 @@
     {/if}
     <SettingRow
       label="Chunk seconds"
-      description="Choose the int8 Parakeet model for lower disk and runtime weight memory. Chunking limits peak activation memory; set chunk seconds to 0 to disable chunking."
-      full
+      description="Chunking limits peak memory; 0 turns it off. The int8 model also lowers disk and memory use."
     >
       {#snippet control()}
         <Stepper
@@ -353,163 +448,76 @@
     </SettingRow>
   {/if}
 
-  <SettingRow label="Selected model status" full divider={false}>
-    {#snippet control()}
-      <div class="tx-stack">
-        {#if transcriptionModelError}
-          <p class="group-hint group-hint--warn" role="alert">Failed to load model status: {transcriptionModelError}</p>
-        {:else if selectedTranscriptionModel}
-          <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
-            <div>
-              <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
-              <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
-            </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedTranscriptionModel.available}
-            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
-          </div>
-          <p class="group-hint">{selectedTranscriptionModel.description}</p>
-          {#if selectedAppleSpeechPermissionStatus}
-            <div class="permission-callout" class:permission-callout--ok={selectedAppleSpeechPermissionStatus === "available"}>
-              <div class="permission-callout__copy">
-                <span class="permission-callout__eyebrow">Apple Speech status</span>
-                <strong>{appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</strong>
-                <p>{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
-              </div>
-              {#if selectedAppleSpeechNeedsPermission}
-                {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
-                  <button
-                    type="button"
-                    class="btn btn--ghost"
-                    onclick={requestAppleSpeechPermission}
-                    disabled={requestingAppleSpeechPermission}
-                    aria-busy={requestingAppleSpeechPermission}
-                  >
-                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
-                  </button>
-                {:else}
-                  <button type="button" class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
-                    Open System Settings
-                  </button>
-                {/if}
-              {/if}
-            </div>
-            {#if appleSpeechPermissionError}
-              <p class="group-hint group-hint--warn" role="alert">Permission request failed: {appleSpeechPermissionError}</p>
-            {/if}
-          {/if}
-          {#if selectedTranscriptionModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedTranscriptionModel.installPath}</span></p>
-          {/if}
-          <ModelMissingFiles files={selectedTranscriptionModel.missingFiles} />
-          {#if selectedTranscriptionModel.failureMessage}
-            <p class="group-hint group-hint--warn"><strong>Failure:</strong> {selectedTranscriptionModel.failureMessage}</p>
-          {/if}
-          {#if selectedTranscriptionModel.licenseLabel || selectedTranscriptionModel.sourceUrl}
-            <p class="group-hint">
-              {#if selectedTranscriptionModel.licenseLabel}<strong>License:</strong> {selectedTranscriptionModel.licenseLabel}. {/if}
-              {#if selectedTranscriptionModel.sourceUrl}<strong>Source:</strong> {selectedTranscriptionModel.sourceUrl}{/if}
-            </p>
-          {/if}
-          {#if selectedTranscriptionModel.management === "app_managed"}
-            {#if selectedTranscriptionModel.download}
-              {#if selectedTranscriptionDownloadRunning}
-                <div class="download-progress" aria-live="polite">
-                  <div class="download-progress__bar">
-                    <span style={`width: ${selectedTranscriptionDownloadPercent ?? 8}%`}></span>
-                  </div>
-                  <p class="group-hint">
-                    {selectedTranscriptionDownloadProgress?.status ?? "downloading"}
-                    {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
-                    {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
-                  </p>
-                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
-                    {#if cancellingTranscriptionDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
-                  </button>
-                </div>
-              {:else}
-                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
-                  {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
-                </button>
-              {/if}
-              <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
-            {:else if !selectedTranscriptionModel.available}
-              <p class="group-hint group-hint--warn">
-                This app-managed model is missing, but no packaged download artifact is available in the current manifest.
-              </p>
-            {/if}
-            {#if transcriptionDownloadError}
-              <p class="group-hint group-hint--warn" role="alert">Download failed: {transcriptionDownloadError}</p>
-            {/if}
-          {:else if rec.draftTranscriptionProvider === "deepgram"}
-            <p class="group-hint">Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.</p>
-          {:else}
-            <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
-          {/if}
-          <div class="debug-log-actions">
-            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
-              {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused transcription models{/if}
-            </button>
-          </div>
-          <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
-          {#if deleteUnusedTranscriptionModelsMessage}
-            <div class="cleanup-result" aria-live="polite">
-              <strong>{deleteUnusedTranscriptionModelsMessage}</strong>
-              {#if deletedUnusedTranscriptionModelLabels.length > 0}
-                <p>Deleted:</p>
-                <ul>
-                  {#each deletedUnusedTranscriptionModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if skippedUnusedTranscriptionModelLabels.length > 0}
-                <p>Skipped active downloads:</p>
-                <ul>
-                  {#each skippedUnusedTranscriptionModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-              {#if skippedTranscriptionProcessingJobModelLabels.length > 0}
-                <p>Skipped running jobs:</p>
-                <ul>
-                  {#each skippedTranscriptionProcessingJobModelLabels as model}
-                    <li>{model}</li>
-                  {/each}
-                </ul>
-              {/if}
-            </div>
-          {/if}
+  {#if m}
+    {#if deleteUnusedTranscriptionModelsMessage || deleteUnusedTranscriptionModelsError}
+      <SettingRow label="Delete unused models" description={deleteUnusedDesc} full>
+        {#snippet aside()}{@render deleteUnused()}{/snippet}
+        {#snippet control()}
           {#if deleteUnusedTranscriptionModelsError}
-            <p class="group-hint group-hint--warn" role="alert">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" />Delete failed: {deleteUnusedTranscriptionModelsError}</span>
+          {:else}
+            <span class="mx-inline" data-tone="ok" aria-live="polite"><IconCheck width="13" height="13" />{deleteUnusedTranscriptionModelsMessage}</span>
           {/if}
-        {:else if loadingTranscriptionModelStatus}
-          <p class="group-hint">Checking installed transcription models…</p>
-        {:else}
-          <p class="group-hint group-hint--warn">No model status is available for the selected provider.</p>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
+        {/snippet}
+      </SettingRow>
+    {:else}
+      <SettingRow label="Delete unused models" description={deleteUnusedDesc}>
+        {#snippet control()}{@render deleteUnused()}{/snippet}
+      </SettingRow>
+    {/if}
+  {/if}
 </SettingGroup>
 
+{#snippet modelSelect()}
+  {#if transcriptionModelOptions.length > 1}
+    <div class="tx-ctl">
+      <Combobox
+        value={rec.draftTranscriptionModelId ?? "__os_managed__"}
+        onValueChange={chooseTranscriptionModel}
+        searchPlaceholder="Search models…"
+        options={transcriptionModelOptions}
+      />
+    </div>
+  {/if}
+{/snippet}
+
+{#snippet deleteUnused()}
+  <button
+    type="button"
+    class="mx-btn mx-btn--ghost"
+    onclick={requestDeleteUnusedTranscriptionModels}
+    disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning}
+    aria-busy={deletingUnusedTranscriptionModels}
+  >
+    {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused{/if}
+  </button>
+{/snippet}
+
 <style>
-  /* The status row stacks the bordered model-status, permission, download, and
-     cleanup sub-blocks; the primitives only gap whole rows. */
+  /* Right-aligned selects/comboboxes keep a readable width (.st-select). */
+  .tx-ctl {
+    width: 240px;
+  }
+
   .tx-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
     width: 100%;
   }
 
-  /* Render filesystem paths in mono so they read as machine values, matching
-     the Developer log path treatment. */
-  .model-path {
-    font-family: var(--app-font-mono);
-    word-break: break-all;
+  /* settings.html .st-keyfield: key input + its actions on one line. */
+  .tx-key {
+    display: flex;
+    gap: var(--s-2);
+    width: 100%;
   }
 
+  .tx-key .mx-input {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+  }
 </style>
+

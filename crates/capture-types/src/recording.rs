@@ -116,10 +116,6 @@ pub fn default_audio_speech_detection_settings() -> AudioSpeechDetectionSettings
     }
 }
 
-pub fn default_native_capture_debug_logging_enabled() -> bool {
-    false
-}
-
 pub fn default_developer_options_enabled() -> bool {
     false
 }
@@ -166,6 +162,17 @@ pub enum AppearanceSetting {
 
 pub fn default_appearance() -> AppearanceSetting {
     AppearanceSetting::System
+}
+
+/// Clock style for every wall-clock time the UI shows. `System` follows the
+/// Mac's own "24-hour time" setting (resolved natively at launch).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeFormatSetting {
+    #[default]
+    System,
+    H12,
+    H24,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -532,6 +539,24 @@ pub struct AccessSettings {
     /// historically a PI `provider:modelId` pair; it is now a bare model id.
     #[serde(default)]
     pub ask_ai_model: Option<String>,
+    /// Whether Quick Recall answers a detected question on its own when the user
+    /// pauses. Auto-answer spends a model call per question; the default keeps
+    /// cloud calls (money and an upload) explicit.
+    #[serde(default)]
+    pub quick_recall_auto_answer: QuickRecallAutoAnswer,
+}
+
+/// "Answer questions automatically" in Settings → Ask AI.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum QuickRecallAutoAnswer {
+    /// Every question, whatever the model.
+    Always,
+    /// Only when the resolved model's provider `is_local()` (Ollama, Llamafile).
+    #[default]
+    LocalOnly,
+    /// Never — the user presses Tab to ask.
+    Never,
 }
 
 impl Default for AccessSettings {
@@ -541,6 +566,7 @@ impl Default for AccessSettings {
             ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
             ask_ai_web_fetch_enabled: false,
             ask_ai_model: None,
+            quick_recall_auto_answer: QuickRecallAutoAnswer::default(),
         }
     }
 }
@@ -1099,8 +1125,6 @@ pub struct RecordingSettings {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
-    #[serde(default = "default_native_capture_debug_logging_enabled")]
-    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_developer_options_enabled")]
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
@@ -1111,6 +1135,8 @@ pub struct RecordingSettings {
     pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
+    #[serde(default)]
+    pub time_format: TimeFormatSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
@@ -1197,8 +1223,6 @@ pub struct UpdateRecordingSettingsRequest {
     pub video_bitrate: VideoBitrateSettings,
     pub save_directory: String,
     pub auto_start: bool,
-    #[serde(default = "default_native_capture_debug_logging_enabled")]
-    pub native_capture_debug_logging_enabled: bool,
     #[serde(default = "default_developer_options_enabled")]
     pub developer_options_enabled: bool,
     #[serde(default = "default_preview_cache_ttl_seconds")]
@@ -1209,6 +1233,8 @@ pub struct UpdateRecordingSettingsRequest {
     pub retention_policy: RetentionPolicy,
     #[serde(default = "default_appearance")]
     pub appearance: AppearanceSetting,
+    #[serde(default)]
+    pub time_format: TimeFormatSetting,
     #[serde(default = "default_ocr_settings")]
     pub ocr: OcrSettings,
     #[serde(default = "default_audio_transcription_settings")]
@@ -1300,6 +1326,7 @@ pub struct UpdateStorageSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateDisplaySettingsRequest {
     pub appearance: Option<AppearanceSetting>,
+    pub time_format: Option<TimeFormatSetting>,
     pub follow_timeline_live: Option<bool>,
 }
 
@@ -1342,11 +1369,12 @@ pub struct UpdateAccessSettingsRequest {
     /// unchanged; an empty string clears the selection back to the engine's
     /// default model.
     pub ask_ai_model: Option<String>,
+    /// New "Answer questions automatically" choice. `None` leaves it unchanged.
+    pub quick_recall_auto_answer: Option<QuickRecallAutoAnswer>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateDeveloperSettingsRequest {
     pub developer_options_enabled: Option<bool>,
-    pub native_capture_debug_logging_enabled: Option<bool>,
 }

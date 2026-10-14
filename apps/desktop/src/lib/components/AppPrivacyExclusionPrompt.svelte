@@ -21,7 +21,7 @@
     </div>
     <div class="sensitive-prompt__actions">
       <button
-        class="btn btn--primary btn--sm"
+        class="mx-btn mx-btn--sm"
         type="button"
         disabled={controller.commandInFlight || controller.promptActionInFlight}
         onclick={() => void controller.applyAllRecommendedPrivacyApps()}
@@ -29,7 +29,7 @@
         Add exclusions
       </button>
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--ghost mx-btn--sm"
         type="button"
         disabled={controller.promptActionInFlight}
         onclick={onReview}
@@ -37,7 +37,7 @@
         Review
       </button>
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--ghost mx-btn--sm"
         type="button"
         disabled={controller.promptActionInFlight}
         onclick={() => void controller.dismissSensitiveRecommendationPrompt()}
@@ -98,65 +98,4 @@
     justify-content: flex-end;
   }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-    font-size: 10px;
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  .btn--primary {
-    background: var(--app-accent);
-    color: var(--app-accent-contrast);
-    border-color: var(--app-accent);
-  }
-
-  .btn--primary:not(:disabled):hover {
-    background: var(--app-accent-strong);
-    border-color: var(--app-accent-strong);
-    color: var(--app-accent-contrast);
-  }
-
-  .btn--primary:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: 9px;
-  }
 </style>

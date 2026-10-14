@@ -247,6 +247,21 @@ export function isOpenableHref(href: string | null | undefined): boolean {
   return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:";
 }
 
+/**
+ * Close a `**` the stream hasn't closed yet, so a half-streamed answer shows
+ * bold text rather than raw asterisks. Looks only at the last paragraph,
+ * outside inline code; an unclosed code fence is left alone. A bare trailing
+ * opener is dropped instead (`****` renders literally), as is one lone
+ * trailing `*` (half of a closer still arriving). Streaming display only.
+ */
+export function closeDanglingBold(text: string): string {
+  if ((text.match(/^\s*(```|~~~)/gm)?.length ?? 0) % 2 === 1) return text;
+  const prose = (text.split(/\n\s*\n/).pop() ?? "").replace(/`[^`]*(`|$)/g, "");
+  if ((prose.match(/\*\*/g)?.length ?? 0) % 2 === 0) return text;
+  const out = text.replace(/(?<!\*)\*$/, "");
+  return /\*\*\s*$/.test(out) ? out.replace(/\*\*\s*$/, "") : `${out.trimEnd()}**`;
+}
+
 export function renderMarkdown(source: string, options?: { highlight?: boolean }): string {
   const md = options?.highlight ? mdHighlight : mdPlain;
   return md.render(source);

@@ -655,6 +655,53 @@ fn validate_cli_access_approval(
     Ok(())
 }
 
+/// Block from the window: a standing rejection, persisted even for a tool that
+/// was never granted (`block_identity`), answered `blocked` so the CLI stops.
+#[tauri::command]
+pub fn block_pending_cli_access_request(
+    app: tauri::AppHandle,
+    request_id: String,
+) -> Result<(), String> {
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    block_pending_request_in(
+        &app.state::<BrokerAuthorizationChannelState>(),
+        &request_id,
+        |request| {
+            BrokeredCaptureAccess::from_config_dir(&config_dir)
+                .block_identity(identity_for_request(request)?)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    )?;
+    let _ = close_cli_access_request_window(&app);
+    Ok(())
+}
+
+/// Same slot rules as [`approve_pending_request_in`]: only the rendered request
+/// (by id) is answered, and a failed write puts it back unanswered.
+fn block_pending_request_in(
+    state: &BrokerAuthorizationChannelState,
+    request_id: &str,
+    write_block: impl FnOnce(&AuthorizationChannelRequest) -> Result<(), String>,
+) -> Result<(), String> {
+    let pending = state
+        .pending
+        .lock()
+        .ok()
+        .and_then(|mut slot| match slot.as_ref() {
+            Some(p) if p.request.request_id == request_id => slot.take(),
+            _ => None,
+        })
+        .ok_or_else(|| "no pending CLI Access request matches this block".to_string())?;
+    if write_block(&pending.request).is_err() {
+        return Err(restore_pending(state, pending));
+    }
+    let _ = pending
+        .respond
+        .send(blocked_response(pending.request.request_id.clone()));
+    Ok(())
+}
+
 #[tauri::command]
 pub fn cancel_pending_cli_access_request(app: tauri::AppHandle) -> Result<(), String> {
     cancel_pending_request(&app, "userCancelled");
@@ -1704,6 +1751,40 @@ mod tests {
             response.grant.expect("an approval carries its grant").scope,
             "lastDay"
         );
+    }
+
+    /// Block answers only the request the window rendered, persists a standing
+    /// rejection for a never-granted tool, and tells the client `blocked`.
+    #[test]
+    fn blocking_the_rendered_request_persists_a_row_and_answers_blocked() {
+        let state = BrokerAuthorizationChannelState::default();
+        let (respond, mut receive) = oneshot::channel();
+        assert!(store_pending(
+            &state,
+            test_authorization_request("lastDay"),
+            respond
+        ));
+        let config_dir = tempfile::tempdir().expect("temp config dir");
+        let block = |request: &AuthorizationChannelRequest| {
+            BrokeredCaptureAccess::from_config_dir(config_dir.path())
+                .block_identity(identity_for_request(request)?)
+                .map(drop)
+                .map_err(|error| error.to_string())
+        };
+
+        assert!(block_pending_request_in(&state, "request-2", block).is_err());
+        assert!(matches!(receive.try_recv(), Err(TryRecvError::Empty)));
+
+        block_pending_request_in(&state, "request-1", block).expect("block lands");
+        let response = receive.try_recv().expect("the client is answered");
+        assert_eq!(response.decision, "blocked");
+        let stored = BrokeredCaptureAccess::from_config_dir(config_dir.path())
+            .list_grants()
+            .expect("permissions load");
+        assert_eq!(stored.grants.len(), 1);
+        assert!(stored.grants[0].blocked);
+        assert_eq!(stored.grants[0].last_used_at_unix_ms, 0);
+        assert!(grant_file_blocks(&stored, "Test Client"));
     }
 
     /// Deny and Esc may only answer the request the window actually DISPLAYED.

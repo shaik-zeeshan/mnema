@@ -6,8 +6,10 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import { semanticSearchProgressPercent } from "$lib/settings/state/models-format";
-  import { formatBytes } from "$lib/settings/state/format";
+  import ModelDownloadRow from "$lib/settings/ui/ModelDownloadRow.svelte";
+  import { downloadMeta } from "$lib/settings/ui/model-download";
+  import IconInfo from "~icons/lucide/info";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -31,33 +33,32 @@
   const semanticSearchReindexing = $derived(models.semanticSearchReindexing);
   const semanticSearchReindexMessage = $derived(models.semanticSearchReindexMessage);
 
-  // rec field alias.
-  const semanticSearchSelectedModelId = $derived(rec.semanticSearchSelectedModelId);
-
   // Controller derived selectors.
   const semanticSearchModelOptions = $derived(c.semanticSearchModelOptions);
-  const semanticSearchPickedModel = $derived(c.semanticSearchPickedModel);
-  const semanticSearchPickedProgress = $derived(c.semanticSearchPickedProgress);
+  const picked = $derived(c.semanticSearchPickedModel);
+  const progress = $derived(c.semanticSearchPickedProgress);
+  const selected = $derived(!!picked && rec.semanticSearchSelectedModelId === picked.modelId);
+  const downloading = $derived(
+    !!progress && ["starting", "downloading", "installing"].includes(progress.status),
+  );
+  const failed = $derived(!!semanticSearchDownloadError || progress?.status === "failed");
+  const hasNotes = $derived(
+    osIsNonEnglish
+      || !!semanticSearchSupportedModelsError
+      || (loadingSemanticSearchSupportedModels && semanticSearchSupportedModels.length === 0),
+  );
+  const reindexing = $derived(selected && (semanticSearchReindexing || !!semanticSearchReindexMessage));
 
   // Controller / store action methods.
   const loadSemanticSearchModelStatus = () => c.loadSemanticSearchModelStatus();
   const setSemanticSearchEnabled = (value: boolean) => c.setSemanticSearchEnabled(value);
   const cancelSemanticSearchModelDownload = () => c.cancelSemanticSearchModelDownload();
-  const startSemanticSearchPickedDownload = (
-    model: Parameters<typeof c.startSemanticSearchPickedDownload>[0],
-  ) => c.startSemanticSearchPickedDownload(model);
-  const chooseSemanticSearchPickedModel = (
-    model: Parameters<typeof c.chooseSemanticSearchPickedModel>[0],
-  ) => c.chooseSemanticSearchPickedModel(model);
-  const deleteSemanticSearchPickedModel = (
-    model: Parameters<typeof c.deleteSemanticSearchPickedModel>[0],
-  ) => c.deleteSemanticSearchPickedModel(model);
 </script>
 
 <SettingGroup
   id="settings-section-semanticSearch"
-  title="Semantic Search Model"
-  hint="Meaning-based search runs fully on-device. Pick a supported model and Mnema embeds your captures in the background; nothing downloads until you choose one."
+  title="Semantic Search"
+  hint="Meaning-based search, fully on-device."
 >
   {#snippet actions()}
     <ReloadButton
@@ -70,191 +71,132 @@
 
   <SettingRow
     label="Enable semantic search"
-    description="Fuse meaning-based results with keyword search. Inert until a model below is installed."
-    full
+    description="Fuse meaning-based results with keyword search. Inert until a model below is installed; indexes in the background, which costs CPU and battery while it catches up."
   >
-    {#snippet aside()}
+    {#snippet control()}
       <Switch
         ariaLabel="Enable semantic search"
         checked={rec.draftSemanticSearchEnabled}
         onCheckedChange={(value) => void setSemanticSearchEnabled(value)}
       />
     {/snippet}
-    {#snippet control()}
-      <p class="group-hint group-hint--warn">
-        Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
-      </p>
-    {/snippet}
   </SettingRow>
 
-  <SettingRow label="Model" full>
-    {#snippet control()}
-      <div class="ss-stack">
-        {#if osIsNonEnglish}
-          <p class="group-hint">
-            Your system language ({osLocale}) isn’t English — the Multilingual tier is recommended so
-            non-English captures aren’t degraded by the English default.
-          </p>
-        {/if}
-
-        {#if semanticSearchModelError}
-          <p class="group-hint group-hint--warn">Model status failed: {semanticSearchModelError}</p>
-        {/if}
-
-        {#if semanticSearchModelStatus}
-          <Combobox
-            label=""
-            placeholder="Select a model — recommended tiers first…"
-            searchPlaceholder="Search models…"
-            value={c.semanticSearchPickedModelId}
-            onValueChange={(v) => (c.semanticSearchPickedModelId = v)}
-            options={semanticSearchModelOptions}
-          />
-          <p class="group-hint">
-            Recommended tiers are listed first. Pick from the supported on-device models;
-            multilingual models are marked. Nothing downloads until you choose below.
-          </p>
-
-          {#if semanticSearchSupportedModelsError}
-            <p class="group-hint group-hint--warn">Custom model list failed: {semanticSearchSupportedModelsError}</p>
-          {:else if loadingSemanticSearchSupportedModels && semanticSearchSupportedModels.length === 0}
-            <p class="group-hint">Loading supported models…</p>
-          {/if}
-
-          {#if semanticSearchPickedModel}
-            {@const picked = semanticSearchPickedModel}
-            {@const progress = semanticSearchPickedProgress}
-            {@const installed = picked.available}
-            {@const selected = semanticSearchSelectedModelId === picked.modelId}
-            {@const downloading =
-              !!progress &&
-              (progress.status === "downloading" ||
-                progress.status === "starting" ||
-                progress.status === "installing")}
-            <div class="settings-group ss-picked" role="group" aria-label={picked.displayName}>
-              <div class="row-actions row-actions--between">
-                <div>
-                  <strong>{picked.displayName}</strong>
-                  <p class="group-hint">{picked.description}</p>
-                  <p class="group-hint">{picked.metaLine}</p>
-                </div>
-                <span class="badge {selected ? 'badge--ok' : 'badge--neutral'} badge--sm">
-                  {selected
-                    ? "Active"
-                    : installed
-                      ? "Installed"
-                      : downloading
-                        ? `Downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
-                        : progress && progress.status === "failed"
-                          ? "Failed"
-                          : "Not installed"}
-                </span>
-              </div>
-
-              {#if downloading && progress}
-                <div class="download-progress" aria-live="polite">
-                  <div class="download-progress__bar">
-                    <span style={`width: ${semanticSearchProgressPercent(progress)}%`}></span>
-                  </div>
-                  <p class="group-hint">
-                    {semanticSearchProgressPercent(progress)}% · {formatBytes(progress.downloadedBytes)}{progress.totalBytes ? ` of ${formatBytes(progress.totalBytes)}` : ""}
-                  </p>
-                </div>
-              {/if}
-
-              {#if downloading || !installed || !selected}
-                <div class="row-actions">
-                  {#if downloading}
-                    <button
-                      type="button"
-                      class="btn btn--ghost btn--sm"
-                      onclick={() => void cancelSemanticSearchModelDownload()}
-                      disabled={cancellingSemanticSearchDownload}
-                      aria-busy={cancellingSemanticSearchDownload}
-                    >
-                      {#if cancellingSemanticSearchDownload}<ButtonSpinner />Cancelling{:else}Cancel{/if}
-                    </button>
-                  {:else if !installed}
-                    <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
-                    <button
-                      type="button"
-                      class="btn btn--primary btn--sm"
-                      onclick={() => void startSemanticSearchPickedDownload(picked)}
-                      disabled={!picked.provider || startingSemanticSearchDownload}
-                      aria-busy={startingSemanticSearchDownload}
-                    >
-                      {#if startingSemanticSearchDownload}
-                        <ButtonSpinner />Starting
-                      {:else}
-                        {picked.approxDownloadBytes != null
-                          ? `Download (${formatBytes(picked.approxDownloadBytes)})`
-                          : "Download"}
-                      {/if}
-                    </button>
-                  {:else if !selected}
-                    <!-- Step 2: use (installed, not yet active). -->
-                    <button
-                      type="button"
-                      class="btn btn--primary btn--sm"
-                      onclick={() => void chooseSemanticSearchPickedModel(picked)}
-                      disabled={semanticSearchReindexing}
-                      aria-busy={semanticSearchReindexing}
-                    >
-                      {#if semanticSearchReindexing}<ButtonSpinner />Re-indexing{:else}Use this model{/if}
-                    </button>
-                    <!-- Installed but not active = unused: allow reclaiming its disk. -->
-                    <button
-                      type="button"
-                      class="btn btn--ghost btn--sm"
-                      onclick={() => void deleteSemanticSearchPickedModel(picked)}
-                      disabled={deletingSemanticSearchModel}
-                      aria-busy={deletingSemanticSearchModel}
-                    >
-                      {#if deletingSemanticSearchModel}<ButtonSpinner />Deleting{:else}Delete{/if}
-                    </button>
-                  {/if}
-                  {#if !installed && !downloading}
-                    <span class="action-hint">Step 1: download · Step 2: use this model</span>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {/if}
-
-          {#if semanticSearchDownloadError}
-            <p class="group-hint group-hint--warn">Download failed: {semanticSearchDownloadError}</p>
-          {/if}
-          {#if semanticSearchReindexing}
-            <p class="group-hint">Re-indexing — clearing existing vectors…</p>
-          {:else if semanticSearchReindexMessage}
-            <p class="group-hint">{semanticSearchReindexMessage}</p>
-          {/if}
-        {:else if loadingSemanticSearchModelStatus}
-          <p class="group-hint">Checking installed search models…</p>
-        {:else}
-          <p class="group-hint group-hint--warn">No search model status is available.</p>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
+  {#if !semanticSearchModelStatus}
+    <ModelDownloadRow
+      label="Model"
+      description={loadingSemanticSearchModelStatus ? "Checking installed search models…" : undefined}
+      error={semanticSearchModelError ? `Model status failed: ${semanticSearchModelError}` : null}
+      warning={loadingSemanticSearchModelStatus || semanticSearchModelError ? null : "No search model status is available."}
+    />
+  {:else if !picked}
+    <ModelDownloadRow
+      label="Model"
+      description="Recommended tiers first. Nothing downloads until you choose one."
+      error={semanticSearchModelError ? `Model status failed: ${semanticSearchModelError}` : null}
+      controls={picker}
+      note={hasNotes ? notes : undefined}
+    />
+  {:else if downloading && progress}
+    <ModelDownloadRow
+      label="Model"
+      description={picked.displayName}
+      progress={downloadMeta(picked.displayName, progress)}
+      onCancel={() => void cancelSemanticSearchModelDownload()}
+      cancelling={cancellingSemanticSearchDownload}
+      cancelLabel="Cancel"
+    />
+  {:else if reindexing}
+    <ModelDownloadRow
+      label="Model"
+      chip={{ text: "active", tone: "accent" }}
+      description={semanticSearchReindexMessage ?? "Re-indexing — clearing existing vectors…"}
+      progress={{ title: "Re-indexing", detail: "catching up", percent: null }}
+      controls={picker}
+    />
+  {:else}
+    <ModelDownloadRow
+      label="Model"
+      chip={!picked.available
+        ? failed
+          ? { text: "failed", tone: "danger" }
+          : { text: "not installed" }
+        : selected
+          ? { text: "active", tone: "accent" }
+          : { text: "installed" }}
+      description={`${picked.metaLine}.${!picked.available && !failed ? " Step 1: download · Step 2: use this model." : ""}`}
+      error={semanticSearchModelError
+        ? `Model status failed: ${semanticSearchModelError}`
+        : semanticSearchDownloadError
+          ? `Download failed: ${semanticSearchDownloadError}`
+          : null}
+      controls={pickedActions}
+      note={hasNotes ? notes : undefined}
+      download={!picked.available
+        ? {
+            bytes: picked.approxDownloadBytes,
+            starting: startingSemanticSearchDownload,
+            onclick: () => void c.startSemanticSearchPickedDownload(picked),
+            disabled: !picked.provider,
+          }
+        : null}
+      folder={{ path: semanticSearchModelStatus.modelsDirectory, reveal: picked.available ? picked.installPath : null }}
+    />
+  {/if}
 </SettingGroup>
 
+{#snippet notes()}
+  {#if osIsNonEnglish}
+    <span class="mx-inline" data-tone="info"><IconInfo width="13" height="13" />Your system language ({osLocale}) isn’t English — the Multilingual tier is recommended.</span>
+  {/if}
+  {#if semanticSearchSupportedModelsError}
+    <span class="mx-inline" data-tone="warn"><IconAlert width="13" height="13" />Custom model list failed: {semanticSearchSupportedModelsError}</span>
+  {:else if loadingSemanticSearchSupportedModels && semanticSearchSupportedModels.length === 0}
+    <span class="mx-inline">Loading supported models…</span>
+  {/if}
+{/snippet}
+
+{#snippet pickedActions()}
+  {@render picker()}
+  {#if picked && picked.available && !selected}
+    <!-- Step 2: use (installed, not yet active). Never automatic (ADR 0036). -->
+    <button
+      type="button"
+      class="mx-btn"
+      onclick={() => void c.chooseSemanticSearchPickedModel(picked)}
+      disabled={semanticSearchReindexing}
+      aria-busy={semanticSearchReindexing}
+    >
+      {#if semanticSearchReindexing}<ButtonSpinner />Re-indexing{:else}Use this model{/if}
+    </button>
+    <!-- Installed but not active = unused: allow reclaiming its disk. -->
+    <button
+      type="button"
+      class="mx-btn mx-btn--ghost"
+      onclick={() => void c.deleteSemanticSearchPickedModel(picked)}
+      disabled={deletingSemanticSearchModel}
+      aria-busy={deletingSemanticSearchModel}
+    >
+      {#if deletingSemanticSearchModel}<ButtonSpinner />Deleting{:else}Delete{/if}
+    </button>
+  {/if}
+{/snippet}
+
+{#snippet picker()}
+  <div class="ss-ctl">
+    <Combobox
+      placeholder="Select a model…"
+      searchPlaceholder="Search models…"
+      value={c.semanticSearchPickedModelId}
+      onValueChange={(v) => (c.semanticSearchPickedModelId = v)}
+      options={semanticSearchModelOptions}
+    />
+  </div>
+{/snippet}
+
 <style>
-  /* Wide "Model" row stacks the picker, hints, and the bordered picked-model
-     sub-block; the primitives only gap rows, not the contents of one control
-     slot. */
-  .ss-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
+  /* Right-aligned picker keeps a readable width (.st-select). */
+  .ss-ctl {
+    width: 260px;
   }
-
-  /* Picked-model header lays its label/description column opposite the status
-     badge; override the shared .row-actions (which packs to the end). */
-  .row-actions.row-actions--between {
-    justify-content: space-between;
-    align-items: flex-start;
-  }
-
 </style>

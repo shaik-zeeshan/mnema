@@ -1,7 +1,8 @@
 # Derivation is source-aware; speaker names resolve on-device
 
 **Status:** accepted, implementation deferred (a follow-up to
-[ADR 0049](0049-receipt-plays-cited-audio-as-bounded-synced-clips.md)).
+[ADR 0049](0049-receipt-plays-cited-audio-as-bounded-synced-clips.md)). Amended 2026-10-11: system
+audio is *the computer*, not *the other side* (see Amendment).
 
 ## Context
 
@@ -38,3 +39,13 @@ stale "unknown Speaker 2" baked in at derivation time.
 - **Deferred and separable:** this is a derivation/prompt change. The Receipt's read-only attribution
   display (ADR 0049) reads local speaker data directly and can ship first; this lands as its own
   work-item.
+
+## Amendment (2026-10-11): system audio is the computer, not "the other side"
+
+Tagging system audio `other-side` presumed a call, so the engine read every video, podcast and
+stream as a conversation: one evening of YouTube produced four "meetings" with no microphone audio
+in any of them, and the same video split into a "meeting" (its sound) and "watching" (its picture).
+The tag is now `computer`: the other side of a call **or** media playing. The engine decides which
+from the frames around it (a call or meeting app vs a video site), and calls it a conversation only
+when a call app is on screen or the user's own voice answers. The attribution rule is unchanged —
+computer audio is never rendered as words the user said.

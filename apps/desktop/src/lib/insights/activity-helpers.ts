@@ -17,16 +17,16 @@ export const CATEGORY_COLOR: Record<ActivityCategory, string> = {
   personal: "--cat-personal",
   entertainment: "--cat-entertainment",
 };
-// Stable legend ordering.
+// Stable legend + stack ordering — insights.html's `CAT` order.
 export const CATEGORY_ORDER: ActivityCategory[] = [
   "creating",
-  "communication",
   "meetings",
   "research",
+  "communication",
   "learning",
+  "entertainment",
   "organizing",
   "personal",
-  "entertainment",
 ];
 export const UNCATEGORIZED_COLOR = "--chart-grey-3";
 
@@ -37,12 +37,6 @@ export function categoryLabel(c: ActivityCategory): string {
 export function startOfDay(ms: number): number {
   const d = new Date(ms);
   d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-export function startOfHour(ms: number): number {
-  const d = new Date(ms);
-  d.setMinutes(0, 0, 0);
   return d.getTime();
 }
 
@@ -110,14 +104,6 @@ export function humanizeMs(ms: number): string {
   if (h <= 0) return `${m}m`;
   if (m === 0) return `${h}h`;
   return `${h}h ${m}m`;
-}
-export function humanizeHours(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "0h";
-  // Under an hour reads in minutes: 2 minutes is "2m", never "0h" (OV-17).
-  if (ms < 3600000) return `${Math.min(59, Math.max(1, Math.round(ms / 60000)))}m`;
-  const h = ms / 3600000;
-  if (h < 10) return `${(Math.round(h * 10) / 10).toString()}h`;
-  return `${Math.round(h)}h`;
 }
 
 // ── Activity threads (#108 corrections) ───────────────────────────────

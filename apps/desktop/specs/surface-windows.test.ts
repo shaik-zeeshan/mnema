@@ -180,6 +180,14 @@ describe("recordMainSurface / getLastMainSurface", () => {
     expect(getLastMainSurface()).toBe("/");
   });
 
+  test("Chat is a main surface; an open chat keeps only its id", () => {
+    recordMainSurface("/");
+    recordMainSurface("/chat", "?c=abc&q=hello");
+    expect(getLastMainSurface()).toBe("/chat?c=abc");
+    recordMainSurface("/chat", "?q=hello");
+    expect(getLastMainSurface()).toBe("/chat");
+  });
+
   test("rejected path (/settings) keeps the prior accepted value", () => {
     recordMainSurface("/insights");
     recordMainSurface("/settings");

@@ -45,8 +45,8 @@ pub struct CaptureWindowItem {
     /// Search Context URL, if available (frames only, best-effort).
     pub url: Option<String>,
     /// Audio only — the capture source: `"microphone"` (the user's own voice) or
-    /// `"system_audio"` (the other party). `None` for frames. Lets the derivation
-    /// prompt tag speech `you` vs `other-side` so words spoken TO the user are not
+    /// `"system_audio"` (a call's other side, or media playing). `None` for frames. Lets
+    /// the derivation prompt tag speech `you` vs `computer` so words spoken TO the user are not
     /// misattributed as words the user said (ADR 0050).
     pub source_kind: Option<String>,
     /// Audio only — diarized speaker turns as `(cluster_id, transcript_text)`,
@@ -128,11 +128,15 @@ impl UserContextStore {
             let text: String = row.get("result_text");
             let snapshot_json: Option<String> = row.get("snapshot_json");
             let snapshot = parse_snapshot(snapshot_json.as_deref());
-            // Skip frames of Mnema's own UI (best-effort: frames without a
-            // snapshot cannot be identified and pass through). ponytail: self
-            // frames still eat the SQL LIMIT budget; push the filter into SQL
-            // json_extract if that ever matters.
-            if snapshot.as_ref().is_some_and(is_self_capture) {
+            // Skip frames of Mnema's own UI and of the lock screen (time away,
+            // not activity) — best-effort: frames without a snapshot cannot be
+            // identified and pass through. ponytail: skipped frames still eat
+            // the SQL LIMIT budget; push the filter into SQL json_extract if
+            // that ever matters.
+            if snapshot
+                .as_ref()
+                .is_some_and(|s| is_self_capture(s) || s.is_lock_screen())
+            {
                 continue;
             }
             let (app_label, url) = snapshot.map_or((None, None), search_context_from_parsed);
@@ -739,7 +743,7 @@ mod tests {
     /// The DB→item `source_kind` projection (ADR 0050). Every audio item must
     /// carry its segment's capture source — `microphone` (the user's own voice)
     /// vs `system_audio` (the other party) — so the derivation prompt can tag
-    /// speech `you` vs `other-side`; a frame item carries `None`. Drop the
+    /// speech `you` vs `computer`; a frame item carries `None`. Drop the
     /// `source_kind` column read in the audio SELECT (or bind `None`) and the
     /// source-kind asserts below fail — the teeth.
     #[test]
@@ -834,6 +838,78 @@ mod tests {
                 .find(|i| i.subject_type == FRAME_SUBJECT_TYPE)
                 .expect("frame item present");
             assert_eq!(frame.source_kind, None);
+        });
+    }
+
+    /// Lock-screen frames are time away: the window handed to derivation never
+    /// carries them, so no lock-screen Activity can be written.
+    #[test]
+    fn read_capture_window_skips_lock_screen_frames() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+            let snap = |name: &str, bundle: &str| {
+                capture_metadata::FrameMetadataSnapshot {
+                    app_name: Some(name.to_string()),
+                    app_bundle_id: Some(bundle.to_string()),
+                    ..Default::default()
+                }
+                .normalized_json()
+            };
+            for (id, json) in [
+                (1_i64, snap("Safari", "com.apple.Safari")),
+                (2, snap("loginwindow", "com.apple.loginwindow")),
+                (3, snap("SecurityAgent", "com.apple.SecurityAgent")),
+            ] {
+                sqlx::query("INSERT INTO frame_metadata_snapshots (id, snapshot_json) VALUES (?1, ?2)")
+                    .bind(id)
+                    .bind(json)
+                    .execute(&pool)
+                    .await
+                    .expect("seed snapshot");
+                sqlx::query("INSERT INTO frames (id, captured_at, metadata_snapshot_id) VALUES (?1, ?2, ?1)")
+                    .bind(id)
+                    .bind(format!("2026-01-01T00:00:0{id}Z"))
+                    .execute(&pool)
+                    .await
+                    .expect("seed frame");
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                )
+                .bind(FRAME_SUBJECT_TYPE)
+                .bind(id)
+                .bind(OCR_PROCESSOR)
+                .bind(format!("distinct screen text number {id}"))
+                .execute(&pool)
+                .await
+                .expect("seed ocr");
+            }
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+            let ids: Vec<i64> = window.items.iter().map(|i| i.subject_id).collect();
+            assert_eq!(ids, vec![1, 3], "the loginwindow frame is dropped; SecurityAgent stays");
         });
     }
 

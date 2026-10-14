@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isOpenableHref, registeredLanguageCount, renderMarkdown } from "../src/lib/markdown";
+import { closeDanglingBold, isOpenableHref, registeredLanguageCount, renderMarkdown } from "../src/lib/markdown";
 import hljs from "highlight.js/lib/core";
 
 describe("renderMarkdown code highlighting", () => {
@@ -124,5 +124,29 @@ describe("isOpenableHref", () => {
     expect(isOpenableHref(null)).toBe(false);
     expect(isOpenableHref(undefined)).toBe(false);
     expect(isOpenableHref("")).toBe(false);
+  });
+});
+
+describe("closeDanglingBold", () => {
+  test("closes an open ** in the last paragraph", () => {
+    expect(closeDanglingBold("You were in **Figma")).toBe("You were in **Figma**");
+    expect(closeDanglingBold("You were in **Figma ")).toBe("You were in **Figma**");
+    expect(closeDanglingBold("**a** then **b")).toBe("**a** then **b**");
+    expect(renderMarkdown(closeDanglingBold("in **Figma"))).toContain("<strong>Figma</strong>");
+  });
+
+  test("drops a bare trailing opener and a lone trailing *", () => {
+    expect(closeDanglingBold("You were in **")).toBe("You were in ");
+    expect(closeDanglingBold("**a** then **")).toBe("**a** then ");
+    expect(closeDanglingBold("in **Figma*")).toBe("in **Figma**");
+  });
+
+  test("leaves balanced text, earlier paragraphs, inline code and open fences alone", () => {
+    expect(closeDanglingBold("**done**")).toBe("**done**");
+    expect(closeDanglingBold("odd **here\n\nfine")).toBe("odd **here\n\nfine");
+    expect(closeDanglingBold("run `a ** b` now")).toBe("run `a ** b` now");
+    expect(closeDanglingBold("run `a **")).toBe("run `a **");
+    expect(closeDanglingBold("```py\nx = a ** b")).toBe("```py\nx = a ** b");
+    expect(closeDanglingBold("")).toBe("");
   });
 });

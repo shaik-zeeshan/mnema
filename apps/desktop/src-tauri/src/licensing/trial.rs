@@ -183,7 +183,7 @@ async fn attempt_issuance(pool: &SqlitePool, app_handle: &tauri::AppHandle, now_
     match classify_trial(result, |wire| verifier.verify_license(wire).is_ok()) {
         TrialDisposition::Install(key_wire) => {
             if let Err(error) = app_infra::store_license_key(&key_wire) {
-                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "trial key issued but could not be stored: {error}");
+                tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "trial key issued but could not be stored: {error}");
                 return;
             }
             tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "trial issued; chaining activation");

@@ -273,12 +273,13 @@ async fn run_analysis_subprocess(
 
     if !status.success() {
         let stderr = trimmed_stderr(&stderr);
-        eprintln!(
-            "speaker-analysis helper failed: elapsed_ms={} status={:?} stderr='{}'",
+        // Helper stderr is model diagnostics, not captured content; keep the tail only.
+        let stderr_tail_start = stderr.char_indices().rev().nth(499).map_or(0, |(index, _)| index);
+        crate::native_capture::debug_log::log_warn(format!(
+            "speaker-analysis helper failed: elapsed_ms={} status={status} stderr_tail='{}'",
             started_at.elapsed().as_millis(),
-            status.code(),
-            stderr
-        );
+            &stderr[stderr_tail_start..]
+        ));
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt;

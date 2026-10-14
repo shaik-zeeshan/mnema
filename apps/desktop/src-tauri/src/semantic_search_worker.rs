@@ -161,7 +161,7 @@ const BACKLOG_COUNT_EVERY_N_WORK_PASSES: u32 = 16;
 /// the worker surfaces a
 /// "model appears corrupt — reinstall" signal on the model-status telemetry
 /// channel and idles instead of hammering the doomed load.
-const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
+pub(crate) const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 
 /// CPU pacing (the "Backfill CPU pacing" cross-cutting concern): a minimum
 /// inter-batch cooldown so a large historical backfill does not sustain a
@@ -689,7 +689,7 @@ async fn run_sweep_pass(
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic index backfill could not resolve app data dir: {error}"
             ));
             return SweepPass::Error;
@@ -708,7 +708,7 @@ async fn run_sweep_pass(
         state.embedder = None;
         state.clear_load_failures();
         if !state.logged_no_model {
-            crate::native_capture::debug_log::log_info(
+            crate::native_capture::debug_log::log(
                 "semantic index backfill skipped: no Semantic Search Model installed (silent no-op)",
             );
             state.logged_no_model = true;
@@ -746,7 +746,7 @@ async fn run_sweep_pass(
     let raw_batch = match infra.semantic_search().anchors_missing_vector(SWEEP_BATCH_SIZE).await {
         Ok(batch) => batch,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic index backfill failed to read anchors missing a vector: {error}"
             ));
             return SweepPass::Error;
@@ -928,7 +928,7 @@ async fn run_sweep_pass(
         Either::Left((join_result, _)) => match join_result {
             Ok(load_embed) => load_embed,
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "semantic index backfill embed task panicked/cancelled: {error}"
                 ));
                 // The embedder (if any) was moved into the failed task; it will be
@@ -982,7 +982,7 @@ async fn run_sweep_pass(
             // The error string is also RETAINED on the state (not just logged) so the
             // debug surface can show why the model will not load.
             let load_failures = state.record_load_failure(&error);
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "semantic index backfill failed to load model '{}/{}' (consecutive load failures: {load_failures}): {error}",
                 descriptor.provider, descriptor.model_id
             ));
@@ -1011,7 +1011,7 @@ async fn run_sweep_pass(
     // dropped theirs too — they check the same `loaded_at`, so they recycle within
     // a pass of each other.
     if loaded.is_stale() {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "semantic index backfill recycled the embedder after {}s warm \
              (bounds candle's Metal buffer pool; reloads on next batch)",
             loaded.loaded_at.elapsed().as_secs()
@@ -1098,7 +1098,7 @@ async fn run_sweep_pass(
                     }
                     Err(error) => {
                         transient_errors += 1;
-                        crate::native_capture::debug_log::log_error(format!(
+                        crate::native_capture::debug_log::log_warn(format!(
                             "semantic index backfill failed to re-check anchor {anchor_id}: {error}"
                         ));
                     }
@@ -1120,7 +1120,7 @@ async fn run_sweep_pass(
                     // pass drops to per-anchor isolation, where every failure IS
                     // credited — see `credit_failures_per_anchor`.)
                     transient_errors += 1;
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "semantic index backfill batch embed failure ({embed_failure_count} anchors in this batch); treating as transient (no quarantine); anchor {anchor_id} last error: {error}"
                     ));
                     continue;
@@ -1141,7 +1141,7 @@ async fn run_sweep_pass(
                         "semantic index backfill quarantined anchor {anchor_id} after {failures} consecutive embed failures (excluded from the sweep until reprocess/restart); last error: {error}"
                     ));
                 } else {
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "semantic index backfill failed to embed anchor {anchor_id} (failure {failures}/{MAX_CONSECUTIVE_ANCHOR_FAILURES}): {error}"
                     ));
                 }
@@ -1173,7 +1173,7 @@ async fn run_sweep_pass(
                 // A real DB failure rolled the whole batch back: every anchor in it
                 // retries (transient), matching the single-store `Err` arm.
                 transient_errors += to_store.len() as u64;
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "semantic index backfill failed to store {} vector(s) in batch: {error}",
                     to_store.len()
                 ));
@@ -1202,7 +1202,7 @@ async fn run_sweep_pass(
             // Throttled to the coarse cadence above — not counted on this pass.
             "not-counted".to_string()
         };
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "semantic index backfill embedded {stored} anchor(s) (batch={}, embed_failures={embed_failures}, transient_errors={transient_errors}, backlog={backlog})",
             batch.len()
         ));
@@ -1224,7 +1224,7 @@ async fn run_sweep_pass(
         // reconciliation (or a successful rebuild) restores agreement. A dimension
         // skip is not a poison-cluster stall, so reset the detector.
         state.clear_transient_stuck();
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "semantic index backfill idled: {dimension_skips} anchor(s) skipped on a vector-dimension mismatch with the live index (awaiting re-index)"
         ));
         return SweepPass::Idle;
@@ -1332,13 +1332,13 @@ fn paced_input(_load: Duration, forward: Duration, _db_tail: Duration) -> Durati
 /// Settings UI already listens on: a `Failed` status with a reinstall message
 /// triggers a model-status reload in Settings (it reacts to `failed` by reloading
 /// status), so the user sees the model flip to "not installed / needs reinstall"
-/// rather than the worker silently load-looping forever. Also logged at WARN.
+/// rather than the worker silently load-looping forever. Also logged at ERROR.
 fn signal_model_appears_corrupt(
     app_handle: &tauri::AppHandle,
     descriptor: &SemanticSearchModelDescriptor,
     error: &str,
 ) {
-    crate::native_capture::debug_log::log_warn(format!(
+    crate::native_capture::debug_log::log_error(format!(
         "semantic index backfill: model '{}/{}' appears corrupt after {MAX_CONSECUTIVE_LOAD_FAILURES} consecutive load failures — surfacing reinstall signal; last error: {error}",
         descriptor.provider, descriptor.model_id
     ));
@@ -1355,7 +1355,7 @@ fn signal_model_appears_corrupt(
     if let Err(emit_error) =
         app_handle.emit(SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT, payload)
     {
-        crate::native_capture::debug_log::log_error(format!(
+        crate::native_capture::debug_log::log_warn(format!(
             "semantic index backfill: failed to emit corrupt-model signal: {emit_error}"
         ));
     }
@@ -1463,7 +1463,7 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
         state.embedder.is_some(),
     ) {
         state.embedder = None;
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "semantic index backfill released the embedder after {} {reason} passes (model weights returned to the OS; reloads on next anchor)",
             state.consecutive_idles
         ));

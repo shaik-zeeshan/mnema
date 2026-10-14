@@ -122,3 +122,12 @@ export function shouldSaveDomain(args: {
   if (args.saving) return false;
   return true;
 }
+
+// The Settings header's one save status (SettingsBar). Priority: failed >
+// resolve issues > saving > saved. `saveFailed` must count SAVE failures only —
+// a load failure has its own in-panel state and is not "Couldn't save".
+export type SaveStatus = "error" | "blocked" | "saving" | "saved";
+
+export function deriveSaveStatus(s: { saveFailed: boolean; blocked: boolean; saving: boolean }): SaveStatus {
+  return s.saveFailed ? "error" : s.blocked ? "blocked" : s.saving ? "saving" : "saved";
+}

@@ -35,6 +35,7 @@ export interface AppUpdateStatus {
 		date?: string | null;
 		notes?: string | null;
 		channel: AppUpdateChannel;
+		sizeBytes?: number | null;
 	} | null;
 	progress?: {
 		downloadedBytes: number;

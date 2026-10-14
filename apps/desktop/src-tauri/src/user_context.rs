@@ -28,9 +28,13 @@
 //! - [`commands`] — the Tauri command surface (status / list activities +
 //!   conclusions / subject view / digest / run-now).
 
+mod activity_spans;
 pub mod commands;
+pub(crate) mod conclusion_guard;
+mod continuation;
 pub mod derivation;
 pub mod digest;
+mod evidence_tags;
 pub mod subject_candidates;
 pub mod subject_vector_worker;
 pub mod worker;

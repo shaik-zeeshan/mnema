@@ -13,7 +13,7 @@
     disabled?: boolean;
     /** Accessible name for the trigger (this control has no visible label). */
     ariaLabel?: string;
-    /** Pill-sized trigger that sits beside dense inline action buttons. */
+    /** Small (--h-sm) trigger that sits beside dense inline action buttons. */
     compact?: boolean;
     /**
      * Fired with the chosen option's value. May be async — the control holds
@@ -79,16 +79,11 @@
     max-width: 100%;
   }
 
-  /* Shrink the shared Select trigger to a pill that matches the popover's
-     compact action buttons. Scoped to compact instances only; the dropdown
-     panel and its items keep their default readable sizing. */
+  /* Compact = the kit's sm control height beside dense inline action buttons.
+     Scoped to compact instances; the dropdown keeps its default sizing. */
   .action-select--compact :global(.select-trigger) {
-    min-height: 24px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    font-size: var(--text-xs);
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    height: var(--h-sm);
+    padding: 0 8px 0 10px;
+    font-size: var(--text-base);
   }
 </style>

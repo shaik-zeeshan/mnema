@@ -80,7 +80,7 @@
   }
 
   .notice__mono {
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
     color: var(--app-text-subtle);
@@ -125,22 +125,5 @@
     height: 9px;
     border-radius: 3px;
     background: var(--app-surface-hover);
-    animation: drawer-skel-pulse 1.4s ease-in-out infinite;
-  }
-
-  @keyframes drawer-skel-pulse {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 0.9;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .skel span {
-      animation: none;
-    }
   }
 </style>

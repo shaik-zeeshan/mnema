@@ -5,7 +5,6 @@ import {
   activeKeyAt,
   defaultSelectedKey,
   nextClipTurn,
-  selectionIndex,
   turnAtMs,
 } from "./receipt-lane";
 
@@ -28,27 +27,6 @@ function turn(overrides) {
     ...overrides,
   };
 }
-
-describe("selectionIndex — the shared selection bus", () => {
-  const turns = [
-    turn({ key: "a" }),
-    turn({ key: "b" }),
-    turn({ key: "c" }),
-    turn({ key: "d" }),
-  ];
-
-  it("a reader-row key resolves to its index", () => {
-    const key = turns[2].key;
-    const rowIndex = turns.findIndex((t) => t.key === key);
-    expect(selectionIndex(turns, key)).toBe(2);
-    expect(selectionIndex(turns, key)).toBe(rowIndex);
-  });
-
-  it("returns -1 for a missing or null key", () => {
-    expect(selectionIndex(turns, "nope")).toBe(-1);
-    expect(selectionIndex(turns, null)).toBe(-1);
-  });
-});
 
 describe("defaultSelectedKey", () => {
   it("headline wins over cited and first", () => {

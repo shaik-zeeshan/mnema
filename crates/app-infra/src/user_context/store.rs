@@ -313,7 +313,7 @@ pub struct StoredDigest {
 /// derivation runs + Conclusions in this slice).
 #[derive(Clone)]
 pub struct UserContextStore {
-    db: CaptureDb,
+    pub(super) db: CaptureDb,
 }
 
 impl UserContextStore {
@@ -615,7 +615,7 @@ impl UserContextStore {
             .collect())
     }
 
-    async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
+    pub(super) async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
         let rows = sqlx::query(
             "SELECT subject_type, subject_id, captured_at_ms, is_headline \
              FROM user_context_activity_evidence \
@@ -1086,79 +1086,6 @@ impl UserContextStore {
         Ok(rows.into_iter().map(|r| (r.get("s"), r.get("e"))).collect())
     }
 
-    /// The earliest captured-at across all raw captures, in unix millis — the
-    /// true history floor that **go-deeper** backfill walks toward. Takes the
-    /// MIN of `frames.captured_at` and `audio_segments.started_at` (both legacy
-    /// RFC3339 TEXT), converting at the boundary exactly as `read_capture_window`
-    /// does. `None` when there are no captures at all.
-    pub async fn earliest_capture_at_ms(&self) -> Result<Option<i64>> {
-        // RFC3339 TEXT sorts lexicographically in captured order for a fixed
-        // zone/format, but we never rely on that across the two tables: read the
-        // MIN TEXT from each table independently, parse each to millis, and take
-        // the smaller. Parse failures fall through to the other source.
-        let frame_min: Option<String> = sqlx::query("SELECT MIN(captured_at) AS m FROM frames")
-            .fetch_one(self.db.read())
-            .await?
-            .get::<Option<String>, _>("m");
-        let audio_min: Option<String> =
-            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments")
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-
-        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
-        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
-
-        Ok(match (frame_ms, audio_ms) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        })
-    }
-
-    /// The earliest RAW capture timestamp **at or after** `after_ms`, in unix
-    /// millis — the MIN of `frames.captured_at` and `audio_segments.started_at`
-    /// (both legacy RFC3339 TEXT) constrained to `>= after_ms`. `None` when no
-    /// capture exists at or after that instant.
-    ///
-    /// The forward derivation worker uses this to O(1)-jump its cursor across an
-    /// empty (no-capture) gap in one step instead of crawling 30-minute windows.
-    /// This is deliberately RAW capture *existence* — it is NOT filtered on OCR
-    /// / transcription completeness — so the worker never jumps its cursor past
-    /// frames whose OCR is still pending.
-    pub async fn next_raw_capture_at_ms(&self, after_ms: i64) -> Result<Option<i64>> {
-        // Convert the lower bound at the boundary exactly as `read_capture_window`
-        // does, so the lexicographic TEXT `>=` compare matches that hot path's own
-        // `captured_at >= start_rfc3339` filter. Read the MIN TEXT from each table
-        // independently, parse each to millis, and take the smaller; parse
-        // failures fall through to the other source.
-        let after_rfc3339 = super::capture_source::ms_to_rfc3339(after_ms);
-
-        let frame_min: Option<String> =
-            sqlx::query("SELECT MIN(captured_at) AS m FROM frames WHERE captured_at >= ?1")
-                .bind(&after_rfc3339)
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-        let audio_min: Option<String> =
-            sqlx::query("SELECT MIN(started_at) AS m FROM audio_segments WHERE started_at >= ?1")
-                .bind(&after_rfc3339)
-                .fetch_one(self.db.read())
-                .await?
-                .get::<Option<String>, _>("m");
-
-        let frame_ms = frame_min.as_deref().and_then(rfc3339_text_to_ms);
-        let audio_ms = audio_min.as_deref().and_then(rfc3339_text_to_ms);
-
-        Ok(match (frame_ms, audio_ms) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        })
-    }
-
     // --- Token-usage / last-derived readouts ------------------------------
 
     /// Aggregated (estimated) token usage across every derivation run.
@@ -1217,7 +1144,8 @@ impl UserContextStore {
         let now = now_ms();
         // Formation path: does NOT pre-decay, so it must not touch the decay
         // anchor — the decay beat owns `last_decayed_at_ms` here (#H3).
-        Self::upsert_conclusion_in(self.db.write(), &draft, draft.confidence, now, false).await
+        Self::upsert_conclusion_in(self.db.write(), &draft, draft.confidence, now, false, None)
+            .await
     }
 
     /// Atomic conclusion upsert against an arbitrary executor (the pool or an open
@@ -1246,6 +1174,7 @@ impl UserContextStore {
         confidence: f64,
         now: i64,
         stamp_decayed: bool,
+        formed_evidence_count: Option<i64>,
     ) -> Result<i64>
     where
         E: sqlx::Executor<'e, Database = Sqlite>,
@@ -1260,6 +1189,8 @@ impl UserContextStore {
         } else {
             ""
         };
+        // `formed_evidence_count` is written on the INSERT only: the ON CONFLICT
+        // update keeps the count the row formed with.
         // ADR 0046: the ON CONFLICT DO UPDATE below must NEVER resurrect a
         // 'superseded' row back to visible/faded — the model re-deriving the same
         // wrong statement from still-in-window evidence would otherwise silently
@@ -1269,10 +1200,11 @@ impl UserContextStore {
         let id = sqlx::query(&format!(
             "INSERT INTO user_context_conclusions \
                 (subject, statement, confidence, status, formed_at_ms, \
-                 last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
+                 last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms, \
+                 formed_evidence_count) \
              VALUES (?1, ?2, ?3, \
                      CASE WHEN ?3 < 0.15 THEN 'faded' ELSE 'visible' END, \
-                     ?4, ?5, ?6, ?6, {insert_decayed_value}) \
+                     ?4, ?5, ?6, ?6, {insert_decayed_value}, ?7) \
              ON CONFLICT (subject COLLATE NOCASE, statement COLLATE NOCASE) DO UPDATE SET \
                 confidence = excluded.confidence, \
                 last_supported_at_ms = MAX(last_supported_at_ms, excluded.last_supported_at_ms), \
@@ -1289,6 +1221,7 @@ impl UserContextStore {
         .bind(draft.formed_at_ms)
         .bind(draft.last_supported_at_ms)
         .bind(now)
+        .bind(formed_evidence_count)
         .fetch_one(executor)
         .await?
         .get::<i64, _>("id");
@@ -1412,12 +1345,20 @@ impl UserContextStore {
             // ON CONFLICT path in `upsert_conclusion_in` cannot fire here (no row
             // for this Subject exists), so this is a plain insert; `stamp_decayed =
             // true` is still correct (a brand-new row has no silence to re-count).
+            // The support count is stamped as the row's formation evidence (B5) —
+            // the links below are replaced on every later reinforcement.
             None => {
                 let confidence =
                     super::confidence::initial_confidence(support_count, contradict_count);
-                let id =
-                    Self::upsert_conclusion_in(&mut *transaction, &draft, confidence, now, true)
-                        .await?;
+                let id = Self::upsert_conclusion_in(
+                    &mut *transaction,
+                    &draft,
+                    confidence,
+                    now,
+                    true,
+                    Some(support_count as i64),
+                )
+                .await?;
                 (id, confidence)
             }
         };
@@ -1718,6 +1659,7 @@ impl UserContextStore {
         let rows = sqlx::query(
             "SELECT c.id, c.subject, c.statement, c.confidence, c.status, c.pinned, \
                     c.formed_at_ms, c.last_supported_at_ms, c.updated_at_ms, \
+                    c.formed_evidence_count, \
                     (SELECT p.statement FROM user_context_conclusions p \
                        WHERE p.superseded_by = c.id AND p.status = 'superseded' \
                        ORDER BY p.updated_at_ms DESC LIMIT 1) AS replaced_statement, \
@@ -1735,8 +1677,13 @@ impl UserContextStore {
     }
 
     /// Bounded read powering the KNOWN SUBJECTS block's per-subject conclusion
-    /// listing. For each subject in `subjects`, its non-dismissed conclusions ordered
-    /// confidence-desc (ties → lowest id), capped at `per_subject_cap` per subject.
+    /// listing. For each subject in `subjects`, at most `per_subject_cap` of its
+    /// non-dismissed conclusions, alternating the strongest (confidence-desc, ties
+    /// → lowest id) with the most recently supported, skipping any statement that
+    /// is a lexical near-duplicate of one already picked. Confidence alone is not
+    /// enough: every long-lived belief saturates at the same ceiling, so a
+    /// confidence-only list degenerates to the subject's OLDEST rows — often
+    /// rewordings of one belief — and hides what the subject is about now.
     /// Returns (subject, id, statement, confidence) tuples. Thin cousin of
     /// `list_conclusions_for_subject` — no evidence hydration.
     pub async fn list_conclusions_for_subjects(
@@ -1752,23 +1699,51 @@ impl UserContextStore {
             if trimmed.is_empty() || !seen.insert(trimmed.to_lowercase()) {
                 continue;
             }
-            let rows = sqlx::query(
-                "SELECT id, statement, confidence FROM user_context_conclusions \
-                 WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
-                 ORDER BY confidence DESC, id ASC LIMIT ?2",
-            )
-            .bind(subject)
-            .bind(per_subject_cap)
-            .fetch_all(self.db.read())
-            .await?;
-            for row in rows {
-                out.push((
-                    subject.clone(),
-                    row.get::<i64, _>("id"),
-                    row.get::<String, _>("statement"),
-                    row.get::<f64, _>("confidence"),
-                ));
+            let mut legs = Vec::with_capacity(2);
+            for order in [
+                "confidence DESC, id ASC",
+                "last_supported_at_ms DESC, id DESC",
+            ] {
+                let rows = sqlx::query(&format!(
+                    "SELECT id, statement, confidence FROM user_context_conclusions \
+                     WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
+                     ORDER BY {order} LIMIT ?2",
+                ))
+                .bind(subject)
+                .bind(per_subject_cap)
+                .fetch_all(self.db.read())
+                .await?;
+                legs.push(
+                    rows.into_iter()
+                        .map(|row| {
+                            (
+                                row.get::<i64, _>("id"),
+                                row.get::<String, _>("statement"),
+                                row.get::<f64, _>("confidence"),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                );
             }
+            let (strongest, recent) = (&legs[0], &legs[1]);
+            let mut picked: Vec<(i64, String, f64)> = Vec::new();
+            let interleaved = (0..strongest.len().max(recent.len()))
+                .flat_map(|i| [strongest.get(i), recent.get(i)])
+                .flatten();
+            for (id, statement, confidence) in interleaved {
+                if picked.len() as i64 >= per_subject_cap {
+                    break;
+                }
+                let duplicate = picked.iter().any(|(picked_id, picked, _)| {
+                    picked_id == id || super::conclusion_dedup::is_lexical_duplicate(picked, statement)
+                });
+                if !duplicate {
+                    picked.push((*id, statement.clone(), *confidence));
+                }
+            }
+            out.extend(picked.into_iter().map(|(id, statement, confidence)| {
+                (subject.clone(), id, statement, confidence)
+            }));
         }
         Ok(out)
     }
@@ -1869,11 +1844,12 @@ impl UserContextStore {
         ))
     }
 
-    /// Number of non-dismissed Conclusions (the status-surface count).
+    /// Number of visible Conclusions — the one "conclusions" count every surface
+    /// shows (faded, dismissed and superseded rows are history, not conclusions).
     pub async fn count_conclusions(&self) -> Result<i64> {
         let row = sqlx::query(
             "SELECT COUNT(*) AS count FROM user_context_conclusions \
-             WHERE status NOT IN ('dismissed', 'superseded')",
+             WHERE status = 'visible'",
         )
         .fetch_one(self.db.read())
         .await?;
@@ -2416,14 +2392,15 @@ impl UserContextStore {
         Ok(())
     }
 
-    /// List every user-authored Context statement, newest first (by
-    /// `created_at_ms`). Used by both the settings surface and the derivation
-    /// pass (which feeds them to the engine as standing context).
+    /// List every user-authored Context statement, most recently edited first
+    /// (by `updated_at_ms`), so editing a statement keeps it inside the
+    /// derivation pass's char cap. Used by both the Context surface and the
+    /// derivation pass (which feeds them to the engine as standing context).
     pub async fn list_authored_context(&self) -> Result<Vec<AuthoredContext>> {
         let rows = sqlx::query(
             "SELECT id, text, topic, created_at_ms, updated_at_ms \
              FROM user_context_authored \
-             ORDER BY created_at_ms DESC, id DESC",
+             ORDER BY updated_at_ms DESC, id DESC",
         )
         .fetch_all(self.db.read())
         .await?;
@@ -2729,6 +2706,18 @@ pub async fn cascade_derived_for_deleted_subjects_in(
     activity_ids.sort_unstable();
     activity_ids.dedup();
 
+    cascade_delete_activities_in(conn, &activity_ids).await
+}
+
+/// Steps 2–5 of the cascade above for an already-chosen Activity set: purge
+/// overlapping Digests, delete the Activities (evidence links cascade via FK),
+/// re-apply the Conclusion formation bar, and purge orphaned Subject Vectors.
+/// Also the lock-screen heal's delete path (`lock_screen.rs`), so every
+/// Activity delete leaves nothing dangling the same way.
+pub(super) async fn cascade_delete_activities_in(
+    conn: &mut sqlx::SqliteConnection,
+    activity_ids: &[i64],
+) -> Result<UserContextCascadeSummary> {
     // 2. Purge Digests overlapping a to-be-deleted Activity's span, BEFORE the
     //    Activities are deleted (their spans are the overlap source). Overlap of
     //    digest [range_start_ms, range_end_ms) with activity [started_at_ms,
@@ -2849,8 +2838,10 @@ pub fn digest_input_fingerprint(activities: &[Activity]) -> String {
     // input: bumping it mismatches every stored `input_fingerprint` at once, so
     // every cached digest regenerates on next view. `v2` added the headline
     // (migration 0030) — pre-headline narratives regenerate WITH one instead of
-    // sitting cached forever. Bump it again whenever the generated shape changes.
-    format!("v2:{count}:{max_id}:{max_created_at_ms}:{accumulator:016x}")
+    // sitting cached forever. `v3`: the headline became a full sentence with an
+    // optional ` — turn`, and activity lines gained clock times. Bump it again
+    // whenever the generated shape changes.
+    format!("v3:{count}:{max_id}:{max_created_at_ms}:{accumulator:016x}")
 }
 
 /// One Activity's order-independent accumulator term for
@@ -2909,7 +2900,7 @@ pub(crate) fn now_ms() -> i64 {
 /// `audio_segments.started_at`) to unix milliseconds; `None` on a parse
 /// failure. Mirrors `capture_source.rs`'s boundary conversion so
 /// `earliest_capture_at_ms` and `read_capture_window` agree on the floor.
-fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
+pub(super) fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
     use time::format_description::well_known::Rfc3339;
     OffsetDateTime::parse(value, &Rfc3339)
         .ok()
@@ -2918,7 +2909,7 @@ fn rfc3339_text_to_ms(value: &str) -> Option<i64> {
 
 /// The stored snake_case string for an [`ActivityCategory`] (matches the
 /// capture-types serde rename).
-fn category_to_str(category: ActivityCategory) -> &'static str {
+pub(super) fn category_to_str(category: ActivityCategory) -> &'static str {
     match category {
         ActivityCategory::Creating => "creating",
         ActivityCategory::Communication => "communication",
@@ -2949,7 +2940,7 @@ fn category_from_str(value: Option<&str>) -> Option<ActivityCategory> {
 
 /// The stored snake_case string for a [`FocusLevel`] (matches the capture-types
 /// serde rename and the SQL `focus` column).
-fn focus_to_str(focus: FocusLevel) -> &'static str {
+pub(super) fn focus_to_str(focus: FocusLevel) -> &'static str {
     match focus {
         FocusLevel::Deep => "deep",
         FocusLevel::Mixed => "mixed",
@@ -2972,7 +2963,7 @@ fn focus_from_str(value: Option<&str>) -> Option<FocusLevel> {
 /// correction precedence: a user correction WINS over the engine label. When
 /// the `*_corrected` flag is set the corrected value (which may be NULL =
 /// deliberately "unset") is the effective value; otherwise the engine column is.
-fn map_activity(row: SqliteRow) -> Activity {
+pub(super) fn map_activity(row: SqliteRow) -> Activity {
     let category = if row.get::<i64, _>("category_corrected") != 0 {
         category_from_str(row.get::<Option<String>, _>("corrected_category").as_deref())
     } else {
@@ -3056,6 +3047,8 @@ fn map_conclusion(row: SqliteRow) -> Conclusion {
         // columns (`list_conclusions_for_subject`); absent elsewhere → None.
         replaced_statement: row.try_get("replaced_statement").unwrap_or(None),
         replaced_at_ms: row.try_get("replaced_at_ms").unwrap_or(None),
+        // B5: likewise only on the Subject page; NULL for rows formed before 0057.
+        formed_evidence_count: row.try_get("formed_evidence_count").unwrap_or(None),
     }
 }
 
@@ -3146,7 +3139,8 @@ mod tests {
                 created_at_ms INTEGER NOT NULL,
                 last_decayed_at_ms INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
-                superseded_by INTEGER
+                superseded_by INTEGER,
+                formed_evidence_count INTEGER
             )",
             // Mirrors migration 0037: the NOCASE unique index that backs the
             // atomic `INSERT ... ON CONFLICT` dedup in `upsert_conclusion`.
@@ -3436,7 +3430,8 @@ mod tests {
                 updated_at_ms INTEGER NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 last_decayed_at_ms INTEGER,
-                pinned INTEGER NOT NULL DEFAULT 0
+                pinned INTEGER NOT NULL DEFAULT 0,
+                formed_evidence_count INTEGER
             )",
             "CREATE UNIQUE INDEX IF NOT EXISTS user_context_conclusions_subject_statement_unique_idx
                 ON user_context_conclusions (subject COLLATE NOCASE, statement COLLATE NOCASE)",
@@ -3588,8 +3583,8 @@ mod tests {
         assert_eq!(with_faded[0].id, visible);
         assert_eq!(with_faded[1].id, faded);
 
-        // count_conclusions excludes dismissed only.
-        assert_eq!(store.count_conclusions().await.expect("count"), 2);
+        // count_conclusions is the visible set only — faded is history.
+        assert_eq!(store.count_conclusions().await.expect("count"), 1);
         });
     }
 
@@ -3958,6 +3953,76 @@ mod tests {
                 1,
                 "a non-raising reinforcement must not append a history snapshot"
             );
+        });
+    }
+
+    /// B5: the support count a belief formed from is stamped on its first insert
+    /// and survives later writes, which replace the evidence links wholesale —
+    /// both an id-cited reinforcement and an uncited same-statement re-derivation
+    /// (the ON CONFLICT update) leave it alone.
+    #[test]
+    fn formed_evidence_count_is_stamped_once_at_formation() {
+        block_on(async {
+            let store = test_store().await;
+            let ids = [
+                seed_activity(&store, "rust borrow checker", 2_000).await,
+                seed_activity(&store, "rust async", 3_000).await,
+                seed_activity(&store, "rust traits", 4_000).await,
+                seed_activity(&store, "rust macros", 5_000).await,
+            ];
+            let support = |n: usize| {
+                ids[..n]
+                    .iter()
+                    .map(|&activity_id| NewConclusionEvidence {
+                        activity_id,
+                        stance: EvidenceStance::Support,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let formed_count = |rows: Vec<Conclusion>| rows[0].formed_evidence_count;
+
+            let id = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    support(2),
+                    None,
+                    None,
+                )
+                .await
+                .expect("form")
+                .id;
+            let rows = store
+                .list_conclusions_for_subject("Rust")
+                .await
+                .expect("rows");
+            assert_eq!(formed_count(rows), Some(2), "stamped on insert");
+
+            for reinforces_id in [Some(id), None] {
+                store
+                    .upsert_conclusion_with_evidence(
+                        draft("Rust", "Learning Rust", 0.0),
+                        4,
+                        0,
+                        support(4),
+                        reinforces_id,
+                        None,
+                    )
+                    .await
+                    .expect("reinforce");
+                let rows = store
+                    .list_conclusions_for_subject("Rust")
+                    .await
+                    .expect("rows");
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].evidence.len(), 4, "evidence links were replaced");
+                assert_eq!(
+                    formed_count(rows),
+                    Some(2),
+                    "unchanged after update ({reinforces_id:?})"
+                );
+            }
         });
     }
 
@@ -5194,6 +5259,12 @@ mod tests {
             None,
             "no capture at-or-after a cursor past the last frame"
         );
+
+        // The backfill twin is strictly-before: the latest capture under a cursor.
+        let prev = |at| store.prev_raw_capture_before_ms(at);
+        assert_eq!(prev(after_all_ms).await.expect("prev"), Some(late_ms));
+        assert_eq!(prev(late_ms).await.expect("prev"), Some(early_ms), "strict at the boundary");
+        assert_eq!(prev(early_ms).await.expect("prev"), None, "nothing before the first capture");
         });
     }
 
@@ -5691,7 +5762,7 @@ mod tests {
         block_on(async {
             let store = test_store().await;
 
-            // Add two statements; list is newest-first by created_at_ms.
+            // Add two statements; list is most-recently-edited first.
             let first = store
                 .add_authored_context("I'm a designer", Some("role"), 1_000)
                 .await
@@ -5727,6 +5798,8 @@ mod tests {
             assert_eq!(updated.topic.as_deref(), Some("job"));
             assert_eq!(updated.created_at_ms, 1_000, "created_at_ms unchanged");
             assert_eq!(updated.updated_at_ms, 5_000, "updated_at_ms bumped");
+            let listed = store.list_authored_context().await.expect("list");
+            assert_eq!(listed[0].id, first, "an edit moves the statement to the front");
 
             // Delete removes only the named row.
             store.delete_authored_context(first).await.expect("delete");
@@ -6448,10 +6521,10 @@ mod tests {
         // Membership changes move it: added, removed, empty.
         assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), b.clone(), c]));
         assert_ne!(baseline, digest_input_fingerprint(&[a.clone()]));
-        // The `v2:` shape-version tag leads every fingerprint (see the body
+        // The `v3:` shape-version tag leads every fingerprint (see the body
         // comment): bumping it invalidates every cached digest at once.
-        assert_eq!(digest_input_fingerprint(&[]), "v2:0:0:0:0000000000000000");
-        assert!(baseline.starts_with("v2:"), "version tag leads: {baseline}");
+        assert_eq!(digest_input_fingerprint(&[]), "v3:0:0:0:0000000000000000");
+        assert!(baseline.starts_with("v3:"), "version tag leads: {baseline}");
 
         // A timestamp shift on one Activity moves it.
         let shifted = digest_activity(2, 300, 450);

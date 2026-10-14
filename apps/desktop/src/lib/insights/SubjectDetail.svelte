@@ -1,387 +1,283 @@
 <script lang="ts">
-  // SubjectDetail — the drill-in detail surface for a single Subject (#106).
-  //
-  // A Subject shows its INDIVIDUAL Conclusions — each scored on its OWN
-  // confidence, NOT a single rolled-up sentiment score. Composition:
-  //   1. Subject hero (title + meta pills + "Ask AI" hand-off).
-  //   2. ConclusionStrip — horizontally-scrollable, self-sorting strip of
-  //      conclusion cards; selecting one drives the timeline below.
-  //   3. ConclusionTimeline — the selected conclusion's header + unified
-  //      vertical timeline of evidence, confidence markers, and its origin.
-  //
-  // This shell owns state/fetch, the realtime refresh, selection preservation,
-  // pin/dismiss commands, thumbnail loading, and the Timeline hand-off; the two
-  // child components only render + call back.
-  //
-  // The breadcrumb back affordance is rendered by the Insights workspace shell
-  // (insights/+page.svelte), so we do NOT duplicate it here. `onBack` is exposed
-  // but the shell already provides the primary back control.
-  //
-  // Props:
-  //   subject: string     — the Subject name being inspected.
-  //   onBack: () => void  — return to the Subjects index.
-
+  // Subject detail (insights.html `openSubject`): crumb with a ghost Ask, the
+  // subject lede + four stats, "Confidence over time" beside the conclusions
+  // list (paged), with "Why Mnema believes this" and the "This conclusion" panel
+  // under the chart — beside the list, so a long list never buries them.
+  // Owns the fetch, the realtime refresh, selection, Pin / delayed-commit
+  // Dismiss, and the Timeline hand-off. Each conclusion keeps its OWN
+  // confidence — the subject is never rolled up into one score.
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
+    ConfidenceSnapshot,
     SubjectView,
-    SubjectTrajectory,
     Activity,
     ActivityEvidenceRef,
   } from "$lib/types/recording";
-  import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
-  import { FramePreviewUrlMap } from "$lib/frame-preview";
-  import Skeleton from "$lib/insights/Skeleton.svelte";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
-  import ConclusionStrip from "$lib/insights/ConclusionStrip.svelte";
-  import ConclusionTimeline from "$lib/insights/ConclusionTimeline.svelte";
+  import SubjectChart from "$lib/insights/SubjectChart.svelte";
   import { buildTimeline } from "$lib/insights/subjectTimeline";
-  import { debounce } from "$lib/insights/subjectsTiers";
+  import { CONCLUSION_PAGE, debounce, deriveTrend, fortnightAgo, pageOf } from "$lib/insights/subjectsTiers";
+  import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
+  import { relativeTime } from "$lib/insights/conversationStore.svelte";
+  import { fmtDuration } from "$lib/insights/lede-stats";
+  import { formatClock } from "$lib/time-format";
+  import { tip } from "$lib/components/tooltip";
   import { humanizeError } from "$lib/format-error";
-  import { conversationStore } from "$lib/insights/conversationStore.svelte";
+  import IconBack from "~icons/lucide/chevron-left";
+  import IconSparkle from "~icons/lucide/sparkle";
+  import IconPin from "~icons/lucide/pin";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconInbox from "~icons/lucide/inbox";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconRetry from "~icons/lucide/rotate-ccw";
+  import IconOk from "~icons/lucide/check";
+  import IconFail from "~icons/lucide/circle-alert";
 
   interface Props {
     subject: string;
     onBack: () => void;
+    // The shell's engine is not set up / off: Ask is shown but disabled.
+    askDisabled?: boolean;
   }
-
-  let { subject, onBack }: Props = $props();
-  // `onBack` is accepted for parity with the stub interface; the workspace shell
-  // already renders the breadcrumb back control, so we keep it referenced inside
-  // a closure (avoids the `state_referenced_locally` warning).
-  const _interface = () => onBack;
-  void _interface;
+  let { subject, onBack, askDisabled = false }: Props = $props();
 
   let view = $state<SubjectView | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
-  // In-flight Pin/Dismiss guard. `actionKind` records WHICH action is running so
-  // only that button shows its busy affordance (the sibling stays disabled).
-  let actionId = $state<number | null>(null);
-  let actionKind = $state<"pin" | "dismiss" | null>(null);
+  let sideEl = $state<HTMLElement>();
 
-  // Activities resolved lazily for richer timeline events + Timeline handoff.
-  // Maps activityId → Activity (title/time/category + raw evidence refs).
-  let activities = $state<Map<number, Activity>>(new Map());
-
-  // Frame previews for screen-sourced timeline events. Maps frameId → asset URL.
-  // Best-effort; events without a resolved preview keep the colored placeholder.
-  let thumbnailCache = $state<Map<number, string>>(new Map());
-  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
-  // eviction. Painting `asset://` here instead parked one decoded surface per
-  // frame in the WebContent process for the life of the window.
-  const thumbnailUrls = new FramePreviewUrlMap();
-  // Teardown-only (no reactive reads): this component is destroyed on every
-  // back/subject switch, and a blob URL survives the object that minted it —
-  // without this, each visit strands its whole live set (bytes AND decoded
-  // surface) and the next visit mints brand-new URLs for the same frames.
-  $effect(() => () => thumbnailUrls.clear());
-
-  const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
-    const m = new Map<number, SubjectTrajectory>();
-    if (view) for (const t of view.trajectories) m.set(t.conclusionId, t);
-    return m;
-  });
-
-  const selectedConclusion = $derived.by<Conclusion | null>(() => {
-    if (!view || selectedId === null) return null;
-    return view.conclusions.find((c) => c.id === selectedId) ?? null;
-  });
-
-  const selectedTrajectory = $derived(
-    selectedId === null ? undefined : trajectoryById.get(selectedId),
-  );
-
-  // The selected conclusion's merged, newest-first event stream. Empty when
-  // nothing is selected. buildTimeline is pure + tested (subjectTimeline.ts).
-  const timelineEvents = $derived(
-    selectedConclusion
-      ? buildTimeline(selectedConclusion, selectedTrajectory, activities)
-      : [],
-  );
-
-  // ---- Hero meta ----
-  const conclusionCount = $derived(view?.conclusions.length ?? 0);
-  const fadedCount = $derived(
-    view?.conclusions.filter((c) => c.status === "faded").length ?? 0,
-  );
-  const firstSeenMs = $derived(
-    view && view.conclusions.length
-      ? Math.min(...view.conclusions.map((c) => c.formedAtMs))
-      : 0,
-  );
-  const lastEvidenceMs = $derived(
-    view && view.conclusions.length
-      ? Math.max(...view.conclusions.map((c) => c.lastSupportedAtMs))
-      : 0,
-  );
-  // Linked-activity count = distinct activityIds across all conclusions' evidence.
-  const linkedActivityCount = $derived.by<number>(() => {
-    if (!view) return 0;
-    const ids = new Set<number>();
-    for (const c of view.conclusions)
-      for (const e of c.evidence) ids.add(e.activityId);
-    return ids.size;
-  });
-
-  function relativeTime(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "—";
-    const diff = Date.now() - ms;
-    if (diff < 0) return "just now";
-    const min = Math.floor(diff / 60000);
-    if (min < 1) return "just now";
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    const day = Math.floor(hr / 24);
-    if (day < 7) return `${day}d ago`;
-    const wk = Math.floor(day / 7);
-    if (wk < 5) return `${wk}w ago`;
-    const mo = Math.floor(day / 30);
-    if (mo < 12) return `${mo}mo ago`;
-    const yr = Math.floor(day / 365);
-    return `${yr}y ago`;
-  }
-
-  // Load frame previews for the visible screen timeline events. Best-effort and
-  // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
-  // cached so re-selecting a conclusion is free.
-  async function loadTimelineThumbnails(): Promise<void> {
-    // `touch`, not `thumbnailCache.has` — see searchStore.loadThumbnails: it
-    // keeps the LRU ordered by what is still on screen. It also reads no $state,
-    // so this loader (called synchronously from a $effect keyed on
-    // timelineEvents) no longer needs the cache untracked to avoid re-running
-    // itself off its own `thumbnailCache` write.
-    const wanted = timelineEvents
-      .map((ev) =>
-        ev.kind === "evidence" && ev.sourceType === "screen"
-          ? ev.frameId
-          : null,
-      )
-      .filter((id): id is number => id != null && !thumbnailUrls.touch(id));
-    const uniqueIds = Array.from(new Set(wanted));
-    if (uniqueIds.length === 0) return;
-    try {
-      const response = await invoke<FrameScrubPreviewsDto>(
-        "get_frame_scrub_previews",
-        { request: { frameIds: uniqueIds } },
-      );
-      // Publish per thumbnail, not per batch: waiting for the whole merge keeps
-      // every timeline event on its placeholder for four asset round trips.
-      thumbnailCache = await thumbnailUrls.merge(
-        response.previews.flatMap((entry) =>
-          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
-        ),
-        () => (thumbnailCache = thumbnailUrls.snapshot()),
-      );
-    } catch {
-      // Thumbnails are best-effort; events fall back to the colored placeholder.
+  // Wide layout keeps the evidence sticky beside the list; stacked (narrow) puts
+  // it below the list, so bring it into view on pick.
+  function select(id: number): void {
+    selectedId = id;
+    if (sideEl && getComputedStyle(sideEl).position !== "sticky") {
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      sideEl.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
     }
   }
+  let pinBusy = $state(false);
+  let destroyed = false;
 
-  $effect(() => {
-    // Re-run whenever the selected conclusion's timeline events change.
-    void loadTimelineThumbnails();
+  // Activities the conclusions cite, resolved for row detail + the hand-off.
+  let activities = $state<Map<number, Activity>>(new Map());
+
+  // ── Toasts: the result of the user's own action (kit `.mx-toast`) ──
+  type Toast = { tone: "ok" | "danger"; text: string; undo?: Conclusion };
+  let toast = $state<Toast | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  function showToast(t: Toast): void {
+    clearTimeout(toastTimer);
+    toast = t;
+    toastTimer = setTimeout(() => (toast = null), DISMISS_UNDO_MS);
+  }
+
+  // Dismiss hides the row at once and commits after 5 s unless undone.
+  const dismissal = new DelayedDismiss<Conclusion>((c) => {
+    invoke("user_context_dismiss_conclusion", { id: c.id })
+      .then(() => {
+        if (!destroyed) void loadSubject();
+      })
+      .catch((error) => {
+        if (!destroyed) showToast({ tone: "danger", text: `Couldn't dismiss — ${humanizeError(error)}` });
+      });
   });
+  $effect(() => () => {
+    destroyed = true;
+    clearTimeout(toastTimer);
+    dismissal.flush();
+  });
+
+  const pct = (v: number) => Math.round(v * 100);
+  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const signed = (d: number) => `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)}`;
+
+  const histories = $derived(
+    new Map<number, ConfidenceSnapshot[]>((view?.trajectories ?? []).map((t) => [t.conclusionId, t.history])),
+  );
+  // Shown = by confidence, minus anything inside its Dismiss undo window.
+  const shown = $derived(
+    (view?.conclusions ?? []).filter((c) => !dismissal.has(c.id)).sort((a, b) => b.confidence - a.confidence),
+  );
+  // The list pages CONCLUSION_PAGE rows at a time; a new subject starts over.
+  let clShown = $state(CONCLUSION_PAGE);
+  const clPage = $derived(pageOf(shown, clShown, CONCLUSION_PAGE));
+  const selected = $derived(shown.find((c) => c.id === selectedId) ?? shown[0] ?? null);
+  const selIndex = $derived(selected ? shown.indexOf(selected) : -1);
+  const lead = $derived(shown[0] ?? null);
+
+  // ── Lede ──
+  const now = Date.now();
+  const sinceMs = $derived(Math.min(...shown.map((c) => c.formedAtMs)));
+  const trendWord = $derived.by(() => {
+    if (shown.every((c) => c.status === "faded")) return "fading";
+    const points = new Map([...histories].map(([id, h]) => [id, h.map((s) => s.confidence)]));
+    return { up: "warming", steady: "steady", down: "cooling" }[deriveTrend(shown, points)];
+  });
+  // Confidence change over the fortnight; null = formed inside it ("new").
+  const fortnightDelta = (c: Conclusion): number | null => {
+    const then = fortnightAgo(c, histories.get(c.id) ?? [], now);
+    return then === null ? null : pct(c.confidence) - pct(then);
+  };
+  const leadDelta = $derived(lead ? fortnightDelta(lead) : null);
+  const aboveFloor = $derived(shown.filter((c) => c.status !== "faded").length);
+  const evidenceCount = $derived(new Set(shown.flatMap((c) => c.evidence.map((e) => e.activityId))).size);
+  const lastSupportMs = $derived(Math.max(...shown.map((c) => c.lastSupportedAtMs)));
+  const lastSupport = $derived.by(() => {
+    const r = relativeTime(lastSupportMs);
+    const m = /^(\d+)(\D+)$/.exec(r);
+    return m ? { n: m[1], unit: `${m[2]} ago` } : { n: r, unit: "" };
+  });
+  const lastSupportDay = $derived(
+    new Date(lastSupportMs).toDateString() === new Date(now).toDateString() ? "today" : day(lastSupportMs),
+  );
+
+  // ── Selected conclusion ──
+  const events = $derived(selected ? buildTimeline(selected, view?.trajectories.find((t) => t.conclusionId === selected.id), activities) : []);
+  const selHistory = $derived(selected ? (histories.get(selected.id) ?? []) : []);
+  const peak = $derived(selected ? Math.max(selected.confidence, ...selHistory.map((s) => s.confidence)) : 0);
+  const selActivities = $derived(selected ? new Set(selected.evidence.map((e) => e.activityId)).size : 0);
+  // Newest supporting Activity that resolved to a raw capture ref.
+  const newestRef = $derived.by((): ActivityEvidenceRef | null => {
+    let best: Activity | null = null;
+    for (const e of selected?.evidence ?? []) {
+      const a = activities.get(e.activityId);
+      if (e.stance === "support" && a?.evidence[0] && (!best || a.startedAtMs > best.startedAtMs)) best = a;
+    }
+    return best?.evidence[0] ?? null;
+  });
+  function evidenceNote(a: Activity): string {
+    const frames = a.evidence.filter((r) => r.subjectType === "frame").length;
+    // B6: the activity's clock time, not a transcript offset Mnema can't pin.
+    const parts = [formatClock(a.startedAtMs), fmtDuration(a.endedAtMs - a.startedAtMs)];
+    if (frames) parts.push(`cited ${frames} ${frames === 1 ? "frame" : "frames"}`);
+    return parts.join(" · ");
+  }
+
+  // ── Ask ──
+  const askHref = $derived(`/chat?q=${encodeURIComponent(`What do you know about ${subject}?`)}`);
+  // ⌘J asks about this subject (capture phase: ahead of the shell's ⌘J).
+  function onKeydown(event: KeyboardEvent): void {
+    if (askDisabled || frameModalOpen) return;
+    if (event.key.toLowerCase() !== "j" || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    void goto(askHref);
+  }
 
   async function loadSubject(): Promise<void> {
     loading = true;
     try {
-      const next = await invoke<SubjectView>("get_user_context_subject", {
-        subject,
-      });
+      const next = await invoke<SubjectView>("get_user_context_subject", { subject });
       view = next;
       loadError = null;
-      // Preserve the selection if it still exists; else select the top one.
-      const stillExists =
-        selectedId !== null &&
-        next.conclusions.some((c) => c.id === selectedId);
-      if (!stillExists) {
-        const top = [...next.conclusions].sort(
-          (a, b) => b.confidence - a.confidence,
-        )[0];
-        selectedId = top?.id ?? null;
-      }
       void loadActivities(next);
     } catch (error) {
-      loadError = humanizeError(error);
+      // A failed background refresh keeps what's on screen (SD-02).
+      if (view) showToast({ tone: "danger", text: `Couldn't refresh ${subject} — ${humanizeError(error)}` });
+      else loadError = humanizeError(error);
     } finally {
       loading = false;
     }
   }
 
-  // Resolve the Activities this Subject's conclusions cite so timeline events
-  // show real titles/times/source type and so "view in Timeline" can hand off to
-  // a raw frame/audio segment. Best-effort: paged scan of recent Activities;
-  // events without a resolved Activity fall back to the conclusion's stored ref.
+  // Best-effort paged scan of recent Activities; rows whose Activity doesn't
+  // resolve stay plain text (SD-04).
   async function loadActivities(v: SubjectView): Promise<void> {
-    const wanted = new Set<number>();
-    for (const c of v.conclusions) for (const e of c.evidence) wanted.add(e.activityId);
+    const wanted = new Set(v.conclusions.flatMap((c) => c.evidence.map((e) => e.activityId)));
     if (wanted.size === 0) return;
     const resolved = new Map<number, Activity>();
     const PAGE = 200;
-    const MAX_PAGES = 6; // bounded scan; evidence is recent for live subjects
-    for (let page = 0; page < MAX_PAGES; page++) {
-      let batch: Activity[];
-      try {
-        batch = await invoke<Activity[]>("list_user_context_activities", {
-          limit: PAGE,
-          offset: page * PAGE,
-        });
-      } catch {
-        break;
-      }
-      if (batch.length === 0) break;
-      for (const a of batch) {
-        if (wanted.has(a.id)) resolved.set(a.id, a);
-      }
-      if (resolved.size >= wanted.size) break;
-      if (batch.length < PAGE) break;
+    for (let page = 0; page < 6; page++) {
+      const batch = await invoke<Activity[]>("list_user_context_activities", { limit: PAGE, offset: page * PAGE }).catch(
+        () => [] as Activity[],
+      );
+      for (const a of batch) if (wanted.has(a.id)) resolved.set(a.id, a);
+      if (batch.length < PAGE || resolved.size >= wanted.size) break;
     }
     activities = resolved;
   }
 
-  // Subject → Chat hand-off (#106 / fix #5). Open a fresh Chat thread with the
-  // composer prefilled to ask about THIS subject. The hand-off routes through
-  // the shared store's selection bus (the Insights shell watches the same bus
-  // and switches to the Chat sub-surface); the prompt is seeded, not auto-sent,
-  // so the user can review/edit before pressing Enter. The engine recalls what
-  // it knows about the subject through its brokered tools when answering.
-  function askAboutSubject(): void {
-    conversationStore.requestNewChat(
-      `Tell me what you know about ${subject} and what I've been doing related to it.`,
-    );
-  }
-
-  async function togglePin(id: number, pinned: boolean): Promise<void> {
-    if (actionId !== null) return;
-    actionId = id;
-    actionKind = "pin";
+  async function togglePin(c: Conclusion): Promise<void> {
+    if (pinBusy) return;
+    pinBusy = true;
+    const pinned = !c.pinned;
     try {
-      await invoke("user_context_set_pinned", { id, pinned });
+      await invoke("user_context_set_pinned", { id: c.id, pinned });
+      if (pinned) showToast({ tone: "ok", text: "Pinned — it won't fade" });
       await loadSubject();
     } catch (error) {
-      // A write failure must NOT blank the surface — surface it in a dialog and
-      // leave the loaded subject intact. `pinned` is the DESIRED new state.
-      const detail = humanizeError(error);
-      await message(detail, {
-        title: pinned ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
-        kind: "error",
-      });
+      showToast({ tone: "danger", text: `Couldn't ${pinned ? "pin" : "unpin"} — ${humanizeError(error)}` });
     } finally {
-      actionId = null;
-      actionKind = null;
+      pinBusy = false;
     }
   }
 
-  async function dismissConclusion(id: number): Promise<void> {
-    if (actionId !== null) return;
-    actionId = id;
-    actionKind = "dismiss";
-    try {
-      await invoke("user_context_dismiss_conclusion", { id });
-      await loadSubject();
-    } catch (error) {
-      // A write failure must NOT blank the surface — surface it in a dialog and
-      // leave the loaded subject intact.
-      const detail = humanizeError(error);
-      await message(detail, {
-        title: "Couldn't dismiss conclusion",
-        kind: "error",
-      });
-    } finally {
-      actionId = null;
-      actionKind = null;
-    }
+  function dismiss(c: Conclusion): void {
+    dismissal.start(c);
+    showToast({ tone: "ok", text: "Dismissed — it won't be re-inferred", undo: c });
   }
 
-  // In-place frame peek (FrameDetailModal). A frame evidence ref opens the modal
-  // instead of hopping to the raw Timeline window; the old hand-off survives only
-  // as the modal's escape hatch and as the audio/no-ref fallback. ConclusionTimeline
-  // intercepts evidence-row frames itself, so this catches the remaining
-  // frame case (e.g. a contradict row whose activity resolves to a frame).
+  function undoDismiss(c: Conclusion): void {
+    dismissal.undo(c);
+    selectedId = c.id;
+    clearTimeout(toastTimer);
+    toast = null;
+  }
+
+  // In-place frame peek; audio refs hand off to the Timeline.
   let frameModalOpen = $state(false);
   let frameModalId = $state<number | null>(null);
   let frameModalOpenInTimeline = $state<(() => void) | null>(null);
 
-  // "view frame" — resolve the Activity's first raw evidence ref. A frame ref
-  // peeks in place; an audio ref (or no ref) keeps the old raw-Timeline hand-off /
-  // plain Timeline navigation.
-  async function onViewInTimeline(activityId: number): Promise<void> {
-    const activity = activities.get(activityId);
-    const ref = activity?.evidence?.[0];
-    if (ref && ref.subjectType === "frame") {
+  function onViewInTimeline(activityId: number): void {
+    const ref = activities.get(activityId)?.evidence[0];
+    if (ref?.subjectType === "frame") {
       frameModalId = ref.subjectId;
       frameModalOpenInTimeline = () => void openRefInTimeline(ref);
       frameModalOpen = true;
       return;
     }
-    await openRefInTimeline(ref);
+    void openRefInTimeline(ref);
   }
 
-  // The legacy best-effort Activity-span hand-off to the raw Timeline — now the
-  // modal's escape hatch + the audio/no-ref fallback.
-  async function openRefInTimeline(
-    ref: ActivityEvidenceRef | undefined,
-  ): Promise<void> {
+  async function openRefInTimeline(ref: ActivityEvidenceRef | undefined): Promise<void> {
     try {
-      if (ref && ref.subjectType === "audio_segment") {
+      if (ref?.subjectType === "audio_segment") {
+        // spanStartMs is an offset WITHIN the segment; null = its start.
         await invoke("open_capture_result_in_main_window", {
           kind: "audio",
           frameId: null,
           audioSegmentId: ref.subjectId,
-          // spanStartMs is an offset WITHIN the segment; ref.capturedAtMs is the
-          // segment's absolute start, i.e. offset 0 — passing it seeked to the end.
           spanStartMs: null,
           alignedFrameId: null,
         });
         return;
       }
-      if (ref && ref.subjectType === "frame") {
-        await invoke("open_capture_result_in_main_window", {
-          kind: "frame",
-          frameId: ref.subjectId,
-          audioSegmentId: null,
-        });
+      if (ref?.subjectType === "frame") {
+        await invoke("open_capture_result_in_main_window", { kind: "frame", frameId: ref.subjectId, audioSegmentId: null });
         return;
       }
     } catch {
-      // fall through to a plain Timeline navigation
+      // fall through
     }
-    // No precise frame/audio span was resolvable (or the handoff threw) — tell
-    // the user before the graceful fallback so jumping to the Timeline top isn't
-    // a silent surprise that looks like the wrong moment opened.
-    await message("Couldn't pinpoint the exact moment — opening the Timeline.", {
-      title: "Opening Timeline",
-      kind: "info",
-    });
-    void goto("/");
+    showToast({ tone: "danger", text: "Couldn't open that moment in the Timeline" });
   }
 
   $effect(() => {
-    // Re-run whenever the Subject changes. Reading `subject` here is the only
-    // tracked dependency; the loader itself is awaited inside.
     subject;
+    clShown = CONCLUSION_PAGE;
     void loadSubject();
-
-    // `user_context_changed` fires per derivation pass (~every 5s during a
-    // backlog drain); coalesce bursts into one trailing reload, matching the
-    // treatment Subjects.svelte gives the same event.
+    // `user_context_changed` fires per derivation pass; coalesce bursts.
     const debouncedReload = debounce(() => void loadSubject(), 500);
-
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
-    void listen("user_context_changed", () => {
-      debouncedReload();
-    }).then((fn) => {
+    void listen("user_context_changed", () => debouncedReload()).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
     });
-
     return () => {
       disposed = true;
       unlisten?.();
@@ -390,116 +286,215 @@
   });
 </script>
 
-<section class="subject-detail" aria-label={`Subject — ${subject}`}>
+<svelte:window onkeydowncapture={onKeydown} />
+
+<section aria-label={`Subject — ${subject}`}>
+  <div class="in-crumb mx-reveal">
+    <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={onBack}
+      ><IconBack width="13" height="13" aria-hidden="true" />Subjects</button
+    >
+    <span>/</span>
+    <b>{subject}</b>
+    <span class="mx-spacer"></span>
+    <a
+      class="mx-btn mx-btn--ghost mx-btn--sm"
+      href={askDisabled ? undefined : askHref}
+      aria-disabled={askDisabled || undefined}
+      use:tip={askDisabled ? "Ask needs AI — turn it on in Settings" : "Opens Chat with this question"}
+      ><IconSparkle class="mx-btn__accent" width="13" height="13" aria-hidden="true" />Ask about {subject}<kbd>⌘J</kbd></a
+    >
+  </div>
+
   {#if loadError && !view}
-    <div class="state state--error">
-      <p class="state-title">Couldn't load this subject.</p>
-      <p class="state-detail">{loadError}</p>
-      <button
-        type="button"
-        class="state-retry"
-        onclick={() => void loadSubject()}
-        disabled={loading}
-      >
-        <span class="state-retry-ico" aria-hidden="true">↻</span>
-        Try again
-      </button>
+    <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
+      <span class="mx-empty__glyph"><IconAlert width="18" height="18" aria-hidden="true" /></span>
+      <h4 class="mx-empty__title">Couldn't load this subject.</h4>
+      <p class="mx-empty__text">Reading its conclusions and history failed. {loadError}</p>
+      <div class="mx-empty__acts">
+        <button type="button" class="mx-btn mx-btn--sm" disabled={loading} onclick={() => void loadSubject()}>
+          <IconRetry width="13" height="13" aria-hidden="true" />Try again
+        </button>
+      </div>
     </div>
-  {:else if loading && !view}
-    <!-- Loading skeleton — hero + conclusion strip, matching the real layout so
-         the swap to loaded content causes no layout shift. The "nothing
-         concluded" empty state only renders once loaded. -->
-    <div aria-label={`Loading ${subject}`} aria-busy="true">
-      <div class="subj-hero">
-        <div class="subj-hero-main">
-          <div class="sk-hero-title">
-            <Skeleton variant="text" width="240px" height="25px" />
-          </div>
-          <div class="subj-meta">
-            <Skeleton variant="text" width="92px" height="18px" radius="999px" />
-            <Skeleton variant="text" width="118px" height="18px" radius="999px" />
-            <Skeleton variant="text" width="132px" height="18px" radius="999px" />
-          </div>
+  {:else if !view}
+    <div aria-busy="true">
+      <span class="mx-sr">Loading {subject}</span>
+      <div class="in-read">
+        <div class="in-skel-read">
+          <div class="mx-skel" style="width:140px;height:9px"></div>
+          <div class="mx-skel mx-skel--title"></div>
+          <div class="mx-skel mx-skel--title"></div>
+          <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div>
+        </div>
+        <div class="in-skel-stats">
+          {#each Array.from({ length: 4 }) as _, i (i)}<div><div class="mx-skel"></div><div class="mx-skel"></div></div>{/each}
         </div>
       </div>
-
-      <div class="sk-strip">
-        {#each Array.from({ length: 3 }) as _, i (i)}
-          <div class="sk-card">
-            <Skeleton variant="text" width="42px" height="11px" />
-            <Skeleton variant="text" width="90%" height="13px" />
-            <Skeleton variant="text" width="70%" height="13px" />
-            <Skeleton width="100%" height="6px" radius="999px" />
-          </div>
-        {/each}
+      <div class="in-ex">
+        <div class="mx-panel in-week"><div class="mx-skel" style="height:230px"></div></div>
+        <div>
+          {#each Array.from({ length: 4 }) as _, i (i)}
+            <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+          {/each}
+        </div>
       </div>
     </div>
-  {:else if view && conclusionCount === 0}
-    <div class="state">
-      <p class="state-title">No beliefs to show about {subject}.</p>
-      <p class="state-detail">
-        Nothing active or fading is left here. Anything you dismissed is in
-        Context › Dismissed.
+  {:else if !selected || !lead}
+    <div class="mx-empty mx-empty--center">
+      <span class="mx-empty__glyph"><IconInbox width="18" height="18" aria-hidden="true" /></span>
+      <h4 class="mx-empty__title">Nothing concluded about {subject} yet.</h4>
+      <p class="mx-empty__text">
+        Its conclusions were dismissed or haven't formed. Views appear here once two activities support them. Anything
+        you dismissed is in Context › Dismissed.
       </p>
     </div>
-  {:else if view}
-    <!-- Hero -->
-    <div class="subj-hero">
-      <div class="subj-hero-main">
-        <h1 class="subj-title">{subject}</h1>
-        <div class="subj-meta">
-          <span class="pill">
-            {conclusionCount}
-            {conclusionCount === 1 ? "conclusion" : "conclusions"}
-          </span>
-          {#if fadedCount > 0}
-            <span class="pill">{fadedCount} below floor</span>
-          {/if}
-          <span class="pill">first seen {relativeTime(firstSeenMs)}</span>
-          <span class="pill">last evidence {relativeTime(lastEvidenceMs)}</span>
-          {#if linkedActivityCount > 0}
-            <span class="pill">{linkedActivityCount} linked activities</span>
-          {/if}
+  {:else}
+    <div class="in-read">
+      <div class="mx-reveal" style="--i:1">
+        <span class="mx-kicker">Subject · since {day(sinceMs)} · {trendWord}</span>
+        <h1 class="mx-display">{subject}</h1>
+        <p class="mx-prose lede">
+          {lead.statement} <span>— its strongest conclusion, at {pct(lead.confidence)}%.</span>
+        </p>
+      </div>
+      <div class="in-lede-stats mx-reveal" style="--i:2">
+        <div class="mx-stat">
+          <span class="mx-stat__label">Lead confidence</span>
+          <span class="mx-stat__value">{pct(lead.confidence)}<small>%</small></span>
+          <span class="mx-stat__delta" class:mx-stat__delta--up={(leadDelta ?? 0) > 0}
+            >{leadDelta === null ? "formed this fortnight" : `${signed(leadDelta)} pts in 14d`}</span
+          >
+        </div>
+        <div class="mx-stat">
+          <span class="mx-stat__label">Conclusions</span>
+          <span class="mx-stat__value">{aboveFloor}</span>
+          <span class="mx-stat__delta">{shown.length - aboveFloor} faded below the display floor</span>
+        </div>
+        <div class="mx-stat">
+          <span class="mx-stat__label">Evidence</span>
+          <span class="mx-stat__value">{evidenceCount}</span>
+          <span class="mx-stat__delta">{evidenceCount === 1 ? "activity" : "activities"} cited</span>
+        </div>
+        <div class="mx-stat">
+          <span class="mx-stat__label">Last support</span>
+          <span class="mx-stat__value">{lastSupport.n}{#if lastSupport.unit}<small>{lastSupport.unit}</small>{/if}</span>
+          <span class="mx-stat__delta">{lastSupportDay}</span>
         </div>
       </div>
-      <!-- Subject → Chat hand-off: open a fresh chat prefilled to ask the engine
-           about this subject (the prompt is seeded for review/edit, not sent). -->
-      <button type="button" class="ask-subject" onclick={askAboutSubject}>
-        <span class="ask-subject-glyph" aria-hidden="true">✦</span>
-        Ask AI about {subject}
-      </button>
     </div>
 
-    <!-- Conclusion strip (master). Passes ALL conclusions incl. faded — the strip
-         de-emphasizes faded cards but keeps them selectable. -->
-    <ConclusionStrip
-      conclusions={view.conclusions}
-      trajectories={trajectoryById}
-      {selectedId}
-      onSelect={(id) => (selectedId = id)}
-      onTogglePin={togglePin}
-      {actionId}
-    />
+    <div class="in-ex">
+      <div class="mx-panel in-week mx-reveal" style="--i:3">
+        <div class="in-sec">
+          <span class="mx-kicker">Confidence over time</span><span class="mx-spacer"></span>
+          <span class="mx-label">selected conclusion · {shown.length > 11 ? "top 10" : "others"} in grey · ● evidence</span>
+        </div>
+        <SubjectChart conclusions={shown} {histories} selectedId={selected.id} />
+      </div>
+      <div class="in-cls-col mx-reveal" style="--i:4">
+        <div class="in-sec">
+          <span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span>
+          <span class="mx-label">{shown.length} · by confidence</span>
+        </div>
+        <div class="in-cls">
+          {#each clPage.visible as c (c.id)}
+            {@const d = fortnightDelta(c)}
+            <button type="button" class="in-cl" aria-pressed={c.id === selected.id} onclick={() => select(c.id)}>
+              <span class="num">{pct(c.confidence)}%</span>
+              <span>{c.statement}</span>
+              <small class:in-up={(d ?? 0) > 0} class:in-down={(d ?? 0) < 0}>{d === null ? "new" : signed(d)}</small>
+            </button>
+          {/each}
+        </div>
+        {#if clPage.more > 0}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown += CONCLUSION_PAGE)}>
+            Show {clPage.more} more
+          </button>
+        {:else if clPage.less}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown = CONCLUSION_PAGE)}>Show less</button>
+        {/if}
+      </div>
 
-    <!-- Selected conclusion's timeline (detail). -->
-    {#if selectedConclusion}
-      <ConclusionTimeline
-        events={timelineEvents}
-        conclusion={selectedConclusion}
-        trajectory={selectedTrajectory}
-        thumbnails={thumbnailCache}
-        {actionId}
-        {actionKind}
-        onTogglePin={togglePin}
-        onDismiss={dismissConclusion}
-        {onViewInTimeline}
-      />
-    {/if}
+      <!-- Sticky beside the list (wide) so picking a conclusion far down keeps its evidence in view. -->
+      <div class="in-side" bind:this={sideEl}>
+      <div class="in-why mx-reveal" style="--i:5">
+        <span class="mx-kicker">Why Mnema believes this · {selIndex + 1} of {shown.length}</span>
+        <h2 class="in-cd__statement">{selected.statement}</h2>
+        <div class="in-cd__acts">
+          <button
+            type="button"
+            class="mx-btn mx-btn--sm"
+            aria-pressed={selected.pinned}
+            aria-busy={pinBusy || undefined}
+            onclick={() => void togglePin(selected)}
+            ><IconPin width="13" height="13" aria-hidden="true" />{selected.pinned ? "Pinned" : "Pin"}</button
+          >
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => dismiss(selected)}>Dismiss</button>
+        </div>
+        <ol class="in-tl">
+          {#each events as ev, i (i)}
+            {@const act = ev.kind === "evidence" || ev.kind === "contradict" ? activities.get(ev.activityId) : undefined}
+            <li class:origin={ev.kind === "formed"} class:conf={ev.kind === "marker"} style:--i={i}>
+              <time class="num">{ev.atMs == null ? "—" : day(ev.atMs)}</time>
+              {#if ev.kind === "formed"}
+                {@const n = selected.formedEvidenceCount}
+                <!-- Beliefs formed before the count was recorded keep the old line. -->
+                <div>
+                  {n == null
+                    ? `Formed at ${pct(ev.confidence)}%`
+                    : `Formed from ${n} supporting ${n === 1 ? "activity" : "activities"} · ${pct(ev.confidence)}%`}
+                </div>
+              {:else if ev.kind === "marker"}
+                <div>Confidence {pct(ev.from)}% → {pct(ev.to)}%</div>
+              {:else if ev.kind === "replaced"}
+                <div>Replaced an earlier take<small>{ev.statement}</small></div>
+              {:else if act}
+                <button type="button" class="in-tl__ev" onclick={() => onViewInTimeline(ev.activityId)}>
+                  {ev.title}<small>{ev.kind === "contradict" ? "contradicts" : evidenceNote(act)}</small>
+                </button>
+              {:else}
+                <div>{ev.title}{#if ev.kind === "contradict"}<small>contradicts</small>{/if}</div>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      </div>
+      <div class="mx-panel mx-panel--inset in-guard mx-reveal" style="--i:6">
+        <div class="in-sec"><span class="mx-kicker">This conclusion</span></div>
+        <dl class="mx-spec">
+          <div><dt>confidence</dt><dd class="num">{pct(selected.confidence)}%</dd></div>
+          <div><dt>peak</dt><dd class="num">{pct(peak)}%</dd></div>
+          <div><dt>evidence</dt><dd>{selActivities} {selActivities === 1 ? "activity" : "activities"}</dd></div>
+          <div><dt>decay</dt><dd>halves every 30 days without support</dd></div>
+          <div><dt>pinned</dt><dd>{selected.pinned ? "yes — it won't fade" : "no — pin it to stop it fading"}</dd></div>
+        </dl>
+        {#if newestRef}
+          {@const ref = newestRef}
+          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm open-tl" onclick={() => void openRefInTimeline(ref)}
+            >Open evidence in Timeline<IconArrow width="13" height="13" aria-hidden="true" /></button
+          >
+        {/if}
+      </div>
+      </div>
+    </div>
   {/if}
 </section>
 
-<!-- In-place frame peek for a conclusion's evidence. Its "open full timeline →"
-     escape hatch replays the old raw-Timeline hand-off. -->
+{#if toast}
+  {@const t = toast}
+  <div class="mx-toasts">
+    <div class="mx-toast" data-tone={t.tone} role={t.tone === "danger" ? "alert" : "status"}>
+      {#if t.tone === "ok"}<IconOk width="15" height="15" aria-hidden="true" />{:else}<IconFail width="15" height="15" aria-hidden="true" />{/if}
+      <span>{t.text}</span>
+      {#if t.undo}
+        {@const c = t.undo}
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => undoDismiss(c)}>Undo</button>
+        <i class="mx-toast__timer" style="--ttl:{DISMISS_UNDO_MS}ms"></i>
+      {/if}
+    </div>
+  </div>
+{/if}
+
 <FrameDetailModal
   open={frameModalOpen}
   frameId={frameModalId}
@@ -508,172 +503,84 @@
 />
 
 <style>
-  .subject-detail {
-    display: flex;
-    flex-direction: column;
+  /* insights.html Subject detail + the shared lede/exhibit/feed layout. */
+  .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-3) -9px; font: 500 var(--text-base) / 1 var(--font-sans); color: var(--app-text-subtle); }
+  .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
+  .in-crumb > a:last-child { margin-right: -9px; }
+  .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end; padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
+  .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
+  .lede { font-size: var(--text-lg); }
+  .lede span { color: var(--app-text-subtle); }
+  .in-lede-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
+  /* Chart, then "Why" and "This conclusion" down the left; the (paged) list
+     spans the right, its extra height absorbed by the last row. */
+  .in-ex {
+    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
+    grid-template-areas: "chart list" "side list"; gap: var(--s-6); align-items: start;
   }
+  .in-ex > .in-week { grid-area: chart; }
+  .in-cls-col { grid-area: list; }
+  /* Sticks under the 56px Insights bar; scrolls inside itself when the evidence
+     timeline is taller than the window. ponytail: 100vh over-counts the titlebar
+     by a few px — the inner scroll absorbs it. */
+  .in-side {
+    grid-area: side; display: grid; gap: var(--s-6); align-self: start;
+    position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain;
+  }
+  .in-cls__more { margin: var(--s-2) 0 0 -9px; }
+  .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
+  .in-week { padding: var(--s-5); }
+  .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
+  .in-guard .mx-spec { grid-template-columns: 96px 1fr; }
+  .open-tl { margin: var(--s-3) 0 0 -9px; }
+  .in-up { color: var(--focus-deep); }
+  .in-down { color: var(--focus-distracted); }
 
-  /* ---- Hero ---- */
-  .subj-hero {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 18px;
-    margin-bottom: 18px;
+  .in-cls { display: grid; gap: 2px; }
+  .in-cl {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: var(--s-3); align-items: start; padding: 11px var(--s-3);
+    border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; color: var(--app-text-muted);
+    font: 400 var(--text-base) / 1.45 var(--font-sans);
+    transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
   }
-  .subj-hero-main {
-    min-width: 0;
-  }
-  .subj-title {
-    font-size: 24px;
-    letter-spacing: -0.01em;
-    color: var(--app-text-strong);
-    font-weight: 600;
-    margin: 0 0 10px;
-  }
-  .subj-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .pill {
-    font-size: 10.5px;
-    padding: 2px 9px;
-    border-radius: 999px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-    white-space: nowrap;
-  }
+  .in-cl:hover { background: var(--mx-wash); color: var(--app-text); }
+  .in-cl:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+  .in-cl[aria-pressed="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+  .in-cl .num { font-size: var(--text-md); color: var(--app-text-strong); line-height: 1.3; }
+  .in-cl small { text-align: right; font: 500 var(--text-xs) / 1.9 var(--font-mono); }
 
-  /* Subject → Chat hand-off button (top-right of the hero). The primary outbound
-     action from a subject, so it carries the accent treatment. */
-  .ask-subject {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: 11.5px;
-    padding: 6px 12px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    white-space: nowrap;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .ask-subject:hover {
-    border-color: var(--app-accent);
-  }
-  .ask-subject:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .ask-subject:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .ask-subject-glyph {
-    font-size: 11px;
-    line-height: 1;
-  }
+  .in-cd__statement { font: 600 24px / 1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-3) 0 var(--s-4); max-width: 34ch; text-wrap: balance; }
+  .in-cd__acts { display: flex; gap: 6px; }
+  .in-tl { list-style: none; margin: var(--s-5) 0 0; padding: 0; position: relative; }
+  .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }
+  .in-tl li { position: relative; display: grid; grid-template-columns: 22px 72px 1fr; padding: 9px 0; animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 40ms); }
+  .in-tl li::before { content: ""; width: 11px; height: 11px; border-radius: 50%; margin-top: 3px; background: var(--app-bg); border: 1.5px solid var(--app-border-strong); }
+  .in-tl li.conf::before { border-color: var(--app-text-strong); background: var(--app-text-strong); width: 7px; height: 7px; margin: 5px 0 0 2px; }
+  .in-tl li.origin::before { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+  .in-tl time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.9; }
+  .in-tl li > div, .in-tl__ev { color: var(--app-text); font-size: var(--text-base); }
+  .in-tl small { display: block; margin-top: 3px; font: 400 var(--text-sm) / 1.4 var(--font-sans); color: var(--app-text-subtle); }
+  .in-tl li.conf > div { font: 500 var(--text-sm) / 1.6 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong); }
+  .in-tl__ev { padding: 0; border: 0; background: none; text-align: left; font-family: inherit; line-height: inherit; cursor: pointer; border-radius: var(--r-xs); }
+  .in-tl__ev:hover { color: var(--app-text-strong); }
+  .in-tl__ev:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 
-  /* ---- Loading skeleton helpers ---- */
-  .sk-hero-title {
-    margin: 0 0 10px;
-  }
-  .sk-strip {
-    display: flex;
-    gap: 10px;
-  }
-  .sk-card {
-    flex: 0 0 auto;
-    width: 240px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface);
-  }
+  .in-skel-read { display: grid; gap: 12px; padding-top: var(--s-4); }
+  .in-skel-read .mx-skel--title { height: 34px; width: 78%; }
+  .in-skel-read .mx-skel--title + .mx-skel--title { width: 52%; }
+  .in-skel-stats { display: grid; grid-template-columns: repeat(2, 132px); gap: var(--s-5) var(--s-6); }
+  .in-skel-stats div { display: grid; gap: 8px; }
+  .in-skel-stats .mx-skel:first-child { height: 8px; width: 60%; }
+  .in-skel-stats .mx-skel:last-child { height: 24px; width: 90%; }
 
-  /* ---- States ---- */
-  .state {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 18px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-  }
-  .state--error {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg);
-  }
-  .state-title {
-    margin: 0;
-    font-size: 13px;
-    color: var(--app-text-strong);
-  }
-  .state-detail {
-    margin: 0;
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    line-height: 1.6;
-  }
-  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
-  .state-retry {
-    align-self: flex-start;
-    margin-top: 4px;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: 10px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .state-retry:hover:not(:disabled) {
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .state-retry:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .state-retry:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .state-retry-ico {
-    font-size: 12px;
-    line-height: 1;
-    letter-spacing: 0;
-  }
+  /* `.in-main` scrolls, so the toast stack pins to the window. */
+  .mx-toasts { position: fixed; }
 
+  @container mx-window (max-width: 1180px) {
+    .in-ex { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "chart" "list" "side"; }
+    .in-side { position: static; max-height: none; overflow: visible; }
+  }
   @media (prefers-reduced-motion: reduce) {
-    .ask-subject,
-    .state-retry {
-      transition: none;
-    }
-    .ask-subject:not(:disabled):active,
-    .state-retry:not(:disabled):active {
-      transform: none;
-    }
+    .in-tl li { animation: none; }
   }
 </style>

@@ -72,7 +72,7 @@
       <div class="inline-row">
         <input class="text-input" autocomplete="off" placeholder="argument" aria-label="Argument {i + 1}" bind:value={model.args[i]} />
         <button
-          class="btn btn--ghost btn--sm"
+          class="mx-btn mx-btn--sm"
           type="button"
           aria-label="Remove argument {i + 1}"
           onclick={() => { model.args = model.args.filter((_, idx) => idx !== i); }}
@@ -81,7 +81,7 @@
     {/each}
     <div class="row-actions">
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         type="button"
         onclick={() => { model.args = [...model.args, ""]; }}
       >+ Argument</button>
@@ -90,13 +90,13 @@
 
   <div class="field">
     <span class="field-label">Environment variables</span>
-    <p class="group-hint">Non-secret values only. The one secret below is delivered separately via the keychain.</p>
+    <p class="group-hint">Non-secret values only. The one secret below is stored encrypted and delivered separately.</p>
     {#each model.env as _, i (i)}
       <div class="inline-row">
         <input class="text-input" autocomplete="off" placeholder="NAME" aria-label="Env var {i + 1} name" bind:value={model.env[i].name} />
         <input class="text-input" autocomplete="off" placeholder="value" aria-label="Env var {i + 1} value" bind:value={model.env[i].value} />
         <button
-          class="btn btn--ghost btn--sm"
+          class="mx-btn mx-btn--sm"
           type="button"
           aria-label="Remove env var {i + 1}"
           onclick={() => { model.env = model.env.filter((_, idx) => idx !== i); }}
@@ -105,7 +105,7 @@
     {/each}
     <div class="row-actions">
       <button
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         type="button"
         onclick={() => { model.env = [...model.env, { name: "", value: "" }]; }}
       >+ Variable</button>
@@ -115,7 +115,7 @@
   <div class="field">
     <label class="field-label" for="mcp-picker-secret-env">Secret delivered as env var</label>
     <input id="mcp-picker-secret-env" class="text-input" autocomplete="off" placeholder="e.g. GITHUB_TOKEN" bind:value={model.secretEnvName} />
-    <p class="group-hint">The keychain secret below is injected into the child process under this env var name.</p>
+    <p class="group-hint">The secret below is injected into the child process under this env var name.</p>
   </div>
 {:else}
   <div class="field">
@@ -143,9 +143,9 @@
       options={AUTH_OPTIONS}
     />
     {#if oauthHttp}
-      <p class="group-hint">Sign in through your browser when you add this connector — nothing is pasted here. Only the returned token is stored, in your macOS keychain.</p>
+      <p class="group-hint">Sign in through your browser when you add this connector — nothing is pasted here. Only the returned token is kept, stored encrypted on this Mac.</p>
     {:else}
-      <p class="group-hint">The keychain secret below is sent as an <code>Authorization: Bearer</code> header.</p>
+      <p class="group-hint">The secret below is sent as an <code>Authorization: Bearer</code> header.</p>
     {/if}
   </div>
 {/if}
@@ -165,9 +165,9 @@
     />
   </div>
   {#if edit && secretSaved}
-    <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span></p>
+    <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret saved</span></p>
   {:else}
-    <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>
+    <p class="group-hint">Stored encrypted on this Mac — never in Mnema's settings.</p>
   {/if}
 {/if}
 

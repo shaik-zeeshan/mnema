@@ -1461,7 +1461,7 @@ pub(super) fn exact_preview_requested_time(video_offset_ms: u64) -> cidre::cm::T
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn log_video_preview_exact_miss(
+fn log_video_preview_exact_miss(
     video_path: &Path,
     frame: &::app_infra::Frame,
     used_indexed_offset: bool,
@@ -1470,16 +1470,40 @@ pub(super) fn log_video_preview_exact_miss(
     requested_time: cidre::cm::Time,
     actual_time: cidre::cm::Time,
 ) {
+    if let Some(message) = video_preview_exact_miss_message(
+        video_path,
+        frame,
+        used_indexed_offset,
+        require_exact_time,
+        offset_seconds,
+        requested_time,
+        actual_time,
+    ) {
+        crate::native_capture::debug_log::log(message);
+    }
+}
+
+/// The exact-miss debug line, or `None` when the miss is under the threshold.
+#[cfg(target_os = "macos")]
+pub(super) fn video_preview_exact_miss_message(
+    video_path: &Path,
+    frame: &::app_infra::Frame,
+    used_indexed_offset: bool,
+    require_exact_time: bool,
+    offset_seconds: f64,
+    requested_time: cidre::cm::Time,
+    actual_time: cidre::cm::Time,
+) -> Option<String> {
     let delta_ms = actual_time.sub(requested_time).abs().as_secs() * 1000.0;
     if delta_ms < FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS {
-        return;
+        return None;
     }
 
     let frame_identity = parse_frame_identity_from_path(Path::new(&frame.file_path))
         .map(|(captured_at_unix_ms, frame_index)| format!("{captured_at_unix_ms}:{frame_index}"))
         .unwrap_or_else(|| "unknown".to_string());
 
-    crate::native_capture::debug_log::log_warn(format!(
+    Some(format!(
         "[DEBUG-frame-preview] event=video_exact_miss path={} frame_id={} frame_identity={} used_indexed_offset={} require_exact_time={} offset_seconds={} requested_time={} actual_time={} delta_ms={:.3}",
         video_path.display(),
         frame.id,
@@ -1490,7 +1514,7 @@ pub(super) fn log_video_preview_exact_miss(
         requested_time.as_secs(),
         actual_time.as_secs(),
         delta_ms,
-    ));
+    ))
 }
 
 #[cfg(target_os = "macos")]
@@ -2138,7 +2162,7 @@ pub(super) async fn get_frame_preview_inner_with_logging(
 
     match &result {
         Ok(Some(_preview)) => {}
-        Ok(None) => crate::native_capture::debug_log::log_warn(format!(
+        Ok(None) => crate::native_capture::debug_log::log(format!(
             "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
             frame_id, elapsed_ms,
         )),
@@ -2341,7 +2365,7 @@ fn log_scrub_preview_perf(event: &str, fields: impl AsRef<str>) {
     if !scrub_preview_perf_debug_enabled() {
         return;
     }
-    crate::native_capture::debug_log::log_info(format!(
+    crate::native_capture::debug_log::log(format!(
         "[DEBUG-scrub-perf] event={event} {}",
         fields.as_ref()
     ));

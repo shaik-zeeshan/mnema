@@ -40,8 +40,12 @@
     icon?: Snippet<[string]>;
     /** Optional aria-label for the group container. */
     ariaLabel?: string;
-    /** Visual size; `compact` is the tighter pill used in titlebars. */
+    /** Tighter segments (icon-only / dense rows). */
     compact?: boolean;
+    /** Kit `--md` size: 32px instead of the default 26px. */
+    md?: boolean;
+    /** Kit `--mono`: data-valued options (1m · 5m, 0.5 fps). */
+    mono?: boolean;
   }
 
   let {
@@ -53,6 +57,8 @@
     icon,
     ariaLabel,
     compact = false,
+    md = false,
+    mono = false,
   }: Props = $props();
 
   const isOff = (v: string): boolean => disabledValues.includes(v);
@@ -61,6 +67,22 @@
   // active segment (focus-follows-selection — the roving tabindex alone leaves
   // focus stranded on the now tabindex=-1 button).
   let segEls = $state<(HTMLButtonElement | null)[]>([]);
+  let groupEl = $state<HTMLDivElement | null>(null);
+
+  // The kit's sliding thumb under the selected segment (kit.js `slide()`).
+  let thumb = $state<{ x: number; w: number } | null>(null);
+  function placeThumb() {
+    const el = segEls[options.findIndex((o) => o.value === value)];
+    thumb = el ? { x: el.offsetLeft, w: el.offsetWidth } : null;
+  }
+  $effect(placeThumb);
+  // Re-measure when the group resizes (web fonts swap in after first layout).
+  $effect(() => {
+    if (!groupEl) return;
+    const ro = new ResizeObserver(placeThumb);
+    ro.observe(groupEl);
+    return () => ro.disconnect();
+  });
 
   function select(next: string) {
     if (disabled || isOff(next) || next === value) return;
@@ -80,8 +102,7 @@
   // focus is already inside this group, so we never steal focus on mount or on
   // a programmatic value change.
   function focusSelected(index: number) {
-    const group = segEls[index]?.closest(".segmented");
-    if (group && group.contains(document.activeElement)) {
+    if (groupEl?.contains(document.activeElement)) {
       segEls[index]?.focus();
     }
   }
@@ -111,19 +132,22 @@
 </script>
 
 <div
-  class="segmented"
-  class:segmented--compact={compact}
-  class:segmented--disabled={disabled}
+  bind:this={groupEl}
+  class="mx-seg"
+  class:mx-seg--md={md}
+  class:mx-seg--mono={mono}
+  class:seg-compact={compact}
   role="radiogroup"
   aria-label={ariaLabel}
+  aria-disabled={disabled || undefined}
 >
+  {#if thumb}
+    <span class="mx-seg__thumb" style:width="{thumb.w}px" style:transform="translateX({thumb.x}px)"></span>
+  {/if}
   {#each options as option, index (option.value)}
     <button
       type="button"
       bind:this={segEls[index]}
-      class="seg"
-      class:seg--active={value === option.value}
-      class:seg--off={isOff(option.value)}
       role="radio"
       aria-checked={value === option.value}
       aria-label={option.ariaLabel ?? option.label}
@@ -137,133 +161,39 @@
         <span class="seg__icon" aria-hidden="true">{@render icon(option.value)}</span>
       {/if}
       {#if option.label}
-        <span class="seg__label">{option.label}</span>
+        <span>{option.label}</span>
       {/if}
     </button>
   {/each}
 </div>
 
 <style>
-  .segmented {
-    display: inline-flex;
-    /* Hug the options even inside a stretch flex column, so the pill doesn't
-       blow out to full width with the segments packed on one side. Callers that
-       want a full-width control opt in by setting width:100% (+ flex segments),
-       as ThemeModeControl does. */
-    width: fit-content;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
-  }
-
-  .segmented--disabled {
+  /* Look lives in kit.css (.mx-seg). Only component extras here. */
+  .mx-seg[aria-disabled="true"] {
     opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
-  .seg {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 5px 12px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 540;
-    line-height: 1;
-    cursor: pointer;
-    user-select: none;
-    outline: none;
-    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+  /* Whole-group disable dims once, on the group (not again per segment). */
+  .mx-seg[aria-disabled="true"] button:disabled {
+    opacity: 1;
   }
 
-  .seg:hover:not(.seg--active) {
-    color: var(--app-text);
-    background: var(--app-surface-hover);
-  }
-
-  .seg:not(.seg--active):not(:disabled):active {
-    background: var(--app-surface-active);
-  }
-
-  .seg:focus-visible {
-    box-shadow: var(--app-ring);
-    outline: 2px solid var(--app-accent);
-    outline-offset: -2px;
-  }
-
-  .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-
-  .seg:disabled {
-    cursor: not-allowed;
-  }
-
-  /* Individually disabled segment (group stays interactive). */
-  .seg--off {
-    opacity: var(--app-disabled-opacity);
+  .seg-compact button {
+    padding: 0 7px;
   }
 
   .seg__icon,
   .seg__icon :global(svg) {
     display: block;
-    width: 12px;
-    height: 12px;
+    width: 13px;
+    height: 13px;
     flex: 0 0 auto;
   }
 
-  .seg__icon :global(svg) {
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  /* ── Compact (titlebar pill) ─────────────────────────────────── */
-  .segmented--compact {
-    padding: 2px;
-    gap: 2px;
-    border-radius: 999px;
-    border-color: var(--app-icon-border-hover);
-    background: var(--app-surface-raised);
-  }
-
-  .segmented--compact .seg {
-    padding: 4px 7px;
-    border-radius: 999px;
-    color: var(--app-icon-fg);
-  }
-
-  .segmented--compact .seg:hover:not(.seg--active) {
-    background: var(--app-icon-bg-hover);
-    color: var(--app-icon-fg-hover);
-  }
-
-  .segmented--compact .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-
-  .segmented--compact .seg__icon,
-  .segmented--compact .seg__icon :global(svg) {
-    width: 16px;
-    height: 16px;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .seg {
-      transition: none;
-    }
+  .mx-seg--md .seg__icon,
+  .mx-seg--md .seg__icon :global(svg) {
+    width: 14px;
+    height: 14px;
   }
 </style>

@@ -1,0 +1,1440 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mnema — Onboarding</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Onboarding. Prefix: ob-
+       Its own focused window (the real one is 1120×800, min 920×620): no app titlebar, no
+       status bar. A 52px drag strip carries the lights, the step name and the flow ruler;
+       each screen = scrolling main + a hairline action footer. Flow and copy are the real
+       app's (apps/desktop/src/routes/onboarding); only the skin is new.
+       Hooks: ?step=welcome|permissions|capture|settings|change|setup|voice|finale
+              &theme=light · &perm=mic-denied|sysaudio|done · &folder=archive|tiny|offline
+              &tab=features|engines|models|ai · &ai=ready|on · &voice=enrolled|rejected|waiting
+              &finale=starting|running|idle|failed
+              ?state=<name> — one named state per screen (see STATES in the script, and the
+              "Mockup state" picker bottom-left). In ?state= renders downloads are frozen. */
+    .mx-window.ob-window { width: min(1120px, 100%); height: min(800px, calc(100vh - 64px)); min-height: 620px;
+      grid-template-rows: 52px minmax(0, 1fr); }
+
+    /* --- The strip: lights · step name · flow ruler · count -------------------- */
+    .ob-bar { display: grid; grid-template-columns: 78px minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
+      padding-right: var(--s-5); border-bottom: 1px solid var(--mx-hairline); user-select: none; }
+    .ob-bar .mx-lights { padding-left: 16px; }
+    .ob-bar:hover .mx-lights i:nth-child(1) { background: var(--app-status-running-dot); }
+    .ob-bar:hover .mx-lights i:nth-child(2) { background: var(--app-status-paused-dot); }
+    .ob-bar:hover .mx-lights i:nth-child(3) { background: var(--app-source-mic); }
+    .ob-bar__name { padding-left: var(--s-2); font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .ob-bar__name small { margin-left: 6px; font-weight: 400; color: var(--app-text-subtle); }
+    .ob-bar__count { justify-self: end; font: 500 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+    .ob-bar__count b { font-weight: 500; color: var(--app-text-strong); }
+    /* Flow ruler: one tick per screen (same language as the date capsule's ruler).
+       Done = grey-4, current = tall accent tick, optional detours (Change settings, Voice) = short. */
+    .ob-rail { position: relative; display: flex; align-items: flex-end; gap: 16px; height: 16px; padding: 0 4px; }
+    .ob-rail::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px; background: var(--mx-hairline); }
+    .ob-rail i { flex: none; width: 2px; height: 8px; border-radius: 1px; background: var(--chart-grey-2); }
+    .ob-rail i[data-opt] { height: 5px; }
+    .ob-rail i[data-done] { background: var(--chart-grey-4); }
+    .ob-rail i[data-cur] { height: 15px; background: var(--app-accent); }
+
+    /* --- Screens --------------------------------------------------------------- */
+    .ob-stage { position: relative; min-height: 0; }
+    .ob-stage:focus, .ob-stage:focus-visible { outline: none; box-shadow: none; } /* programmatic focus target on each step */
+    .ob-window [hidden] { display: none !important; }
+    /* working screens carry no motion: segmented thumbs jump instead of sliding */
+    .ob-window .mx-seg__thumb { transition: none; }
+    .ob-screen { display: none; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr) auto; }
+    .ob-screen.is-on { display: grid; }
+    .ob-main { min-height: 0; overflow: auto; display: grid; align-content: center; padding: var(--s-7) var(--s-8) var(--s-6); }
+    .ob-col { display: grid; gap: var(--s-6); max-width: 780px; min-width: 0; }
+    .ob-head { display: grid; gap: var(--s-3); }
+    .ob-head .mx-display { font-size: 36px; }
+    .ob-fine { margin: 0; font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text-subtle); }
+    .ob-acts { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-2); }
+    .ob-acts .ob-fine { margin-left: var(--s-2); }
+    .ob-foot { display: flex; align-items: center; gap: var(--s-2); min-height: 60px; padding: 12px var(--s-5) 12px var(--s-8);
+      border-top: 1px solid var(--mx-hairline); background: color-mix(in srgb, var(--app-bg) 86%, transparent); }
+    .ob-foot__note { flex: 1; min-width: 0; margin: 0; font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ob-foot__note b { font-weight: 500; color: var(--app-text); }
+    .ob-btn-arrow { transition: transform var(--t-med) var(--ease-expo); }
+    .mx-btn:hover .ob-btn-arrow { transform: translateX(2px); }
+
+    /* status marks: ✓ granted/on · ring = not (yet) · system audio never gets the check */
+    .ob-mark { flex: none; width: 14px; height: 14px; color: var(--app-text-faint); }
+    .ob-mark--on { color: var(--app-accent); }
+
+    /* --- 01 Welcome (motion bookend) ------------------------------------------- */
+    .ob-welcome .ob-main { align-content: space-between; padding: 88px 0 var(--s-6); gap: var(--s-6); }
+    .ob-hero { display: grid; justify-items: start; gap: var(--s-5); padding: 0 var(--s-8); }
+    .ob-hero__title { margin: 0; font: 600 76px/0.98 var(--font-sans); letter-spacing: -0.045em; color: var(--app-text-strong); }
+    .ob-hero__title span { color: var(--app-text-subtle); }
+    .ob-hero .mx-prose { font-size: 16px; max-width: 46ch; }
+    .ob-hero .ob-acts { margin-top: var(--s-2); }
+    .ob-film { position: relative; height: 104px; overflow: hidden;
+      -webkit-mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
+      mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent); }
+    .ob-film__strip { position: absolute; left: 0; top: 6px; display: flex; gap: 12px; will-change: transform; }
+    .ob-fr { flex: none; width: 132px; height: 88px; display: grid; grid-template-rows: 10px 1fr; overflow: hidden;
+      border-radius: var(--r-sm); background: var(--app-surface); border: 1px solid var(--app-border);
+      transition: border-color var(--t-slow) var(--ease-quart), background-color var(--t-slow) var(--ease-quart); }
+    .ob-fr__bar { display: flex; gap: 3px; align-items: center; padding: 0 6px; border-bottom: 1px solid var(--mx-hairline); }
+    .ob-fr__bar i { width: 3px; height: 3px; border-radius: 50%; background: var(--chart-grey-2); }
+    .ob-fr__body { display: grid; align-content: start; gap: 6px; padding: 9px 10px; }
+    .ob-fr__body i { display: block; height: 4px; border-radius: 2px; background: var(--chart-grey-1); transition: background-color var(--t-slow) var(--ease-quart); }
+    .ob-film.is-settled .ob-fr--hit { border-color: var(--app-accent-border); background: color-mix(in srgb, var(--app-accent) 5%, var(--app-surface)); }
+    .ob-film.is-settled .ob-fr--hit .ob-fr__body i:nth-child(2) { background: var(--app-accent); }
+    .ob-film__head { position: absolute; left: 50%; top: 0; bottom: 0; width: 1.5px; margin-left: -0.75px; background: var(--app-accent); }
+    .ob-film__head::before { content: ""; position: absolute; top: 0; left: -4px; width: 9.5px; height: 6px; background: var(--app-accent);
+      clip-path: polygon(0 0, 100% 0, 50% 100%); }
+    .ob-film__rail { display: flex; align-items: baseline; gap: var(--s-4); padding: var(--s-3) var(--s-8) 0; }
+    .ob-film__tag { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .ob-film__tc { font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .ob-film__read { font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); opacity: 0; transition: opacity var(--t-slow) var(--ease-quart); }
+    .ob-film__read b { font-weight: 500; color: var(--app-text-strong); }
+    .ob-welcome.is-settled .ob-film__read { opacity: 1; }
+
+    /* --- 02 Permissions --------------------------------------------------------- */
+    .ob-ledger { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--mx-hairline); max-width: 520px; }
+    .ob-ledger li { display: grid; grid-template-columns: 14px 160px 1fr; align-items: center; gap: var(--s-3); height: 36px;
+      border-bottom: 1px solid var(--mx-hairline); font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text); }
+    .ob-ledger li span:last-child { font: 400 var(--text-base)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .ob-ledger li.is-warn span:last-child { color: var(--app-warn); }
+    .ob-moment { display: grid; gap: var(--s-4); justify-items: start; }
+    .ob-meter { display: flex; align-items: center; gap: 3px; height: 40px; }
+    .ob-meter i { width: 4px; height: 4px; border-radius: 2px; background: var(--chart-grey-2); transition: height 120ms var(--ease-quart), background-color var(--t-fast) var(--ease-quart); }
+    .ob-meter.is-live i { background: var(--chart-grey-4); }
+    .ob-meter.is-lit i { background: var(--app-source-sysaudio); }
+    .ob-meter.is-voice i { background: var(--app-source-mic); }
+    .ob-level { display: flex; align-items: center; gap: var(--s-5); padding: var(--s-3) var(--s-4); border-radius: var(--r-lg);
+      background: var(--app-surface); border: 1px solid var(--app-border); }
+    .ob-level__state { display: grid; gap: 4px; }
+    .ob-level__state b { font: 600 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    /* mock of the OS prompt (macOS draws the real one) */
+    .ob-tcc { position: absolute; z-index: 30; top: 18px; left: 50%; width: 300px; margin-left: -150px; display: grid; justify-items: center; gap: var(--s-2);
+      padding: var(--s-5) var(--s-4) var(--s-4); text-align: center; border-radius: var(--r-xl);
+      background: var(--app-surface-raised); border: 1px solid var(--app-overlay-border); box-shadow: var(--app-shadow-popover);
+      animation: mx-rise var(--t-med) var(--ease-expo) both; }
+    .ob-tcc[hidden] { display: none; }
+    .ob-tcc__glyph { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 10px; background: var(--app-accent-bg);
+      color: var(--app-accent); box-shadow: inset 0 0 0 1px var(--app-accent-border); }
+    .ob-tcc b { font: 600 var(--text-md)/1.35 var(--font-sans); color: var(--app-text-strong); }
+    .ob-tcc .ob-acts { width: 100%; margin-top: var(--s-2); }
+    .ob-tcc .ob-acts .mx-btn { flex: 1; }
+    .ob-tcc__tag { font: 500 9px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-faint); }
+
+    /* --- 03 Capture & Storage: spec rows + the verdict ------------------------- */
+    .ob-rows { display: grid; border-top: 1px solid var(--mx-hairline); }
+    .ob-row { display: grid; grid-template-columns: 136px minmax(0, 1fr); align-items: center; gap: var(--s-4); min-height: 52px; padding: 9px 0;
+      border-bottom: 1px solid var(--mx-hairline); }
+    .ob-row > .mx-label { font-size: var(--text-md); color: var(--app-text-muted); }
+    .ob-row__ctl { display: flex; align-items: center; gap: var(--s-2); min-width: 0; flex-wrap: nowrap; }
+    .ob-path { display: inline-flex; align-items: center; height: var(--h-sm); padding: 0 var(--s-2); border-radius: var(--r-sm);
+      font: 450 var(--text-base)/1 var(--font-mono); color: var(--app-text-strong); background: var(--mx-wash); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+    .ob-path.is-bad { color: var(--app-danger-text); box-shadow: inset 0 0 0 1px var(--app-danger-border); background: var(--app-danger-bg); }
+    .ob-clause { font: 500 var(--text-md)/1.2 var(--font-sans); color: var(--app-danger-text); white-space: nowrap; }
+    .ob-pop-folders { left: 0; right: auto; transform-origin: top left; min-width: 340px; }
+    .ob-pop-folders li { justify-content: space-between; }
+    .ob-pop-folders li[aria-selected="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
+    .ob-pop-folders .mono { font-size: var(--text-base); }
+    .ob-apps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .ob-apps .mx-btn { gap: 6px; padding-left: 4px; }
+    .ob-apps .mx-btn[aria-pressed="false"] { --_fg: var(--app-text-subtle); text-decoration: line-through; text-decoration-color: var(--app-text-faint); }
+    .ob-apps .mx-btn[aria-pressed="false"] .ob-app { opacity: 0.45; }
+    .ob-apps .mx-btn small { font: 400 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); text-decoration: none; }
+    .ob-app { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; flex: none;
+      font: 600 var(--text-xs)/1 var(--font-sans); color: var(--app-text-strong);
+      background: color-mix(in srgb, var(--c) 24%, var(--app-surface-raised)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 40%, transparent); }
+    .ob-verdict { display: grid; gap: 6px; padding: var(--s-3) var(--s-4); border-radius: var(--r-lg); background: var(--app-surface); border: 1px solid var(--app-border); }
+    .ob-verdict__plan { font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+    .ob-verdict__plan b, .ob-verdict__text b.fig { font: 500 var(--text-base)/1 var(--font-mono); color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .ob-verdict__text { font: 400 var(--text-md)/1.45 var(--font-sans); color: var(--app-text); }
+    .ob-verdict__text b { font-weight: 600; color: var(--app-text-strong); }
+    .ob-verdict[data-tone="ok"] .ob-verdict__text b:not(.fig) { color: var(--app-accent); font-weight: 500; }
+    .ob-verdict:is([data-tone="warn"], [data-tone="danger"]) { border-color: var(--tone-bd); background: var(--tone-bg); }
+    .ob-verdict:is([data-tone="warn"], [data-tone="danger"]) .ob-verdict__text b:not(.fig) { color: var(--tone); }
+    .ob-verdict .ob-acts:empty { display: none; }
+    .ob-verdict .ob-acts { margin-top: 4px; }
+
+    /* --- 04 Your settings: read-only manifest ----------------------------------- */
+    .ob-manifest { display: grid; grid-template-columns: 1fr 1fr; column-gap: var(--s-6); border-top: 1px solid var(--mx-hairline); }
+    .ob-man { display: grid; grid-template-columns: 14px auto minmax(0, 1fr); align-items: center; gap: var(--s-3); height: 42px;
+      border-bottom: 1px solid var(--mx-hairline); }
+    .ob-man__name { font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; }
+    .ob-man__val { justify-self: end; display: inline-flex; align-items: center; gap: var(--s-2); font: 400 var(--text-base)/1 var(--font-mono); color: var(--app-text-muted); white-space: nowrap; }
+    .ob-man.is-off .ob-man__name { color: var(--app-text-subtle); }
+    .ob-man.is-off .ob-man__val { color: var(--app-text-subtle); }
+    .ob-man.is-warn .ob-man__val { color: var(--app-warn); }
+    .ob-facts { display: grid; grid-template-columns: repeat(4, auto); justify-content: start; column-gap: var(--s-7); margin: 0; }
+    .ob-facts div { display: grid; gap: 8px; }
+    .ob-facts dt { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .ob-facts dd { margin: 0; font: 450 var(--text-lg)/1 var(--font-mono); color: var(--app-text-strong); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+
+    /* --- 05 Change settings: deliberately dense --------------------------------- */
+    .ob-change .ob-main { align-content: start; padding-top: var(--s-5); }
+    .ob-change .ob-col { max-width: 900px; }
+    .ob-tabs { display: flex; align-items: center; gap: var(--s-3); }
+    .ob-tabs .num { font-size: var(--text-sm); color: var(--app-text-subtle); }
+    .ob-pane { display: none; gap: var(--s-4); }
+    .ob-pane.is-on { display: grid; }
+    .ob-pane__head { display: flex; align-items: baseline; gap: var(--s-3); }
+    .ob-chain { display: grid; border-top: 1px solid var(--mx-hairline); }
+    .ob-feat { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 170px 64px; align-items: center; gap: var(--s-3);
+      min-height: 46px; padding: 6px 0 6px calc(var(--d, 0) * 26px); border-bottom: 1px solid var(--mx-hairline); }
+    /* tree elbow for a dependent row (hierarchy, not a selection mark) */
+    .ob-feat[style*="--d"]::before { content: ""; position: absolute; left: calc(var(--d) * 26px - 16px); top: 12px; width: 9px; height: 10px;
+      border: solid var(--app-border-strong); border-width: 0 0 1px 1px; border-bottom-left-radius: 4px; }
+    .ob-feat__name { display: flex; align-items: center; gap: var(--s-2); font: 500 var(--text-md)/1.25 var(--font-sans); color: var(--app-text-strong); }
+    .ob-feat__desc { display: block; margin-top: 2px; font: 400 var(--text-base)/1.35 var(--font-sans); color: var(--app-text-subtle); text-wrap: pretty; }
+    .ob-feat__desc.is-warn { color: var(--app-warn); }
+    .ob-feat__carry { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); letter-spacing: 0.02em; }
+    .ob-feat__cost { justify-self: end; font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .ob-feat__ctl { justify-self: end; display: flex; }
+    .ob-feat.is-off .ob-feat__name { color: var(--app-text-muted); }
+    .ob-src { width: 7px; height: 7px; border-radius: 2px; flex: none; background: var(--c, var(--chart-grey-3)); }
+    .mx-switch.ob-sw--screen:checked { background: var(--app-source-screen); }
+    .mx-switch.ob-sw--mic:checked { background: var(--app-source-mic); }
+    .mx-switch.ob-sw--sysaudio:checked { background: var(--app-source-sysaudio); }
+    .ob-bar-stack { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; background: var(--app-surface-hover); }
+    .ob-bar-stack i { display: block; height: 100%; background: var(--c); transition: width var(--t-med) var(--ease-expo); }
+    .ob-totals { display: grid; gap: var(--s-2); }
+    .ob-kv { display: flex; gap: var(--s-6); font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .ob-kv b { margin-left: 6px; font: 500 var(--text-base)/1 var(--font-mono); color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    /* engines: meters inside the choice tiles */
+    .ob-engines .mx-choice__opt { gap: 6px; }
+    .ob-met { display: grid; gap: 4px; margin-top: 4px; }
+    .ob-met span { display: flex; justify-content: space-between; font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .ob-met span b { font-weight: 500; color: var(--app-text); }
+    .ob-met i { display: block; height: 3px; border-radius: 2px; background: var(--app-surface-hover); overflow: hidden; }
+    .ob-met i b { display: block; height: 100%; background: var(--chart-grey-4); }
+    .ob-met i.is-est b { background: repeating-linear-gradient(90deg, var(--chart-grey-4) 0 3px, transparent 3px 5px); }
+    /* models */
+    .ob-picker { display: grid; gap: var(--s-3); }
+    .ob-picker__ctl { display: flex; align-items: center; gap: var(--s-3); min-height: var(--h-sm); }
+    .ob-picker__ctl [hidden] { display: none; }
+    .ob-strip { display: grid; grid-template-columns: 1.6fr 1fr 1fr; border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface); }
+    .ob-strip div { display: grid; gap: 6px; padding: 10px var(--s-3); }
+    .ob-strip div + div { border-left: 1px solid var(--mx-hairline); }
+    .ob-strip span { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .ob-strip b { font: 500 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); }
+    .ob-strip b.num { font-family: var(--font-mono); font-weight: 450; }
+    .ob-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-5); margin: 0; padding: 0; list-style: none;
+      font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted); }
+    .ob-legend li { display: inline-flex; align-items: center; gap: 6px; }
+    .ob-legend li::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--c); }
+    .ob-legend b { font: 500 var(--text-base)/1 var(--font-mono); color: var(--app-text-strong); }
+    .ob-total { display: flex; align-items: baseline; gap: var(--s-3); }
+    .ob-total b { font: 400 22px/1 var(--font-mono); letter-spacing: -0.04em; color: var(--app-text-strong); }
+    /* AI */
+    .ob-ai-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-4); padding: 10px 0;
+      border-top: 1px solid var(--mx-hairline); border-bottom: 1px solid var(--mx-hairline); }
+    .ob-select { appearance: none; height: var(--h-md); min-width: 220px; padding: 0 30px 0 var(--s-3); cursor: pointer;
+      border-radius: var(--r-md); border: 1px solid var(--app-border-strong); color: var(--app-text-strong); font: 400 var(--text-md)/1 var(--font-sans);
+      background: var(--app-surface-raised) no-repeat;
+      background-image: linear-gradient(45deg, transparent 50%, var(--app-text-subtle) 50%), linear-gradient(-45deg, transparent 50%, var(--app-text-subtle) 50%);
+      background-size: 5px 5px, 5px 5px; background-position: right 15px center, right 10px center; }
+    .ob-key { width: 300px; font-family: var(--font-mono); font-size: var(--text-base); }
+    .ob-wire { display: flex; align-items: center; gap: var(--s-2); font: 400 var(--text-sm)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .ob-wire i { width: 64px; height: 1px; background: repeating-linear-gradient(90deg, var(--app-border-hover) 0 4px, transparent 4px 7px); }
+    .ob-wire.is-out { color: var(--app-warn); }
+    .ob-scan { display: grid; border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface); }
+    .ob-scan > div { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto 80px 96px; align-items: center; gap: var(--s-3); height: 40px; padding: 0 var(--s-3);
+      font: 400 var(--text-base)/1 var(--font-mono); color: var(--app-text); }
+    .ob-scan > div + div { border-top: 1px solid var(--mx-hairline); }
+    .ob-lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--chart-grey-2); }
+    .ob-lamp.is-live { background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .ob-scan .is-dead { color: var(--app-text-subtle); }
+    .ob-scan .mx-btn { justify-self: end; }
+    .ob-ai-later { display: grid; gap: 6px; }
+
+    /* --- 06 Setup --------------------------------------------------------------- */
+    .ob-pct { font: 300 72px/0.9 var(--font-mono); letter-spacing: -0.06em; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+    .ob-pct small { font-size: 28px; color: var(--app-text-subtle); letter-spacing: -0.02em; }
+    .ob-line { margin: 0; font: 400 15px/1.4 var(--font-sans); color: var(--app-text-muted); }
+    .ob-line b { font-weight: 600; color: var(--app-text-strong); }
+    .ob-line .num { color: var(--app-text-strong); }
+    .ob-work { display: grid; border-top: 1px solid var(--mx-hairline); max-width: 620px; }
+    .ob-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: var(--s-3); row-gap: 8px; padding: 12px 0;
+      border-bottom: 1px solid var(--mx-hairline); }
+    .ob-item__name { font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); }
+    .ob-item__name small { margin-left: var(--s-2); font: 400 var(--text-base)/1 var(--font-mono); color: var(--app-text-subtle); }
+    .ob-item.is-off .ob-item__name { color: var(--app-text-subtle); }
+    .ob-item__st { display: inline-flex; align-items: center; gap: var(--s-2); font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+    .ob-item__st.is-ready { color: var(--app-accent); }
+    .ob-item__st.is-warn { color: var(--app-warn); }
+    .ob-track { grid-column: 1 / -1; height: 3px; border-radius: 2px; background: var(--app-surface-hover); overflow: hidden; }
+    .ob-track b { display: block; height: 100%; background: var(--app-accent); transition: width 120ms linear; }
+
+    /* --- 07 Voice ----------------------------------------------------------------- */
+    .ob-split { display: grid; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: var(--s-7); align-items: center; }
+    .ob-split .mx-display { font-size: 34px; }
+    .ob-instr { display: grid; gap: var(--s-4); padding: var(--s-5); }
+    .ob-quote { margin: 0; font: 400 17px/1.55 var(--font-sans); color: var(--app-text-strong); max-width: 50ch; text-wrap: pretty; }
+    .ob-take { display: flex; align-items: center; gap: var(--s-4); }
+    .ob-take .ob-meter { height: 44px; gap: 2px; }
+    .ob-take .ob-meter i { width: 3px; }
+    .ob-take .num { font-size: var(--text-base); color: var(--app-text-muted); }
+
+    /* --- 08 Finale (motion bookend) --------------------------------------------- */
+    .ob-finale .ob-split { grid-template-columns: minmax(0, 360px) minmax(0, 1fr); }
+    .ob-finale__title { margin: var(--s-4) 0 0; font: 600 60px/0.98 var(--font-sans); letter-spacing: -0.042em; color: var(--app-text-strong); }
+    .ob-finale .mx-rec { justify-self: start; font: 500 var(--text-sm)/1 var(--font-mono); letter-spacing: 0.04em; }
+    .ob-evidence { display: grid; gap: var(--s-5); }
+    .ob-shot { position: relative; aspect-ratio: 16 / 10; display: grid; grid-template-rows: 22px 1fr; overflow: hidden;
+      border-radius: var(--r-lg); border: 1px solid var(--app-border); background: var(--app-surface); }
+    .ob-shot__bar { display: flex; align-items: center; gap: 5px; padding: 0 10px; border-bottom: 1px solid var(--mx-hairline); }
+    .ob-shot__bar i { width: 6px; height: 6px; border-radius: 50%; background: var(--chart-grey-2); }
+    .ob-shot__body { display: grid; grid-template-columns: 26% 1fr; }
+    .ob-shot__side { display: grid; align-content: start; gap: 9px; padding: 14px 12px; border-right: 1px solid var(--mx-hairline); }
+    .ob-shot__doc { display: grid; align-content: start; gap: 10px; padding: 18px 22px; }
+    .ob-shot i.b { display: block; height: 6px; border-radius: 3px; background: var(--chart-grey-1); }
+    .ob-shot i.h { height: 10px; width: 62%; background: var(--chart-grey-2); }
+    .ob-shot.is-empty { grid-template-rows: 1fr; place-items: center; border-style: dashed; background: transparent; }
+    .ob-ocr { margin: 0; padding: 12px var(--s-3); border-radius: var(--r-md); background: var(--app-surface); border: 1px solid var(--app-border);
+      font: 400 var(--text-md)/1.5 var(--font-mono); color: var(--app-text); }
+    .ob-ocr span { opacity: 0; animation: ob-glyph 360ms var(--ease-quart) forwards; animation-delay: calc(var(--i) * 22ms + 300ms); }
+    @keyframes ob-glyph { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
+    /* mockup-only state picker, outside the window */
+    .ob-states { position: fixed; z-index: 50; left: 16px; bottom: 12px; display: flex; align-items: center; gap: var(--s-2); }
+    .ob-states select { height: var(--h-sm); width: 340px; padding: 0 var(--s-2); font: 400 var(--text-base)/1 var(--font-sans); color: var(--app-text); background: var(--app-surface-raised); }
+    .ob-moment .mx-notice, .ob-col > .mx-notice { max-width: 640px; justify-self: stretch; }
+    .ob-item .mx-inline { justify-self: end; }
+    #ob-dl-notice .mx-notice { max-width: 620px; }
+    #ob-dl-notice:empty { display: none; }
+    .ob-item__why { grid-column: 1 / -1; margin: -2px 0 0; font: 400 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); }
+    .ob-track.is-stalled b { background: var(--chart-grey-4); }
+    .ob-dl { display: grid; gap: var(--s-2); max-width: 420px; }
+    .ob-reason { margin: 0; font: 400 var(--text-md)/1.45 var(--font-mono); color: var(--app-danger-text); }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2M21 12h0"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4c-6 0-12 4-13 13l-3 3"/><path d="M7 17c6 0 10-3 11-9"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></symbol>
+    <symbol id="ob-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 8.4 2.9 2.8 6.1-6.4"/></symbol>
+    <symbol id="ob-ring" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/></symbol>
+    <symbol id="ob-half" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5" stroke-dasharray="3 2.2"/></symbol>
+    <symbol id="ob-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="ob-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="ob-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5 10 17 19 7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/></symbol>
+    <symbol id="i-cloud-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 18 18"/><path d="M6.2 8.6A4.5 4.5 0 0 0 7 18h10"/><path d="M20.6 15.6A4.5 4.5 0 0 0 17.5 9 6 6 0 0 0 9.6 5.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  </defs>
+</svg>
+
+<label class="ob-states"><span class="mx-label">Mockup state</span><select class="mx-input" id="ob-state" aria-label="Mockup state"></select></label>
+<div class="mx-desk">
+  <div class="mx-window ob-window" id="ob-win">
+    <header class="ob-bar" data-tauri-drag-region>
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="ob-bar__name" id="ob-name">Mnema</span>
+      <div class="ob-rail" id="ob-rail" aria-hidden="true"><i></i><i></i><i></i><i></i><i data-opt></i><i></i><i data-opt></i><i></i></div>
+      <span class="ob-bar__count" id="ob-count" role="status" aria-live="polite"><b>1</b> / 8</span>
+    </header>
+
+    <main class="ob-stage mx-texture" id="ob-stage" tabindex="-1">
+      <div class="ob-tcc" id="ob-tcc" role="alertdialog" aria-label="macOS permission prompt" hidden>
+        <span class="ob-tcc__tag">macOS prompt · mock</span>
+        <span class="ob-tcc__glyph"><svg width="20" height="20"><use href="#i-mark"/></svg></span>
+        <b id="ob-tcc-text"></b>
+        <span class="ob-fine">You can change this in Privacy &amp; Security settings.</span>
+        <div class="ob-acts"><button class="mx-btn mx-btn--sm" data-tcc="deny">Don’t Allow</button><button class="mx-btn mx-btn--sm" data-tcc="allow">Allow</button></div>
+      </div>
+
+      <!-- ===================================================== 01 Welcome -->
+      <section class="ob-screen ob-welcome" data-step="welcome" aria-label="Welcome">
+        <div class="ob-main">
+          <div class="ob-hero">
+            <span class="mx-kicker">Mnema</span>
+            <h1 class="ob-hero__title">Your memory,<br /><span>on rewind.</span></h1>
+            <p class="mx-prose">Records your screen so you can scrub back to anything you have seen. Every byte stays on this Mac.</p>
+            <div class="ob-acts">
+              <button class="mx-btn mx-btn--primary" data-go="next">Begin setup<svg class="ob-btn-arrow" width="14" height="14"><use href="#i-arrow"/></svg></button>
+              <span class="ob-fine">About a minute. Nothing is recorded until you finish.</span>
+            </div>
+          </div>
+          <div>
+            <div class="ob-film" id="ob-film" aria-hidden="true"><div class="ob-film__strip" id="ob-strip"></div><span class="ob-film__head"></span></div>
+            <div class="ob-film__rail">
+              <span class="ob-film__tag">◂◂ rewinding</span>
+              <time class="ob-film__tc" id="ob-tc">--:--:--</time>
+              <span class="ob-film__read">read off that frame — <b>“Quarterly review — draft agenda”</b></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================================================= 02 Permissions -->
+      <section class="ob-screen" data-step="permissions" aria-label="Permissions">
+        <div class="ob-main"><div class="ob-col" id="ob-perm"></div></div>
+        <footer class="ob-foot">
+          <p class="ob-foot__note" id="ob-perm-next"></p>
+          <button class="mx-btn mx-btn--ghost" data-go="back">Back</button>
+          <button class="mx-btn mx-btn--primary" id="ob-perm-go"></button>
+        </footer>
+      </section>
+
+      <!-- =========================================== 03 Capture & Storage -->
+      <section class="ob-screen" data-step="capture" aria-label="Capture and Storage">
+        <div class="ob-main"><div class="ob-col">
+          <div class="ob-head">
+            <span class="mx-kicker">Capture &amp; Storage</span>
+            <h1 class="mx-display">Four things to settle.</h1>
+          </div>
+          <div class="ob-rows">
+            <div class="ob-row">
+              <span class="mx-label">Take a snapshot</span>
+              <div class="ob-row__ctl">
+                <div class="mx-seg mx-seg--mono" role="group" aria-label="How often to take a snapshot" id="ob-rate"></div>
+                <span class="ob-fine" id="ob-rate-say"></span>
+              </div>
+            </div>
+            <div class="ob-row">
+              <span class="mx-label">Keep</span>
+              <div class="ob-row__ctl">
+                <div class="mx-seg" role="group" aria-label="How long to keep it" id="ob-keep">
+                  <button value="0" aria-pressed="true">Everything</button><button value="1">Last 30 days</button><button value="2">Last 14 days</button><button value="3">Last 7 days</button>
+                </div>
+              </div>
+            </div>
+            <div class="ob-row">
+              <span class="mx-label">Saves to</span>
+              <div class="ob-row__ctl">
+                <span class="ob-path" id="ob-path">~/.mnema</span>
+                <span class="ob-clause" id="ob-clause"></span>
+                <div class="mx-pop-anchor">
+                  <button class="mx-btn mx-btn--sm" data-pop="ob-folders"><svg width="13" height="13"><use href="#ob-folder"/></svg>Choose…</button>
+                  <div class="mx-pop ob-pop-folders" id="ob-folders" role="dialog" aria-label="Folder (mock picker)">
+                    <ul class="mx-menu" id="ob-folder-list"></ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="ob-row">
+              <span class="mx-label">Never recorded</span>
+              <div class="ob-row__ctl ob-apps" id="ob-apps"></div>
+            </div>
+          </div>
+          <div class="ob-verdict" id="ob-verdict" aria-live="polite">
+            <div class="ob-verdict__plan" id="ob-plan"></div>
+            <div class="ob-verdict__text" id="ob-vtext"></div>
+            <div class="ob-acts" id="ob-repairs"></div>
+          </div>
+          <p class="ob-fine">Estimate measured on a real Mac: 270 MB a day at one snapshot every 3 s, pause-on-inactivity on.</p>
+        </div></div>
+        <footer class="ob-foot">
+          <p class="ob-foot__note"></p>
+          <button class="mx-btn mx-btn--ghost" data-go="back">Back</button>
+          <span class="mx-chip mx-chip--warn" id="ob-held" hidden>continue held</span>
+          <button class="mx-btn mx-btn--primary" data-go="next" id="ob-cap-go">Your settings<svg class="ob-btn-arrow" width="14" height="14"><use href="#i-arrow"/></svg></button>
+        </footer>
+      </section>
+
+      <!-- =============================================== 04 Your settings -->
+      <section class="ob-screen" data-step="settings" aria-label="Your settings">
+        <div class="ob-main"><div class="ob-col">
+          <div class="ob-head">
+            <span class="mx-kicker">Your settings</span>
+            <h1 class="mx-display">Already answered.</h1>
+          </div>
+          <div class="ob-manifest" id="ob-manifest"></div>
+          <dl class="ob-facts" id="ob-facts"></dl>
+        </div></div>
+        <footer class="ob-foot">
+          <p class="ob-foot__note">Every line here stays changeable in Settings.</p>
+          <button class="mx-btn mx-btn--ghost" data-go="back">Back</button>
+          <button class="mx-btn" data-go="change">Change settings</button>
+          <button class="mx-btn mx-btn--primary" data-go="next">Start<svg class="ob-btn-arrow" width="14" height="14"><use href="#i-arrow"/></svg></button>
+        </footer>
+      </section>
+
+      <!-- ============================================= 05 Change settings -->
+      <section class="ob-screen ob-change" data-step="change" aria-label="Change settings">
+        <div class="ob-main"><div class="ob-col">
+          <div class="ob-tabs">
+            <div class="mx-seg mx-seg--md" role="group" aria-label="Sections" id="ob-tabs">
+              <button value="features" aria-pressed="true">What Mnema will do</button><button value="engines">Engines</button><button value="models">Models</button><button value="ai">AI features</button>
+            </div>
+            <span class="num" id="ob-tab-count">1 / 4</span>
+          </div>
+
+          <!-- features -->
+          <div class="ob-pane" data-pane="features">
+            <div class="ob-pane__head"><span class="mx-kicker">What Mnema will do</span><span class="ob-fine">Indented rows need the row above them.</span></div>
+            <div class="ob-chain" id="ob-chain"></div>
+            <div class="mx-notice" data-tone="warn" id="ob-ai-gate-row" hidden><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+              <b class="mx-notice__title">AI features are on with nothing to run them.</b>
+              <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm" data-tab="ai">Connect a provider</button><button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="ai-off">Turn it off</button></div></div>
+            <div class="mx-notice" id="ob-undo" hidden><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-info"/></svg></span>
+              <b class="mx-notice__title" id="ob-undo-text"></b>
+              <div class="mx-notice__acts"><button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="undo">Undo</button></div></div>
+            <div class="ob-totals">
+              <div class="ob-bar-stack" id="ob-disk-bar"></div>
+              <div class="ob-kv"><span>disk, once it is running<b id="ob-disk-total"></b></span><span>download<b id="ob-dl-total"></b></span></div>
+            </div>
+          </div>
+
+          <!-- engines -->
+          <div class="ob-pane" data-pane="engines">
+            <div class="ob-head">
+              <h2 class="mx-h2">Your voice never leaves this Mac.</h2>
+              <p class="ob-fine">Every engine below transcribes on this machine. Once its model is on disk, it keeps working with the network off.</p>
+            </div>
+            <div class="mx-choice ob-engines" role="radiogroup" aria-label="Transcription engine" id="ob-engines">
+              <label class="mx-choice__opt"><input type="radio" name="engine" value="apple_speech_on_device" />
+                <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-feather"/></svg></span>
+                <span class="mx-choice__title">Apple Speech</span>
+                <span class="mx-choice__desc">Nothing to download; macOS does the work in its own process.</span>
+                <span class="ob-met"><span>download<b>none</b></span><i><b style="width:0"></b></i></span>
+                <span class="ob-met"><span>memory<b>baseline</b></span><i class="is-est"><b style="width:8%"></b></i></span></label>
+              <label class="mx-choice__opt"><input type="radio" name="engine" value="local_whisper" checked />
+                <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-wave"/></svg></span>
+                <span class="mx-choice__title">Whisper <span class="mx-choice__tag">recommended</span></span>
+                <span class="mx-choice__desc">Balanced speed, size and quality — the manifest’s reason for Base.</span>
+                <span class="ob-met"><span>download<b>148 MB</b></span><i><b style="width:22%"></b></i></span>
+                <span class="ob-met"><span>memory<b>about 1.4 GB</b></span><i class="is-est"><b style="width:47%"></b></i></span></label>
+              <label class="mx-choice__opt"><input type="radio" name="engine" value="parakeet" />
+                <span class="mx-choice__icon"><svg width="15" height="15"><use href="#i-chip"/></svg></span>
+                <span class="mx-choice__title">Parakeet</span>
+                <span class="mx-choice__desc">The heaviest of the three: the manifest calls it the highest memory use.</span>
+                <span class="ob-met"><span>download<b>671 MB</b></span><i><b style="width:100%"></b></i></span>
+                <span class="ob-met"><span>memory<b>about 3 GB</b></span><i class="is-est"><b style="width:100%"></b></i></span></label>
+            </div>
+            <div class="ob-acts"><span class="ob-fine" id="ob-engine-delta">Whisper Base is picked for you.</span>
+              <button class="mx-btn mx-btn--sm" data-act="engine-reco" id="ob-engine-reco" hidden>Use recommended</button></div>
+          </div>
+
+          <!-- models -->
+          <div class="ob-pane" data-pane="models">
+            <div class="ob-picker">
+              <div class="ob-pane__head"><span class="mx-kicker">Transcription</span><span class="ob-fine" id="ob-engine-name"></span></div>
+              <div class="ob-picker__ctl">
+                <div class="mx-seg" role="group" aria-label="Whisper build" id="ob-whisper">
+                  <button value="tiny">Tiny</button><button value="base" aria-pressed="true">Base</button><button value="small">Small</button><button value="medium">Medium</button>
+                </div>
+                <div class="mx-seg" role="group" aria-label="Parakeet build" id="ob-parakeet" hidden>
+                  <button value="int8" aria-pressed="true">int8</button><button value="full">Full precision</button>
+                </div>
+                <span class="ob-fine" id="ob-t-note"></span>
+              </div>
+              <div class="ob-strip" id="ob-t-strip"></div>
+            </div>
+            <hr class="mx-rule" />
+            <div class="ob-picker">
+              <div class="ob-pane__head"><span class="mx-kicker">Semantic Search</span></div>
+              <div class="ob-picker__ctl">
+                <div class="mx-seg" role="group" aria-label="Semantic Search languages" id="ob-sfam">
+                  <button value="en" aria-pressed="true">English</button><button value="ml">Multilingual</button>
+                </div>
+                <div class="mx-seg" role="group" aria-label="English model" id="ob-sem-en">
+                  <button value="nomic" aria-pressed="true">Nomic v1.5</button><button value="modernbert">ModernBERT</button><button value="stella">Stella 400M</button>
+                </div>
+                <div class="mx-seg" role="group" aria-label="Multilingual model" id="ob-sem-ml" hidden>
+                  <button value="e5" aria-pressed="true">E5 Small</button><button value="bge">BGE-M3</button><button value="arctic">Arctic L v2.0</button>
+                </div>
+              </div>
+              <div class="ob-strip" id="ob-s-strip"></div>
+            </div>
+            <div class="ob-totals">
+              <div class="ob-total"><b id="ob-budget-total"></b><span class="ob-fine">to download before any of this works</span></div>
+              <div class="ob-bar-stack" id="ob-budget-bar"></div>
+              <ul class="ob-legend" id="ob-budget-legend"></ul>
+            </div>
+          </div>
+
+          <!-- AI -->
+          <div class="ob-pane" data-pane="ai">
+            <div class="ob-head">
+              <span class="mx-kicker" id="ob-ai-kicker">AI features · optional</span>
+              <p class="ob-fine">Ask AI, daily digests and User Context need a reasoning engine. Recording, search, transcription and speaker names do not.</p>
+            </div>
+            <div class="mx-notice" data-tone="warn" id="ob-ai-gate" hidden><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-alert"/></svg></span>
+              <p class="mx-notice__text">The <b>AI features</b> row is on, with nothing to run it — connect a provider here, or switch the row off.</p></div>
+            <div class="mx-choice" role="radiogroup" aria-label="AI features" id="ob-ai-fork">
+              <label class="mx-choice__opt"><input type="radio" name="aimode" value="later" />
+                <span class="mx-choice__title">Set this up later</span>
+                <span class="mx-choice__desc">Skipping downloads nothing and needs no account.</span></label>
+              <label class="mx-choice__opt"><input type="radio" name="aimode" value="now" />
+                <span class="mx-choice__title">I have a key — set it up now</span>
+                <span class="mx-choice__desc">A local engine on this Mac, or your own cloud account.</span></label>
+            </div>
+            <div class="ob-ai-later" id="ob-ai-later" hidden>
+              <p class="ob-fine">Ask AI, daily digests and User Context stay dark; everything else keeps working. Turn it on later at Settings → Intelligence → AI features.</p>
+            </div>
+            <div class="ob-pane is-on" id="ob-ai-now" hidden>
+              <div class="ob-ai-row">
+                <div><div class="ob-feat__name">AI features</div><span class="ob-feat__desc" id="ob-ai-status"></span></div>
+                <input type="checkbox" class="mx-switch" id="ob-ai-switch" aria-label="AI features" />
+              </div>
+              <div class="ob-acts">
+                <select class="ob-select" id="ob-kind" aria-label="Provider">
+                  <optgroup label="On this Mac — nothing leaves"><option value="ollama">Ollama</option><option value="llamafile">Llamafile</option></optgroup>
+                  <optgroup label="Cloud — your words leave this Mac"><option value="anthropic">Anthropic</option><option value="openai">OpenAI</option><option value="chatgpt">ChatGPT</option><option value="openai_compatible">OpenAI-compatible</option></optgroup>
+                </select>
+                <button class="mx-btn" data-act="scan" id="ob-scan-btn">Scan this Mac</button>
+                <input class="mx-input ob-key" id="ob-key" type="password" placeholder="paste your key — it verifies itself" autocomplete="off" spellcheck="false" aria-label="API key" hidden />
+                <button class="mx-btn" data-act="chatgpt" id="ob-chatgpt" hidden>Sign in with ChatGPT</button>
+              </div>
+              <div id="ob-ai-check"></div>
+              <div class="ob-wire" id="ob-wire"></div>
+              <div class="ob-scan" id="ob-scan" hidden></div>
+              <div id="ob-scan-note"></div>
+            </div>
+          </div>
+        </div></div>
+        <footer class="ob-foot" id="ob-change-foot">
+          <p class="ob-foot__note" id="ob-change-note"></p>
+          <button class="mx-btn mx-btn--ghost" id="ob-change-back"></button>
+          <button class="mx-btn mx-btn--primary" id="ob-change-next"></button>
+        </footer>
+      </section>
+
+      <!-- ======================================================= 06 Setup -->
+      <section class="ob-screen" data-step="setup" aria-label="Setup">
+        <div class="ob-main"><div class="ob-col">
+          <h1 class="mx-kicker">Setup</h1>
+          <div class="ob-head">
+            <div class="ob-pct" aria-hidden="true" id="ob-pct">0<small>%</small></div>
+            <p class="ob-line" id="ob-dl-line"></p>
+          </div>
+          <div id="ob-dl-notice"></div>
+          <div class="ob-work" id="ob-work"></div>
+        </div></div>
+        <footer class="ob-foot">
+          <p class="ob-foot__note">Live since you arrived, and it never disables. Downloads carry on behind you.</p>
+          <button class="mx-btn mx-btn--ghost" data-go="back">Back</button>
+          <button class="mx-btn mx-btn--primary" data-go="next">Continue<svg class="ob-btn-arrow" width="14" height="14"><use href="#i-arrow"/></svg></button>
+        </footer>
+      </section>
+
+      <!-- ======================================================= 07 Voice -->
+      <section class="ob-screen" data-step="voice" aria-label="Voice">
+        <div class="ob-main"><div class="ob-split" id="ob-voice"></div></div>
+        <footer class="ob-foot">
+          <p class="ob-foot__note">The voiceprint never leaves this device, and recognition labels many turns — not every turn.</p>
+          <button class="mx-btn mx-btn--ghost" data-go="back">Back</button>
+          <span id="ob-voice-acts" style="display:contents"></span>
+        </footer>
+      </section>
+
+      <!-- ====================================================== 08 Finale -->
+      <section class="ob-screen ob-finale" data-step="finale" aria-label="Finale">
+        <div class="ob-main"><div class="ob-split" id="ob-finale"></div></div>
+        <footer class="ob-foot" id="ob-finale-foot"></footer>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const qs = new URLSearchParams(location.search);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ARROW = '<svg class="ob-btn-arrow" width="14" height="14"><use href="#i-arrow"/></svg>';
+  const mark = (on, half) => `<svg class="ob-mark${on ? " ob-mark--on" : ""}"><use href="#${on ? "ob-check" : half ? "ob-half" : "ob-ring"}"/></svg>`;
+  // ponytail: decimal MB/GB like YourSettingsScreen.formatSize — every manifest figure is SI.
+  const fmtB = (b) => (b >= 1e11 ? `${Math.round(b / 1e9)} GB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+  const clockS = (ms) => `0:${String(Math.floor(ms / 1000)).padStart(2, "0")}`;
+  const hms = (d) => d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  // ------------------------------------------------------------------ state
+  const S = {
+    step: "welcome",
+    perm: { screen: "unknown", microphone: "unknown", acc: "unknown", accAsked: false, prior: false, relaunch: false, resumed: false, sys: { requested: false, sound: false, listening: false, blocked: false } },
+    passed: [],
+    f: { screen: true, ocr: true, microphone: true, systemAudio: true, transcription: true, speakerSeparation: true, semanticSearch: true, aiFeatures: false },
+    rate: 3, keep: 0, folder: "default",
+    apps: [
+      { id: "pw", name: "Apple Passwords", c: "--cat-research", on: true },
+      { id: "kc", name: "Keychain Access", c: "--cat-organizing", on: true },
+      { id: "1p", name: "1Password", c: "--cat-communication", on: true },
+      { id: "bw", name: "Bitwarden", c: "--cat-learning", on: true, pending: true },
+    ],
+    engine: "local_whisper", whisper: "base", parakeet: "int8", sfam: "en", sem: { en: "nomic", ml: "e5" },
+    tab: "features", undo: null,
+    ai: { mode: null, kind: "ollama", ready: false, model: null, scanned: false, scan: "found", check: null },
+    dl: { started: false, items: {}, frozen: false, notice: null },
+    voice: { phase: "idle", take: 0, elapsed: 0, levels: Array(36).fill(0), rejected: false },
+    finale: null,
+  };
+
+  // ---------------------------------------------------------------- numbers
+  const LADDER = [0.1, 0.5, 1, 2, 3, 5, 10, 15, 30, 45, 60];
+  const short = (s) => (s < 1 ? `${Math.round(1 / s)}/s` : `${s}s`);
+  const phrase = (s) => (s < 1 ? `${Math.round(1 / s)} times a second` : s === 1 ? "every second" : s === 60 ? "once per minute" : `every ${s} seconds`);
+  // disk-estimate.ts: 270 MB/day at 3 s (720p anchor), linear in rate → 405 MB/day at the 2 s default.
+  const dailyMB = (s = LADDER[S.rate]) => Math.round(((270 * 3) / s) * 10) / 10;
+  const KEEP = [{ word: "everything", short: "everything", days: null }, { short: "30 days", days: 30 }, { short: "14 days", days: 14 }, { short: "7 days", days: 7 }];
+  const RESERVE = 1024 ** 3;
+  const FOLDERS = {
+    default: { path: "~/.mnema", exists: true, writable: true, free: 312e9, vol: "your startup disk", note: "default · 312 GB free" },
+    archive: { path: "/Volumes/Archive/Mnema", exists: true, writable: false, free: 1.2e12, vol: "Archive", note: "read-only" },
+    work: { path: "/Volumes/Work/Mnema", exists: true, writable: true, free: 60e9, vol: "Work", note: "60 GB free" },
+    tiny: { path: "/Volumes/Tiny/Mnema", exists: true, writable: true, free: 1.9e9, vol: "Tiny", note: "1.9 GB free" },
+    offline: { path: "/Volumes/Backup/Mnema", exists: false, writable: false, free: null, vol: "Backup", note: "not connected" },
+  };
+  const T_MODELS = {
+    apple_speech_on_device: { os: { name: "Apple Speech (on-device)", bytes: 0, mem: "baseline" } },
+    local_whisper: {
+      tiny: { name: "Whisper Tiny", bytes: 77_691_713, mem: "about 1.4 GB" }, base: { name: "Whisper Base", bytes: 147_951_465, mem: "about 1.4 GB" },
+      small: { name: "Whisper Small", bytes: 487_601_967, mem: "about 1.4 GB" }, medium: { name: "Whisper Medium", bytes: 1_533_763_059, mem: "about 1.4 GB" },
+    },
+    parakeet: { int8: { name: "Parakeet TDT 0.6B v3 int8", bytes: 670_619_803, mem: "about 3 GB" }, full: { name: "Parakeet TDT 0.6B v3", bytes: 2_549_945_719, mem: "about 3 GB" } },
+  };
+  const ENGINE_NAME = { apple_speech_on_device: "Apple Speech", local_whisper: "Whisper", parakeet: "Parakeet" };
+  const FAMILY_NOTES = { apple_speech_on_device: "One OS model. Nothing to choose, nothing to download.", local_whisper: "Larger is more accurate and slower.", parakeet: "Multilingual, CC-BY. int8 trades accuracy for memory." };
+  const S_MODELS = {
+    nomic: { name: "Nomic Embed Text v1.5", bytes: 548e6, langs: "English" }, modernbert: { name: "GTE ModernBERT Base", bytes: 301_625_980, langs: "English" },
+    stella: { name: "Stella 400M v5", bytes: 1.75e9, langs: "English" }, e5: { name: "Multilingual E5 Small", bytes: 488e6, langs: "100+ languages" },
+    bge: { name: "BGE-M3", bytes: 2.289e9, langs: "100+ languages" }, arctic: { name: "Snowflake Arctic Embed L v2.0", bytes: 2.289e9, langs: "100+ languages" },
+  };
+  const SPEAKRS = 419_482_724;
+  const tModel = () => { const fam = T_MODELS[S.engine]; return S.engine === "local_whisper" ? fam[S.whisper] : S.engine === "parakeet" ? fam[S.parakeet] : fam.os; };
+  const sModel = () => S_MODELS[S.sem[S.sfam]];
+  const NAME = { transcription: "Transcription", speakerSeparation: "Who's speaking", semanticSearch: "Semantic Search" };
+  const workList = () => [
+    { id: "transcription", bytes: tModel().bytes, approx: false, model: tModel().name },
+    { id: "speakerSeparation", bytes: SPEAKRS, approx: false, model: "speakrs" },
+    { id: "semanticSearch", bytes: sModel().bytes, approx: true, model: sModel().name },
+  ].filter((w) => w.bytes > 0 && (S.f[w.id] || S.dl.items[w.id]?.state === "cancelled"));
+  const activeWork = () => workList().filter((w) => S.f[w.id]);
+  const downloadBytes = () => activeWork().reduce((a, w) => a + w.bytes, 0);
+  const approxTotal = () => activeWork().some((w) => w.approx);
+  const totalLabel = () => (activeWork().length ? `${approxTotal() ? "about " : ""}${fmtB(downloadBytes())}` : "nothing");
+
+  // --------------------------------------------------------------- the flow
+  const ORDER = ["welcome", "permissions", "capture", "settings", "change", "setup", "voice", "finale"];
+  const META = {
+    welcome: ["Mnema"], permissions: ["Permissions"], capture: ["Capture & Storage"], settings: ["Your settings"],
+    change: ["Change settings", "round trip"], setup: ["Setup"], voice: ["Voice", "optional"], finale: ["Finale"],
+  };
+  const NEXT = { welcome: "permissions", permissions: "capture", capture: "settings", settings: "setup", change: "settings", setup: "voice", voice: "finale" };
+  const BACK = { permissions: "welcome", capture: "permissions", settings: "capture", change: "settings", setup: "settings", voice: "setup", finale: "voice" };
+  const ALIAS = { captureStorage: "capture", storage: "capture", yourSettings: "settings", changeSettings: "change" };
+
+  function go(step) {
+    if (!ORDER.includes(step)) return;
+    S.step = step;
+    $$(".ob-screen").forEach((s) => s.classList.toggle("is-on", s.dataset.step === step));
+    const i = ORDER.indexOf(step);
+    $$("#ob-rail i").forEach((t, k) => { t.toggleAttribute("data-done", k < i); t.toggleAttribute("data-cur", k === i); });
+    const [label, suffix] = META[step];
+    $("#ob-name").innerHTML = `${label}${suffix ? `<small>· ${suffix}</small>` : ""}`;
+    $("#ob-count").innerHTML = `<b>${i + 1}</b> / 8`;
+    const u = new URL(location.href); u.searchParams.set("step", step); history.replaceState(null, "", u);
+    if (step === "setup" || step === "voice" || step === "finale") startDownloads();
+    RENDER[step]?.();
+    $("#ob-stage").focus({ preventScroll: true });
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-go]");
+    if (!b || b.disabled) return;
+    const to = b.dataset.go;
+    go(to === "next" ? NEXT[S.step] : to === "back" ? BACK[S.step] : to);
+  });
+
+  // --------------------------------------------------- 01 Welcome: the rewind
+  const TILES = [[71, 60, 53, 73, 90], [55, 37, 66, 74, 90], [46, 90, 38, 51, 46], [90, 60, 86, 39, 78], [55, 76, 59, 81, 44], [66, 55, 43, 53, 36], [48, 65, 77, 48, 85], [41, 34, 37, 90, 79]];
+  const HIT = 19, PITCH = 144, TRAVEL = 9;
+  const anchor = new Date(2026, 9, 10, 14, 32, 8);
+  $("#ob-strip").innerHTML = Array.from({ length: 30 }, (_, k) => {
+    const w = TILES[k % TILES.length];
+    return `<div class="ob-fr${k === HIT ? " ob-fr--hit" : ""}"><div class="ob-fr__bar"><i></i><i></i><i></i></div><div class="ob-fr__body">${w.map((x) => `<i style="width:${x}%"></i>`).join("")}</div></div>`;
+  }).join("");
+  let rewound = false;
+  function rewind() {
+    if (rewound) return; rewound = true;
+    const film = $("#ob-film"), strip = $("#ob-strip"), tc = $("#ob-tc"), scr = $(".ob-welcome");
+    const end = film.clientWidth / 2 - (HIT * PITCH + 66);
+    const hitTime = new Date(anchor.getTime() - 8 * 2000);
+    const stamp = (x) => { tc.textContent = hms(new Date(hitTime.getTime() + Math.round((end - x) / PITCH) * 2000)); };
+    const settle = () => { strip.style.transform = `translateX(${end}px)`; stamp(end); film.classList.add("is-settled"); scr.classList.add("is-settled"); };
+    if (reduced) return settle();
+    const start = end - TRAVEL * PITCH;
+    const anim = strip.animate([{ transform: `translateX(${start}px)` }, { transform: `translateX(${end}px)` }], { duration: 2600, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "forwards", delay: 250 });
+    const loop = () => { stamp(new DOMMatrix(getComputedStyle(strip).transform).m41); if (anim.playState !== "finished") requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+    anim.finished.then(settle);
+  }
+
+  // ------------------------------------------------------- 02 Permissions
+  const PNAME = { screen: "Screen recording", microphone: "Microphone", systemAudio: "System audio", accessibility: "Accessibility" };
+  const PORDER = ["screen", "microphone", "systemAudio", "accessibility"]; // accessibility: only because a Gecko browser (Zen) is "installed"
+  const pval = (id) => (id === "accessibility" ? S.perm.acc : S.perm[id]);
+  const answered = (id) => S.passed.includes(id) || (id === "systemAudio" ? false : pval(id) === "granted");
+  const current = () => PORDER.find((id) => !answered(id)) ?? null;
+  const ledgerValue = (id) => {
+    if (id === "accessibility") return S.perm.acc === "granted" ? "granted" : "skipped";
+    if (id === "screen" && S.perm.relaunch) return "granted · needs one relaunch";
+    if (id === "systemAudio") return S.perm.sys.sound ? "sound is arriving" : S.perm.sys.blocked ? "possibly blocked" : S.perm.sys.requested ? "requested · unconfirmed" : "not requested";
+    return pval(id) === "granted" ? "granted" : pval(id) === "denied" ? "denied" : "not requested";
+  };
+  const TCC = {
+    screen: "“Mnema” would like to record this computer’s screen and audio.",
+    microphone: "“Mnema” would like to access the microphone.",
+    systemAudio: "“Mnema” would like to record audio from other apps.",
+    accessibility: "“Mnema” would like to control this computer using accessibility features.",
+  };
+  let tccFor = null;
+  function ask(id) { tccFor = id; $("#ob-tcc-text").textContent = TCC[id]; $("#ob-tcc").hidden = false; }
+  $("#ob-tcc").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tcc]"); if (!b) return;
+    const allow = b.dataset.tcc === "allow";
+    $("#ob-tcc").hidden = true;
+    if (tccFor === "systemAudio") listen(allow);
+    else if (tccFor === "accessibility") { S.perm.accAsked = true; if (allow) S.perm.acc = "granted"; }
+    else S.perm[tccFor] = allow ? "granted" : "denied";
+    renderPermissions();
+  });
+  // System audio: no grant to read (ADR 0052). Only sound arriving is evidence — and it never earns the check.
+  let meterTimer = null;
+  function listen(allowed) {
+    const sys = S.perm.sys;
+    sys.requested = true; sys.listening = true; sys.sound = false;
+    clearInterval(meterTimer);
+    let t = 0;
+    meterTimer = setInterval(() => {
+      t += 120;
+      if (allowed && t > 1400) sys.sound = true;
+      if (!allowed && t > 3600) { sys.listening = false; clearInterval(meterTimer); }
+      const m = $("#ob-sysmeter");
+      if (m) {
+        const bars = [...m.children];
+        bars.forEach((b, k) => { if (k < bars.length - 1) b.style.height = bars[k + 1].style.height; });
+        bars[bars.length - 1].style.height = `${4 + (sys.sound ? Math.round(Math.sqrt(0.08 + Math.random() * 0.7) * 30) : 0)}px`;
+      }
+      if (t % 600 === 0 || (allowed && t === 1440)) renderSysState();
+    }, 120);
+    renderPermissions();
+  }
+  function renderSysState() {
+    const sys = S.perm.sys, st = $("#ob-sysstate"), m = $("#ob-sysmeter");
+    if (!st) return;
+    m.classList.toggle("is-live", sys.listening); m.classList.toggle("is-lit", sys.sound);
+    st.innerHTML = `<b>${sys.sound ? "Sound is arriving." : sys.listening ? "Listening…" : sys.blocked ? "Nothing has arrived yet" : sys.requested ? "Requested · unconfirmed" : "Nothing has arrived yet"}</b>` +
+      (sys.sound ? "" : `<span class="ob-fine">${sys.listening ? "Play something — a video, a song. " : ""}Silent is not denied — it might just be a quiet Mac.</span>`);
+    const led = $(`#ob-perm li[data-id="systemAudio"] span:last-child`); if (led) led.textContent = ledgerValue("systemAudio");
+  }
+  function moment(id) {
+    const denied = pval(id) === "denied";
+    const req = (label = "Request access") => `<button class="mx-btn" data-ask="${id}">${label}</button>`;
+    const fix = (where) => `<button class="mx-btn" data-act="open-settings">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button><button class="mx-btn" data-recheck="${id}">Re-check</button><span class="ob-fine">Privacy &amp; Security → ${where} → Mnema</span>`;
+    const M = (h, lead, acts, extra = "") => `<div class="ob-moment"><h1 class="mx-display">${h}</h1><p class="mx-prose">${lead}</p>${extra}<div class="ob-acts">${acts}</div></div>`;
+    if (id === "screen") return denied
+      ? M("Screen recording", "You said no — and this is the one Mnema cannot run without. macOS will not ask again, so the switch has to be flipped in System Settings.", fix("Screen Recording"),
+          S.perm.prior ? `<span class="mx-inline" data-tone="info"><svg width="13" height="13"><use href="#i-info"/></svg>Turned down in an earlier setup — macOS won’t show its prompt again.</span>` : "")
+      : M("Your screen.", "The one Mnema is built on — it records the screen so you can scrub back to it.", req() + `<span class="ob-fine">macOS raises its own prompt. Nothing is recorded until you finish setup.</span>`);
+    if (id === "microphone") return denied
+      ? M("Microphone", "You said no. Mnema keeps working — without transcripts or speaker names.", fix("Microphone"))
+      : M("Your microphone.", "Only what you say, transcribed on this Mac — no audio ever leaves it.", req() + `<span class="ob-fine">Off by itself, this only costs you transcripts and speaker names.</span>`);
+    if (id === "systemAudio") return M("Play anything.", "macOS will not tell us whether you granted this — sound arriving is the only proof.",
+      req(S.perm.sys.requested ? "Request again" : "Request") + `<span class="ob-fine">A prompt you closed by accident looks exactly like a No.</span>`,
+      `<div class="ob-level"><div class="ob-meter" id="ob-sysmeter" aria-hidden="true">${"<i></i>".repeat(20)}</div><div class="ob-level__state" id="ob-sysstate"></div></div>` +
+      (S.perm.sys.blocked ? `<div class="mx-notice" data-tone="info"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-info"/></svg></span>
+        <b class="mx-notice__title">System audio may be blocked</b><p class="mx-notice__text">A minute of silence while something played. Check the switch, or carry on — the mic still records.</p>
+        <div class="mx-notice__acts"><button class="mx-btn mx-btn--sm" data-act="open-settings">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button></div></div>` : ""));
+    if (id === "accessibility") return M("Browser page addresses.", "Optional, and only for Firefox and Zen — every other browser tells Mnema its page address already.",
+      (S.perm.accAsked ? fix("Accessibility") : req() + `<span class="ob-fine">Privacy &amp; Security → Accessibility → Mnema</span>`));
+    return M("That is everything.", "Nothing left to ask — all of it stays changeable in Settings.", "");
+  }
+  function renderPermissions() {
+    const cur = current();
+    const settled = PORDER.filter((id) => id !== cur && answered(id));
+    const upcoming = cur === null ? [] : PORDER.slice(PORDER.indexOf(cur) + 1).filter((id) => !answered(id));
+    const isLast = cur === null || upcoming.length === 0;
+    const ledger = settled.length ? `<ul class="ob-ledger">${settled.map((id) => {
+      const on = id === "accessibility" ? S.perm.acc === "granted" : id !== "systemAudio" && pval(id) === "granted" && !(id === "screen" && S.perm.relaunch); // system audio NEVER ticks
+      return `<li data-id="${id}" class="${pval(id) === "denied" || (id === "systemAudio" && S.perm.sys.blocked) ? "is-warn" : ""}">${mark(on, (id === "systemAudio" && S.perm.sys.sound) || (id === "screen" && S.perm.relaunch))}<span>${PNAME[id]}</span><span>${ledgerValue(id)}</span></li>`;
+    }).join("")}</ul>` : "";
+    const top = S.perm.relaunch ? `<div class="mx-notice" data-tone="info"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-retry"/></svg></span>
+        <b class="mx-notice__title">Screen recording needs one relaunch</b><p class="mx-notice__text">macOS gives that grant to a fresh copy of Mnema. Setup resumes right here — nothing chosen yet is lost.</p></div>`
+      : S.perm.resumed ? `<div class="mx-notice" data-tone="ok"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-check"/></svg></span>
+        <b class="mx-notice__title">Relaunched — screen recording is live</b><p class="mx-notice__text">Setup picked up at Permissions. Your capture choices start fresh.</p></div>` : "";
+    $("#ob-perm").innerHTML = `<span class="mx-kicker">One at a time</span>${top}${ledger}${moment(cur)}`;
+    if (cur === "systemAudio") { renderSysState(); }
+    $("#ob-perm-next").innerHTML = upcoming.map((id, k) => `${k ? "then" : "next"} · <b>${PNAME[id]}</b>${id === "accessibility" ? " (optional)" : ""}`).join("&nbsp;&nbsp;&nbsp;");
+    const deniedCur = cur && cur !== "accessibility" && pval(cur) === "denied";
+    $("#ob-perm-go").innerHTML = (S.perm.relaunch ? "Relaunch to continue" : isLast ? "Capture &amp; Storage" : deniedCur ? `Continue without ${cur === "screen" ? "screen recording" : "the microphone"}` : "Continue") + ARROW;
+  }
+  $("#ob-perm-go").addEventListener("click", () => { // a denial gates nothing; the ONLY hold is a grant that needs a relaunch (decision 20)
+    if (S.perm.relaunch) { S.perm.relaunch = false; S.perm.resumed = true; return renderPermissions(); }
+    const cur = current();
+    const upcoming = cur === null ? [] : PORDER.slice(PORDER.indexOf(cur) + 1).filter((id) => !answered(id));
+    if (cur === null || upcoming.length === 0) { if (cur) S.passed.push(cur); return go("capture"); }
+    S.passed.push(cur); clearInterval(meterTimer); renderPermissions();
+  });
+  $("#ob-perm").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-ask]"); if (a) return ask(a.dataset.ask);
+    if (e.target.closest('[data-act="relaunch-perm"]')) { S.perm.relaunch = false; S.perm.resumed = true; return renderPermissions(); }
+    const r = e.target.closest("[data-recheck]"); if (r) { const id = r.dataset.recheck; if (id === "accessibility") S.perm.acc = "granted"; else S.perm[id] = "granted"; renderPermissions(); }
+  });
+
+  // ------------------------------------------------ 03 Capture & Storage
+  $("#ob-rate").innerHTML = LADDER.map((s, k) => `<button value="${k}" aria-pressed="${k === S.rate}" data-tip="${phrase(s)} — ${fmtB(dailyMB(s) * 1e6)} a day" data-tip-pos="top">${short(s)}</button>`).join("");
+  $("#ob-folder-list").innerHTML = Object.entries(FOLDERS).map(([k, f]) => `<li data-folder="${k}"><span class="mono">${f.path}</span><span class="mx-menu__meta">${f.note}</span></li>`).join("");
+  function verdict() {
+    const s = LADDER[S.rate], daily = dailyMB(s) * 1e6, stop = KEEP[S.keep];
+    const held = stop.days === null ? null : daily * stop.days;
+    const F = FOLDERS[S.folder], free = F.free, dl = downloadBytes(), about = S.f.semanticSearch ? "about " : "";
+    const fig = (t) => `<b class="fig">${t}</b>`;
+    const plan = stop.days === null
+      ? `${phrase(s)} · ${fig(fmtB(daily))} a day · about ${fig(fmtB(daily * 365))} in the first year, and it keeps going`
+      : `${phrase(s)} · ${fig(fmtB(daily))} a day · ${fig(fmtB(held))} held, then it stops growing`;
+    const R = (label, act) => ({ label, act });
+    const v = (tone, text, repairs = [], clause = null, blocking = false) => ({ tone, text, repairs, clause, blocking, plan });
+    if (S.folder === "offline") return v("danger", "Mnema won’t record to a volume it can’t see, and if it disappears mid-session recording stops until it’s back.", [R("Use ~/.mnema instead", "default"), R("Re-check", "recheck")], "that drive isn’t connected right now.", true);
+    if (!F.writable) return v("danger", "The write probe failed there — <b>proven, not guessed.</b>", [R("Choose another folder…", "pick"), R("Use ~/.mnema instead", "default")], `${F.vol} is read-only.`, true);
+    const need = RESERVE + dl + daily, usable = free - dl - RESERVE;
+    if (free < need) {
+      if (dl > 0 && free < RESERVE + dl) return v("danger", `<b>${fmtB(dl + RESERVE - free)} short before recording even starts.</b> The downloads are ${about}${fig(fmtB(dl))}; ${F.vol} has ${fig(fmtB(free))} free.`,
+        [...(S.f.semanticSearch ? [R("Turn Semantic Search off", "nosemantic")] : []), R("Choose another folder…", "pick")], "there isn’t room for the models yet.", true);
+      return v("danger", `<b>The downloads fit; the capture does not.</b> After ${about}${fig(fmtB(dl + RESERVE))} of models and safety reserve, ${usable <= 0 ? "nothing is left" : `only ${fig(fmtB(usable))} is left`} — and one day costs ${fig(fmtB(daily))}.`,
+        [R("Choose another folder…", "pick"), R("Record less often", "slower")], "there isn’t room for a day of recording.", true);
+    }
+    const human = (d) => d < 1 ? "less than a day" : d < 14 ? `${Math.round(d)} days` : d < 60 ? `${Math.round(d / 7)} weeks` : d < 365 ? `${Math.round(d / 30)} months` : `${(d / 365).toFixed(1)} years`;
+    if (held !== null && held > usable) return v("warn", `Holding ${stop.short} takes about ${fig(fmtB(held))}, and ${fig(fmtB(usable))} is free on ${F.vol}. <b>It fills up after about ${human(usable / daily)}.</b>`, [R("Record less often", "slower"), R("Keep less", "tighten")]);
+    if (held === null) {
+      const runout = usable / daily;
+      return v(runout >= 180 ? "ok" : "warn", `${fig(fmtB(free))} free on ${F.vol} — <b>room for about ${human(runout)} at this rate</b>, and nothing is deleted to make more.`, runout >= 180 ? [] : [R("Keep the last 30 days", "keep30"), R("Record less often", "slower")]);
+    }
+    return v("ok", `${fig(fmtB(free))} free on ${F.vol} — <b>fits, with ${fmtB(usable - held)} to spare</b> (and it stops growing after ${stop.days} days).`);
+  }
+  const blocked = () => verdict().blocking;
+  function renderCapture() {
+    const V = verdict(), F = FOLDERS[S.folder];
+    $("#ob-rate-say").textContent = phrase(LADDER[S.rate]);
+    $("#ob-path").textContent = F.path; $("#ob-path").classList.toggle("is-bad", !!V.clause);
+    $("#ob-clause").textContent = V.clause ? `— ${V.clause}` : "";
+    $$("#ob-folder-list li").forEach((li) => li.setAttribute("aria-selected", String(li.dataset.folder === S.folder)));
+    $("#ob-verdict").dataset.tone = V.tone;
+    $("#ob-plan").innerHTML = V.plan.replace(/^./, (c) => c.toUpperCase());
+    $("#ob-vtext").innerHTML = V.text;
+    $("#ob-repairs").innerHTML = V.repairs.map((r) => `<button class="mx-btn mx-btn--sm" data-repair="${r.act}">${r.label}</button>`).join("");
+    $("#ob-apps").innerHTML = S.apps.map((a) => `<button class="mx-btn mx-btn--sm" aria-pressed="${a.on}" data-app="${a.id}" aria-label="${a.name} — ${a.on ? "never recorded, activate to record it" : "recorded, activate to hide it again"}"><span class="ob-app" style="--c: var(${a.c})">${a.name[0]}</span>${a.name}${a.pending ? "<small>· when installed</small>" : ""}</button>`).join("") +
+      `<button class="mx-btn mx-btn--ghost mx-btn--sm mx-btn--icon" data-act="add-app" aria-label="Add an app" data-tip="Add an app it should never see"><svg width="14" height="14"><use href="#ob-plus"/></svg></button>`;
+    $("#ob-held").hidden = !V.blocking; $("#ob-cap-go").disabled = V.blocking;
+  }
+  $("#ob-rate").addEventListener("mx-change", (e) => { S.rate = +e.detail; renderCapture(); });
+  $("#ob-keep").addEventListener("mx-change", (e) => { S.keep = +e.detail; renderCapture(); });
+  const pressSeg = (seg, value) => $(`${seg} button[value="${value}"]`)?.click();
+  $("#ob-folder-list").addEventListener("click", (e) => {
+    const li = e.target.closest("[data-folder]"); if (!li) return;
+    S.folder = li.dataset.folder; $("#ob-folders").removeAttribute("data-open"); renderCapture();
+  });
+  $("[data-step=capture]").addEventListener("click", (e) => {
+    const r = e.target.closest("[data-repair]");
+    if (r) {
+      const act = r.dataset.repair;
+      if (act === "default") S.folder = "default";
+      else if (act === "pick") { e.stopPropagation(); $("#ob-folders").setAttribute("data-open", ""); return; }
+      else if (act === "nosemantic") S.f.semanticSearch = false;
+      else if (act === "slower") return pressSeg("#ob-rate", Math.min(S.rate + 1, LADDER.length - 1));
+      else if (act === "tighten") return pressSeg("#ob-keep", Math.min(S.keep + 1, 3));
+      else if (act === "keep30") return pressSeg("#ob-keep", 1);
+      return renderCapture();
+    }
+    const a = e.target.closest("[data-app]");
+    if (a) { const app = S.apps.find((x) => x.id === a.dataset.app); app.on = !app.on; renderCapture(); }
+  });
+
+  // ------------------------------------------------------ 04 Your settings
+  function renderSettings() {
+    const f = S.f, p = S.perm;
+    const rows = [
+      p.screen === "denied" ? { n: "Screen capture", v: "not granted", warn: true, grant: true } : { n: "Screen capture", v: f.screen ? "on" : "off", on: f.screen },
+      { n: "Read on-screen text", v: f.ocr && f.screen ? "on" : "off", on: f.ocr && f.screen },
+      p.microphone === "denied" ? { n: "Microphone", v: "not granted", warn: true, grant: true } : { n: "Microphone", v: f.microphone ? "on" : "off", on: f.microphone },
+      { n: "System audio", v: f.systemAudio ? "on · macOS can’t confirm the grant" : "off", on: f.systemAudio }, // never confirmed (ADR 0052)
+      { n: "Transcription", v: f.transcription ? "on" : f.microphone || f.systemAudio ? "off" : "off — no audio source", on: f.transcription },
+      { n: "Who’s speaking", v: f.speakerSeparation ? "on" : f.transcription ? "off" : "off — needs transcription", on: f.speakerSeparation },
+      { n: "Semantic Search", v: f.semanticSearch ? "on" : "off", on: f.semanticSearch },
+      { n: "AI features", v: S.ai.ready ? "on" : f.aiFeatures ? "on · nothing connected yet" : "off — needs a provider", on: f.aiFeatures },
+    ];
+    // two columns of four: capture | processing — one line per row
+    const cell = (r) => `<div class="ob-man${r.on ? "" : " is-off"}${r.warn ? " is-warn" : ""}">${r.n === "System audio" && r.on ? mark(false, true) : mark(!!r.on)}<span class="ob-man__name">${r.n}</span><span class="ob-man__val">${r.v}${r.grant ? `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="grant">Grant</button>` : ""}</span></div>`;
+    $("#ob-manifest").innerHTML = [0, 4, 1, 5, 2, 6, 3, 7].map((k) => cell(rows[k])).join("");
+    const keep = KEEP[S.keep].days === null ? "Everything" : `${KEEP[S.keep].days} days`;
+    const facts = [["Download", activeWork().length ? `${approxTotal() ? "~" : ""}${fmtB(downloadBytes())}` : "Nothing"], ["Saves to", FOLDERS[S.folder].path], ["Keeps", keep], ["Per day", `~${fmtB(dailyMB() * 1e6)}`]];
+    $("#ob-facts").innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+  }
+  $("#ob-manifest").addEventListener("click", (e) => {
+    if (!e.target.closest('[data-act="grant"]')) return;
+    S.passed = S.passed.filter((id) => pval(id) !== "denied"); go("permissions");
+  });
+
+  // ---------------------------------------------------- 05 Change settings
+  const FEAT = [
+    ["screen", 0, "Screen capture", "--app-source-screen", "ob-sw--screen"], ["ocr", 1, "Read on-screen text"],
+    ["microphone", 0, "Microphone", "--app-source-mic", "ob-sw--mic"], ["systemAudio", 0, "System audio", "--app-source-sysaudio", "ob-sw--sysaudio"],
+    ["transcription", 1, "Transcription"], ["speakerSeparation", 2, "Who’s speaking"], ["semanticSearch", 0, "Semantic Search"], ["aiFeatures", 0, "AI features"],
+  ];
+  const LABEL = Object.fromEntries(FEAT.map(([id, , l]) => [id, l]));
+  const noAudio = (f = S.f) => !f.microphone && !f.systemAudio;
+  function cost(f = S.f) {
+    const s = LADDER[S.rate], scale = dailyMB(s) / 270, src = (f.microphone ? 1 : 0) + (f.systemAudio ? 1 : 0), reads = f.screen && f.ocr;
+    const d = { screen: f.screen ? 168 * scale : 0, ocr: reads ? 47 * scale : 0, microphone: f.microphone ? 23 * scale : 0, systemAudio: f.systemAudio ? 23 * scale : 0,
+      transcription: f.transcription ? 4.5 * src * scale : 0, speakerSeparation: 0, semanticSearch: f.semanticSearch ? (reads ? (8 * 3600 / s) * 768 / 1e6 : 0) + (f.transcription ? 2 : 0) : 0, aiFeatures: 0 };
+    const dl = { transcription: f.transcription ? tModel().bytes : 0, speakerSeparation: f.speakerSeparation ? SPEAKRS : 0, semanticSearch: f.semanticSearch ? sModel().bytes : 0 };
+    return { d, dl, total: Object.values(d).reduce((a, b) => a + b, 0) };
+  }
+  function note(id) {
+    const f = S.f;
+    switch (id) {
+      case "screen": return S.perm.screen === "denied" ? "Screen Recording is not granted — stays listed, records nothing." : "Frames of your screen. Everything else is built on these.";
+      case "microphone": return S.perm.microphone !== "denied" ? "Your voice, from the built-in or a connected mic." : f.microphone ? "Microphone permission is not granted — stays on, records nothing." : "Microphone permission is not granted — grant it to turn this on.";
+      case "systemAudio": return "What your Mac plays. Excludes Mnema itself and every privacy-listed app. macOS can’t confirm this grant.";
+      case "ocr": return f.screen ? "On-device. Apple Vision needs no download." : "Nothing to read while screen capture is off.";
+      case "transcription": return f.transcription ? `Runs locally on ${tModel().name.replace(" (on-device)", "")}.` : noAudio() ? "Needs an audio source above it." : "Off — the audio is still recorded, just never turned into text.";
+      case "speakerSeparation": return f.speakerSeparation ? "Splits a conversation into voices, on-device." : "A transcript is what it splits.";
+      case "semanticSearch": return "Finds by meaning, not by word. The biggest single download.";
+      case "aiFeatures": return S.ai.ready ? "Ready — a default model is configured." : f.aiFeatures ? "On, with nothing connected to answer with." : "Never pre-ticked. Connecting a provider is what turns it on.";
+    }
+  }
+  // cascades both ways (feature-rules.ts applyToggle, simplified): a parent off takes its children with it.
+  function toggle(id) {
+    const before = { ...S.f }, f = S.f;
+    f[id] = !f[id];
+    if (id === "screen") f.ocr = f.screen;
+    if (id === "microphone" || id === "systemAudio") { if (noAudio()) f.transcription = f.speakerSeparation = false; else if (noAudio(before)) f.transcription = f.speakerSeparation = true; }
+    if (id === "transcription") f.speakerSeparation = f.transcription;
+    const moved = Object.keys(f).filter((k) => k !== id && f[k] !== before[k]);
+    S.undo = moved.length ? { snap: before, text: `${LABEL[id]} went ${f[id] ? "on" : "off"} — and ${moved.map((k) => LABEL[k].toLowerCase()).join(" + ")} went with it.` } : null;
+    if (id === "aiFeatures" && !f.aiFeatures) S.undo = null;
+    renderChange();
+  }
+  function lockFix(id) {
+    const f = S.f;
+    if (id === "ocr" && !f.screen) return { label: "Turn screen capture on", id: "screen" };
+    if (id === "transcription" && noAudio()) return { label: "Turn an audio source on", id: "microphone" };
+    if (id === "speakerSeparation" && !f.transcription) return { label: "Turn transcription on", id: "transcription" };
+    if (id === "microphone" && S.perm.microphone === "denied" && !f.microphone) return { label: "Grant access", grant: true };
+    return null;
+  }
+  const aiBlocked = () => S.f.aiFeatures && !S.ai.ready;
+  function renderChain() {
+    const C = cost();
+    $("#ob-chain").innerHTML = FEAT.map(([id, depth, label, c, sw]) => {
+      const fix = lockFix(id), on = S.f[id];
+      const cut = id === "ocr" && !S.f.screen ? "screen capture" : id === "transcription" && noAudio() ? "audio" : id === "speakerSeparation" && !S.f.transcription ? (noAudio() ? "audio" : "transcription") : null;
+      const disk = Math.round(C.d[id]), dl = C.dl[id] || 0;
+      const costTxt = [disk > 0 ? `${disk} MB/day` : "", dl > 0 ? `${fmtB(dl)} once` : ""].filter(Boolean).join(" · ") || "—";
+      const ctl = fix ? `<button class="mx-btn mx-btn--sm" data-fix="${fix.grant ? "grant" : fix.id}">${fix.label}</button>`
+        : `<input type="checkbox" class="mx-switch ${sw || ""}" data-feat="${id}" ${on ? "checked" : ""} aria-label="${label}. ${note(id)}" />`;
+      return `<div class="ob-feat${on ? "" : " is-off"}"${depth ? ` style="--d:${depth}"` : ""}><div><span class="ob-feat__name">${c ? `<i class="ob-src" style="--c: var(${c})"></i>` : ""}${label}${cut ? `<span class="ob-feat__carry">off with ${cut}</span>` : ""}</span><span class="ob-feat__desc${fix && !cut ? " is-warn" : ""}">${note(id)}</span></div><span class="ob-feat__cost">${costTxt}</span><span class="ob-feat__ctl">${ctl}</span></div>`;
+    }).join("");
+    const BAR = [["screen", "--app-source-screen"], ["ocr", "--chart-grey-4"], ["microphone", "--app-source-mic"], ["systemAudio", "--app-source-sysaudio"], ["transcription", "--chart-grey-3"], ["semanticSearch", "--app-info"]];
+    $("#ob-disk-bar").innerHTML = BAR.map(([id, c]) => `<i style="--c: var(${c}); width:${C.total ? (C.d[id] / C.total) * 100 : 0}%"></i>`).join("");
+    $("#ob-disk-total").textContent = `${S.f.semanticSearch ? "about " : ""}${Math.round(C.total)} MB/day`;
+    $("#ob-dl-total").textContent = totalLabel();
+    $("#ob-ai-gate-row").hidden = !aiBlocked();
+    $("#ob-undo").hidden = !S.undo; if (S.undo) $("#ob-undo-text").textContent = S.undo.text;
+  }
+  $("#ob-chain").addEventListener("change", (e) => { const id = e.target.dataset.feat; if (id) toggle(id); });
+  $("#ob-chain").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-fix]"); if (!b) return;
+    if (b.dataset.fix === "grant") { S.perm.microphone = "granted"; renderChange(); } else toggle(b.dataset.fix);
+  });
+  function renderModels() {
+    const t = tModel(), sm = sModel();
+    $("#ob-engine-name").innerHTML = `Engine: <b>${ENGINE_NAME[S.engine]}</b> — chosen on Engines. This picks its build.`;
+    $("#ob-whisper").hidden = S.engine !== "local_whisper"; $("#ob-parakeet").hidden = S.engine !== "parakeet";
+    $("#ob-t-note").textContent = FAMILY_NOTES[S.engine];
+    $("#ob-t-strip").innerHTML = `<div><span>Model</span><b>${S.f.transcription ? t.name : "Off"}</b></div><div><span>Download</span><b class="num">${t.bytes ? fmtB(t.bytes) : "none"}</b></div><div><span>Memory</span><b class="num">${t.mem}</b></div>`;
+    $("#ob-sem-en").hidden = S.sfam !== "en"; $("#ob-sem-ml").hidden = S.sfam !== "ml";
+    $("#ob-s-strip").innerHTML = `<div><span>Model</span><b>${S.f.semanticSearch ? sm.name : "Off"}</b></div><div><span>Download</span><b class="num">about ${fmtB(sm.bytes)}</b></div><div><span>Languages</span><b>${S.f.semanticSearch ? sm.langs : "keyword search only"}</b></div>`;
+    const parts = [["speakerSeparation", "Who’s speaking", "--app-source-mic", SPEAKRS], ["transcription", "Transcription", "--chart-grey-4", t.bytes], ["semanticSearch", "Semantic Search", "--app-info", sm.bytes]];
+    const tot = downloadBytes();
+    $("#ob-budget-total").textContent = totalLabel();
+    $("#ob-budget-bar").innerHTML = parts.map(([id, , c, b]) => `<i style="--c: var(${c}); width:${S.f[id] && tot ? (b / tot) * 100 : 0}%"></i>`).join("");
+    $("#ob-budget-legend").innerHTML = parts.map(([id, n, c, b]) => `<li style="--c: var(${c})">${n}<b>${!S.f[id] ? "off" : b ? `${id === "semanticSearch" ? "about " : ""}${fmtB(b)}` : "none"}</b></li>`).join("");
+  }
+  function renderEngines() {
+    const reco = S.engine === "local_whisper";
+    $("#ob-engine-reco").hidden = reco;
+    const dl = tModel().bytes - T_MODELS.local_whisper.base.bytes;
+    $("#ob-engine-delta").textContent = reco ? "Whisper Base is picked for you." : `${ENGINE_NAME[S.engine]} instead of Whisper: ${dl < 0 ? `saves ${fmtB(-dl)}` : `adds ${fmtB(dl)}`} of download.`;
+  }
+  function renderAi() {
+    const ai = S.ai, local = ai.kind === "ollama" || ai.kind === "llamafile", oauth = ai.kind === "chatgpt";
+    $$("#ob-ai-fork input").forEach((i) => (i.checked = i.value === ai.mode));
+    $("#ob-ai-later").hidden = ai.mode !== "later"; $("#ob-ai-now").hidden = ai.mode !== "now";
+    $("#ob-ai-gate").hidden = !aiBlocked();
+    $("#ob-ai-kicker").textContent = ai.mode === "later" ? "AI features · off" : "AI features · optional";
+    $("#ob-ai-switch").checked = S.f.aiFeatures;
+    $("#ob-ai-status").textContent = ai.ready ? `Ready — ${ai.model} will answer.` : "No provider yet — connect one below.";
+    const label = $("#ob-kind").selectedOptions[0]?.textContent || "the provider";
+    $("#ob-ai-check").innerHTML = ai.check === "checking" ? `<span class="mx-inline" role="status"><span class="mx-spin mx-spin--sm"></span>Verifying ${label}…</span>`
+      : ai.check === "bad" ? `<span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>${label} is not answering — authentication failed.<button class="mx-btn mx-btn--ghost mx-btn--sm" data-act="key-clear">Paste another key</button></span>`
+      : ai.check === "ok" ? `<span class="mx-inline" data-tone="ok"><svg width="13" height="13"><use href="#i-check"/></svg>12 models listed in 340 ms</span>` : "";
+    $("#ob-key").toggleAttribute("aria-invalid", ai.check === "bad");
+    $("#ob-scan-btn").hidden = !local; $("#ob-key").hidden = local || oauth; $("#ob-chatgpt").hidden = !oauth;
+    $("#ob-scan-btn").textContent = ai.scanned ? "Scan again" : "Scan this Mac";
+    const host = local ? "localhost" : { anthropic: "api.anthropic.com", openai: "api.openai.com", chatgpt: "chatgpt.com", openai_compatible: "your endpoint" }[ai.kind];
+    $("#ob-wire").className = `ob-wire${local ? "" : " is-out"}`;
+    $("#ob-wire").innerHTML = `<span>this Mac</span><i></i><span>${host}</span><span>${local ? "· nothing leaves" : "· prompts and their context leave"}</span>`;
+    $("#ob-scan").hidden = !(local && ai.scanned);
+    const dead = (port, name) => `<div class="is-dead"><span class="ob-lamp"></span><span>localhost:${port} · ${name}</span><span></span><span>no answer</span><span></span></div>`;
+    const ollama = ai.scan === "none" ? dead(11434, "Ollama")
+      : ai.scan === "empty" ? `<div><span class="ob-lamp is-live"></span><span>localhost:11434 · Ollama</span><span class="mx-chip mx-chip--warn">0 models</span><span>9 ms</span><span></span></div>`
+      : `<div><span class="ob-lamp is-live"></span><span>localhost:11434 · Ollama</span><span class="mx-chip mx-chip--accent">3 models</span><span>12 ms</span>${ai.ready && ai.via === "ollama" ? `<span class="mx-chip">connected</span>` : `<button class="mx-btn mx-btn--sm" data-act="use-ollama">Use this</button>`}</div>`;
+    $("#ob-scan").innerHTML = ollama + dead(8080, "Llamafile") + dead(1234, "OpenAI-compatible");
+    // real copy: AiSetup.svelte:527-531 (nothing answered); "0 models" has no copy today
+    $("#ob-scan-note").innerHTML = !(local && ai.scanned) ? ""
+      : ai.scan === "none" ? `<div class="mx-empty mx-empty--compact" data-tone="warn"><span class="mx-empty__glyph"><svg width="14" height="14"><use href="#i-search"/></svg></span><b class="mx-empty__title">Nothing is listening on the usual ports</b><p class="mx-empty__text">That is an answer, not an error. Start Ollama and scan again, or pick a cloud account above.</p></div>`
+      : ai.scan === "empty" ? `<span class="mx-inline" data-tone="warn"><svg width="13" height="13"><use href="#i-alert"/></svg>Ollama answered, but has no models to run. Pull one (<span class="mono">ollama pull llama3.2</span>), then scan again.</span>` : "";
+  }
+  function becomeReady(model, via) {
+    const was = S.ai.ready; S.ai.ready = true; S.ai.model = model; S.ai.via = via;
+    if (!was && !S.f.aiFeatures) S.f.aiFeatures = true; // configuring a provider ENABLES the row — the one auto-enable
+    renderChange();
+  }
+  const SECTIONS = { features: ["What Mnema will do", "Turn the last audio source off and transcription and who’s speaking switch off with it."], engines: ["Engines", "Cloud transcription is not offered here — it lives in Settings behind its own consent gate."], models: ["Models", "Sizes come from the model manifests — nothing here is a pasted constant."], ai: ["AI features", "Nothing here is sent anywhere until you pick a provider."] };
+  const TABS = Object.keys(SECTIONS);
+  function renderChange() {
+    $$(".ob-pane[data-pane]").forEach((p) => p.classList.toggle("is-on", p.dataset.pane === S.tab));
+    const at = TABS.indexOf(S.tab);
+    $("#ob-tab-count").textContent = `${at + 1} / 4`;
+    renderChain(); renderEngines(); renderModels(); renderAi();
+    // Decision 21: no exit is ever held. "AI on with nothing to run it" is a soft notice in place (#ob-ai-gate-row /
+    // #ob-ai-gate); after Start the engine pill, Insights and Settings carry it.
+    $("#ob-change-note").textContent = SECTIONS[S.tab][1];
+    $("#ob-change-back").textContent = at === 0 ? "Back to your settings" : SECTIONS[TABS[at - 1]][0];
+    $("#ob-change-next").innerHTML = (at === 3 ? "Back to your settings" : SECTIONS[TABS[at + 1]][0]) + ARROW;
+  }
+  const setTab = (t) => { if ($(`#ob-tabs button[value="${t}"]`).getAttribute("aria-pressed") !== "true") pressSeg("#ob-tabs", t); else { S.tab = t; renderChange(); } };
+  $("#ob-tabs").addEventListener("mx-change", (e) => { S.tab = e.detail; renderChange(); });
+  $("#ob-change-back").addEventListener("click", () => { const at = TABS.indexOf(S.tab); at === 0 ? go("settings") : setTab(TABS[at - 1]); });
+  $("#ob-change-next").addEventListener("click", () => { const at = TABS.indexOf(S.tab); at === 3 ? go("settings") : setTab(TABS[at + 1]); });
+  $("#ob-engines").addEventListener("change", (e) => { S.engine = e.target.value; renderChange(); });
+  $("#ob-whisper").addEventListener("mx-change", (e) => { S.whisper = e.detail; renderChange(); });
+  $("#ob-parakeet").addEventListener("mx-change", (e) => { S.parakeet = e.detail; renderChange(); });
+  $("#ob-sfam").addEventListener("mx-change", (e) => { S.sfam = e.detail; renderChange(); });
+  $("#ob-sem-en").addEventListener("mx-change", (e) => { S.sem.en = e.detail; renderChange(); });
+  $("#ob-sem-ml").addEventListener("mx-change", (e) => { S.sem.ml = e.detail; renderChange(); });
+  $("#ob-ai-fork").addEventListener("change", (e) => { S.ai.mode = e.target.value; renderChange(); });
+  $("#ob-ai-switch").addEventListener("change", () => toggle("aiFeatures"));
+  $("#ob-kind").addEventListener("change", (e) => { S.ai.kind = e.target.value; S.ai.scanned = false; renderChange(); });
+  let keyTimer;
+  $("#ob-key").addEventListener("input", (e) => {
+    clearTimeout(keyTimer);
+    if (e.target.value.length < 10) return;
+    S.ai.check = "checking"; renderAi();
+    keyTimer = setTimeout(() => { e.target.value = ""; S.ai.check = "ok"; becomeReady(S.ai.kind === "anthropic" ? "claude-sonnet-4-5" : "gpt-5-mini", S.ai.kind); }, 900);
+  });
+  $("[data-step=change]").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-tab]"); if (t) return setTab(t.dataset.tab);
+    const a = e.target.closest("[data-act]"); if (!a) return;
+    const act = a.dataset.act;
+    if (act === "undo" && S.undo) { S.f = S.undo.snap; S.undo = null; renderChange(); }
+    else if (act === "ai-off") { if (S.f.aiFeatures) toggle("aiFeatures"); }
+    else if (act === "scan") { S.ai.scanned = true; renderChange(); }
+    else if (act === "key-clear") { S.ai.check = null; $("#ob-key").value = ""; renderChange(); $("#ob-key").focus(); }
+    else if (act === "use-ollama") becomeReady("llama3.2:3b", "ollama");
+    else if (act === "chatgpt") becomeReady("gpt-5", "chatgpt");
+    else if (act === "engine-reco") { $('#ob-engines input[value="local_whisper"]').checked = true; S.engine = "local_whisper"; renderChange(); }
+  });
+
+  // --------------------------------------------------------------- 06 Setup
+  const RATE = 9e6; // ponytail: fake 90 MB/s, one item at a time in a fixed order
+  function startDownloads() {
+    if (S.dl.started) return; S.dl.started = true;
+    activeWork().forEach((w) => (S.dl.items[w.id] ??= { got: 0, state: "queued" }));
+    setInterval(() => {
+      if (S.dl.frozen) return; // ?state= renders hold still
+      const next = activeWork().find((w) => ["queued", "downloading"].includes(S.dl.items[w.id]?.state));
+      if (!next) return;
+      const it = S.dl.items[next.id]; it.state = "downloading"; it.got = Math.min(next.bytes, it.got + RATE);
+      if (it.got >= next.bytes) it.state = "ready";
+      if (S.step === "setup") renderSetup();
+      if (S.step === "voice" && (readiness() !== "ready" || S.voice.shown !== "ready")) renderVoice();
+      if (S.step === "finale") renderFinaleFoot();
+    }, 100);
+  }
+  function progress() {
+    const act = activeWork(), tot = act.reduce((a, w) => a + w.bytes, 0), got = act.reduce((a, w) => a + (S.dl.items[w.id]?.got || 0), 0);
+    return { tot, got, pct: tot ? Math.floor((got / tot) * 100) : 100, done: act.every((w) => S.dl.items[w.id]?.state === "ready") };
+  }
+  function renderSetup() {
+    const P = progress(), wl = workList(), act = activeWork();
+    const now = act.find((w) => S.dl.items[w.id]?.state === "downloading");
+    $("#ob-pct").innerHTML = `${P.pct}<small>%</small>`;
+    const bad = act.filter((w) => ["failed", "nospace"].includes(S.dl.items[w.id]?.state)).length;
+    const N = S.dl.notice;
+    $("#ob-dl-line").innerHTML = wl.length === 0 ? "Nothing to download — everything you need is already here."
+      : act.length === 0 ? "Every download was cancelled."
+      : N === "held" ? `Downloads are held until there is room · <span class="num">${totalLabel()}</span> to fetch.`
+      : N === "nospace" ? `Stopped · out of space at <span class="num">${fmtB(P.got)} of ${totalLabel()}</span>`
+      : N === "offline" ? `Waiting for the network · <span class="num">${fmtB(P.got)} of ${totalLabel()}</span>`
+      : bad ? `${bad === 1 ? "One download" : `${bad} downloads`} didn’t finish · the rest carry on.`
+      : P.done ? `All set · <span class="num">${totalLabel()}</span> downloaded.`
+      : now ? `Downloading <b>${NAME[now.id]}</b> · <span class="num">${fmtB(P.got)} of ${totalLabel()}</span>`
+      : `Starting <b>${NAME[act[0].id]}</b> · <span class="num">${totalLabel()}</span> to fetch.`;
+    const DISK = "Macintosh HD";
+    $("#ob-dl-notice").innerHTML = N === "offline" ? `<div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-cloud-off"/></svg></span><b class="mx-notice__title">You’re offline</b><p class="mx-notice__text">Downloads pick up where they stopped once the network is back. Keep going — nothing here waits on them.</p></div>`
+      : N === "held" ? `<div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-disk"/></svg></span><b class="mx-notice__title">Not enough room for the downloads</b><p class="mx-notice__text">2.1 GB free · 3.2 GB needed on ${DISK}. Free some space, or start them anyway.</p><div class="mx-notice__acts"><button class="mx-btn mx-btn--sm" data-act="dl-anyway">Download anyway</button></div></div>`
+      : N === "nospace" ? `<div class="mx-notice" data-tone="danger"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-disk"/></svg></span><b class="mx-notice__title">${DISK} filled up mid-download</b><p class="mx-notice__text">Free up space, then retry — the feature stays off until its model is here.</p><div class="mx-notice__acts"><button class="mx-btn mx-btn--sm" data-go="capture">Choose another folder</button></div></div>` : "";
+    $("#ob-work").innerHTML = wl.map((w) => {
+      const it = S.dl.items[w.id] || { got: 0, state: "queued" }, off = !S.f[w.id];
+      const retry = `<button class="mx-btn mx-btn--ghost mx-btn--sm" data-retry="${w.id}"><svg width="12" height="12"><use href="#i-retry"/></svg>Retry</button>`;
+      const st = it.state === "ready" ? `<span class="ob-item__st is-ready"><svg width="14" height="14"><use href="#ob-check"/></svg>Ready</span>`
+        : off ? `<span class="ob-item__st is-warn">Turned off<button class="mx-btn mx-btn--sm" data-restore="${w.id}">Turn it back on</button></span>`
+        : it.state === "failed" ? `<span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-alert"/></svg>${it.msg || "Download failed."}${retry}</span>`
+        : it.state === "nospace" ? `<span class="mx-inline" data-tone="danger"><svg width="13" height="13"><use href="#i-disk"/></svg>Out of space at ${fmtB(it.got)}${retry}</span>`
+        : it.state === "waiting" ? `<span class="ob-item__st"><svg width="13" height="13"><use href="#i-cloud-off"/></svg>Waiting for the network</span>`
+        : it.state === "held" ? `<span class="ob-item__st">Held</span>`
+        : it.state === "downloading" ? `<span class="ob-item__st">Downloading<button class="mx-btn mx-btn--sm" data-cancel="${w.id}">Cancel</button></span>`
+        : `<span class="ob-item__st">Queued</span>`;
+      const stalled = ["failed", "nospace", "waiting"].includes(it.state);
+      const track = !off && (it.state === "downloading" || (stalled && it.got)) ? `<div class="ob-track${stalled ? " is-stalled" : ""}"><b style="width:${(it.got / w.bytes) * 100}%"></b></div>` : "";
+      const why = !off && ["failed", "nospace"].includes(it.state) ? `<p class="ob-item__why">${NAME[w.id]} stays off until this arrives. Continue still works.</p>` : "";
+      return `<div class="ob-item${off && it.state !== "ready" ? " is-off" : ""}"><span class="ob-item__name">${NAME[w.id]}<small>${w.approx ? "about " : ""}${fmtB(w.bytes)}</small></span>${st}${track}${why}</div>`;
+    }).join("") || `<p class="ob-fine">Every model your settings need is already on this machine.</p>`;
+  }
+  $("#ob-work").addEventListener("click", (e) => {
+    const c = e.target.closest("[data-cancel]"), r = e.target.closest("[data-restore]"), t = e.target.closest("[data-retry]");
+    if (t) { S.dl.items[t.dataset.retry].state = "downloading"; S.dl.notice = null; S.dl.frozen = false; }
+    if (c) { const id = c.dataset.cancel; S.f[id] = false; S.dl.items[id].state = "cancelled"; S.dl.items[id].got = 0; if (id === "transcription" && S.f.speakerSeparation) { S.f.speakerSeparation = false; if (S.dl.items.speakerSeparation) S.dl.items.speakerSeparation.state = "cancelled"; } } // cancel → the processing feature goes off; the capture source stays on
+    if (r) { const id = r.dataset.restore; S.f[id] = true; S.dl.items[id] = { got: 0, state: "queued" }; }
+    renderSetup();
+  });
+
+  document.querySelector('[data-step="setup"]').addEventListener("click", (e) => {
+    if (!e.target.closest('[data-act="dl-anyway"]')) return;
+    S.dl.notice = null; S.dl.frozen = false; activeWork().forEach((w) => { const it = S.dl.items[w.id]; if (it?.state === "held") it.state = "queued"; }); renderSetup();
+  });
+
+  // --------------------------------------------------------------- 07 Voice
+  const SENTENCE = "I keep my work on this machine, and I would like Mnema to know my voice. I work on a few things at once, and I would like the transcript to say who said what. Reading this out loud takes about fifteen seconds.";
+  const CLIP = 15000;
+  const readiness = () => !S.f.speakerSeparation ? "off" : S.dl.items.speakerSeparation?.state === "ready" ? "ready" : "downloading";
+  function renderVoice() {
+    const R = readiness(), v = S.voice; v.shown = R;
+    if (R !== "ready") {
+      const it = S.dl.items.speakerSeparation, pct = it ? Math.floor((it.got / SPEAKRS) * 100) : 0;
+      $("#ob-voice").innerHTML = `<div class="ob-head"><h1 class="mx-display">Not yet — and that is fine.</h1><p class="ob-fine">This step waits for you, never the other way round.</p></div>
+        <div class="ob-head"><p class="mx-prose">${R === "off" ? "Who’s speaking is switched off, so there is nothing to match a voice against." : "The model that tells voices apart is still arriving."}</p>
+        ${R === "downloading" ? `<div class="ob-track" style="max-width:420px"><b style="width:${pct}%"></b></div><p class="ob-fine num">${fmtB(it?.got || 0)} of ${fmtB(SPEAKRS)}</p><p class="ob-fine">A card will be waiting on your dashboard the moment it is ready.</p>` : ""}</div>`;
+      $("#ob-voice-acts").innerHTML = `<button class="mx-btn mx-btn--ghost" data-go="next">Skip voice entirely</button><button class="mx-btn mx-btn--primary" data-go="next">Set this up later${ARROW}</button>`;
+      return;
+    }
+    const busy = v.phase === "recording" || v.phase === "judging";
+    const line = v.phase === "recording" ? `${clockS(v.elapsed)} of about ${clockS(CLIP)}` : v.phase === "judging" ? "Checking the take…"
+      : v.phase === "error" ? `Take ${v.take} · no audio`
+      : v.take === 0 ? `Ready when you are · about ${clockS(CLIP)}` : `Take ${v.take} · ${v.phase === "rejected" ? "0:06" : "0:15"} · peaked at ${{ enrolled: 71, nospeech: 3, multi: 64 }[v.phase] ?? 34}%`;
+    // real copy: lib/voice-enrollment.ts:38-48 (rejections) · VoiceScreen.svelte (enrolled / error)
+    const note = (tone, ic, title, text) => `<div class="mx-notice" data-tone="${tone}"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#${ic}"/></svg></span><b class="mx-notice__title">${title}</b>${text ? `<p class="mx-notice__text">${text}</p>` : ""}</div>`;
+    const callout = v.phase === "enrolled" ? note("ok", "i-check", "Enrolled.", "Mnema will pick your voice out from now on.")
+      : v.phase === "rejected" ? note("warn", "i-alert", "Too short to learn from", "That take had only 6 seconds of speech in it. Read the whole sentence out loud, then try again.")
+      : v.phase === "nospeech" ? note("warn", "i-alert", "Too quiet to hear", "Mnema heard no speech in that take. Check the right microphone is selected and that you are not muted, then try again.")
+      : v.phase === "multi" ? note("warn", "i-alert", "More than one voice", "Mnema heard 2 voices in that take. It can only learn one, so record somewhere quieter — or ask the other person for fifteen seconds of silence.")
+      : v.phase === "error" ? note("danger", "i-alert", "That didn’t record.", "The microphone is in use by another app. Close it, then record again.") : "";
+    const btn = v.phase === "enrolled" ? `<button class="mx-btn" data-act="record">Record again</button>`
+      : `<button class="mx-btn mx-btn--primary" data-act="record" ${busy ? 'aria-busy="true" disabled' : ""}><svg width="14" height="14"><use href="#ob-mic"/></svg>${v.phase === "recording" ? "Recording…" : v.phase === "judging" ? "Checking…" : v.take === 0 ? "Record fifteen seconds" : "Record again"}</button>`;
+    $("#ob-voice").innerHTML = `<div class="ob-head"><span class="mx-kicker">Voice</span><h1 class="mx-display">Fifteen seconds so Mnema can use your name.</h1><p class="ob-fine">Otherwise your side is filed as “Speaker&nbsp;1”.</p></div>
+      <div class="mx-panel ob-instr"><span class="mx-label">Read this out loud</span><p class="ob-quote">“${SENTENCE}”</p>
+        <div class="ob-take"><div class="ob-meter${v.take ? " is-voice" : ""}" id="ob-vmeter" aria-hidden="true">${v.levels.map((l) => `<i style="height:${4 + Math.round(l * 36)}px"></i>`).join("")}</div><span class="num" role="status">${line}</span></div>
+        ${callout}<div class="ob-acts">${btn}</div></div>`;
+    $("#ob-voice-acts").innerHTML = v.phase === "enrolled" ? `<button class="mx-btn mx-btn--primary" data-go="next">Continue${ARROW}</button>`
+      : `<button class="mx-btn" data-go="next">Skip — you can do this later in Settings</button>`;
+  }
+  $("#ob-voice").addEventListener("click", (e) => {
+    if (!e.target.closest('[data-act="record"]')) return;
+    const v = S.voice; v.phase = "recording"; v.elapsed = 0; v.take++;
+    const reject = !v.rejected; // ponytail: take 1 is rejected (too short), take 2 enrolls — shows both outcomes
+    const stopAt = reject ? 6000 : CLIP;
+    renderVoice();
+    const t = setInterval(() => {
+      v.elapsed += 360; // ponytail: clock runs 3× fast so a mock take lasts 5 s
+      v.levels = [...v.levels.slice(1), Math.max(0.04, Math.abs(Math.sin(v.elapsed / 400)) * (0.35 + Math.random() * 0.6))];
+      if (v.elapsed >= stopAt) {
+        clearInterval(t); v.phase = "judging"; renderVoice();
+        setTimeout(() => { v.phase = reject ? "rejected" : "enrolled"; v.rejected = true; renderVoice(); }, 900);
+      } else renderVoice();
+    }, 120);
+  });
+
+  // -------------------------------------------------------------- 08 Finale
+  const OCR = "Quarterly review — draft agenda · Q3 numbers, hiring plan, roadmap";
+  let finaleTimer = null, recStart = 0;
+  function finalePhase() { return S.finale ?? (S.perm.screen === "denied" && S.perm.microphone !== "granted" ? "idle" : "starting"); } // screen denied + mic granted = audio-only session (ADR 0052)
+  function renderFinale() {
+    const ph = finalePhase(), shot = new Date(anchor.getTime() + 2000), audioOnly = S.perm.screen === "denied";
+    const pill = { running: `<span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span><span id="ob-rec-t">REC 00:00:03</span></span>`, starting: `<span class="mx-rec mx-rec--starting"><span class="mx-spin mx-spin--sm"></span>STARTING…</span>`,
+      idle: `<span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>`, failed: `<span class="mx-rec mx-rec--stopped"><span class="mx-rec__dot"></span>NOT RECORDING</span>` }[ph];
+    const left = {
+      running: `<h1 class="ob-finale__title">It has<br />already<br />started.</h1><p class="ob-fine">${audioOnly ? "Microphone only — Screen Recording is off, so there are no frames yet." : "Capture began the moment you arrived here."}</p>`,
+      starting: `<h1 class="ob-finale__title">Setting up.</h1><p class="ob-fine">Saving your settings, then starting capture.</p>`,
+      idle: `<h1 class="ob-finale__title">Nothing is<br />being<br />recorded.</h1><p class="ob-fine">You declined Screen Recording, so Mnema is idle.</p>`,
+      failed: `<h1 class="ob-finale__title">Capture could<br />not start.</h1><p class="ob-reason">ScreenCaptureKit: the stream was refused (−3801).</p><p class="ob-fine">Screen Recording is granted, so this is almost certainly the stale-stream case — Mnema has not been relaunched since the grant.</p>`,
+    }[ph];
+    const frame = ph === "running" && audioOnly ? `<div class="ob-shot is-empty"><span class="ob-fine">No screen frames — Screen Recording is off.</span></div>` : ph === "running"
+      ? `<div class="ob-shot"><div class="ob-shot__bar"><i></i><i></i><i></i></div><div class="ob-shot__body"><div class="ob-shot__side">${[70, 52, 64, 40, 58].map((w) => `<i class="b" style="width:${w}%"></i>`).join("")}</div><div class="ob-shot__doc"><i class="b h"></i>${[92, 84, 88, 60, 0, 78, 90, 70].map((w) => (w ? `<i class="b" style="width:${w}%"></i>` : "<span></span>")).join("")}</div></div></div><p class="ob-fine num">Captured ${hms(shot)} · 3 seconds ago</p>`
+      : `<div class="ob-shot is-empty"><span class="ob-fine">${ph === "starting" ? `first frame due within ${LADDER[S.rate]} seconds` : "No frame has been captured."}</span></div>`;
+    const ocr = ph === "running" && !audioOnly ? `<div class="ob-head"><span class="mx-label">First words read off it · already searchable</span><p class="ob-ocr"><mark>${[...OCR.slice(0, 31)].map((ch, i) => `<span style="--i:${i}">${ch}</span>`).join("")}</mark>${[...OCR.slice(31)].map((ch, i) => `<span style="--i:${i + 31}">${ch}</span>`).join("")}</p></div>`
+      : ph === "idle" ? `<p class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema, then relaunch once.</p>`
+      : ph === "running" && audioOnly ? `<div class="mx-notice" data-tone="warn"><span class="mx-notice__icon"><svg width="15" height="15"><use href="#i-lock"/></svg></span><b class="mx-notice__title">Screen Recording is off for Mnema</b><p class="mx-notice__text">Turn it on in System Settings, then relaunch once — frames start on their own.</p><div class="mx-notice__acts"><button class="mx-btn mx-btn--sm" data-act="open-settings">Open System Settings<svg width="12" height="12"><use href="#i-external"/></svg></button></div></div>` : "";
+    $("#ob-finale").innerHTML = `<div class="ob-head">${pill}${left}</div><div class="ob-evidence"><div class="ob-head"><span class="mx-label">${ph === "running" ? (audioOnly ? "Listening — microphone only" : "Your first frame") : "What you would be seeing"}</span>${frame}</div>${ocr}</div>`;
+    renderFinaleFoot();
+    clearTimeout(finaleTimer);
+    if (ph === "starting" && !qs.has("finale") && !qs.has("state")) finaleTimer = setTimeout(() => { S.finale = "running"; recStart = Date.now(); renderFinale(); }, 1200);
+  }
+  function renderFinaleFoot() {
+    const ph = finalePhase();
+    const pending = activeWork().filter((w) => S.dl.items[w.id] && S.dl.items[w.id].state !== "ready");
+    const failed = pending.filter((w) => ["failed", "nospace"].includes(S.dl.items[w.id].state));
+    const noteTxt = ph === "idle" ? "Grant it later and capture starts on its own."
+      : failed.length && ph !== "failed" ? `${NAME[failed[0].id]} didn’t download — retry it in Settings → Models.`
+      : pending.length && ph !== "failed" ? `Preparing · ${pending.map((w) => `${NAME[w.id]} <span class="num">${Math.floor((S.dl.items[w.id].got / w.bytes) * 100)}%</span>`).join(" · ")} — ${pending.length > 1 ? "they turn" : "turns"} themselves on.`.replace("turns themselves", "turns itself")
+      : ph === "running" ? "Everything else runs in the background from here." : "";
+    const acts = ph === "idle" ? `<button class="mx-btn mx-btn--ghost" data-go="back">Back</button><a class="mx-btn" href="timeline.html">Open Mnema anyway</a><button class="mx-btn" data-act="recheck-finale">Re-check</button><button class="mx-btn mx-btn--primary" data-act="open-settings">Open System Settings ›</button>`
+      : ph === "failed" ? `<button class="mx-btn mx-btn--ghost" data-go="back">Back</button><a class="mx-btn" href="timeline.html">Open Mnema anyway</a><button class="mx-btn mx-btn--primary" data-act="relaunch">Relaunch Mnema</button>`
+      : `<a class="mx-btn mx-btn--primary" href="timeline.html"${ph === "starting" ? ' aria-disabled="true"' : ""}>Open Mnema${ARROW}</a>`;
+    $("#ob-finale-foot").innerHTML = `<p class="ob-foot__note">${noteTxt}</p>${acts}`;
+  }
+  $("#ob-finale-foot").addEventListener("click", (e) => {
+    const a = e.target.closest("[data-act]"); if (!a) return;
+    if (a.dataset.act === "recheck-finale") { S.perm.screen = "granted"; S.finale = null; renderFinale(); }
+    if (a.dataset.act === "relaunch") { S.finale = null; renderFinale(); }
+  });
+  setInterval(() => { const t = $("#ob-rec-t"); if (t && recStart) { const s = 3 + Math.floor((Date.now() - recStart) / 1000); t.textContent = `REC 00:${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; } }, 1000);
+
+  // ---------------------------------------------- Permission helper window
+  // Opens with every "Open System Settings" (Permissions, Finale, status bar in the app); a live check from the
+  // permission poll closes it. In ?state= renders it stays open. Drag-out of the icon into the list: later cut.
+  const HLIST = { screen: "Screen Recording", microphone: "Microphone", systemAudio: "Screen & System Audio Recording", accessibility: "Accessibility" };
+  function helper(kind) {
+    const h = $("#ob-helper"); h.hidden = false; h.dataset.state = "waiting";
+    $("#ob-helper-title").textContent = `Turn on Mnema in the ${HLIST[kind] ?? HLIST.screen} list`;
+    $("#ob-helper-state").innerHTML = `<span class="mx-spin mx-spin--sm"></span>Waiting for the switch — this closes by itself`;
+  }
+  function helperGranted() {
+    const h = $("#ob-helper"); if (h.hidden) return; h.dataset.state = "granted";
+    $("#ob-helper-state").innerHTML = `<svg width="13" height="13"><use href="#i-check"/></svg>On — you can close System Settings`;
+    if (!qs.has("state")) setTimeout(() => { h.hidden = true; }, 1400);
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target.closest('[data-act="open-settings"]')) return helper(S.step === "finale" ? "screen" : (current() ?? "screen"));
+    if (e.target.closest('[data-recheck], [data-act="recheck-finale"]')) return helperGranted();
+    if (e.target.closest('[data-act="dismiss-helper"]')) $("#ob-helper").hidden = true;
+  });
+
+  const RENDER = { welcome: rewind, permissions: renderPermissions, capture: renderCapture, settings: renderSettings, change: renderChange, setup: renderSetup, voice: renderVoice, finale: renderFinale };
+
+  // ------------------------------------------------- ?step / ?state hooks
+  // One named state per row: [label, step, setup]. Setup runs after the ?step defaults.
+  const seed = (map, frozen = true) => { S.dl.started = false; S.dl.frozen = frozen;
+    activeWork().forEach((w) => { const [state, frac, msg] = map[w.id] || ["ready", 1]; S.dl.items[w.id] = { state, got: Math.round(w.bytes * frac), msg }; }); };
+  const allReady = () => seed({});
+  const voice = (phase, take = 1) => () => { allReady(); Object.assign(S.voice, { phase, take, rejected: true, levels: S.voice.levels.map((_, k) => phase === "nospeech" || phase === "error" ? 0.02 + (k % 3) * 0.01 : 0.12 + Math.abs(Math.sin(k * 1.7)) * 0.55) }); };
+  const STATES = {
+    "perm-ask": ["Permissions · screen, first ask", "permissions", () => {}],
+    "perm-denied": ["Permissions · screen denied just now", "permissions", () => { S.perm.screen = "denied"; }],
+    "perm-prior": ["Permissions · denied before setup (no prompt)", "permissions", () => { S.perm.screen = "denied"; S.perm.prior = true; }],
+    "perm-helper": ["Permissions · System Settings open, helper floating", "permissions", () => { S.perm.screen = "denied"; setTimeout(() => helper("screen"), 60); }],
+    "perm-relaunch": ["Permissions · screen granted, needs relaunch (holds Continue)", "permissions", () => { S.perm.screen = "granted"; S.perm.relaunch = true; }],
+    "perm-resumed": ["Permissions · relaunched mid-flow, resumes here", "permissions", () => { S.perm.screen = "granted"; S.perm.resumed = true; }],
+    "perm-mic-denied": ["Permissions · microphone denied", "permissions", () => { S.perm.screen = "granted"; S.perm.microphone = "denied"; }],
+    "perm-sys-listening": ["Permissions · system audio, listening", "permissions", () => { S.perm.screen = S.perm.microphone = "granted"; setTimeout(() => listen(true), 50); }],
+    "perm-sys-blocked": ["Permissions · system audio possibly blocked", "permissions", () => { S.perm.screen = S.perm.microphone = "granted"; Object.assign(S.perm.sys, { requested: true, blocked: true }); }],
+    "perm-done": ["Permissions · all answered", "permissions", () => { S.perm.screen = S.perm.microphone = "granted"; S.perm.sys.requested = true; S.passed = ["systemAudio", "accessibility"]; }],
+    "storage-ok": ["Capture & Storage · fits", "capture", () => {}],
+    "storage-tight": ["Capture & Storage · fills up (warn)", "capture", () => { S.folder = "work"; }],
+    "storage-readonly": ["Capture & Storage · not writable (gate)", "capture", () => { S.folder = "archive"; }],
+    "storage-offline": ["Capture & Storage · volume disconnected (gate)", "capture", () => { S.folder = "offline"; }],
+    "storage-full": ["Capture & Storage · not enough disk (gate)", "capture", () => { S.folder = "tiny"; }],
+    "settings": ["Your settings", "settings", () => {}],
+    "settings-denied": ["Your settings · mic not granted", "settings", () => { S.perm.microphone = "denied"; }],
+    "change-ai-unready": ["Change settings · AI on with nothing to run it (soft notice, exits live)", "change", () => { S.f.aiFeatures = true; S.ai.ready = false; S.ai.mode = "later"; }],
+    "change-undo": ["Change settings · cascade + undo", "change", () => { S.undo = { snap: { ...S.f }, text: "System audio went off — and transcription + who’s speaking went with it." }; S.f.microphone = S.f.systemAudio = S.f.transcription = S.f.speakerSeparation = false; }],
+    "ai-held": ["AI · on with nothing to run it (back held)", "change", () => { S.tab = "ai"; S.f.aiFeatures = true; S.ai.mode = "now"; }],
+    "ai-verifying": ["AI · key verifying", "change", () => { S.tab = "ai"; S.ai.mode = "now"; S.ai.kind = "anthropic"; S.ai.check = "checking"; }],
+    "ai-invalid": ["AI · key rejected", "change", () => { S.tab = "ai"; S.ai.mode = "now"; S.ai.kind = "anthropic"; S.ai.check = "bad"; }],
+    "ai-none": ["AI · local scan finds nothing", "change", () => { S.tab = "ai"; S.ai.mode = "now"; S.ai.scanned = true; S.ai.scan = "none"; }],
+    "ai-empty": ["AI · Ollama has no models", "change", () => { S.tab = "ai"; S.ai.mode = "now"; S.ai.scanned = true; S.ai.scan = "empty"; }],
+    "ai-ready": ["AI · ready", "change", () => { S.tab = "ai"; S.ai = { mode: "now", kind: "ollama", ready: true, model: "llama3.2:3b", via: "ollama", scanned: true, scan: "found", check: null }; S.f.aiFeatures = true; }],
+    "setup": ["Setup · downloading", "setup", () => seed({ transcription: ["ready", 1], speakerSeparation: ["downloading", 0.46], semanticSearch: ["queued", 0] })],
+    "setup-held": ["Setup · held, not enough room", "setup", () => { S.dl.notice = "held"; seed({ transcription: ["held", 0], speakerSeparation: ["held", 0], semanticSearch: ["held", 0] }); }],
+    "setup-failed": ["Setup · one download failed", "setup", () => seed({ transcription: ["ready", 1], speakerSeparation: ["failed", 0.38, "Connection reset by the server."], semanticSearch: ["downloading", 0.3] })],
+    "setup-offline": ["Setup · offline", "setup", () => { S.dl.notice = "offline"; seed({ transcription: ["ready", 1], speakerSeparation: ["waiting", 0.52], semanticSearch: ["waiting", 0] }); }],
+    "setup-nospace": ["Setup · disk filled mid-download", "setup", () => { S.dl.notice = "nospace"; seed({ transcription: ["ready", 1], speakerSeparation: ["ready", 1], semanticSearch: ["nospace", 0.57] }); }],
+    "setup-cancelled": ["Setup · one cancelled → feature off", "setup", () => { seed({ transcription: ["ready", 1], speakerSeparation: ["downloading", 0.7], semanticSearch: ["cancelled", 0] }); S.f.semanticSearch = false; }],
+    "setup-done": ["Setup · all ready", "setup", () => allReady()],
+    "voice-waiting": ["Voice · model still downloading", "voice", () => seed({ speakerSeparation: ["downloading", 0.46] })],
+    "voice-off": ["Voice · who’s speaking off", "voice", () => { allReady(); S.f.speakerSeparation = false; }],
+    "voice-ready": ["Voice · ready to record", "voice", () => allReady()],
+    "voice-busy": ["Voice · mic busy (didn’t record)", "voice", voice("error")],
+    "voice-quiet": ["Voice · too quiet (no speech)", "voice", voice("nospeech")],
+    "voice-rejected": ["Voice · too short", "voice", voice("rejected")],
+    "voice-multi": ["Voice · two voices", "voice", voice("multi")],
+    "voice-saved": ["Voice · enrolled", "voice", voice("enrolled", 2)],
+    "finale-starting": ["Finale · starting", "finale", () => { allReady(); S.finale = "starting"; }],
+    "finale-running": ["Finale · running", "finale", () => { allReady(); S.finale = "running"; recStart = Date.now(); }],
+    "finale-downloads": ["Finale · running, downloads still going", "finale", () => { seed({ speakerSeparation: ["downloading", 0.81], semanticSearch: ["downloading", 0.34] }); S.finale = "running"; recStart = Date.now(); }],
+    "finale-dl-failed": ["Finale · running, a download failed", "finale", () => { seed({ speakerSeparation: ["failed", 0.38] }); S.finale = "running"; recStart = Date.now(); }],
+    "finale-idle": ["Finale · screen denied, idle", "finale", () => { allReady(); S.finale = "idle"; S.perm.screen = "denied"; }],
+    "finale-audio-only": ["Finale · screen denied, microphone recording", "finale", () => { allReady(); S.finale = "running"; recStart = Date.now(); S.perm.screen = "denied"; S.perm.microphone = "granted"; }],
+    "finale-helper": ["Finale · idle, helper floating", "finale", () => { allReady(); S.finale = "idle"; S.perm.screen = "denied"; setTimeout(() => helper("screen"), 60); }],
+    "finale-failed": ["Finale · capture failed to start", "finale", () => { allReady(); S.finale = "failed"; }],
+  };
+  const picker = $("#ob-state");
+  picker.innerHTML = `<option value="">— live flow —</option>` + Object.entries(STATES).map(([k, [l]]) => `<option value="${k}">${l}</option>`).join("");
+  picker.value = STATES[qs.get("state")] ? qs.get("state") : "";
+  picker.addEventListener("change", () => { const u = new URL(location.href); [...u.searchParams.keys()].filter((k) => k !== "theme").forEach((k) => u.searchParams.delete(k)); if (picker.value) u.searchParams.set("state", picker.value); location.href = u; });
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const ST = STATES[qs.get("state")];
+    const step = ST ? ST[1] : ALIAS[qs.get("step")] ?? qs.get("step") ?? "welcome";
+    const at = ORDER.indexOf(step);
+    if (at > 1) { S.perm.screen = S.perm.microphone = "granted"; S.perm.sys.requested = true; S.passed = [...PORDER]; } // arrived past Permissions
+    const perm = qs.get("perm");
+    if (perm === "mic-denied") { S.perm.screen = "granted"; S.perm.microphone = "denied"; }
+    if (perm === "sysaudio") { S.perm.screen = S.perm.microphone = "granted"; setTimeout(() => listen(true), 50); }
+    if (perm === "done") { S.perm.screen = S.perm.microphone = "granted"; S.perm.sys.requested = true; S.passed = ["systemAudio", "accessibility"]; }
+    if (FOLDERS[qs.get("folder")]) S.folder = qs.get("folder");
+    if (TABS.includes(qs.get("tab"))) { S.tab = qs.get("tab"); $$("#ob-tabs button").forEach((b) => b.setAttribute("aria-pressed", String(b.value === S.tab))); }
+    if (qs.get("ai") === "on") { S.f.aiFeatures = true; S.ai.mode = "now"; }
+    if (qs.get("ai") === "ready") { S.ai = { mode: "now", kind: "ollama", ready: true, model: "llama3.2:3b", via: "ollama", scanned: true }; S.f.aiFeatures = true; }
+    const vq = qs.get("voice");
+    if (at >= 6 && vq !== "waiting" && !ST) { S.dl.started = false; activeWork().forEach((w) => (S.dl.items[w.id] = { got: w.id === "semanticSearch" ? w.bytes * 0.62 : w.bytes, state: w.id === "semanticSearch" ? "downloading" : "ready" })); startDownloads(); }
+    if (vq === "enrolled") Object.assign(S.voice, { phase: "enrolled", take: 2, rejected: true, levels: S.voice.levels.map((_, k) => 0.15 + Math.abs(Math.sin(k * 1.7)) * 0.6) });
+    if (vq === "rejected") Object.assign(S.voice, { phase: "rejected", take: 1, rejected: true, levels: S.voice.levels.map((_, k) => (k > 20 ? 0.1 + Math.abs(Math.sin(k)) * 0.4 : 0.03)) });
+    if (["starting", "running", "idle", "failed"].includes(qs.get("finale"))) { S.finale = qs.get("finale"); if (S.finale === "idle") S.perm.screen = "denied"; recStart = Date.now(); }
+    if (step === "finale" && !qs.has("finale")) S.finale = null;
+    if (ST) {
+      ST[2]();
+      $$("#ob-tabs button").forEach((b) => b.setAttribute("aria-pressed", String(b.value === S.tab)));
+      $$("#ob-kind option").forEach((o) => (o.selected = o.value === S.ai.kind));
+      if (S.ai.check) $("#ob-key").value = "sk-ant-api03-7Hq2••••••••";
+    }
+    go(ORDER.includes(step) ? step : "welcome");
+  });
+})();
+</script>
+<!-- Permission helper — the app's own always-on-top, non-activating window (decision 20); drawn fixed here. -->
+<div class="mx-helper" id="ob-helper" hidden data-state="waiting"><span class="mx-helper__icon"><img src="../../../apps/desktop/src-tauri/icons/128x128.png" alt=""></span>
+  <div><div class="mx-helper__title" id="ob-helper-title"></div><div class="mx-helper__state" id="ob-helper-state"></div></div>
+  <button class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" data-act="dismiss-helper" aria-label="Dismiss"><svg width="14" height="14"><use href="#i-x"/></svg></button></div>
+</body>
+</html>
