@@ -394,6 +394,39 @@ where
     extract_with_preamble(config, PREAMBLE, prompt).await
 }
 
+/// `max_tokens` for Anthropic extraction. Anthropic requires the field, and rig
+/// only defaults it for a hard-coded model-prefix list (64K for the Claude 4
+/// family), so any model it doesn't know — e.g. the Claude 5 family on rig 0.41 —
+/// fails with "`max_tokens` must be set for Anthropic". 32K is a ceiling every
+/// Claude 4+ model accepts (Opus 4/4.1 cap output at 32K) and far above any
+/// extraction batch, so long Activity batches aren't cut off mid-JSON.
+const ANTHROPIC_EXTRACT_MAX_TOKENS: u64 = 32_768;
+
+/// The Anthropic extractor chain, split out so a test can point `client` at a
+/// local server (production never honors a `base_url` for Anthropic).
+async fn anthropic_extract<T>(
+    client: &anthropic::Client,
+    model: &str,
+    preamble: &str,
+    prompt: &str,
+) -> Result<T, AiRuntimeError>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned + serde::Serialize + Send + Sync + 'static,
+{
+    let extractor = client
+        .extractor::<T>(model)
+        .preamble(preamble)
+        .max_tokens(ANTHROPIC_EXTRACT_MAX_TOKENS)
+        // `auto`, not rig's default forced choice: the Claude 5 family rejects
+        // `tool_choice` `any`/`tool` with a 400. One tool + a preamble that says
+        // to use it still yields the `submit` call; `EXTRACT_RETRIES` covers a
+        // rare prose answer (same stance as the OpenAI-compatible path).
+        .tool_choice(rig_core::message::ToolChoice::Auto)
+        .retries(EXTRACT_RETRIES)
+        .build();
+    Ok(extractor.extract(prompt).await?)
+}
+
 /// Run a generic structured extraction with a caller-supplied `preamble`.
 ///
 /// Identical to [`extract`] but lets the caller drive the system instruction —
@@ -426,12 +459,7 @@ where
             match provider {
                 CloudProvider::Anthropic => {
                     let client = anthropic::Client::builder().api_key(api_key).build()?;
-                    let extractor = client
-                        .extractor::<T>(model.as_str())
-                        .preamble(preamble)
-                        .retries(EXTRACT_RETRIES)
-                        .build();
-                    Ok(extractor.extract(prompt).await?)
+                    anthropic_extract(&client, model, preamble, prompt).await
                 }
                 CloudProvider::Openai => {
                     let client = openai::Client::builder().api_key(api_key).build()?;
@@ -617,6 +645,99 @@ fn parse_host_port(endpoint: &str) -> Option<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+    struct Probe {
+        answer: String,
+    }
+
+    /// Serve ONE request on a local port with a canned Anthropic `submit` tool
+    /// call; hand back the raw JSON request body the client sent.
+    fn one_shot_anthropic_server() -> (String, std::sync::mpsc::Receiver<serde_json::Value>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}", listener.local_addr().expect("addr"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = BufReader::new(stream);
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().expect("content-length");
+                    }
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).expect("body");
+            tx.send(serde_json::from_slice(&body).expect("json body")).ok();
+            let response = serde_json::json!({
+                "id": "msg_test", "type": "message", "role": "assistant",
+                "model": "claude-opus-5-5",
+                "content": [{ "type": "tool_use", "id": "toolu_test", "name": "submit",
+                              "input": { "answer": "ok" } }],
+                "stop_reason": "tool_use", "stop_sequence": null,
+                "usage": { "input_tokens": 1, "output_tokens": 1 }
+            })
+            .to_string();
+            let mut stream = reader.into_inner();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .expect("write");
+        });
+        (url, rx)
+    }
+
+    /// Regression: rig 0.41 has no `max_tokens` default for the Claude 5
+    /// family, so without an explicit one extraction failed before sending with
+    /// "`max_tokens` must be set for Anthropic".
+    #[tokio::test]
+    async fn anthropic_extract_sends_max_tokens_for_models_rig_does_not_know() {
+        let (url, body) = one_shot_anthropic_server();
+        let client = anthropic::Client::builder()
+            .api_key("test-key")
+            .base_url(&url)
+            .build()
+            .expect("client");
+
+        let probe: Probe = anthropic_extract(&client, "claude-opus-5-5", "Answer.", "ping")
+            .await
+            .expect("extraction should round-trip");
+
+        assert_eq!(probe.answer, "ok");
+        let body = body.recv().expect("request body");
+        assert_eq!(body["model"], "claude-opus-5-5");
+        assert_eq!(body["max_tokens"], ANTHROPIC_EXTRACT_MAX_TOKENS);
+        assert_eq!(body["tool_choice"]["type"], "auto");
+    }
+
+    /// Live check against the real API. Run with:
+    /// `ANTHROPIC_API_KEY=… cargo test -p ai-runtime live_anthropic -- --ignored --nocapture`
+    /// (optionally `ANTHROPIC_MODEL=…`, default `claude-sonnet-5-5`).
+    #[tokio::test]
+    #[ignore = "hits the real Anthropic API; needs ANTHROPIC_API_KEY"]
+    async fn live_anthropic_extract() {
+        let config = EngineConfig::Cloud {
+            provider: CloudProvider::Anthropic,
+            model: std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-5-5".into()),
+            api_key: std::env::var("ANTHROPIC_API_KEY").expect("set ANTHROPIC_API_KEY"),
+            base_url: None,
+        };
+        let probe: Probe =
+            extract_with_preamble(&config, "Reply via the tool. answer = \"ok\".", "ping")
+                .await
+                .expect("live extraction should succeed");
+        println!("live answer: {probe:?}");
+    }
 
     #[test]
     fn ping_endpoint_returns_false_for_closed_port() {
