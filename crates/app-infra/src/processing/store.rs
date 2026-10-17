@@ -262,6 +262,20 @@ pub struct ProcessingStore {
     db: CaptureDb,
 }
 
+/// The query behind `list_nonterminal_ocr_references_for_workspace`, shared
+/// with `frame_pipeline_plan_check`.
+pub(crate) const WORKSPACE_OCR_JOBS_SQL: &str = "\
+    SELECT \
+       frames.id AS frame_id, \
+       processing_jobs.id AS job_id, \
+       processing_jobs.status AS job_status \
+    FROM frames \
+    CROSS JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
+        AND processing_jobs.subject_type = ?3 \
+        AND processing_jobs.processor = ?4 \
+    WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
+    ORDER BY frames.id ASC, processing_jobs.id ASC";
+
 impl ProcessingStore {
     pub(crate) fn new(db: CaptureDb) -> Self {
         Self { db }
@@ -683,27 +697,19 @@ impl ProcessingStore {
     ) -> Result<Vec<SegmentWorkspaceOcrReference>> {
         // Range bounds (not `LIKE`) so SQLite can use the `frames_file_path_idx`
         // index instead of a full table scan: range-scan `frames` by path prefix,
-        // then index into each frame's OCR jobs. See migration 0038.
-        let rows = sqlx::query(
-            "SELECT \
-                frames.id AS frame_id, \
-                processing_jobs.id AS job_id, \
-                processing_jobs.status AS job_status \
-             FROM frames \
-             INNER JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
-                 AND processing_jobs.subject_type = ?3 \
-                 AND processing_jobs.processor = ?4 \
-             WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
-             ORDER BY frames.id ASC, processing_jobs.id ASC",
-        )
-        .bind(workspace_prefix)
-        .bind(crate::frame_batch_store::workspace_path_prefix_upper_bound(
-            workspace_prefix,
-        ))
-        .bind(super::FRAME_SUBJECT_TYPE)
-        .bind(super::OCR_PROCESSOR)
-        .fetch_all(self.db.read())
-        .await?;
+        // then index into each frame's OCR jobs. See migration 0038. `CROSS JOIN`
+        // pins that order: the app never runs `ANALYZE`, and with a plain `JOIN`
+        // the planner drove from `processing_jobs_subject_idx (subject_type=?)` —
+        // every frame OCR job ever, ~86 MB per call (2026-10-17 stmt-cost trace).
+        let rows = sqlx::query(WORKSPACE_OCR_JOBS_SQL)
+            .bind(workspace_prefix)
+            .bind(crate::frame_batch_store::workspace_path_prefix_upper_bound(
+                workspace_prefix,
+            ))
+            .bind(super::FRAME_SUBJECT_TYPE)
+            .bind(super::OCR_PROCESSOR)
+            .fetch_all(self.db.read())
+            .await?;
 
         let mut references = Vec::new();
         let mut seen_job_ids = std::collections::HashSet::new();

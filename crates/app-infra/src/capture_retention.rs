@@ -197,6 +197,29 @@ pub struct CaptureRetentionStore {
     db: CaptureDb,
 }
 
+/// The query behind `list_finalized_screen_segments_overlapping_window`, shared
+/// with `frame_pipeline_plan_check`.
+pub(crate) const FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL: &str = "\
+    SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
+           sidecar_file_path, started_at, ended_at
+    FROM capture_segments
+    WHERE source_kind = 'screen'
+      AND status != 'recording'
+      AND media_file_path IS NOT NULL
+      AND (
+        (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
+        OR id IN (
+          SELECT capture_segment_id
+          FROM frames
+          WHERE capture_segment_id IS NOT NULL
+            AND captured_at >= date(?1, '-1 day')
+            AND captured_at < date(?2, '+2 days')
+            AND julianday(captured_at) >= julianday(?1)
+            AND julianday(captured_at) <= julianday(?2)
+        )
+      )
+    ORDER BY julianday(started_at) ASC, id ASC";
+
 impl CaptureRetentionStore {
     pub(crate) fn new(db: CaptureDb) -> Self {
         Self { db }
@@ -369,29 +392,18 @@ impl CaptureRetentionStore {
         start_at: &str,
         end_at: &str,
     ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
-        let rows = sqlx::query(
-            "SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
-                    sidecar_file_path, started_at, ended_at
-             FROM capture_segments
-             WHERE source_kind = 'screen'
-               AND status != 'recording'
-               AND media_file_path IS NOT NULL
-               AND (
-                 (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
-                 OR id IN (
-                   SELECT capture_segment_id
-                   FROM frames
-                   WHERE capture_segment_id IS NOT NULL
-                     AND julianday(captured_at) >= julianday(?1)
-                     AND julianday(captured_at) <= julianday(?2)
-                 )
-               )
-             ORDER BY julianday(started_at) ASC, id ASC",
-        )
-        .bind(start_at)
-        .bind(end_at)
-        .fetch_all(self.db.read())
-        .await?;
+        // The `date(…)` bounds are what let the frames sub-select range-scan
+        // `frames_captured_at_idx`: `julianday()` wraps the column, so on its own
+        // it forced a full `frames` scan per call (~72 MB on a real install,
+        // 2026-10-17 stmt-cost trace). They are a strict superset of the exact
+        // `julianday` window — every stored timestamp is ISO-8601 and starts with
+        // its date, and the one-day margin covers any UTC offset — so the
+        // `julianday` test still decides, across mixed fractional precisions.
+        let rows = sqlx::query(FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL)
+            .bind(start_at)
+            .bind(end_at)
+            .fetch_all(self.db.read())
+            .await?;
 
         rows.into_iter()
             .map(|row| {

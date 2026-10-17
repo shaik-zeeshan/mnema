@@ -60,6 +60,8 @@ use query::{
 
 mod equivalent_reuse;
 mod facets;
+#[cfg(test)]
+mod frame_pipeline_plan_check;
 mod grouping;
 mod honesty;
 #[cfg(test)]
