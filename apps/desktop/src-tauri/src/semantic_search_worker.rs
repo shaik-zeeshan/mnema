@@ -72,12 +72,12 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(20);
 ///
 /// A grace period (not an immediate drop on the first empty peek) avoids
 /// thrashing: live capture trickles fresh anchors in, and reloading the model
-/// costs a model read + device init. At [`IDLE_POLL_INTERVAL`] = 20 s, 3 passes
-/// is ~60 s of being caught up before the weights are released; the next anchor
+/// costs a model read + device init. At [`IDLE_POLL_INTERVAL`] = 20 s, 30 passes
+/// is ~10 min of being caught up before the weights are released; the next anchor
 /// pays one reload. This is the cheap, in-process approximation of a sidecar (a
 /// process that exits when drained returns *everything*, including the base
 /// runtime — this only frees the model).
-const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
+const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 30;
 
 /// Maximum time a loaded embedder stays warm across *consecutive working* passes
 /// before it is recycled (dropped and reloaded on the next batch).
@@ -102,7 +102,7 @@ const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
 /// forward passes, and batch wall time already varies with the CPU-pacing
 /// cooldown. Upgrade path: if candle ever sweeps `private_buffers`, delete this
 /// and the recycle check that reads it.
-pub(crate) const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(300);
+pub(crate) const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(3600);
 
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
 /// blocks capture, so a failure just retries later rather than surfacing.
