@@ -1,8 +1,8 @@
 //! The tap exclude list: Mnema's own process plus the privacy-listed apps.
 //!
 //! Excluding privacy-listed apps is parity, not a feature — ScreenCaptureKit's
-//! content filter already silenced their audio (ADR 0052), so the matching rule
-//! here deliberately mirrors `plan_privacy_content_filter` in `capture-screen`.
+//! content filter already silenced their audio (ADR 0052). Matching follows the
+//! responsible app, not just the process — see [`compute_exclude_list`].
 
 use std::collections::BTreeSet;
 
@@ -19,13 +19,18 @@ use cidre::{arc, core_audio as ca, dispatch};
 #[cfg(target_os = "macos")]
 use crate::LOG_PREFIX;
 
-/// A Core Audio process object, reduced to the two identities that matter: the
-/// object id a tap exclude list is written in, and the bundle id the privacy
-/// list is written in.
+/// A Core Audio process object, reduced to the identities that matter: the
+/// object id a tap exclude list is written in, and the bundle ids the privacy
+/// list is matched against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioProcess {
     pub object_id: u32,
     pub bundle_id: Option<String>,
+    /// The bundle id of the app macOS holds responsible for this process. Most
+    /// apps don't play sound from their main process: Chromium/Electron from
+    /// `<bundle>.helper`, every WebKit app from a shared-name
+    /// `com.apple.WebKit.GPU`. Only this ties those back to the app.
+    pub responsible_bundle_id: Option<String>,
 }
 
 /// The set of Core Audio process objects a tap generation must exclude.
@@ -57,13 +62,12 @@ impl ExcludeList {
 ///
 /// The privacy list identifies apps by **bundle id** (`ExcludedAppEntry::bundle_id`,
 /// resolved to `PrivacyFilterDecision::excluded_bundle_ids` by `evaluate_privacy`),
-/// and matching here is exact, case-sensitive bundle-id equality against every
-/// process object — the same rule `plan_privacy_content_filter` applies to
-/// ScreenCaptureKit's running apps today. Every process object carrying an
-/// excluded bundle id is excluded, so an app with several audio processes is
-/// covered by all of them; a helper process is covered only when it reports its
-/// parent's bundle id, which is exactly ScreenCaptureKit's behavior and so
-/// preserves the parity bar either way.
+/// A process object is excluded when its own bundle id **or** its responsible
+/// app's bundle id matches an excluded one — exactly, or as the parent of a
+/// nested id (`net.whatsapp.WhatsApp` covers `net.whatsapp.WhatsApp.ServiceExtension`,
+/// which app extensions must carry and which is its own responsible process).
+/// Matching the process's own bundle id alone missed nearly every real app: a
+/// browser's sound comes from its helpers, a WebKit app's from `WebKit.GPU`.
 ///
 /// `own_process_object_id` is `None` only until Core Audio mints an object for
 /// our pid; the next reconcile picks it up and rebuilds, so self-exclusion
@@ -83,12 +87,21 @@ pub fn compute_exclude_list(
         .filter(|bundle_id| !bundle_id.is_empty())
         .collect();
 
+    let matches = |bundle_id: &str| {
+        excluded.iter().any(|excluded| {
+            bundle_id
+                .strip_prefix(excluded)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+    };
+
     let mut process_object_ids: Vec<u32> = own_process_object_id.into_iter().collect();
     for process in processes {
-        let Some(bundle_id) = process.bundle_id.as_deref() else {
-            continue;
-        };
-        if excluded.contains(bundle_id) {
+        if [&process.bundle_id, &process.responsible_bundle_id]
+            .into_iter()
+            .flatten()
+            .any(|bundle_id| matches(bundle_id))
+        {
             process_object_ids.push(process.object_id);
         }
     }
@@ -150,13 +163,38 @@ pub fn read_audio_processes() -> Result<Vec<AudioProcess>, CaptureErrorResponse>
             .map(|process| AudioProcess {
                 object_id: process.0 .0,
                 // ponytail: a process whose bundle id cannot be read is treated as
-                // having none, so it never matches — same exposure ScreenCaptureKit
-                // has today. Distinguish "no bundle" from "read failed" only if a
-                // privacy-listed app is ever seen slipping through this way.
+                // having none, so it never matches. Distinguish "no bundle" from
+                // "read failed" only if a privacy-listed app is ever seen
+                // slipping through this way.
                 bundle_id: process.bundle_id().ok().map(|bundle_id| bundle_id.to_string()),
+                responsible_bundle_id: process.pid().ok().and_then(responsible_bundle_id),
             })
             .collect(),
     )
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    /// Private libSystem SPI (stable since 10.14, what Activity Monitor and
+    /// TCC attribute by). No public API maps an XPC service like
+    /// `WebKit.GPU` — whose parent is launchd — back to the app it serves.
+    fn responsibility_get_pid_responsible_for_pid(pid: i32) -> i32;
+}
+
+/// The bundle id of the app responsible for `pid`; `None` for daemons and for
+/// any lookup that fails, which falls back to matching the process's own
+/// bundle id alone.
+#[cfg(target_os = "macos")]
+fn responsible_bundle_id(pid: i32) -> Option<String> {
+    let responsible = unsafe { responsibility_get_pid_responsible_for_pid(pid) };
+    if responsible <= 0 {
+        return None;
+    }
+    cidre::objc::ar_pool(|| {
+        cidre::ns::RunningApp::with_pid(responsible)
+            .and_then(|app| app.bundle_id())
+            .map(|bundle_id| bundle_id.to_string())
+    })
 }
 
 /// The whole Core Audio read a reconcile depends on, as one fallible step.
@@ -391,6 +429,14 @@ mod tests {
         AudioProcess {
             object_id,
             bundle_id: Some(bundle_id.to_string()),
+            responsible_bundle_id: None,
+        }
+    }
+
+    fn served(object_id: u32, bundle_id: &str, responsible: &str) -> AudioProcess {
+        AudioProcess {
+            responsible_bundle_id: Some(responsible.to_string()),
+            ..process(object_id, bundle_id)
         }
     }
 
@@ -521,23 +567,37 @@ mod tests {
         assert_eq!(list.process_object_ids(), &[3, 4, OWN]);
     }
 
-    // The open assumption in the plan: a helper reporting its OWN bundle id is
-    // not excluded — matching is exact, exactly as ScreenCaptureKit's filter
-    // matches today, so this is parity rather than a regression.
+    // Chromium/Electron helpers carry `<bundle>.helper`; app extensions must
+    // nest under their app's id. Both are the app.
     #[test]
-    fn helper_reporting_its_own_bundle_id_is_not_excluded() {
+    fn nested_bundle_ids_are_the_app() {
         let list = list(
             &["com.google.Chrome"],
             &[
                 process(3, "com.google.Chrome"),
                 process(4, "com.google.Chrome.helper"),
+                process(5, "com.google.Chrome.helper.Renderer"),
+            ],
+        );
+        assert_eq!(list.process_object_ids(), &[3, 4, 5, OWN]);
+    }
+
+    // Safari, Mail, and every WKWebView app play sound from a process named
+    // `com.apple.WebKit.GPU`; only the responsible app says whose it is.
+    #[test]
+    fn shared_service_is_matched_by_its_responsible_app() {
+        let list = list(
+            &["com.apple.Safari"],
+            &[
+                served(3, "com.apple.WebKit.GPU", "com.apple.Safari"),
+                served(4, "com.apple.WebKit.GPU", "com.apple.mail"),
             ],
         );
         assert_eq!(list.process_object_ids(), &[3, OWN]);
     }
 
     #[test]
-    fn bundle_id_matching_is_exact() {
+    fn bundle_id_matching_is_exact_or_nested() {
         let list = list(
             &["com.secret"],
             &[
@@ -545,9 +605,11 @@ mod tests {
                 process(4, "com.secret.extra"),
                 process(5, "secret"),
                 process(6, "com.secret"),
+                process(7, "com.secretive"),
+                served(8, "com.apple.WebKit.GPU", "com.secretive"),
             ],
         );
-        assert_eq!(list.process_object_ids(), &[6, OWN]);
+        assert_eq!(list.process_object_ids(), &[4, 6, OWN]);
     }
 
     #[test]
@@ -558,10 +620,12 @@ mod tests {
                 AudioProcess {
                     object_id: 3,
                     bundle_id: Some(String::new()),
+                    responsible_bundle_id: Some(String::new()),
                 },
                 AudioProcess {
                     object_id: 4,
                     bundle_id: None,
+                    responsible_bundle_id: None,
                 },
             ],
         );
