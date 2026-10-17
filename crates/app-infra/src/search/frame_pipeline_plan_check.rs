@@ -1,5 +1,6 @@
-//! Fast plan checks for the three statements the 2026-10-17 `stmt-cost` trace
-//! caught re-reading app.sqlite3 (41 of 44.6 GB of page reads in 31 minutes).
+//! Fast plan checks for the statements the 2026-10-17 `stmt-cost` traces
+//! caught re-reading app.sqlite3 (41 of 44.6 GB of page reads in 31 minutes,
+//! then the user-context capture window at ~150 MB per distillation window).
 //!
 //! The app never runs `ANALYZE`, so the plan an empty migrated database gets is
 //! the plan every install gets: each check asserts the statement seeks instead
@@ -11,6 +12,7 @@ use super::equivalent_reuse::CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL;
 use super::test_support::{run_async_test, test_dir};
 use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
+use crate::user_context::capture_source::FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL;
 use crate::AppInfra;
 
 async fn plan(infra: &AppInfra, sql: &str) -> String {
@@ -58,6 +60,14 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
                 && workspace.contains("frames_file_path_idx")
                 && workspace.contains("(subject_type=? AND subject_id=?)"),
             "workspace OCR lookup must range-scan frames by path first; plan was: {workspace}"
+        );
+
+        // Was a GROUP BY over every OCR result: ~150 MB per distillation window.
+        let capture_window = plan(&infra, FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL).await;
+        assert!(
+            capture_window.starts_with("SEARCH frames USING INDEX frames_captured_at_idx")
+                && !capture_window.contains("SCAN processing_results"),
+            "capture window must range-scan frames, then probe each one's results; plan was: {capture_window}"
         );
 
         drop(infra);

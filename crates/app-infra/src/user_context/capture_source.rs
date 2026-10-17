@@ -58,6 +58,24 @@ pub struct CaptureWindowItem {
     pub speaker_turns: Vec<(i64, String)>,
 }
 
+pub(crate) const FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL: &str = "\
+    SELECT frames.id AS subject_id, \
+           frames.captured_at AS captured_at, \
+           processing_results.result_text AS result_text, \
+           frame_metadata_snapshots.snapshot_json AS snapshot_json \
+    FROM frames \
+    CROSS JOIN processing_results ON processing_results.id = (\
+       SELECT MAX(latest.id) FROM processing_results latest \
+       WHERE latest.subject_type = ?1 AND latest.subject_id = frames.id \
+         AND latest.processor = ?2\
+    ) \
+    LEFT JOIN frame_metadata_snapshots \
+       ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+    WHERE frames.captured_at >= ?3 AND frames.captured_at <= ?4 \
+      AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+    ORDER BY frames.captured_at ASC, frames.id ASC \
+    LIMIT ?5";
+
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureWindow {
@@ -89,36 +107,19 @@ impl UserContextStore {
 
         // --- Frames + latest OCR result + best-effort Search Context ---------
         //
-        // Latest-per-frame OCR result via a MAX(id) self-join (mirrors the
-        // pattern in `search.rs`). `frames.captured_at` is RFC3339 TEXT; filter
-        // on the RFC3339 range and convert to millis at the boundary.
-        let frame_rows = sqlx::query(
-            "SELECT frames.id AS subject_id, \
-                    frames.captured_at AS captured_at, \
-                    processing_results.result_text AS result_text, \
-                    frame_metadata_snapshots.snapshot_json AS snapshot_json \
-             FROM frames \
-             JOIN (\
-                SELECT subject_id, MAX(id) AS id \
-                FROM processing_results \
-                WHERE subject_type = ?1 AND processor = ?2 \
-                GROUP BY subject_id\
-             ) latest_ocr ON latest_ocr.subject_id = frames.id \
-             JOIN processing_results ON processing_results.id = latest_ocr.id \
-             LEFT JOIN frame_metadata_snapshots \
-                ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-             WHERE frames.captured_at >= ?3 AND frames.captured_at <= ?4 \
-               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
-             ORDER BY frames.captured_at ASC, frames.id ASC \
-             LIMIT ?5",
-        )
-        .bind(FRAME_SUBJECT_TYPE)
-        .bind(OCR_PROCESSOR)
-        .bind(&start_rfc3339)
-        .bind(&end_rfc3339)
-        .bind(max_items)
-        .fetch_all(self.pool())
-        .await?;
+        // Latest-per-frame OCR result via a correlated MAX(id), pinned behind
+        // the window's frames with CROSS JOIN: a GROUP BY derived table here
+        // read every OCR result ever (~150 MB) on each distillation window.
+        // `frames.captured_at` is RFC3339 TEXT; filter on the RFC3339 range
+        // and convert to millis at the boundary.
+        let frame_rows = sqlx::query(FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL)
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
+            .bind(&start_rfc3339)
+            .bind(&end_rfc3339)
+            .bind(max_items)
+            .fetch_all(self.pool())
+            .await?;
 
         for row in frame_rows {
             let captured_at: String = row.get("captured_at");
@@ -164,13 +165,11 @@ impl UserContextStore {
                     audio_segments.source_kind AS source_kind, \
                     processing_results.result_text AS result_text \
              FROM audio_segments \
-             JOIN (\
-                SELECT subject_id, MAX(id) AS id \
-                FROM processing_results \
-                WHERE subject_type = ?1 AND processor = ?2 \
-                GROUP BY subject_id\
-             ) latest_transcription ON latest_transcription.subject_id = audio_segments.id \
-             JOIN processing_results ON processing_results.id = latest_transcription.id \
+             CROSS JOIN processing_results ON processing_results.id = (\
+                SELECT MAX(latest.id) FROM processing_results latest \
+                WHERE latest.subject_type = ?1 AND latest.subject_id = audio_segments.id \
+                  AND latest.processor = ?2\
+             ) \
              WHERE audio_segments.started_at <= ?4 AND audio_segments.ended_at >= ?3 \
                AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
              ORDER BY audio_segments.started_at ASC, audio_segments.id ASC \
