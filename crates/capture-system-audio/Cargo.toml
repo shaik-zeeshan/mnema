@@ -12,4 +12,4 @@ capture-writers = { path = "../capture-writers" }
 # `core_audio` is the feature this crate is here for; the rest is the sibling
 # capture crates' set, which `core_audio` needs but does not declare (it reaches
 # for `at`, which reaches for `av`, which reaches for `cm`).
-cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cat", "cm", "core_audio", "dispatch", "macos_15_0"] }
+cidre = { version = "0.15", default-features = false, features = ["app", "av", "async", "blocks", "cat", "cm", "core_audio", "dispatch", "macos_15_0"] }
