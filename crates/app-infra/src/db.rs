@@ -431,6 +431,28 @@ async fn connect_pool(
     Ok(pool)
 }
 
+/// Test-only: a migrated, SQLCipher-keyed Owner Writer pool pinned to ONE
+/// connection, built through the same [`connect_pool`] the app uses (same pragmas,
+/// same `vec0` registration), so a scale check can read that one connection's
+/// pager counters and know they cover every statement it ran.
+#[cfg(test)]
+pub(crate) async fn connect_single_connection_owner_pool(
+    database_path: &Path,
+    passphrase: &str,
+) -> Result<SqlitePool> {
+    let pool = connect_pool(
+        database_path,
+        Some(CaptureIndexDatabaseKey::for_test(passphrase)),
+        PoolConfig {
+            max_connections: 1,
+            ..PoolConfig::owner_writer()
+        },
+    )
+    .await?;
+    MIGRATOR.run(&pool).await?;
+    Ok(pool)
+}
+
 async fn has_pending_migrations(pool: &SqlitePool) -> Result<bool> {
     let mut connection = pool.acquire().await?;
     let connection = connection.as_mut();

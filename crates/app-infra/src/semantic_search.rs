@@ -18,12 +18,19 @@
 //! - [`SemanticSearchStore::store_vector`] — write one **Semantic Search Vector**
 //!   into the `search_document_vectors` vec0 table keyed to `search_documents.id`.
 //!
-//! Resumability is structural: progress lives entirely in the DB (the presence or
-//! absence of a `vec0` row), never in worker memory. A restart mid-backfill
-//! continues from exactly where the rows say it is — an already-vectored anchor is
-//! filtered out by the `NOT IN` sub-select, and a reprocessed anchor (delete +
-//! reinsert with a new id, dropping the old vec0 row via the slice-1 `AFTER
-//! DELETE` trigger) reappears in the query automatically.
+//! Resumability is structural: progress lives entirely in the DB, never in worker
+//! memory. The work list is the `search_document_vector_backlog` table (migration
+//! `0059`): a trigger adds every new `direct` anchor, the store removes it in the
+//! same transaction that writes its vector, and a vec0 rebuild refills it. A
+//! restart mid-backfill continues from exactly where the rows say it is, and a
+//! reprocessed anchor (delete + reinsert with a new id, dropping the old vec0 and
+//! backlog rows via their `AFTER DELETE` triggers) reappears automatically.
+//!
+//! Never find the missing set by anti-joining `search_document_vectors` (`NOT IN
+//! (SELECT rowid …)`): vec0 answers that with a full `_rowids` scan and sort per
+//! statement, and with the backlog below the peek's `LIMIT` the peek then walks
+//! every `direct` anchor. That was ~210 MB of database read per worker pass
+//! (`search::semantic_backfill_scale_check`).
 
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
@@ -121,24 +128,16 @@ impl SemanticSearchStore {
     /// — its group's `direct` representative is what surfaces. Structural frame
     /// dedup thus collapses the embed count with no separate admission pass.
     ///
-    /// The `NOT IN (SELECT rowid FROM search_document_vectors)` anti-join is what
-    /// makes the sweep self-healing and resumable: any anchor already vectored is
-    /// filtered out, so the same query covers live capture, historical backfill,
-    /// and resume-after-restart in one pass.
+    /// Walks `search_document_vector_backlog` newest-first through its own index,
+    /// so it reads pages in proportion to `limit`, not to the size of the index.
+    /// The backlog is what makes the sweep self-healing and resumable: the same
+    /// query covers live capture, historical backfill (a rebuild refills it), and
+    /// resume-after-restart in one pass.
     pub async fn anchors_missing_vector(&self, limit: i64) -> Result<Vec<AnchorMissingVector>> {
-        let rows = sqlx::query(
-            "SELECT search_documents.id AS id, search_documents.body_text AS body_text \
-             FROM search_documents \
-             WHERE search_documents.text_source_kind = 'direct' \
-               AND search_documents.id NOT IN (\
-                   SELECT rowid FROM search_document_vectors\
-               ) \
-             ORDER BY search_documents.absolute_start_at DESC, search_documents.id DESC \
-             LIMIT ?1",
-        )
-        .bind(limit)
-        .fetch_all(self.db.read())
-        .await?;
+        let rows = sqlx::query(ANCHORS_MISSING_VECTOR_SQL)
+            .bind(limit)
+            .fetch_all(self.db.read())
+            .await?;
 
         Ok(rows
             .into_iter()
@@ -155,19 +154,13 @@ impl SemanticSearchStore {
     /// Delete Recent) mid-embed is never inserted as an orphan, and a concurrent
     /// reprocess that replaced the anchor id is not clobbered.
     pub async fn anchor_still_missing_vector(&self, anchor_id: i64) -> Result<bool> {
-        let exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 \
-             FROM search_documents \
-             WHERE search_documents.id = ?1 \
-               AND search_documents.text_source_kind = 'direct' \
-               AND search_documents.id NOT IN (\
-                   SELECT rowid FROM search_document_vectors\
-               ) \
-             LIMIT 1",
-        )
-        .bind(anchor_id)
-        .fetch_optional(self.db.read())
-        .await?;
+        // A backlog row exists only for a live `direct` anchor with no vector: the
+        // delete trigger drops it with the anchor, the store with the vector.
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM search_document_vector_backlog WHERE id = ?1")
+                .bind(anchor_id)
+                .fetch_optional(self.db.read())
+                .await?;
         Ok(exists.is_some())
     }
 
@@ -247,6 +240,7 @@ impl SemanticSearchStore {
         .bind(blob)
         .execute(&mut *tx)
         .await?;
+        remove_from_backlog(&mut tx, anchor_id).await?;
         tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
@@ -382,6 +376,7 @@ impl SemanticSearchStore {
             .bind(blob)
             .execute(&mut *tx)
             .await?;
+            remove_from_backlog(&mut tx, *anchor_id).await?;
             outcomes.push(result.rows_affected() > 0);
         }
         tx.commit().await?;
@@ -557,6 +552,18 @@ impl SemanticSearchStore {
         // Same transaction as the DROP+CREATE: the table and its model stamp commit
         // together or not at all.
         stamp_vectors_model(&mut tx, model_id).await?;
+        // ...and so does the work list: an empty table means every `direct` anchor
+        // is missing its vector again.
+        sqlx::query("DELETE FROM search_document_vector_backlog")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO search_document_vector_backlog (id, absolute_start_at) \
+             SELECT id, absolute_start_at FROM search_documents \
+             WHERE text_source_kind = 'direct'",
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         Ok(u64::try_from(previous).unwrap_or(0))
     }
@@ -564,16 +571,9 @@ impl SemanticSearchStore {
     /// Count of `direct` anchors still lacking a vector — the backlog size, used
     /// only for logging the sweep's progress (never a control signal).
     pub async fn count_anchors_missing_vector(&self) -> Result<i64> {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) \
-             FROM search_documents \
-             WHERE search_documents.text_source_kind = 'direct' \
-               AND search_documents.id NOT IN (\
-                   SELECT rowid FROM search_document_vectors\
-               )",
-        )
-        .fetch_one(self.db.read())
-        .await?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM search_document_vector_backlog")
+            .fetch_one(self.db.read())
+            .await?;
         Ok(count)
     }
 
@@ -592,6 +592,36 @@ impl SemanticSearchStore {
                 .await?,
         )
     }
+}
+
+/// The peek behind [`SemanticSearchStore::anchors_missing_vector`], shared with
+/// the plan test so the test cannot drift from what runs. Driven from the backlog
+/// index (newest-first, stops at `LIMIT`); the join only fetches each picked
+/// anchor's text. The `direct` filter is belt-and-braces: the backlog only ever
+/// holds `direct` ids.
+///
+/// `CROSS JOIN` is load-bearing: it is SQLite's only way to pin the join order,
+/// and the app never runs `ANALYZE`. With a plain `JOIN` the unanalyzed planner
+/// sees the `direct` filter match `search_documents_direct_recent_idx`, drives
+/// from that, and walks every `direct` anchor again.
+pub(crate) const ANCHORS_MISSING_VECTOR_SQL: &str = "\
+    SELECT search_documents.id AS id, search_documents.body_text AS body_text \
+    FROM search_document_vector_backlog \
+    CROSS JOIN search_documents ON search_documents.id = search_document_vector_backlog.id \
+    WHERE search_documents.text_source_kind = 'direct' \
+    ORDER BY search_document_vector_backlog.absolute_start_at DESC, \
+             search_document_vector_backlog.id DESC \
+    LIMIT ?1";
+
+/// Drop `anchor_id` from the work list inside the store's write transaction, so
+/// the vector and the backlog can never disagree. A no-op when the anchor was
+/// deleted mid-embed (its delete trigger already removed the row).
+async fn remove_from_backlog(tx: &mut sqlx::Transaction<'_, Sqlite>, anchor_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM search_document_vector_backlog WHERE id = ?1")
+        .bind(anchor_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 /// Serialize an f32 vector to the little-endian byte BLOB vec0 stores. The one

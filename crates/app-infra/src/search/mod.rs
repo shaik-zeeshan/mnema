@@ -70,6 +70,8 @@ mod projection;
 mod retrieval;
 mod stopwords;
 #[cfg(test)]
+mod semantic_backfill_scale_check;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod url_backfill_scale_check;
