@@ -224,7 +224,11 @@ fn aggregate_desc(
             output_uid.as_type_ref(),
             sub_device_list.as_type_ref(),
             tap_list.as_type_ref(),
-            cf::Boolean::value_true().as_type_ref(),
+            // tap_auto_start OFF: when on, coreaudiod ties every tapped app's
+            // audio start to this tap, so another app's mic start hangs (0x3C
+            // StartIO timeout). `start()` starts the aggregate itself, and the
+            // watchdog expects zeros in silence, not a tap that never runs.
+            cf::Boolean::value_false().as_type_ref(),
             cf::Boolean::value_true().as_type_ref(),
             cf::Boolean::value_false().as_type_ref(),
         ],
