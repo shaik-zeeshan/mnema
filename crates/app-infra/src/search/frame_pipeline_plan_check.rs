@@ -12,6 +12,7 @@ use super::equivalent_reuse::CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL;
 use super::test_support::{run_async_test, test_dir};
 use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
+use crate::usage_charts::USAGE_WINDOW_FRAMES_SQL;
 use crate::user_context::capture_source::FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL;
 use crate::AppInfra;
 
@@ -65,9 +66,17 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
         // Was a GROUP BY over every OCR result: ~150 MB per distillation window.
         let capture_window = plan(&infra, FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL).await;
         assert!(
-            capture_window.starts_with("SEARCH frames USING INDEX frames_captured_at_idx")
+            capture_window.starts_with("SEARCH frames USING")
+                && capture_window.contains("(captured_at>? AND captured_at<?)")
                 && !capture_window.contains("SCAN processing_results"),
             "capture window must range-scan frames, then probe each one's results; plan was: {capture_window}"
+        );
+
+        // Fetched each frame's whole row: ~30 MB per Insights refresh.
+        let usage = plan(&infra, USAGE_WINDOW_FRAMES_SQL).await;
+        assert!(
+            usage.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx"),
+            "usage charts must read frames from the covering index only; plan was: {usage}"
         );
 
         drop(infra);

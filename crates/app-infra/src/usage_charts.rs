@@ -83,6 +83,17 @@ struct SiteAccum {
     frame_count: i64,
 }
 
+/// Walks `frames_usage_window_idx` (migration 0060), never the frame rows.
+pub(crate) const USAGE_WINDOW_FRAMES_SQL: &str = "\
+    SELECT frames.session_id AS session_id, \
+           frames.captured_at AS captured_at, \
+           frame_metadata_snapshots.snapshot_json AS snapshot_json \
+    FROM frames \
+    LEFT JOIN frame_metadata_snapshots \
+       ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+    WHERE frames.captured_at >= ?1 AND frames.captured_at < ?2 \
+    ORDER BY frames.session_id ASC, frames.captured_at ASC, frames.id ASC";
+
 impl UsageChartsStore {
     pub fn new(db: CaptureDb) -> Self {
         Self { db }
@@ -195,20 +206,11 @@ impl UsageChartsStore {
         let start_rfc3339 = ms_to_rfc3339(start_ms);
         let end_rfc3339 = ms_to_rfc3339(end_ms);
 
-        let rows = sqlx::query(
-            "SELECT frames.session_id AS session_id, \
-                    frames.captured_at AS captured_at, \
-                    frame_metadata_snapshots.snapshot_json AS snapshot_json \
-             FROM frames \
-             LEFT JOIN frame_metadata_snapshots \
-                ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-             WHERE frames.captured_at >= ?1 AND frames.captured_at < ?2 \
-             ORDER BY frames.session_id ASC, frames.captured_at ASC, frames.id ASC",
-        )
-        .bind(&start_rfc3339)
-        .bind(&end_rfc3339)
-        .fetch_all(self.pool())
-        .await?;
+        let rows = sqlx::query(USAGE_WINDOW_FRAMES_SQL)
+            .bind(&start_rfc3339)
+            .bind(&end_rfc3339)
+            .fetch_all(self.pool())
+            .await?;
 
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
