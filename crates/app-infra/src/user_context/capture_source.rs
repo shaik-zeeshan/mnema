@@ -852,6 +852,76 @@ mod tests {
         });
     }
 
+    /// A re-OCR'd frame or re-transcribed segment has several results: the window
+    /// carries the newest one per subject, never a result from another processor
+    /// or subject type that happens to share the subject id.
+    #[test]
+    fn read_capture_window_uses_the_newest_result_per_subject() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+                "INSERT INTO frames (id, captured_at) VALUES (1, '2026-01-01T00:00:05Z')",
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("seed schema");
+            }
+            // Results in id order; the last one per (subject_type, processor) wins.
+            for (subject_type, processor, text) in [
+                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "old screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "old words"),
+                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "new screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "new words"),
+                (FRAME_SUBJECT_TYPE, "other_processor", "not ocr"),
+                ("other_subject", OCR_PROCESSOR, "not a frame"),
+                ("other_subject", AUDIO_TRANSCRIPTION_PROCESSOR, "not a segment"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, 1, ?2, ?3)",
+                )
+                .bind(subject_type)
+                .bind(processor)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed result");
+            }
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+            let texts: Vec<(&str, &str)> = window
+                .items
+                .iter()
+                .map(|i| (i.subject_type.as_str(), i.text.as_str()))
+                .collect();
+            assert_eq!(texts.len(), 2, "one item per subject: {texts:?}");
+            assert!(texts.contains(&(FRAME_SUBJECT_TYPE, "new screen text")), "{texts:?}");
+            assert!(
+                texts.contains(&(AUDIO_SEGMENT_SUBJECT_TYPE, "new words")),
+                "{texts:?}"
+            );
+        });
+    }
+
     /// Lock-screen frames are time away: the window handed to derivation never
     /// carries them, so no lock-screen Activity can be written.
     #[test]

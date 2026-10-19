@@ -2127,6 +2127,82 @@ mod tests {
         });
     }
 
+    /// The `date()` pre-filters compare stored text, whose date part is the
+    /// local date for a non-UTC offset: the margins must still admit segments
+    /// and frames just across midnight UTC, through both the overlap branch and
+    /// the frames branch.
+    #[test]
+    fn screen_segment_window_query_finds_offset_timestamps_across_midnight_utc() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // 1 and 3 overlap their window by their own interval; 2 and 4 are
+            // legacy zero-duration segments found only through a linked frame;
+            // 5 is outside both windows.
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'c', 'screen', 's', 1, '/tmp/1.mov',
+                     '2026-05-16T19:00:10-05:00', '2026-05-16T19:00:20-05:00', 'completed'),
+                    (2, 'c', 'screen', 's', 2, '/tmp/2.mov',
+                     '2026-05-16T07:00:00Z', '2026-05-16T07:00:00Z', 'completed'),
+                    (3, 'c', 'screen', 's', 3, '/tmp/3.mov',
+                     '2026-05-18T04:45:00+05:30', '2026-05-18T04:45:30+05:30', 'completed'),
+                    (4, 'c', 'screen', 's', 4, '/tmp/4.mov',
+                     '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'completed'),
+                    (5, 'c', 'screen', 's', 5, '/tmp/5.mov',
+                     '2026-05-18T10:00:00Z', '2026-05-18T10:00:30Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id) VALUES
+                    ('s', '/tmp/f2.jpg', '2026-05-16T19:00:30-05:00', 2),
+                    ('s', '/tmp/f4.jpg', '2026-05-18T05:00:00+05:30', 4)",
+            )
+            .execute(&pool)
+            .await
+            .expect("linked frames should insert");
+
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
+            let ids_in = |start: &'static str, end: &'static str| {
+                let store = &store;
+                async move {
+                    store
+                        .list_finalized_screen_segments_overlapping_window(start, end)
+                        .await
+                        .expect("segments should query")
+                        .into_iter()
+                        .map(|segment| segment.id)
+                        .collect::<Vec<_>>()
+                }
+            };
+
+            // Just after midnight UTC; the -05:00 rows' text dates are a day earlier.
+            assert_eq!(
+                ids_in("2026-05-17T00:00:00Z", "2026-05-17T00:01:00Z").await,
+                vec![2, 1]
+            );
+            // Just before midnight UTC; the +05:30 rows' text dates are a day later.
+            assert_eq!(
+                ids_in("2026-05-17T23:00:00Z", "2026-05-17T23:59:59Z").await,
+                vec![4, 3]
+            );
+        });
+    }
+
     #[test]
     fn screen_segment_window_query_orders_mixed_precision_timestamps_by_time() {
         let runtime = tokio::runtime::Builder::new_current_thread()

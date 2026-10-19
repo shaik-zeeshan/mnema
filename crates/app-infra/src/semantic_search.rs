@@ -956,6 +956,30 @@ mod tests {
             // equivalent_reuse anchor reuses the group's vector and is excluded.
             assert_eq!(missing.len(), 1);
             assert_eq!(missing[0].anchor_id, first.id);
+
+            // The backlog itself holds only the direct anchor: the peek re-filters
+            // `direct`, so on its own it would hide a reuse row the trigger leaked
+            // (one the worker never sees, so nothing ever removes it). A rebuild's
+            // refill must keep it out too.
+            let reuse_id: i64 = sqlx::query_scalar(
+                "SELECT id FROM search_documents WHERE text_source_kind != 'direct'",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("the reuse anchor exists");
+            assert!(!store
+                .anchor_still_missing_vector(reuse_id)
+                .await
+                .expect("recheck"));
+            assert_eq!(store.count_anchors_missing_vector().await.expect("count"), 1);
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("rebuild");
+            assert_eq!(
+                store.count_anchors_missing_vector().await.expect("count after rebuild"),
+                1
+            );
         });
     }
 

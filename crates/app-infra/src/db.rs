@@ -713,6 +713,69 @@ mod tests {
         });
     }
 
+    /// 0059 seeds the semantic backfill backlog on a database that already holds
+    /// anchors: exactly the `direct` anchors with no vector, never a reuse anchor
+    /// or an already-vectored one. Every other test migrates an empty database,
+    /// and a wrong seed can't be fixed later by editing the applied migration.
+    #[test]
+    fn vector_backlog_migration_seeds_only_direct_anchors_missing_a_vector() {
+        block_on(async {
+            register_vec0_auto_extension();
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            // ponytail: sqlx's Migrator fields are semver-exempt; if they move,
+            // copy migrations 0001-0058 to a temp dir and use `Migrator::new`.
+            let through_0058 = sqlx::migrate::Migrator {
+                migrations: MIGRATOR
+                    .migrations
+                    .iter()
+                    .filter(|migration| migration.version < 59)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into(),
+                ..sqlx::migrate::Migrator::DEFAULT
+            };
+            through_0058.run(&pool).await.expect("migrations through 0058");
+
+            let unit_vector = format!("[1.0{}]", ",0.0".repeat(767));
+            for statement in [
+                "INSERT INTO frames (id, session_id, file_path, captured_at) VALUES \
+                    (1, 's', '/tmp/1.jpg', '2026-05-17T10:00:00Z'), \
+                    (2, 's', '/tmp/2.jpg', '2026-05-17T10:01:00Z'), \
+                    (3, 's', '/tmp/3.jpg', '2026-05-17T10:01:02Z')",
+                "INSERT INTO search_documents (id, anchor_type, frame_id, absolute_start_at, \
+                    absolute_end_at, session_id, group_key, text_source_kind, body_text, \
+                    canonical_search_document_id) VALUES \
+                    (1, 'frame', 1, '2026-05-17T10:00:00Z', '2026-05-17T10:00:00Z', 's', 'g1', 'direct', 'vectored', NULL), \
+                    (2, 'frame', 2, '2026-05-17T10:01:00Z', '2026-05-17T10:01:00Z', 's', 'g2', 'direct', 'missing', NULL), \
+                    (3, 'frame', 3, '2026-05-17T10:01:02Z', '2026-05-17T10:01:02Z', 's', 'g2', 'equivalent_reuse', NULL, 2)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("seed anchors");
+            }
+            sqlx::query(
+                "INSERT INTO search_document_vectors (rowid, embedding) \
+                 VALUES (1, vec_quantize_int8(?1, 'unit'))",
+            )
+            .bind(unit_vector)
+            .execute(&pool)
+            .await
+            .expect("seed vector");
+
+            MIGRATOR.run(&pool).await.expect("0059 onward should apply");
+
+            let backlog: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT id, absolute_start_at FROM search_document_vector_backlog ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("read backlog");
+            assert_eq!(backlog, vec![(2, "2026-05-17T10:01:00Z".to_string())]);
+        });
+    }
+
     /// `vec0` KNN and SQLCipher encryption-at-rest coexist in the same pool: the
     /// pool reports an SQLCipher `cipher_version`, a Semantic Search Vector
     /// round-trips through the encrypted store, and a KNN scan returns it.

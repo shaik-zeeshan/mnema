@@ -455,6 +455,32 @@ mod tests {
     }
 
     #[test]
+    fn list_subjects_needing_embedding_matches_vectors_case_insensitively() {
+        block_on(async {
+            let store = test_store().await;
+            // `beta` is current under a differently-cased key; `Gamma` is stale.
+            // Without the NOCASE match, `beta` would be re-listed every poll and
+            // re-embedded forever (the upsert lands on the `Beta` row).
+            seed_conclusion(&store, "beta").await;
+            seed_conclusion(&store, "Gamma").await;
+            store
+                .upsert_subject_vector("Beta", &[1.0, 0.0], 1_000, MODEL)
+                .await
+                .expect("embed Beta");
+            store
+                .upsert_subject_vector("gamma", &[0.0, 1.0], 1_000, "mnema/old-model")
+                .await
+                .expect("embed gamma under old model");
+
+            let pending = store
+                .list_subjects_needing_embedding(MODEL, 10)
+                .await
+                .expect("list");
+            assert_eq!(pending, vec!["Gamma".to_string()]);
+        });
+    }
+
+    #[test]
     fn upsert_round_trips_embedded_model_and_knn_queries_by_it() {
         block_on(async {
             let store = test_store().await;
