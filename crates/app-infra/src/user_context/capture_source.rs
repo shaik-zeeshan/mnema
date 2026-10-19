@@ -76,6 +76,30 @@ pub(crate) const FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL: &str = "\
     ORDER BY frames.captured_at ASC, frames.id ASC \
     LIMIT ?5";
 
+/// ponytail: a segment overlapping the window started at most this long before
+/// it. Capture segments are capped at 5 min; a day is a generous superset.
+const AUDIO_SEGMENT_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// `?6` is the window start minus [`AUDIO_SEGMENT_LOOKBACK_MS`]: without a lower
+/// bound on `started_at`, `audio_segments_time_range_idx` is walked from the first
+/// segment ever recorded up to the window end on every call.
+pub(crate) const AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL: &str = "\
+    SELECT audio_segments.id AS subject_id, \
+           audio_segments.started_at AS started_at, \
+           audio_segments.source_kind AS source_kind, \
+           processing_results.result_text AS result_text \
+    FROM audio_segments \
+    CROSS JOIN processing_results ON processing_results.id = (\
+       SELECT MAX(latest.id) FROM processing_results latest \
+       WHERE latest.subject_type = ?1 AND latest.subject_id = audio_segments.id \
+         AND latest.processor = ?2\
+    ) \
+    WHERE audio_segments.started_at <= ?4 AND audio_segments.ended_at >= ?3 \
+      AND audio_segments.started_at >= ?6 \
+      AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+    ORDER BY audio_segments.started_at ASC, audio_segments.id ASC \
+    LIMIT ?5";
+
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureWindow {
@@ -159,29 +183,17 @@ impl UserContextStore {
         // `audio_segments.started_at` / `ended_at` are RFC3339 TEXT. A segment
         // overlaps the window when it starts at-or-before the window end and
         // ends at-or-after the window start.
-        let audio_rows = sqlx::query(
-            "SELECT audio_segments.id AS subject_id, \
-                    audio_segments.started_at AS started_at, \
-                    audio_segments.source_kind AS source_kind, \
-                    processing_results.result_text AS result_text \
-             FROM audio_segments \
-             CROSS JOIN processing_results ON processing_results.id = (\
-                SELECT MAX(latest.id) FROM processing_results latest \
-                WHERE latest.subject_type = ?1 AND latest.subject_id = audio_segments.id \
-                  AND latest.processor = ?2\
-             ) \
-             WHERE audio_segments.started_at <= ?4 AND audio_segments.ended_at >= ?3 \
-               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
-             ORDER BY audio_segments.started_at ASC, audio_segments.id ASC \
-             LIMIT ?5",
-        )
-        .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
-        .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
-        .bind(&start_rfc3339)
-        .bind(&end_rfc3339)
-        .bind(max_items)
-        .fetch_all(self.pool())
-        .await?;
+        let audio_rows = sqlx::query(AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL)
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .bind(&start_rfc3339)
+            .bind(&end_rfc3339)
+            .bind(max_items)
+            .bind(ms_to_rfc3339(
+                start_ms.saturating_sub(AUDIO_SEGMENT_LOOKBACK_MS),
+            ))
+            .fetch_all(self.pool())
+            .await?;
 
         for row in audio_rows {
             let started_at: String = row.get("started_at");

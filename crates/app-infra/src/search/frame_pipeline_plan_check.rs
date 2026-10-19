@@ -14,7 +14,9 @@ use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
 use crate::usage_charts::USAGE_WINDOW_FRAMES_SQL;
 use crate::user_context::subject_vectors::SUBJECTS_NEEDING_EMBEDDING_SQL;
-use crate::user_context::capture_source::FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL;
+use crate::user_context::capture_source::{
+    AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL, FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL,
+};
 use crate::AppInfra;
 
 async fn plan(infra: &AppInfra, sql: &str) -> String {
@@ -54,6 +56,13 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
             !segments.contains("SCAN frames") && segments.contains("frames_captured_at_idx"),
             "the window's frames sub-select must range-scan captured_at; plan was: {segments}"
         );
+        // ...and the outer loop must probe only the matched segments by id, never
+        // walk every screen segment ever recorded (`source_kind=?`).
+        assert!(
+            segments.starts_with("SEARCH capture_segments USING INTEGER PRIMARY KEY")
+                && segments.contains("capture_segments_ended_at_idx (ended_at>? AND ended_at<?)"),
+            "the window's segments must come from range scans, not every screen segment; plan was: {segments}"
+        );
 
         // Was driven from every frame OCR job: ~86 MB per workspace check.
         let workspace = plan(&infra, WORKSPACE_OCR_JOBS_SQL).await;
@@ -71,6 +80,20 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
                 && capture_window.contains("(captured_at>? AND captured_at<?)")
                 && !capture_window.contains("SCAN processing_results"),
             "capture window must range-scan frames, then probe each one's results; plan was: {capture_window}"
+        );
+
+        // The audio half: must range-scan started_at from both ends, not walk
+        // every audio segment recorded before the window's end.
+        let audio_window = plan(
+            &infra,
+            AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL,
+        )
+        .await;
+        assert!(
+            audio_window.starts_with("SEARCH audio_segments USING")
+                && audio_window.contains("(started_at>? AND started_at<?)")
+                && !audio_window.contains("SCAN processing_results"),
+            "capture window audio must range-scan started_at from both ends; plan was: {audio_window}"
         );
 
         // Fetched each frame's whole row: ~30 MB per Insights refresh.

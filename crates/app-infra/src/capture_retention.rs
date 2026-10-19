@@ -203,12 +203,16 @@ pub(crate) const FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL: &str = "\
     SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
            sidecar_file_path, started_at, ended_at
     FROM capture_segments
-    WHERE source_kind = 'screen'
+    WHERE +source_kind = 'screen'
       AND status != 'recording'
       AND media_file_path IS NOT NULL
-      AND (
-        (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
-        OR id IN (
+      AND id IN (
+          SELECT id FROM capture_segments
+          WHERE ended_at >= date(?1, '-1 day')
+            AND ended_at < date(?2, '+3 days')
+            AND julianday(ended_at) >= julianday(?1)
+            AND julianday(started_at) <= julianday(?2)
+          UNION ALL
           SELECT capture_segment_id
           FROM frames
           WHERE capture_segment_id IS NOT NULL
@@ -216,7 +220,6 @@ pub(crate) const FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL: &str = "\
             AND captured_at < date(?2, '+2 days')
             AND julianday(captured_at) >= julianday(?1)
             AND julianday(captured_at) <= julianday(?2)
-        )
       )
     ORDER BY julianday(started_at) ASC, id ASC";
 
@@ -399,6 +402,11 @@ impl CaptureRetentionStore {
         // `julianday` window — every stored timestamp is ISO-8601 and starts with
         // its date, and the one-day margin covers any UTC offset — so the
         // `julianday` test still decides, across mixed fractional precisions.
+        // The overlap branch gets the same treatment on `capture_segments_ended_at_idx`
+        // (`ended_at < date(?2, '+3 days')` holds because a segment lasts under a
+        // day — capped at 5 min), and `+source_kind` keeps the planner from walking
+        // every screen segment ever recorded through `capture_segments_source_idx`:
+        // the outer loop probes only the ids the two range scans found.
         let rows = sqlx::query(FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL)
             .bind(start_at)
             .bind(end_at)
