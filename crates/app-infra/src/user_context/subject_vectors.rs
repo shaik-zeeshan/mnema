@@ -67,6 +67,24 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     Some(dot / (norm_a.sqrt() * norm_b.sqrt()))
 }
 
+/// The worker's 30 s poll. "Needs a vector" = no vector row embedded under the
+/// active model, answered from migration 0061's indexes, never the Conclusion
+/// text or the embedding BLOB. `NOT IN` (one list per poll, seeking by model)
+/// rather than a correlated probe, which the unanalyzed planner sends through
+/// the primary key and so through each row's BLOB. Testing `embedded_model`
+/// alone is enough because every writer keeps it NULL whenever `embedding` is
+/// NULL (the upsert writes both, `mark_subject_vector_stale` clears both).
+pub(crate) const SUBJECTS_NEEDING_EMBEDDING_SQL: &str = "\
+    SELECT DISTINCT c.subject AS subject \
+    FROM user_context_conclusions c \
+    WHERE c.status NOT IN ('dismissed', 'superseded') \
+      AND c.subject COLLATE NOCASE NOT IN (\
+          SELECT subject FROM user_context_subject_vectors \
+          WHERE embedded_model = ?1 AND subject IS NOT NULL\
+      ) \
+    ORDER BY c.subject COLLATE NOCASE \
+    LIMIT ?2";
+
 impl SubjectVectorStore {
     pub fn new(db: CaptureDb) -> Self {
         Self { db }
@@ -147,23 +165,11 @@ impl SubjectVectorStore {
         active_model: &str,
         limit: i64,
     ) -> Result<Vec<String>> {
-        let rows = sqlx::query(
-            "SELECT DISTINCT c.subject AS subject \
-             FROM user_context_conclusions c \
-             LEFT JOIN user_context_subject_vectors v \
-                 ON v.subject = c.subject COLLATE NOCASE \
-             WHERE c.status NOT IN ('dismissed', 'superseded') \
-               AND (v.subject IS NULL \
-                    OR v.embedding IS NULL \
-                    OR v.embedded_model IS NULL \
-                    OR v.embedded_model != ?1) \
-             ORDER BY c.subject COLLATE NOCASE \
-             LIMIT ?2",
-        )
-        .bind(active_model)
-        .bind(limit)
-        .fetch_all(self.db.read())
-        .await?;
+        let rows = sqlx::query(SUBJECTS_NEEDING_EMBEDDING_SQL)
+            .bind(active_model)
+            .bind(limit)
+            .fetch_all(self.db.read())
+            .await?;
         Ok(rows.iter().map(|row| row.get::<String, _>("subject")).collect())
     }
 

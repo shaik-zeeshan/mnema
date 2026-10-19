@@ -13,6 +13,7 @@ use super::test_support::{run_async_test, test_dir};
 use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
 use crate::usage_charts::USAGE_WINDOW_FRAMES_SQL;
+use crate::user_context::subject_vectors::SUBJECTS_NEEDING_EMBEDDING_SQL;
 use crate::user_context::capture_source::FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL;
 use crate::AppInfra;
 
@@ -77,6 +78,14 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
         assert!(
             usage.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx"),
             "usage charts must read frames from the covering index only; plan was: {usage}"
+        );
+
+        // Read every Conclusion row and walked each vector's BLOB: ~12 MB per 30 s poll.
+        let subjects = plan(&infra, SUBJECTS_NEEDING_EMBEDDING_SQL).await;
+        assert!(
+            subjects.contains("USING COVERING INDEX user_context_conclusions_subject_status_idx")
+                && subjects.contains("USING COVERING INDEX user_context_subject_vectors_embedded_idx"),
+            "subject poll must read both tables from indexes only; plan was: {subjects}"
         );
 
         drop(infra);
