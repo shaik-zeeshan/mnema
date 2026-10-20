@@ -11,6 +11,9 @@ pub mod speaker_resolution;
 mod store;
 mod system_audio_speech_activity;
 
+#[cfg(test)]
+pub(crate) use store::WORKSPACE_OCR_JOBS_SQL;
+
 pub use audio_transcription::{AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend};
 pub use backend::{ProcessorBackend, ProcessorRegistry};
 pub use frame::{Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame};

@@ -197,6 +197,32 @@ pub struct CaptureRetentionStore {
     db: CaptureDb,
 }
 
+/// The query behind `list_finalized_screen_segments_overlapping_window`, shared
+/// with `frame_pipeline_plan_check`.
+pub(crate) const FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL: &str = "\
+    SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
+           sidecar_file_path, started_at, ended_at
+    FROM capture_segments
+    WHERE +source_kind = 'screen'
+      AND status != 'recording'
+      AND media_file_path IS NOT NULL
+      AND id IN (
+          SELECT id FROM capture_segments
+          WHERE ended_at >= date(?1, '-1 day')
+            AND ended_at < date(?2, '+3 days')
+            AND julianday(ended_at) >= julianday(?1)
+            AND julianday(started_at) <= julianday(?2)
+          UNION ALL
+          SELECT capture_segment_id
+          FROM frames
+          WHERE capture_segment_id IS NOT NULL
+            AND captured_at >= date(?1, '-1 day')
+            AND captured_at < date(?2, '+2 days')
+            AND julianday(captured_at) >= julianday(?1)
+            AND julianday(captured_at) <= julianday(?2)
+      )
+    ORDER BY julianday(started_at) ASC, id ASC";
+
 impl CaptureRetentionStore {
     pub(crate) fn new(db: CaptureDb) -> Self {
         Self { db }
@@ -369,29 +395,23 @@ impl CaptureRetentionStore {
         start_at: &str,
         end_at: &str,
     ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
-        let rows = sqlx::query(
-            "SELECT id, capture_session_id, source_session_id, segment_index, media_file_path,
-                    sidecar_file_path, started_at, ended_at
-             FROM capture_segments
-             WHERE source_kind = 'screen'
-               AND status != 'recording'
-               AND media_file_path IS NOT NULL
-               AND (
-                 (julianday(ended_at) >= julianday(?1) AND julianday(started_at) <= julianday(?2))
-                 OR id IN (
-                   SELECT capture_segment_id
-                   FROM frames
-                   WHERE capture_segment_id IS NOT NULL
-                     AND julianday(captured_at) >= julianday(?1)
-                     AND julianday(captured_at) <= julianday(?2)
-                 )
-               )
-             ORDER BY julianday(started_at) ASC, id ASC",
-        )
-        .bind(start_at)
-        .bind(end_at)
-        .fetch_all(self.db.read())
-        .await?;
+        // The `date(…)` bounds are what let the frames sub-select range-scan
+        // `frames_captured_at_idx`: `julianday()` wraps the column, so on its own
+        // it forced a full `frames` scan per call (~72 MB on a real install,
+        // 2026-10-17 stmt-cost trace). They are a strict superset of the exact
+        // `julianday` window — every stored timestamp is ISO-8601 and starts with
+        // its date, and the one-day margin covers any UTC offset — so the
+        // `julianday` test still decides, across mixed fractional precisions.
+        // The overlap branch gets the same treatment on `capture_segments_ended_at_idx`
+        // (`ended_at < date(?2, '+3 days')` holds because a segment lasts under a
+        // day — capped at 5 min), and `+source_kind` keeps the planner from walking
+        // every screen segment ever recorded through `capture_segments_source_idx`:
+        // the outer loop probes only the ids the two range scans found.
+        let rows = sqlx::query(FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL)
+            .bind(start_at)
+            .bind(end_at)
+            .fetch_all(self.db.read())
+            .await?;
 
         rows.into_iter()
             .map(|row| {
@@ -2104,6 +2124,82 @@ mod tests {
 
             assert_eq!(segments.len(), 1);
             assert_eq!(segments[0].id, 42);
+        });
+    }
+
+    /// The `date()` pre-filters compare stored text, whose date part is the
+    /// local date for a non-UTC offset: the margins must still admit segments
+    /// and frames just across midnight UTC, through both the overlap branch and
+    /// the frames branch.
+    #[test]
+    fn screen_segment_window_query_finds_offset_timestamps_across_midnight_utc() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // 1 and 3 overlap their window by their own interval; 2 and 4 are
+            // legacy zero-duration segments found only through a linked frame;
+            // 5 is outside both windows.
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'c', 'screen', 's', 1, '/tmp/1.mov',
+                     '2026-05-16T19:00:10-05:00', '2026-05-16T19:00:20-05:00', 'completed'),
+                    (2, 'c', 'screen', 's', 2, '/tmp/2.mov',
+                     '2026-05-16T07:00:00Z', '2026-05-16T07:00:00Z', 'completed'),
+                    (3, 'c', 'screen', 's', 3, '/tmp/3.mov',
+                     '2026-05-18T04:45:00+05:30', '2026-05-18T04:45:30+05:30', 'completed'),
+                    (4, 'c', 'screen', 's', 4, '/tmp/4.mov',
+                     '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'completed'),
+                    (5, 'c', 'screen', 's', 5, '/tmp/5.mov',
+                     '2026-05-18T10:00:00Z', '2026-05-18T10:00:30Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id) VALUES
+                    ('s', '/tmp/f2.jpg', '2026-05-16T19:00:30-05:00', 2),
+                    ('s', '/tmp/f4.jpg', '2026-05-18T05:00:00+05:30', 4)",
+            )
+            .execute(&pool)
+            .await
+            .expect("linked frames should insert");
+
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
+            let ids_in = |start: &'static str, end: &'static str| {
+                let store = &store;
+                async move {
+                    store
+                        .list_finalized_screen_segments_overlapping_window(start, end)
+                        .await
+                        .expect("segments should query")
+                        .into_iter()
+                        .map(|segment| segment.id)
+                        .collect::<Vec<_>>()
+                }
+            };
+
+            // Just after midnight UTC; the -05:00 rows' text dates are a day earlier.
+            assert_eq!(
+                ids_in("2026-05-17T00:00:00Z", "2026-05-17T00:01:00Z").await,
+                vec![2, 1]
+            );
+            // Just before midnight UTC; the +05:30 rows' text dates are a day later.
+            assert_eq!(
+                ids_in("2026-05-17T23:00:00Z", "2026-05-17T23:59:59Z").await,
+                vec![4, 3]
+            );
         });
     }
 

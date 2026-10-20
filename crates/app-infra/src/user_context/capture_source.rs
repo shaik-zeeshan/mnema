@@ -58,6 +58,48 @@ pub struct CaptureWindowItem {
     pub speaker_turns: Vec<(i64, String)>,
 }
 
+pub(crate) const FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL: &str = "\
+    SELECT frames.id AS subject_id, \
+           frames.captured_at AS captured_at, \
+           processing_results.result_text AS result_text, \
+           frame_metadata_snapshots.snapshot_json AS snapshot_json \
+    FROM frames \
+    CROSS JOIN processing_results ON processing_results.id = (\
+       SELECT MAX(latest.id) FROM processing_results latest \
+       WHERE latest.subject_type = ?1 AND latest.subject_id = frames.id \
+         AND latest.processor = ?2\
+    ) \
+    LEFT JOIN frame_metadata_snapshots \
+       ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+    WHERE frames.captured_at >= ?3 AND frames.captured_at <= ?4 \
+      AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+    ORDER BY frames.captured_at ASC, frames.id ASC \
+    LIMIT ?5";
+
+/// ponytail: a segment overlapping the window started at most this long before
+/// it. Capture segments are capped at 5 min; a day is a generous superset.
+const AUDIO_SEGMENT_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// `?6` is the window start minus [`AUDIO_SEGMENT_LOOKBACK_MS`]: without a lower
+/// bound on `started_at`, `audio_segments_time_range_idx` is walked from the first
+/// segment ever recorded up to the window end on every call.
+pub(crate) const AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL: &str = "\
+    SELECT audio_segments.id AS subject_id, \
+           audio_segments.started_at AS started_at, \
+           audio_segments.source_kind AS source_kind, \
+           processing_results.result_text AS result_text \
+    FROM audio_segments \
+    CROSS JOIN processing_results ON processing_results.id = (\
+       SELECT MAX(latest.id) FROM processing_results latest \
+       WHERE latest.subject_type = ?1 AND latest.subject_id = audio_segments.id \
+         AND latest.processor = ?2\
+    ) \
+    WHERE audio_segments.started_at <= ?4 AND audio_segments.ended_at >= ?3 \
+      AND audio_segments.started_at >= ?6 \
+      AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
+    ORDER BY audio_segments.started_at ASC, audio_segments.id ASC \
+    LIMIT ?5";
+
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureWindow {
@@ -89,36 +131,19 @@ impl UserContextStore {
 
         // --- Frames + latest OCR result + best-effort Search Context ---------
         //
-        // Latest-per-frame OCR result via a MAX(id) self-join (mirrors the
-        // pattern in `search.rs`). `frames.captured_at` is RFC3339 TEXT; filter
-        // on the RFC3339 range and convert to millis at the boundary.
-        let frame_rows = sqlx::query(
-            "SELECT frames.id AS subject_id, \
-                    frames.captured_at AS captured_at, \
-                    processing_results.result_text AS result_text, \
-                    frame_metadata_snapshots.snapshot_json AS snapshot_json \
-             FROM frames \
-             JOIN (\
-                SELECT subject_id, MAX(id) AS id \
-                FROM processing_results \
-                WHERE subject_type = ?1 AND processor = ?2 \
-                GROUP BY subject_id\
-             ) latest_ocr ON latest_ocr.subject_id = frames.id \
-             JOIN processing_results ON processing_results.id = latest_ocr.id \
-             LEFT JOIN frame_metadata_snapshots \
-                ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
-             WHERE frames.captured_at >= ?3 AND frames.captured_at <= ?4 \
-               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
-             ORDER BY frames.captured_at ASC, frames.id ASC \
-             LIMIT ?5",
-        )
-        .bind(FRAME_SUBJECT_TYPE)
-        .bind(OCR_PROCESSOR)
-        .bind(&start_rfc3339)
-        .bind(&end_rfc3339)
-        .bind(max_items)
-        .fetch_all(self.pool())
-        .await?;
+        // Latest-per-frame OCR result via a correlated MAX(id), pinned behind
+        // the window's frames with CROSS JOIN: a GROUP BY derived table here
+        // read every OCR result ever (~150 MB) on each distillation window.
+        // `frames.captured_at` is RFC3339 TEXT; filter on the RFC3339 range
+        // and convert to millis at the boundary.
+        let frame_rows = sqlx::query(FRAMES_IN_WINDOW_WITH_LATEST_OCR_SQL)
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
+            .bind(&start_rfc3339)
+            .bind(&end_rfc3339)
+            .bind(max_items)
+            .fetch_all(self.pool())
+            .await?;
 
         for row in frame_rows {
             let captured_at: String = row.get("captured_at");
@@ -158,31 +183,17 @@ impl UserContextStore {
         // `audio_segments.started_at` / `ended_at` are RFC3339 TEXT. A segment
         // overlaps the window when it starts at-or-before the window end and
         // ends at-or-after the window start.
-        let audio_rows = sqlx::query(
-            "SELECT audio_segments.id AS subject_id, \
-                    audio_segments.started_at AS started_at, \
-                    audio_segments.source_kind AS source_kind, \
-                    processing_results.result_text AS result_text \
-             FROM audio_segments \
-             JOIN (\
-                SELECT subject_id, MAX(id) AS id \
-                FROM processing_results \
-                WHERE subject_type = ?1 AND processor = ?2 \
-                GROUP BY subject_id\
-             ) latest_transcription ON latest_transcription.subject_id = audio_segments.id \
-             JOIN processing_results ON processing_results.id = latest_transcription.id \
-             WHERE audio_segments.started_at <= ?4 AND audio_segments.ended_at >= ?3 \
-               AND LENGTH(TRIM(COALESCE(processing_results.result_text, ''))) > 0 \
-             ORDER BY audio_segments.started_at ASC, audio_segments.id ASC \
-             LIMIT ?5",
-        )
-        .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
-        .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
-        .bind(&start_rfc3339)
-        .bind(&end_rfc3339)
-        .bind(max_items)
-        .fetch_all(self.pool())
-        .await?;
+        let audio_rows = sqlx::query(AUDIO_SEGMENTS_IN_WINDOW_WITH_LATEST_TRANSCRIPTION_SQL)
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .bind(&start_rfc3339)
+            .bind(&end_rfc3339)
+            .bind(max_items)
+            .bind(ms_to_rfc3339(
+                start_ms.saturating_sub(AUDIO_SEGMENT_LOOKBACK_MS),
+            ))
+            .fetch_all(self.pool())
+            .await?;
 
         for row in audio_rows {
             let started_at: String = row.get("started_at");
@@ -838,6 +849,76 @@ mod tests {
                 .find(|i| i.subject_type == FRAME_SUBJECT_TYPE)
                 .expect("frame item present");
             assert_eq!(frame.source_kind, None);
+        });
+    }
+
+    /// A re-OCR'd frame or re-transcribed segment has several results: the window
+    /// carries the newest one per subject, never a result from another processor
+    /// or subject type that happens to share the subject id.
+    #[test]
+    fn read_capture_window_uses_the_newest_result_per_subject() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+                "INSERT INTO frames (id, captured_at) VALUES (1, '2026-01-01T00:00:05Z')",
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("seed schema");
+            }
+            // Results in id order; the last one per (subject_type, processor) wins.
+            for (subject_type, processor, text) in [
+                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "old screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "old words"),
+                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "new screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "new words"),
+                (FRAME_SUBJECT_TYPE, "other_processor", "not ocr"),
+                ("other_subject", OCR_PROCESSOR, "not a frame"),
+                ("other_subject", AUDIO_TRANSCRIPTION_PROCESSOR, "not a segment"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, 1, ?2, ?3)",
+                )
+                .bind(subject_type)
+                .bind(processor)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed result");
+            }
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+            let texts: Vec<(&str, &str)> = window
+                .items
+                .iter()
+                .map(|i| (i.subject_type.as_str(), i.text.as_str()))
+                .collect();
+            assert_eq!(texts.len(), 2, "one item per subject: {texts:?}");
+            assert!(texts.contains(&(FRAME_SUBJECT_TYPE, "new screen text")), "{texts:?}");
+            assert!(
+                texts.contains(&(AUDIO_SEGMENT_SUBJECT_TYPE, "new words")),
+                "{texts:?}"
+            );
         });
     }
 

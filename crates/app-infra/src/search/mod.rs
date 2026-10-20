@@ -60,6 +60,8 @@ use query::{
 
 mod equivalent_reuse;
 mod facets;
+#[cfg(test)]
+mod frame_pipeline_plan_check;
 mod grouping;
 mod honesty;
 #[cfg(test)]
@@ -69,6 +71,8 @@ mod moments;
 mod projection;
 mod retrieval;
 mod stopwords;
+#[cfg(test)]
+mod semantic_backfill_scale_check;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
