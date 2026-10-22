@@ -9,10 +9,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_FOLDER_LABEL,
-  RATE_GHOST_WIDTH,
   RETENTION_STOPS,
   dailyBytes,
-  ghostWindow,
   humanDuration,
   planSegments,
   retentionIndex,
@@ -81,27 +79,6 @@ describe("the mockup's self-check, ported", () => {
 
   test("the 30-day ceiling at the default rate is 12.2 GB", () => {
     expect(formatBytes(dailyBytes(2) * 30)).toBe("12.2 GB");
-  });
-
-  test("the rate window is always 5 wide, clamped at both ends", () => {
-    expect(ghostWindow(0, 11, RATE_GHOST_WIDTH)).toEqual({ start: 0, end: 5 });
-    expect(ghostWindow(10, 11, RATE_GHOST_WIDTH)).toEqual({ start: 6, end: 11 });
-    expect(ghostWindow(3, 11, RATE_GHOST_WIDTH)).toEqual({ start: 1, end: 6 });
-    for (let i = 0; i < CAPTURE_INTERVAL_LADDER_S.length; i++) {
-      const win = ghostWindow(i, CAPTURE_INTERVAL_LADDER_S.length, RATE_GHOST_WIDTH);
-      expect(win.end - win.start).toBe(RATE_GHOST_WIDTH);
-      expect(i).toBeGreaterThanOrEqual(win.start);
-      expect(i).toBeLessThan(win.end);
-    }
-  });
-
-  test("retention prints all four stops at every position", () => {
-    for (let i = 0; i < RETENTION_STOPS.length; i++) {
-      expect(ghostWindow(i, RETENTION_STOPS.length, RETENTION_STOPS.length)).toEqual({
-        start: 0,
-        end: 4,
-      });
-    }
   });
 
   test("the Semantic Search escape does not rescue the SD card", () => {

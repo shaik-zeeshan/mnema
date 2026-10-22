@@ -145,6 +145,27 @@ pub(super) async fn delete_equivalent_reuse_projections_for_source_result(
     Ok(())
 }
 
+/// The canonical-`direct` lookup behind [`project_equivalent_frame_reuse_in_transaction`],
+/// shared with `frame_pipeline_plan_check`.
+pub(crate) const CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL: &str = "\
+    SELECT canonical.id AS canonical_id, \
+           canonical.processing_result_id AS processing_result_id \
+    FROM search_documents AS related \
+    JOIN search_documents AS canonical \
+      ON canonical.id = COALESCE(related.canonical_search_document_id, related.id) \
+    WHERE related.anchor_type = 'frame' \
+      AND related.frame_id = ?1 \
+      AND (\
+           related.processing_result_id IS NULL \
+           OR EXISTS (\
+               SELECT 1 FROM processing_results \
+               WHERE processing_results.id = related.processing_result_id \
+                 AND processing_results.subject_type = 'frame' \
+                 AND processing_results.processor = ?2\
+           )\
+      ) \
+    ORDER BY related.id DESC LIMIT 1";
+
 pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     frame: &Frame,
@@ -155,27 +176,17 @@ pub(crate) async fn project_equivalent_frame_reuse_in_transaction(
     // `canonical_search_document_id`; otherwise it is the canonical. The new reuse
     // document borrows its text from there and inherits the canonical's
     // `processing_result_id` (so redaction lookups still resolve the source).
-    let Some(canonical_doc) = sqlx::query(
-        "SELECT canonical.id AS canonical_id, \
-                canonical.processing_result_id AS processing_result_id \
-         FROM search_documents AS related \
-         JOIN search_documents AS canonical \
-           ON canonical.id = COALESCE(related.canonical_search_document_id, related.id) \
-         WHERE related.anchor_type = 'frame' \
-           AND related.frame_id = ?1 \
-           AND (\
-                related.processing_result_id IS NULL \
-                OR related.processing_result_id IN (\
-                    SELECT id FROM processing_results \
-                    WHERE subject_type = 'frame' AND processor = ?2\
-                )\
-           ) \
-         ORDER BY related.id DESC LIMIT 1",
-    )
-    .bind(related_frame_id)
-    .bind(OCR_PROCESSOR)
-    .fetch_optional(&mut **transaction)
-    .await?
+    //
+    // The OCR-result check is a correlated primary-key probe, never
+    // `processing_result_id IN (SELECT id FROM processing_results WHERE …)`: that
+    // form materialized every OCR result row (text and payload included) on every
+    // call — ~93 MB of page reads per equivalent frame on a real install
+    // (2026-10-17 stmt-cost trace).
+    let Some(canonical_doc) = sqlx::query(CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL)
+        .bind(related_frame_id)
+        .bind(OCR_PROCESSOR)
+        .fetch_optional(&mut **transaction)
+        .await?
     else {
         return Ok(());
     };

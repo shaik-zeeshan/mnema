@@ -7,7 +7,15 @@
   // amplitude from `get_audio_segment_waveform_peaks`; bar hue is whoever held
   // the floor at that moment. An empty peaks array means no bars at all and the
   // plain progress track shows through — no error state, no empty box.
-  import type { WaveBar } from "./audio-drawer-view";
+  // Hovering the bars names whoever held the floor there; a speaker picked in the
+  // strip dims every other voice's bars.
+  import SpeakerMarkGlyph from "./SpeakerMark.svelte";
+  import {
+    formatPlayerTime,
+    type SpeakerMark,
+    type StripSpeaker,
+    type WaveBar,
+  } from "./audio-drawer-view";
 
   interface Props {
     bars: WaveBar[];
@@ -16,19 +24,52 @@
     valueText: string;
     /** Half height, no playhead dot — the peek drawer's variant. */
     compact?: boolean;
+    speakers?: StripSpeaker[];
+    marks?: Map<number, SpeakerMark>;
+    selectedClusterId?: number | null;
     oninput: (event: Event) => void;
     onchange: (event: Event) => void;
   }
 
-  let { bars, currentTime, duration, valueText, compact = false, oninput, onchange }: Props =
-    $props();
+  let {
+    bars,
+    currentTime,
+    duration,
+    valueText,
+    compact = false,
+    speakers = [],
+    marks = new Map(),
+    selectedClusterId = null,
+    oninput,
+    onchange,
+  }: Props = $props();
 
   const playable = $derived(duration > 0);
   const progress = $derived(playable ? Math.min(100, (currentTime / duration) * 100) : 0);
   const currentMs = $derived(currentTime * 1000);
+
+  let width = $state(0);
+  let hoverX = $state<number | null>(null);
+  const hover = $derived.by(() => {
+    if (hoverX == null || !(width > 0) || bars.length === 0) return null;
+    const x = Math.min(width, Math.max(0, hoverX));
+    const bar = bars[Math.min(bars.length - 1, Math.floor((x / width) * bars.length))];
+    const speaker = speakers.find((s) => s.clusterId === bar.clusterId) ?? null;
+    return { x, speaker, time: formatPlayerTime((x / width) * duration) };
+  });
 </script>
 
-<div class="wave" class:wave--bars={bars.length > 0} class:wave--compact={compact}>
+<!-- The hover tooltip is decoration over the real control (the range input). -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+  class="wave"
+  class:wave--bars={bars.length > 0}
+  class:wave--compact={compact}
+  class:wave--sel={selectedClusterId != null}
+  bind:clientWidth={width}
+  onpointermove={(event) => (hoverX = event.clientX - event.currentTarget.getBoundingClientRect().left)}
+  onpointerleave={() => (hoverX = null)}
+>
   {#if bars.length > 0}
     <div class="wave__bars" aria-hidden="true">
       {#each bars as bar, i (i)}
@@ -36,6 +77,7 @@
           class="wave__bar"
           class:is-played={bar.atMs <= currentMs}
           class:is-silent={bar.colorVar == null}
+          class:is-dim={selectedClusterId != null && bar.clusterId !== selectedClusterId}
           style="height: {bar.heightPct}%; {bar.colorVar
             ? `--bar: var(${bar.colorVar});`
             : ''}"
@@ -62,6 +104,17 @@
   />
   {#if bars.length > 0}
     <div class="wave__head" style="left: {progress}%" aria-hidden="true"></div>
+  {/if}
+  {#if hover}
+    <span class="wave__tip" style="left: {hover.x}px" aria-hidden="true">
+      {#if hover.speaker}
+        <SpeakerMarkGlyph mark={marks.get(hover.speaker.clusterId)} ghosted={hover.speaker.unnamed} />
+        {hover.speaker.name}
+      {:else}
+        no speech
+      {/if}
+      <span class="wave__tip-time">{hover.time}</span>
+    </span>
   {/if}
 </div>
 
@@ -111,6 +164,40 @@
 
   .wave__bar.is-silent {
     opacity: 0.22;
+  }
+
+  .wave--sel .wave__bar:not(.is-dim):not(.is-played) {
+    opacity: 0.6;
+  }
+
+  .wave__bar.is-dim {
+    opacity: 0.1;
+  }
+
+  .wave__tip {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    z-index: 5;
+    translate: -50% 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--app-overlay-border);
+    background: var(--app-overlay-bg-strong);
+    box-shadow: var(--app-shadow-popover);
+    font: 500 var(--text-sm) / 1 var(--font-sans);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .wave__tip-time {
+    font-family: var(--font-mono);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
   }
 
   /* ── the real control ────────────────────────────────────────────────────── */

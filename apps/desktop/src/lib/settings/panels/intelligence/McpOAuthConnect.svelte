@@ -33,12 +33,12 @@
 <div class="oauth">
   {#if stage === "idle"}
     <div class="oauth__stage">
-      <button class="btn btn--primary oauth__connect" type="button" onclick={onConnect}>
+      <button class="mx-btn mx-btn--primary oauth__connect" type="button" onclick={onConnect}>
         {verb}{label.trim() ? ` ${label.trim()}` : " with OAuth"}
       </button>
       <p class="oauth__reassure">
-        Opens your browser to approve. Nothing is pasted here — only the returned token lands in your
-        macOS keychain.
+        Opens your browser to approve. Nothing is pasted here — only the returned token is kept,
+        stored encrypted on this Mac.
       </p>
     </div>
   {:else if stage === "authorizing"}
@@ -53,20 +53,20 @@
            own (~5 min TTL, ADR 0051). Cancel just dismisses the modal; the row
            keeps "authorizing…" until the callback resolves or the next status
            refresh reverts it. -->
-      <button class="btn btn--ghost btn--sm" type="button" onclick={onCancel}>Cancel</button>
+      <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={onCancel}>Cancel</button>
     </div>
   {:else if stage === "authorized"}
     <div class="oauth__stage">
       <span class="oauth__check"><IconCheck aria-hidden="true" /></span>
       <p class="oauth__ok">Connected{tools != null ? ` · ${tools} tools` : ""}</p>
-      <button class="btn btn--primary oauth__done" type="button" onclick={onDone}>Done</button>
+      <button class="mx-btn mx-btn--primary oauth__done" type="button" onclick={onDone}>Done</button>
     </div>
   {:else}
     <div class="oauth__stage">
       <span class="oauth__x"><IconAlert aria-hidden="true" /></span>
       <p class="oauth__ok">Approval didn't go through</p>
       <p class="oauth__sub">You cancelled or denied access in the browser. Nothing was stored.</p>
-      <button class="btn btn--primary oauth__retry" type="button" onclick={onRetry}>Try again</button>
+      <button class="mx-btn mx-btn--primary oauth__retry" type="button" onclick={onRetry}>Try again</button>
     </div>
   {/if}
 </div>
@@ -84,11 +84,6 @@
     text-align: center;
     gap: 12px;
     padding: 26px 8px 12px;
-  }
-  .oauth__connect.btn {
-    padding: 11px 24px;
-    font-size: 12px;
-    letter-spacing: 0.06em;
   }
   .oauth__reassure {
     margin: 0;
@@ -144,7 +139,6 @@
     border-radius: 50%;
     background: var(--app-accent);
     box-shadow: 0 0 8px var(--app-accent-glow);
-    animation: oauth-pulse 1.4s ease-in-out infinite;
   }
 
   /* authorized stage */
@@ -193,26 +187,11 @@
       opacity: 1;
     }
   }
-  @keyframes oauth-pulse {
-    0%,
-    100% {
-      opacity: 0.3;
-      transform: scale(0.8);
-    }
-    50% {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
     .oauth__glyph,
     .oauth__check,
     .oauth__x {
       animation: none;
-    }
-    .oauth__pulse {
-      animation: none;
-      opacity: 1;
     }
   }
 </style>

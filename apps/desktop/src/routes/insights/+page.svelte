@@ -1,10 +1,9 @@
 <script lang="ts">
-  import { tip } from "$lib/components/tooltip";
-  // Insights workspace — the second top-level Surface of Main (alongside the
-  // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
-  // switched via local state (NOT separate routes), plus a Subject drill-in.
-  // The surface toggle that brings the user here lives in the shared titlebar
-  // (`+layout.svelte`); this page owns only the sub-nav + sub-surface content.
+  // Insights — the second top-level surface of Main (insights.html). A sticky
+  // `.in-bar` of four underline tabs (Overview · Journal · Subjects · Context)
+  // switched via local state, with the active view's controls on the same row
+  // (views move them there with `use:inBar`), plus a Subject drill-in. Engine
+  // trouble is one `mx-notice` over the view — never a wall, never a steer.
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -12,310 +11,196 @@
   import type {
     AiRuntimeSettings,
     AiRuntimeStatus,
+    AuthoredContext,
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
-  import type { AskAiAvailability } from "$lib/insights/conversation";
   import { engineState } from "$lib/insights/engine-state";
+  import { aiProviderInstanceLabel, aiProviderKindLabel } from "$lib/settings/state/ai-providers";
   import Overview from "$lib/insights/Overview.svelte";
   import DayTimeline from "$lib/insights/DayTimeline.svelte";
   import Subjects from "$lib/insights/Subjects.svelte";
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
   import Context from "$lib/insights/Context.svelte";
-  import Chat from "$lib/insights/Chat.svelte";
-  import InsightsRail from "$lib/insights/InsightsRail.svelte";
-  import RailResizer from "$lib/insights/RailResizer.svelte";
-  import { conversationStore } from "$lib/insights/conversationStore.svelte";
+  import IconOff from "~icons/lucide/circle-off";
+  import IconSparkle from "~icons/lucide/sparkle";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconCloudOff from "~icons/lucide/cloud-off";
+  import IconRetry from "~icons/lucide/rotate-ccw";
 
-  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
+  type InsightsTab = "overview" | "journal" | "subjects" | "context";
 
-  // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
-  // the Subjects tab held in `selectedSubject` (null = the index).
   let view = $state<InsightsTab>("overview");
+  // Subject drill-in over the Subjects tab (null = the index).
   let selectedSubject = $state<string | null>(null);
-
-  // Quick Recall → Chat handoff (issue #111, ADR 0031). When a Quick Recall
-  // thread is promoted into Chat, the main window is shown/navigated here and a
-  // conversation id is delivered (a live `insights_open_conversation` event for
-  // a warm window, or the cold-window drain on mount). The handoff now routes
-  // through the shared store's selection BUS (`requestOpen`), which Chat watches;
-  // the effect below switches this shell to the Chat sub-surface when the bus
-  // fires (so a request that arrives while on another tab still lands on Chat).
-  function handoffConversation(conversationId: string): void {
-    conversationStore.requestOpen(conversationId);
-    view = "chat";
-    selectedSubject = null;
-  }
-
-  // A bus request (from the handoff above, or — in a later slice — the rail
-  // clicking a row from another surface) switches the shell to the Chat
-  // sub-surface. Track the nonce; skip 0 (nothing requested yet on mount).
-  let lastHandoffNonce = 0;
-  $effect(() => {
-    const pending = conversationStore.pendingOpen;
-    untrack(() => {
-      if (pending.nonce === 0 || pending.nonce === lastHandoffNonce) return;
-      lastHandoffNonce = pending.nonce;
-      view = "chat";
-      selectedSubject = null;
-    });
-  });
+  let main = $state<HTMLElement>();
 
   function openTab(tab: InsightsTab): void {
     view = tab;
     contextOpenDismissed = false;
     if (tab !== "subjects") selectedSubject = null;
-    // Leaving Chat unmounts it, so its mirror effect can no longer clear the
-    // store's open-thread id — clear it here so the rail stops highlighting the
-    // previously-open row while a non-Chat sub-surface is showing. (Re-entering
-    // Chat remounts it; the bus/handoff sets the active id back as needed.)
-    if (tab !== "chat") conversationStore.activeConversationId = null;
+    if (main) main.scrollTop = 0;
   }
 
   function openSubject(subject: string): void {
     view = "subjects";
     selectedSubject = subject;
+    if (main) main.scrollTop = 0;
   }
 
-  function backToSubjects(): void {
-    selectedSubject = null;
-  }
-
-  // ── Engine status ────────────────────────────────────────────────────
-  // The status state stays in this shell and is read through the shared
-  // `engineState` rule (Direction A, SH-01/OV-01/SB-03/MT-02), which no longer
-  // keys on `configured`:
-  //   1. no provider ever added   → the full-page pitch;
-  //   2. AI turned off            → a slim "AI is off" line, content visible;
-  //   3. can't reach engine/vault → "Can't reach…" + Retry;
-  //   4. anything else broken     → the named fix.
-  // A broken-but-set-up engine never hides existing Insights behind the pitch.
-  let aiStatus = $state<AiRuntimeStatus | null>(null);
-  let aiSettings = $state<AiRuntimeSettings | null>(null);
-  let ctxStatus = $state<UserContextStatus | null>(null);
-  let askAvailability = $state<AskAiAvailability | null>(null);
-  let modelLabel = $state<string>("");
-  // Distinguishes "still loading the status calls" from a real state, so
-  // nothing flashes "engine off" (or the pitch) before the first load lands.
-  let statusLoaded = $state(false);
-
-  const engine = $derived(engineState(statusLoaded, aiStatus, aiSettings));
-  const engineGated = $derived(engine.kind === "pitch");
-  // Engine fine, but the Ask AI opt-in is off — the rail footer says so.
-  const chatOff = $derived(
-    engine.kind === "on" && askAvailability?.reason === "ask_ai_disabled",
-  );
-
-  // Continuous derivation (the User Context opt-in) is off while the runtime is
-  // set up. Nothing is locked (MT-01): every tab stays readable and Context stays
-  // editable — Subjects/Context just carry a paused line with "Turn back on".
-  const derivationOff = $derived(
-    statusLoaded && ctxStatus?.reason === "user_context_disabled",
-  );
-  let resuming = $state(false);
-
-  // Subjects' "View dismissed": switch to Context with the archive open. Reset
-  // whenever the view changes again so a later visit lands normally.
+  // Subjects' "View dismissed": switch to Context with the archive open.
   let contextOpenDismissed = $state(false);
   function viewDismissed(): void {
     openTab("context");
     contextOpenDismissed = true;
   }
 
-  async function turnDerivationBackOn(): Promise<void> {
-    resuming = true;
-    try {
-      await invoke("update_user_context_settings", { request: { enabled: true } });
-      await loadEngineStatus();
-    } catch {
-      // Fall back to the setting itself so the user can see what failed.
-      void openSettings("userContext");
-    } finally {
-      resuming = false;
-    }
-  }
+  // ── Engine status → one notice (IMPLEMENTATION.md §4 Shell) ──────────
+  let aiStatus = $state<AiRuntimeStatus | null>(null);
+  let aiSettings = $state<AiRuntimeSettings | null>(null);
+  let ctxStatus = $state<UserContextStatus | null>(null);
+  let authoredCount = $state<number | undefined>(undefined);
+  // Nothing flashes a notice before the first status read lands.
+  let statusLoaded = $state(false);
 
-  function shortModel(model: string): string {
-    const trimmed = model.trim();
-    if (!trimmed) return "engine";
-    // Drop a leading "provider:" prefix and any path, keep the model id tail.
-    const afterProvider = trimmed.includes(":") ? trimmed.split(":").pop()! : trimmed;
-    const tail = afterProvider.split("/").pop() ?? afterProvider;
-    return tail.length > 28 ? `${tail.slice(0, 27)}…` : tail;
-  }
+  const engine = $derived(engineState(statusLoaded, aiStatus, aiSettings));
 
   async function loadEngineStatus(): Promise<void> {
-    try {
-      const [ai, ctx, settings, ask] = await Promise.all([
-        invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
-        invoke<UserContextStatus>("get_user_context_status").catch(() => null),
-        invoke<RecordingSettings>("get_recording_settings").catch(() => null),
-        invoke<AskAiAvailability>("ask_ai_availability").catch(() => null),
-      ]);
-      aiStatus = ai;
-      ctxStatus = ctx;
-      askAvailability = ask;
-      aiSettings = settings?.aiRuntime ?? null;
-      if (settings?.aiRuntime) {
-        modelLabel = shortModel(settings.aiRuntime.defaultModel?.model ?? "");
-      }
-    } catch {
-      // Best-effort: a failed status read reads as "couldn't check" + Retry.
-    } finally {
-      statusLoaded = true;
+    const [ai, ctx, settings, authored] = await Promise.all([
+      invoke<AiRuntimeStatus>("get_ai_runtime_status").catch(() => null),
+      invoke<UserContextStatus>("get_user_context_status").catch(() => null),
+      invoke<RecordingSettings>("get_recording_settings").catch(() => null),
+      invoke<AuthoredContext[]>("list_user_context_authored").catch(() => null),
+    ]);
+    aiStatus = ai;
+    ctxStatus = ctx;
+    authoredCount = authored?.length;
+    aiSettings = settings?.aiRuntime ?? null;
+    statusLoaded = true;
+  }
+
+  function providerLabel(id: string): string {
+    const provider = aiSettings?.providers.find((p) => p.id === id);
+    return provider ? aiProviderInstanceLabel(provider) : aiProviderKindLabel(id);
+  }
+
+  type Notice = {
+    tone: "off" | "warn" | "danger" | "";
+    icon: typeof IconOff;
+    title: string;
+    /** Per-view body copy, or one line for every view. */
+    text: Record<InsightsTab, string> | string;
+    action: string;
+    ghost: boolean;
+    onAction: () => void;
+  };
+
+  const toEngine = () => void openSettings("intelligence");
+
+  // Reason-keyed copy (insights.html ENGINE). `has_providers` picks "not set up"
+  // over "off"; off-by-choice is never a warning, unreachable never says sign in.
+  const notice = $derived.by((): Notice | null => {
+    if (engine.kind === "pitch") {
+      return {
+        tone: "",
+        icon: IconSparkle,
+        title: "AI isn't set up yet",
+        text: {
+          overview: "Connect a provider — local (Ollama, Llamafile) or your own API key — to get the read, categories and focus.",
+          journal: "The journal is written by your AI provider. Until one is connected, the Timeline has everything captured.",
+          subjects: "Subjects are views your AI provider forms from your activity.",
+          context: "You can write context now — it's saved and used once AI is set up.",
+        },
+        action: "Set up AI",
+        ghost: false,
+        onAction: toEngine,
+      };
     }
-  }
-
-  function enableEngine(): void {
-    void openSettings("intelligence");
-  }
-
-  // ── Rail collapse / expand (Slice 6) ─────────────────────────────────────
-  // The rail can be collapsed to give the active sub-surface full width. Two
-  // independent inputs decide the EFFECTIVE collapsed state:
-  //   • userCollapsed — the user's EXPLICIT preference, persisted to
-  //     localStorage. Only the toggle button writes this.
-  //   • windowNarrow  — a TRANSIENT, automatic collapse on narrow windows
-  //     (< NARROW_PX). Never persisted; recomputed from a resize listener.
-  // Effective = userCollapsed || windowNarrow. Keeping them separate means an
-  // auto-collapse on a narrow window does NOT clobber the user's saved choice:
-  // widen the window again and the rail returns to whatever the user last set.
-  //
-  // Semantics of the toggle (intuitive, documented per the plan):
-  //   • Collapse  → userCollapsed = true (persisted). Rail hides immediately.
-  //   • Expand    → userCollapsed = false (persisted). If the window is wide the
-  //     rail returns at once. If the window is currently narrow, the rail still
-  //     appears (the user explicitly asked) but may auto-collapse again on the
-  //     next narrow resize — acceptable, and the natural reading of "show it now".
-  const RAIL_COLLAPSED_KEY = "mnema.insights.rail-collapsed";
-  const NARROW_PX = 760;
-
-  function readPersistedCollapsed(): boolean {
-    try {
-      return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
-    } catch {
-      // SSR / disabled storage — default to expanded.
-      return false;
+    if (engine.kind === "off") {
+      return {
+        tone: "off",
+        icon: IconOff,
+        title: "AI features are off",
+        text: {
+          overview: "You're seeing capture-only numbers. The read, categories and focus come back when AI features are on.",
+          journal: "Nothing new is written up while they're off. Days already written stay as they are.",
+          subjects: "Subjects stop updating while AI features are off. Nothing here is lost.",
+          context: "What you write is saved, and steers the dossier again once AI features are back on.",
+        },
+        action: "Turn on in Settings →",
+        ghost: true,
+        onAction: toEngine,
+      };
     }
-  }
-
-  let userCollapsed = $state(readPersistedCollapsed());
-  let windowNarrow = $state(false);
-  const railCollapsed = $derived(userCollapsed || windowNarrow);
-
-  function toggleRailCollapsed(): void {
-    // Expanding while narrow re-shows the rail by clearing the explicit
-    // preference; collapsing sets it. Either way persist the explicit choice.
-    userCollapsed = !railCollapsed;
-    try {
-      localStorage.setItem(RAIL_COLLAPSED_KEY, userCollapsed ? "1" : "0");
-    } catch {
-      // Best-effort persistence — a disabled store just won't survive reload.
+    if (engine.kind === "unreachable") {
+      return {
+        tone: "warn",
+        icon: IconCloudOff,
+        // "Can't reach ChatGPT right now — your sign-in is fine." → the head.
+        title: engine.text.split(" — ")[0],
+        text: "New write-ups resume on their own once it's reachable. Everything already here stays.",
+        action: "Try again",
+        ghost: false,
+        onAction: () => void loadEngineStatus(),
+      };
     }
-  }
-
-  // ── Rail width (drag-resize, Slice 7) ───────────────────────────────────
-  // Independent of collapse: the user can drag the rail/main boundary to any
-  // width in [RAIL_MIN_WIDTH, RAIL_MAX_WIDTH], persisted to localStorage and
-  // restored on mount. <RailResizer/> reports a desired px width; the shell is
-  // the single owner that clamps + persists (so storage never holds an out-of-
-  // range value). Only matters while expanded — when collapsed the rail (and the
-  // resizer) aren't rendered, but the saved width is what returns on expand.
-  const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
-  const RAIL_MIN_WIDTH = 180;
-  const RAIL_MAX_WIDTH = 400;
-  // First-run width sits in the conventional 240-280px expanded-sidebar band so
-  // long conversation titles + the engine/model footer get room (still drag-
-  // resizable within [min,max] and persisted).
-  const RAIL_DEFAULT_WIDTH = 240;
-
-  function clampRailWidth(px: number): number {
-    return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));
-  }
-
-  function readPersistedWidth(): number {
-    try {
-      const raw = localStorage.getItem(RAIL_WIDTH_KEY);
-      if (raw === null) return RAIL_DEFAULT_WIDTH;
-      const parsed = Number.parseInt(raw, 10);
-      return Number.isNaN(parsed) ? RAIL_DEFAULT_WIDTH : clampRailWidth(parsed);
-    } catch {
-      // SSR / disabled storage — fall back to the default width.
-      return RAIL_DEFAULT_WIDTH;
+    if (engine.kind === "fix") {
+      const id = engine.reconnectProviderId;
+      return {
+        tone: "danger",
+        icon: IconAlert,
+        title: id ? `${providerLabel(id)} needs you to sign in again` : engine.text,
+        text: id
+          ? "OpenAI rejected the saved sign-in, so new write-ups are paused. Everything already here stays."
+          : "New write-ups are paused. Everything already here stays.",
+        action: id ? "Reconnect" : "Open settings",
+        ghost: false,
+        onAction: toEngine,
+      };
     }
-  }
-
-  let railWidth = $state(readPersistedWidth());
-
-  function setRailWidth(px: number): void {
-    railWidth = clampRailWidth(px);
-    try {
-      localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth));
-    } catch {
-      // Best-effort persistence — a disabled store just won't survive reload.
+    if (engine.kind === "on" && ctxStatus?.reason === "user_context_disabled") {
+      return {
+        tone: "off",
+        icon: IconOff,
+        title: "Continuous derivation is off",
+        text: {
+          overview: "No new activities, read or focus while it's off — the numbers below are capture-only.",
+          journal: "New capture isn't written up while it's off. Days already written stay as they are.",
+          subjects: "No new evidence reaches your subjects while it's off. Confidence keeps fading on its own.",
+          context: "What you write is saved, and steers the dossier once derivation is back on.",
+        },
+        action: "Turn on in Settings →",
+        ghost: true,
+        onAction: () => void openSettings("userContext"),
+      };
     }
-  }
-
-  function resetRailWidth(): void {
-    setRailWidth(RAIL_DEFAULT_WIDTH);
-  }
-
-  // Track the narrow-window condition with a matchMedia listener (cheaper than a
-  // raw resize handler and fires only on the threshold crossing). Set up in an
-  // effect so the listener is cleaned up on unmount.
-  $effect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia(`(max-width: ${NARROW_PX - 1}px)`);
-    const apply = () => {
-      windowNarrow = mql.matches;
-    };
-    apply();
-    mql.addEventListener("change", apply);
-    return () => mql.removeEventListener("change", apply);
+    return null;
   });
 
-  // Drain any pending Quick Recall → Chat handoff queued before this surface
-  // mounted (cold main window): the event may have fired while the window was
-  // opening, so the latest queued conversation id lands the Chat tab on the
-  // handed-off thread. Best-effort; a transport failure just leaves the default
-  // Overview tab. The newest queued entry wins (handoffConversation is called in
-  // order, so the last call sets the active id).
-  async function drainPendingHandoff(): Promise<void> {
-    try {
-      const pending = await invoke<{ conversationId: string }[]>(
-        "drain_pending_insights_open_conversations",
-      );
-      for (const entry of pending) {
-        handoffConversation(entry.conversationId);
-      }
-    } catch {
-      // Best-effort: no pending handoff, or the command is unavailable.
-    }
-  }
+  // Tab counts: Subjects from the context status, Context from the authored
+  // list (both re-read on `user_context_changed`). Journal carries no number
+  // by ruling (B7).
+  const TABS: { id: InsightsTab; label: string }[] = [
+    { id: "overview", label: "Overview" },
+    { id: "journal", label: "Journal" },
+    { id: "subjects", label: "Subjects" },
+    { id: "context", label: "Context" },
+  ];
+  const counts = $derived<Partial<Record<InsightsTab, number>>>({
+    subjects: ctxStatus?.subjectCount,
+    context: authoredCount,
+  });
 
   $effect(() => {
     void untrack(() => loadEngineStatus());
-    void untrack(() => drainPendingHandoff());
-    // Kick the shared store's first history fetch so the rail populates even
-    // when Chat isn't mounted (idempotent — Chat also calls it on its mount).
-    void conversationStore.ensureStarted();
-
     const unlistens: UnlistenFn[] = [];
     let disposed = false;
     const keep = (fn: UnlistenFn) => (disposed ? fn() : unlistens.push(fn));
-    // Re-read the engine status on: a context change; a Settings save (default
-    // model / engine on-off emit only `recording_settings_changed`); and a
-    // ChatGPT sign-in (Chat's inline "Sign in again" emits only
-    // `chatgpt_login_update`) — else the rail footer stays "signed out".
+    // A context change, a Settings save (engine on/off, default model) and a
+    // ChatGPT sign-in all change which notice shows.
     for (const name of ["user_context_changed", "recording_settings_changed", "chatgpt_login_update"]) {
       void listen(name, () => void loadEngineStatus()).then(keep);
     }
-
-    // Warm-window handoff: a live event switches to Chat + selects the thread.
-    void listen<{ conversationId: string }>("insights_open_conversation", (event) => {
-      handoffConversation(event.payload.conversationId);
-    }).then(keep);
-
     return () => {
       disposed = true;
       for (const fn of unlistens) fn();
@@ -323,461 +208,184 @@
   });
 </script>
 
-{#if engineGated}
-  <!-- Engine never set up — the whole workspace is engine-derived, so pitch it.
-       `recording_settings_changed` re-runs loadEngineStatus, so finishing setup
-       in Settings unlocks this page live, no reload needed. -->
-  <div class="gate">
-    <div class="gate-panel">
-      <p class="gate-eyebrow">
-        <span class="diamond" aria-hidden="true">◆</span>
-        Insights
-      </p>
-      <h1 class="gate-title">Turn on the Reasoning Engine to unlock Insights.</h1>
-      <p class="gate-detail">
-        Insights is what the engine writes about your days — everything on this
-        surface is derived from it:
-      </p>
-      <ul class="gate-list">
-        <li><strong>The read</strong> — a daily digest of what you actually did.</li>
-        <li><strong>Journal</strong> — your day reconstructed as a timeline of activities.</li>
-        <li><strong>Subjects</strong> — the beliefs it forms about you, with confidence trajectories.</li>
-        <li><strong>Context</strong> — what you tell it about yourself, to steer those beliefs.</li>
-        <li><strong>Chat</strong> — ask questions over your own history.</li>
-      </ul>
-      <button type="button" class="gate-cta" onclick={enableEngine}>
-        Open engine settings
-      </button>
-      <p class="gate-note">
-        Runs on your own provider — local (Ollama, Llamafile) or your cloud API key.
-      </p>
+<div class="in-main" bind:this={main}>
+  <div class="in-bar">
+    <div class="in-bar__in">
+      <nav class="in-tabs" aria-label="Insights sections">
+        {#each TABS as tab (tab.id)}
+          <button
+            type="button"
+            aria-current={view === tab.id ? "true" : "false"}
+            onclick={() => openTab(tab.id)}
+          >
+            {tab.label}
+            {#if counts[tab.id] !== undefined}<span class="num">{counts[tab.id]}</span>{/if}
+          </button>
+        {/each}
+      </nav>
+      <span class="mx-spacer"></span>
+      <!-- The active view moves its own controls in here (`use:inBar`). -->
+      <div class="in-bar__ctl"></div>
     </div>
   </div>
-{:else}
-<div class="insights" class:insights--collapsed={railCollapsed}>
-  <InsightsRail
-    {view}
-    onOpenTab={openTab}
-    {engine}
-    {chatOff}
-    {modelLabel}
-    onEnable={enableEngine}
-    onRetry={() => void loadEngineStatus()}
-    collapsed={railCollapsed}
-    onToggleCollapse={toggleRailCollapsed}
-    width={railWidth}
-  />
 
-  <!-- Drag handle between the rail and the active sub-surface. Only present when
-       the rail is (so there is a boundary to drag). -->
-  {#if !railCollapsed}
-    <RailResizer
-      width={railWidth}
-      min={RAIL_MIN_WIDTH}
-      max={RAIL_MAX_WIDTH}
-      onWidth={setRailWidth}
-      onReset={resetRailWidth}
-    />
-  {/if}
-
-  <main class="insights-main" class:insights-main--chat={view === "chat"}>
-    <!-- When the rail is collapsed, a quiet floating button (top-left, with a
-         subtle backdrop so it reads above sub-surface content) brings it back. -->
-    {#if railCollapsed}
-      <button
-        type="button"
-        class="rail-expand-float"
-        aria-label="Expand sidebar"
-        aria-expanded="false"
-        use:tip={"Expand sidebar"}
-        onclick={toggleRailCollapsed}
-      >
-        <span aria-hidden="true">»</span>
-      </button>
-    {/if}
-    {#if view !== "chat" && (engine.kind === "off" || engine.kind === "unreachable" || engine.kind === "fix")}
-      <!-- Engine set up but not working: one line over the intact content.
-           Chat carries the same state in its composer slot instead. -->
-      <p class="engine-line" role="status">
-        <span class="wdot" class:wdot--off={engine.kind === "off"} aria-hidden="true"></span>
-        {#if engine.kind === "off"}
-          AI is off, so nothing new is written. Everything here is still yours to read.
-          <button type="button" class="btn btn--accent" onclick={enableEngine}>Turn on</button>
-        {:else if engine.kind === "unreachable"}
-          {engine.text}
-          <button type="button" class="re-read" onclick={() => void loadEngineStatus()}>
-            <span class="re-read-ico" aria-hidden="true">↻</span> Retry
-          </button>
-        {:else}
-          {engine.text}
-          <button type="button" class="btn btn--accent" onclick={enableEngine}>
-            {engine.reconnectProviderId ? "Sign in again" : "Open settings"}
-          </button>
-        {/if}
-      </p>
-    {/if}
-    {#if derivationOff && engine.kind === "on" && (view === "subjects" || view === "context")}
-      <p class="engine-line" role="status">
-        <span class="wdot" aria-hidden="true"></span>
-        Paused, not updating — continuous derivation is off. Everything here is still yours to read.
-        <button
-          type="button"
-          class="btn btn--accent"
-          disabled={resuming}
-          onclick={() => void turnDerivationBackOn()}
-        >
-          {resuming ? "Turning on…" : "Turn back on"}
-        </button>
-      </p>
+  <section class="in-view" aria-label={TABS.find((t) => t.id === view)?.label}>
+    {#if notice && !(engine.kind === "pitch" && view === "journal")}
+      {@const Icon = notice.icon}
+      <div class="in-notices">
+        <div class="mx-notice" data-tone={notice.tone || undefined} role="status">
+          <span class="mx-notice__icon"><Icon width="15" height="15" aria-hidden="true" /></span>
+          <b class="mx-notice__title">{notice.title}</b>
+          <p class="mx-notice__text">{typeof notice.text === "string" ? notice.text : notice.text[view]}</p>
+          <div class="mx-notice__acts">
+            <button
+              type="button"
+              class="mx-btn mx-btn--sm"
+              class:mx-btn--ghost={notice.ghost}
+              onclick={notice.onAction}
+            >
+              {#if notice.icon === IconCloudOff}<IconRetry width="13" height="13" aria-hidden="true" />{/if}
+              {notice.action}
+            </button>
+          </div>
+        </div>
+      </div>
     {/if}
     {#if view === "overview"}
-      <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
+      <Overview
+        onOpenSubject={openSubject}
+        onOpenTab={openTab}
+      />
     {:else if view === "journal"}
       <DayTimeline />
     {:else if view === "subjects"}
       {#if selectedSubject}
-        <div class="breadcrumb">
-          <button type="button" class="breadcrumb-back" onclick={backToSubjects}>‹ back</button>
-          <button type="button" class="breadcrumb-link" onclick={backToSubjects}>Subjects</button>
-          <span class="sep">/</span>
-          <span class="current">{selectedSubject}</span>
-        </div>
-        <SubjectDetail subject={selectedSubject} onBack={backToSubjects} />
-      {:else}
-        <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} />
+        <SubjectDetail
+          subject={selectedSubject}
+          onBack={() => {
+            selectedSubject = null;
+            if (main) main.scrollTop = 0;
+          }}
+          askDisabled={engine.kind === "pitch" || engine.kind === "off"}
+        />
       {/if}
-    {:else if view === "context"}
-      <Context openDismissed={contextOpenDismissed} />
+      <!-- The index stays mounted under a subject's page so its filter and
+           Conviction/Movement controls keep their place on the bar (mockup). -->
+      <div style:display={selectedSubject ? "none" : "contents"}>
+        <Subjects onOpenSubject={openSubject} onViewDismissed={viewDismissed} onFilter={() => (selectedSubject = null)} />
+      </div>
     {:else}
-      <Chat />
+      <Context
+        openDismissed={contextOpenDismissed}
+        onOpenSubject={openSubject}
+        providerKind={aiStatus?.defaultProviderKind ?? null}
+        providerName={aiStatus?.defaultModel ? providerLabel(aiStatus.defaultModel.provider) : null}
+      />
     {/if}
-  </main>
+  </section>
 </div>
-{/if}
 
 <style>
-  /* Insights workspace shell — mirrors `.insights` from the mockup (app.css),
-     token-driven. A persistent left rail (<InsightsRail>) sits beside the
-     `.insights-main` scroll column; the rail carries the sub-surface nav,
-     new-chat, chat search/history, and the engine-status footer. */
-  .insights {
-    display: flex;
-    flex-direction: row;
+  /* insights.html `.in-main` / `.in-bar` / `.in-tabs` / `.in-view`. */
+  .in-main {
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
-  }
-
-  /* ── Engine gate — full-surface pitch shown until the engine is set up ── */
-  .gate {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
     overflow-y: auto;
-    padding: 28px 20px;
+    overflow-x: hidden;
+    position: relative;
   }
-  .gate-panel {
-    /* Auto margins center when there's room but keep the top reachable when the
-       panel is taller than the viewport (flex centering would clip it). */
-    margin: auto;
-    max-width: 460px;
+  .in-bar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+  /* Blur on a pseudo layer so popovers inside the bar can still blur the page. */
+  .in-bar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: color-mix(in srgb, var(--app-bg) 84%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    backdrop-filter: blur(14px) saturate(1.2);
+  }
+  .in-bar__in {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 0 var(--s-7);
+    height: 56px;
     display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 26px 28px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 11px;
+    align-items: center;
+    gap: var(--s-3);
   }
-  .gate-eyebrow {
-    margin: 0;
+  .in-tabs {
+    display: flex;
+    align-self: stretch;
+    gap: var(--s-5);
+  }
+  .in-tabs button {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    font: 500 var(--text-lg) / 1 var(--font-sans);
+    letter-spacing: -0.012em;
+    color: var(--app-text-subtle);
+    transition: color var(--t-fast) var(--ease-quart);
   }
-  .gate-eyebrow .diamond {
-    color: var(--app-accent);
-    letter-spacing: 0;
+  .in-tabs button:hover {
+    color: var(--app-text);
   }
-  .gate-title {
-    margin: 0;
-    font-size: var(--text-lg);
-    line-height: 1.35;
+  .in-tabs button:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .in-tabs button[aria-current="true"] {
     color: var(--app-text-strong);
   }
-  .gate-detail {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.6;
-    color: var(--app-text-muted);
-  }
-  .gate-list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: var(--text-md);
-    line-height: 1.55;
-    color: var(--app-text-muted);
-  }
-  /* Hanging indent — wrapped lines align under the text, not the ◆ marker. */
-  .gate-list li {
-    position: relative;
-    padding-left: 16px;
-  }
-  .gate-list li::before {
-    content: "◆";
+  /* The ink sits on the bar's hairline. */
+  .in-tabs button[aria-current="true"]::after {
+    content: "";
     position: absolute;
     left: 0;
-    font-size: 8px;
-    color: var(--app-accent);
-    vertical-align: 1px;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--app-text-strong);
   }
-  .gate-list strong {
-    color: var(--app-text-strong);
-    font-weight: 600;
-  }
-  .gate-cta {
-    align-self: flex-start;
-    margin-top: 8px;
-    font: inherit;
-    font-size: var(--text-md);
-    padding: 7px 15px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .gate-cta:hover {
-    border-color: var(--app-accent);
-  }
-  .gate-cta:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .gate-cta:active {
-    transform: translateY(1px);
-  }
-  .gate-note {
-    margin: 0;
-    font-size: var(--text-sm);
-    color: var(--app-text-faint);
-  }
-
-  /* Engine-status line (Direction A `.quiet-line`): amber dot + one sentence +
-     one action, above the sub-surface. */
-  .engine-line {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    max-width: 860px;
-    margin: 0 auto 14px;
-    font-size: var(--text-sm);
-    line-height: 1.55;
-    color: var(--app-text-muted);
-  }
-  .engine-line .re-read,
-  .engine-line .btn {
-    margin-left: auto;
-    flex: none;
-  }
-  .engine-line .btn {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 5px 12px;
-    border-radius: 7px;
-    cursor: pointer;
-    border: 1px solid var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .engine-line .btn:hover {
-    border-color: var(--app-accent);
-  }
-  .engine-line .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .wdot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-warn);
-  }
-  .wdot--off {
-    background: var(--app-status-dot);
-  }
-  .re-read {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
+  .in-tabs .num {
     font-size: var(--text-xs);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .re-read:hover {
-    color: var(--app-text-strong);
-  }
-  .re-read:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .re-read-ico {
-    font-size: var(--text-base);
-    line-height: 1;
-    letter-spacing: 0;
-  }
-
-  .insights-main {
-    flex: 1 1 auto;
-    min-width: 0;
-    /* Position context for the floating expand button (collapsed state). */
-    position: relative;
-    overflow-y: auto;
-    /* Reading surfaces never scroll sideways; a stray wide element (long
-       unwrapped token, 1px rounding) must not summon a horizontal scrollbar. */
-    overflow-x: hidden;
-    padding: 18px 20px 28px;
-  }
-  /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /
-     context) reserve a little extra top-left room so the floating expand button
-     never sits on top of their content. Chat floats above its own header, so it
-     keeps its edge-to-edge `--chat` padding (the button's backdrop separates
-     it). */
-  .insights--collapsed .insights-main:not(.insights-main--chat) {
-    padding-top: 46px;
-  }
-
-  /* Floating expand affordance — only rendered when the rail is collapsed.
-     Anchored top-left of the content area with a small inset + a subtle backdrop
-     so it reads cleanly above whatever sub-surface is showing. Quiet by default,
-     accent-on-hover, keyboard focusable with a visible focus ring. */
-  .rail-expand-float {
-    position: absolute;
-    top: 12px;
-    left: 12px;
-    z-index: 5;
-    width: 26px;
-    height: 26px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-    color: var(--app-text-muted);
-    font-size: 14px;
-    line-height: 1;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .rail-expand-float:hover {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-surface-hover);
-  }
-  .rail-expand-float:focus-visible {
-    outline: none;
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
-  }
-  /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
-     so the shell main drops its padding and outer scroll (mirrors the mockup's
-     `.insights-main` override). The other tabs keep the padded scroll above. */
-  .insights-main--chat {
-    padding: 0;
-    overflow: hidden;
-    /* Become a flex column so the chat surface fills via flex-grow rather than
-       a percentage height. WKWebView (Tauri) does not reliably resolve a child's
-       `height: 100%` against a flex-stretched parent, so `.chat` collapses to its
-       content height; growing it as a flex item instead fills the surface. */
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-
-  /* Drill-in breadcrumb (Subjects / <name>). Mirrors app.css `.breadcrumb`. */
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin-bottom: 14px;
-  }
-  .breadcrumb-link {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.12s ease;
-  }
-  .breadcrumb-link:hover {
-    color: var(--app-text-strong);
-  }
-  .breadcrumb-link:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    border-radius: 4px;
-    box-shadow: var(--app-ring);
-  }
-  .breadcrumb .sep {
+    font-weight: 500;
     color: var(--app-text-faint);
   }
-  .breadcrumb .current {
-    color: var(--app-text-strong);
+  .in-tabs button[aria-current="true"] .num {
+    color: var(--app-text-subtle);
   }
-  .breadcrumb-back {
-    display: inline-flex;
+  .in-bar__ctl {
+    display: flex;
     align-items: center;
-    gap: 4px;
-    margin-right: 4px;
-    padding: 2px 7px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 11.5px;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
+    gap: var(--s-3);
   }
-  .breadcrumb-back:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
+  /* A view's moved-in controls drop the spacing and wrapping they had in-flow. */
+  .in-bar__ctl > :global(*) {
+    margin: 0;
+    flex-wrap: nowrap;
   }
-  .breadcrumb-back:focus-visible {
-    outline: none;
-    color: var(--app-text-strong);
-    box-shadow: var(--app-ring);
+  .in-view {
+    padding: var(--s-6) var(--s-7) var(--s-8);
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  .in-notices {
+    display: grid;
+    gap: var(--s-2);
+    margin: 0 0 var(--s-5);
   }
 </style>

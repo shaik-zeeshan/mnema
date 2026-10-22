@@ -1,6 +1,6 @@
 // The onboarding flow's gate predicates (issue #195, slice 5).
 //
-// The flow has THREE hard gates. Two of them live on *Capture & Storage*:
+// The flow has TWO hard gates, both on *Capture & Storage*:
 //   1. the storage path exists and is writable
 //   2. the volume has room to actually run: the reserve the backend already
 //      enforces + the download work-list + one day of capture
@@ -8,13 +8,11 @@
 // range validation, which blocks because those values serialize as `null` and
 // break the backend save.
 //
-// The third is Screen Recording, on *Permissions*: Mnema records the screen, so
-// without that grant there is nothing to record. It is enforced in
-// `PermissionsScreen.svelte` rather than here because it reads live OS state,
-// not the resolved settings — including the relaunch a same-process grant needs
-// before ScreenCaptureKit can use it. EVERY OTHER permission still gates
-// nothing: macOS never re-prompts after a denial, so blocking on an OPTIONAL
-// source would trap the user with no in-app recovery.
+// Permissions gate NOTHING — Screen Recording included (a denial leaves an
+// audio-only or idle session; the start request ANDs each source with its
+// grant). macOS never re-prompts after a denial, so blocking on any of them
+// would trap the user with no in-app recovery. The one hold left there is the
+// relaunch a same-process screen grant needs (`permissions-gate.ts`).
 //
 // Setup gates NOTHING, EVER — its Continue is live on arrival and never
 // disables. The old "attention item" concept, where a selected-but-missing model

@@ -17,7 +17,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
 import { humanizeError } from "$lib/format-error";
 import { retentionToDays } from "$lib/components/retention";
-import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
+import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
 import { setAppearance } from "$lib/theme.svelte";
 import { setDeveloperOptionsEnabled } from "$lib/developer-options.svelte";
@@ -25,6 +25,7 @@ import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.
 import {
   RECORDING_DRAFT_DOMAINS,
   RECORDING_DOMAIN_COMMANDS,
+  deriveSaveStatus,
   type AutosaveRecordingDomain,
 } from "./autosave-core";
 import { createAutosaveEngine } from "./autosave.svelte";
@@ -102,7 +103,6 @@ export class SettingsController {
   rec = createRecordingStore({
     setAppearance: (value) => setAppearance(value),
     setDeveloperOptionsEnabled: (value) => setDeveloperOptionsEnabled(value),
-    loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
     refreshMcpServerSecretPresence: () => void this.aiRuntime.refreshMcpServerSecretPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
@@ -173,7 +173,7 @@ export class SettingsController {
   // A failed recording-domain save leaves the domain dirty, so the autosave
   // engine's re-tick (on the `savingRecDomains` flag flipping back to false)
   // would re-fire the save every ~450ms forever — a silent hammer. These track
-  // the failed domain (so the rail footer can offer a targeted Retry/Dismiss),
+  // the failed domain (so the header save status can offer a targeted Retry/Dismiss),
   // the consecutive-failure count, and the per-domain "don't retry before"
   // timestamp that throttles the loop with capped exponential backoff.
   lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
@@ -187,7 +187,7 @@ export class SettingsController {
     ReturnType<typeof setTimeout>
   >();
   // The domain whose save most recently succeeded — drives a near-the-control
-  // "Saved" micro-affordance (the rail footer status is remote from the edit).
+  // "Saved" micro-affordance (the header save status is remote from the edit).
   recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
 
   // Ask AI / AI model picker open state.
@@ -296,7 +296,7 @@ export class SettingsController {
     if (removed && this.isCloudAiProviderKind(removed.kind)) {
       const label = this.aiProviderInstanceLabel(removed);
       const confirmed = await confirm(
-        `Removing “${label}” deletes its API key from the macOS keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
+        `Removing “${label}” deletes its API key from this Mac right away. Any AI feature using this provider will stop working until you reconnect it.`,
         {
           title: "Remove this provider?",
           kind: "warning",
@@ -644,7 +644,7 @@ export class SettingsController {
   }
 
   // Record a failed recording-domain save: surface the message, remember the
-  // domain (so the rail footer can target Retry/Dismiss), and arm capped
+  // domain (so the header save status can target Retry/Dismiss), and arm capped
   // exponential backoff with a single one-shot re-tick so the retry resumes
   // once — not as a tight ~450ms hammer — when the window elapses.
   private noteSaveFailure(domain: AutosaveRecordingDomain, message: string) {
@@ -748,6 +748,20 @@ export class SettingsController {
 
   savingRecSettings = $derived(
     RECORDING_DRAFT_DOMAINS.some((domain) => this.rec.savingRecDomains[domain]),
+  );
+
+  // The header's save status. A shortcut issue blocks (an in-progress key
+  // capture does not); LOAD failures (`recLoadError`, `keyboardLoadError`,
+  // `micLoadError`) show in their sections, not here.
+  saveStatus = $derived(
+    deriveSaveStatus({
+      saveFailed: !!(this.rec.recError || this.keyboard.keyboardBindingsError || this.audio.micError),
+      blocked:
+        (this.rec.recordingSettings !== null && this.recSaveBlocked) ||
+        this.audio.micApplyBlocked ||
+        Object.keys(this.keyboard.keyboardShortcutIssues).length > 0,
+      saving: this.savingRecSettings || this.keyboard.savingKeyboardBindings || this.audio.savingMicSettings,
+    }),
   );
 }
 

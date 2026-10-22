@@ -112,7 +112,7 @@ impl SystemAudioTapSession {
                 let delivered =
                     std::panic::catch_unwind(AssertUnwindSafe(|| on_samples(input_time, buffers)));
                 if delivered.is_err() {
-                    capture_runtime::debug_log!("{LOG_PREFIX} sample callback panicked");
+                    capture_runtime::error_log!("{LOG_PREFIX} sample callback panicked");
                 }
             },
         );
@@ -127,7 +127,7 @@ impl SystemAudioTapSession {
 
         let tap_rate = asbd.sample_rate;
         let asbd = writer_asbd(asbd, aggregate.nominal_sample_rate().ok());
-        capture_runtime::debug_log!(
+        capture_runtime::info_log!(
             "{LOG_PREFIX} started tap generation: {} Hz (tap claims {} Hz), {} ch, excluding {} process object(s)",
             asbd.sample_rate,
             tap_rate,
@@ -306,7 +306,7 @@ pub fn cleanup_stale_aggregate_devices() -> usize {
                 capture_runtime::debug_log!("{LOG_PREFIX} destroyed stale aggregate {uid}");
             }
             Err(error) => {
-                capture_runtime::debug_log!(
+                capture_runtime::warn_log!(
                     "{LOG_PREFIX} failed to destroy stale aggregate {uid}: {error:?}"
                 );
             }

@@ -209,7 +209,7 @@
         >{phase.prompt.userCode}</button>
         <button
           type="button"
-          class="chatgpt-connect__btn chatgpt-connect__copy"
+          class="mx-btn mx-btn--icon"
           title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
           onclick={() => phase.kind === "waiting" && void copyCode(phase.prompt.userCode)}
@@ -218,8 +218,8 @@
         </button>
       </div>
       <div class="chatgpt-connect__actions">
-        <button type="button" class="chatgpt-connect__btn" onclick={beginLogin}>Start over</button>
-        <button type="button" class="chatgpt-connect__btn" onclick={() => void cancelLogin()}>
+        <button type="button" class="mx-btn mx-btn--ghost" onclick={beginLogin}>Start over</button>
+        <button type="button" class="mx-btn mx-btn--ghost" onclick={() => void cancelLogin()}>
           Cancel
         </button>
       </div>
@@ -228,7 +228,7 @@
     <div class="chatgpt-connect__actions">
       <button
         type="button"
-        class="chatgpt-connect__btn chatgpt-connect__btn--primary"
+        class="mx-btn"
         disabled={phase.kind === "starting" || disconnecting}
         aria-busy={phase.kind === "starting"}
         onclick={beginLogin}
@@ -244,7 +244,7 @@
       {#if connected}
         <button
           type="button"
-          class="chatgpt-connect__btn"
+          class="mx-btn mx-btn--ghost"
           disabled={disconnecting || phase.kind !== "idle"}
           onclick={disconnect}
         >
@@ -276,26 +276,6 @@
     align-items: center;
   }
 
-  .chatgpt-connect__btn {
-    appearance: none;
-    border: 1px solid var(--app-border, rgba(127, 127, 127, 0.35));
-    background: transparent;
-    color: var(--app-text, inherit);
-    border-radius: 7px;
-    padding: 5px 12px;
-    font-size: var(--text-sm, 13px);
-    cursor: pointer;
-  }
-
-  .chatgpt-connect__btn:disabled {
-    opacity: var(--app-disabled-opacity, 0.5);
-    cursor: default;
-  }
-
-  .chatgpt-connect__btn--primary {
-    font-weight: 600;
-  }
-
   .chatgpt-connect__code-block {
     display: flex;
     flex-direction: column;
@@ -306,12 +286,6 @@
     display: flex;
     gap: 8px;
     align-items: center;
-  }
-
-  .chatgpt-connect__copy {
-    display: inline-flex;
-    align-items: center;
-    padding: 8px;
   }
 
   /* The code is the hero while waiting: big, monospace, one click to copy. */

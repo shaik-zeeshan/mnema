@@ -11,6 +11,9 @@ pub mod speaker_resolution;
 mod store;
 mod system_audio_speech_activity;
 
+#[cfg(test)]
+pub(crate) use store::WORKSPACE_OCR_JOBS_SQL;
+
 pub use audio_transcription::{AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend};
 pub use backend::{ProcessorBackend, ProcessorRegistry};
 pub use frame::{Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary, NewFrame};
@@ -28,6 +31,7 @@ pub use speaker_analysis::{
 pub(crate) use store::map_frame_for_search;
 pub(crate) use store::structured_payload_json_from_row;
 pub(crate) use store::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS;
+pub(crate) use store::OCR_DISABLED_ERROR;
 pub use store::{
     processing_job_model_is_locked, FocusedFrameWindow, FrameProcessingJob, PersonProfile,
     ProcessingJobCompletion, ProcessingJobListing, ProcessingJobReclamationSummary,

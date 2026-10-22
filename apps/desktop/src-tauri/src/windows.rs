@@ -12,6 +12,9 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, W
 
 use crate::native_capture;
 
+pub mod permission_helper;
+pub mod quick_recall_frame;
+
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
@@ -20,6 +23,10 @@ const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
 // the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for
 // this to cancel any resident Ask AI PI session.
 const QUICK_RECALL_DISMISSED_EVENT: &str = "quick_recall_dismissed";
+// Emitted to the Quick Recall webview when a summon parks a query, so an
+// already-open panel takes it now instead of waiting for a focus change that
+// never comes when it is already up.
+const QUICK_RECALL_QUERY_EVENT: &str = "quick_recall_query";
 
 // The Quick Recall surface is a non-activating NSPanel that emits a spurious
 // `Focused(false)` while AppKit promotes its webview to first responder on the
@@ -31,6 +38,12 @@ const QUICK_RECALL_SUMMON_BLUR_GRACE: Duration = Duration::from_millis(300);
 // The wall-clock instant of the most recent Quick Recall summon, used to honor
 // the `QUICK_RECALL_SUMMON_BLUR_GRACE` window in the `Focused(false)` handler.
 static LAST_QUICK_RECALL_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
+
+// Text the main window's titlebar field handed over with ↵ (recall mode). Held
+// here until the Quick Recall webview takes it — on `QUICK_RECALL_QUERY_EVENT`,
+// or once its listener attaches, so a cold-built window still gets it. One
+// slot: a newer summon replaces an unread one.
+static PENDING_QUICK_RECALL_QUERY: Mutex<Option<String>> = Mutex::new(None);
 
 // One-shot suppression of the very next Quick Recall blur-dismiss. The frontend
 // sets this (via `quick_recall_suppress_blur_dismiss`) immediately before opening
@@ -75,6 +88,7 @@ enum AppWindow {
     Debug,
     QuickRecall,
     Update,
+    PermissionHelper,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,16 +238,16 @@ impl AppWindow {
                 label: "cli-access-request",
                 path: "access/request",
                 title: "mnema · CLI Access",
-                // Sized for the TALLEST state, not the average one: `allRetained`
-                // with its warn callout needs 372 px of body at 520 wide, and the
-                // body's `overflow-y: auto` is invisible under macOS overlay
-                // scrollbars — a short window silently truncates the standing-terms
-                // sentence, which since ADR 0059 is the whole statement of what
-                // access means. Measured, not guessed. Min is pinned to the same
-                // box: this is a fixed-content dialog, and narrowing to 460 rewraps
-                // the callout into a clip again.
+                // The opening size, not the final one: the page sizes the window
+                // to its content (`fitAccessWindowHeight`) — short views (loading,
+                // none waiting, receipts) shrink, and a request grows until the
+                // standing-terms sentence is visible (the body's scroll is
+                // invisible under macOS overlay scrollbars, and since ADR 0059
+                // that sentence is the whole statement of what access means).
+                // So the min height only has to stay under the shortest view.
+                // Width stays pinned: narrowing to 460 rewraps the callout.
                 inner_size: (520.0, 600.0),
-                min_inner_size: (520.0, 600.0),
+                min_inner_size: (520.0, 200.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -241,12 +255,15 @@ impl AppWindow {
                 shadow: true,
                 macos_corner_radius: Some(12.0),
             },
+            // The developer window: a compact 520×640 panel. Mini mode
+            // (300×120, kept on top) lowers the min size at runtime (F1b)
+            // through the frontend window API, so this is the full-size floor.
             Self::Debug => AppWindowConfig {
                 label: "debug",
                 path: "debug",
-                title: "mnema · Debug",
-                inner_size: (980.0, 680.0),
-                min_inner_size: (800.0, 560.0),
+                title: "mnema · Developer",
+                inner_size: (520.0, 640.0),
+                min_inner_size: (440.0, 480.0),
                 gated_by_dev_options: true,
                 decorations: false,
                 overlay_title_bar: false,
@@ -265,10 +282,10 @@ impl AppWindow {
                 // The page measures its rendered release notes and resizes the
                 // window to fit (`fitWindowToContent`), so this is the opening
                 // size, not the final one — and `min_inner_size` must stay under
-                // the page's own 360px floor or a short changelog can't shrink
-                // out of its dead space.
+                // the page's own floor (`UPDATE_WINDOW_MIN_HEIGHT`) or a short
+                // changelog can't shrink out of its dead space.
                 inner_size: (480.0, 520.0),
-                min_inner_size: (420.0, 340.0),
+                min_inner_size: (420.0, 240.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -280,14 +297,31 @@ impl AppWindow {
                 label: "quick-recall",
                 path: "quick-recall",
                 title: "mnema · Quick Recall",
-                inner_size: (1120.0, 720.0),
-                min_inner_size: (960.0, 600.0),
+                inner_size: (quick_recall_frame::WIDTH, quick_recall_frame::IDLE_HEIGHT),
+                min_inner_size: (quick_recall_frame::WIDTH, quick_recall_frame::IDLE_HEIGHT),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
                 transparent: true,
                 shadow: true,
-                macos_corner_radius: Some(12.0),
+                macos_corner_radius: Some(16.0),
+            },
+            // A HUD, not a dialog: one card, sized to the kit's `mx-helper`
+            // (460 wide). Built by `permission_helper.rs`, not
+            // `open_or_focus_window` — it must never take focus from System
+            // Settings.
+            Self::PermissionHelper => AppWindowConfig {
+                label: "permission-helper",
+                path: "permission-helper",
+                title: "mnema · Permission",
+                inner_size: (460.0, 62.0),
+                min_inner_size: (460.0, 62.0),
+                gated_by_dev_options: false,
+                decorations: false,
+                overlay_title_bar: false,
+                transparent: true,
+                shadow: true,
+                macos_corner_radius: Some(8.0),
             },
         }
     }
@@ -300,6 +334,7 @@ impl AppWindow {
             "debug" => Some(Self::Debug),
             "quick-recall" => Some(Self::QuickRecall),
             "update" => Some(Self::Update),
+            "permission-helper" => Some(Self::PermissionHelper),
             _ => None,
         }
     }
@@ -314,15 +349,16 @@ impl AppWindow {
     /// here — but the compiler cannot prove this array then grew, so satisfying
     /// that match without extending `ALL` would leave the new window unchecked.
     /// Deriving it needs a variant-enumerating macro or a new dependency, which
-    /// is not worth it for six variants; upgrade if this list gets long.
+    /// is not worth it for seven variants; upgrade if this list gets long.
     #[cfg(test)]
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Main,
         Self::Onboarding,
         Self::CliAccessRequest,
         Self::Debug,
         Self::QuickRecall,
         Self::Update,
+        Self::PermissionHelper,
     ];
 }
 
@@ -926,7 +962,7 @@ fn summon_quick_recall_window(window: &WebviewWindow) {
     if let Ok(mut last) = LAST_QUICK_RECALL_SUMMON.lock() {
         *last = Some(Instant::now());
     }
-    let _ = window.center();
+    quick_recall_frame::anchor_quick_recall(window, None);
     let _ = window.show();
     #[cfg(target_os = "macos")]
     make_quick_recall_panel_key(window);
@@ -1090,7 +1126,7 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
             method.cast_mut(),
             std::mem::transmute(terminate as *const ()),
         );
-        crate::native_capture::debug_log::log_info(
+        crate::native_capture::debug_log::log(
             "installed macOS terminate handler for graceful app exit",
         );
     }
@@ -1166,7 +1202,7 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
 
         match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
             Ok(unloaded) => {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
                 ));
             }
@@ -1227,9 +1263,12 @@ fn destroyed_window_action(label: &str) -> DestroyedWindowAction {
     match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => DestroyedWindowAction::ExitApp,
         Some(AppWindow::Debug) => DestroyedWindowAction::FocusMainWindow,
-        Some(AppWindow::CliAccessRequest | AppWindow::QuickRecall | AppWindow::Update) => {
-            DestroyedWindowAction::None
-        }
+        Some(
+            AppWindow::CliAccessRequest
+            | AppWindow::QuickRecall
+            | AppWindow::Update
+            | AppWindow::PermissionHelper,
+        ) => DestroyedWindowAction::None,
         Some(AppWindow::Main) => DestroyedWindowAction::ExitApp,
         None => DestroyedWindowAction::None,
     }
@@ -1250,7 +1289,8 @@ fn close_window(window: WebviewWindow) -> Result<(), String> {
             AppWindow::Onboarding
             | AppWindow::CliAccessRequest
             | AppWindow::Debug
-            | AppWindow::Update,
+            | AppWindow::Update
+            | AppWindow::PermissionHelper,
         ) => window.close().map_err(|err| err.to_string()),
         Some(AppWindow::Main) => Err("main window cannot be closed from this command".into()),
         None => window.close().map_err(|err| err.to_string()),
@@ -1425,12 +1465,41 @@ pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
     toggle_main_window_visibility(&app);
 }
 
-/// Summon (toggle) the Quick Recall panel from in-app UI — the titlebar
-/// "Search / Recall" affordance. Mirrors what the ⌥Space global shortcut does so
-/// the launcher is discoverable by mouse, not only by chord.
+/// Summon the Quick Recall panel from in-app UI. Without a `query` it toggles,
+/// exactly like the ⌥⌘Space global shortcut. With a non-blank `query` (↵ in the
+/// titlebar's recall field) it always shows the panel — never dismisses it — and
+/// parks the text for `take_quick_recall_query`.
 #[tauri::command]
-pub fn summon_quick_recall_window_command(app: tauri::AppHandle) -> Result<(), String> {
-    toggle_quick_recall_window(&app)
+pub fn summon_quick_recall_window_command(
+    app: tauri::AppHandle,
+    query: Option<String>,
+) -> Result<(), String> {
+    let Some(query) = summon_query(query) else {
+        return toggle_quick_recall_window(&app);
+    };
+    if let Ok(mut pending) = PENDING_QUICK_RECALL_QUERY.lock() {
+        *pending = Some(query);
+    }
+    let window = match app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
+        Some(existing) => existing,
+        None => build_quick_recall_window(&app)?,
+    };
+    summon_quick_recall_window(&window);
+    let _ = window.emit(QUICK_RECALL_QUERY_EVENT, ());
+    Ok(())
+}
+
+/// The handed-over titlebar query, once. The Quick Recall page reads it when
+/// its listener attaches and on every `QUICK_RECALL_QUERY_EVENT`.
+#[tauri::command]
+pub fn take_quick_recall_query() -> Option<String> {
+    PENDING_QUICK_RECALL_QUERY.lock().ok()?.take()
+}
+
+/// A summon query worth handing over: trimmed, non-blank.
+fn summon_query(query: Option<String>) -> Option<String> {
+    let trimmed = query?.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }
 
 #[tauri::command]
@@ -1472,9 +1541,19 @@ mod tests {
         close_window_focuses_main_before_close, destroyed_window_action,
         enqueue_cold_open_settings, is_known_settings_tab, load_onboarding_state_from_path,
         normalize_settings_focus, normalize_settings_tab, normalized_open_settings_payload,
-        settings_tab_focus_path, AppExitCoordinatorState, DestroyedWindowAction, OnboardingState,
-        OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
+        settings_tab_focus_path, summon_query, AppExitCoordinatorState, DestroyedWindowAction,
+        OnboardingState, OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
     };
+
+    #[test]
+    fn summon_query_hands_over_only_non_blank_text() {
+        assert_eq!(summon_query(None), None);
+        assert_eq!(summon_query(Some("   ".into())), None);
+        assert_eq!(
+            summon_query(Some("  pricing page ".into())),
+            Some("pricing page".into())
+        );
+    }
 
     #[test]
     fn secondary_window_destruction_refocuses_main_window() {
@@ -1506,7 +1585,8 @@ mod tests {
     fn assert_all_windows_listed(window: super::AppWindow) {
         use super::AppWindow::*;
         match window {
-            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update => {}
+            Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update
+            | PermissionHelper => {}
         }
     }
 
@@ -1544,7 +1624,7 @@ mod tests {
         }
 
         // Covering the label is necessary but not sufficient: the command still
-        // has to be in the permission set. None of these three is in
+        // has to be in the permission set. None of these is in
         // `core:window:default`, and each one fails SILENTLY when absent —
         // the pages swallow the rejection — so assert them by name.
         let permissions: Vec<&str> = capability["permissions"]
@@ -1565,6 +1645,14 @@ mod tests {
             (
                 "core:window:allow-close",
                 "the CLI access receipt closes its own window",
+            ),
+            (
+                "core:window:allow-set-always-on-top",
+                "the developer window pins itself on top",
+            ),
+            (
+                "core:window:allow-set-min-size",
+                "the developer window lowers its min size to shrink to mini",
             ),
         ] {
             assert!(

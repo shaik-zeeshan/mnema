@@ -10,7 +10,9 @@
   // Grouped AM/PM hourly list for the previewed day. Each row carries a muted
   // frame count + a NEUTRAL density fill scaled to volume (spec §12.5 — never
   // accent, so it never collides with preview/here/active/hover). The committed
-  // hour shows the accent LEFT BAR (§12.3), echoing the playhead.
+  // hour carries the kit's selected fill (no left bar).
+  import IconLatest from "~icons/lucide/arrow-right-to-line";
+  import IconCalendar from "~icons/lucide/calendar";
   import type { HourBucket } from "./jumper-time";
 
   interface Props {
@@ -40,299 +42,167 @@
   const dayHasFrames = $derived(buckets.some((b) => !b.disabled));
   const dayHourCount = $derived(buckets.filter((b) => b.count > 0).length);
 
+  // Land the list on "you are here" (else the latest captured hour), like the playhead.
+  let scrollEl = $state<HTMLDivElement | null>(null);
+  $effect(() => {
+    void [dayLabel, loading]; // once per previewed day / load, not on every bucket refresh
+    const row =
+      scrollEl?.querySelector<HTMLElement>(".jumper-hour--here") ??
+      Array.from(scrollEl?.querySelectorAll<HTMLElement>(".jumper-hour:not(:disabled)") ?? []).at(-1);
+    if (scrollEl && row) scrollEl.scrollTop = row.offsetTop - (scrollEl.clientHeight - row.offsetHeight) / 2;
+  });
+
   function densityFraction(count: number): number {
     if (count <= 0) return 0;
     return count / Math.max(1, maxCount);
   }
 </script>
 
-<div class="timeline__picker-time">
-  <div class="timeline__picker-time-head">
-    <span class="timeline__picker-day">{dayLabel || "—"}</span>
+<div class="jumper-times">
+  <div class="jumper-times__head">
+    <span class="jumper-times__day">{dayLabel || "—"}</span>
     {#if hasSelection && dayHasFrames && !loading}
-      <span class="timeline__picker-day-count"
-        >{dayHourCount} hr</span
-      >
+      <span class="mx-label num">{dayHourCount} hr</span>
     {/if}
   </div>
 
-  <div class="timeline__picker-scroll">
+  <div class="jumper-times__scroll" bind:this={scrollEl}>
     {#if !hasSelection}
-      <div class="timeline__picker-msg">
-        <span class="timeline__picker-msg-ico" aria-hidden="true">◴</span>
-        Select a day to see hours
-      </div>
+      <p class="jumper-times__msg mx-body-sm">Pick a day to see its hours.</p>
     {:else if loading}
-      <div class="timeline__picker-msg">
-        <span class="timeline__picker-spinner" aria-hidden="true"></span>
-        loading month…
+      <div class="jumper-times__msg" aria-busy="true">
+        <span class="mx-sr">Loading month</span>
+        {#each { length: 7 } as _, i (i)}<div class="mx-skel"></div>{/each}
       </div>
     {:else if !dayHasFrames}
-      <div class="timeline__picker-msg">
-        <span class="timeline__picker-msg-ico" aria-hidden="true">∅</span>
-        No frames on this day
+      <div class="jumper-times__msg">
+        <div class="mx-empty mx-empty--compact">
+          <span class="mx-empty__glyph"><IconCalendar width="14" height="14" /></span>
+          <b class="mx-empty__title">No frames on this day</b>
+          <p class="mx-empty__text">Mnema wasn’t recording.</p>
+        </div>
       </div>
     {:else}
       {#each buckets as t (t.hour)}
         <button
           type="button"
-          class="timeline__picker-hour"
-          class:timeline__picker-hour--here={isHereHour(t.hour) && !t.disabled}
+          class="jumper-hour"
+          class:jumper-hour--here={isHereHour(t.hour) && !t.disabled}
           onclick={() => onCommitHour(t.hour)}
           disabled={busy || t.disabled}
         >
           {#if !t.disabled && t.count > 0}
-            <span
-              class="timeline__picker-hour-density"
-              style="--density:{densityFraction(t.count)}"
-              aria-hidden="true"
-            ></span>
+            <span class="jumper-hour__density" style="--d:{densityFraction(t.count)}" aria-hidden="true"></span>
           {/if}
-          <span class="timeline__picker-hour-tick" aria-hidden="true"></span>
-          <span class="timeline__picker-hour-label">{t.label}</span>
-          <span class="timeline__picker-hour-count"
-            >{t.disabled ? "·" : t.count}</span
-          >
+          <span class="jumper-hour__label">{t.label}</span>
+          <span class="jumper-hour__count">{t.disabled ? "·" : t.count}</span>
         </button>
       {/each}
     {/if}
   </div>
 
-  <div class="timeline__picker-time-foot">
+  <div class="jumper-times__foot">
     <button
-      class="btn btn--ghost btn--sm timeline__picker-day-latest"
+      type="button"
+      class="mx-btn mx-btn--ghost mx-btn--sm"
       onclick={onCommitDayLatest}
       disabled={busy || !hasSelection || !dayHasFrames}
-    >
-      <span class="timeline__picker-glyph" aria-hidden="true">⤓</span>
-      latest of day
-    </button>
+    ><IconLatest width="13" height="13" />latest of day</button>
   </div>
 </div>
 
 <style>
-  .timeline__picker-time {
-    display: flex;
-    flex-direction: column;
+  .jumper-times {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
     min-width: 0;
-    /* min-height:0 lets the inner scroll pane bound itself against the grid
-       row instead of forcing the whole column to content height. */
     min-height: 0;
-    overflow: hidden;
+    border-left: 1px solid var(--mx-hairline);
   }
-
-  .timeline__picker-time-head {
+  .jumper-times__head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    gap: 8px;
-    padding: 8px 12px 6px;
-    border-bottom: 1px solid var(--app-border);
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-3) var(--s-2);
   }
-  .timeline__picker-day {
-    font-size: var(--text-base);
+  .jumper-times__day {
+    font: 600 var(--text-base)/1 var(--font-sans);
     color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .timeline__picker-day-count {
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    letter-spacing: 0.04em;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .timeline__picker-scroll {
-    flex: 1 1 auto;
-    overflow-y: auto;
-    padding: 6px 8px;
-    min-height: 160px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--app-border-strong) transparent;
-  }
-  .timeline__picker-scroll::-webkit-scrollbar {
-    width: 8px;
-  }
-  .timeline__picker-scroll::-webkit-scrollbar-thumb {
-    background: var(--app-border-strong);
-    border-radius: 4px;
-    border: 2px solid var(--app-surface);
-  }
-
-  .timeline__picker-hour {
+  .jumper-times__scroll {
     position: relative;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    color: var(--app-text);
-    font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
-    font-variant-numeric: tabular-nums;
-    padding: 4px 8px;
-    margin-bottom: 1px;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    overflow-y: auto;
+    padding: 0 6px;
+    scrollbar-width: thin;
   }
-  /* Neutral density fill (NEVER accent) — pre-attentive "where was I busy". */
-  .timeline__picker-hour-density {
+  .jumper-times__msg {
+    margin: 0;
+    padding: var(--s-3) var(--s-2);
+  }
+  .jumper-times__msg .mx-skel {
+    height: 22px;
+    margin: 0 4px 6px;
+  }
+  .jumper-times__msg .mx-empty {
+    padding: 0;
+  }
+  .jumper-hour {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    width: 100%;
+    height: 28px;
+    padding: 0 10px 0 14px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: none;
+    cursor: pointer;
+    overflow: hidden;
+    font: 500 var(--text-sm)/1 var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text);
+    text-align: left;
+    transition: background-color var(--t-fast) var(--ease-quart);
+  }
+  .jumper-hour:hover:not(:disabled) {
+    background: var(--mx-wash-strong);
+    color: var(--app-text-strong);
+  }
+  .jumper-hour:disabled {
+    color: var(--app-text-faint);
+    cursor: default;
+  }
+  .jumper-hour:focus-visible {
+    outline: 2px solid var(--app-accent);
+    outline-offset: -2px;
+  }
+  .jumper-hour--here {
+    background: var(--mx-selected);
+    color: var(--app-text-strong);
+  }
+  .jumper-hour__density {
     position: absolute;
-    inset: 0;
-    border-radius: 3px;
-    background: var(--app-text);
-    opacity: calc(var(--density, 0) * 0.06);
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: calc(var(--d) * 100%);
+    border-radius: var(--r-xs);
+    background: color-mix(in srgb, var(--chart-grey-3) 22%, transparent);
     pointer-events: none;
   }
-  .timeline__picker-hour-tick {
-    position: relative;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--app-accent-strong);
-    flex: none;
-    opacity: 0.85;
-  }
-  .timeline__picker-hour-label {
+  .jumper-hour__label,
+  .jumper-hour__count {
     position: relative;
   }
-  .timeline__picker-hour-count {
-    position: relative;
-    margin-left: auto;
+  .jumper-hour__count {
     font-size: var(--text-xs);
     color: var(--app-text-subtle);
-    letter-spacing: 0.02em;
   }
-  .timeline__picker-hour:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  .timeline__picker-hour:disabled {
-    color: var(--app-text-faint);
-    cursor: not-allowed;
-  }
-  .timeline__picker-hour:disabled .timeline__picker-hour-tick {
-    background: var(--app-text-faint);
-    opacity: 0.5;
-  }
-  .timeline__picker-hour:disabled .timeline__picker-hour-count {
-    color: var(--app-text-faint);
-  }
-  /* "You are here" — accent LEFT BAR (no fill), echoing the playhead. */
-  .timeline__picker-hour--here {
-    color: var(--app-accent);
-    box-shadow: inset 2px 0 0 0 var(--app-accent);
-  }
-  .timeline__picker-hour--here .timeline__picker-hour-tick {
-    background: var(--app-accent);
-    opacity: 1;
-  }
-  .timeline__picker-hour--here .timeline__picker-hour-count {
-    color: var(--app-accent);
-  }
-  .timeline__picker-hour:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
-  }
-
-  .timeline__picker-msg {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 24px 16px;
-    text-align: center;
-    color: var(--app-text-subtle);
-    font-size: var(--text-sm);
-    min-height: 140px;
-  }
-  .timeline__picker-msg-ico {
-    font-size: var(--text-xl);
-    opacity: 0.5;
-  }
-  .timeline__picker-spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid var(--app-border-strong);
-    border-top-color: var(--app-accent);
-    border-radius: 50%;
-    animation: timeline-jumper-spin 0.7s linear infinite;
-  }
-  @keyframes timeline-jumper-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .timeline__picker-spinner {
-      animation-duration: 1.4s;
-    }
-  }
-
-  .timeline__picker-time-foot {
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-  .timeline__picker-day-latest {
-    width: 100%;
-    justify-content: center;
-    gap: 7px;
-  }
-  .timeline__picker-glyph {
-    font-size: var(--text-md);
-    line-height: 1;
-  }
-
-  /* Shared button system (local copy — `.btn` is defined per-surface in this
-     app, not in a global sheet). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
+  .jumper-times__foot {
+    padding: var(--s-2) var(--s-3);
+    border-top: 1px solid var(--mx-hairline);
   }
 </style>

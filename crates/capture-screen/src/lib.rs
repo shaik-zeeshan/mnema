@@ -181,8 +181,8 @@ fn should_log_privacy_filter_diagnostics(
 fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
     if !state.unresolved_bundle_ids.is_empty() {
         capture_runtime::debug_log!(
-            "privacy filter requested bundle ids not present in ScreenCaptureKit content: {:?}",
-            state.unresolved_bundle_ids
+            "privacy filter requested {} bundle id(s) not present in ScreenCaptureKit content",
+            state.unresolved_bundle_ids.len()
         );
     }
 }
@@ -418,7 +418,7 @@ fn output_files_for_session(
 
 #[cfg(target_os = "macos")]
 fn log_capture_error(context: &str, error: &CaptureErrorResponse) {
-    capture_runtime::debug_log!(
+    capture_runtime::warn_log!(
         "[capture-screen] {context}: [{}] {}",
         error.code,
         error.message
@@ -1256,7 +1256,7 @@ fn persist_screen_segment_frame_index(
     // samples positionally is wrong whenever the export throttle skipped an
     // appended frame (the video holds more samples than the index).
     if !screen_segment_frame_index_offsets_are_monotonic(&entries) {
-        capture_runtime::debug_log!(
+        capture_runtime::warn_log!(
             "[capture-screen] live screen frame index offsets regressed for {}",
             screen_video_output_file
         );
@@ -1485,7 +1485,7 @@ fn finalized_screen_segment_frame_index(
         }
 
         if !screen_segment_frame_index_offsets_are_monotonic(&finalized_entries) {
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[capture-screen] finalized screen frame index offsets regressed for {}",
                 screen_video_output_file
             );
@@ -1752,7 +1752,7 @@ fn export_screen_frame_artifact(
     let file_path = prepared.file_path.clone();
     let video_offset_ms = sample_time_to_ms(sample_pts.sub(first_video_sample_pts));
     if video_offset_ms.is_none() {
-        capture_runtime::debug_log!(
+        capture_runtime::warn_log!(
             "[capture-screen] screen frame sample had non-numeric PTS; skipping frame index entry for {}",
             file_path.display()
         );
@@ -1766,7 +1766,7 @@ fn export_screen_frame_artifact(
     callback_queue.async_once(move || {
         if let Err(error) = save_screen_sample_as_jpeg(sample_buf.as_ref(), &file_path) {
             store_first_frame_export_error(&first_error, error.clone());
-            capture_runtime::debug_log!(
+            capture_runtime::error_log!(
                 "[capture-screen] failed to export screen frame artifact {}: [{}] {}",
                 file_path.display(),
                 error.code,
@@ -2097,7 +2097,7 @@ fn maybe_remove_screen_video_file(path: &str) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => capture_runtime::debug_log!(
+        Err(error) => capture_runtime::warn_log!(
             "[capture-screen] failed to remove invalid screen video artifact {path}: {error}"
         ),
     }
@@ -2849,7 +2849,7 @@ fn finalize_startup_result<T>(
     match start_result {
         Ok(started) => Ok(started),
         Err(start_error) => {
-            capture_runtime::debug_log!(
+            capture_runtime::error_log!(
                 "[capture-screen] capture startup failed for {}: [{}] {}",
                 session_dir.display(),
                 start_error.code,
@@ -2861,7 +2861,7 @@ fn finalize_startup_result<T>(
             }
 
             if let Err(cleanup_error) = remove_session_dir(session_dir) {
-                capture_runtime::debug_log!(
+                capture_runtime::warn_log!(
                     "[capture-screen] startup cleanup failed for {}: [{}] {}",
                     session_dir.display(),
                     cleanup_error.code,
@@ -3027,7 +3027,7 @@ pub fn start_capture_session_with_options(
     } else {
         "AVFoundation"
     };
-    capture_runtime::debug_log!(
+    capture_runtime::info_log!(
         "[capture-screen] starting {backend} capture session at {} (sources: screen={}, frame_rate={}, resolution={:?}, video_bitrate_bps={:?})",
         session_dir.display(),
         sources.screen,

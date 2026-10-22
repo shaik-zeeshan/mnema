@@ -3,13 +3,13 @@
 import { describe, expect, it } from "bun:test";
 import {
 	CAPTURE_INTERVAL_LADDER_S,
+	CAPTURE_RATE_STOPS_S,
+	captureRateOptions,
 	captureIntervalPhrase,
 	captureRateShortLabel,
 	fpsToIntervalS,
 	intervalSToFps,
 	nearestLadderIndex,
-	relativeStorageLabel,
-	snapshotsPerMinute,
 	timelineGapMs,
 } from "./capture-rate";
 
@@ -82,15 +82,6 @@ describe("captureRateShortLabel", () => {
 	});
 });
 
-describe("relativeStorageLabel", () => {
-	it("shows ≥1× and 1/N× branches relative to the 2s default", () => {
-		expect(relativeStorageLabel(2)).toBe("1×");
-		expect(relativeStorageLabel(1)).toBe("2×");
-		expect(relativeStorageLabel(0.1)).toBe("20×");
-		expect(relativeStorageLabel(60)).toBe("1/30×");
-	});
-});
-
 // The value ChangeSettingsScreen hands its capture-rate `Select`, and the
 // option values it picks from. Through the ladder, never a raw 1/fps.
 const optionValues = CAPTURE_INTERVAL_LADDER_S.map((s) => String(s));
@@ -115,32 +106,6 @@ describe("capture rate Select value", () => {
 	});
 });
 
-describe("snapshotsPerMinute", () => {
-	it("counts the snapshot at t=0, so the 45s stop holds two", () => {
-		expect(snapshotsPerMinute(45)).toBe(2);
-	});
-	it("keeps the closing edge exclusive at one a minute", () => {
-		expect(snapshotsPerMinute(60)).toBe(1);
-	});
-	it("matches a hand count across the whole ladder", () => {
-		expect(CAPTURE_INTERVAL_LADDER_S.map(snapshotsPerMinute)).toEqual([
-			600, 120, 60, 30, 20, 12, 6, 4, 2, 2, 1,
-		]);
-	});
-	it("agrees with simulating one minute of capture", () => {
-		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
-			let taken = 0;
-			for (let t = 0; t < 60 - 1e-9; t += intervalS) taken += 1;
-			expect(snapshotsPerMinute(intervalS)).toBe(taken);
-		}
-	});
-	it("never undercounts the old Math.round(60 / s) reading", () => {
-		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
-			expect(snapshotsPerMinute(intervalS)).toBeGreaterThanOrEqual(Math.round(60 / intervalS));
-		}
-	});
-});
-
 describe("timelineGapMs", () => {
 	it("floors at 10s for unset / fast rates, opens up for slow rates", () => {
 		expect(timelineGapMs(undefined)).toBe(10_000); // fallback 2s → 6000, floored
@@ -148,5 +113,19 @@ describe("timelineGapMs", () => {
 		expect(timelineGapMs(10)).toBe(10_000); // 3×100ms floored
 		expect(timelineGapMs(0.5)).toBe(10_000); // default 2s → 6000, floored
 		expect(timelineGapMs(1 / 60)).toBe(180_000); // 3×60s exceeds floor
+	});
+});
+
+describe("captureRateOptions", () => {
+	it("lists the stops fastest-first with short mono labels", () => {
+		expect(captureRateOptions(2).map((o) => o.label)).toEqual(["10/s", "1/s", "2s", "5s", "15s", "1/min"]);
+	});
+	it("adds an off-stop persisted interval as its own segment", () => {
+		const opts = captureRateOptions(30);
+		expect(opts.map((o) => o.value)).toEqual(["0.1", "1", "2", "5", "15", "30", "60"]);
+		expect(opts[5].label).toBe("30s");
+	});
+	it("every stop is on the ladder", () => {
+		for (const s of CAPTURE_RATE_STOPS_S) expect(CAPTURE_INTERVAL_LADDER_S).toContain(s);
 	});
 });

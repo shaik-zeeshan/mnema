@@ -1,20 +1,19 @@
 // Quick Recall SEARCH-mode store — the single frontend owner of the launcher's
-// search state (query text, debounce/scheduling, results, thumbnails,
-// selection, filter chips, picker/ghost/value-list via `filters`, syntax-help
-// open state, loading/error/parse-error states, semantic-hint state).
+// search state (query text + pills, the operator query they make,
+// debounce/scheduling, results, thumbnails, selection, ghost + pill popover via
+// `filters`, loading/error/parse-error states, `states`).
 // Extracted from the quick-recall +page.svelte in the search-mode extraction
 // slice — NO behavior change. Mirrors the repo's `.svelte.ts` store idiom
 // (a class with `$state`/`$derived` class fields + a module-level singleton),
 // like `conversationStore`. The page keeps the window shell, mode cross-fade,
 // the whole Ask AI mode, and the page-level listeners/effects; components
-// (ResultsList / FilterPicker / SyntaxHelp) render off this singleton.
+// (Field / ResultsList / FilterPicker) render off this singleton.
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
 import { FramePreviewUrlMap } from "$lib/frame-preview";
 import { openCapturedUrl } from "$lib/open-captured-url";
 import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
 import { humanizeError } from "$lib/format-error";
-import type { SemanticSearchModelStatusResponse } from "$lib/types";
 import type {
   SearchCaptureResponse,
   SearchCaptureRefinements,
@@ -27,38 +26,45 @@ import type {
 import {
   deriveActiveFilterChips,
   friendlyParseError,
-  stripChipTokens,
+  operatorQuery,
   type ActiveFilterChip,
 } from "./filter-chips";
-import { isTrailingOperatorPartial } from "./query-tokens";
+import { isTrailingOperatorPartial, trailingToken } from "./query-tokens";
+import { mergePills, parseNatural, type Pill } from "./natural-tokens";
 import {
   AUDIO_FETCH_LIMIT,
-  AUDIO_VISIBLE_CAP,
   FRAME_FETCH_LIMIT,
-  FRAME_VISIBLE_CAP,
-  remapSelection,
+  mergeByRank,
   visibleCount,
+  type RankedResult,
 } from "./result-sections";
 import { FilterSurfaces } from "./filterSurfaces.svelte";
+import { RecallStates } from "./states.svelte";
+import type { CountLabel } from "./recall-states";
 import { appIcons } from "./app-icons.svelte";
 
 export const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
+// Recognised phrases turn into pills once typing pauses this long.
+export const COMMIT_MS = 700;
 
 export const OPTION_ID_PREFIX = "qr-opt-";
 
-// The selected result surfaced to the detail pane: the kind discriminant plus
-// the concrete DTO (frame xor audio).
-export type SelectedSearchResult =
-  | { kind: "frame"; frame: FrameSearchResultDto }
-  | { kind: "audio"; audio: AudioSearchResultDto };
+// The selected result: the kind discriminant plus the concrete DTO.
+export type SelectedSearchResult = RankedResult;
 
 export class SearchStore {
+  // The typed text. Recognised phrases in it are tinted live (`naturalParse`)
+  // and lifted into `pills` after a COMMIT_MS pause.
   query = $state("");
+  pills = $state<Pill[]>([]);
   inputEl = $state<HTMLInputElement | null>(null);
 
   frames = $state<FrameSearchResultDto[]>([]);
   audio = $state<AudioSearchResultDto[]>([]);
+  // The backend had more than the fetch cap of that kind: counts read "24+".
+  hasMoreFrames = $state(false);
+  hasMoreAudio = $state(false);
   loading = $state(false);
   errorMessage = $state<string | null>(null);
   // The query string that the currently-displayed results belong to.
@@ -87,23 +93,17 @@ export class SearchStore {
   residualQuery = $state("");
   parseErrors = $state<SearchParseError[]>([]);
 
-  // Roving selection over the flattened VISIBLE result list (visible frames
-  // first, then visible audio — collapsed show-more overflow is NOT in the
-  // index space). -1 means nothing highlighted. The search input keeps DOM
+  // Roving selection over the VISIBLE ranked list (`visibleResults`; index 0
+  // is the best moment, collapsed show-more overflow is NOT in the index
+  // space). -1 means nothing highlighted. The search input keeps DOM
   // focus the whole time; selection is surfaced via aria-activedescendant + a
   // `selected` class. Selecting PREVIEWS (the detail pane consumes
   // `selectedResult`); only Enter opens + closes the window.
   selectedIndex = $state(-1);
 
-  // Per-section show-more expansion (mockup `.more-row` toggle). Reset on a
-  // new search (query change), never carried across queries.
-  framesExpanded = $state(false);
-  audioExpanded = $state(false);
-
-  // Syntax-help popover open state + the wrapper element (bound by the
-  // SyntaxHelp component; the page-level outside-click effect reads it).
-  syntaxHelpOpen = $state(false);
-  syntaxHelpEl = $state<HTMLDivElement | null>(null);
+  // Show-more expansion of the ranked list. Reset on a new search (query
+  // change), never carried across queries.
+  expanded = $state(false);
 
   // Lazily-loaded distinct captured apps, cached for the session. A transient
   // failure leaves this null so the next partial retries (ghost/value list just
@@ -116,10 +116,6 @@ export class SearchStore {
   // rather than a full caret position. Updated on every input/keyup/click/select.
   caretAtEnd = $state(true);
 
-  // In-search discoverability hint (issue #125): when no Semantic Search Model
-  // is installed, search is keyword-only; a hint points the user to Settings.
-  semanticSearchModelInstalled = $state<boolean | null>(null);
-
   // In-flight latch for the captured-page open: one selected result (and one
   // answer-source chip) opens at a time, so a single boolean is enough to keep
   // the ⌃O key or a chip double-click from stacking opens / feedback dialogs.
@@ -130,6 +126,68 @@ export class SearchStore {
   // Generation token so stale (out-of-order) responses are discarded.
   searchGeneration = 0;
   #debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  #commitTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Option counts for the pill popover, keyed by the option's operators
+  // (`PillOption.op`; "" = the "Any …" row). Null until facet counts exist
+  // (QR-B2): the popover then lists options without counts. `states` fills it.
+  facetCounts = $state<Record<string, CountLabel> | null>(null);
+
+  // Captured-app names (deduped by name, most recent first): the vocabulary for
+  // "in Arc", the ghost, and the app pill's popover.
+  appNames = $derived.by<string[]>(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const app of this.searchableApps ?? []) {
+      const name = (app.name ?? "").trim();
+      if (name && !seen.has(name.toLowerCase())) {
+        seen.add(name.toLowerCase());
+        names.push(name);
+      }
+    }
+    return names;
+  });
+
+  naturalParse = $derived(parseNatural(this.query, new Date(), this.appNames));
+  // Pills plus the phrases still tinted in the text.
+  effectivePills = $derived(
+    mergePills(this.pills, this.naturalParse.spans.map((span) => span.pill)),
+  );
+  // The real query: what the backend runs and the footer shows.
+  operatorQuery = $derived(operatorQuery(this.naturalParse.residual, this.effectivePills));
+
+  // Lift the recognised phrases out of the text into pills.
+  commitPills(): void {
+    this.clearCommit();
+    const { spans, residual } = this.naturalParse;
+    if (spans.length === 0) return;
+    this.pills = this.effectivePills;
+    this.query = residual && !/\?$/.test(residual) ? `${residual} ` : residual;
+    this.caretAtEnd = true;
+    const el = this.inputEl;
+    // The bound value lands on the next flush; park the caret after it.
+    requestAnimationFrame(() => el?.setSelectionRange(el.value.length, el.value.length));
+  }
+
+  scheduleCommit(): void {
+    this.clearCommit();
+    this.#commitTimer = setTimeout(() => this.commitPills(), COMMIT_MS);
+  }
+
+  clearCommit(): void {
+    if (this.#commitTimer !== null) {
+      clearTimeout(this.#commitTimer);
+      this.#commitTimer = null;
+    }
+  }
+
+  // Esc's middle step: drop the text and the pills.
+  clearQuery(): void {
+    this.clearCommit();
+    this.query = "";
+    this.pills = [];
+    this.filters.selectPill(null);
+  }
 
   clearDebounce(): void {
     if (this.#debounceTimer !== null) {
@@ -138,14 +196,13 @@ export class SearchStore {
     }
   }
 
+  // `raw` is the operator query; the typed text decides the pacing.
   scheduleSearch(raw: string): void {
     this.clearDebounce();
 
-    // While the caret sits in an un-committed field-operator value, the Filter
-    // Value List owns the results region; the partial operator must NOT reach
-    // the backend (a half-typed value would otherwise read as empty results).
-    // Cancel any in-flight search and leave the current results state intact.
-    if (isTrailingOperatorPartial(raw)) {
+    // A bare operator name (`app:`) has nothing to search yet: cancel any
+    // in-flight search and leave the current results state intact.
+    if (/^(app|source|date|after|before|hours):$/i.test(trailingToken(this.query))) {
       this.searchGeneration += 1;
       // Clear any in-flight loading state: the invalidated response will be
       // dropped by the generation guard and never reach `loading = false`, so
@@ -163,23 +220,28 @@ export class SearchStore {
       this.searchGeneration += 1;
       this.frames = [];
       this.audio = [];
+      this.hasMoreFrames = false;
+      this.hasMoreAudio = false;
       this.loading = false;
       this.errorMessage = null;
       this.resultsQuery = "";
       this.selectedIndex = -1;
-      this.framesExpanded = false;
-      this.audioExpanded = false;
+      this.expanded = false;
       // Drop any parsed scope so stale chips/parse errors don't linger once
       // the query falls back below the minimum length.
       this.appliedRefinements = null;
       this.residualQuery = "";
       this.parseErrors = [];
+      this.states.take(null);
       return;
     }
 
+    // A half-typed operator value waits for the same pause that commits pills,
+    // so a value still being typed isn't reported as a bad filter.
+    const delay = isTrailingOperatorPartial(this.query) ? COMMIT_MS : DEBOUNCE_MS;
     this.#debounceTimer = setTimeout(() => {
       void this.runSearch(trimmed);
-    }, DEBOUNCE_MS);
+    }, delay);
   }
 
   async runSearch(trimmed: string): Promise<void> {
@@ -187,6 +249,7 @@ export class SearchStore {
     const generation = this.searchGeneration;
     this.loading = true;
     this.errorMessage = null;
+    void this.states.loadIndexStatus();
 
     try {
       // Narrow the per-section limits to the active scope so a
@@ -224,16 +287,18 @@ export class SearchStore {
       // Expansion state resets on a NEW search; a same-query re-run (retry /
       // scope-narrowed refetch) keeps whatever the user expanded.
       if (trimmed !== this.resultsQuery) {
-        this.framesExpanded = false;
-        this.audioExpanded = false;
+        this.expanded = false;
       }
       this.frames = response.frames;
       this.audio = response.audio;
+      this.hasMoreFrames = response.hasMoreFrames;
+      this.hasMoreAudio = response.hasMoreAudio;
       this.resultsQuery = trimmed;
       // Capture the parsed scope so chip/error/limit derivations update.
       this.appliedRefinements = response.appliedRefinements;
       this.residualQuery = response.residualQuery;
       this.parseErrors = response.parseErrors;
+      this.states.take(response);
       this.loading = false;
       // Auto-highlight the top hit so a hurried Enter opens it (spotlight-style).
       this.selectedIndex =
@@ -247,16 +312,19 @@ export class SearchStore {
       }
       this.frames = [];
       this.audio = [];
+      this.hasMoreFrames = false;
+      this.hasMoreAudio = false;
       this.resultsQuery = trimmed;
       this.loading = false;
       this.selectedIndex = -1;
-      this.framesExpanded = false;
-      this.audioExpanded = false;
+      this.expanded = false;
       // A transport/backend failure isn't a parse outcome — clear the parsed
       // scope so a prior query's chips/parse errors don't survive an error.
       this.appliedRefinements = null;
       this.residualQuery = "";
       this.parseErrors = [];
+      this.states.take(null);
+      // Never shown raw: `states.emptyState` says it in plain words.
       this.errorMessage = humanizeError(error);
     }
   }
@@ -329,6 +397,8 @@ export class SearchStore {
         kind: "frame",
         frameId: result.representativeFrame.id,
         audioSegmentId: null,
+        query: this.resultsQuery,
+        byMeaning: result.foundByMeaning,
       });
     } catch (err) {
       await this.surfaceResultHandoffFailure(err);
@@ -348,6 +418,7 @@ export class SearchStore {
         audioSegmentId: result.audioSegment.id,
         spanStartMs: result.spanStartMs,
         alignedFrameId: result.alignedFrame?.id ?? null,
+        query: this.resultsQuery,
       });
     } catch (err) {
       await this.surfaceResultHandoffFailure(err);
@@ -370,47 +441,31 @@ export class SearchStore {
     }
   }
 
-  // ── Keyboard navigation (flattened visible results list) ──────────────────
-  // Results render as a single flattened list (visible frames first, then
-  // visible audio) so the arrow keys can roam across both sections.
-  // `selectedIndex` indexes into that flattened VISIBLE order — rows hidden
-  // behind a collapsed show-more are not selectable; the helpers below
-  // translate it back to a concrete result.
+  // ── Keyboard navigation (one ranked list) ─────────────────────────────────
+  // Frames and audio merge by rank (`mergeByRank`); `selectedIndex` indexes
+  // the VISIBLE slice (0 = the best moment) — rows behind a collapsed
+  // show-more are not selectable.
 
-  visibleFrames = $derived(
-    this.frames.slice(
-      0,
-      visibleCount(this.frames.length, FRAME_VISIBLE_CAP, this.framesExpanded),
-    ),
+  ranked = $derived(mergeByRank(this.frames, this.audio));
+  visibleResults = $derived(
+    this.ranked.slice(0, visibleCount(this.ranked.length, this.expanded)),
   );
-  visibleAudio = $derived(
-    this.audio.slice(
-      0,
-      visibleCount(this.audio.length, AUDIO_VISIBLE_CAP, this.audioExpanded),
-    ),
-  );
-  // The selection space (visible rows only). The total fetched count lives in
-  // `totalResultCount` (section headers / SR announcement).
-  resultCount = $derived(this.visibleFrames.length + this.visibleAudio.length);
-  totalResultCount = $derived(this.frames.length + this.audio.length);
+  // The selection space (visible rows only); `totalResultCount` is everything
+  // fetched (the bar's "N moments", the SR announcement) — a lower bound when
+  // `capped` (a fetch cap was hit), so counts render as "36+".
+  resultCount = $derived(this.visibleResults.length);
+  totalResultCount = $derived(this.ranked.length);
+  capped = $derived(this.hasMoreFrames || this.hasMoreAudio);
 
-  // The selected result (kind + DTO) — select = PREVIEW: this is what the
-  // detail pane renders from (Slice 5); nothing opens until Enter.
-  selectedResult = $derived.by<SelectedSearchResult | null>(() => {
-    const index = this.selectedIndex;
-    if (index < 0) {
-      return null;
-    }
-    if (index < this.visibleFrames.length) {
-      return { kind: "frame", frame: this.visibleFrames[index] };
-    }
-    const audio = this.visibleAudio[index - this.visibleFrames.length];
-    return audio !== undefined ? { kind: "audio", audio } : null;
-  });
+  // The selected result (kind + DTO) — select = PREVIEW; nothing opens until
+  // Enter.
+  selectedResult = $derived<SelectedSearchResult | null>(
+    this.visibleResults[this.selectedIndex] ?? null,
+  );
 
   // The currently-selected result is an openable frame carrying a captured
-  // page. Gates the ⌘O "open page" footer hint so it tracks the *selected*
-  // result — never advertising a no-op for an audio/url-less selection.
+  // page. Gates the ⌘↵ "page" footer hint so it tracks the *selected* result —
+  // never advertising a no-op for an audio/url-less selection.
   selectedResultIsOpenable = $derived(
     this.selectedResult?.kind === "frame" && this.selectedResult.frame.url != null,
   );
@@ -430,67 +485,20 @@ export class SearchStore {
     this.selectedIndex = index;
   }
 
-  // Timeline-strip click (Slice 6): select a FETCHED result by section +
-  // fetched-array index. Mirrors the mockup's select(): a dot can target a row
-  // hidden behind a collapsed show-more, so expand that section first, then
-  // set the visible-space index (post-expansion the fetched index IS the
-  // section-local visible index). Selecting only previews, like selectResultAt.
-  selectFetchedResult(kind: "frame" | "audio", index: number): void {
+  // Toggle show-more. A collapse that hides the selected row clamps it to the
+  // last visible row.
+  toggleExpanded(): void {
     this.inputEl?.focus();
-    if (kind === "frame") {
-      if (index < 0 || index >= this.frames.length) {
-        return;
-      }
-      if (index >= this.visibleFrames.length) {
-        this.framesExpanded = true;
-      }
-      this.selectedIndex = index;
-      return;
-    }
-    if (index < 0 || index >= this.audio.length) {
-      return;
-    }
-    if (index >= this.visibleAudio.length) {
-      this.audioExpanded = true;
-    }
-    this.selectedIndex = this.visibleFrames.length + index;
-  }
-
-  // Toggle a section's show-more expansion. If the collapse hides the selected
-  // row (or shifts the audio block), remap so the same result stays selected
-  // where possible, clamped to the nearest visible row otherwise.
-  toggleFramesExpanded(): void {
-    this.inputEl?.focus();
-    const prev = { frames: this.visibleFrames.length, audio: this.visibleAudio.length };
-    this.framesExpanded = !this.framesExpanded;
-    this.#clampSelection(prev);
-  }
-
-  toggleAudioExpanded(): void {
-    this.inputEl?.focus();
-    const prev = { frames: this.visibleFrames.length, audio: this.visibleAudio.length };
-    this.audioExpanded = !this.audioExpanded;
-    this.#clampSelection(prev);
-  }
-
-  #clampSelection(prev: { frames: number; audio: number }): void {
-    this.selectedIndex = remapSelection(this.selectedIndex, prev, {
-      frames: this.visibleFrames.length,
-      audio: this.visibleAudio.length,
-    });
+    this.expanded = !this.expanded;
+    this.selectedIndex = Math.min(this.selectedIndex, this.resultCount - 1);
   }
 
   // Enter's action: open the visible result at `index` in the main-window
   // timeline (frame or audio) and close Quick Recall.
   openResultAt(index: number): void {
-    if (index < 0 || index >= this.resultCount) {
-      return;
-    }
-    if (index < this.visibleFrames.length) {
-      void this.openFrameResult(this.visibleFrames[index]);
-    } else {
-      void this.openAudioResult(this.visibleAudio[index - this.visibleFrames.length]);
-    }
+    const result = this.visibleResults[index];
+    if (result?.kind === "frame") void this.openFrameResult(result.frame);
+    else if (result) void this.openAudioResult(result.audio);
   }
 
   // Open the captured page behind the currently-selected frame result in the
@@ -512,6 +520,8 @@ export class SearchStore {
 
   moveSelection(delta: number): void {
     if (this.resultCount === 0) {
+      // ↓ on the empty bar opens Recent + Try.
+      if (delta > 0 && this.operatorQuery === "") void this.states.openRecent();
       return;
     }
     // Wrap around the ends; a first ArrowDown from -1 lands on the top result.
@@ -559,33 +569,6 @@ export class SearchStore {
     deriveActiveFilterChips(this.appliedRefinements),
   );
 
-  // Drop a chip's operator token(s) from the query and let the reactive effect
-  // rerun the search (which re-derives chips and restores sections via
-  // sectionLimits). Refocus the input so removal keeps keyboard flow.
-  removeChip(chip: ActiveFilterChip): void {
-    this.query = stripChipTokens(this.query, chip);
-    this.inputEl?.focus();
-  }
-
-  // ── Syntax help (static popover; the only state is open/closed) ───────────
-
-  toggleSyntaxHelp(): void {
-    this.syntaxHelpOpen = !this.syntaxHelpOpen;
-    // Keep typing flow on the search input — the help is an occasional-use
-    // affordance, so it's toggled by click but never becomes the focus target.
-    if (!this.syntaxHelpOpen) {
-      this.inputEl?.focus();
-    }
-  }
-
-  closeSyntaxHelp(): void {
-    if (!this.syntaxHelpOpen) {
-      return;
-    }
-    this.syntaxHelpOpen = false;
-    this.inputEl?.focus();
-  }
-
   // ── Result-state derivations ───────────────────────────────────────────────
 
   // The first parse error (or null). One inline error line renders from this;
@@ -615,7 +598,7 @@ export class SearchStore {
     return { frameLimit: FRAME_FETCH_LIMIT, audioLimit: AUDIO_FETCH_LIMIT };
   });
 
-  trimmedQuery = $derived(this.query.trim());
+  trimmedQuery = $derived(this.operatorQuery);
   belowMinimum = $derived(this.trimmedQuery.length < MIN_QUERY_LENGTH);
   hasResults = $derived(this.frames.length > 0 || this.audio.length > 0);
 
@@ -653,28 +636,18 @@ export class SearchStore {
       this.parseErrorMessage !== null,
   );
 
-  // Show the hint once results have run and no model is installed — the hint is
-  // most useful exactly when keyword-only search underwhelms.
-  showSemanticSearchHint = $derived(
-    this.semanticSearchModelInstalled === false &&
-      !this.belowMinimum &&
-      !this.loading &&
-      this.parseErrorMessage === null &&
-      this.resultsQuery.length > 0,
-  );
-
-  async loadSemanticSearchModelInstalled(): Promise<void> {
-    try {
-      const status = await invoke<SemanticSearchModelStatusResponse>(
-        "get_semantic_search_model_status",
-      );
-      this.semanticSearchModelInstalled = status.models.some(
-        (model) => model.available,
-      );
-    } catch {
-      // Best-effort: a failure just suppresses the hint (never blocks search).
-      this.semanticSearchModelInstalled = null;
-    }
+  // ↵ in the main window's titlebar recall field summons this window with its
+  // text (`summon_quick_recall_window_command { query }`). Rust parks it until
+  // read here — on mount and on every focus — so it survives a cold build.
+  // Returns true when a query was taken (the page then leaves Ask mode).
+  async takeSummonQuery(): Promise<boolean> {
+    const query = await invoke<string | null>("take_quick_recall_query").catch(() => null);
+    if (!query) return false;
+    this.query = query;
+    this.pills = [];
+    this.caretAtEnd = true;
+    this.scheduleCommit();
+    return true;
   }
 
   async openSemanticSearchSettings(): Promise<void> {
@@ -687,28 +660,29 @@ export class SearchStore {
     this.clearDebounce();
     // Invalidate any in-flight search so a late response can't repopulate.
     this.searchGeneration += 1;
-    this.query = "";
+    this.clearQuery();
     this.frames = [];
     this.audio = [];
+    this.hasMoreFrames = false;
+    this.hasMoreAudio = false;
     this.resultsQuery = "";
     this.errorMessage = null;
     this.loading = false;
     this.selectedIndex = -1;
-    this.framesExpanded = false;
-    this.audioExpanded = false;
+    this.expanded = false;
     // Reset parsed scope to pristine so a re-summon starts with no chips /
     // parse errors / scope-narrowed limits.
     this.appliedRefinements = null;
     this.residualQuery = "";
     this.parseErrors = [];
-    // A fresh summon starts with the Filter Picker closed.
-    this.filters.pickerOpen = false;
-    this.filters.pickerIndex = 0;
+    this.states.take(null);
+    this.states.recentOpen = false;
   }
 
-  // The picker / ghost / value-list surfaces, composed last so every store
+  // The ghost + pill surfaces, composed last so every store
   // field above is initialized before the sub-surface captures the reference.
   filters = new FilterSurfaces(this);
+  states = new RecallStates(this);
 }
 
 export const quickRecallSearch = new SearchStore();

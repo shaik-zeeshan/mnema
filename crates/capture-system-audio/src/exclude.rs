@@ -279,7 +279,7 @@ impl SystemAudioExcludeWatcher {
                     reconcile(&listener_state, listener_callback.as_ref());
                 }));
                 if reconciled.is_err() {
-                    capture_runtime::debug_log!("{LOG_PREFIX} process list listener panicked");
+                    capture_runtime::error_log!("{LOG_PREFIX} process list listener panicked");
                 }
             },
         );
@@ -401,7 +401,7 @@ fn reconcile_with(
         Ok(inputs) => inputs,
         Err(error) => {
             lock_state(state).dirty = true;
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "{LOG_PREFIX} keeping exclude list after failed process list read, retrying on the next tick: {}",
                 error.message
             );

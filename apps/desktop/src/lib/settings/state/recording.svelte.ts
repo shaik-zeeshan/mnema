@@ -19,6 +19,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
+import { setTimeFormat } from "$lib/time-format";
 import type {
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
@@ -27,6 +28,7 @@ import type {
   AiEngineRef,
   McpServerConfig,
   AppearanceSetting,
+  TimeFormatSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
   BrowserUrlMode,
@@ -42,6 +44,7 @@ import type {
   RetentionPolicy,
   VideoBitrateMode,
   VideoBitratePreset,
+  QuickRecallAutoAnswer,
 } from "$lib/types";
 import {
   RECORDING_AUTOSAVE_DOMAINS,
@@ -109,10 +112,8 @@ export function cloneMcpServer(server: McpServerConfig): McpServerConfig {
 export interface RecordingStoreDeps {
   // App-wide theme runtime (lib/theme.svelte): apply the loaded appearance.
   setAppearance: (value: AppearanceSetting) => void;
-  // Developer-options runtime (lib/developer-options.svelte): gate the Debug page.
+  // Developer-options runtime (lib/developer-options.svelte): gate the developer window.
   setDeveloperOptionsEnabled: (value: boolean) => void;
-  // Reload the debug-log status (page-owned loader) after a developer-domain sync.
-  loadDebugLogStatus: () => void;
   // AI-runtime store refreshers, re-run after an ai_runtime-domain sync so the
   // key-presence badges + availability reflect the synced provider list.
   refreshAiProviderKeyPresence: () => void;
@@ -137,6 +138,8 @@ export class RecordingStore {
   recordingSettings = $state<RecordingSettings | null>(null);
   loadingRecSettings = $state(false);
   recError = $state<string | null>(null);
+  // LOAD failures, kept apart from `recError` so they never read as "Couldn't save".
+  recLoadError = $state<string | null>(null);
   // True only once loadRecordingSettings() has resolved at least once, so the
   // persisted semantic-search selection is known (the page's chooser gates on it).
   recordingSettingsLoaded = $state(false);
@@ -158,7 +161,7 @@ export class RecordingStore {
   draftSegmentDuration = $state(60);
   draftFrameRate = $state(0.5);
   draftSaveDirectory = $state("");
-  draftAutoStart = $state(false);
+  draftAutoStart = $state(true);
 
   // Resolution drafts
   draftResolutionMode = $state<ResolutionMode>("original");
@@ -182,7 +185,6 @@ export class RecordingStore {
   draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
 
   // Developer drafts
-  draftNativeCaptureDebugLoggingEnabled = $state(false);
   draftDeveloperOptionsEnabled = $state(false);
 
   // Processing: preview cache TTL (seconds; 0 disables)
@@ -194,6 +196,7 @@ export class RecordingStore {
   draftMetadataEnabled = $state(true);
   draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   draftAppearance = $state<AppearanceSetting>("system");
+  draftTimeFormat = $state<TimeFormatSetting>("system");
 
   // Privacy-exclusion drafts (committed through the dedicated controller).
   draftExcludedApps = $state<ExcludedAppEntry[]>([]);
@@ -206,6 +209,7 @@ export class RecordingStore {
   draftAskAiLimitToolCalls = $state(true);
   draftAskAiMaxToolCalls = $state(ASK_AI_DEFAULT_TOOL_CALL_LIMIT);
   draftAskAiModel = $state("");
+  draftQuickRecallAutoAnswer = $state<QuickRecallAutoAnswer>("localOnly");
 
   // AI runtime drafts (ADR 0034). The per-provider key is keychain-only and
   // never travels through this draft state.
@@ -349,6 +353,7 @@ export class RecordingStore {
   syncDisplayDrafts(s: RecordingSettings): void {
     this.draftFollowTimelineLive = s.followTimelineLive ?? false;
     this.draftAppearance = s.appearance ?? "system";
+    this.draftTimeFormat = s.timeFormat ?? "system";
   }
 
   syncMetadataDrafts(s: RecordingSettings): void {
@@ -368,6 +373,7 @@ export class RecordingStore {
     this.draftAskAiLimitToolCalls = cap > 0;
     this.draftAskAiMaxToolCalls = cap > 0 ? cap : ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
     this.draftAskAiModel = s.access?.askAiModel ?? "";
+    this.draftQuickRecallAutoAnswer = s.access?.quickRecallAutoAnswer ?? "localOnly";
   }
 
   syncAiRuntimeDrafts(s: RecordingSettings): void {
@@ -404,7 +410,6 @@ export class RecordingStore {
   }
 
   syncDeveloperDrafts(s: RecordingSettings): void {
-    this.draftNativeCaptureDebugLoggingEnabled = s.nativeCaptureDebugLoggingEnabled ?? false;
     this.draftDeveloperOptionsEnabled = s.developerOptionsEnabled ?? false;
   }
 
@@ -586,10 +591,10 @@ export class RecordingStore {
 
     if (draftDomain === "display" && applyDrafts) {
       this.#deps.setAppearance(s.appearance ?? "system");
+      setTimeFormat(s.timeFormat);
     }
     if (draftDomain === "developer" && applyDrafts) {
       this.#deps.setDeveloperOptionsEnabled(s.developerOptionsEnabled ?? false);
-      this.#deps.loadDebugLogStatus();
     }
     if (draftDomain === "ai_runtime" && applyDrafts) {
       this.#deps.refreshAiProviderKeyPresence();
@@ -619,7 +624,7 @@ export class RecordingStore {
   // ─── Load ─────────────────────────────────────────────────────────────────
   async loadRecordingSettings(): Promise<void> {
     this.loadingRecSettings = true;
-    this.recError = null;
+    this.recLoadError = null;
     try {
       const s = await invoke<RecordingSettings>("get_recording_settings");
       this.recordingSettings = s;
@@ -628,7 +633,7 @@ export class RecordingStore {
       this.recordingSettingsLoaded = true;
       this.#deps.onRecordingSettingsLoaded?.();
     } catch (err) {
-      this.recError = humanizeError(err);
+      this.recLoadError = humanizeError(err);
     } finally {
       this.loadingRecSettings = false;
     }
@@ -641,6 +646,7 @@ export class RecordingStore {
     this.recordingSettings = payload;
     this.resyncRecordingDraftsFromCanonical(payload);
     this.recError = null;
+    this.recLoadError = null;
   }
 
   onRecordingSettingsDomainChanged(payload: RecordingSettingsDomainUpdateResponse): void {

@@ -1,86 +1,68 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import SelectMenu from "$lib/components/Select.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
-  import IconClear from "~icons/lucide/x";
+  import IconRetry from "~icons/lucide/rotate-cw";
+  import IconMic from "~icons/lucide/mic";
 
   const c = getSettingsController();
   const audio = c.audio;
 
   const micState = $derived(audio.micState);
-  const micDeviceOptions = $derived(audio.micDeviceOptions);
-  const loadingMicState = $derived(audio.loadingMicState);
   const loadMicState = () => audio.loadMicState();
-
+  const noDevices = $derived(micState !== null && micState.devices.length === 0);
+  // A failed reload while state is showing; a failed first load is the empty state.
+  const micLine = $derived(audio.micError ?? (micState ? audio.micLoadError : null));
 </script>
 
-<SettingGroup id="settings-section-audio" title="Microphone Controller">
-  {#snippet actions()}
-    <ReloadButton onclick={loadMicState} busy={loadingMicState} label="Reload microphone state" />
-  {/snippet}
+{#snippet needsDevice()}
+  <span class="mx-inline" data-tone="warn"><IconAlert width="13" height="13" />Select a device before saving Specific Device mode.</span>
+{/snippet}
 
-  {#if loadingMicState}
-    <SettingRow label="Microphone" description="Microphone state is loading." divider={false}>
-      {#snippet control()}
-        <p class="loading-text"><ButtonSpinner />Loading microphone state…</p>
-      {/snippet}
-    </SettingRow>
-  {:else if micState}
-    <SettingRow label="Active Device" description="The microphone currently in use." full>
-      {#snippet control()}
-        <div class="control-stack">
-          <div class="effective-device" class:effective-device--none={!micState.effectiveDevice}>
-            <span class="effective-device__dot" class:effective-device__dot--on={!!micState.effectiveDevice}></span>
-            <span class="effective-device__label">
-              {#if micState.effectiveDevice}
-                {micState.effectiveDevice.name}
-                {#if micState.effectiveDevice.isDefault}
-                  <span class="badge badge--neutral badge--sm">default</span>
-                {/if}
-              {:else}
-                No active device
-              {/if}
-            </span>
-          </div>
+<SettingGroup id="settings-section-audio" title="Microphone" loading={audio.loadingMicState}>
+  {#if micState === null}
+    <div class="mic-pad">
+      <div class="mx-empty mx-empty--compact" data-tone="danger">
+        <span class="mx-empty__glyph"><IconAlert width="14" height="14" /></span>
+        <b class="mx-empty__title">Couldn’t load microphone state</b>
+        <p class="mx-empty__text">Devices and your preference will show here once it loads.</p>
+        <div class="mx-empty__acts">
+          <button type="button" class="mx-btn mx-btn--sm" onclick={loadMicState}>
+            <IconRetry width="12" height="12" />Retry
+          </button>
         </div>
-      {/snippet}
-    </SettingRow>
-
-    <SettingRow label="Available Devices" description="Microphones detected on this Mac." full>
-      {#snippet control()}
-        <div class="control-stack">
-          {#if micState.devices.length > 0}
-            <ul class="device-list">
-              {#each micState.devices as device (device.id)}
-                <li class="device-item" class:device-item--active={micState.effectiveDevice?.id === device.id}>
-                  <span class="device-item__dot" class:device-item__dot--active={micState.effectiveDevice?.id === device.id}></span>
-                  <span class="device-item__name">{device.name}</span>
-                  <div class="device-item__badges">
-                    {#if device.isDefault}
-                      <span class="badge badge--neutral badge--sm">default</span>
-                    {/if}
-                    {#if micState.effectiveDevice?.id === device.id}
-                      <span class="badge badge--ok badge--sm">active</span>
-                    {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
+      </div>
+    </div>
+  {:else}
+    {#if noDevices}
+      <div class="mic-pad">
+        <div class="mx-empty mx-empty--compact">
+          <span class="mx-empty__glyph"><IconMic width="14" height="14" /></span>
+          <b class="mx-empty__title">No microphone devices found</b>
+          <p class="mx-empty__text">Plug one in or connect a headset — it shows up here on its own.</p>
+        </div>
+      </div>
+    {:else}
+      <SettingRow label="Active device" description="The microphone currently in use.">
+        {#snippet control()}
+          {#if micState.effectiveDevice}
+            <span class="mx-chip mx-chip--mic">{micState.effectiveDevice.name}</span>
           {:else}
-            <p class="empty-state">No microphone devices found.</p>
+            <span class="mx-chip">No active device</span>
           {/if}
-        </div>
-      {/snippet}
-    </SettingRow>
+          <ReloadButton onclick={loadMicState} busy={audio.loadingMicState} label="Reload microphone state" />
+        {/snippet}
+      </SettingRow>
+    {/if}
 
-    <SettingRow label="Preference" description="Which microphone capture should use." full>
+    <SettingRow label="Preference" description="Which microphone capture should use.">
       {#snippet control()}
         <Segmented
+          md
           bind:value={audio.draftPreferenceMode}
           ariaLabel="Microphone preference"
           options={[
@@ -92,35 +74,29 @@
     </SettingRow>
 
     {#if audio.draftPreferenceMode === "specific_device"}
-      <SettingRow label="Device" description="Pick the microphone to lock to." full>
-        {#snippet control()}
-          <div class="control-stack">
-            {#if micDeviceOptions.length > 0}
-              <RadioGroup
-                value={audio.draftDeviceId ?? ""}
+      {#if !noDevices}
+        <SettingRow label="Device" description="Pick the microphone to lock to.">
+          {#snippet control()}
+            <div class="mic-device">
+              <SelectMenu
+                value={audio.draftDeviceId}
                 onValueChange={(v) => (audio.draftDeviceId = v)}
-                options={micDeviceOptions}
+                options={audio.micDeviceOptions}
+                placeholder="Choose a microphone"
+                ariaLabel="Device"
               />
-            {:else}
-              <p class="empty-state">No microphone devices to choose from.</p>
-            {/if}
-            {#if !audio.draftDeviceId}
-              <p class="group-hint group-hint--warn">Select a device before saving Specific Device mode.</p>
-            {/if}
-          </div>
-        {/snippet}
-      </SettingRow>
-    {/if}
+              {#if !audio.draftDeviceId}{@render needsDevice()}{/if}
+            </div>
+          {/snippet}
+        </SettingRow>
+      {:else if !audio.draftDeviceId}
+        <div class="mic-pad">{@render needsDevice()}</div>
+      {/if}
 
-    {#if audio.draftPreferenceMode === "specific_device"}
-      <SettingRow
-        label="On Disconnect"
-        description="What to do when the chosen microphone disconnects."
-        full
-        divider={!!audio.micError}
-      >
+      <SettingRow label="On Disconnect" description="What to do when the chosen microphone disconnects.">
         {#snippet control()}
           <Segmented
+            md
             bind:value={audio.draftDisconnectPolicy}
             ariaLabel="On disconnect policy"
             options={[
@@ -131,48 +107,30 @@
         {/snippet}
       </SettingRow>
     {/if}
+  {/if}
 
-    {#if audio.micError}
-      <SettingRow label="Error" warn full divider={false}>
-        {#snippet control()}
-          <div class="inline-error">
-            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
-            <span class="inline-error__msg">{audio.micError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => audio.micError = null}><IconClear aria-hidden="true" /></button>
-          </div>
-        {/snippet}
-      </SettingRow>
-    {/if}
-  {:else}
-    <SettingRow label="Microphone" description="Microphone state could not be loaded." full divider={false}>
-      {#snippet control()}
-        <div class="control-stack">
-          <p class="empty-state">Failed to load microphone state.</p>
-          <button type="button" class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
-        </div>
-      {/snippet}
-    </SettingRow>
+  {#if micLine}
+    <div class="mic-pad">
+      <span class="mx-inline" data-tone="danger" role="alert">
+        <IconAlert width="13" height="13" />{micLine}
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => (audio.micError = audio.micLoadError = null)}>Dismiss</button>
+      </span>
+    </div>
   {/if}
 </SettingGroup>
 
 <style>
-  /* SettingRow's full-mode control slot is a flex row; stack the device banner,
-     list, select + hint, and error block vertically. */
-  .control-stack {
+  /* A full-width state between rows, on the rows' left edge. */
+  .mic-pad {
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+
+  .mic-device {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    width: 100%;
-    min-width: 0;
-    align-items: flex-start;
-  }
-
-  .control-stack :global(.group-hint) {
-    margin: 0;
-  }
-
-  .control-stack :global(.device-list),
-  .control-stack :global(.effective-device) {
-    width: 100%;
+    align-items: flex-end;
+    gap: var(--s-2);
+    min-width: 220px;
   }
 </style>

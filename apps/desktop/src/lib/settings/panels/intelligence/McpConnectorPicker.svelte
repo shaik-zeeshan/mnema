@@ -537,9 +537,9 @@
                   {/if}
                 </div>
                 {#if edit && secretSaved}
-                  <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span></p>
+                  <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret saved</span></p>
                 {:else}
-                  <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>
+                  <p class="group-hint">Stored encrypted on this Mac — never in Mnema's settings.</p>
                 {/if}
               {/if}
 
@@ -571,7 +571,7 @@
             <div class="connect__footer">
               {#if edit}
                 <button
-                  class="btn btn--danger btn--sm"
+                  class="mx-btn mx-btn--danger mx-btn--sm"
                   type="button"
                   disabled={connecting || removing}
                   onclick={() => void removeEdit()}
@@ -580,7 +580,7 @@
                 </button>
               {:else}
                 <button
-                  class="btn btn--ghost btn--sm"
+                  class="mx-btn mx-btn--sm"
                   type="button"
                   disabled={connecting}
                   onclick={backToCatalog}
@@ -589,7 +589,7 @@
                 </button>
               {/if}
               <button
-                class="btn btn--primary"
+                class="mx-btn"
                 type="button"
                 disabled={addDisabled}
                 aria-busy={connecting}

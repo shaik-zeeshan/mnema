@@ -1,36 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { SETTINGS_GROUPS } from "../src/lib/settings/groups";
 import {
+  activeSectionAt,
   isAtScrollTarget,
-  isScrollable,
   isScrolledToBottom,
-  lastSectionOfGroup,
 } from "../src/lib/settings/scroll-spy";
 
-// The scroll-spy tail-selection + bottom-out predicate had two dedicated fix
-// commits but no test. These pin the pure decisions both fixes hinge on.
+describe("scroll-spy: activeSectionAt", () => {
+  // Capture's four sections, tops in viewport px; the line sits at 100.
+  const at = (tops: number[]) =>
+    (["capture", "video", "audio", "privacy"] as const).map((id, i) => ({ id, top: tops[i] }));
 
-describe("scroll-spy: lastSectionOfGroup", () => {
-  test("returns the FINAL section of each group (the spy-unreachable tail)", () => {
-    // The whole point of the helper: the tail is the last section in render
-    // order, which the IntersectionObserver can't mark active on bottom-out.
-    for (const group of SETTINGS_GROUPS) {
-      const expected = group.sections[group.sections.length - 1].id;
-      expect(lastSectionOfGroup(group.id)).toBe(expected);
-    }
+  test("first section until any top crosses the line", () => {
+    expect(activeSectionAt(at([180, 900, 1500, 2100]), 100, false)).toBe("capture");
   });
 
-  test("Capture's tail is Privacy (last of capture/video/audio/privacy)", () => {
-    expect(lastSectionOfGroup("capture")).toBe("privacy");
+  test("the next section wins as soon as its top crosses — not when the previous one leaves", () => {
+    // The old observer kept the previous (taller, still-visible) section lit here.
+    expect(activeSectionAt(at([-700, 99, 700, 1300]), 100, false)).toBe("video");
+    expect(activeSectionAt(at([-700, 100, 700, 1300]), 100, false)).toBe("video");
+    expect(activeSectionAt(at([-700, 101, 700, 1300]), 100, false)).toBe("capture");
   });
 
-  test("Intelligence's tail is Semantic Search (the deepest scroll target)", () => {
-    expect(lastSectionOfGroup("intelligence")).toBe("semanticSearch");
+  test("the last section wins at the bottom even if its top can't reach the line", () => {
+    expect(activeSectionAt(at([-1900, -1200, -300, 400]), 100, true)).toBe("privacy");
+    expect(activeSectionAt(at([-1900, -1200, -300, 400]), 100, false)).toBe("audio");
   });
 
-  test("returns null for an unknown group id", () => {
-    // @ts-expect-error — deliberately passing a non-group id.
-    expect(lastSectionOfGroup("not-a-group")).toBeNull();
+  test("null with no sections", () => {
+    expect(activeSectionAt([], 100, true)).toBeNull();
   });
 });
 
@@ -83,28 +80,6 @@ describe("scroll-spy: isScrolledToBottom", () => {
   });
 });
 
-describe("scroll-spy: isScrollable", () => {
-  test("true when content overflows the viewport (room to scroll)", () => {
-    // 1000 - 400 = 600 of overflow → genuinely scrollable.
-    expect(isScrollable({ scrollHeight: 1000, clientHeight: 400 })).toBe(true);
-  });
-
-  test("false when content fits the viewport (short group)", () => {
-    // A group whose content fits leaves nothing to scroll, so the bottom-out
-    // short-circuit must NOT fire (otherwise the highlight freezes).
-    expect(isScrollable({ scrollHeight: 300, clientHeight: 400 })).toBe(false);
-    // Content the exact viewport height is still not scrollable.
-    expect(isScrollable({ scrollHeight: 400, clientHeight: 400 })).toBe(false);
-  });
-
-  test("false within the 2px sub-pixel tolerance", () => {
-    // 402 - 400 = 2 (≤ tolerance) → still treated as not scrollable.
-    expect(isScrollable({ scrollHeight: 402, clientHeight: 400 })).toBe(false);
-    // 403 - 400 = 3 (> tolerance) → scrollable.
-    expect(isScrollable({ scrollHeight: 403, clientHeight: 400 })).toBe(true);
-  });
-});
-
 describe("scroll-spy: isAtScrollTarget", () => {
   test("false while no programmatic scroll is in flight (null target)", () => {
     // With no target the scroll-spy must NOT treat any scroll as settled —
@@ -115,7 +90,7 @@ describe("scroll-spy: isAtScrollTarget", () => {
 
   test("false mid-animation while still far from the target", () => {
     // A long smooth jump: scrollTop is nowhere near the target yet, so the
-    // observer must stay suppressed (this is the flicker the fix prevents).
+    // spy must stay suppressed (this is the flicker the fix prevents).
     expect(isAtScrollTarget(120, 980)).toBe(false);
   });
 

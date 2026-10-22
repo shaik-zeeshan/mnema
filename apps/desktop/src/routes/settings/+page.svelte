@@ -29,6 +29,7 @@
     setSettingsController,
   } from "$lib/settings/state/controller.svelte";
   import {
+    SETTINGS_GROUPS,
     groupForSection,
     resolveTabDeeplink,
     resolveFocusDeeplink,
@@ -40,10 +41,10 @@
     type SettingsSectionId,
   } from "$lib/settings/groups";
   import {
+    SPY_LINE_PX,
+    activeSectionAt,
     isAtScrollTarget,
-    isScrollable,
     isScrolledToBottom,
-    lastSectionOfGroup,
   } from "$lib/settings/scroll-spy";
   // Shared `.settings-shell` styles, split per concern (≤800 lines each),
   // imported in SOURCE ORDER (cascade-critical; theme last). Map: settings-layout.css.
@@ -54,6 +55,9 @@
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
   import SettingsRail from "$lib/settings/SettingsRail.svelte";
+  import SettingsBar from "$lib/settings/SettingsBar.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconRetry from "~icons/lucide/rotate-cw";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
@@ -98,7 +102,6 @@
   const loadSemanticSearchModelStatus = () => c.loadSemanticSearchModelStatus();
   const loadSemanticSearchSupportedModels = () => c.loadSemanticSearchSupportedModels();
   const loadPersonProfileCount = () => c.loadPersonProfileCount();
-  const loadDebugLogStatus = () => c.logs.loadDebugLogStatus();
   const loadGeneralLogStatus = () => c.logs.loadGeneralLogStatus();
   const loadAppUpdateStatus = () => c.about.loadAppUpdateStatus();
   const loadThirdPartyNotices = () => c.about.loadThirdPartyNotices();
@@ -113,12 +116,55 @@
   // Defaults to the first section of the default group.
   let activeSection = $state<SettingsSectionId>(DEFAULT_SETTINGS_SECTION);
   let scrollRegion = $state<HTMLDivElement | null>(null);
+  // The header gains a hairline once the column scrolls under it.
+  let scrolled = $state(false);
+  const activeGroupInfo = $derived(SETTINGS_GROUPS.find((g) => g.id === activeGroup)!);
+
+  // Autosave failures (and the recording-settings load failure, which spans
+  // many sections), one notice each (see the markup).
+  type SaveError = { title: string; message: string; retry: (() => void) | null; dismiss: () => void };
+  const saveErrors = $derived.by<SaveError[]>(() => {
+    const out: SaveError[] = [];
+    if (c.rec.recError) {
+      out.push({
+        title: "Couldn’t save recording settings",
+        message: `${c.rec.recError.replace(/\.$/, "")}. Retrying on its own — or dismiss to put the last saved value back.`,
+        retry: c.lastFailedSaveDomain ? () => c.retryFailedSave() : null,
+        dismiss: () => c.dismissRecError(),
+      });
+    }
+    if (c.rec.recLoadError) {
+      out.push({
+        title: "Couldn’t load recording settings",
+        message: `${c.rec.recLoadError.replace(/\.$/, "")}. Capture, privacy and storage show their defaults until it loads.`,
+        retry: () => void c.rec.loadRecordingSettings(),
+        dismiss: () => (c.rec.recLoadError = null),
+      });
+    }
+    if (c.keyboard.keyboardBindingsError) {
+      out.push({
+        title: "Couldn’t save shortcuts",
+        message: c.keyboard.keyboardBindingsError,
+        retry: null,
+        dismiss: () => (c.keyboard.keyboardBindingsError = null),
+      });
+    }
+    if (c.audio.micError) {
+      out.push({
+        title: "Microphone settings hit an error",
+        message: c.audio.micError,
+        retry: null,
+        dismiss: () => (c.audio.micError = null),
+      });
+    }
+    return out;
+  });
   let scrollRegionScrolling = $state(false);
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Scroll-spy suppression: while a programmatic scroll (deeplink / rail click)
-  // is in flight, the IntersectionObserver must NOT fight it by re-deriving
-  // `activeSection` from intersection ratios mid-animation. The flag is raised
+  // is in flight, the scroll-spy must NOT fight it by re-deriving
+  // `activeSection` from section positions mid-animation. The flag is raised
   // by `focusSettingsSection` and cleared on a scroll-SETTLE signal — once the
   // region's `scrollTop` reaches the target anchor (`spySuppressTarget`) — with
   // the timer only an UPPER bound so suppression can never get stuck (a long
@@ -148,7 +194,7 @@
   }
 
   // Both scroll-spy timers are armed from event handlers (suppress-on-navigate
-  // and the onscroll is-scrolling flag), not from the IntersectionObserver
+  // and the onscroll is-scrolling flag), not from an
   // $effect, so that effect's cleanup never clears them. Clear on destroy so a
   // navigate-away mid-settle (e.g. "← Back to app" within the 700ms suppression
   // window) leaves no timer firing into a torn-down shell.
@@ -169,10 +215,12 @@
   function setSpyTarget(el: HTMLElement) {
     if (!scrollRegion) return;
     const maxTop = scrollRegion.scrollHeight - scrollRegion.clientHeight;
-    spySuppressTarget = Math.max(0, Math.min(el.offsetTop, maxTop));
+    const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
+    spySuppressTarget = Math.max(0, Math.min(el.offsetTop - margin, maxTop));
   }
 
   function handleScrollRegionScroll() {
+    scrolled = (scrollRegion?.scrollTop ?? 0) > 4;
     scrollRegionScrolling = true;
     if (scrollRegionScrollTimer !== null) clearTimeout(scrollRegionScrollTimer);
     scrollRegionScrollTimer = setTimeout(() => {
@@ -180,41 +228,40 @@
       scrollRegionScrollTimer = null;
     }, 800);
 
+    if (!scrollRegion) return;
     // Clear scroll-spy suppression on a settle signal: once the programmatic
-    // scroll has carried `scrollTop` to its target anchor, the observer is safe
-    // to drive `activeSection` again. This beats a blind timer for long smooth
-    // jumps (which can outlast the upper-bound timeout). Done before the tail
-    // short-circuit below so the freshly-settled section can be force-selected.
-    if (
-      spySuppressed &&
-      scrollRegion &&
-      isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)
-    ) {
-      clearSpySuppression();
+    // scroll has carried `scrollTop` to its target anchor, the spy may drive
+    // `activeSection` again. No re-derive on this event, so a clicked section
+    // that can't reach the line (target clamped at the bottom) stays lit.
+    if (spySuppressed) {
+      if (isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)) clearSpySuppression();
+      return;
     }
 
-    // Scroll-spy tail fix: when the region bottoms out, the last section's
-    // anchor can't reach the top detection band, so the IntersectionObserver
-    // leaves the highlight stuck on the second-to-last section. Force-select
-    // the tail here (unless a programmatic scroll is in flight).
-    if (
-      !spySuppressed &&
-      scrollRegion &&
-      isScrolledToBottom({
-        scrollHeight: scrollRegion.scrollHeight,
-        scrollTop: scrollRegion.scrollTop,
-        clientHeight: scrollRegion.clientHeight,
-      })
-    ) {
-      const last = lastSectionOfGroup(activeGroup);
-      if (last && last !== activeSection) activeSection = last;
-    }
+    // Scroll-spy: the section whose top has crossed a line just under the
+    // header, the last one at the bottom. Only the active group's panel is
+    // mounted, so these are its sections in render order.
+    const line = scrollRegion.getBoundingClientRect().top + SPY_LINE_PX;
+    const sections = [
+      ...scrollRegion.querySelectorAll<HTMLElement>('[id^="settings-section-"]'),
+    ].map((el) => ({
+      id: el.id.replace(/^settings-section-/, "") as SettingsSectionId,
+      top: el.getBoundingClientRect().top,
+    }));
+    const id = activeSectionAt(sections, line, isScrolledToBottom(scrollRegion));
+    if (id && id !== activeSection && groupForSection(id) === activeGroup) activeSection = id;
   }
 
   // Scroll a section's anchor into view after the group panel has mounted, and
   // record the settle target so suppression clears on arrival (not a blind timer).
   function scrollToSection(section: SettingsSectionId, smooth: boolean) {
     void tick().then(() => {
+      // A group's first section lands at the top, so the page head shows.
+      if (SETTINGS_GROUPS.some((g) => g.sections[0].id === section)) {
+        scrollRegion?.scrollTo({ top: 0, behavior: smooth ? "smooth" : "auto" });
+        spySuppressTarget = 0;
+        return;
+      }
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
       if (el) setSpyTarget(el);
@@ -249,6 +296,7 @@
     const section = resolveTabDeeplink(requestedTab);
     if (section) {
       focusSettingsSection(section, false);
+      if (!untrack(() => c.rec.recordingSettingsLoaded)) deeplinkAwaitingLoad = section;
     }
     const focus = resolveFocusDeeplink($page.url.searchParams.get("focus"));
     if (focus) {
@@ -264,97 +312,24 @@
     }
   });
 
+  // A deeplink to a lower section scrolls before recording settings arrive; the
+  // sections above it then grow and push it down. Re-scroll once they've loaded
+  // — unless the user has already scrolled elsewhere (scroll-spy moved on).
+  let deeplinkAwaitingLoad: SettingsSectionId | null = null;
+  $effect(() => {
+    if (!c.rec.recordingSettingsLoaded) return;
+    untrack(() => {
+      const section = deeplinkAwaitingLoad;
+      deeplinkAwaitingLoad = null;
+      if (section && activeSection === section) focusSettingsSection(section, false);
+    });
+  });
+
   // Reset scroll to top when the active group changes (matches legacy tabbed
   // settings: a fresh group starts at the top unless a deeplink scrolled it).
   $effect(() => {
     activeGroup;
     untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
-  });
-
-  // ─── Scroll-spy ─────────────────────────────────────────────────────────────
-  // Observe the `#settings-section-*` anchors inside the scroll region and set
-  // `activeSection` to the top-most visible one as the user scrolls. Re-armed on
-  // group change (only the active group's panel is mounted, so spy only moves
-  // `activeSection` within the current group). No-ops while suppression is active
-  // so it never fights a programmatic deeplink / rail-click scroll.
-  $effect(() => {
-    // Re-run when the group changes (its anchors mount) or the scroll region
-    // (re)attaches. Read both so the effect tracks them.
-    activeGroup;
-    const root = scrollRegion;
-    if (!root || typeof IntersectionObserver === "undefined") return;
-
-    let frame = 0;
-    // Each callback reports only the entries that changed, so accumulate the
-    // latest intersection state per element and re-derive the top-most one.
-    const intersecting = new Set<HTMLElement>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          const el = e.target as HTMLElement;
-          if (e.isIntersecting) intersecting.add(el);
-          else intersecting.delete(el);
-        }
-        if (spySuppressed) return;
-        // Coalesce to the next frame: pick the top-most intersecting section.
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-          if (spySuppressed || intersecting.size === 0) return;
-          // At the bottom, the tail section can't reach the top detection band;
-          // the scroll handler force-selects it, so don't override it back to a
-          // mid-band section here. Only short-circuit when the region is actually
-          // scrollable — a short group that fits the viewport is permanently
-          // "bottomed out", which would freeze the highlight on the entry
-          // section; let it fall through to the top-most-intersecting selection.
-          if (
-            isScrollable({
-              scrollHeight: root.scrollHeight,
-              clientHeight: root.clientHeight,
-            }) &&
-            isScrolledToBottom({
-              scrollHeight: root.scrollHeight,
-              scrollTop: root.scrollTop,
-              clientHeight: root.clientHeight,
-            })
-          )
-            return;
-          // Top-most = smallest top offset relative to the root.
-          const rootTop = root.getBoundingClientRect().top;
-          let top: HTMLElement | null = null;
-          let topDelta = Infinity;
-          for (const el of intersecting) {
-            const delta = el.getBoundingClientRect().top - rootTop;
-            if (delta < topDelta) {
-              topDelta = delta;
-              top = el;
-            }
-          }
-          const id = top?.id?.replace(/^settings-section-/, "") as
-            | SettingsSectionId
-            | undefined;
-          if (id && id !== activeSection && groupForSection(id) === activeGroup) {
-            activeSection = id;
-          }
-        });
-      },
-      // Bias toward the top of the viewport so a section is "active" once its
-      // head clears the top edge — matches the deeplink scroll target.
-      { root, rootMargin: "0px 0px -70% 0px", threshold: [0, 0.1, 0.5, 1] },
-    );
-
-    // The anchors live inside the just-mounted group panel; observe after tick.
-    void tick().then(() => {
-      for (const el of root.querySelectorAll<HTMLElement>(
-        '[id^="settings-section-"]',
-      )) {
-        observer.observe(el);
-      }
-    });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
   });
 
   // ─── Auto-save (shared engine) ──────────────────────────────────────────────
@@ -453,7 +428,6 @@
       void loadSemanticSearchModelStatus();
       void loadSemanticSearchSupportedModels();
       void loadPersonProfileCount();
-      loadDebugLogStatus();
       loadGeneralLogStatus();
       loadAppUpdateStatus();
       void loadThirdPartyNotices();
@@ -589,26 +563,18 @@
 </script>
 
 <!-- ── Settings shell ──────────────────────────────────────────────────────
-     A fixed left rail lists the 5 groups; only the right-hand content pane
-     scrolls. One group panel is mounted at a time, so the rail and window
-     chrome stay pinned. -->
+     Full-window focus mode (settings.html): a full-height rail on the left; on
+     the right a 52px drag header (crumb + save status) over the one scrolling
+     column. One group panel is mounted at a time. -->
 <div class="settings-shell">
-  <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
-       <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the rail's grouped sections. -->
-  <h1 class="settings-page-title">Settings</h1>
   <SettingsRail
     {activeGroup}
     {activeSection}
     onNavigate={(section) => focusSettingsSection(section)}
   />
 
-  <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
-    <AppPrivacyExclusionPrompt
-      controller={c.appPrivacyExclusion}
-      onReview={() => focusSettingsSection("privacy")}
-    />
+    <SettingsBar {activeGroup} {activeSection} scrolled={scrolled} />
 
     <div
       class="settings-scroll"
@@ -616,45 +582,72 @@
       bind:this={scrollRegion}
       onscroll={handleScrollRegionScroll}
     >
-      {#if activeGroup === "general"}
-        <GeneralPanel />
-      {:else if activeGroup === "capture"}
-        <CapturePanel />
-      {:else if activeGroup === "intelligence"}
-        <IntelligencePanel />
-      {:else if activeGroup === "data"}
-        <DataPanel />
-      {:else if activeGroup === "about"}
-        <AboutPanel />
-      {/if}
+      <div class="settings-page">
+        <header class="settings-page__head">
+          <h1 class="mx-h1">{activeGroupInfo.label}</h1>
+          <p class="mx-prose">{activeGroupInfo.description}</p>
+        </header>
+
+        <!-- Autosave failures: the header shows one line; the message and its
+             actions live here. Recording gets Retry (re-runs the failed domain
+             save) + Dismiss (puts the last saved value back); shortcuts and the
+             microphone re-attempt on their own, so they only offer Dismiss. -->
+        {#each saveErrors as err (err.title)}
+          <div class="mx-notice settings-page__notice" data-tone="danger" role="alert">
+            <span class="mx-notice__icon"><IconAlert width="15" height="15" aria-hidden="true" /></span>
+            <b class="mx-notice__title">{err.title}</b>
+            <p class="mx-notice__text">{err.message}</p>
+            <div class="mx-notice__acts">
+              {#if err.retry}
+                <button class="mx-btn mx-btn--sm" type="button" onclick={err.retry}>
+                  <IconRetry width="12" height="12" aria-hidden="true" />Retry
+                </button>
+              {/if}
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={err.dismiss}>Dismiss</button>
+            </div>
+          </div>
+        {/each}
+
+        <AppPrivacyExclusionPrompt
+          controller={c.appPrivacyExclusion}
+          onReview={() => focusSettingsSection("privacy")}
+        />
+
+        {#if activeGroup === "general"}
+          <GeneralPanel />
+        {:else if activeGroup === "capture"}
+          <CapturePanel />
+        {:else if activeGroup === "intelligence"}
+          <IntelligencePanel />
+        {:else if activeGroup === "data"}
+          <DataPanel />
+        {:else if activeGroup === "about"}
+          <AboutPanel />
+        {/if}
+      </div>
     </div>
   </div>
 </div>
 
 <style>
-  /* The shell root rule lives here (its element is in this template); all other
-     settings CSS is the shared, `.settings-shell`-namespaced
-     lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
+  /* The shell root rule lives here (its element is in this template); the
+     content + scroll rules are in lib/settings/settings-layout.css. */
   .settings-shell {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    gap: 18px;
   }
 
-  /* Visually-hidden page heading — present in the AT accessibility tree as the
-     route's <h1> landmark, but removed from the visual layout (the flex shell's
-     two columns are unaffected). */
-  .settings-page-title {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    clip-path: inset(50%);
-    white-space: nowrap;
-    border: 0;
+  .settings-page {
+    max-width: 760px;
+    padding-bottom: var(--s-8);
+  }
+  .settings-page__head {
+    display: grid;
+    gap: var(--s-2);
+    margin-bottom: var(--s-6);
+  }
+  .settings-page__notice {
+    margin-bottom: var(--s-5);
   }
 </style>

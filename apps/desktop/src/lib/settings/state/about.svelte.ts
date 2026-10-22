@@ -3,6 +3,7 @@
 // invokes; pure label/format helpers are exported standalone for the panel.
 
 import { invoke } from "@tauri-apps/api/core";
+import { hourCycle } from "$lib/time-format";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
@@ -86,7 +87,7 @@ export function formatUpdateDate(value: string | null | undefined): string | nul
 export function formatCheckedAt(value: number | null | undefined): string {
   if (!value) return "Not checked yet";
   return new Date(value).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hourCycle: hourCycle(),
   });
 }
 

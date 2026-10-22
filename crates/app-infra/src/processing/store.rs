@@ -46,6 +46,10 @@ pub const SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY: &str = "speakerAnalysisPayload";
 /// before it can finish — never merely because a user quit the app a few times.
 pub(crate) const RECLAIM_ATTEMPT_CEILING: i64 = 10;
 
+/// `last_error` of the queued OCR jobs failed in bulk when the user turns OCR
+/// off. A cancellation by choice, so it isn't a recent failure.
+pub(crate) const OCR_DISABLED_ERROR: &str = "OCR is disabled";
+
 /// Maximum number of genuine failures (tracked by `failure_count`) a failed **OCR Job** may
 /// accumulate before it is left terminally failed. A transient OCR failure on a frame that a
 /// later equivalent frame deferred to (via OCR Fallback Eligibility) is bounded-retried so the
@@ -257,6 +261,20 @@ pub struct FocusedFrameWindow {
 pub struct ProcessingStore {
     db: CaptureDb,
 }
+
+/// The query behind `list_nonterminal_ocr_references_for_workspace`, shared
+/// with `frame_pipeline_plan_check`.
+pub(crate) const WORKSPACE_OCR_JOBS_SQL: &str = "\
+    SELECT \
+       frames.id AS frame_id, \
+       processing_jobs.id AS job_id, \
+       processing_jobs.status AS job_status \
+    FROM frames \
+    CROSS JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
+        AND processing_jobs.subject_type = ?3 \
+        AND processing_jobs.processor = ?4 \
+    WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
+    ORDER BY frames.id ASC, processing_jobs.id ASC";
 
 impl ProcessingStore {
     pub(crate) fn new(db: CaptureDb) -> Self {
@@ -679,27 +697,19 @@ impl ProcessingStore {
     ) -> Result<Vec<SegmentWorkspaceOcrReference>> {
         // Range bounds (not `LIKE`) so SQLite can use the `frames_file_path_idx`
         // index instead of a full table scan: range-scan `frames` by path prefix,
-        // then index into each frame's OCR jobs. See migration 0038.
-        let rows = sqlx::query(
-            "SELECT \
-                frames.id AS frame_id, \
-                processing_jobs.id AS job_id, \
-                processing_jobs.status AS job_status \
-             FROM frames \
-             INNER JOIN processing_jobs ON processing_jobs.subject_id = frames.id \
-                 AND processing_jobs.subject_type = ?3 \
-                 AND processing_jobs.processor = ?4 \
-             WHERE frames.file_path >= ?1 AND frames.file_path < ?2 \
-             ORDER BY frames.id ASC, processing_jobs.id ASC",
-        )
-        .bind(workspace_prefix)
-        .bind(crate::frame_batch_store::workspace_path_prefix_upper_bound(
-            workspace_prefix,
-        ))
-        .bind(super::FRAME_SUBJECT_TYPE)
-        .bind(super::OCR_PROCESSOR)
-        .fetch_all(self.db.read())
-        .await?;
+        // then index into each frame's OCR jobs. See migration 0038. `CROSS JOIN`
+        // pins that order: the app never runs `ANALYZE`, and with a plain `JOIN`
+        // the planner drove from `processing_jobs_subject_idx (subject_type=?)` —
+        // every frame OCR job ever, ~86 MB per call (2026-10-17 stmt-cost trace).
+        let rows = sqlx::query(WORKSPACE_OCR_JOBS_SQL)
+            .bind(workspace_prefix)
+            .bind(crate::frame_batch_store::workspace_path_prefix_upper_bound(
+                workspace_prefix,
+            ))
+            .bind(super::FRAME_SUBJECT_TYPE)
+            .bind(super::OCR_PROCESSOR)
+            .fetch_all(self.db.read())
+            .await?;
 
         let mut references = Vec::new();
         let mut seen_job_ids = std::collections::HashSet::new();
@@ -802,19 +812,30 @@ impl ProcessingStore {
         rows.into_iter().map(map_frame).collect()
     }
 
+    /// `exclude_lock_screen` drops lock-screen frames (time away, see
+    /// `user_context::lock_screen`) — the Journal reads their span as Away.
     pub async fn list_frame_summaries_in_range(
         &self,
         captured_at_start: &str,
         captured_at_end: &str,
+        exclude_lock_screen: bool,
     ) -> Result<Vec<FrameSummary>> {
+        let excluded_snapshot_ids = if exclude_lock_screen {
+            crate::user_context::lock_screen::lock_screen_snapshot_ids_json(self.db.read()).await?
+        } else {
+            "[]".to_string()
+        };
         let rows = sqlx::query(
             "SELECT id, captured_at \
              FROM frames \
              WHERE captured_at >= ?1 AND captured_at <= ?2 \
+               AND (metadata_snapshot_id IS NULL \
+                    OR metadata_snapshot_id NOT IN (SELECT value FROM json_each(?3))) \
              ORDER BY captured_at DESC, id DESC",
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
+        .bind(excluded_snapshot_ids)
         .fetch_all(self.db.read())
         .await?;
 
@@ -999,6 +1020,7 @@ impl ProcessingStore {
                     SUM(status = 'failed') AS failed, \
                     SUM(CASE WHEN status = 'failed' \
                               AND finished_at >= datetime('now', '-24 hours') \
+                              AND last_error IS NOT ?1 \
                              THEN 1 ELSE 0 END) AS failed_last_24h, \
                     AVG(CASE WHEN status = 'completed' \
                               AND started_at IS NOT NULL \
@@ -1009,6 +1031,7 @@ impl ProcessingStore {
              GROUP BY processor \
              ORDER BY processor ASC",
         )
+        .bind(OCR_DISABLED_ERROR)
         .fetch_all(self.db.read())
         .await?;
 
@@ -1830,7 +1853,7 @@ impl ProcessingStore {
                     )
                 }
                 capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-                    capture_runtime::debug_log!(
+                    capture_runtime::warn_log!(
                         "[app-infra] quarantined frame {} during equivalence backfill: {}",
                         frame_id,
                         error
@@ -2051,19 +2074,28 @@ impl ProcessingStore {
         Ok(job)
     }
 
-    /// Test-only: clear a job's retry backoff so the automatic queue drain treats
-    /// it as immediately eligible again, simulating the backoff window elapsing
-    /// without waiting in wall-clock time.
+    /// Clear a queued job's retry backoff so the next queue drain may claim it right away.
+    /// Returns `false` when no queued job with that id exists (a failed job goes through
+    /// reprocess instead). Leaves `failure_count`, `attempt_count` and model locks alone.
+    pub async fn clear_processing_job_backoff(&self, job_id: i64) -> Result<bool> {
+        let cleared = sqlx::query(
+            "UPDATE processing_jobs \
+             SET next_attempt_at = NULL, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'queued'",
+        )
+        .bind(job_id)
+        .execute(self.db.write())
+        .await?;
+        Ok(cleared.rows_affected() > 0)
+    }
+
+    /// Test-only: simulate the backoff window elapsing without waiting in wall-clock time.
     #[cfg(test)]
     pub(crate) async fn expire_processing_job_retry_backoff_for_test(
         &self,
         job_id: i64,
     ) -> Result<()> {
-        sqlx::query("UPDATE processing_jobs SET next_attempt_at = NULL WHERE id = ?1")
-            .bind(job_id)
-            .execute(self.db.write())
-            .await?;
-        Ok(())
+        self.clear_processing_job_backoff(job_id).await.map(|_| ())
     }
 
     pub async fn complete_job(
@@ -4039,6 +4071,28 @@ mod tests {
         });
     }
 
+    /// Jobs failed in bulk because the user turned OCR off are a choice, not a failure: they
+    /// stay in the lifetime total but don't light the recent-failure signal.
+    #[test]
+    fn pipeline_status_skips_ocr_disabled_cancellations_in_recent_failures() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+            seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
+            store
+                .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, OCR_DISABLED_ERROR)
+                .await
+                .expect("queued OCR jobs should fail");
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+            let ocr = status_for(&statuses, OCR_PROCESSOR);
+            assert_eq!(ocr.failed, 1);
+            assert_eq!(ocr.failed_last_24h, 0);
+        });
+    }
+
     /// Average duration is over jobs *completed* in the window: an out-of-window completion must
     /// not drag the average, and a failed job's duration must not be averaged in at all.
     #[test]
@@ -4987,6 +5041,56 @@ mod tests {
             assert_eq!(claimed.id, job.id);
             assert_eq!(claimed.failure_count, 0);
             assert_eq!(claimed.attempt_count, 1);
+        });
+    }
+
+    /// "Retry now" in the developer window: a queued job waiting out a backoff becomes claimable
+    /// at once, while a failed job is left for reprocess.
+    #[test]
+    fn retry_now_clears_a_queued_backoff_but_leaves_a_failed_job() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            sqlx::query(
+                "UPDATE processing_jobs SET next_attempt_at = datetime(CURRENT_TIMESTAMP, '+1 hour') WHERE id = ?1",
+            )
+            .bind(job.id)
+            .execute(store.db.write())
+            .await
+            .expect("backoff should be set");
+            assert!(store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed")
+                .is_none());
+
+            assert!(store
+                .clear_processing_job_backoff(job.id)
+                .await
+                .expect("clear should succeed"));
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed")
+                .expect("job should be claimable once the backoff is cleared");
+            assert_eq!(claimed.id, job.id);
+
+            let failed = store
+                .mark_job_failed(job.id, Some("engine exploded"))
+                .await
+                .expect("mark_job_failed should succeed");
+            assert!(!store
+                .clear_processing_job_backoff(job.id)
+                .await
+                .expect("clear should succeed"));
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(after.status, ProcessingJobStatus::Failed);
+            assert_eq!(after.failure_count, failed.failure_count);
+            assert_eq!(after.attempt_count, failed.attempt_count);
         });
     }
 

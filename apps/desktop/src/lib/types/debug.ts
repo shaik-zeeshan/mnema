@@ -1,14 +1,10 @@
-// Debug-page wire types.
+// Developer-window wire types.
 //
 // Hand-mirrored from Rust per repo convention (no codegen). Sources:
 //   • `DebugSeverity` / `DebugFeature` / `FeatureHealthDto`
 //       → apps/desktop/src-tauri/src/debug_health.rs
-//   • `AppLogFile` / `AppLogTailDto`
+//   • `AppLogTailDto`
 //       → apps/desktop/src-tauri/src/debug_status.rs (tail_app_log)
-//   • `CapturePrivacyDebugInfo`
-//       → apps/desktop/src-tauri/src/native_capture/metadata.rs (get_capture_privacy_debug)
-//   • `OcrBudgetDebug` + its events
-//       → apps/desktop/src-tauri/src/ocr_budget.rs (get_ocr_budget_debug)
 //   • `ProcessorPipelineStatus` / `ProcessingJobListing`
 //       → crates/app-infra/src/processing/store.rs
 //         (get_processing_pipeline_status / list_processing_jobs_by_processor)
@@ -19,42 +15,38 @@
 //   • `AskAiTokenUsage`
 //       → apps/desktop/src-tauri/src/ask_ai.rs (get_ask_ai_last_turn_usage)
 //
-// The privacy/OCR shapes were page-local `type` aliases inside
-// routes/debug/+page.svelte before the slice-5 split; they moved here verbatim
-// because the section components and the state stores both need them now.
-
 import type { ProcessingJobDto, ProcessingJobStatus } from "./app-infra";
 
-/** Dock health dot. Wire: serde `rename_all = "camelCase"` over the Rust enum. */
-export type DebugSeverity = "ok" | "warn" | "error";
+/** A health row's tone. UI: `error` renders as danger; the rest keep their name. */
+export type DebugSeverity = "ok" | "info" | "warn" | "error" | "off";
 
-/**
- * A debug section that has a health rollup. Note there are **9** of these but
- * **11** sections — `health` and `logs` have no health entry (see
- * `lib/debug/sections.ts`, where `healthFeature` is nullable).
- */
+/** One health row. `get_debug_health` always returns all 12, in this order. */
 export type DebugFeature =
-	| "capture"
-	| "privacy"
-	| "ocr"
+	| "screen"
+	| "microphone"
+	| "systemAudio"
+	| "reading"
 	| "transcription"
-	| "diarization"
-	| "embeddings"
-	| "aiRuntime"
+	| "speakers"
+	| "meaningIndex"
+	| "aiEngine"
 	| "userContext"
-	| "jobsAndStorage";
+	| "disk"
+	| "cliAccess"
+	| "startup";
 
 export interface FeatureHealthDto {
 	feature: DebugFeature;
 	severity: DebugSeverity;
-	/** Short plain-language sentence — rendered in the dock tooltip. */
+	/** One plain sentence ("Deepgram can’t be reached, retrying on its own"). */
 	reason: string;
+	/** Short right-column text ("14 waiting", "182 GB", "3rd today", "1.8 s"). */
+	metric: string | null;
+	/** When set, render a local HH:MM instead of `metric` (AI engine, User Context). */
+	metricAtMs: number | null;
 }
 
 // ─── Log tail (tail_app_log) ───────────────────────────────────────────────
-
-/** The two logs the app writes. Wire: serde `rename_all = "camelCase"`. */
-export type AppLogFile = "rust" | "nativeCapture";
 
 export interface AppLogTailDto {
 	/** Resolved on-disk path — shown so the reader knows where this came from. */
@@ -68,91 +60,6 @@ export interface AppLogTailDto {
 	exists: boolean;
 	/** Up to the requested line count, oldest first. Empty when missing. */
 	lines: string[];
-}
-
-// ─── Privacy filter debug (get_capture_privacy_debug) ──────────────────────
-
-export interface PrivacyFilterDecision {
-	excludedBundleIds: string[];
-	excludedBundleSourceIds?: Record<string, string>;
-	matchedRuleIds: string[];
-	metadataRedactionReason: string | null;
-	privacyFilterApplied: boolean;
-}
-
-export interface CapturePrivacyDebugInfo {
-	metadataEnabled: boolean;
-	browserUrlMode: string;
-	browserUrlMetadataSource: string;
-	privacyDebug: {
-		latestSnapshot: {
-			appBundleId: string | null;
-			appName: string | null;
-			windowTitle: string | null;
-			browserUrl: string | null;
-			displayId: number | null;
-			metadataRedactionReason: string | null;
-			metadataRedactionSourceId: string | null;
-		} | null;
-		latestDecision: PrivacyFilterDecision;
-		latestAppliedDecision: PrivacyFilterDecision;
-		currentlyExcludedBundleIds: string[];
-		privacyFilterApplied: boolean;
-	};
-}
-
-// ─── OCR budget debug (get_ocr_budget_debug) ───────────────────────────────
-
-export interface OcrAdmissionSignals {
-	firstCandidateInScope: boolean;
-	contextChanged: boolean;
-	lowQueuePressure: boolean;
-	representativeDue: boolean;
-	highQueuePressure: boolean;
-	fingerprintNovelInScope: boolean;
-	noveltyAdmissionAvailable: boolean;
-}
-
-export interface OcrAdmissionDebugEvent {
-	occurredAt: string;
-	sessionId: string;
-	workspaceScope: string;
-	frameId: number;
-	outcome: string;
-	reason: string;
-	queuePressureCount: number;
-	recordingActive: boolean;
-	jobId: number | null;
-	relatedFrameId: number | null;
-	signals: OcrAdmissionSignals;
-}
-
-export interface OcrExecutionDebugEvent {
-	occurredAt: string;
-	jobId: number;
-	frameId: number | null;
-	provider: string;
-	modelId: string | null;
-	recognitionMode: string | null;
-	status: string;
-	runDurationMs: number;
-	queueWaitMs: number | null;
-	resultTextLength: number | null;
-	observationCount: number | null;
-	lastError: string | null;
-}
-
-export interface OcrBudgetDebug {
-	summary: {
-		queuedOrRunningCount: number;
-		executionState: string;
-		cooldownRemainingMs: number;
-		lastRunDurationMs: number | null;
-		lastRunStatus: string | null;
-		lastPacingMode: string | null;
-	};
-	admissionEvents: OcrAdmissionDebugEvent[];
-	executionEvents: OcrExecutionDebugEvent[];
 }
 
 // ─── Pipeline status (get_processing_pipeline_status) ──────────────────────
@@ -212,9 +119,9 @@ export interface ProcessingJobListing extends ProcessingJobDto {
 	 * `status === "queued" && modelLocked` is the "Preparing" state: waiting for its model rather
 	 * than queued behind other work.
 	 *
-	 * Lives HERE, not on `ProcessingJobDto`: Rust resolves it on the listing wrapper
-	 * (`ProcessingJobListing`, `crates/app-infra/src/processing/store.rs`), not on the domain
-	 * `ProcessingJob` — so `get_processing_job` / `list_processing_jobs` never send it.
+	 * Also on `ProcessingJobDto` now: the desktop commands (`get_processing_job`,
+	 * `list_processing_jobs`, `retry_processing_job_now`) resolve it too. Here the
+	 * listing wrapper (`crates/app-infra/src/processing/store.rs`) resolves it.
 	 */
 	modelLocked: boolean;
 }
@@ -304,4 +211,66 @@ export interface AskAiTokenUsage {
 	toolCalls: number;
 	/** Loop start → usage report, ms (within a stream-tail of the full turn). */
 	durationMs: number;
+}
+
+// ─── Capture health (get_capture_health) ───────────────────────────────────
+
+export type CaptureSourceState = "off" | "recording" | "paused" | "waiting" | "reconnecting" | "failed";
+
+export interface CaptureSourceHealth {
+	requested: boolean;
+	state: CaptureSourceState;
+	/** Raw reason code, e.g. `capture_display_unavailable`, `inactivity`, `not_requested`. */
+	reason: string | null;
+	/** dBFS from the normalized peak, clamped to −60; audio only. */
+	levelDb: number | null;
+	idleMs: number | null;
+	/** Not cheaply known today: always `null`. */
+	deviceName: string | null;
+}
+
+export interface CaptureSuspensionHealth {
+	kind: "privacyFilter" | "displayUnavailable" | "lowDisk";
+	reason: string;
+	recoveryAttempts: number;
+	restartRequired: boolean;
+	sinceMs: number | null;
+	lastErrorMessage: string | null;
+}
+
+export type SystemAudioTapRebuildReason =
+	| "deviceChanged"
+	| "deviceDied"
+	| "sampleRateChanged"
+	| "excludeListMoved"
+	| "silenceWatchdog";
+
+export interface SystemAudioTapHealth {
+	/** Since local midnight, within this app run (resets on relaunch). */
+	rebuildsToday: number;
+	lastReason: SystemAudioTapRebuildReason | null;
+	lastRebuildAtMs: number | null;
+	/** e.g. "48000 → 16000 Hz" after a sample-rate rebuild. */
+	lastDetail: string | null;
+	nextSilenceCheckInMs: number | null;
+	watchdogDelayMs: number | null;
+	sampleRateHz: number | null;
+}
+
+export interface CaptureHealthDto {
+	recording: boolean;
+	startedAtMs: number | null;
+	screen: CaptureSourceHealth;
+	microphone: CaptureSourceHealth;
+	systemAudio: CaptureSourceHealth;
+	suspension: CaptureSuspensionHealth | null;
+	/** `null` while no system-audio session is live. */
+	systemAudioTap: SystemAudioTapHealth | null;
+	disk: {
+		freeBytes: number | null;
+		reserveFloorBytes: number;
+		/** `null` while not recording. */
+		pauseThresholdBytes: number | null;
+		resumeThresholdBytes: number | null;
+	};
 }

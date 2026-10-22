@@ -41,6 +41,11 @@ impl CaptureIndexDatabaseKey {
         Self { passphrase }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(passphrase: &str) -> Self {
+        Self::new(passphrase.to_string())
+    }
+
     pub(crate) fn sqlcipher_pragma_value(&self) -> String {
         let escaped_key = self.passphrase.replace('\'', "''");
         format!("'{escaped_key}'")

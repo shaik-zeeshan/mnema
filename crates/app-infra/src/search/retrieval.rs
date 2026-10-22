@@ -91,6 +91,23 @@ pub(super) fn push_search_refinement_predicates(
         query.push_bind(range.end_at.clone());
         query.push(")");
     }
+    if let Some(window) = refinements.hours {
+        // ponytail: SQLite's `localtime` reads the process timezone — the zone
+        // chrono::Local resolves for `date:` (dates.rs) — per instant, so DST is
+        // right. A hit is placed by the hour it STARTS in.
+        const LOCAL_HOUR: &str =
+            "CAST(strftime('%H', search_documents.absolute_start_at, 'localtime') AS INTEGER)";
+        query.push(format!(" AND ({LOCAL_HOUR} >= "));
+        query.push_bind(i64::from(window.start_hour));
+        query.push(if window.start_hour < window.end_hour {
+            " AND "
+        } else {
+            " OR "
+        });
+        query.push(format!("{LOCAL_HOUR} < "));
+        query.push_bind(i64::from(window.end_hour));
+        query.push(")");
+    }
     if !refinements.apps.is_empty() {
         // Multiple `app:` operators accumulate with OR semantics: a frame
         // matches when its retained identity matches any of the apps.
@@ -197,18 +214,25 @@ fn sqlite_contains_like_pattern(value: &str) -> String {
 /// The dimension gate itself lives in the store seam (`knn_in_scope_anchors`),
 /// which returns a clean empty candidate set on a mismatch — so a mismatch never
 /// reaches this wrapper as an `Err`; only a real DB failure does.
-pub(super) fn degrade_to_keyword_only<T>(kind: &str, result: Result<Vec<T>>) -> Vec<T> {
+pub(super) fn degrade_to_keyword_only<T>(
+    kind: &str,
+    result: Result<Vec<T>>,
+    degraded: &mut bool,
+) -> Vec<T> {
     match result {
         Ok(hits) => hits,
         Err(error) => {
-            // Route the degrade through `debug_log!` — the same packaged-app log
+            // Reported on the response (`semantic_degraded`) so the page can say
+            // "keyword only" instead of silently returning fewer results.
+            *degraded = true;
+            // Route the degrade through `warn_log!` — the same packaged-app log
             // target the companion query-embed failure path uses on the desktop
             // side — rather than bare stderr, so a persistent semantic-tier
             // outage (a DB failure silently dropping hybrid to keyword-only) is
             // observable even when the packaged app does not capture stderr. It
             // is a degrade signal, never a user-facing error — search proceeds
             // keyword-only.
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[app-infra][search] semantic {kind} search degraded to keyword-only (semantic fetch failed: {error})"
             );
             Vec::new()
@@ -476,6 +500,7 @@ pub(super) async fn fetch_grouped_frame_hits(
     limit: u32,
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
+    semantic_degraded: &mut bool,
 ) -> Result<Vec<FrameSearchResult>> {
     // **Hybrid Search**: when a query vector is present, fetch the meaning-tier
     // candidates once (a bounded top-k `vec0` KNN) and RRF-fuse them into the
@@ -489,6 +514,7 @@ pub(super) async fn fetch_grouped_frame_hits(
         Some(embedding) => degrade_to_keyword_only(
             "frame",
             fetch_semantic_frame_hits(pool, embedding, snapshot_document_id, refinements).await,
+            semantic_degraded,
         ),
         None => Vec::new(),
     };
@@ -598,6 +624,7 @@ pub(super) async fn fetch_grouped_audio_hits(
     snapshot_document_id: i64,
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
+    semantic_degraded: &mut bool,
 ) -> Result<Vec<AudioSearchResult>> {
     // See `fetch_grouped_frame_hits`: the tier is the query's, not this list's.
     let hybrid = query_embedding.is_some();
@@ -605,6 +632,7 @@ pub(super) async fn fetch_grouped_audio_hits(
         Some(embedding) => degrade_to_keyword_only(
             "audio",
             fetch_semantic_audio_hits(pool, embedding, snapshot_document_id, refinements).await,
+            semantic_degraded,
         ),
         None => Vec::new(),
     };
@@ -902,6 +930,7 @@ mod tests {
                     audio_sources: Vec::new(),
                     screen_source: false,
                     speaker: None,
+                    hours: None,
                 };
                 async move {
                     infra
@@ -1958,6 +1987,7 @@ mod tests {
                         audio_sources: Vec::new(),
                         screen_source: false,
                         speaker: None,
+                        hours: None,
                     }),
                     // Query vector exactly on every out-of-scope anchor's vector, so
                     // a post-filter's top-`k` is all out-of-scope rows.

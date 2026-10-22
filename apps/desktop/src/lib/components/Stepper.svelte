@@ -1,4 +1,6 @@
 <script lang="ts">
+  import IconMinus from "~icons/lucide/minus";
+  import IconPlus from "~icons/lucide/plus";
   import { clampNumber, clampToRange, parseStepperRaw, stepRaw } from "./stepper-clamp";
 
   // `value` is a RAW STRING so it can flow upward unchanged into the settings
@@ -78,12 +80,12 @@
 <div class="stepper" class:stepper--disabled={disabled} class:stepper--invalid={invalid}>
   <button
     type="button"
-    class="step-btn"
+    class="mx-btn mx-btn--icon"
     disabled={disabled || atMin}
     aria-label={`Decrease${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(-1)}
   >
-    <span aria-hidden="true">−</span>
+    <IconMinus width="15" height="15" aria-hidden="true" />
   </button>
 
   <div class="field" class:field--has-unit={!!unit}>
@@ -92,8 +94,7 @@
       type="text"
       inputmode="numeric"
       role="spinbutton"
-      class="num-input"
-      class:num-input--invalid={invalid}
+      class="mx-input num"
       bind:value
       {placeholder}
       {disabled}
@@ -120,19 +121,20 @@
 
   <button
     type="button"
-    class="step-btn"
+    class="mx-btn mx-btn--icon"
     disabled={disabled || atMax}
     aria-label={`Increase${ariaLabel ? ` ${ariaLabel}` : ""}`}
     onclick={() => bump(1)}
   >
-    <span aria-hidden="true">+</span>
+    <IconPlus width="15" height="15" aria-hidden="true" />
   </button>
 </div>
 
 <style>
+  /* Flat kit pieces: mx-btn icon buttons around an mx-input. */
   .stepper {
     display: inline-flex;
-    align-items: stretch;
+    align-items: center;
     gap: 6px;
     min-width: 0;
   }
@@ -142,45 +144,6 @@
     pointer-events: none;
   }
 
-  .step-btn {
-    flex: 0 0 30px;
-    width: 30px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 16px;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .step-btn:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-
-  .step-btn:not(:disabled):active {
-    background: var(--app-surface-active);
-    transform: translateY(0.5px);
-  }
-
-  .step-btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .step-btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
   .field {
     position: relative;
     display: inline-flex;
@@ -188,71 +151,25 @@
     flex: 1 1 auto;
   }
 
-  .num-input {
+  .mx-input {
     width: 100%;
     min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
     text-align: center;
-    outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
   }
 
   /* leave room for the unit chip and left-align the digits beside it */
-  .field--has-unit .num-input {
+  .field--has-unit .mx-input {
     padding-right: 52px;
     text-align: left;
-  }
-
-  .num-input::placeholder {
-    color: var(--app-text-faint);
-  }
-
-  .num-input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
-  }
-
-  .num-input--invalid {
-    border-color: var(--app-danger);
-  }
-
-  .num-input--invalid:focus {
-    border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
-  }
-
-  .num-input:disabled {
-    cursor: not-allowed;
   }
 
   .unit-chip {
     position: absolute;
     top: 50%;
-    right: 8px;
+    right: var(--s-3);
     transform: translateY(-50%);
-    color: var(--app-text-faint);
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
+    font: 500 var(--text-xs)/1 var(--font-mono);
+    color: var(--app-text-subtle);
     pointer-events: none;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .step-btn,
-    .num-input {
-      transition: none;
-    }
   }
 </style>

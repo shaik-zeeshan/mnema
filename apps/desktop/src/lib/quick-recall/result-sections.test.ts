@@ -2,97 +2,76 @@
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
 import {
-  AUDIO_VISIBLE_CAP,
-  FRAME_VISIBLE_CAP,
+  mergeByRank,
+  momentBreakdown,
+  momentTime,
   moreRowLabel,
-  remapSelection,
   visibleCount,
 } from "./result-sections";
 
-describe("visibleCount", () => {
-  test("below the cap renders everything", () => {
-    expect(visibleCount(5, FRAME_VISIBLE_CAP, false)).toBe(5);
+const frame = (id, rank, at = "2026-10-06T10:00:00Z") => ({ groupKey: `f${id}`, rank, groupStartAt: at });
+const clip = (id, rank, at = "2026-10-06T10:00:00Z") => ({ groupKey: `a${id}`, rank, absoluteStartAt: at });
+const keys = (list) => list.map((r) => (r.kind === "frame" ? r.frame.groupKey : r.audio.groupKey));
+
+describe("mergeByRank", () => {
+  test("lower rank first across kinds, each list's order kept", () => {
+    const merged = mergeByRank([frame(1, -9), frame(2, -3), frame(3, -1)], [clip(1, -7), clip(2, -2)]);
+    expect(keys(merged)).toEqual(["f1", "a1", "f2", "a2", "f3"]);
   });
 
-  test("at the cap renders everything", () => {
-    expect(visibleCount(8, FRAME_VISIBLE_CAP, false)).toBe(8);
+  test("a rank tie goes to the newer start", () => {
+    expect(keys(mergeByRank([frame(1, -5, "2026-10-06T09:00:00Z")], [clip(1, -5, "2026-10-06T11:00:00Z")]))).toEqual(["a1", "f1"]);
+    expect(keys(mergeByRank([frame(1, -5, "2026-10-06T11:00:00Z")], [clip(1, -5, "2026-10-06T09:00:00Z")]))).toEqual(["f1", "a1"]);
   });
 
-  test("above the cap collapsed renders the cap", () => {
-    expect(visibleCount(24, FRAME_VISIBLE_CAP, false)).toBe(8);
-    expect(visibleCount(12, AUDIO_VISIBLE_CAP, false)).toBe(3);
+  test("a full tie goes to the frame", () => {
+    expect(keys(mergeByRank([frame(1, -5)], [clip(1, -5)]))).toEqual(["f1", "a1"]);
   });
 
-  test("above the cap expanded renders everything", () => {
-    expect(visibleCount(24, FRAME_VISIBLE_CAP, true)).toBe(24);
-  });
-
-  test("empty section renders nothing either way", () => {
-    expect(visibleCount(0, FRAME_VISIBLE_CAP, false)).toBe(0);
-    expect(visibleCount(0, FRAME_VISIBLE_CAP, true)).toBe(0);
-  });
-});
-
-describe("moreRowLabel", () => {
-  test("no row when the section fits its cap", () => {
-    expect(moreRowLabel(8, FRAME_VISIBLE_CAP, false, "screen")).toBeNull();
-    expect(moreRowLabel(0, AUDIO_VISIBLE_CAP, false, "audio")).toBeNull();
-  });
-
-  test("collapsed overflow shows the hidden count (mockup wording)", () => {
-    expect(moreRowLabel(24, FRAME_VISIBLE_CAP, false, "screen")).toBe(
-      "↓ show 16 more screen results",
-    );
-    expect(moreRowLabel(4, AUDIO_VISIBLE_CAP, false, "audio")).toBe(
-      "↓ show 1 more audio results",
-    );
-  });
-
-  test("expanded overflow shows the collapse toggle", () => {
-    expect(moreRowLabel(24, FRAME_VISIBLE_CAP, true, "screen")).toBe("↑ show less");
+  test("one kind empty passes the other through", () => {
+    expect(keys(mergeByRank([], [clip(1, 1), clip(2, 2)]))).toEqual(["a1", "a2"]);
+    expect(keys(mergeByRank([frame(1, 1)], []))).toEqual(["f1"]);
+    expect(mergeByRank([], [])).toEqual([]);
   });
 });
 
-describe("remapSelection", () => {
-  // Index space: visible frames first, then visible audio.
-  test("no selection stays unselected", () => {
-    expect(remapSelection(-1, { frames: 24, audio: 3 }, { frames: 8, audio: 3 })).toBe(-1);
+describe("show more", () => {
+  test("one cap of 8, expanded shows everything", () => {
+    expect(visibleCount(5, false)).toBe(5);
+    expect(visibleCount(36, false)).toBe(8);
+    expect(visibleCount(36, true)).toBe(36);
   });
 
-  test("everything gone yields -1", () => {
-    expect(remapSelection(2, { frames: 8, audio: 3 }, { frames: 0, audio: 0 })).toBe(-1);
+  test("label only when the list overflows", () => {
+    expect(moreRowLabel(8, false)).toBeNull();
+    expect(moreRowLabel(36, false)).toBe("↓ show 28 more");
+    expect(moreRowLabel(36, true)).toBe("↑ show less");
+  });
+});
+
+describe("momentTime", () => {
+  const now = new Date(2026, 9, 9, 18, 0);
+  const time = (d) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+  test("today is just the time", () => {
+    const at = new Date(2026, 9, 9, 14, 12);
+    expect(momentTime(at, now)).toBe(time(at));
   });
 
-  test("still-visible frame keeps its position", () => {
-    expect(remapSelection(5, { frames: 24, audio: 3 }, { frames: 8, audio: 3 })).toBe(5);
+  test("this week adds the weekday", () => {
+    const at = new Date(2026, 9, 6, 14, 12);
+    expect(momentTime(at, now)).toBe(`${at.toLocaleDateString(undefined, { weekday: "short" })} ${time(at)}`);
   });
 
-  test("frame hidden by collapse clamps to the last visible frame", () => {
-    expect(remapSelection(20, { frames: 24, audio: 3 }, { frames: 8, audio: 3 })).toBe(7);
+  test("older is the date", () => {
+    const at = new Date(2026, 8, 20, 9, 0);
+    expect(momentTime(at, now)).toBe(at.toLocaleDateString(undefined, { month: "short", day: "numeric" }));
   });
+});
 
-  test("frame section emptying clamps to the first remaining row", () => {
-    expect(remapSelection(3, { frames: 8, audio: 3 }, { frames: 0, audio: 3 })).toBe(0);
-  });
-
-  test("audio selection survives a frame-section collapse (index shifts)", () => {
-    // Audio position 1: index 24+1 → 8+1.
-    expect(remapSelection(25, { frames: 24, audio: 3 }, { frames: 8, audio: 3 })).toBe(9);
-  });
-
-  test("audio selection survives an audio expand", () => {
-    expect(remapSelection(8 + 2, { frames: 8, audio: 3 }, { frames: 8, audio: 12 })).toBe(10);
-  });
-
-  test("audio hidden by collapse clamps to the last visible row", () => {
-    expect(remapSelection(8 + 10, { frames: 8, audio: 12 }, { frames: 8, audio: 3 })).toBe(10);
-  });
-
-  test("audio section emptying clamps to the last visible frame", () => {
-    expect(remapSelection(8 + 1, { frames: 8, audio: 3 }, { frames: 8, audio: 0 })).toBe(7);
-  });
-
-  test("out-of-range selection clamps into the new space", () => {
-    expect(remapSelection(50, { frames: 8, audio: 3 }, { frames: 8, audio: 3 })).toBe(10);
+describe("momentBreakdown", () => {
+  test("a kind that hit its fetch cap reads N+, an uncapped one stays exact", () => {
+    expect(momentBreakdown(24, 12, 3, { frames: true, audio: false })).toBe("24+ screen · 12 audio · 3 days");
+    expect(momentBreakdown(5, 0, 1, { frames: false, audio: false })).toBe("5 screen · 1 day");
   });
 });

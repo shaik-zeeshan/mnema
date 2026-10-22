@@ -204,6 +204,15 @@ fn is_catching_up(derived_window: bool, forward_backlog_ms: i64) -> bool {
     derived_window && forward_backlog_ms > CATCHUP_BACKLOG_MS
 }
 
+/// Where an EMPTY backfill window's coverage starts — the backward twin of
+/// [`empty_window_jump_target`]: just above the latest earlier capture (so the
+/// next window ends on it), or the floor when nothing older exists (backfill
+/// done). Without it an empty night, or the days below the first capture, are
+/// walked 30 minutes per window. Always within `[floor, start]`.
+fn backfill_jump_start(start: i64, floor: i64, prev_capture: Option<i64>) -> i64 {
+    prev_capture.map_or(floor, |prev| prev + 1).max(floor).min(start)
+}
+
 /// The **History Backfill** floor (#98): how far back backfill is allowed to
 /// reach, newest-first. When **go-deeper** is on, the floor is the true earliest
 /// capture (`earliest_capture_at_ms`, all of history); otherwise it is the
@@ -258,9 +267,9 @@ pub struct ForwardWindowRun {
     pub changed: bool,
     /// Whether a forward window was actually *picked* this pass (i.e.
     /// `next_forward_window` returned a window). `false` means the forward catch-up
-    /// is caught up — there was no new recent window to derive — which is the signal
-    /// the worker uses to gate the backward **History Backfill** pass (newest-first:
-    /// backfill only runs when forward has nothing new). Note this is `true` even
+    /// is caught up — there was no new recent window to derive. Feeds
+    /// [`is_catching_up`], which gates both the catch-up cadence and the backward
+    /// **History Backfill** pass (newest-first). Note this is `true` even
     /// when the window read empty / derived zero Activities — what matters for the
     /// interleave is whether forward had ground to cover, not the yield.
     pub derived_window: bool,
@@ -465,8 +474,13 @@ pub async fn run_forward_activity_window(
                     gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
-            let message = if outcome.inserted == 0 {
-                "Derivation completed; no new Activities in this window.".to_string()
+            let message = if outcome.inserted == 0 && outcome.extended > 0 {
+                format!(
+                    "Extended {} ongoing {} from {} capture item(s).",
+                    outcome.extended,
+                    if outcome.extended == 1 { "Activity" } else { "Activities" },
+                    items_read
+                )
             } else {
                 format!(
                     "Derived {} {} from {} capture item(s).",
@@ -485,7 +499,7 @@ pub async fn run_forward_activity_window(
                 window_end_ms: end,
                 items_read,
                 message,
-                changed: outcome.inserted > 0,
+                changed: outcome.inserted + outcome.extended > 0,
                 derived_window: true,
             }
         }
@@ -530,7 +544,8 @@ enum BackfillStep {
     /// A window was read but had no captures; a `skipped` run advanced the
     /// cursor. Keep going (more windows may have content).
     Advanced,
-    /// A window was derived (≥1 Activity), recorded as a completed run.
+    /// A window was derived (≥1 Activity inserted or extended), recorded as a
+    /// completed run.
     Derived,
     /// A window read empty-of-engine-work or failed; the outcome was still
     /// recorded via a run. Keep going.
@@ -549,6 +564,7 @@ async fn derive_window_and_record(
     kind: &str,
     start: i64,
     end: i64,
+    jump_floor_ms: Option<i64>,
     provider_label: Option<String>,
     model_label: Option<String>,
 ) -> BackfillStep {
@@ -577,8 +593,16 @@ async fn derive_window_and_record(
     };
 
     // No captures in this window: record a `skipped` run to advance the cursor
-    // (and, for a retry, extinguish the hole — the captures are gone).
+    // (and, for a retry, extinguish the hole — the captures are gone). Backfill
+    // stretches the skipped run down to the next older capture in one step.
     if window.items.is_empty() {
+        let start = match jump_floor_ms {
+            Some(floor) => store
+                .prev_raw_capture_before_ms(start)
+                .await
+                .map_or(start, |prev| backfill_jump_start(start, floor, prev)),
+            None => start,
+        };
         let _ = store
             .insert_derivation_run(NewDerivationRun {
                 kind: kind.to_string(),
@@ -624,7 +648,7 @@ async fn derive_window_and_record(
                     gate_drops: DistillationGateDrops::default(),
                 })
                 .await;
-            if outcome.inserted > 0 {
+            if outcome.inserted + outcome.extended > 0 {
                 BackfillStep::Derived
             } else {
                 BackfillStep::NoChange
@@ -683,6 +707,7 @@ async fn run_backfill_window(
         "backfill",
         start,
         end,
+        Some(floor_ms),
         provider_label,
         model_label,
     )
@@ -783,6 +808,7 @@ async fn run_failed_window_retry_pass(
             &window.kind,
             window.window_start_ms,
             window.window_end_ms,
+            None,
             provider_label.clone(),
             model_label.clone(),
         )
@@ -790,7 +816,7 @@ async fn run_failed_window_retry_pass(
         if step == BackfillStep::Derived {
             derived_anything = true;
         }
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log_warn(format!(
             "user context worker retried failed window [{},{}] (attempt {} of {}): {:?}",
             window.window_start_ms,
             window.window_end_ms,
@@ -802,14 +828,15 @@ async fn run_failed_window_retry_pass(
     derived_anything
 }
 
-/// Run Conclusion distillation on the slower beat once every this many
-/// successful Activity ticks, so the dossier (expensive, occasional) re-distills
-/// less often than the diary (cheap, frequent). A distillation also runs early
-/// whenever the Activity count has grown since the last one (see [`WorkerCadence`]).
-const CONCLUSION_EVERY_K_ACTIVITY_TICKS: u32 = 3;
+/// Conclusion distillation runs at most once per this interval, and only when
+/// an Activity was inserted or extended since the last successful pass, so the
+/// dossier (expensive, occasional) re-distills far less often than the diary
+/// (cheap, frequent). Each pass sends only what changed (`distill_conclusions`).
+/// The manual run-now command bypasses this throttle.
+const CONCLUSION_MIN_INTERVAL_MS: i64 = 30 * 60 * 1000;
 
 /// Run the confidence-decay beat once every this many ticks. This is the
-/// *slowest* beat (M ≥ K, the Conclusion beat): confidence fades on a 30-day
+/// *slowest* beat: confidence fades on a 30-day
 /// half-life, so re-evaluating decay only every few ticks is plenty, and decay
 /// uses **no LLM** (it is pure local math). Counting ticks (not successful
 /// Activity ticks) means the dossier keeps fading during quiet stretches even
@@ -824,34 +851,44 @@ const MAX_SNAPSHOTS_PER_CONCLUSION: i64 = 64;
 
 /// Cross-tick state for the slower Conclusion-distillation beat. The worker loop
 /// owns one of these and threads it through each tick. Activity derivation stays
-/// the frequent beat; this counts successful Activity ticks so distillation runs
-/// on a slower cadence (or sooner when new Activities have accumulated).
+/// the frequent beat; distillation is throttled to [`CONCLUSION_MIN_INTERVAL_MS`].
 #[derive(Debug, Default)]
 struct WorkerCadence {
-    /// Successful Activity ticks since the last distillation.
-    activity_ticks_since_distillation: u32,
-    /// `count_activities()` observed at the last distillation, so a tick can
-    /// distill early when the Activity total has grown.
-    last_distilled_activity_count: Option<i64>,
+    /// When the worker last attempted a distillation pass (failed ones too, so a
+    /// failing engine is not re-billed every tick). Seeded at worker start from
+    /// the last completed pass in the ledger, so a restart does not re-distill.
+    last_distillation_at_ms: Option<i64>,
+    /// The last pass succeeded but more changed Activities wait behind the
+    /// watermark than one pass sends (e.g. a History Backfill), so the next tick
+    /// distills again without waiting out [`CONCLUSION_MIN_INTERVAL_MS`].
+    distillation_backlog: bool,
     /// Ticks (of any kind, including idle-but-resolved ones that reach the
     /// decay check) since the last confidence-decay pass.
     ticks_since_decay: u32,
 }
 
 impl WorkerCadence {
-    /// Whether this tick should run a Conclusion distillation: every Kth
-    /// successful Activity tick, OR as soon as new Activities exist since the
-    /// last distillation.
-    fn should_distill(&self, current_activity_count: i64) -> bool {
-        let grew = self
-            .last_distilled_activity_count
-            .map(|last| current_activity_count > last)
-            .unwrap_or(current_activity_count > 0);
-        grew || self.activity_ticks_since_distillation >= CONCLUSION_EVERY_K_ACTIVITY_TICKS
+    /// Whether this tick should run a Conclusion distillation: only when an
+    /// Activity was inserted or extended since the last successful pass, and —
+    /// unless a backlog is draining — at most once per [`CONCLUSION_MIN_INTERVAL_MS`].
+    fn should_distill(&self, now_ms: i64, activities_changed: bool) -> bool {
+        activities_changed
+            && (self.distillation_backlog
+                || self
+                    .last_distillation_at_ms
+                    .is_none_or(|last| now_ms.saturating_sub(last) >= CONCLUSION_MIN_INTERVAL_MS))
+    }
+
+    /// Record a pass attempted at `now_ms`. A failed pass always waits the full
+    /// interval; a successful one drains back to back (one per tick, at the
+    /// worker's normal pacing) while changes remain behind the watermark.
+    fn record_distillation(&mut self, now_ms: i64, succeeded: bool, backlog_remaining: bool) {
+        self.last_distillation_at_ms = Some(now_ms);
+        self.distillation_backlog = succeeded && backlog_remaining;
     }
 
     /// Whether this tick should run the confidence-decay beat: every Mth tick.
-    /// Decay is the slowest beat (M ≥ K) and unconditional on new Activities —
+    /// Decay is the slowest beat and unconditional on new Activities —
     /// silence is precisely when a Conclusion should fade.
     fn should_decay(&self) -> bool {
         self.ticks_since_decay >= CONFIDENCE_DECAY_EVERY_M_TICKS
@@ -894,14 +931,14 @@ pub(crate) async fn run_conclusion_distillation(
                 })
                 .await;
             if outcome.upserted > 0 {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "user context worker distilled {} conclusion(s)",
                     outcome.upserted
                 ));
             }
             if outcome.gate_drops.total() > 0 {
                 let drops = outcome.gate_drops;
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "user context distillation withheld {} draft(s): {} ungrounded, \
                      {} guardrail-suppressed, {} below the formation bar, {} resurface-blocked",
                     drops.total(),
@@ -915,7 +952,7 @@ pub(crate) async fn run_conclusion_distillation(
             // separately from the "withheld N drafts" line so retirements are visible.
             let drops = outcome.gate_drops;
             if drops.superseded + drops.supersede_degraded + drops.supersede_blocked > 0 {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "user context supersede: {} retired, {} degraded, {} blocked",
                     drops.superseded, drops.supersede_degraded, drops.supersede_blocked,
                 ));
@@ -1016,7 +1053,7 @@ pub(crate) async fn run_confidence_decay(
             .update_conclusion_confidence(conclusion.id, decayed, status, now)
             .await
         {
-            crate::native_capture::debug_log::log_info(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "user context confidence decay: update failed for conclusion {}: {error}",
                 conclusion.id
             ));
@@ -1028,7 +1065,7 @@ pub(crate) async fn run_confidence_decay(
             .insert_confidence_snapshot(conclusion.id, decayed, now)
             .await
         {
-            crate::native_capture::debug_log::log_info(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "user context confidence decay: snapshot failed for conclusion {}: {error}",
                 conclusion.id
             ));
@@ -1042,7 +1079,7 @@ pub(crate) async fn run_confidence_decay(
         .prune_confidence_history(MAX_SNAPSHOTS_PER_CONCLUSION)
         .await
     {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log_warn(format!(
             "user context confidence decay: history prune failed: {error}"
         ));
     }
@@ -1065,7 +1102,7 @@ pub(crate) async fn run_confidence_decay(
         .await;
 
     if touched > 0 {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "user context worker decayed {touched} conclusion(s)"
         ));
     }
@@ -1120,13 +1157,7 @@ async fn worker_tick(
     // Pacing depends on the provider *kind* (cloud vs local), so resolve the
     // default model's provider instance id back to its kind via the provider
     // list.
-    let Some(default_provider) = ai_runtime.default_model.as_ref().and_then(|model| {
-        ai_runtime
-            .providers
-            .iter()
-            .find(|provider| provider.id == model.provider)
-            .map(|provider| provider.kind)
-    }) else {
+    let Some(default_provider) = default_provider_kind(&ai_runtime) else {
         return IDLE_INTERVAL;
     };
     let provider_label = provider_label_for(&ai_runtime);
@@ -1150,26 +1181,26 @@ async fn worker_tick(
 
     let mut dossier_changed = run.changed;
     if run.activities_derived > 0 {
-        crate::native_capture::debug_log::log_info(format!(
+        crate::native_capture::debug_log::log(format!(
             "user context worker derived {} activities (window=[{},{}], items={})",
             run.activities_derived, run.window_start_ms, run.window_end_ms, run.items_read
         ));
-        cadence.activity_ticks_since_distillation =
-            cadence.activity_ticks_since_distillation.saturating_add(1);
     }
 
     // --- History Backfill beat (backward, newest-first) ---
     // (#98) STRICTLY newest-first: only extend coverage *backward* once the forward
-    // catch-up has no new recent window to derive this tick (`!run.derived_window`).
-    // Recency-weighted Confidence means recent history drives current conclusions,
-    // so recent windows are always covered before older ones.
+    // catch-up has reached realtime this tick (`!catching_up`). Recency-weighted
+    // Confidence means recent history drives current conclusions, so recent
+    // windows are always covered before older ones. NOT `!run.derived_window`: a
+    // tick interval (≥ 120 s) never undercuts `MIN_WINDOW_MS`, so forward always
+    // has a fresh window and that gate starved backfill for good.
     //
     // This is a BACKGROUND TRICKLE paced by the Derivation Budget — one bounded
     // window per pass, up to a small per-tier count — never a synchronous
     // whole-history bill (there is deliberately no "derive all of history now"
     // path). It is bounded by default (`backfill_window_days`) and extends to the
     // true earliest capture only under the explicit go-deeper toggle.
-    if !run.derived_window {
+    if !catching_up {
         let now = now_ms();
         let earliest_capture = if user_context.backfill_go_deeper {
             infra
@@ -1200,9 +1231,7 @@ async fn worker_tick(
         .await;
         if backfilled {
             dossier_changed = true;
-            cadence.activity_ticks_since_distillation =
-                cadence.activity_ticks_since_distillation.saturating_add(1);
-            crate::native_capture::debug_log::log_info(
+            crate::native_capture::debug_log::log(
                 "user context worker backfilled older history (background trickle)",
             );
         }
@@ -1227,29 +1256,29 @@ async fn worker_tick(
         .await;
         if retried {
             dossier_changed = true;
-            cadence.activity_ticks_since_distillation =
-                cadence.activity_ticks_since_distillation.saturating_add(1);
         }
     }
 
     // --- Conclusion beat (slower) ---
-    // CADENCE HOOK (spec §6 / §4): after the forward Activity window, run
-    // Conclusion distillation on a slower beat — every Kth successful Activity
-    // tick, or whenever the Activity count has grown since the last distillation.
-    // It shares the SAME resolved engine and records its own `derivation_run`
+    // CADENCE HOOK (spec §6 / §4): after the Activity passes, run Conclusion
+    // distillation at most once per `CONCLUSION_MIN_INTERVAL_MS`, and only when
+    // an Activity was inserted or extended since the last successful pass (the
+    // durable watermark, so a restart neither loses nor repeats changes). It
+    // shares the SAME resolved engine and records its own `derivation_run`
     // (kind `'conclusion'`).
-    let activity_count = infra
-        .user_context()
-        .count_activities()
-        .await
-        .unwrap_or(0);
     // While draining a forward backlog (catch-up cadence) we derive many
     // Activities fast; deferring distillation until caught up avoids an LLM
-    // distillation call on every catch-up tick — it runs once on the first normal
-    // tick afterward (the Activity count will have grown by then, so
-    // `should_distill` fires immediately).
-    if !catching_up && cadence.should_distill(activity_count) {
-        let changed = run_conclusion_distillation(
+    // distillation call on every catch-up tick — the changes wait behind the
+    // watermark for the first normal tick afterward.
+    let now = now_ms();
+    let activities_changed = !catching_up
+        && infra
+            .user_context()
+            .activities_changed_since_distillation()
+            .await
+            .unwrap_or(false);
+    if cadence.should_distill(now, activities_changed) {
+        let outcome = run_conclusion_distillation(
             &engine,
             infra.user_context(),
             app_handle,
@@ -1257,11 +1286,18 @@ async fn worker_tick(
             provider_label.clone(),
             model_label.clone(),
         )
-        .await
-        .is_some_and(|outcome| outcome.upserted > 0);
-        dossier_changed = dossier_changed || changed;
-        cadence.activity_ticks_since_distillation = 0;
-        cadence.last_distilled_activity_count = Some(activity_count);
+        .await;
+        dossier_changed = dossier_changed || outcome.is_some_and(|outcome| outcome.upserted > 0);
+        // Still changed right after a pass that actually sent something = the
+        // pass hit its cap. (A no-op pass — e.g. a lone Activity — sends nothing
+        // and must not spin every tick.)
+        let backlog_remaining = outcome.is_some_and(|outcome| outcome.input_tokens > 0)
+            && infra
+                .user_context()
+                .activities_changed_since_distillation()
+                .await
+                .unwrap_or(false);
+        cadence.record_distillation(now, outcome.is_some(), backlog_remaining);
     }
 
     // --- Confidence-decay beat (slowest, LLM-free) ---
@@ -1304,6 +1340,19 @@ pub(crate) fn provider_label_for(settings: &capture_types::AiRuntimeSettings) ->
         .map(|model| model.provider.clone())
 }
 
+/// The global default model's provider *kind*, resolved from its instance id
+/// through the provider list (`None` when no default or a dangling id).
+pub(crate) fn default_provider_kind(
+    settings: &capture_types::AiRuntimeSettings,
+) -> Option<capture_types::AiProviderKind> {
+    let model = settings.default_model.as_ref()?;
+    settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == model.provider)
+        .map(|provider| provider.kind)
+}
+
 /// Model label for the run ledger (the global default model id).
 pub(crate) fn model_label_for(settings: &capture_types::AiRuntimeSettings) -> Option<String> {
     settings
@@ -1329,7 +1378,16 @@ pub fn spawn_user_context_worker(
         let infra = Arc::clone(&infra);
         // The slower Conclusion-distillation beat is paced relative to the
         // frequent Activity beat; this state survives across ticks.
-        let mut cadence = WorkerCadence::default();
+        let mut cadence = WorkerCadence {
+            last_distillation_at_ms: infra
+                .user_context()
+                .latest_distillation_summary()
+                .await
+                .ok()
+                .flatten()
+                .map(|(at_ms, _, _)| at_ms),
+            ..WorkerCadence::default()
+        };
         loop {
             if *shutdown_rx.borrow() {
                 break;
@@ -1349,245 +1407,5 @@ pub fn spawn_user_context_worker(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cold_store_window_reaches_back_initial_lookback() {
-        let now = 10_000_000_000;
-        let window = next_forward_window(now, None).expect("cold window");
-        assert_eq!(window.0, now - INITIAL_LOOKBACK_MS);
-        assert_eq!(window.1, (now - INITIAL_LOOKBACK_MS) + MAX_WINDOW_MS);
-    }
-
-    #[test]
-    fn resumes_from_last_covered_end() {
-        let now = 10_000_000_000;
-        let last_end = now - (5 * 60 * 1000);
-        let window = next_forward_window(now, Some(last_end)).expect("forward window");
-        assert_eq!(window.0, last_end);
-        assert_eq!(window.1, now);
-    }
-
-    #[test]
-    fn waits_until_enough_new_time() {
-        let now = 10_000_000_000;
-        let last_end = now - (MIN_WINDOW_MS - 1);
-        assert!(next_forward_window(now, Some(last_end)).is_none());
-    }
-
-    #[test]
-    fn clamps_long_gap_to_max_window() {
-        let now = 10_000_000_000;
-        let last_end = now - (5 * MAX_WINDOW_MS);
-        let window = next_forward_window(now, Some(last_end)).expect("clamped window");
-        assert_eq!(window.1 - window.0, MAX_WINDOW_MS);
-    }
-
-    // --- A: empty-window cursor jump -------------------------------------------
-
-    #[test]
-    fn empty_window_jump_target_leaps_gap_to_next_capture() {
-        let end = 1_000;
-        let now = 10_000;
-        // A raw capture sits in the gap ahead: jump straight to it.
-        let next = 5_000;
-        assert_eq!(empty_window_jump_target(end, now, Some(next)), next);
-    }
-
-    #[test]
-    fn empty_window_jump_target_clamps_next_to_now() {
-        let end = 1_000;
-        let now = 4_000;
-        // The next raw capture is beyond `now` (clock skew / racing capture):
-        // clamp to `now`, never overshoot realtime.
-        assert_eq!(empty_window_jump_target(end, now, Some(9_000)), now);
-    }
-
-    #[test]
-    fn empty_window_jump_target_holds_when_capture_inside_window() {
-        let end = 5_000;
-        let now = 10_000;
-        // A raw capture sits within the just-read window (OCR pending): do NOT
-        // leap past it — advance one window (stay at `end`).
-        assert_eq!(empty_window_jump_target(end, now, Some(end)), end);
-        assert_eq!(empty_window_jump_target(end, now, Some(end - 1)), end);
-    }
-
-    #[test]
-    fn empty_window_jump_target_none_jumps_to_now() {
-        let end = 1_000;
-        let now = 10_000;
-        // No raw captures at/after `end`: safe to jump straight to `now`.
-        assert_eq!(empty_window_jump_target(end, now, None), now);
-    }
-
-    #[test]
-    fn empty_window_jump_target_always_within_end_and_now() {
-        let end = 2_000;
-        let now = 8_000;
-        for next in [None, Some(0), Some(2_000), Some(5_000), Some(99_999)] {
-            let result = empty_window_jump_target(end, now, next);
-            assert!(result >= end, "result {result} went backward before end {end}");
-            assert!(result <= now, "result {result} overshot now {now}");
-        }
-    }
-
-    // --- C: catch-up cadence ---------------------------------------------------
-
-    #[test]
-    fn is_catching_up_false_when_caught_up() {
-        // Small backlog (within one window) => no catch-up cadence.
-        assert!(!is_catching_up(true, MIN_WINDOW_MS));
-        assert!(!is_catching_up(true, 0));
-    }
-
-    #[test]
-    fn is_catching_up_true_with_large_backlog_and_derived_window() {
-        assert!(is_catching_up(true, CATCHUP_BACKLOG_MS + 1));
-        assert!(is_catching_up(true, 10 * CATCHUP_BACKLOG_MS));
-    }
-
-    #[test]
-    fn is_catching_up_false_without_a_derived_window() {
-        // Even a huge backlog does not trigger catch-up if the forward beat did
-        // not actually cover a window this tick (e.g. it was idle/not-enough-yet).
-        assert!(!is_catching_up(false, 10 * CATCHUP_BACKLOG_MS));
-    }
-
-    #[test]
-    fn is_catching_up_strictly_greater_than_threshold() {
-        // Exactly at the threshold => not catching up (strictly greater).
-        assert!(!is_catching_up(true, CATCHUP_BACKLOG_MS));
-    }
-
-    #[test]
-    fn cadence_distills_when_activity_count_grows() {
-        let mut cadence = WorkerCadence::default();
-        // Cold: distills as soon as there is at least one Activity.
-        assert!(cadence.should_distill(1));
-        cadence.last_distilled_activity_count = Some(5);
-        cadence.activity_ticks_since_distillation = 0;
-        // No growth and below the K threshold => skip.
-        assert!(!cadence.should_distill(5));
-        // Growth => distill early even below the K threshold.
-        assert!(cadence.should_distill(6));
-    }
-
-    #[test]
-    fn cadence_distills_every_kth_tick_without_growth() {
-        let cadence = WorkerCadence {
-            activity_ticks_since_distillation: CONCLUSION_EVERY_K_ACTIVITY_TICKS,
-            last_distilled_activity_count: Some(10),
-            ticks_since_decay: 0,
-        };
-        // No growth, but the K-tick threshold is met => distill.
-        assert!(cadence.should_distill(10));
-    }
-
-    #[test]
-    fn cadence_decays_on_the_slowest_beat() {
-        // The decay beat is strictly the slowest (M ≥ K).
-        assert!(CONFIDENCE_DECAY_EVERY_M_TICKS >= CONCLUSION_EVERY_K_ACTIVITY_TICKS);
-        let mut cadence = WorkerCadence::default();
-        // Below the M threshold => no decay yet.
-        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS - 1;
-        assert!(!cadence.should_decay());
-        // At the threshold => decay.
-        cadence.ticks_since_decay = CONFIDENCE_DECAY_EVERY_M_TICKS;
-        assert!(cadence.should_decay());
-    }
-
-    #[test]
-    fn tier_paces_cloud_but_not_local() {
-        assert_eq!(
-            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
-            LIGHT_INTERVAL
-        );
-        assert_eq!(
-            tick_interval(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
-            THOROUGH_INTERVAL
-        );
-        assert_eq!(
-            tick_interval(AiProviderKind::Ollama, DerivationBudgetTier::Thorough),
-            LOCAL_INTERVAL
-        );
-    }
-
-    // --- #98 History Backfill window math --------------------------------------
-
-    #[test]
-    fn bounded_backfill_floor_is_now_minus_window_days() {
-        let now = 10_000_000_000;
-        // go-deeper OFF: floor is the bounded recent window, ignoring the earliest
-        // capture even when there is much older history.
-        let floor = backfill_floor_ms(now, 30, false, Some(0));
-        assert_eq!(floor, now - 30 * 86_400_000);
-    }
-
-    #[test]
-    fn go_deeper_floor_reaches_earliest_capture() {
-        let now = 10_000_000_000;
-        let earliest = 1_234;
-        // go-deeper ON: floor is the true earliest capture (all of history).
-        assert_eq!(backfill_floor_ms(now, 30, true, Some(earliest)), earliest);
-        // go-deeper ON with no captures collapses to `now` (backfill no-op).
-        assert_eq!(backfill_floor_ms(now, 30, true, None), now);
-    }
-
-    #[test]
-    fn backfill_window_steps_one_window_older() {
-        let oldest_covered = 10_000_000_000;
-        let floor = oldest_covered - 10 * BACKFILL_WINDOW_MS;
-        let (start, end) = next_backfill_window(floor, oldest_covered).expect("backfill window");
-        // The window ends at the current trailing edge and reaches back exactly one
-        // BACKFILL_WINDOW_MS (the floor is far below, so it does not clamp here).
-        assert_eq!(end, oldest_covered);
-        assert_eq!(start, oldest_covered - BACKFILL_WINDOW_MS);
-    }
-
-    #[test]
-    fn backfill_window_clamps_to_floor() {
-        let oldest_covered = 10_000_000_000;
-        // Floor is closer than one full window: the window start clamps to the floor.
-        let floor = oldest_covered - (BACKFILL_WINDOW_MS / 2);
-        let (start, end) = next_backfill_window(floor, oldest_covered).expect("clamped window");
-        assert_eq!(start, floor);
-        assert_eq!(end, oldest_covered);
-    }
-
-    #[test]
-    fn backfill_complete_when_coverage_reaches_floor() {
-        let oldest_covered = 10_000_000_000;
-        // Coverage already AT the floor → nothing to backfill.
-        assert!(next_backfill_window(oldest_covered, oldest_covered).is_none());
-        // Coverage already BELOW the floor (e.g. floor moved up) → nothing to do.
-        assert!(next_backfill_window(oldest_covered + 1, oldest_covered).is_none());
-    }
-
-    #[test]
-    fn backfill_intensity_is_a_real_cloud_tier_knob() {
-        // The named cloud tier is a real intensity knob (windows/tick), not just a
-        // sleep: Light < Balanced < Thorough.
-        assert_eq!(
-            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Light),
-            1
-        );
-        assert_eq!(
-            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Balanced),
-            2
-        );
-        assert_eq!(
-            backfill_windows_per_tick(AiProviderKind::Anthropic, DerivationBudgetTier::Thorough),
-            4
-        );
-        // Local ignores the tier entirely (fixed pacing): always one window/tick.
-        for tier in [
-            DerivationBudgetTier::Light,
-            DerivationBudgetTier::Balanced,
-            DerivationBudgetTier::Thorough,
-        ] {
-            assert_eq!(backfill_windows_per_tick(AiProviderKind::Ollama, tier), 1);
-        }
-    }
-}
+#[path = "worker_tests.rs"]
+mod tests;

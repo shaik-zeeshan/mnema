@@ -38,7 +38,9 @@ pub use probe::{start_system_audio_level_probe, take_system_audio_probe_level};
 #[cfg(target_os = "macos")]
 pub use process::own_process_object_id;
 #[cfg(target_os = "macos")]
-pub use rebuild::{RebuildReason, SystemAudioCaptureSession, SystemAudioSegmentHooks};
+pub use rebuild::{
+    RebuildReason, SystemAudioCaptureSession, SystemAudioSegmentHooks, TapHealth,
+};
 #[cfg(target_os = "macos")]
 pub use tap::{
     cleanup_stale_aggregate_devices, prompt_for_system_audio_permission, SystemAudioTapSession,

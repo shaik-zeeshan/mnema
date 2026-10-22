@@ -1,6 +1,5 @@
 <script lang="ts">
   import { Select as BitsSelect } from "bits-ui";
-  import IconSpinner from "~icons/lucide/loader-circle";
   import { pinAncestorScrollOnOpen } from "./pin-scroll-on-open";
   import { shouldOpenUpward } from "./popover-direction";
 
@@ -85,7 +84,7 @@
   bind:this={wrapperEl}
 >
   {#if label}
-    <span class="select-label" id={labelId}>{label}</span>
+    <span class="mx-label" id={labelId}>{label}</span>
   {/if}
   <!-- Inner positioning context wrapping only the trigger (Root renders no box),
        so the non-portaled popover anchors to the trigger rather than the
@@ -108,7 +107,7 @@
         {selectedLabel ?? placeholder}
       </span>
       {#if loading}
-        <span class="select-spinner" aria-hidden="true"><IconSpinner /></span>
+        <span class="mx-spin mx-spin--sm" aria-hidden="true"></span>
       {:else}
         <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
           <path d="m6 9 6 6 6-6" />
@@ -200,63 +199,42 @@
     cursor: progress;
   }
 
-  .select-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
+  /* Kit control: --h-md, flat 1px border, sans value (settings.html .st-select). */
   :global(.select-trigger) {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     width: 100%;
-    padding: 7px 10px;
-    background: var(--app-surface);
+    height: var(--h-md);
+    padding: 0 10px 0 var(--s-3);
+    background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    gap: 8px;
+    font: 400 var(--text-md)/1 var(--font-sans);
+    color: var(--app-text-muted);
     text-align: left;
+    transition: border-color var(--t-fast) var(--ease-quart), box-shadow var(--t-med) var(--ease-quart);
   }
 
-  :global(.select-trigger:hover) {
+  :global(.select-trigger:hover),
+  :global(.select-trigger[data-state="open"]) {
     border-color: var(--app-border-hover);
   }
 
-  :global(.select-trigger:active) {
-    background: var(--app-surface-active);
-  }
-
   :global(.select-trigger:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
-    outline: none;
-  }
-
-  :global(.select-trigger[data-state="open"]) {
-    border-color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    box-shadow: var(--app-ring);
   }
 
   :global(.select-trigger--warn) {
     border-color: var(--app-warn-border);
   }
 
-  :global(.select-trigger--warn:focus-visible) {
-    border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
-  }
-
   .select-trigger-text {
-    color: var(--app-text);
+    color: var(--app-text-strong);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -273,44 +251,23 @@
     height: 14px;
     flex-shrink: 0;
     fill: none;
-    stroke: var(--app-text-muted);
+    stroke: var(--app-text-subtle);
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: transform 0.15s, stroke 0.15s;
+    transition: transform var(--t-med) var(--ease-expo);
   }
 
   :global(.select-trigger[data-state="open"]) .select-chevron {
     transform: rotate(180deg);
-    stroke: var(--app-accent);
   }
 
-  /* Busy spinner shown on the closed trigger while a pick is in flight. Rotate
-     the wrapper span (not the <svg>): WKWebView doesn't reliably spin an <svg>
-     around its own center. Mirrors ButtonSpinner. */
-  .select-spinner {
-    display: inline-flex;
-    flex-shrink: 0;
-    color: var(--app-text-muted);
-    animation: select-spinner-spin 0.7s linear infinite;
-  }
-
-  .select-spinner :global(svg) {
-    width: 14px;
-    height: 14px;
-    stroke-width: 2;
-  }
-
-  @keyframes select-spinner-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
+  /* Popover + rows follow the kit's .mx-pop / .mx-menu. Selected = --mx-selected
+     fill + stronger text; the green check is the selection mark. */
   :global(.select-content) {
     background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
+    border: 1px solid var(--app-overlay-border);
+    border-radius: var(--r-lg);
     padding: 4px;
     box-shadow: var(--app-shadow-popover);
     z-index: 100;
@@ -328,19 +285,17 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 10px;
-    border-radius: 3px;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    font: 400 var(--text-md)/1.3 var(--font-sans);
     color: var(--app-text);
+    text-align: left;
     cursor: pointer;
-    transition: background 0.1s, color 0.1s;
     outline: none;
     user-select: none;
-    border: none;
-    background: transparent;
-    width: 100%;
-    text-align: left;
   }
 
   :global(.select-item:hover),
@@ -350,8 +305,8 @@
   }
 
   :global(.select-item[data-selected]) {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
+    background: var(--mx-selected);
+    color: var(--app-text-strong);
   }
 
   .select-item-check {
@@ -367,20 +322,14 @@
   .select-empty {
     padding: 14px 10px;
     text-align: center;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-sm);
-    font-style: italic;
+    font: 400 var(--text-base)/1.3 var(--font-sans);
     color: var(--app-text-subtle);
   }
 
   @media (prefers-reduced-motion: reduce) {
     :global(.select-trigger),
-    .select-chevron,
-    :global(.select-item) {
+    .select-chevron {
       transition: none;
-    }
-    .select-spinner {
-      animation: none;
     }
   }
 </style>

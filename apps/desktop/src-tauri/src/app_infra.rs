@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -34,6 +34,7 @@ pub type BackgroundWorkersState = BackgroundWorkersControl;
 pub const TIMELINE_DATA_CHANGED_EVENT: &str = "timeline_data_changed";
 
 pub mod frame_preview;
+pub mod quick_recall;
 pub(crate) use frame_preview::{
     run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
 };
@@ -293,13 +294,6 @@ struct ResolvedAppInfraBaseDir {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubmitDebugCpuJobRequest {
-    pub document_name: String,
-    pub source_text: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct GetAppJobRequest {
     pub job_id: i64,
 }
@@ -466,6 +460,9 @@ pub struct ListFramesRequest {
 pub struct FrameCapturedAtRangeRequest {
     pub captured_at_start: String,
     pub captured_at_end: String,
+    /// Journal only: drop lock-screen frames so their span reads as Away.
+    #[serde(default)]
+    pub exclude_lock_screen: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -564,11 +561,18 @@ pub struct SearchCaptureResponseDto {
     pub applied_refinements: ::app_infra::SearchCaptureRefinements,
     pub residual_query: String,
     pub parse_errors: Vec<::app_infra::SearchParseError>,
+    /// Why results may be partial (see `::app_infra::SearchCaptureResponse`).
+    pub index_empty: bool,
+    pub semantic_degraded: bool,
+    pub untranscribed_segments_in_range: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameSearchResultDto {
+    /// Lower is better; the frontend merges frames and audio by it (ADR 0036:
+    /// no calibration — see `::app_infra::FrameSearchResult::rank`).
+    pub rank: f64,
     pub group_key: String,
     pub representative_frame: FrameDto,
     pub group_start_at: String,
@@ -590,11 +594,16 @@ pub struct FrameSearchResultDto {
     /// A meaning-only **Semantic Search** hit: the snippet is a leading
     /// `body_text` excerpt the frontend tags "found by meaning".
     pub found_by_meaning: bool,
+    /// Where the query's words sit on `representative_frame` (normalised,
+    /// top-left origin). Filled by `search_capture`, never by the `From`.
+    pub match_boxes: Vec<::app_infra::MatchBox>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSearchResultDto {
+    /// Lower is better (see [`FrameSearchResultDto::rank`]).
+    pub rank: f64,
     pub group_key: String,
     pub audio_segment: AudioSegmentDto,
     pub source_kind: ::app_infra::AudioSegmentSourceKind,
@@ -632,47 +641,6 @@ pub struct FocusedFrameWindowDto {
 pub struct AudioSegmentMediaDto {
     pub mime_type: String,
     pub data_base64: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClassifyHiddenSegmentWorkspaceRequest {
-    pub workspace_dir: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct HiddenSegmentWorkspacePathsDto {
-    pub workspace_dir: String,
-    pub frames_dir: String,
-    pub visible_segment_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceBatchReferenceDto {
-    pub batch_id: i64,
-    pub status: ::app_infra::FrameBatchStatus,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceOcrReferenceDto {
-    pub frame_id: i64,
-    pub job_id: i64,
-    pub status: ::app_infra::ProcessingJobStatus,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SegmentWorkspaceCleanupDebugInfoDto {
-    pub paths: HiddenSegmentWorkspacePathsDto,
-    pub disposition: ::app_infra::SegmentWorkspaceCleanupDisposition,
-    pub safe_to_remove: bool,
-    pub visible_segment_exists: bool,
-    pub frame_count: i64,
-    pub batch_references: Vec<SegmentWorkspaceBatchReferenceDto>,
-    pub nonterminal_ocr_references: Vec<SegmentWorkspaceOcrReferenceDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -894,6 +862,7 @@ impl From<::app_infra::FocusedFrameWindow> for FocusedFrameWindowDto {
 impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
     fn from(result: ::app_infra::FrameSearchResult) -> Self {
         Self {
+            rank: result.rank,
             group_key: result.group_key,
             representative_frame: FrameDto::from(result.representative_frame),
             group_start_at: result.group_start_at,
@@ -914,6 +883,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
             secret_redaction_count: result.secret_redaction_count,
             has_secret_redactions: result.has_secret_redactions,
             found_by_meaning: result.found_by_meaning,
+            match_boxes: Vec::new(),
         }
     }
 }
@@ -921,6 +891,7 @@ impl From<::app_infra::FrameSearchResult> for FrameSearchResultDto {
 impl From<::app_infra::AudioSearchResult> for AudioSearchResultDto {
     fn from(result: ::app_infra::AudioSearchResult) -> Self {
         Self {
+            rank: result.rank,
             group_key: result.group_key,
             audio_segment: AudioSegmentDto::from(result.audio_segment),
             source_kind: result.source_kind,
@@ -958,6 +929,9 @@ impl From<::app_infra::SearchCaptureResponse> for SearchCaptureResponseDto {
             applied_refinements: response.applied_refinements,
             residual_query: response.residual_query,
             parse_errors: response.parse_errors,
+            index_empty: response.index_empty,
+            semantic_degraded: response.semantic_degraded,
+            untranscribed_segments_in_range: response.untranscribed_segments_in_range,
         }
     }
 }
@@ -1133,66 +1107,6 @@ impl From<::app_infra::AudioSegment> for AudioSegmentDto {
             ended_at: segment.ended_at,
             created_at: segment.created_at,
             updated_at: segment.updated_at,
-        }
-    }
-}
-
-impl From<::app_infra::HiddenSegmentWorkspacePaths> for HiddenSegmentWorkspacePathsDto {
-    fn from(paths: ::app_infra::HiddenSegmentWorkspacePaths) -> Self {
-        Self {
-            workspace_dir: paths.workspace_dir,
-            frames_dir: paths.frames_dir,
-            visible_segment_path: paths.visible_segment_path,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceBatchReference> for SegmentWorkspaceBatchReferenceDto {
-    fn from(reference: ::app_infra::SegmentWorkspaceBatchReference) -> Self {
-        Self {
-            batch_id: reference.batch_id,
-            status: reference.status,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceOcrReference> for SegmentWorkspaceOcrReferenceDto {
-    fn from(reference: ::app_infra::SegmentWorkspaceOcrReference) -> Self {
-        Self {
-            frame_id: reference.frame_id,
-            job_id: reference.job_id,
-            status: reference.status,
-        }
-    }
-}
-
-impl From<::app_infra::SegmentWorkspaceCleanupDebugInfo> for SegmentWorkspaceCleanupDebugInfoDto {
-    fn from(info: ::app_infra::SegmentWorkspaceCleanupDebugInfo) -> Self {
-        Self {
-            paths: info.paths.into(),
-            disposition: info.disposition,
-            safe_to_remove: info.safe_to_remove,
-            visible_segment_exists: info.visible_segment_exists,
-            frame_count: info.frame_count,
-            batch_references: info
-                .batch_references
-                .into_iter()
-                .map(SegmentWorkspaceBatchReferenceDto::from)
-                .collect(),
-            nonterminal_ocr_references: info
-                .nonterminal_ocr_references
-                .into_iter()
-                .map(SegmentWorkspaceOcrReferenceDto::from)
-                .collect(),
-        }
-    }
-}
-
-impl From<SubmitDebugCpuJobRequest> for ::app_infra::DebugCpuJobRequest {
-    fn from(request: SubmitDebugCpuJobRequest) -> Self {
-        Self {
-            document_name: request.document_name,
-            source_text: request.source_text,
         }
     }
 }
@@ -1470,7 +1384,7 @@ pub async fn persist_screen_frame_artifact(
                 equivalence.version,
             )),
         capture_screen::CapturedFrameEquivalenceOutcome::Quarantined(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "quarantined captured frame equivalence for session {} artifact {}: {}",
                 session_id, file_path, error
             ));
@@ -1754,6 +1668,52 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
     Ok(())
 }
 
+/// What the last deferred startup repaired, for the developer window's Startup
+/// row. Data only; the row's copy lives with the health rows. Stored once, at
+/// the end of [`run_deferred_startup_blocking`], so it is `None` while startup
+/// is still running and for a run a quit cut short. The aggregate-device reap
+/// runs afterwards in `lib.rs` and is not part of it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct StartupReport {
+    pub duration_ms: u64,
+    pub vault_unlocked: bool,
+    /// `"vault_denied"` or `"vault_error"`. Never the message: it can quote a secret.
+    pub vault_error_code: Option<&'static str>,
+    /// `None` when maintenance failed (`errors` then holds `"startup_maintenance"`).
+    pub maintenance: Option<::app_infra::StartupMaintenanceSummary>,
+    /// `None` when the workspace repair failed or never ran.
+    pub workspaces_removed: Option<u64>,
+    /// Queued OCR jobs failed because OCR is off; `None` while OCR is on.
+    pub ocr_disabled_jobs_failed: Option<u64>,
+    /// Short labels of the passes that failed, in run order.
+    pub errors: Vec<&'static str>,
+}
+
+static STARTUP_REPORT: OnceLock<StartupReport> = OnceLock::new();
+
+/// Set when deferred startup unwound: the report then never lands and no
+/// workers spawned, which "still running" would otherwise disguise.
+static STARTUP_PANICKED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn startup_report() -> Option<StartupReport> {
+    STARTUP_REPORT.get().cloned()
+}
+
+pub(crate) fn startup_panicked() -> bool {
+    STARTUP_PANICKED.load(Ordering::Relaxed)
+}
+
+/// Flags [`STARTUP_PANICKED`] if dropped during an unwind.
+struct StartupPanicFlag;
+
+impl Drop for StartupPanicFlag {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            STARTUP_PANICKED.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Runs every startup task that does not need to complete before the window is
 /// shown: the [`::app_infra::AppInfra::run_startup_maintenance`] passes, the
 /// filesystem repair/conversion scans, OCR-disabled reconciliation, the
@@ -1767,6 +1727,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
 /// (inside `run_startup_maintenance`) completes before the processing workers
 /// spawn — it is only safe while nothing is executing those jobs (ADR 0020).
 pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
+    let _panic_flag = StartupPanicFlag;
     // Defense in depth against a quit requested before deferred startup even
     // began (see also the gate in `run_deferred_startup`): if a graceful exit is
     // already in progress, there is nothing to spin up. Bail before running any
@@ -1802,16 +1763,28 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     };
     let background_workers = background_workers.inner().clone();
     let base_dir = infra.base_dir().to_path_buf();
+    let started = Instant::now();
+    let mut report = StartupReport::default();
 
     // Unlock the secret vault exactly once per process, here on the deferred
     // thread so a first-run keychain prompt never blocks the window opening.
     // A denied unlock is cached: features degrade with a distinct
     // SecretVaultDenied error instead of re-prompting per read.
     match infra.secret_vault().unlock_now() {
-        Ok(()) => crate::native_capture::debug_log::log_info("secret vault unlocked"),
-        Err(error) => crate::native_capture::debug_log::log_error(format!(
-            "secret vault unlock failed; AI/MCP secret access is disabled for this run: {error}"
-        )),
+        Ok(()) => {
+            report.vault_unlocked = true;
+            crate::native_capture::debug_log::log_info("secret vault unlocked");
+        }
+        Err(error) => {
+            report.vault_error_code = Some(match error {
+                ::app_infra::AppInfraError::SecretVaultDenied(_) => "vault_denied",
+                _ => "vault_error",
+            });
+            report.errors.push("vault_unlock");
+            crate::native_capture::debug_log::log_error(format!(
+                "secret vault unlock failed; AI/MCP secret access is disabled for this run: {error}"
+            ));
+        }
     }
 
     // #3: This runs on a detached background thread, so we cannot cleanly
@@ -1823,11 +1796,15 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // next launch. The ADR-0020 ordering still holds: orphaned-job reconciliation
     // lives inside `run_startup_maintenance` and completes (or this thread is
     // gone via a panic — see below) before the workers spawn.
-    if let Err(error) = tauri::async_runtime::block_on(infra.run_startup_maintenance()) {
-        crate::native_capture::debug_log::log_error(format!(
-            "startup maintenance failed (base_dir='{}'): {error}",
-            base_dir.display()
-        ));
+    match tauri::async_runtime::block_on(infra.run_startup_maintenance()) {
+        Ok(summary) => report.maintenance = Some(summary),
+        Err(error) => {
+            report.errors.push("startup_maintenance");
+            crate::native_capture::debug_log::log_error(format!(
+                "startup maintenance failed (base_dir='{}'): {error}",
+                base_dir.display()
+            ));
+        }
     }
 
     // If a quit was requested during maintenance, stop here rather than running
@@ -1860,29 +1837,41 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         // its three attempts for the whole session. It depends on none of the passes below.
         tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
         run_generated_frame_preview_cache_startup_pass(app_handle);
-        run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
+        report.workspaces_removed =
+            run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
+        if report.workspaces_removed.is_none() {
+            report.errors.push("workspace_repair");
+        }
         if let Ok(settings) = app_handle
             .state::<crate::native_capture::RecordingSettingsState>()
             .lock()
         {
             if !settings.settings.ocr.enabled {
-                match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
-                    Ok(failed_count) => crate::native_capture::debug_log::log_info(format!(
-                        "startup marked queued OCR jobs failed because OCR is disabled (count={failed_count})"
-                    )),
-                    Err(error) => crate::native_capture::debug_log::log_error(format!(
-                        "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
-                    )),
+                match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled())
+                {
+                    // Counted in the "startup maintenance finished" line below.
+                    Ok(failed_count) => report.ocr_disabled_jobs_failed = Some(failed_count),
+                    Err(error) => {
+                        report.errors.push("ocr_disabled_reconcile");
+                        crate::native_capture::debug_log::log_warn(format!(
+                            "startup failed to mark queued OCR jobs failed while OCR is disabled: {error}"
+                        ));
+                    }
                 }
             }
         } else {
-            crate::native_capture::debug_log::log_error(
+            report.errors.push("ocr_disabled_reconcile");
+            crate::native_capture::debug_log::log_warn(
                 "failed to read recording settings during OCR disabled startup reconciliation",
             );
         }
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
+        // Before the User Context worker spawns below, so no distillation races it.
+        crate::user_context::conclusion_guard::run_dedup_startup_pass(&infra);
+        run_lock_screen_activity_heal_startup_pass(&infra);
     }));
     if post_maintenance.is_err() {
+        report.errors.push("post_maintenance_panic");
         // The panic itself is already recorded by the installed panic hook; we
         // intentionally continue to spawn workers because these passes are not
         // ordering-critical and stranding processing is worse than skipping them.
@@ -1965,6 +1954,24 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     crate::licensing::run_license_gate(app_handle);
 
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
+
+    report.duration_ms = started.elapsed().as_millis() as u64;
+    let summary = report.maintenance.unwrap_or_default();
+    crate::native_capture::debug_log::log_info(format!(
+        "startup maintenance finished in {} ms (requeued={}, failed={}, workspaces_removed={}, orphaned_app_jobs={}, stale_model_locks={}, frame_equivalence={}, batches_closed={}, batches_open={}, ocr_disabled_failed={}, errors={:?})",
+        report.duration_ms,
+        summary.orphaned_processing_requeued,
+        summary.orphaned_processing_failed,
+        report.workspaces_removed.unwrap_or(0),
+        summary.orphaned_app_jobs,
+        summary.stale_model_locks_cleared,
+        summary.frame_equivalence_backfilled,
+        summary.closed_batches_reconciled,
+        summary.open_batches_reconciled,
+        report.ocr_disabled_jobs_failed.unwrap_or(0),
+        report.errors,
+    ));
+    let _ = STARTUP_REPORT.set(report);
 }
 
 pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri::AppHandle) {
@@ -2000,7 +2007,7 @@ pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri:
                 "graceful shutdown reclaimed in-flight processing jobs (requeued={}, failed_on_ceiling={})",
                 reclamation.requeued, reclamation.failed_on_ceiling
             )),
-            Err(error) => crate::native_capture::debug_log::log_error(format!(
+            Err(error) => crate::native_capture::debug_log::log_warn(format!(
                 "graceful shutdown failed to reclaim in-flight processing jobs: {error}"
             )),
         },
@@ -2033,7 +2040,7 @@ pub(crate) async fn acquire_model_download_lock(
     {
         Ok(lock) => Some(lock),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to lock {processor} model for download; its queued jobs may fail against the in-flight model: {error}"
             ));
             None
@@ -2057,7 +2064,7 @@ pub(crate) async fn release_model_download_lock(
     reconcile_absent_model_locks(app_handle).await;
     if let (Some(lock), Some(infra)) = (lock, app_handle.try_state::<AppInfraState>()) {
         if let Err(error) = infra.release_processing_model_locks(&lock).await {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to release model download lock: {error}"
             ));
         }
@@ -2079,7 +2086,7 @@ pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) 
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(app_data_dir) => app_data_dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to resolve app data directory for absent-model lock reconciliation: {error}"
             ));
             return;
@@ -2118,7 +2125,7 @@ pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) 
             .sync_absent_processing_model_locks(processor, &model_keys)
             .await
         {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "failed to reconcile absent-model locks for {processor}: {error}"
             ));
         }
@@ -2141,7 +2148,7 @@ async fn run_audio_transcription_backfill_pass(
 ) {
     let admission = audio_transcription_admission_for_current_settings(app_handle);
     if !admission.enabled || !admission.provider_available || admission.payload_json.is_none() {
-        crate::native_capture::debug_log::log_info(
+        crate::native_capture::debug_log::log(
             format!(
                 "{reason} audio transcription backfill skipped because transcription is disabled or the selected model is unavailable"
             ),
@@ -2159,7 +2166,7 @@ async fn run_audio_transcription_backfill_pass(
             ));
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "{reason} audio transcription backfill failed: {error}"
             ));
         }
@@ -2180,7 +2187,7 @@ async fn run_audio_transcription_backfill_pass(
                 ));
             }
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "{reason} speaker analysis backfill failed: {error}"
                 ));
             }
@@ -2480,7 +2487,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     infra: &::app_infra::AppInfra,
     base_dir: &Path,
     app_handle: &tauri::AppHandle,
-) {
+) -> Option<u64> {
     let recordings_root =
         crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
             .recordings_root();
@@ -2497,21 +2504,25 @@ fn run_hidden_segment_workspace_repair_startup_pass(
         infra,
         &recordings_root,
         &active_workspace_dirs,
+        hidden_workspace_repair_retention_cutoff(app_handle),
     )) {
         Ok(result) => {
-            crate::native_capture::debug_log::log_info(format!(
+            // Debug: `removed` is repeated in the "startup maintenance finished" Info line.
+            crate::native_capture::debug_log::log(format!(
                 "startup hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                 recordings_root_display,
                 result.scanned_workspace_count,
                 result.removed_workspace_count,
                 result.skipped_workspace_count
             ));
+            Some(result.removed_workspace_count)
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "startup hidden segment workspace repair failed (recordings_root='{}'): {error}",
                 recordings_root_display
             ));
+            None
         }
     }
 }
@@ -2691,7 +2702,7 @@ fn spawn_processing_worker_loop(
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "app infrastructure {worker_name} worker iteration failed (base_dir='{}', consecutive_failures={}, retry_in_ms={}): {error}",
                         base_dir_display,
                         consecutive_failures,
@@ -2760,6 +2771,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
                 &infra,
                 &recordings_root,
                 &active_workspace_dirs,
+                hidden_workspace_repair_retention_cutoff(&app_handle),
             );
             pin_mut!(shutdown_changed, repair);
             let repair_result = match select(shutdown_changed, repair).await {
@@ -2769,7 +2781,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
 
             match repair_result {
                 Ok(result) => {
-                    crate::native_capture::debug_log::log_info(format!(
+                    crate::native_capture::debug_log::log(format!(
                         "hidden segment workspace repair completed (recordings_root='{}', scanned={}, removed={}, skipped={})",
                         recordings_root_display,
                         result.scanned_workspace_count,
@@ -2778,7 +2790,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
                     ));
                 }
                 Err(error) => {
-                    crate::native_capture::debug_log::log_error(format!(
+                    crate::native_capture::debug_log::log_warn(format!(
                         "hidden segment workspace repair failed (recordings_root='{}'): {error}",
                         recordings_root_display
                     ));
@@ -2817,7 +2829,7 @@ fn spawn_retention_cleanup_worker(
                     RetentionSleepOutcome::Elapsed => {}
                     RetentionSleepOutcome::ScheduleChanged => {
                         schedule_changed = true;
-                        crate::native_capture::debug_log::log_info(
+                        crate::native_capture::debug_log::log(
                             "retention cleanup worker woke for retention schedule change",
                         );
                     }
@@ -2839,7 +2851,7 @@ fn spawn_retention_cleanup_worker(
                 .await;
             let mut retry_soon = false;
             if policy != SettingsRetentionPolicy::Never {
-                crate::native_capture::debug_log::log_info(format!(
+                crate::native_capture::debug_log::log(format!(
                     "retention cleanup worker running cleanup (policy={}, triggered_by={})",
                     app_retention_policy(policy).as_str(),
                     if schedule_changed {
@@ -2898,7 +2910,7 @@ fn spawn_retention_cleanup_worker(
                     Ok(summary) => {
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
-                        crate::native_capture::debug_log::log_info(format!(
+                        crate::native_capture::debug_log::log(format!(
                             "retention cleanup worker completed cleanup (policy={}, status={}, eligible_segments={}, deleted_segments={}, deleted_frames={}, deleted_audio_segments={}, retry_soon={})",
                             summary.policy,
                             summary.status,
@@ -2909,7 +2921,7 @@ fn spawn_retention_cleanup_worker(
                             retry_soon
                         ));
                     }
-                    Err(error) => crate::native_capture::debug_log::log_error(format!(
+                    Err(error) => crate::native_capture::debug_log::log_warn(format!(
                         "retention cleanup worker failed: {error}"
                     )),
                 }
@@ -2919,7 +2931,7 @@ fn spawn_retention_cleanup_worker(
             } else {
                 duration_until_next_retention_daily_run()
             };
-            crate::native_capture::debug_log::log_info(format!(
+            crate::native_capture::debug_log::log(format!(
                 "retention cleanup worker scheduled next wake (policy={}, next_sleep_ms={})",
                 app_retention_policy(policy).as_str(),
                 next_sleep.as_millis()
@@ -2947,15 +2959,45 @@ async fn repair_hidden_segment_workspaces_once(
     infra: &::app_infra::AppInfra,
     recordings_root: &Path,
     active_workspace_dirs: &BTreeSet<String>,
+    retention_cutoff: Option<String>,
 ) -> ::app_infra::Result<::app_infra::HiddenSegmentWorkspaceRepairResult> {
     infra
         .repair_hidden_segment_workspaces_with_context(
             recordings_root,
             &::app_infra::HiddenSegmentWorkspaceRepairContext {
                 active_workspace_dirs: active_workspace_dirs.clone(),
+                retention_cutoff,
             },
         )
         .await
+}
+
+/// Deferred-startup heal: delete Activities written entirely from lock-screen
+/// frames before derivation learned to skip them (lock screen = time away).
+/// Idempotent and a no-op once clean; a failure is retried on the next launch.
+fn run_lock_screen_activity_heal_startup_pass(infra: &::app_infra::AppInfra) {
+    match tauri::async_runtime::block_on(infra.user_context().delete_lock_screen_only_activities())
+    {
+        Ok(summary) if summary.deleted_activities > 0 => {
+            crate::native_capture::debug_log::log_info(format!(
+                "user context removed {} lock-screen-only activit(ies), {} conclusion(s), {} digest(s)",
+                summary.deleted_activities, summary.deleted_conclusions, summary.deleted_digests
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+            "lock-screen activity heal failed; retrying next launch: {error}"
+        )),
+    }
+}
+
+/// The Retention Cleanup cutoff for the user's current policy, so the repair
+/// ages out orphaned visible segments exactly as retention would. `None` when
+/// retention is Never (or settings aren't managed yet), which keeps them.
+fn hidden_workspace_repair_retention_cutoff(app_handle: &tauri::AppHandle) -> Option<String> {
+    let settings = app_handle.try_state::<crate::native_capture::RecordingSettingsState>()?;
+    let policy = retention_policy_from_settings(settings, None);
+    ::app_infra::cutoff_ended_before(app_retention_policy(policy), local_now_for_retention())
 }
 
 fn active_workspace_dirs_for_hidden_workspace_repair(
@@ -3037,7 +3079,7 @@ async fn process_pending_jobs_once(
     let did_finalize = match infra.process_next_frame_batch_job().await {
         Ok(result) => result.is_some(),
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            crate::native_capture::debug_log::log_warn(format!(
                 "app infrastructure frame-batch finalization failed after state update; worker will continue: {error}"
             ));
             true
@@ -3052,7 +3094,7 @@ async fn process_pending_jobs_once(
         match infra.process_next_frame_batch_job().await {
             Ok(result) => result.is_some(),
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                crate::native_capture::debug_log::log_warn(format!(
                     "app infrastructure frame-batch finalization failed after OCR state update; worker will continue: {error}"
                 ));
                 true
@@ -3153,8 +3195,8 @@ fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBas
     })
 }
 
-/// The resolved on-disk storage root where captures, the database, and model
-/// caches live. This is the authoritative, env-honoring resolution: when no
+/// The resolved on-disk storage root where captures and the database live
+/// (downloaded models stay in Mnema's app data, not here). This is the authoritative, env-honoring resolution: when no
 /// `save_directory` is persisted it falls back to `default_save_directory()`
 /// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Settings › Storage shows this
 /// read-only; the folder is changed by writing `save_directory` through the
@@ -3252,16 +3294,6 @@ async fn reprocess_system_audio_speech_activity_inner(
         .reprocess_system_audio_speech_activity(request.audio_segment_id, &admission)
         .await
         .map(SystemAudioSpeechActivityReprocessingResultDto::from)
-}
-
-async fn classify_hidden_segment_workspace_inner(
-    infra: &::app_infra::AppInfra,
-    request: ClassifyHiddenSegmentWorkspaceRequest,
-) -> ::app_infra::Result<Option<SegmentWorkspaceCleanupDebugInfoDto>> {
-    infra
-        .classify_hidden_segment_workspace(Path::new(&request.workspace_dir))
-        .await
-        .map(|info| info.map(SegmentWorkspaceCleanupDebugInfoDto::from))
 }
 
 #[tauri::command]
@@ -4558,19 +4590,6 @@ pub async fn install_cli_inner(app_handle: tauri::AppHandle) -> Result<MnemaCliS
 }
 
 #[tauri::command]
-pub async fn submit_debug_cpu_job(
-    request: SubmitDebugCpuJobRequest,
-    state: tauri::State<'_, AppInfraState>,
-) -> Result<AppJobDto, String> {
-    let infra = Arc::clone(&*state);
-    infra
-        .submit_debug_cpu_job(request.into())
-        .await
-        .map(AppJobDto::from)
-        .map_err(|error| format!("failed to submit debug cpu job: {error}"))
-}
-
-#[tauri::command]
 pub async fn list_app_jobs(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Vec<AppJobDto>, String> {
@@ -4696,23 +4715,6 @@ pub async fn reprocess_system_audio_speech_activity(
 }
 
 #[tauri::command]
-pub async fn classify_hidden_segment_workspace(
-    request: ClassifyHiddenSegmentWorkspaceRequest,
-    state: tauri::State<'_, AppInfraState>,
-) -> Result<Option<SegmentWorkspaceCleanupDebugInfoDto>, String> {
-    let infra = Arc::clone(&*state);
-
-    classify_hidden_segment_workspace_inner(&infra, request.clone())
-        .await
-        .map_err(|error| {
-            format!(
-                "failed to classify hidden segment workspace {}: {error}",
-                request.workspace_dir
-            )
-        })
-}
-
-#[tauri::command]
 pub async fn list_frames(
     request: Option<ListFramesRequest>,
     state: tauri::State<'_, AppInfraState>,
@@ -4742,7 +4744,11 @@ pub async fn list_frame_summaries_in_range(
 ) -> Result<Vec<FrameSummaryDto>, String> {
     let infra = Arc::clone(&*state);
     infra
-        .list_frame_summaries_in_range(&request.captured_at_start, &request.captured_at_end)
+        .list_frame_summaries_in_range(
+            &request.captured_at_start,
+            &request.captured_at_end,
+            request.exclude_lock_screen,
+        )
         .await
         .map(|frames| frames.into_iter().map(FrameSummaryDto::from).collect())
         .map_err(|error| format!("failed to list frame summaries in range: {error}"))
@@ -5028,7 +5034,8 @@ pub async fn search_capture(
         crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
             .await;
 
-    infra
+    let query = request.query.clone();
+    let mut response = infra
         .search_capture(::app_infra::SearchCaptureRequest {
             query: request.query,
             frame_limit: request.frame_limit,
@@ -5041,7 +5048,21 @@ pub async fn search_capture(
         })
         .await
         .map(SearchCaptureResponseDto::from)
-        .map_err(|error| format!("failed to search captured content: {error}"))
+        .map_err(|error| format!("failed to search captured content: {error}"))?;
+    // ponytail: one indexed lookup per frame on the page (≤ 24); batch if it shows.
+    // A missing outline never fails the search.
+    for frame in &mut response.frames {
+        frame.match_boxes = infra
+            .search()
+            .frame_match_boxes(
+                frame.representative_frame.id,
+                &query,
+                frame.found_by_meaning,
+            )
+            .await
+            .unwrap_or_default();
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -5083,6 +5104,38 @@ pub async fn get_processing_job(
         .await
         .map(|job| job.map(|job| ProcessingJobDto::from_job(job, &locked_model_keys)))
         .map_err(|error| format!("failed to get processing job {}: {error}", request.job_id))
+}
+
+/// Developer window "Retry now": skip a waiting job's backoff. Failed jobs use the
+/// `reprocess_*` commands instead.
+#[tauri::command]
+pub async fn retry_processing_job_now(
+    job_id: i64,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<ProcessingJobDto, String> {
+    let infra = Arc::clone(&*state);
+    let cleared = infra
+        .clear_processing_job_backoff(job_id)
+        .await
+        .map_err(|error| format!("failed to retry processing job {job_id}: {error}"))?;
+    if !cleared {
+        return Err(
+            "Only a waiting job can be retried now. Use Reprocess for a failed job.".to_string(),
+        );
+    }
+    crate::native_capture::debug_log::log_info(format!(
+        "processing job {job_id} retry requested from developer window"
+    ));
+    let locked_model_keys = infra
+        .list_locked_processing_model_keys()
+        .await
+        .map_err(|error| format!("failed to list locked processing models: {error}"))?;
+    infra
+        .get_processing_job(job_id)
+        .await
+        .map_err(|error| format!("failed to get processing job {job_id}: {error}"))?
+        .map(|job| ProcessingJobDto::from_job(job, &locked_model_keys))
+        .ok_or_else(|| format!("processing job {job_id} not found"))
 }
 
 #[tauri::command]
@@ -5748,6 +5801,16 @@ mod tests {
             .execute(pool)
             .await
             .expect("retained frame should insert");
+            // Typed text is never named by Delete Recent Capture (conversations'
+            // contract): a query run inside the deleted window survives it.
+            let recent_query = ::app_infra::RecentQuery {
+                text: "pricing page".to_string(),
+                ask: false,
+                at: 1_779_184_805_000, // 2026-05-19T10:00:05Z
+            };
+            ::app_infra::store_recent_queries(pool, vec![recent_query.clone()])
+                .await
+                .expect("recent query should store");
 
             let deletion =
                 delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
@@ -5759,6 +5822,10 @@ mod tests {
             assert_eq!(
                 deletion.capture_segment_media_paths,
                 vec![deleted_media_path]
+            );
+            assert_eq!(
+                ::app_infra::load_recent_queries(pool).await.expect("load"),
+                vec![recent_query]
             );
             let deleted_snapshot_count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM frame_metadata_snapshots WHERE id = ?1")
@@ -6278,6 +6345,19 @@ mod tests {
             value.get("appBundleId").and_then(|value| value.as_str()),
             Some("com.example.Search")
         );
+        assert_eq!(value["rank"], serde_json::json!(-1.0));
+        assert_eq!(value["matchBoxes"], serde_json::json!([]));
+        let match_box = ::app_infra::MatchBox {
+            x: 0.1,
+            y: 0.2,
+            w: 0.3,
+            h: 0.05,
+            kind: ::app_infra::MatchBoxKind::Meaning,
+        };
+        assert_eq!(
+            serde_json::to_value(match_box).unwrap(),
+            serde_json::json!({"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.05, "kind": "meaning"})
+        );
     }
 
     struct TestVideoPreviewExtractorGuard;
@@ -6531,50 +6611,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_hidden_segment_workspace_info_dto_maps_nested_debug_payload() {
-        let dto = SegmentWorkspaceCleanupDebugInfoDto::from(
-            ::app_infra::SegmentWorkspaceCleanupDebugInfo {
-                paths: ::app_infra::HiddenSegmentWorkspacePaths {
-                    workspace_dir: "/tmp/.session-segment-0001".to_string(),
-                    frames_dir: "/tmp/.session-segment-0001/frames".to_string(),
-                    visible_segment_path: "/tmp/session-segment-0001.mov".to_string(),
-                },
-                disposition: ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly,
-                safe_to_remove: true,
-                visible_segment_exists: true,
-                frame_count: 2,
-                batch_references: vec![::app_infra::SegmentWorkspaceBatchReference {
-                    batch_id: 7,
-                    status: ::app_infra::FrameBatchStatus::Completed,
-                }],
-                nonterminal_ocr_references: vec![::app_infra::SegmentWorkspaceOcrReference {
-                    frame_id: 11,
-                    job_id: 12,
-                    status: ::app_infra::ProcessingJobStatus::Queued,
-                }],
-            },
-        );
-
-        assert_eq!(dto.paths.workspace_dir, "/tmp/.session-segment-0001");
-        assert_eq!(dto.paths.frames_dir, "/tmp/.session-segment-0001/frames");
-        assert_eq!(
-            dto.paths.visible_segment_path,
-            "/tmp/session-segment-0001.mov"
-        );
-        assert_eq!(
-            dto.disposition,
-            ::app_infra::SegmentWorkspaceCleanupDisposition::CompletedOnly
-        );
-        assert!(dto.safe_to_remove);
-        assert_eq!(dto.frame_count, 2);
-        assert_eq!(dto.batch_references.len(), 1);
-        assert_eq!(dto.batch_references[0].batch_id, 7);
-        assert_eq!(dto.nonterminal_ocr_references.len(), 1);
-        assert_eq!(dto.nonterminal_ocr_references[0].frame_id, 11);
-        assert_eq!(dto.nonterminal_ocr_references[0].job_id, 12);
-    }
-
-    #[test]
     fn estimate_frame_preview_offset_seconds_uses_segment_frame_times() {
         let frame = ::app_infra::Frame {
             id: 2,
@@ -6683,7 +6719,6 @@ mod tests {
     #[test]
     fn video_preview_exact_miss_log_includes_requested_actual_and_delta() {
         let dir = TestDir::new("frame-preview-exact-miss-log");
-        let log_path = dir.path().join("native-capture-debug.log");
         let requested = cidre::cm::Time::with_secs(1.5, 600);
         // Six video ticks past the requested time (timescale 600 => 10ms) so the
         // delta clears FRAME_PREVIEW_EXACT_MISS_LOG_THRESHOLD_MS and is logged.
@@ -6711,8 +6746,7 @@ mod tests {
             metadata_snapshot: None,
         };
 
-        capture_runtime::configure_debug_log(true, Some(log_path.clone()));
-        log_video_preview_exact_miss(
+        let contents = video_preview_exact_miss_message(
             Path::new("/tmp/session-preview-segment-0001.mov"),
             &frame,
             true,
@@ -6720,10 +6754,8 @@ mod tests {
             1.5,
             requested,
             actual,
-        );
-        capture_runtime::configure_debug_log(false, None);
-
-        let contents = fs::read_to_string(&log_path).expect("exact miss log file should exist");
+        )
+        .expect("a 10ms miss should be logged");
         assert!(contents.contains("[DEBUG-frame-preview] event=video_exact_miss"));
         assert!(contents.contains("path=/tmp/session-preview-segment-0001.mov"));
         assert!(contents.contains("frame_id=2"));
@@ -7815,10 +7847,14 @@ mod tests {
             )
             .expect("visible segment should be written");
 
-            let result =
-                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
-                    .await
-                    .expect("repair should succeed");
+            let result = repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                &BTreeSet::new(),
+                None,
+            )
+            .await
+            .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 1);
@@ -7844,10 +7880,14 @@ mod tests {
             fs::write(frames_dir.join("frame-1.jpg"), b"fake frame")
                 .expect("workspace frame artifact should be created");
 
-            let result =
-                repair_hidden_segment_workspaces_once(&infra, &recordings_root, &BTreeSet::new())
-                    .await
-                    .expect("repair should succeed");
+            let result = repair_hidden_segment_workspaces_once(
+                &infra,
+                &recordings_root,
+                &BTreeSet::new(),
+                None,
+            )
+            .await
+            .expect("repair should succeed");
 
             assert_eq!(result.scanned_workspace_count, 1);
             assert_eq!(result.removed_workspace_count, 0);
@@ -7883,6 +7923,7 @@ mod tests {
                 &infra,
                 &recordings_root,
                 &BTreeSet::from([workspace_dir.to_string_lossy().to_string()]),
+                None,
             )
             .await
             .expect("repair should succeed");

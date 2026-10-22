@@ -40,7 +40,8 @@ mod types;
 pub use types::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement, SearchableApp,
+    SearchDateRangeRefinement, SearchHoursRefinement, SearchParseError, SearchSpeakerRefinement,
+    SearchableApp,
 };
 use types::{
     normalize_app_bundle_id_for_search, normalize_app_name_for_search, EquivalentReuseText,
@@ -48,6 +49,9 @@ use types::{
 
 mod query;
 
+pub use facets::{SearchFacet, SearchFacetBucket, SearchFacetCounts};
+pub use honesty::FrameReadingBacklog;
+pub use match_boxes::{MatchBox, MatchBoxKind};
 pub use query::semantic_search_residual_query;
 use query::{
     merge_parsed_field_operators, normalize_query, normalize_search_refinements, parse_search_query,
@@ -55,9 +59,20 @@ use query::{
 };
 
 mod equivalent_reuse;
+mod facets;
+#[cfg(test)]
+mod frame_pipeline_plan_check;
 mod grouping;
+mod honesty;
+#[cfg(test)]
+mod hours_filter_check;
+mod match_boxes;
+mod moments;
 mod projection;
 mod retrieval;
+mod stopwords;
+#[cfg(test)]
+mod semantic_backfill_scale_check;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -210,6 +225,19 @@ impl SearchStore {
         &self,
         request: SearchCaptureRequest,
     ) -> Result<SearchCaptureResponse> {
+        self.search_capture_without(request, None).await
+    }
+
+    /// [`Self::search_capture`] with one facet's refinement swapped out AFTER the
+    /// query's operators are merged — what a facet count asks: "how many moments
+    /// if this pill were something else?"
+    async fn search_capture_without(
+        &self,
+        request: SearchCaptureRequest,
+        swapped_out: Option<SearchFacet>,
+    ) -> Result<SearchCaptureResponse> {
+        // An empty index ("nothing captured yet") reads differently from no match.
+        let index_empty = self.index_is_empty().await?;
         // Opt-in query syntax: field operators are lifted into refinements and
         // body operators shape the residual that drives FTS matching. A query
         // with no operators leaves the residual equal to the plain text, so
@@ -218,7 +246,10 @@ impl SearchStore {
 
         // Merge typed field operators into any caller-supplied refinements:
         // apps/sources accumulate, the date slot overwrites (last write wins).
-        let merged_refinements = merge_parsed_field_operators(request.refinements, &parsed);
+        let mut merged_refinements = merge_parsed_field_operators(request.refinements, &parsed);
+        if let Some(facet) = swapped_out {
+            facet.clear(&mut merged_refinements);
+        }
 
         let ParsedQuery {
             fts_body,
@@ -256,6 +287,9 @@ impl SearchStore {
             applied_refinements: applied_refinements.clone(),
             residual_query: residual_query.clone(),
             parse_errors: parse_errors.clone(),
+            index_empty,
+            semantic_degraded: false,
+            untranscribed_segments_in_range: 0,
         };
 
         let Some(refinements) = refinements else {
@@ -296,6 +330,7 @@ impl SearchStore {
             None => fetch_search_document_high_water_mark(self.db.read()).await?,
         };
 
+        let mut semantic_degraded = false;
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
         // A speaker filter narrows to audio for the same reason `audio_sources`
@@ -315,14 +350,14 @@ impl SearchStore {
                 frame_limit,
                 &refinements,
                 query_embedding,
+                &mut semantic_degraded,
             )
             .await?
         };
-        let all_audio_groups = if audio_limit == 0
-            || !refinements.apps.is_empty()
+        let audio_skipped = !refinements.apps.is_empty()
             || refinements.window_title.is_some()
-            || refinements.screen_source
-        {
+            || refinements.screen_source;
+        let all_audio_groups = if audio_limit == 0 || audio_skipped {
             Vec::new()
         } else {
             fetch_grouped_audio_hits(
@@ -332,8 +367,15 @@ impl SearchStore {
                 snapshot_document_id,
                 &refinements,
                 query_embedding,
+                &mut semantic_degraded,
             )
             .await?
+        };
+        // Audio is searchable only once transcribed: say how much is still waiting.
+        let untranscribed_segments_in_range = if audio_skipped {
+            0
+        } else {
+            self.untranscribed_segments_in_range(&refinements).await?
         };
         let frames = all_frame_groups
             .iter()
@@ -359,6 +401,9 @@ impl SearchStore {
             applied_refinements,
             residual_query,
             parse_errors,
+            index_empty,
+            semantic_degraded,
+            untranscribed_segments_in_range,
         })
     }
 

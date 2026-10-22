@@ -1,7 +1,14 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Choice from "$lib/components/Choice.svelte";
+  import IconOff from "~icons/lucide/ban";
+  import IconShield from "~icons/lucide/shield";
+  import IconLink from "~icons/lucide/link";
+  import IconLock from "~icons/lucide/lock";
+  import IconInfo from "~icons/lucide/info";
+  import IconCheck from "~icons/lucide/check";
+  import IconExternal from "~icons/lucide/external-link";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -9,17 +16,65 @@
 
   const c = getSettingsController();
   const rec = c.rec;
-  const appPrivacyExclusion = c.appPrivacyExclusion;
+  const excl = c.appPrivacyExclusion;
+  const gecko = c.geckoUrlAccess;
 
   const setBrowserUrlMode = (m: string) => c.setBrowserUrlMode(m);
-
+  const pendingCount = $derived(excl.pendingRecommendedApps.length);
+  const geckoNames = $derived(gecko.installedNames.length > 0 ? gecko.installedNames.join(" / ") : "Firefox / Zen");
 </script>
 
 <SettingGroup id="settings-section-privacy" title="Privacy">
+  {#if excl.showSensitiveRecommendationPrompt}
+    <div class="mx-notice priv-top" data-tone="info">
+      <span class="mx-notice__icon"><IconShield width="15" height="15" /></span>
+      <b class="mx-notice__title">{pendingCount} recommended app exclusion{pendingCount === 1 ? "" : "s"} pending</b>
+      <p class="mx-notice__text">Password managers and Apple Passwords can be excluded from future screen capture.</p>
+      <div class="mx-notice__acts">
+        <button
+          class="mx-btn mx-btn--sm"
+          type="button"
+          disabled={excl.commandInFlight || excl.promptActionInFlight}
+          onclick={() => void excl.applyAllRecommendedPrivacyApps()}
+        >
+          Add exclusions
+        </button>
+        <button
+          class="mx-btn mx-btn--ghost mx-btn--sm"
+          type="button"
+          disabled={excl.promptActionInFlight}
+          onclick={() => void excl.dismissSensitiveRecommendationPrompt()}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <SettingRow
-    label="Capture frame context"
-    description="Store app, window, and supported browser context with frames"
+    label="Excluded Apps"
+    description="Apps whose visible content is never recorded. Browsers, including private windows, are recorded unless the browser itself is excluded. Mnema does not detect password pages or password fields."
+    full
   >
+    {#snippet control()}
+      <div class="priv-full">
+        <AppPrivacyExclusion controller={excl} />
+      </div>
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow label="Filter system audio" description="Also keep audio from excluded apps out of recordings.">
+    {#snippet control()}
+      <Switch
+        checked={rec.draftFilterSystemAudio}
+        onCheckedChange={(enabled) => excl.setFilterSystemAudio(enabled)}
+        disabled={excl.commandInFlight}
+        ariaLabel="Filter system audio"
+      />
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow label="Capture frame context" description="Store app, window, and supported browser context with frames.">
     {#snippet control()}
       <Switch bind:checked={rec.draftMetadataEnabled} ariaLabel="Capture frame context" />
     {/snippet}
@@ -27,113 +82,71 @@
 
   <SettingRow
     label="Browser URL mode"
-    description="How much of a captured browser URL is stored with the frame."
+    description="How much of a captured browser URL is stored with the frame. Full asks first."
     disabled={!rec.draftMetadataEnabled}
     full
   >
     {#snippet control()}
-      <RadioGroup
+      <Choice
         value={rec.draftBrowserUrlMode}
         onValueChange={setBrowserUrlMode}
         disabled={!rec.draftMetadataEnabled}
+        ariaLabel="Browser URL mode"
         options={[
-          { value: "off", label: "Off", description: "Don't store browser URLs with captured frames." },
-          { value: "sanitized", label: "Sanitized", description: "Keep scheme, host, port, and path; drop query strings and fragments." },
-          { value: "full", label: "Full", description: "Store the complete URL, including query strings and fragments." },
+          { value: "off", label: "Off", icon: IconOff, description: "Don't store browser URLs with captured frames." },
+          { value: "sanitized", label: "Sanitized", tag: "default", icon: IconShield, description: "Keep scheme, host, port and path; drop query strings and fragments." },
+          { value: "full", label: "Full", icon: IconLink, description: "The complete URL, including query strings and fragments." },
         ]}
       />
     {/snippet}
   </SettingRow>
 
-  {#if c.geckoUrlAccess.installed && rec.draftMetadataEnabled && rec.draftBrowserUrlMode !== "off"}
-    {@const gecko = c.geckoUrlAccess}
+  {#if gecko.installed && rec.draftMetadataEnabled && rec.draftBrowserUrlMode !== "off"}
     <SettingRow
       label="Browser URL access (Firefox / Zen)"
-      description="Firefox and Zen have no scriptable URL like Chrome/Safari; reading their page address needs the macOS Accessibility permission."
+      description="Firefox and Zen expose no scriptable URL, so reading their page address needs the macOS Accessibility permission."
       full
     >
       {#snippet control()}
-        <div class="gecko-access">
-          <div class="permission-callout" class:permission-callout--ok={gecko.trusted}>
-            <div class="permission-callout__copy">
-              <span class="permission-callout__eyebrow">Accessibility</span>
-              <strong>
-                {gecko.installedNames.length > 0 ? gecko.installedNames.join(" / ") : "Firefox / Zen"}
-                · {gecko.trusted ? "Granted" : "Not granted"}
-              </strong>
-              <p>Lets Mnema capture the page address for Firefox and Zen. Enable Mnema under Privacy &amp; Security → Accessibility.</p>
-            </div>
-            {#if !gecko.trusted}
-              <button type="button" class="btn btn--ghost" onclick={() => gecko.request()} disabled={gecko.requesting} aria-busy={gecko.requesting}>
-                {#if gecko.requesting}<ButtonSpinner />Requesting…{:else}Grant access{/if}
-              </button>
-            {/if}
-          </div>
-          {#if !gecko.trusted}
-            <div class="row-actions">
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.openSettings()}>
-                Open System Settings
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking} aria-busy={gecko.rechecking}>
-                {#if gecko.rechecking}<ButtonSpinner />Checking…{:else}Recheck{/if}
-              </button>
+        <div class="priv-full">
+          {#if gecko.trusted}
+            <span class="mx-inline" data-tone="ok"><IconCheck width="13" height="13" />{geckoNames} · Accessibility granted</span>
+          {:else}
+            <div class="mx-notice" data-tone="warn">
+              <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+              <b class="mx-notice__title">{geckoNames} · Accessibility not granted</b>
+              <p class="mx-notice__text">Allow Mnema under Privacy &amp; Security → Accessibility to capture {geckoNames}’s page address.</p>
+              <div class="mx-notice__acts">
+                <button type="button" class="mx-btn mx-btn--sm" onclick={() => gecko.request()} disabled={gecko.requesting} aria-busy={gecko.requesting}>
+                  {#if gecko.requesting}<ButtonSpinner />Requesting…{:else}Grant access{/if}
+                </button>
+                <button class="mx-btn mx-btn--sm" type="button" onclick={() => gecko.openSettings()}>
+                  Open System Settings<IconExternal width="12" height="12" />
+                </button>
+                <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => gecko.recheck()} disabled={gecko.rechecking} aria-busy={gecko.rechecking}>
+                  {#if gecko.rechecking}<ButtonSpinner />Checking…{:else}Recheck{/if}
+                </button>
+              </div>
             </div>
           {/if}
           {#if gecko.error}
-            <p class="group-hint group-hint--warn">Browser URL access request failed: {gecko.error}</p>
+            <span class="mx-inline" data-tone="warn"><IconInfo width="13" height="13" />Browser URL access request failed: {gecko.error}</span>
           {/if}
         </div>
       {/snippet}
     </SettingRow>
   {/if}
-
-  <SettingRow
-    label="Excluded Apps"
-    description="Apps whose visible content is never recorded."
-    full
-  >
-    {#snippet control()}
-      <div class="exclusion-cell" class:exclusion-cell--open={appPrivacyExclusion.comboboxOpen}>
-        <AppPrivacyExclusion controller={appPrivacyExclusion} />
-      </div>
-    {/snippet}
-  </SettingRow>
-
-  <SettingRow
-    label="Filter system audio"
-    description="Also keep audio from excluded apps out of recordings."
-    divider={false}
-  >
-    {#snippet control()}
-      <Switch
-        checked={rec.draftFilterSystemAudio}
-        onCheckedChange={(enabled) => appPrivacyExclusion.setFilterSystemAudio(enabled)}
-        disabled={appPrivacyExclusion.commandInFlight}
-        ariaLabel="Filter system audio"
-      />
-    {/snippet}
-  </SettingRow>
 </SettingGroup>
 
 <style>
-  /* The exclusion editor owns a combobox dropdown that overlays following rows;
-     elevate this cell while it is open so the panel isn't covered. */
-  .exclusion-cell {
-    width: 100%;
-    min-width: 0;
+  .priv-top {
+    margin: var(--s-3) 0;
   }
 
-  .exclusion-cell--open {
-    position: relative;
-    z-index: 10;
-  }
-
-  /* Optional Gecko browser-URL access — stack the callout, action buttons, and
-     any error vertically within the full-width control cell. */
-  .gecko-access {
+  .priv-full {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: var(--s-2);
     width: 100%;
     min-width: 0;
   }

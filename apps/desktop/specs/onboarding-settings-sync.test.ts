@@ -47,6 +47,7 @@ const base = {
     askAiWebFetchEnabled: true,
     askAiMaxToolCalls: 12,
     askAiModel: null,
+    quickRecallAutoAnswer: "never",
   },
   aiRuntime: {
     enabled: true,
@@ -70,6 +71,10 @@ const draft = {
 describe("buildSettingsRequestFrom preserves Settings-page-owned slices", () => {
   test("askAiWebFetchEnabled round-trips from base", () => {
     expect(buildSettingsRequestFrom(draft).access.askAiWebFetchEnabled).toBe(true);
+  });
+
+  test("quickRecallAutoAnswer round-trips from base", () => {
+    expect(buildSettingsRequestFrom(draft).access.quickRecallAutoAnswer).toBe("never");
   });
 
   test("mcpServers round-trip from base untouched", () => {

@@ -63,6 +63,9 @@ pub(crate) struct CaptureSuspension {
     pub last_error_message: String,
     pub recovery_attempts: u8,
     pub status: CaptureSuspensionStatus,
+    /// When the suspension began. Survives recovery-attempt bumps; `None` only
+    /// if the wall clock is unreadable.
+    pub since: Option<SystemTime>,
 }
 
 #[cfg(target_os = "macos")]
@@ -80,6 +83,7 @@ impl CaptureSuspension {
             last_error_message: error.message.clone(),
             recovery_attempts: 0,
             status: CaptureSuspensionStatus::Retryable,
+            since: Some(SystemTime::now()),
         }
     }
 

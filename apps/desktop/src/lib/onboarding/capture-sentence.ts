@@ -19,9 +19,6 @@ import {
   type StorageProbe,
 } from "./gates";
 
-/** Stops printed around the rate token, the chosen one included (mockup: 5). */
-export const RATE_GHOST_WIDTH = 5;
-
 /**
  * The label for "the folder the app picks when you pick nothing". The draft
  * save directory carries `""` for it and `probe_storage_path` resolves it, so
@@ -64,21 +61,6 @@ export function retentionIndex(policy: RetentionPolicy): number {
 /** Daily capture cost in bytes — `disk-estimate`'s MB figure, not a re-derivation. */
 export function dailyBytes(intervalSeconds: number, videoPixels?: number): number {
   return estimateDailyStorageMb(intervalSeconds, videoPixels) * 1e6;
-}
-
-/**
- * The slice of a ladder a token prints, `width` wide, centred on `index` and
- * clamped at both ends — so the ghost row never goes ragged at the ladder's
- * extremes and a ±2 jump is always one click away.
- */
-export function ghostWindow(
-  index: number,
-  count: number,
-  width: number,
-): { start: number; end: number } {
-  const w = Math.min(width, count);
-  const start = Math.min(Math.max(index - ((w - 1) >> 1), 0), count - w);
-  return { start, end: start + w };
 }
 
 /** "3 weeks" / "8 months" / "1.4 years" — how long a volume lasts at this rate. */

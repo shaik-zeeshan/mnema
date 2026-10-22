@@ -33,6 +33,9 @@ export class AudioStore {
   loadingMicState = $state(false);
   savingMicSettings = $state(false);
   micError = $state<string | null>(null);
+  // A failed LOAD of the device list/state — kept apart from `micError` so it
+  // never reads as a save failure in the Settings header.
+  micLoadError = $state<string | null>(null);
   micSaved = $state(false);
 
   // Autosave baseline: the last successfully-persisted snapshot string.
@@ -109,13 +112,13 @@ export class AudioStore {
   // ─── Load / save ────────────────────────────────────────────────────────────
   async loadMicState() {
     this.loadingMicState = true;
-    this.micError = null;
+    this.micLoadError = null;
     try {
       const s = await invoke<MicrophoneControllerState>("get_microphone_controller_state");
       this.micState = s;
       this.syncMicDrafts(s);
     } catch (err) {
-      this.micError = humanizeError(err);
+      this.micLoadError = humanizeError(err);
     } finally {
       this.loadingMicState = false;
     }
@@ -185,6 +188,7 @@ export class AudioStore {
       // baseline to match). Initial load keeps its unconditional `syncMicDrafts`.
       this.resyncMicDraftsFromCanonical(event.payload);
       this.micError = null;
+      this.micLoadError = null;
     }).then((fn) => {
       if (destroyed) fn();
       else unlistenControllerChanged = fn;

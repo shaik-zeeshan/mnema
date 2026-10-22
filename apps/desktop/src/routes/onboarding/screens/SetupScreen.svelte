@@ -48,6 +48,11 @@
     SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
   } from "../onboarding-mapping";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconCheck from "~icons/lucide/check";
+  import IconDisk from "~icons/lucide/hard-drive";
+  import IconRetry from "~icons/lucide/rotate-ccw";
 
   let {
     flow,
@@ -135,7 +140,7 @@
   const shortfall = $derived.by(() => {
     const free = flow.storageProbe?.freeBytes;
     if (free === undefined || free === null || free >= activeBytes) return null;
-    return `Not enough room for the downloads. ${formatBytes(free)} free · ${totalLabel} needed.`;
+    return `${formatBytes(free)} free · ${totalLabel} needed. Free some space, or start them anyway.`;
   });
   const mayStart = $derived(shortfall === null || diskOverride);
 
@@ -266,263 +271,195 @@
   }
 </script>
 
-<h1 class="ob-sr-only">Setup</h1>
-
-<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without
-     this the whole screen sat at the top with ~600px of hole under it. -->
-<div class="mid">
-  <div class="stmt">
-    <div class="pct" aria-hidden="true">{percent}%</div>
-
-    <!-- Deliberately NOT a live region: the byte figure changes on every chunk
-         event, so `role="status"` would announce it dozens of times a second. -->
-    <p class="line">
-      {#if workList.length === 0}
-        Nothing to download — everything you need is already here.
-      {:else if !mayStart}
-        Downloads are held until there is room.
-      {:else if downloadingNow}
-        <span class="nw">
-          Downloading <span class="ob-strong">{FEATURE_NAME[downloadingNow.feature]}</span>
-          · <span class="ob-num">{formatBytes(activeReceived)} of {totalLabel}</span>
-        </span>
-      {:else if active.length === 0}
-        Every download was cancelled.
-      {:else if progress.done}
-        All set · <span class="ob-num">{totalLabel}</span> downloaded.
-      {:else if failedCount > 0}
-        {failedCount === 1 ? "One download" : `${failedCount} downloads`} didn't finish.
-      {:else}
-        Starting <span class="ob-strong">{FEATURE_NAME[active[0].feature]}</span>
-        · <span class="ob-num">{totalLabel}</span> to fetch.
-      {/if}
-    </p>
-
-    {#if shortfall}
-      <div class="preflight">
-        <p class="ob-blocked">{shortfall}</p>
-        {#if !diskOverride}
-          <button class="ob-btn sm" onclick={() => (diskOverride = true)}>
-            Download anyway
-          </button>
+<div class="ob-main">
+  <div class="ob-col">
+    <h1 class="mx-kicker">Setup</h1>
+    <div class="ob-head">
+      <div class="ob-pct" aria-hidden="true">{percent}<small>%</small></div>
+      <!-- Deliberately NOT a live region: the byte figure changes on every chunk
+           event, so `role="status"` would announce it dozens of times a second. -->
+      <p class="ob-line">
+        {#if workList.length === 0}
+          Nothing to download — everything you need is already here.
+        {:else if !mayStart}
+          Downloads are held until there is room · <span class="num">{totalLabel}</span> to fetch.
+        {:else if downloadingNow}
+          Downloading <b>{FEATURE_NAME[downloadingNow.feature]}</b> ·
+          <span class="num">{formatBytes(activeReceived)} of {totalLabel}</span>
+        {:else if active.length === 0}
+          Every download was cancelled.
+        {:else if progress.done}
+          All set · <span class="num">{totalLabel}</span> downloaded.
+        {:else if failedCount > 0}
+          {failedCount === 1 ? "One download" : `${failedCount} downloads`} didn't finish · the rest carry on.
+        {:else}
+          Starting <b>{FEATURE_NAME[active[0].feature]}</b> · <span class="num">{totalLabel}</span> to fetch.
         {/if}
+      </p>
+    </div>
+
+    {#if shortfall && !diskOverride}
+      <div class="mx-notice" data-tone="warn">
+        <span class="mx-notice__icon"><IconDisk width="15" height="15" /></span>
+        <b class="mx-notice__title">Not enough room for the downloads</b>
+        <p class="mx-notice__text">{shortfall}</p>
+        <div class="mx-notice__acts">
+          <button class="mx-btn mx-btn--sm" onclick={() => (diskOverride = true)}>Download anyway</button>
+        </div>
       </div>
     {/if}
-  </div>
 
-  <hr class="ob-rule sep" />
-
-  <div class="work">
-    {#each workList as item (item.id)}
-      {@const off = !flow.features[item.feature]}
-      {@const state = progress.states[item.id] ?? "missing"}
-      <div class="item">
-        <div class="head">
-          <span class="t" class:dim={off && state !== "ready"}>{FEATURE_NAME[item.feature]}</span>
+    <div class="ob-work">
+      {#each workList as item (item.id)}
+        {@const off = !flow.features[item.feature]}
+        {@const state = progress.states[item.id] ?? "missing"}
+        <div class="ob-item" class:off={off && state !== "ready"}>
+          <span class="ob-item__name">
+            {FEATURE_NAME[item.feature]}<small>{item.subsystem === "semanticSearch" ? "about " : ""}{formatBytes(item.bytes)}</small>
+          </span>
           {#if state === "ready"}
-            <!-- Ready wins over a switched-off feature: the bytes ARE on disk,
-                 and this screen reports downloads. Whether the feature is on
-                 is *Your settings*' business. -->
-            <span class="st ready">✓ Ready</span>
+            <!-- Ready wins over a switched-off feature: the bytes ARE on disk. -->
+            <span class="ob-item__st ready"><IconCheck width="14" height="14" />Ready</span>
           {:else if off}
-            <span class="st warn">
+            <span class="ob-item__st warn">
               Turned off
-              <button class="ob-btn sm" onclick={() => restoreItem(item)}>
-                Turn it back on
-              </button>
+              <button class="mx-btn mx-btn--sm" onclick={() => restoreItem(item)}>Turn it back on</button>
             </span>
           {:else if state === "downloading"}
-            <span class="st busy">
+            <span class="ob-item__st">
               Downloading
-              <button class="ob-btn sm" onclick={() => void cancelItem(item)}>Cancel</button>
+              <button class="mx-btn mx-btn--sm" onclick={() => void cancelItem(item)}>Cancel</button>
             </span>
           {:else if state === "failed"}
-            <span class="st fail">
-              {progress.errors[item.id] ?? "Download failed."}
-              <button class="ob-btn sm" onclick={() => retryItem(item)}>Retry</button>
+            <span class="mx-inline" data-tone="danger">
+              <IconAlert width="13" height="13" />{progress.errors[item.id] ?? "Download failed."}
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => retryItem(item)}>
+                <IconRetry width="12" height="12" />Retry
+              </button>
             </span>
           {:else}
-            <span class="st wait">{mayStart ? "Queued" : "Held"}</span>
+            <span class="ob-item__st">{mayStart ? "Queued" : "Held"}</span>
+          {/if}
+          {#if !off && (state === "downloading" || (state === "failed" && itemPercent(item) > 0))}
+            <div class="ob-track" class:stalled={state === "failed"}>
+              <b style:width="{itemPercent(item)}%"></b>
+            </div>
+          {/if}
+          {#if !off && state === "failed"}
+            <p class="ob-item__why">
+              {FEATURE_NAME[item.feature]} stays off until this arrives. Continue still works.
+            </p>
           {/if}
         </div>
-        {#if !off && (state === "downloading" || state === "failed")}
-          <div class="track">
-            <i
-              class:sheen={state === "downloading"}
-              style="width:{state === 'failed' ? 0 : itemPercent(item)}%"
-            ></i>
-          </div>
-        {/if}
-      </div>
-    {:else}
-      <p class="ob-fine">
-        Every model your settings need is already on this machine.
-      </p>
-    {/each}
+      {:else}
+        <p class="ob-fine">Every model your settings need is already on this machine.</p>
+      {/each}
+    </div>
   </div>
 </div>
 
-<div class="ob-foot">
-  <hr class="ob-rule" />
-  <div class="ob-acts">
-    <span class="ob-fine spacer">
-      Live since you arrived, and it never disables. Downloads carry on behind you.
-    </span>
-    <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-    <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
-  </div>
-</div>
+<footer class="ob-foot">
+  <p class="ob-foot__note">Live since you arrived, and it never disables. Downloads carry on behind you.</p>
+  <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+  <button class="mx-btn mx-btn--primary" onclick={onContinue}>
+    Continue<IconArrow class="ob-btn-arrow" width="14" height="14" />
+  </button>
+</footer>
 
 <style>
-  /* Mockup frame 06 (`revision-2.html`): the 360px column is GONE. This screen
-     has one thing to say and a list of rows, so it says it at full width and the
-     actions live in the shell's `.ob-foot` like every other screen. Every colour
-     is an `--app-*` token — the mockup's hexes are dark-theme only. */
-  /* Same idiom as ChangeSettingsScreen's `.scene`: `safe center` centres the
-     statement + work-list while they fit, and falls back to top-aligned the
-     moment they do not, so a long work-list scrolls from its first row instead
-     of losing its head off the top of the stage. */
-  .mid {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    justify-content: safe center;
-    /* See `--ob-bleed`. */
-    padding-inline: var(--ob-bleed);
-    margin-inline: calc(-1 * var(--ob-bleed));
-  }
-  .stmt {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .sep {
-    margin: 26px 0;
-  }
-
-  .pct {
-    font-size: 72px;
-    line-height: 1;
-    letter-spacing: -0.045em;
+  .ob-pct {
+    font: 300 72px / 0.9 var(--font-mono);
+    letter-spacing: -0.06em;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
   }
-  .line {
-    margin: 10px 0 0;
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-text);
+  .ob-pct small {
+    font-size: 28px;
+    color: var(--app-text-subtle);
+    letter-spacing: -0.02em;
   }
-  /* The current-item line is one line, like the mockup's (density rule 1). */
-  .line .nw {
-    white-space: nowrap;
-  }
-
-  .preflight {
-    margin-top: 18px;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  /* ---- the work-list: name + state only. The bar carries the progress. ---- */
-  .work {
-    display: flex;
-    flex-direction: column;
-  }
-  .item {
-    padding: 20px 0;
-    border-top: 1px solid var(--app-border);
-  }
-  .item:first-child {
-    border-top: 0;
-    padding-top: 2px;
-  }
-  /* Centred, not baseline: a row that mixes a label and a button hangs the
-     button box below the text when the two are baseline-aligned. */
-  .head {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-  .t {
-    font-size: var(--text-md);
-    color: var(--app-text-strong);
-  }
-  .t.dim {
+  .ob-line {
+    margin: 0;
+    font: 400 15px / 1.4 var(--font-sans);
     color: var(--app-text-muted);
   }
-  .st {
-    margin-left: auto;
-    font-size: var(--text-sm);
-    display: flex;
+  .ob-line b {
+    font-weight: 600;
+    color: var(--app-text-strong);
+  }
+  .ob-line .num {
+    color: var(--app-text-strong);
+  }
+  .mx-notice {
+    max-width: 620px;
+  }
+  .ob-work {
+    display: grid;
+    border-top: 1px solid var(--mx-hairline);
+    max-width: 620px;
+  }
+  .ob-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 12px;
-    text-align: right;
+    column-gap: var(--s-3);
+    row-gap: 8px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--mx-hairline);
   }
-  .st.ready {
-    color: var(--app-accent-strong);
+  .ob-item__name {
+    font: 500 var(--text-md) / 1 var(--font-sans);
+    color: var(--app-text-strong);
   }
-  .st.busy {
-    color: var(--app-text);
-  }
-  .st.wait {
+  .ob-item__name small {
+    margin-left: var(--s-2);
+    font: 400 var(--text-base) / 1 var(--font-mono);
     color: var(--app-text-subtle);
   }
-  .st.warn {
+  .ob-item.off .ob-item__name {
+    color: var(--app-text-subtle);
+  }
+  .ob-item__st {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    font: 400 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+  .ob-item__st.ready {
+    color: var(--app-accent);
+  }
+  .ob-item__st.warn {
     color: var(--app-warn);
   }
-  .st.fail {
-    color: var(--app-danger);
+  .ob-item .mx-inline {
+    justify-self: end;
   }
-
-  .track {
+  .ob-item__why {
+    grid-column: 1 / -1;
+    margin: -2px 0 0;
+    font: 400 var(--text-base) / 1.4 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+  /* Real progress, not ambient motion: no sheen, no loop. */
+  .ob-track {
+    grid-column: 1 / -1;
     height: 3px;
-    background: var(--app-border-strong);
-    margin-top: 13px;
-    position: relative;
+    border-radius: 2px;
+    background: var(--app-surface-hover);
     overflow: hidden;
-    border-radius: 2px;
   }
-  .track i {
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--app-text-strong);
+  .ob-track b {
     display: block;
-    border-radius: 2px;
-    transition: width 240ms linear;
+    height: 100%;
+    background: var(--app-accent);
+    transition: width 120ms linear;
   }
-  /* Functional feedback, not ambient motion: it exists only while bytes are
-     actually moving, which is the one exception the density rule allows. */
-  .track i.sheen::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    width: 60px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-text-strong) 60%, transparent),
-      transparent
-    );
-    animation: sheen 3.4s ease-in-out infinite;
-  }
-  @keyframes sheen {
-    0% {
-      transform: translateX(-70px);
-    }
-    100% {
-      transform: translateX(430px);
-    }
+  .ob-track.stalled b {
+    background: var(--chart-grey-4);
   }
   @media (prefers-reduced-motion: reduce) {
-    .track i.sheen::after {
-      animation: none;
-    }
-    .track i {
+    .ob-track b {
       transition: none;
     }
   }

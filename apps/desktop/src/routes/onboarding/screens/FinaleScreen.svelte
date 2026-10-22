@@ -9,7 +9,12 @@
   Four states, all real (mockup frames 1644-1792):
     · waiting  — capture started, no frame yet. Shows the CONFIGURED capture
                  interval, not a spinner; a spinner would not say how long.
-    · success  — first frame, then the first OCR hit developing out of noise.
+    · success  — `mx-rec` running pill with its clock; first frame, then the
+                 first OCR hit revealed letter by letter, once (reduced
+                 motion shows it whole).
+                 Audio-only when the screen is not live (Screen Recording
+                 denied, mic or system audio still on): it says so and waits
+                 for no frame.
     · idle     — nothing granted, so nothing is recording. No heartbeat: there
                  is nothing alive to beat, and that absence is the point.
     · failed   — capture could not start, named with the real backend reason.
@@ -19,12 +24,16 @@
   to ask for capture (`startRecording`), then reads what happened.
 -->
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import { goto } from "$app/navigation";
   import { invoke } from "@tauri-apps/api/core";
   import { fpsToIntervalS } from "$lib/components/capture-rate";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import type { FrameDto, FramePreviewDto, GetFramePreviewRequest } from "$lib/types";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconArrow from "~icons/lucide/arrow-right";
+  import IconExternal from "~icons/lucide/external-link";
+  import IconLock from "~icons/lucide/lock";
 
   let {
     flow,
@@ -65,6 +74,17 @@
   const willCapture = $derived(
     liveSources.screen || liveSources.microphone || liveSources.systemAudio,
   );
+  // A screen denial gates nothing: with an audio source live the session runs
+  // audio-only, and the evidence column must not promise a frame.
+  const audioOnly = $derived(phase === "running" && !liveSources.screen);
+  const audioName = $derived(
+    liveSources.microphone && liveSources.systemAudio
+      ? "Audio"
+      : liveSources.microphone
+        ? "Microphone"
+        : "System audio",
+  );
+  const screenOff = $derived(screenGranted ? "Screen capture is turned off" : "Screen Recording is off");
 
   const ocrText = $derived(firstLine(frame?.ocrText ?? null));
   const secondsAgo = $derived(
@@ -79,16 +99,19 @@
     return line ? line.slice(0, 64) : null;
   }
 
-  // ── The develop motion: garbled glyphs settling into legible characters,
-  //    left to right. A picture of what OCR did to that frame, used once.
-  const NOISE = "▞▛▒&@≡±▜∷▓░▙▗▖#%";
-  const glyphs = $derived(
-    (ocrText ?? "").split("").map((ch, i) => ({
-      ch,
-      noise: ch.trim() === "" ? null : NOISE[i % NOISE.length],
-      delay: i * 42,
-    })),
-  );
+  // ── The REC pill's clock: seconds since capture started on this screen. ──
+  let recStartMs = $state<number | null>(null);
+  $effect(() => {
+    if (phase !== "running") return;
+    recStartMs ??= Date.now();
+    const timer = setInterval(() => (nowMs = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const two = (n: number) => String(n).padStart(2, "0");
+  const elapsed = $derived.by(() => {
+    const t = recStartMs === null ? 0 : Math.max(0, Math.floor((nowMs - recStartMs) / 1000));
+    return [Math.floor(t / 3600), Math.floor(t / 60) % 60, t % 60].map(two).join(":");
+  });
 
   async function newestFrameId(): Promise<number | null> {
     try {
@@ -117,7 +140,8 @@
   // precondition is checked here to turn a no-op into a named failure.
   async function commit(): Promise<void> {
     const start = willCapture;
-    const baselineId = start ? await newestFrameId() : null;
+    const frames = liveSources.screen;
+    const baselineId = frames ? await newestFrameId() : null;
     if (c.settings === null || !c.canSkipToDashboard) {
       failureReason =
         "Your settings could not be saved: the custom resolution or bitrate is not a valid number.";
@@ -135,7 +159,7 @@
       return;
     }
     phase = "running";
-    void poll(baselineId);
+    if (frames) void poll(baselineId);
   }
 
   // Wait for the pipeline to produce evidence: first a frame row, then the OCR
@@ -199,331 +223,231 @@
     }
   }
 
-  const openSettings = () => invoke("open_capture_privacy_settings", { kind: "screen" });
+  const openSettings = () => invoke("show_permission_helper", { kind: "screen" });
   const relaunch = () => invoke("request_app_relaunch");
   const openMnema = () => goto("/");
 </script>
 
-<div class="split">
-  <div class="col">
-    {#if phase === "running"}
-      <span class="rec"><span class="dot"></span><span class="ob-m tag">Recording</span></span>
-      <h1 class="ob-disp big">It has<br />already<br />started.</h1>
-      <p class="ob-fine" style="margin-top:18px">Capture began the moment you arrived here.</p>
-    {:else if phase === "idle"}
-      <span class="rec"><span class="ring-glyph"></span><span class="ob-m tag">Not recording</span></span>
-      <h1 class="ob-disp big">Nothing is<br />being<br />recorded.</h1>
-      <p class="ob-fine" style="margin-top:18px">
-        {#if !screenGranted}
-          You declined Screen Recording, so Mnema is idle.
-        {:else}
-          Every capture source is turned off, so Mnema is idle.
+<div class="ob-main">
+  <div class="ob-split">
+    <div class="ob-head">
+      {#if phase === "running"}
+        <span class="mx-rec mx-rec--running"><span class="mx-rec__dot"></span>REC {elapsed}</span>
+        <h1 class="ob-finale__title">It has<br />already<br />started.</h1>
+        <p class="ob-fine">
+          {audioOnly
+            ? `${audioName} only — ${screenOff}, so there are no frames yet.`
+            : "Capture began the moment you arrived here."}
+        </p>
+      {:else if phase === "idle"}
+        <span class="mx-rec"><span class="mx-rec__dot"></span>NOT RECORDING</span>
+        <h1 class="ob-finale__title">Nothing is<br />being<br />recorded.</h1>
+        <p class="ob-fine">
+          {#if !screenGranted}
+            You declined Screen Recording, so Mnema is idle.
+          {:else}
+            Every capture source is turned off, so Mnema is idle.
+          {/if}
+        </p>
+      {:else if phase === "failed"}
+        <span class="mx-rec mx-rec--stopped"><span class="mx-rec__dot"></span>NOT RECORDING</span>
+        <h1 class="ob-finale__title">Capture could<br />not start.</h1>
+        <p class="ob-reason">{failureReason}</p>
+        {#if screenGranted}
+          <p class="ob-fine">
+            Screen Recording is granted, so this is almost certainly the stale-stream case: macOS hands the
+            capture stream out at launch, and Mnema has not been relaunched since the grant.
+          </p>
         {/if}
-      </p>
-    {:else if phase === "failed"}
-      <span class="rec"><span class="ring-glyph bad"></span><span class="ob-m tag">Not recording</span></span>
-      <h1 class="ob-disp big">Capture could<br />not start.</h1>
-      <p class="reason" style="margin-top:18px">{failureReason}</p>
-      {#if screenGranted}
-        <p class="ob-fine" style="margin-top:12px">
-          Screen Recording is granted, so this is almost certainly the stale-stream case: macOS
-          hands the capture stream out at launch, and Mnema has not been relaunched since the
-          grant.
-        </p>
-      {/if}
-    {:else}
-      <span class="rec"><span class="ring-glyph"></span><span class="ob-m tag">Starting</span></span>
-      <h1 class="ob-disp big">Setting up.</h1>
-      <p class="ob-fine" style="margin-top:18px">
-        Saving your settings, then starting capture.
-      </p>
-    {/if}
-
-  </div>
-
-  <div class="col evidence">
-    <div>
-      <span class="ob-m">
-        {phase === "running" ? "Your first frame" : "What you would be seeing"}
-      </span>
-      {#if previewUrl}
-        <div class="shot" style="margin-top:10px">
-          <img src={previewUrl} alt="The first frame Mnema captured" />
-        </div>
       {:else}
-        <div class="shot empty" style="margin-top:10px">
-          <span class="ob-fine">
-            {#if phase === "running" && frame}
-              Frame captured — its image is still being written.
-            {:else if phase === "running"}
-              first frame due within {intervalS} {intervalS === 1 ? "second" : "seconds"}
-            {:else if phase === "starting"}
-              first frame due within {intervalS} {intervalS === 1 ? "second" : "seconds"}
-            {:else}
-              No frame has been captured.
-            {/if}
-          </span>
-        </div>
-      {/if}
-      {#if frame}
-        <p class="ob-fine ob-num" style="margin-top:9px">
-          Captured {new Date(frame.capturedAt).toLocaleTimeString("en-GB")} · {secondsAgo}
-          {secondsAgo === 1 ? "second" : "seconds"} ago
-        </p>
+        <span class="mx-rec mx-rec--starting"><span class="mx-spin mx-spin--sm"></span>STARTING…</span>
+        <h1 class="ob-finale__title">Setting up.</h1>
+        <p class="ob-fine">Saving your settings, then starting capture.</p>
       {/if}
     </div>
 
-    {#if ocrText}
-      <div>
-        <span class="ob-m">First words read off it · already searchable</span>
-        <!-- prettier-ignore -->
-        <div class="ocr" style="margin-top:10px"><span class="hit dev">{#each glyphs as g, i (i)}<span class="gl">{#if g.noise}<i style="animation-delay:{g.delay}ms">{g.noise}</i>{/if}<b style="animation-delay:{g.delay}ms">{g.ch}</b></span>{/each}</span></div>
+    <div class="ob-evidence">
+      <div class="ob-head">
+        <span class="mx-label">
+          {audioOnly
+            ? `Listening — ${audioName.toLowerCase()} only`
+            : phase === "running"
+              ? "Your first frame"
+              : "What you would be seeing"}
+        </span>
+        {#if previewUrl}
+          <div class="ob-shot"><img src={previewUrl} alt="The first frame Mnema captured" /></div>
+        {:else}
+          <div class="ob-shot empty">
+            <span class="ob-fine">
+              {#if audioOnly}
+                No screen frames — {screenOff}.
+              {:else if phase === "running" && frame}
+                Frame captured — its image is still being written.
+              {:else if phase === "running" || phase === "starting"}
+                first frame due within {intervalS} {intervalS === 1 ? "second" : "seconds"}
+              {:else}
+                No frame has been captured.
+              {/if}
+            </span>
+          </div>
+        {/if}
+        {#if frame}
+          <p class="ob-fine num">
+            Captured {formatClock(new Date(frame.capturedAt), { seconds: true })} · {secondsAgo}
+            {secondsAgo === 1 ? "second" : "seconds"} ago
+          </p>
+        {/if}
       </div>
-    {:else if phase === "idle"}
-      <p class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema, then relaunch once.</p>
-    {/if}
+
+      {#if ocrText}
+        <div class="ob-head">
+          <span class="mx-label">First words read off it · already searchable</span>
+          <!-- One letter-by-letter reveal, once; reduced motion shows it whole. -->
+          <!-- prettier-ignore -->
+          <p class="ob-ocr"><mark>{#each [...ocrText] as ch, i (i)}<span style:--i={i}>{ch}</span>{/each}</mark></p>
+        </div>
+      {:else if phase === "idle"}
+        <p class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema, then relaunch once.</p>
+      {:else if audioOnly && !screenGranted}
+        <div class="mx-notice" data-tone="warn">
+          <span class="mx-notice__icon"><IconLock width="15" height="15" /></span>
+          <b class="mx-notice__title">Screen Recording is off for Mnema</b>
+          <p class="mx-notice__text">
+            Turn Screen Recording on in System Settings, then relaunch once — frames start on their own.
+          </p>
+          <div class="mx-notice__acts">
+            <button class="mx-btn mx-btn--sm" onclick={openSettings}>
+              Open System Settings<IconExternal width="12" height="12" />
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
   </div>
 </div>
 
-<!-- The same footer every other screen has: state on the left, actions on the
-     right. It used to be pinned to the floor of the 360px column. -->
-<div class="ob-foot">
-  <hr class="ob-rule" />
-  <div class="ob-acts">
+<!-- The same footer every other screen has: state on the left, actions on the right. -->
+<footer class="ob-foot">
+  <p class="ob-foot__note">
     {#if phase === "idle"}
-      <span class="ob-fine spacer">Grant it later and capture starts on its own.</span>
+      Grant it later and capture starts on its own.
     {:else if c.selectedSemanticSearchDownloadRunning && c.selectedSemanticSearchDownloadPercent !== null}
-      <span class="ob-fine spacer">
-        Preparing · Semantic Search
-        <span class="ob-num">{c.selectedSemanticSearchDownloadPercent}%</span> — turns itself on.
-      </span>
+      Preparing · Semantic Search <span class="ob-num">{c.selectedSemanticSearchDownloadPercent}%</span> — turns
+      itself on.
     {:else if phase === "running"}
-      <span class="ob-fine spacer">Everything else runs in the background from here.</span>
+      Everything else runs in the background from here.
     {/if}
-    {#if phase === "idle"}
-      <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-      <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
-      <button class="ob-btn" onclick={recheck} disabled={rechecking}>
-        {rechecking ? "Re-checking…" : "Re-check"}
-      </button>
-      <button class="ob-btn primary" onclick={openSettings}>
-        Open System&nbsp;Settings&nbsp; ›
-      </button>
-    {:else if phase === "failed"}
-      <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-      <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
-      <button class="ob-btn primary" onclick={relaunch}>Relaunch Mnema</button>
-    {:else}
-      <button class="ob-btn primary" onclick={openMnema} disabled={phase === "starting"}>
-        Open Mnema&nbsp; →
-      </button>
-    {/if}
-  </div>
-</div>
+  </p>
+  {#if phase === "idle"}
+    <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+    <button class="mx-btn" onclick={openMnema}>Open Mnema anyway</button>
+    <button class="mx-btn" onclick={recheck} disabled={rechecking}>
+      {rechecking ? "Re-checking…" : "Re-check"}
+    </button>
+    <button class="mx-btn mx-btn--primary" onclick={openSettings}>
+      Open System Settings<IconExternal width="13" height="13" />
+    </button>
+  {:else if phase === "failed"}
+    <button class="mx-btn mx-btn--ghost" onclick={onBack}>Back</button>
+    <button class="mx-btn" onclick={openMnema}>Open Mnema anyway</button>
+    <button class="mx-btn mx-btn--primary" onclick={relaunch}>Relaunch Mnema</button>
+  {:else}
+    <button class="mx-btn mx-btn--primary" onclick={openMnema} disabled={phase === "starting"}>
+      Open Mnema<IconArrow class="ob-btn-arrow" width="14" height="14" />
+    </button>
+  {/if}
+</footer>
 
 <style>
-  .split {
+  .ob-split {
     display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 44px;
-    /* The two columns centre against each other; nothing is pinned to a
-       column's floor any more (the actions moved to `.ob-foot`). */
+    grid-template-columns: minmax(0, 360px) minmax(0, 1fr);
+    gap: var(--s-7);
     align-items: center;
-    flex: 1;
-    min-height: 0;
   }
-  .col {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
+  .ob-finale__title {
+    margin: var(--s-4) 0 0;
+    font: 600 60px / 0.98 var(--font-sans);
+    letter-spacing: -0.042em;
+    color: var(--app-text-strong);
   }
-  .evidence {
-    gap: 18px;
+  .mx-rec {
+    font: 500 var(--text-sm) / 1 var(--font-mono);
+    letter-spacing: 0.04em;
   }
-  .ob-disp.big {
-    font-size: 42px;
-    margin-top: 16px;
-  }
-  .reason {
-    font-size: var(--text-sm);
-    line-height: 1.7;
-    color: var(--app-danger);
+  .ob-reason {
     margin: 0;
-    max-width: 64ch;
+    font: 400 var(--text-md) / 1.45 var(--font-mono);
+    color: var(--app-danger-text);
   }
-
-  /* ---- one heartbeat: the app coming alive. Running state ONLY. ---- */
-  .rec {
-    display: inline-flex;
-    align-items: center;
-    gap: 11px;
+  .ob-evidence {
+    display: grid;
+    gap: var(--s-5);
   }
-  .rec .tag {
-    display: inline;
+  .ob-evidence > .ob-head {
+    justify-items: stretch;
   }
-  .rec .dot {
-    position: relative;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    flex: none;
-    background: var(--app-accent);
-    animation: hb 2.8s ease-in-out infinite;
-  }
-  .rec .dot::after {
-    content: "";
-    position: absolute;
-    inset: -5px;
-    border-radius: 50%;
-    border: 1px solid var(--app-accent);
-    animation: hb-ring 2.8s ease-out infinite;
-  }
-  @keyframes hb {
-    0%,
-    100% {
-      opacity: 0.42;
-      transform: scale(0.78);
-    }
-    12% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    46% {
-      opacity: 0.6;
-      transform: scale(0.88);
-    }
-  }
-  @keyframes hb-ring {
-    0% {
-      opacity: 0.55;
-      transform: scale(0.5);
-    }
-    55%,
-    100% {
-      opacity: 0;
-      transform: scale(1.7);
-    }
-  }
-  /* No heartbeat when nothing is recording — the absence is the point. */
-  .ring-glyph {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 1px solid var(--app-text-subtle);
-    display: inline-block;
-    flex: none;
-  }
-  .ring-glyph.bad {
-    border-color: var(--app-danger);
-  }
-
-  /* ---- the evidence ---- */
-  .shot {
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-subtle);
-    overflow: hidden;
+  .ob-shot {
     position: relative;
     aspect-ratio: 16 / 10;
+    overflow: hidden;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--app-border);
+    background: var(--app-surface);
   }
-  .shot img {
+  .ob-shot img {
     width: 100%;
     height: 100%;
     object-fit: contain;
     display: block;
   }
-  .shot.empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
+  .ob-shot.empty {
+    display: grid;
+    place-items: center;
     padding: 0 24px;
+    text-align: center;
+    border-style: dashed;
+    background: transparent;
   }
-  .ocr {
+  .ob-ocr {
+    margin: 0;
+    padding: 12px var(--s-3);
+    border-radius: var(--r-md);
+    background: var(--app-surface);
     border: 1px solid var(--app-border);
-    border-radius: 8px;
-    padding: 14px 16px;
-    background: var(--app-surface-subtle);
-    font-size: var(--text-md);
+    font: 400 var(--text-md) / 1.5 var(--font-mono);
     color: var(--app-text);
     overflow-x: auto;
-  }
-  .ocr .hit {
-    color: var(--app-accent);
     white-space: nowrap;
   }
-
-  /* ---- text that develops: garbled glyphs settle into characters, once ---- */
-  .gl {
-    position: relative;
-    display: inline-block;
+  .ob-ocr mark {
+    background: none;
+    color: var(--app-accent);
+    text-decoration: underline;
+    text-decoration-color: var(--app-accent-border);
+    text-underline-offset: 4px;
+  }
+  .ob-ocr span {
     white-space: pre;
+    opacity: 0;
+    animation: ob-glyph 360ms var(--ease-quart) forwards;
+    animation-delay: calc(var(--i) * 22ms + 300ms);
   }
-  .gl i {
-    position: absolute;
-    inset: 0;
-    font-style: normal;
-    color: var(--app-text-subtle);
-  }
-  .gl b {
-    font-weight: 400;
-    display: inline-block;
-  }
-  .dev .gl i {
-    animation: gl-out 2.6s steps(1, end) both;
-  }
-  .dev .gl b {
-    animation: gl-in 2.6s steps(1, end) both;
-  }
-  @keyframes gl-out {
-    0% {
-      opacity: 1;
-    }
-    4% {
-      opacity: 0.35;
-    }
-    8% {
-      opacity: 1;
-    }
-    12% {
-      opacity: 0.5;
-    }
-    14% {
-      opacity: 1;
-    }
-    15%,
-    100% {
+  @keyframes ob-glyph {
+    from {
       opacity: 0;
+      filter: blur(3px);
     }
-  }
-  @keyframes gl-in {
-    0%,
-    14% {
-      opacity: 0;
-    }
-    15%,
-    100% {
+    to {
       opacity: 1;
+      filter: none;
     }
   }
-
   @media (prefers-reduced-motion: reduce) {
-    .dev .gl i {
-      display: none;
-    }
-    .dev .gl b {
+    .ob-ocr span {
       animation: none;
       opacity: 1;
-    }
-    .rec .dot {
-      animation: none;
-      opacity: 1;
-      transform: none;
-    }
-    .rec .dot::after {
-      animation: none;
-      opacity: 0.25;
-      transform: none;
     }
   }
 </style>

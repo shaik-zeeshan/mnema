@@ -5,12 +5,11 @@
 //! page's growing read surface does not pile onto that (already very large)
 //! module.
 
-use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::Manager;
 
 use crate::app_infra::AppInfraState;
@@ -146,18 +145,6 @@ pub async fn list_user_context_derivation_runs(
         .map_err(|error| format!("failed to list derivation runs: {error}"))
 }
 
-/// Which log file to tail. A closed enum, never a caller-supplied path: the
-/// debug page can only reach the two logs the app itself writes, so there is no
-/// path-traversal surface (`../../../etc/passwd` does not deserialize).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AppLogFile {
-    /// The `tauri-plugin-log` application log (`rust.log`).
-    Rust,
-    /// The native-capture debug log (`native-capture-debug.log`).
-    NativeCapture,
-}
-
 /// The last `lines` lines of one app log.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,15 +159,18 @@ pub struct AppLogTailDto {
 /// Hard ceiling on a single tail request — a debug readout, not a log viewer.
 const MAX_TAIL_LINES: usize = 2_000;
 
-/// Read the last `lines` lines of `path`.
+/// Bytes read per backward step when tailing a log.
+const TAIL_BLOCK_BYTES: u64 = 64 * 1024;
+
+/// Read the last `lines` lines of `path`, oldest first.
 ///
-/// ponytail: streams the file forward through a bounded `VecDeque` ring rather
-/// than reading it into memory or reverse-seeking. That is O(file) I/O but O(N)
-/// memory, which is the right trade for a log tail a human triggers. Upgrade to
-/// a reverse block reader only if the logs grow big enough for the read to be
-/// felt.
+/// Reads backward from the end in `TAIL_BLOCK_BYTES` blocks until it holds
+/// more than `lines` newlines or reaches the start, so a poll costs O(tail),
+/// not O(file) — rust.log runs to 5 MB and the Logs tab polls every 2 s.
+/// ponytail: one line longer than the whole file still reads to the start;
+/// fine for a log a human triggers.
 fn tail_lines(path: &std::path::Path, lines: usize) -> std::io::Result<Vec<String>> {
-    let file = match std::fs::File::open(path) {
+    let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
         // Missing file is an empty tail, not an error: the log simply has not
         // been written yet (or the user just deleted it from this same page).
@@ -188,40 +178,65 @@ fn tail_lines(path: &std::path::Path, lines: usize) -> std::io::Result<Vec<Strin
         Err(error) => return Err(error),
     };
 
-    let mut ring: VecDeque<String> = VecDeque::with_capacity(lines.min(MAX_TAIL_LINES));
-    for line in BufReader::new(file).lines() {
-        // Lossless UTF-8 is not guaranteed for a log a panic hook wrote into;
-        // skip a line rather than fail the whole tail.
-        let Ok(line) = line else { continue };
-        if ring.len() == lines {
-            ring.pop_front();
-        }
-        ring.push_back(line);
+    let mut pos = file.seek(SeekFrom::End(0))?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut newlines = 0;
+    // `> lines` newlines guarantees the first kept line is complete, even with
+    // a trailing newline.
+    while pos > 0 && newlines <= lines {
+        let step = pos.min(TAIL_BLOCK_BYTES);
+        pos -= step;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut block = vec![0; step as usize];
+        file.read_exact(&mut block)?;
+        newlines += block.iter().filter(|&&byte| byte == b'\n').count();
+        block.extend_from_slice(&buf);
+        buf = block;
+    }
+    if buf.is_empty() {
+        return Ok(Vec::new());
     }
 
-    Ok(ring.into())
-}
-
-fn app_log_path(app_handle: &tauri::AppHandle, file: AppLogFile) -> Result<PathBuf, String> {
-    match file {
-        AppLogFile::Rust => app_handle
-            .path()
-            .app_log_dir()
-            .map(|dir| dir.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
-            .map_err(|error| format!("failed to resolve application log path: {error}")),
-        AppLogFile::NativeCapture => Ok(
-            crate::native_capture::debug_log::native_capture_debug_log_path(app_handle),
-        ),
+    // Not at the start: everything up to the first newline is a partial line.
+    let mut text = buf.as_slice();
+    if pos > 0 {
+        let first = text
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(0, |at| at + 1);
+        text = &text[first..];
     }
+    // A trailing newline must not produce a phantom empty last line.
+    let text = text.strip_suffix(b"\n").unwrap_or(text);
+    let all: Vec<&[u8]> = text.split(|&byte| byte == b'\n').collect();
+    Ok(all[all.len().saturating_sub(lines)..]
+        .iter()
+        .map(|line| {
+            // Lossless UTF-8 is not guaranteed for a log a panic hook wrote
+            // into; lossy-convert a line rather than fail the whole tail.
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            String::from_utf8_lossy(line).into_owned()
+        })
+        .collect())
 }
 
+/// The `tauri-plugin-log` application log (`rust.log`). The path is fixed, never
+/// caller-supplied, so the debug page has no path-traversal surface.
+fn app_log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_handle
+        .path()
+        .app_log_dir()
+        .map(|dir| dir.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
+        .map_err(|error| format!("failed to resolve application log path: {error}"))
+}
+
+// Async so the file read runs off the main thread.
 #[tauri::command]
-pub fn tail_app_log(
+pub async fn tail_app_log(
     app_handle: tauri::AppHandle,
-    file: AppLogFile,
     lines: Option<usize>,
 ) -> Result<AppLogTailDto, String> {
-    let path = app_log_path(&app_handle, file)?;
+    let path = app_log_path(&app_handle)?;
     let lines = lines.unwrap_or(200).clamp(1, MAX_TAIL_LINES);
     let tail = tail_lines(&path, lines)
         .map_err(|error| format!("failed to read log '{}': {error}", path.display()))?;
@@ -317,17 +332,33 @@ mod tests {
     }
 
     #[test]
-    fn app_log_file_deserializes_only_the_two_known_logs() {
+    fn tail_lines_reads_backward_across_block_boundaries() {
+        let dir = TestDir::new("blocks");
+        let log = dir.path().join("rust.log");
+        // ~3 blocks of 37-byte lines, so lines straddle every block boundary,
+        // plus one invalid-UTF-8 line that must not fail the tail.
+        let count = (3 * TAIL_BLOCK_BYTES as usize) / 37;
+        let mut body: Vec<u8> = (0..count)
+            .flat_map(|index| format!("line {index:08} padding padding pad\n").into_bytes())
+            .collect();
+        body.extend_from_slice(b"bad \xff byte\n");
+        assert!(body.len() as u64 > 2 * TAIL_BLOCK_BYTES);
+        fs::write(&log, body).expect("log should write");
+
+        let tail = tail_lines(&log, 2_000).expect("tail should read");
+        assert_eq!(tail.len(), 2_000);
         assert_eq!(
-            serde_json::from_str::<AppLogFile>("\"rust\"").expect("rust log should parse"),
-            AppLogFile::Rust
+            tail[0],
+            format!("line {:08} padding padding pad", count - 1_999)
         );
         assert_eq!(
-            serde_json::from_str::<AppLogFile>("\"nativeCapture\"")
-                .expect("native capture log should parse"),
-            AppLogFile::NativeCapture
+            tail[1_998],
+            format!("line {:08} padding padding pad", count - 1)
         );
-        // No caller-supplied path can reach the reader.
-        assert!(serde_json::from_str::<AppLogFile>("\"../../etc/passwd\"").is_err());
+        assert_eq!(tail[1_999], "bad \u{fffd} byte");
+
+        let whole = tail_lines(&log, usize::MAX).expect("whole file should read");
+        assert_eq!(whole.len(), count + 1);
+        assert_eq!(whole[0], "line 00000000 padding padding pad");
     }
 }

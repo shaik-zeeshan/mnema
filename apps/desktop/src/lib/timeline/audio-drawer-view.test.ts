@@ -324,7 +324,8 @@ describe("drawerStatusPill", () => {
   };
 
   it("counts speakers on the happy path", () => {
-    expect(drawerStatusPill(base)).toEqual({ tone: "ok", label: "3 speakers", busy: false });
+    expect(drawerStatusPill(base)).toEqual({ tone: "ok", label: "transcribed · 3 speakers", busy: false });
+    expect(drawerStatusPill({ ...base, distinctSpeakers: 1 }).label).toBe("transcribed · 1 speaker");
   });
 
   it("prefers the in-flight speaker pass over a competing busy status AND a failure", () => {
@@ -332,7 +333,7 @@ describe("drawerStatusPill", () => {
     // whole pill against statuses that would otherwise win.
     expect(
       drawerStatusPill({ ...base, speakerAnalysisRunning: true, transcriptStatus: "loading" }),
-    ).toEqual({ tone: "work", label: "speakers", busy: true });
+    ).toEqual({ tone: "work", label: "finding speakers", busy: true });
     expect(
       drawerStatusPill({
         ...base,
@@ -340,13 +341,13 @@ describe("drawerStatusPill", () => {
         transcriptStatus: "error",
         speakerAnalysisFailed: true,
       }),
-    ).toEqual({ tone: "work", label: "speakers", busy: true });
+    ).toEqual({ tone: "work", label: "finding speakers", busy: true });
   });
 
   it("uses system-audio wording for the speech-detection stage", () => {
     expect(drawerStatusPill({ ...base, source: "systemAudio", transcriptStatus: "running" }).label)
       .toBe("detecting speech");
-    expect(drawerStatusPill({ ...base, transcriptStatus: "running" }).label).toBe("processing");
+    expect(drawerStatusPill({ ...base, transcriptStatus: "running" }).label).toBe("transcribing");
   });
 
   it("marks a failed speaker pass bad even though the transcript succeeded", () => {
@@ -365,7 +366,7 @@ describe("drawerStatusPill", () => {
     ).toEqual({ tone: "bad", label: "speech detection failed", busy: false });
     expect(drawerStatusPill({ ...base, transcriptStatus: "error" })).toEqual({
       tone: "bad",
-      label: "error",
+      label: "failed",
       busy: false,
     });
   });
@@ -384,7 +385,7 @@ describe("drawerStatusPill", () => {
     // transcribed, but diarization attributed it to nobody
     expect(drawerStatusPill({ ...base, distinctSpeakers: 0 })).toEqual({
       tone: "ok",
-      label: "completed",
+      label: "transcribed",
       busy: false,
     });
     expect(drawerStatusPill({ ...base, transcriptStatus: "idle" })).toEqual({

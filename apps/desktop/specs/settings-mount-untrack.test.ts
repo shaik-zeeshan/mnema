@@ -64,7 +64,6 @@ describe("settings mount: loaders run inside untrack()", () => {
     "loadSemanticSearchModelStatus",
     "loadSemanticSearchSupportedModels",
     "loadPersonProfileCount",
-    "loadDebugLogStatus",
     "loadGeneralLogStatus",
     "loadAppUpdateStatus",
     "loadThirdPartyNotices",

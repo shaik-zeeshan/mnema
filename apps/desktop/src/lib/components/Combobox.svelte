@@ -95,7 +95,7 @@
   bind:this={wrapperEl}
 >
   {#if label}
-    <span class="combobox-label" id={labelId}>{label}</span>
+    <span class="mx-label" id={labelId}>{label}</span>
   {/if}
   <!-- Inner positioning context wrapping only the trigger (Root renders no box),
        so the non-portaled popover anchors to the trigger rather than the
@@ -218,65 +218,42 @@
     pointer-events: none;
   }
 
-  .combobox-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-
-  /* Trigger mirrors Select's recessed trigger exactly so the two read as one
-     family (radius 8, mono value, chevron, inset shadow, accent focus ring). */
+  /* Trigger mirrors Select's kit control exactly (--h-md, flat border, sans). */
   :global(.combobox-trigger) {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px;
     width: 100%;
-    padding: 7px 10px;
-    background: var(--app-surface);
+    height: var(--h-md);
+    padding: 0 10px 0 var(--s-3);
+    background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    gap: 8px;
+    font: 400 var(--text-md)/1 var(--font-sans);
+    color: var(--app-text-muted);
     text-align: left;
+    transition: border-color var(--t-fast) var(--ease-quart), box-shadow var(--t-med) var(--ease-quart);
   }
 
-  :global(.combobox-trigger:hover) {
+  :global(.combobox-trigger:hover),
+  :global(.combobox-trigger[data-state="open"]) {
     border-color: var(--app-border-hover);
   }
 
-  :global(.combobox-trigger:active) {
-    background: var(--app-surface-active);
-  }
-
   :global(.combobox-trigger:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
-    outline: none;
-  }
-
-  :global(.combobox-trigger[data-state="open"]) {
-    border-color: var(--app-accent);
+    border-color: var(--app-accent-border);
+    box-shadow: var(--app-ring);
   }
 
   :global(.combobox-trigger--warn) {
     border-color: var(--app-warn-border);
   }
 
-  :global(.combobox-trigger--warn:focus-visible) {
-    border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
-  }
-
   .combobox-trigger-text {
-    color: var(--app-text);
+    color: var(--app-text-strong);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -293,22 +270,22 @@
     height: 14px;
     flex-shrink: 0;
     fill: none;
-    stroke: var(--app-text-muted);
+    stroke: var(--app-text-subtle);
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: transform 0.15s, stroke 0.15s;
+    transition: transform var(--t-med) var(--ease-expo);
   }
 
   :global(.combobox-trigger[data-state="open"]) .combobox-chevron {
     transform: rotate(180deg);
-    stroke: var(--app-accent);
   }
 
+  /* Popover + rows follow the kit's .mx-pop / .mx-menu (see Select). */
   :global(.combobox-content) {
     background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
+    border: 1px solid var(--app-overlay-border);
+    border-radius: var(--r-lg);
     padding: 4px;
     box-shadow: var(--app-shadow-popover);
     z-index: 100;
@@ -324,16 +301,15 @@
     gap: 8px;
     padding: 6px 9px;
     margin: -4px -4px 4px;
-    background: var(--app-surface);
-    border-bottom: 1px solid var(--app-border);
-    border-radius: 6px 6px 0 0;
+    border-bottom: 1px solid var(--mx-hairline);
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
   }
 
   .combobox-search-icon {
     width: 13px;
     height: 13px;
     flex: 0 0 13px;
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
   :global(.combobox-search-input) {
@@ -342,9 +318,8 @@
     background: transparent;
     border: none;
     outline: none;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    color: var(--app-text);
+    font: 400 var(--text-md)/1.3 var(--font-sans);
+    color: var(--app-text-strong);
     padding: 0;
   }
 
@@ -361,19 +336,17 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 10px;
-    border-radius: 3px;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    font: 400 var(--text-md)/1.3 var(--font-sans);
     color: var(--app-text);
+    text-align: left;
     cursor: pointer;
-    transition: background 0.1s, color 0.1s;
     outline: none;
     user-select: none;
-    border: none;
-    background: transparent;
-    width: 100%;
-    text-align: left;
   }
 
   :global(.combobox-item:hover),
@@ -383,8 +356,8 @@
   }
 
   :global(.combobox-item[data-selected]) {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
+    background: var(--mx-selected);
+    color: var(--app-text-strong);
   }
 
   .combobox-item-check {
@@ -398,16 +371,13 @@
   .combobox-empty {
     padding: 14px 10px;
     text-align: center;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-sm);
-    font-style: italic;
+    font: 400 var(--text-base)/1.3 var(--font-sans);
     color: var(--app-text-subtle);
   }
 
   @media (prefers-reduced-motion: reduce) {
     :global(.combobox-trigger),
-    .combobox-chevron,
-    :global(.combobox-item) {
+    .combobox-chevron {
       transition: none;
     }
   }

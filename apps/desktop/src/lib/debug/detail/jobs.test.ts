@@ -2,7 +2,18 @@
 // svelte-check tsconfig, so skip static checking here (log-filter.test.ts
 // precedent).
 import { describe, expect, it } from "bun:test";
-import { hasNextPage, jobProvider, jobState, nextAttemptLabel, pageCount, pageTotalsLabel } from "./jobs";
+import {
+	errorTitle,
+	filterCounts,
+	jobLogNeedle,
+	jobMessage,
+	jobProvider,
+	jobState,
+	matchesFilter,
+	nextAttemptLabel,
+	subjectLabel,
+	timelineTarget,
+} from "./jobs";
 
 // SQLite's naive-UTC shape, exactly as `next_attempt_at` is written
 // (`datetime(CURRENT_TIMESTAMP, '+300 seconds')`).
@@ -37,12 +48,11 @@ describe("jobState", () => {
 		expect(jobState({ ...job("queued", null), modelLocked: true }, NOW)).toBe("preparing");
 	});
 
-	// Precedence matters: a parked job may also carry a stale backoff from before
-	// its model went away. The model is the reason it will not run next, so that
-	// is what the row must say.
-	it("prefers 'preparing' over 'retrying' when a parked job also has a backoff", () => {
+	// Precedence matters: the backend's `retrying` count includes deferred jobs
+	// whatever their model lock, so the Retrying filter must list them too.
+	it("prefers 'retrying' over 'preparing' when a parked job also has a backoff", () => {
 		expect(jobState({ ...job("queued", "2026-07-15 14:36:00"), modelLocked: true }, NOW)).toBe(
-			"preparing",
+			"retrying",
 		);
 	});
 
@@ -71,24 +81,70 @@ describe("nextAttemptLabel", () => {
 	});
 });
 
-describe("pagination against the wire total", () => {
-	it("counts pages, never fewer than one", () => {
-		expect(pageCount(0, 25)).toBe(1);
-		expect(pageCount(25, 25)).toBe(1);
-		expect(pageCount(26, 25)).toBe(2);
+describe("filterCounts", () => {
+	it("splits retrying out of the lane's queued count", () => {
+		const counts = filterCounts({ queued: 14, retrying: 12, running: 1, completed: 200, failed: 3 });
+		expect(counts).toEqual({ all: 218, queued: 2, running: 1, retrying: 12, failed: 3 });
 	});
+});
 
-	it("offers next exactly while pages remain", () => {
-		expect(hasNextPage(0, 26, 25)).toBe(true);
-		expect(hasNextPage(1, 26, 25)).toBe(false);
-		expect(hasNextPage(0, 25, 25)).toBe(false);
-		expect(hasNextPage(0, 0, 25)).toBe(false);
+describe("matchesFilter", () => {
+	it("keeps parked jobs under Queued and retrying ones out of it", () => {
+		expect(matchesFilter("preparing", "queued")).toBe(true);
+		expect(matchesFilter("retrying", "queued")).toBe(false);
+		expect(matchesFilter("retrying", "retrying")).toBe(true);
+		expect(matchesFilter("completed", "all")).toBe(true);
 	});
+});
 
-	it("labels this page's rows against the filter's total", () => {
-		expect(pageTotalsLabel(6, 12)).toBe("6 of 12 jobs");
-		expect(pageTotalsLabel(1, 1)).toBe("1 of 1 job");
-		expect(pageTotalsLabel(0, 0)).toBe("no jobs");
+describe("plain error titles", () => {
+	it("names the provider for connectivity failures", () => {
+		expect(errorTitle("deepgram request timed out after 30s", "deepgram")).toBe("Deepgram can’t be reached");
+		expect(errorTitle("HTTP 503 from upstream", null)).toBe("The provider can’t be reached");
+	});
+	it("recognises a cut-off recording before anything else", () => {
+		expect(errorTitle("decode: moov atom not found (segment 2291)", "deepgram")).toBe("The recording was cut off");
+	});
+	it("recognises a missing model", () => {
+		expect(errorTitle("model parakeet-tdt not installed", null)).toBe("The model isn’t installed");
+	});
+	it("falls back to a generic title", () => {
+		expect(errorTitle("disk I/O error", null)).toBe("This job failed");
+		expect(errorTitle(null, null)).toBe("This job failed");
+	});
+});
+
+describe("jobMessage", () => {
+	const row = (o = {}) => ({ status: "queued", nextAttemptAt: null, lastError: null, payloadJson: '{"provider":"deepgram"}', ...o });
+	it("counts down a retry and says why", () => {
+		const r = row({ nextAttemptAt: "2026-07-15 14:31:42", lastError: "connection timed out" });
+		expect(jobMessage(r, "retrying", NOW, 12)).toBe("Next try in 42s · Deepgram can’t be reached");
+	});
+	it("shows the raw first line for an unknown failure", () => {
+		expect(jobMessage(row({ status: "failed", lastError: "disk I/O error\nat foo" }), "failed", NOW, 0)).toBe("disk I/O error");
+	});
+	it("says what a queued job waits behind", () => {
+		expect(jobMessage(row(), "queued", NOW, 12)).toBe("Waiting behind 12 retries");
+		expect(jobMessage(row(), "queued", NOW, 0)).toBe("Waiting its turn");
+		expect(jobMessage(row({ status: "running" }), "running", NOW, 0)).toBeNull();
+	});
+});
+
+describe("subject + timeline target", () => {
+	it("labels and targets frames and segments", () => {
+		expect(subjectLabel({ subjectType: "frame", subjectId: 918244 })).toBe("Frame #918244");
+		expect(subjectLabel({ subjectType: "audio_segment", subjectId: 2291 })).toBe("Segment #2291");
+		expect(timelineTarget({ subjectType: "audio_segment", subjectId: 2291 })).toEqual({ kind: "audio", frameId: null, audioSegmentId: 2291 });
+		expect(timelineTarget({ subjectType: "frame", subjectId: 7 })).toEqual({ kind: "frame", frameId: 7, audioSegmentId: null });
+		expect(timelineTarget({ subjectType: "other", subjectId: 7 })).toBeNull();
+	});
+});
+
+describe("jobLogNeedle", () => {
+	it("matches the processing-job log line, not app-infra's cpu job lines", () => {
+		const needle = jobLogNeedle(42);
+		expect("processing job 42 retry requested from developer window".includes(needle)).toBe(true);
+		expect("[app-infra][jobs] captured panic in cpu job 42 (ocr): boom".includes(needle)).toBe(false);
 	});
 });
 

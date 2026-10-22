@@ -305,6 +305,7 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       // reset the selection back to the PI runtime default on every full save.
       // Left null so Ask AI inherits the global default model chosen below.
       askAiModel: base.access?.askAiModel ?? null,
+      quickRecallAutoAnswer: base.access?.quickRecallAutoAnswer ?? "localOnly",
     },
     // Reasoning Engine config connected inline during onboarding (AskAiBody).
     // The master AI switch is MONOTONIC w.r.t. the base: onboarding only surfaces

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   buildHourBuckets,
   dayRange,
@@ -6,6 +6,11 @@ import {
   hourRange,
 } from "../src/lib/timeline/jumper-time";
 import type { FrameSummaryDto } from "../src/lib/types/app-infra";
+import { setTimeFormat } from "../src/lib/time-format";
+
+// Labels follow the Time format setting; pin 12-hour so the suite is locale-proof.
+beforeAll(() => setTimeFormat("h12"));
+afterAll(() => setTimeFormat("system"));
 
 // Pure time-list helpers extracted from `TimelineJumper.svelte`. `now` is
 // injected so "today caps at the current hour" is deterministic, and ranges are
@@ -23,6 +28,13 @@ describe("formatHourLabel", () => {
     expect(formatHourLabel(12)).toBe("12:00 PM");
     expect(formatHourLabel(13)).toBe("1:00 PM");
     expect(formatHourLabel(23)).toBe("11:00 PM");
+  });
+
+  test("follows a 24-hour Time format", () => {
+    setTimeFormat("h24");
+    expect(formatHourLabel(0)).toBe("00:00");
+    expect(formatHourLabel(13)).toBe("13:00");
+    setTimeFormat("h12");
   });
 });
 

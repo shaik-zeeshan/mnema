@@ -10,6 +10,7 @@
 // these functions only put the backend's verdict into words.
 
 import type { PersonProfileDto } from "$lib/types/app-infra";
+import { humanizeError } from "./format-error";
 
 /** Clip length asked of `record_bounded_microphone_clip`. */
 export const ENROLLMENT_CLIP_MS = 15_000;
@@ -78,4 +79,25 @@ export function recognitionReadout(state: RecognitionReadout): string {
   return state.autoLabelOwner
     ? `Voiceprint saved for ${who}. Your turns are labelled with your name on their own when the match is confident.`
     : `Voiceprint saved for ${who}. Mnema suggests your name and waits for you to confirm it.`;
+}
+
+/**
+ * A failed take or enroll command (not a rejection), in words. The known
+ * failures get what-to-do copy; anything else shows the raw error.
+ * Codes: `record_bounded_microphone_clip` in `src-tauri/src/native_capture.rs`
+ * and the microphone capture crate; the build string is `voice_enrollment.rs`.
+ */
+export function voiceErrorMessage(err: unknown): string {
+  const code = typeof err === "object" && err !== null && "code" in err ? String(err.code) : "";
+  const raw = humanizeError(err);
+  if (code === "microphone_clip_already_recording") {
+    return "A take is already recording. Wait for it to finish, then try again.";
+  }
+  if (code === "microphone_input_unavailable") {
+    return "That didn’t record — the microphone is unavailable. Another app may be using it, or it was unplugged. Free it up, then record again.";
+  }
+  if (code === "unsupported_platform" || /not compiled into this build/i.test(raw)) {
+    return "Voice enrollment isn’t available in this build of Mnema.";
+  }
+  return raw;
 }

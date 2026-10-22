@@ -94,7 +94,7 @@ export class OnboardingController {
   draftSaveDirectory = $state("");
   draftPreviewCacheTtlSeconds = $state(3600);
   draftRetentionPolicy = $state<RetentionPolicy>("never");
-  draftAutoStart = $state(false);
+  draftAutoStart = $state(true);
   draftPauseCaptureOnInactivity = $state(false);
   draftIdleTimeoutSeconds = $state(30);
   draftActivityMode = $state<ActivityMode>("system_input_or_screen_or_audio");
@@ -183,7 +183,6 @@ export class OnboardingController {
   get permissionTone() { return this.permsStore.permissionTone; }
   get loadGeckoUrlAccess() { return this.permsStore.loadGeckoUrlAccess; }
   get requestGeckoAccess() { return this.permsStore.requestGeckoAccess; }
-  get openGeckoAccessSettings() { return this.permsStore.openGeckoAccessSettings; }
   get recheckGeckoAccess() { return this.permsStore.recheckGeckoAccess; }
 
   // ── Lifecycle flags ──────────────────────────────────────────────────────

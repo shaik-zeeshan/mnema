@@ -2,7 +2,7 @@
 import type { RetentionPolicy } from "$lib/types/recording";
 
 const DAY_MS = 86_400_000;
-const POLICY_DAYS: Record<RetentionPolicy, number | null> = {
+export const POLICY_DAYS: Record<RetentionPolicy, number | null> = {
   never: null,
   days_7: 7,
   days_14: 14,

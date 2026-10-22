@@ -34,14 +34,6 @@ export function nearestLadderIndex(fps: number): number {
 	return best;
 }
 
-// Snapshots inside one minute of recording. The first one lands at t=0, so a
-// 45s interval fits TWO (0s and 45s) — `60 / intervalS` counts intervals, not
-// snapshots, and understates every stop that does not divide 60. The epsilon
-// keeps the closing edge exclusive: 60s yields 1, not 2.
-export function snapshotsPerMinute(intervalS: number): number {
-	return Math.floor((60 - 1e-9) / intervalS) + 1;
-}
-
 // Readout phrase for the control header: "every 2 seconds", "once per minute".
 export function captureIntervalPhrase(intervalS: number): string {
 	if (intervalS < 1) return `${Math.round(1 / intervalS)} times a second`;
@@ -59,14 +51,6 @@ export function captureRateShortLabel(fps: number): string {
 	return `1 snapshot every ${intervalS}s`;
 }
 
-// Storage (and encode CPU) scale linearly with fps for preset bitrates —
-// compute_effective_screen_bitrate_bps multiplies by the frame rate.
-export function relativeStorageLabel(intervalS: number): string {
-	const ratio = DEFAULT_CAPTURE_INTERVAL_S / intervalS;
-	if (ratio >= 1) return `${Math.round(ratio * 10) / 10}×`;
-	return `1/${Math.round(1 / ratio)}×`;
-}
-
 // Timeline app-run split threshold. Frames land one capture interval apart, so
 // the gap must comfortably exceed one interval or a single skipped frame splits
 // a run. Derived from the live rate; the 10s floor preserves the old behaviour
@@ -75,4 +59,22 @@ export function relativeStorageLabel(intervalS: number): string {
 export function timelineGapMs(fps: number | undefined): number {
 	const intervalMs = fps && fps > 0 ? 1000 / fps : DEFAULT_CAPTURE_INTERVAL_S * 1000;
 	return Math.max(10_000, 3 * intervalMs);
+}
+
+// Settings' capture-rate `mx-seg--mono` stops: the mockup's five plus the 2s
+// default (the mockup drew no default stop). A persisted rate off these stops
+// shows as its own segment so the selection is never blank.
+export const CAPTURE_RATE_STOPS_S = [0.1, 1, 2, 5, 15, 60] as const;
+
+export function captureRateSegLabel(intervalS: number): string {
+	if (intervalS < 1) return `${Math.round(1 / intervalS)}/s`;
+	if (intervalS === 1) return "1/s";
+	if (intervalS === 60) return "1/min";
+	return `${intervalS}s`;
+}
+
+export function captureRateOptions(currentIntervalS: number): { value: string; label: string }[] {
+	return [...new Set<number>([...CAPTURE_RATE_STOPS_S, currentIntervalS])]
+		.sort((a, b) => a - b)
+		.map((s) => ({ value: String(s), label: captureRateSegLabel(s) }));
 }

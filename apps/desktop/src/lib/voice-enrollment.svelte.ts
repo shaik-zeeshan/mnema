@@ -19,6 +19,7 @@ import { errorText } from "$lib/settings/state/format";
 import type { PersonProfileDto } from "$lib/types/app-infra";
 import {
   ENROLLMENT_CLIP_MS,
+  voiceErrorMessage,
   type VoiceEnrollmentOutcome,
   type VoiceEnrollmentRejection,
 } from "$lib/voice-enrollment";
@@ -91,7 +92,7 @@ export class VoiceEnrollmentStore {
       });
       this.stage = "review";
     } catch (err) {
-      this.error = errorText(err);
+      this.error = voiceErrorMessage(err);
       this.stage = "idle";
     } finally {
       this.#stopLevelPolling();
@@ -122,7 +123,7 @@ export class VoiceEnrollmentStore {
       this.rejection = outcome;
       return false;
     } catch (err) {
-      this.error = errorText(err);
+      this.error = voiceErrorMessage(err);
       this.stage = "idle";
       return false;
     }

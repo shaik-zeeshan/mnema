@@ -41,7 +41,7 @@ pub fn start_receipt_refresh_timer(app_handle: tauri::AppHandle) {
                 tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "receipt refresh tick: update window still lapsed, re-activating");
                 super::activation::refresh_receipt(app_handle.clone()).await;
             } else {
-                tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "receipt refresh tick skipped: no longer lapsed");
+                tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "receipt refresh tick skipped: no longer lapsed");
             }
         }
     });

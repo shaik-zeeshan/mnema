@@ -18,7 +18,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { humanizeError } from "$lib/format-error";
   import { trapTabKey } from "$lib/keyboard";
-  import Checkbox from "$lib/components/Checkbox.svelte";
+  import Switch from "$lib/components/Switch.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { activeToolNames, toggleTool } from "$lib/settings/state/mcp-tool-curation";
   import type { McpServerConfig } from "$lib/types";
@@ -139,7 +139,7 @@
             <p class="mcp-tools__error-text">{error}</p>
             <button
               type="button"
-              class="btn btn--ghost btn--sm"
+              class="mx-btn mx-btn--ghost mx-btn--sm"
               onclick={() => server && load(server.id)}
             >
               Retry
@@ -155,21 +155,21 @@
             <div class="mcp-tools__toolbar-actions">
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--ghost mx-btn--sm"
                 onclick={() => onCurate(allNames.slice())}
               >
                 Select all
               </button>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--ghost mx-btn--sm"
                 onclick={() => onCurate([])}
               >
                 Select none
               </button>
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
+                class="mx-btn mx-btn--ghost mx-btn--sm"
                 onclick={() => onCurate(null)}
               >
                 Reset to default
@@ -179,7 +179,7 @@
           <ul class="mcp-tools__list">
             {#each tools as t (t.name)}
               <li class="mcp-tools__row">
-                <Checkbox
+                <Switch
                   checked={checkedNames.has(t.name)}
                   onCheckedChange={(v) => onToggle(t.name, v)}
                   label={t.name}
@@ -338,7 +338,7 @@
     padding: 9px 0;
   }
   .mcp-tools__row + .mcp-tools__row {
-    border-top: 1px dashed var(--app-border);
+    border-top: 1px solid var(--mx-hairline);
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -45,8 +45,8 @@
 <div class="slider-wrapper" class:slider-wrapper--disabled={disabled}>
   {#if label}
     <div class="slider-header">
-      <span class="slider-label" id={labelId}>{label}</span>
-      <span class="slider-value">{displayValue}</span>
+      <span class="mx-label" id={labelId}>{label}</span>
+      <span class="slider-value num">{displayValue}</span>
     </div>
   {/if}
   <BitsSlider.Root
@@ -72,6 +72,7 @@
 </div>
 
 <style>
+  /* Flat: hairline track, solid accent range, plain thumb (no glow). */
   .slider-wrapper {
     display: flex;
     flex-direction: column;
@@ -90,20 +91,9 @@
     justify-content: space-between;
   }
 
-  .slider-label {
-    font-size: var(--text-base);
-    font-weight: 500;
-    color: var(--app-text);
-    letter-spacing: 0.02em;
-  }
-
   .slider-value {
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text-strong);
-    letter-spacing: 0.02em;
-    font-variant-numeric: tabular-nums;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
   }
 
   :global(.slider-root) {
@@ -111,7 +101,7 @@
     display: flex;
     align-items: center;
     width: 100%;
-    height: 20px;
+    height: 18px;
     touch-action: none;
     user-select: none;
     cursor: pointer;
@@ -128,8 +118,8 @@
     left: 0;
     right: 0;
     height: 4px;
-    background: var(--app-border-strong);
-    border-radius: 999px;
+    background: var(--mx-wash-strong);
+    border-radius: var(--r-pill);
     transform: translateY(-50%);
   }
 
@@ -138,8 +128,8 @@
     top: 50%;
     left: 0;
     height: 4px;
-    background: linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
-    border-radius: 999px;
+    background: var(--app-accent);
+    border-radius: var(--r-pill);
     transform: translateY(-50%);
   }
 
@@ -149,27 +139,14 @@
     height: 14px;
     border-radius: 50%;
     background: var(--app-accent);
-    border: 2px solid var(--app-bg);
-    box-shadow: 0 0 8px var(--app-accent-glow);
+    box-shadow: 0 0 0 2px var(--app-surface);
     cursor: pointer;
-    transition: box-shadow 0.12s ease, transform 0.12s ease;
     transform: translateX(-50%);
     outline: none;
   }
 
   :global(.slider-thumb:focus-visible) {
-    box-shadow: var(--app-ring);
     outline: 2px solid var(--app-accent);
     outline-offset: 2px;
-  }
-
-  :global(.slider-thumb:hover) {
-    transform: translateX(-50%) scale(1.15);
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    :global(.slider-thumb) {
-      transition: none;
-    }
   }
 </style>

@@ -1,36 +1,23 @@
 <!--
-  Onboarding's capture line (issue #195, slice 6) — "the sentence".
+  Onboarding's capture rows (issue #195, slice 6; redesign ON2).
 
-  Ported from `docs/onboarding/mockups/input-components/parts/sentence.part.html`,
-  which is the design of record; behaviour and copy come from it. The arithmetic
-  and every string it prints live in `$lib/onboarding/capture-sentence.ts` so
-  `bun test` can pin them; this file is the control surface only.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Capture & Storage) —
+  the old sentence-with-dials became spec rows on kit controls:
+    Take a snapshot   11-stop `mx-seg--mono` over the capture-rate ladder
+    Keep              `mx-seg`, Everything first
+    Saves to          the path + Choose…
+    (caller rows)     `rows` — the screen slots "Never recorded" in here
+  and the verdict panel under them (plan line, verdict, repair buttons).
 
-  ONE line replaces three rows and their two duplicates: the capture-rate
-  slider, the storage field and the retention group on *Capture & Storage*, plus
-  the `RetentionPicker` and rate `Select` on *Change settings*. A user who has
-  read the sentence never meets the same two settings again in a different
-  control.
-
-  The ghost dial: each token prints its own alternatives faintly around it, as
-  many as its ladder can carry — retention prints all four stops (so "everything"
-  reads as one of four rather than as a statement), the rate prints a 5-wide
-  window clamped at both ends, and the folder prints one, the default you moved
-  away from, riding at the very END of the sentence so the full stop still lands
-  on the folder.
-
-  Keyboard parity: ghosts are `aria-hidden` and out of the tab order — three
-  extra tab stops per token is the wrong trade — but every value a ghost reaches
-  is reachable from the token itself. Tab between tokens, ← → step, Page↑/Page↓
-  jump ±2 (the outer ghost), Home/End go to the ends, Enter on the folder opens
-  the picker. Each token is a `role="spinbutton"` carrying `aria-valuetext`, so a
-  screen reader hears the word, not the index.
-
-  Motion: none ambient. The one animation is the probe's indeterminate bar,
-  which is real work in flight, and it is dropped under prefers-reduced-motion.
+  The arithmetic and every string the verdict prints live in
+  `$lib/onboarding/capture-sentence.ts` (`sentenceVerdict`), kept as is so
+  `bun test` pins them; this file is the control surface only. Each rate stop's
+  tooltip carries its daily cost, which is what the old hover preview showed.
 -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
+  import Segmented from "$lib/components/Segmented.svelte";
   import {
     CAPTURE_INTERVAL_LADDER_S,
     captureIntervalPhrase,
@@ -39,10 +26,8 @@
   } from "$lib/components/capture-rate";
   import {
     DEFAULT_FOLDER_LABEL,
-    RATE_GHOST_WIDTH,
     RETENTION_STOPS,
     dailyBytes,
-    ghostWindow,
     retentionIndex,
     sentencePath,
     sentenceVerdict,
@@ -52,6 +37,7 @@
   import type { StorageProbe } from "$lib/onboarding/gates";
   import { describeError, formatBytes } from "$lib/settings/state/format";
   import type { RetentionPolicy } from "$lib/types";
+  import IconFolder from "~icons/lucide/folder";
 
   let {
     frameRate,
@@ -69,8 +55,9 @@
     semanticSearchOn = false,
     onDisableSemanticSearch,
     onError,
+    rows,
   }: {
-    /** Wire format stays fps; the sentence never says "fps". */
+    /** Wire format stays fps; the rows never say "fps". */
     frameRate: number;
     onFrameRateChange: (fps: number) => void;
     retention: RetentionPolicy;
@@ -93,135 +80,50 @@
     /** Omit and the "turn Semantic Search off" escape is not offered. */
     onDisableSemanticSearch?: () => void;
     onError?: (message: string) => void;
+    /** More `.ob-row`s, drawn after Saves to and before the verdict. */
+    rows?: Snippet;
   } = $props();
 
-  // ── The two ladders ───────────────────────────────────────────────────────
   const LADDER = CAPTURE_INTERVAL_LADDER_S;
   const rateIndex = $derived(nearestLadderIndex(frameRate));
   const intervalS = $derived(LADDER[rateIndex]!);
   const keepIndex = $derived(retentionIndex(retention));
 
-  // ── Hover preview ─────────────────────────────────────────────────────────
-  // Hovering a ghost moves the consequence before you commit to it. Mouse only:
-  // ghosts are not focusable, and a keyboard step commits outright.
-  let peek = $state<{ rate?: number; keep?: RetentionPolicy } | null>(null);
-  const viewInterval = $derived(
-    peek?.rate === undefined ? intervalS : LADDER[peek.rate]!,
+  const shortRate = (s: number) => (s < 1 ? `${Math.round(1 / s)}/s` : `${s}s`);
+  const rateOptions = $derived(
+    LADDER.map((s, i) => ({
+      value: String(i),
+      label: shortRate(s),
+      ariaLabel: `${captureIntervalPhrase(s)} — ${formatBytes(dailyBytes(s, videoPixels))} a day`,
+    })),
   );
-  const viewRetention = $derived(peek?.keep ?? retention);
+  const keepOptions = RETENTION_STOPS.map((stop) => ({
+    value: stop.id,
+    label: stop.days === null ? "Everything" : `Last ${stop.days} days`,
+  }));
 
   const shownPath = $derived(saveDirectory.trim() || probedPath);
-  const verdictFor = (intervalSeconds: number, keep: RetentionPolicy) =>
+  const verdict = $derived(
     sentenceVerdict({
-      intervalSeconds,
+      intervalSeconds: intervalS,
       videoPixels,
-      retention: keep,
+      retention,
       path: shownPath,
       probe,
       probeState,
       requiredBytes,
       semanticSearchOn,
-    });
-  const verdict = $derived(verdictFor(viewInterval, viewRetention));
-  /**
-   * The repair row reads the COMMITTED values, never the peek. Driving it off
-   * the preview made it appear and disappear under the cursor — the scene is
-   * `justify-content: center`, so losing a 54px row moved the ghost you were
-   * hovering out from under the pointer, which cancelled the peek, which
-   * brought the row back: a flicker loop that made the ghosts unclickable.
-   */
-  const committed = $derived(peek === null ? verdict : verdictFor(intervalS, retention));
-
-  // ── The dials ─────────────────────────────────────────────────────────────
-  interface DialSpec {
-    kind: "rate" | "keep";
-    label: string;
-    aria: string;
-    index: number;
-    count: number;
-    width: number;
-    textAt: (i: number) => string;
-    titleAt: (i: number) => string;
-    peekAt: (i: number) => { rate?: number; keep?: RetentionPolicy };
-    commit: (i: number) => void;
-  }
-
-  const shortRate = (s: number) => (s < 1 ? `${Math.round(1 / s)}/s` : `${s}s`);
-
-  const rateDial = $derived<DialSpec>({
-    kind: "rate",
-    label: captureIntervalPhrase(intervalS),
-    aria: "How often to take a snapshot",
-    index: rateIndex,
-    count: LADDER.length,
-    width: RATE_GHOST_WIDTH,
-    textAt: (i) => shortRate(LADDER[i]!),
-    titleAt: (i) =>
-      `${captureIntervalPhrase(LADDER[i]!)} — ${formatBytes(dailyBytes(LADDER[i]!, videoPixels))} a day`,
-    peekAt: (i) => ({ rate: i }),
-    commit: (i) => onFrameRateChange(intervalSToFps(LADDER[i]!)),
-  });
-
-  const keepDial = $derived<DialSpec>({
-    kind: "keep",
-    label: RETENTION_STOPS[keepIndex]!.word,
-    aria: "How long to keep it",
-    index: keepIndex,
-    count: RETENTION_STOPS.length,
-    width: RETENTION_STOPS.length,
-    textAt: (i) => RETENTION_STOPS[i]!.short,
-    titleAt: (i) => `keep ${RETENTION_STOPS[i]!.word}`,
-    peekAt: (i) => ({ keep: RETENTION_STOPS[i]!.id }),
-    commit: (i) => onRetentionChange(RETENTION_STOPS[i]!.id),
-  });
-
-  /**
-   * The ghosts on either side of the token. Split rather than one list with the
-   * token inside it: stepping shifts the window, and if the token were an entry
-   * in a keyed `{#each}` it would be destroyed and recreated on every step, so
-   * keyboard focus would fall out of the control after one arrow press.
-   */
-  function ghosts(d: DialSpec, side: "before" | "after"): number[] {
-    const win = ghostWindow(d.index, d.count, d.width);
-    const from = side === "before" ? win.start : d.index + 1;
-    const to = side === "before" ? d.index : win.end;
-    const out: number[] = [];
-    for (let i = from; i < to; i++) out.push(i);
-    return out;
-  }
-
-  function stepKey(d: DialSpec, event: KeyboardEvent) {
-    const last = d.count - 1;
-    const clamp = (i: number) => Math.min(Math.max(i, 0), last);
-    const to =
-      event.key === "ArrowRight" || event.key === "ArrowUp"
-        ? clamp(d.index + 1)
-        : event.key === "ArrowLeft" || event.key === "ArrowDown"
-          ? clamp(d.index - 1)
-          : event.key === "PageUp"
-            ? clamp(d.index + 2)
-            : event.key === "PageDown"
-              ? clamp(d.index - 2)
-              : event.key === "Home"
-                ? 0
-                : event.key === "End"
-                  ? last
-                  : null;
-    if (to === null) return;
-    event.preventDefault();
-    peek = null;
-    d.commit(to);
-  }
+    }),
+  );
+  const tone = $derived(
+    verdict.tone === "bad" ? "danger" : verdict.tone === "" ? undefined : verdict.tone,
+  );
+  const phrase = $derived(captureIntervalPhrase(intervalS));
 
   // ── The folder ────────────────────────────────────────────────────────────
   let browsing = $state(false);
-  /**
-   * Whether the undo ghost has anywhere to go. NOT `saveDirectory !== ""`: the
-   * settings round-trip fills the draft with the RESOLVED default path, so a
-   * user who has moved nowhere still carries a non-empty draft and the ghost
-   * would print "↩ ~/.mnema" immediately after "in ~/.mnema.". Compare what the
-   * sentence actually shows instead — that is the claim the undo makes.
-   */
+  /** Compare what is SHOWN, not `saveDirectory !== ""`: the settings round
+   *  trip fills the draft with the resolved default path. */
   const movedAway = $derived(sentencePath(shownPath) !== DEFAULT_FOLDER_LABEL);
 
   async function browse() {
@@ -245,16 +147,15 @@
   }
 
   // ── Repairs ───────────────────────────────────────────────────────────────
-  // The escape offered under each failure. `nosemantic` is dropped when the
-  // caller has nothing to turn off, so a dead button is never rendered.
+  // `nosemantic` is dropped when the caller has nothing to turn off, so a dead
+  // button is never rendered.
   const repairs = $derived(
-    committed.repairs.filter(
+    verdict.repairs.filter(
       (r) => r.act !== "nosemantic" || (semanticSearchOn && onDisableSemanticSearch),
     ),
   );
 
   function act(action: RepairAct) {
-    peek = null;
     if (action === "default") return onSaveDirectoryChange("");
     if (action === "pick") return void browse();
     if (action === "recheck") return onRecheck();
@@ -273,301 +174,164 @@
   }
 </script>
 
-<!-- Decoration to a screen reader on purpose: every value a ghost reaches is
-     also reachable from the token with ← → / Page↑ Page↓ / Home / End. -->
-{#snippet ghost(d: DialSpec, i: number)}
-  <button
-    type="button"
-    class="ghost"
-    class:near={Math.abs(i - d.index) === 1}
-    aria-hidden="true"
-    tabindex="-1"
-    title={d.titleAt(i)}
-    onclick={(event) => {
-      event.stopPropagation();
-      peek = null;
-      d.commit(i);
-    }}
-    onmouseenter={() => (peek = d.peekAt(i))}
-    onmouseleave={() => (peek = null)}
-  >
-    {d.textAt(i)}
-  </button>
-{/snippet}
+<div class="ob-rows">
+  <div class="ob-row">
+    <span class="mx-label">Take a snapshot</span>
+    <div class="ob-row__ctl">
+      <Segmented
+        mono
+        options={rateOptions}
+        value={String(rateIndex)}
+        ariaLabel="How often to take a snapshot"
+        onValueChange={(v) => onFrameRateChange(intervalSToFps(LADDER[Number(v)]!))}
+      />
+      <span class="ob-fine">{phrase}</span>
+    </div>
+  </div>
+  <div class="ob-row">
+    <span class="mx-label">Keep</span>
+    <div class="ob-row__ctl">
+      <Segmented
+        options={keepOptions}
+        value={retention}
+        ariaLabel="How long to keep it"
+        onValueChange={(v) => onRetentionChange(v as RetentionPolicy)}
+      />
+    </div>
+  </div>
+  <div class="ob-row">
+    <span class="mx-label">Saves to</span>
+    <div class="ob-row__ctl">
+      <span class="ob-path" class:bad={verdict.clause !== null} title={shownPath}>
+        {sentencePath(shownPath) || "…"}
+      </span>
+      {#if verdict.clause}<span class="ob-clause">— {verdict.clause}</span>{/if}
+      <button class="mx-btn mx-btn--sm" disabled={browsing} onclick={browse}>
+        <IconFolder width="13" height="13" />Choose…
+      </button>
+      {#if movedAway && verdict.clause === null}
+        <button class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => onSaveDirectoryChange("")}>
+          Use {DEFAULT_FOLDER_LABEL}
+        </button>
+      {/if}
+    </div>
+  </div>
+  {@render rows?.()}
+</div>
 
-{#snippet dial(d: DialSpec)}
-  <span class="dial">
-    {#each ghosts(d, "before") as i (i)}{@render ghost(d, i)}{/each}
-    <button
-      type="button"
-      class="tok"
-      role="spinbutton"
-      aria-label={d.aria}
-      aria-valuemin={1}
-      aria-valuemax={d.count}
-      aria-valuenow={d.index + 1}
-      aria-valuetext={d.label}
-      onclick={() => {
-        peek = null;
-        d.commit((d.index + 1) % d.count);
-      }}
-      onkeydown={(event) => stepKey(d, event)}
-    >
-      {d.label}
-    </button>
-    {#each ghosts(d, "after") as i (i)}{@render ghost(d, i)}{/each}
-  </span>
-{/snippet}
-
-<p class="sentence">
-  Take a snapshot <span class="nb">{@render dial(rateDial)},</span>
-  keep <span class="nb">{@render dial(keepDial)},</span>
-  in <span class="nb"
-    ><button
-      type="button"
-      class="tok place"
-      class:bad={verdict.clause !== null}
-      title={shownPath}
-      aria-label="Where it lives: {shownPath}. Opens a folder picker."
-      disabled={browsing}
-      onclick={browse}>{sentencePath(shownPath) || "…"}</button
-    >{#if verdict.probing}…{:else if verdict.clause}<span class="dash">{" —"}</span
-      >{:else}.{/if}</span
-  >{#if verdict.clause}<span class="brk">{` ${verdict.clause}`}</span>{/if}
-  {#if movedAway}
-    <!-- The one place ghost: the default you moved away from. It rides at the
-         END of the sentence — it is an undo, not a ladder neighbour, and a
-         broken sentence gets to finish its clause before the undo appears.
-         ponytail: it commits instead of previewing; a preview would need a
-         probe of a path you have not chosen. -->
-    <button
-      type="button"
-      class="ghost undo"
-      aria-hidden="true"
-      tabindex="-1"
-      title="Back to the default folder"
-      onclick={() => onSaveDirectoryChange("")}
-    >
-      {DEFAULT_FOLDER_LABEL}
-    </button>
-  {/if}
-</p>
-
-<div class="outcome {verdict.tone}" class:peek={peek !== null} aria-live="polite">
-  <span class="plan">
-    {#if peek}<span class="peek-tag">if</span>{/if}
-    {#each verdict.plan as seg, i (i)}<span class={seg.kind ?? ""}>{seg.text}</span
-      >{/each}
-  </span>
-  {#if verdict.probing}
-    <div class="probing"><i></i></div>
-  {:else}
-    {#each verdict.verdict as seg, i (i)}<span class={seg.kind ?? ""}>{seg.text}</span
-      >{/each}
+<div class="ob-verdict" data-tone={tone} aria-live="polite">
+  <div class="ob-verdict__plan">
+    {phrase[0]!.toUpperCase()}{phrase.slice(1)} ·
+    {#each verdict.plan as seg, i (i)}{#if seg.kind}<b>{seg.text}</b>{:else}{seg.text}{/if}{/each}
+  </div>
+  <div class="ob-verdict__text">
+    {#if verdict.probing}
+      <span class="mx-inline"><span class="mx-spin mx-spin--sm"></span>Checking the folder…</span>
+    {:else}
+      {#each verdict.verdict as seg, i (i)}{#if seg.kind === "fig"}<b class="fig">{seg.text}</b
+          >{:else if seg.kind === "verdict"}<b>{seg.text}</b>{:else}{seg.text}{/if}{/each}
+    {/if}
+  </div>
+  {#if repairs.length > 0}
+    <div class="ob-acts">
+      {#each repairs as r (r.act)}
+        <!-- One green primary per view: the footer's. Repairs stay plain. -->
+        <button class="mx-btn mx-btn--sm" onclick={() => act(r.act)}>
+          {r.label}
+        </button>
+      {/each}
+    </div>
   {/if}
 </div>
 
-{#if repairs.length > 0}
-  <div class="repair">
-    {#each repairs as r (r.act)}
-      <button class="ob-btn sm" class:primary={r.primary} onclick={() => act(r.act)}>
-        {r.label}
-      </button>
-    {/each}
-  </div>
-{/if}
-
-<p class="hint">
-  click a word to step · click a faint word to jump · ← → step · Home / End ends ·
-  Enter on the folder opens the picker
-</p>
-
 <style>
-  .sentence {
-    margin: 0;
-    font-size: var(--text-xl);
-    line-height: 2.1;
-    color: var(--app-text);
-    overflow-wrap: break-word;
+  /* Spec rows: label column + one control line. `:global` because the caller
+     slots its own `.ob-row`s in through `rows`. */
+  .ob-rows {
+    display: grid;
+    border-top: 1px solid var(--mx-hairline);
   }
-  /* Each token is glued to the punctuation after it, so a wrap never starts a
-     line with an orphan comma; the break clause is free to wrap. */
-  .nb {
-    white-space: nowrap;
+  .ob-rows :global(.ob-row) {
+    display: grid;
+    grid-template-columns: 136px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--s-4);
+    min-height: 52px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--mx-hairline);
   }
-  .brk {
-    color: var(--app-danger);
+  .ob-rows :global(.ob-row > .mx-label) {
+    font-size: var(--text-md);
+    color: var(--app-text-muted);
   }
-  .dash {
-    color: var(--app-text-faint);
-  }
-
-  /* Every token is the same word-shaped thing, whatever it edits. */
-  .tok {
-    font: inherit;
-    font-size: inherit;
-    line-height: inherit;
-    color: var(--app-text-strong);
-    background: transparent;
-    border: 0;
-    border-bottom: 1px solid var(--app-border-hover);
-    padding: 0 2px 1px;
-    margin: 0;
-    cursor: pointer;
-    border-radius: 0;
-    -webkit-appearance: none;
-    appearance: none;
-  }
-  .tok:hover {
-    border-color: var(--app-accent);
-  }
-  .tok:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent);
-  }
-  .tok.bad {
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-  }
-  /* The folder mark keeps the place token from reading as a word-menu. */
-  .tok.place::before {
-    content: "▸";
-    color: var(--app-text-faint);
-    font-size: 0.62em;
-    vertical-align: 0.22em;
-    margin-right: 6px;
-  }
-  .tok.place:hover::before,
-  .tok.place:focus-visible::before {
-    color: var(--app-accent);
-  }
-
-  /* ---- the ghost dial ---- */
-  .dial {
-    display: inline-flex;
+  .ob-rows :global(.ob-row__ctl) {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-width: 0;
     flex-wrap: wrap;
-    align-items: baseline;
-    gap: 5px;
-    vertical-align: baseline;
   }
-  .ghost {
-    font: inherit;
-    font-size: var(--text-md);
-    color: var(--app-text-faint);
-    background: transparent;
-    border: 0;
-    padding: 0 1px;
-    cursor: pointer;
+  .ob-path {
+    display: inline-flex;
+    align-items: center;
+    height: var(--h-sm);
+    padding: 0 var(--s-2);
+    border-radius: var(--r-sm);
+    font: 450 var(--text-base) / 1 var(--font-mono);
+    color: var(--app-text-strong);
+    background: var(--mx-wash);
+    box-shadow: inset 0 0 0 1px var(--mx-hairline);
     white-space: nowrap;
-    border-radius: 4px;
   }
-  .ghost:hover {
-    color: var(--app-text-subtle);
+  .ob-path.bad {
+    color: var(--app-danger-text);
+    box-shadow: inset 0 0 0 1px var(--app-danger-border);
+    background: var(--app-danger-bg);
   }
-  .ghost.near {
-    color: var(--app-text-subtle);
-  }
-  .ghost.near:hover {
-    color: var(--app-text-muted);
-  }
-  .ghost.undo {
-    color: var(--app-text-subtle);
-    margin-left: 10px;
-  }
-  .ghost.undo::before {
-    content: "↩ ";
-    color: var(--app-text-faint);
+  .ob-clause {
+    font: 500 var(--text-md) / 1.2 var(--font-sans);
+    color: var(--app-danger-text);
+    white-space: nowrap;
   }
 
-  /* ---- the consequence ---- */
-  .outcome {
-    margin-top: 20px;
-    padding-top: 16px;
-    border-top: 1px solid var(--app-border);
-    font-size: var(--text-md);
-    line-height: 1.85;
-    color: var(--app-text-muted);
+  .ob-verdict {
+    display: grid;
+    gap: 6px;
+    padding: var(--s-3) var(--s-4);
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
   }
-  .outcome :global(.fig) {
+  .ob-verdict__plan {
+    font: 400 var(--text-base) / 1.4 var(--font-sans);
+    color: var(--app-text-subtle);
+  }
+  .ob-verdict__plan b,
+  .ob-verdict__text b.fig {
+    font: 500 var(--text-base) / 1 var(--font-mono);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
   }
-  .outcome :global(.verdict) {
-    color: var(--app-text-strong);
-  }
-  .outcome.ok :global(.verdict) {
-    color: var(--app-accent);
-  }
-  .outcome.warn :global(.verdict) {
-    color: var(--app-warn);
-  }
-  .outcome.bad :global(.verdict) {
-    color: var(--app-danger);
-  }
-  .outcome .plan {
-    display: block;
-  }
-  .outcome.peek {
-    border-left: 2px solid var(--app-accent-border);
-    margin-left: -14px;
-    padding-left: 12px;
-  }
-  .outcome.peek .plan {
+  .ob-verdict__text {
+    font: 400 var(--text-md) / 1.45 var(--font-sans);
     color: var(--app-text);
   }
-  .peek-tag {
+  .ob-verdict__text b {
+    font-weight: 600;
+    color: var(--app-text-strong);
+  }
+  .ob-verdict[data-tone="ok"] .ob-verdict__text b:not(.fig) {
     color: var(--app-accent);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    font-size: var(--text-xs);
-    margin-right: 8px;
+    font-weight: 500;
   }
-  .repair {
-    margin-top: 14px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
+  .ob-verdict:is([data-tone="warn"], [data-tone="danger"]) {
+    border-color: var(--tone-bd);
+    background: var(--tone-bg);
   }
-  .hint {
-    margin: 14px 0 0;
-    font-size: var(--text-xs);
-    color: var(--app-text-faint);
-    letter-spacing: 0.06em;
+  .ob-verdict:is([data-tone="warn"], [data-tone="danger"]) .ob-verdict__text b:not(.fig) {
+    color: var(--tone);
   }
-
-  /* Real work in flight, not ambient motion — it exists only while a probe is
-     outstanding, and reduced motion drops it to a static bar. */
-  .probing {
-    height: 2px;
-    background: var(--app-border);
-    border-radius: 2px;
-    overflow: hidden;
-    max-width: 220px;
-    margin-top: 10px;
-  }
-  .probing i {
-    display: block;
-    height: 100%;
-    width: 35%;
-    background: var(--app-accent-strong);
-    border-radius: 2px;
-    animation: capture-sentence-slide 900ms linear infinite;
-  }
-  @keyframes capture-sentence-slide {
-    from {
-      transform: translateX(-110%);
-    }
-    to {
-      transform: translateX(320%);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .probing i {
-      animation: none;
-      width: 100%;
-      opacity: 0.5;
-    }
+  .ob-verdict .ob-acts {
+    margin-top: 4px;
   }
 </style>

@@ -11,14 +11,22 @@
 //! math, and the `guardrail` submodule (#96) holds the pure Sensitive Category
 //! Guardrail (the soft instruction text + the hard `is_sensitive` post-filter).
 
+mod activity_continuation;
+mod activity_meta;
+mod capture_bounds;
 pub mod capture_source;
+pub mod conclusion_dedup;
 pub mod confidence;
+mod distillation_input;
 pub mod guardrail;
+pub(crate) mod lock_screen;
 pub mod recurrence;
 pub mod store;
 pub mod subject_vectors;
 
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
+pub use conclusion_dedup::ConclusionDedupSummary;
+pub use distillation_input::{DistillationInput, DistillationWatermark};
 pub use recurrence::{
     build_recurrence_digest, recurrence_digest_window_start_ms, RECURRENCE_DIGEST_WINDOW_DAYS,
 };

@@ -21,10 +21,12 @@ mod machine_id;
 mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
+mod recent_queries;
 pub mod retry_policy;
 mod search;
 mod secret_vault;
 mod secret_vault_handle;
+mod storage_usage;
 mod semantic_search;
 pub mod status;
 pub mod system_audio_evidence;
@@ -50,6 +52,7 @@ pub use secret_vault::{
     SECRET_VAULT_FILE_NAME,
 };
 pub use secret_vault_handle::{install_process_secret_vault, SecretVaultHandle};
+pub use storage_usage::{measure_storage_usage, StorageUsage};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
@@ -59,7 +62,7 @@ pub use audio_segments::{
 /// data model (the raw URL is local-only, used only by `open_captured_url`).
 pub use brokered_access::guard_url as guard_browser_url;
 pub use capture_retention::{
-    delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
+    cutoff_ended_before, delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
     RetentionCleanupSummary, RetentionPolicy, ScreenCaptureSegmentWindow,
 };
@@ -86,7 +89,7 @@ pub use hidden_segment_workspace::{
 };
 pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
-    CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
+    CpuJobSuccess, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use license_token_store::{
     clear_trial_issuance, load_activation_receipt, load_first_seen, load_license_key,
@@ -122,11 +125,16 @@ pub use processing::{
     HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
+pub use recent_queries::{
+    delete_recent_queries, load_recent_queries, prune_recent_queries_older_than,
+    store_recent_queries, RecentQuery, MAX_RECENT_QUERIES,
+};
 pub use search::{
-    semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,
-    SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse,
-    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement,
-    SearchStore, SearchableApp,
+    semantic_search_residual_query, AudioSearchResult, FrameReadingBacklog, FrameSearchResult,
+    MatchBox, MatchBoxKind, SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements,
+    SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement,
+    SearchFacet, SearchFacetBucket, SearchFacetCounts, SearchHoursRefinement, SearchParseError,
+    SearchSpeakerRefinement, SearchStore, SearchableApp,
 };
 pub use semantic_search::{vectors_index_epoch, AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;
@@ -289,6 +297,20 @@ pub struct AudioSegmentTranscriptionReprocessingResult {
 
 pub type AudioSegmentSpeakerAnalysisReprocessingOutcome =
     AudioSegmentTranscriptionReprocessingOutcome;
+
+/// What [`AppInfra::run_startup_maintenance`] repaired, pass by pass. Every
+/// field is a row count; all zero is the steady state ("nothing needed repair").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StartupMaintenanceSummary {
+    pub stale_model_locks_cleared: u64,
+    pub frame_equivalence_backfilled: u64,
+    /// Orphaned `running` background jobs (not processing jobs) failed (ADR 0020).
+    pub orphaned_app_jobs: u64,
+    pub orphaned_processing_requeued: u64,
+    pub orphaned_processing_failed: u64,
+    pub closed_batches_reconciled: u64,
+    pub open_batches_reconciled: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentSpeakerAnalysisReprocessingResult {
@@ -457,35 +479,42 @@ impl AppInfra {
     /// nothing to do (the normal write paths keep everything current) but still
     /// cost real time, so the desktop app runs this off the window-open path.
     /// It must complete before processing workers are spawned.
-    pub async fn run_startup_maintenance(&self) -> Result<()> {
+    ///
+    /// Returns what each pass repaired. It does not log the counts: the desktop
+    /// app writes one Info line for the whole deferred startup instead.
+    pub async fn run_startup_maintenance(&self) -> Result<StartupMaintenanceSummary> {
         // Stale-only: this runs on the deferred-startup thread while model-deletion commands can be
         // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
         // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
-        self.processing
+        let stale_model_locks_cleared = self
+            .processing
             .clear_stale_model_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
             .await?;
-        self.processing.backfill_frame_equivalence().await?;
+        let frame_equivalence_backfilled = self.processing.backfill_frame_equivalence().await?;
         self.search.backfill_missing_projections().await?;
-        self.jobs.reconcile_orphaned_running_jobs().await?;
+        let orphaned_app_jobs = self.jobs.reconcile_orphaned_running_jobs().await?;
         let reclamation = self.processing.reconcile_orphaned_running_jobs().await?;
-        if reclamation.requeued > 0 || reclamation.failed_on_ceiling > 0 {
-            capture_runtime::debug_log!(
-                "[app-infra] startup reclaimed orphaned processing jobs (requeued={}, failed_on_ceiling={})",
-                reclamation.requeued,
-                reclamation.failed_on_ceiling
-            );
-        }
-        self.frame_batches
+        let closed_batches_reconciled = self
+            .frame_batches
             .reconcile_closed_batches_without_finalize_jobs()
             .await?;
-        self.frame_batches
+        let open_batches_reconciled = self
+            .frame_batches
             .reconcile_open_batches_without_active_capture()
             .await?;
         // NOTE: the one-shot purge of legacy embedding-blacklist rejections is
         // migration `0051_purge_legacy_speaker_recognition_rejections.sql`, not a
         // pass here. Maintenance runs after the window is live, so a DELETE here
         // also eats rejections the user makes while it is still scanning.
-        Ok(())
+        Ok(StartupMaintenanceSummary {
+            stale_model_locks_cleared,
+            frame_equivalence_backfilled,
+            orphaned_app_jobs,
+            orphaned_processing_requeued: reclamation.requeued,
+            orphaned_processing_failed: reclamation.failed_on_ceiling,
+            closed_batches_reconciled,
+            open_batches_reconciled,
+        })
     }
 
     /// Back-compat / test-only accessor returning the writer pool. Do not call
@@ -497,6 +526,10 @@ impl AppInfra {
 
     pub fn read_pool(&self) -> &SqlitePool {
         self.database.read_pool()
+    }
+
+    pub fn write_pool(&self) -> &SqlitePool {
+        self.database.write_pool()
     }
 
     /// Begin a write transaction with `BEGIN IMMEDIATE` on the Writer Pool
@@ -569,6 +602,10 @@ impl AppInfra {
     /// needs.
     pub fn semantic_search(&self) -> &SemanticSearchStore {
         &self.semantic_search
+    }
+
+    pub fn search(&self) -> &SearchStore {
+        &self.search
     }
 
     pub async fn frame_secret_redaction_count(&self, frame_id: i64) -> Result<u32> {
@@ -733,9 +770,10 @@ impl AppInfra {
         &self,
         captured_at_start: &str,
         captured_at_end: &str,
+        exclude_lock_screen: bool,
     ) -> Result<Vec<FrameSummary>> {
         self.processing
-            .list_frame_summaries_in_range(captured_at_start, captured_at_end)
+            .list_frame_summaries_in_range(captured_at_start, captured_at_end, exclude_lock_screen)
             .await
     }
 
@@ -834,15 +872,6 @@ impl AppInfra {
     ) -> Result<Vec<ScreenCaptureSegmentWindow>> {
         self.capture_retention
             .list_finalized_screen_segments_overlapping_window(start_at, end_at)
-            .await
-    }
-
-    pub async fn classify_hidden_segment_workspace(
-        &self,
-        workspace_dir: &Path,
-    ) -> Result<Option<SegmentWorkspaceCleanupDebugInfo>> {
-        self.frame_batches
-            .classify_hidden_segment_workspace(workspace_dir)
             .await
     }
 
@@ -1446,6 +1475,12 @@ impl AppInfra {
         self.processing.get_job(job_id).await
     }
 
+    /// Drop a queued job's retry backoff so it runs on the next queue drain. `false` when the job
+    /// is not queued.
+    pub async fn clear_processing_job_backoff(&self, job_id: i64) -> Result<bool> {
+        self.processing.clear_processing_job_backoff(job_id).await
+    }
+
     pub async fn list_processing_jobs_for_subject(
         &self,
         subject: &ProcessingSubject,
@@ -1471,7 +1506,7 @@ impl AppInfra {
 
     pub async fn fail_queued_ocr_jobs_because_disabled(&self) -> Result<u64> {
         self.processing
-            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, "OCR is disabled")
+            .mark_queued_jobs_failed_for_processor(OCR_PROCESSOR, processing::OCR_DISABLED_ERROR)
             .await
     }
 
@@ -1941,26 +1976,6 @@ impl AppInfra {
 
     pub async fn process_next_frame_batch_job(&self) -> Result<Option<FrameBatchFinalizeResult>> {
         self.frame_batch_runtime.process_next_queued_job().await
-    }
-
-    pub async fn submit_debug_cpu_job(&self, request: DebugCpuJobRequest) -> Result<BackgroundJob> {
-        let request = request.normalized();
-        let payload_json = serde_json::to_string(&request)?;
-        let task_request = request.clone();
-        let handle = self
-            .spawn_cpu_job(
-                JobDescriptor::new(jobs::DEBUG_CPU_JOB_KIND),
-                Some(&payload_json),
-                move || {
-                    let result_text = task_request.simulated_result_text();
-                    Ok(CpuJobSuccess::new(result_text.clone()).with_result_text(result_text))
-                },
-            )
-            .await?;
-
-        self.get_job(handle.job_id())
-            .await?
-            .ok_or(AppInfraError::JobNotFound(handle.job_id()))
     }
 
     pub async fn spawn_cpu_job<F, T>(
@@ -3181,6 +3196,56 @@ mod tests {
                 .await
                 .expect("result lookup should succeed")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn startup_maintenance_summary_counts_what_it_repaired() {
+        run_async_test(async {
+            let dir = TestDir::new("startup-maintenance-summary");
+            let infra = AppInfra::initialize_fast_with_processing_registry(
+                dir.path(),
+                test_processing_registry("unused result"),
+            )
+            .await
+            .expect("app infra should initialize");
+
+            let clean = infra
+                .run_startup_maintenance()
+                .await
+                .expect("maintenance should run");
+            assert_eq!(clean, StartupMaintenanceSummary::default());
+
+            let app_job = infra
+                .enqueue_job(&JobDescriptor::new("ocr"), None)
+                .await
+                .expect("job should enqueue");
+            infra
+                .jobs()
+                .mark_running(app_job.id)
+                .await
+                .expect("job should be marked running");
+            let persisted = infra
+                .debug_insert_frame_and_enqueue_processing_job(
+                    &test_frame("session-startup-summary", "frame-startup-summary.png"),
+                    TEST_PROCESSOR,
+                    None,
+                )
+                .await
+                .expect("frame and job should persist");
+            infra
+                .claim_queued_processing_job(persisted.job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+
+            let summary = infra
+                .run_startup_maintenance()
+                .await
+                .expect("maintenance should run");
+            assert_eq!(summary.orphaned_app_jobs, 1);
+            assert_eq!(summary.orphaned_processing_requeued, 1);
+            assert_eq!(summary.orphaned_processing_failed, 0);
         });
     }
 
@@ -9407,7 +9472,7 @@ mod tests {
                 .expect("later frame should persist");
 
             let summaries = infra
-                .list_frame_summaries_in_range("2026-04-12T00:00:00Z", "2026-04-12T23:59:59Z")
+                .list_frame_summaries_in_range("2026-04-12T00:00:00Z", "2026-04-12T23:59:59Z", false)
                 .await
                 .expect("frame summaries should list");
 

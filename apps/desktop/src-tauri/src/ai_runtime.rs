@@ -16,7 +16,7 @@ use crate::native_capture::{read_recording_settings, RecordingSettingsState};
 
 /// Availability snapshot for the configured engine, mirroring Ask AI's
 /// "Ok with available:false + reason" shape for the normal not-ready cases.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeStatus {
     enabled: bool,
@@ -25,9 +25,13 @@ pub struct AiRuntimeStatus {
     has_providers: bool,
     configured: bool,
     available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     default_model: Option<AiEngineRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The default model's provider *kind* (cloud vs local), so the Context
+    /// composer can say where authored statements go.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_provider_kind: Option<AiProviderKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
 }
 
@@ -632,6 +636,18 @@ pub(crate) async fn resolve_engine_config_live(
     pin: Option<(&str, &str)>,
     feature_override_model: Option<&str>,
 ) -> Result<ai_engine::EngineConfig, String> {
+    resolve_engine_ref_live(settings, pin, feature_override_model)
+        .await
+        .map(|(_, config)| config)
+}
+
+/// [`resolve_engine_config_live`] plus the resolved provider *instance id*,
+/// for a caller that records which engine answered (Ask AI stamps each turn).
+pub(crate) async fn resolve_engine_ref_live(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<(String, ai_engine::EngineConfig), String> {
     let (provider_id, mut config) = resolve_engine_ref(settings, pin, feature_override_model)?;
     if let ai_engine::EngineConfig::Cloud {
         provider: ai_engine::CloudProvider::Chatgpt,
@@ -641,7 +657,7 @@ pub(crate) async fn resolve_engine_config_live(
     {
         *api_key = crate::chatgpt_auth::fresh_access_token(&provider_id).await?;
     }
-    Ok(config)
+    Ok((provider_id, config))
 }
 
 /// The static (no-network) half of the engine-configured prerequisite: master
@@ -736,6 +752,35 @@ pub async fn ai_runtime_has_provider_key(
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
+}
+
+/// The last 4 characters of a provider's stored API key, so Settings can show
+/// which key is which (`…4f2a`). This is the ONLY key material that ever
+/// crosses IPC; `None` when no key is stored, the key is too short for 4
+/// characters to be a small fraction of it, or the slot holds a ChatGPT OAuth
+/// token set (JSON) rather than a key.
+#[tauri::command]
+pub async fn ai_runtime_provider_key_ending(
+    request: AiRuntimeProviderRequest,
+) -> Result<Option<String>, String> {
+    let provider = request.provider.trim().to_string();
+    if provider.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    let key = tokio::task::spawn_blocking(move || app_infra::load_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    Ok(key.as_deref().and_then(key_ending))
+}
+
+fn key_ending(key: &str) -> Option<String> {
+    let key = key.trim();
+    let chars: Vec<char> = key.chars().collect();
+    if key.starts_with('{') || chars.len() < 12 {
+        return None;
+    }
+    Some(chars[chars.len() - 4..].iter().collect())
 }
 
 /// Start a ChatGPT device-code login for one `chatgpt` provider instance.
@@ -840,6 +885,7 @@ pub async fn get_ai_runtime_status(
     // local engine that is merely unreachable); `available` is the full
     // prerequisite (including the local reachability ping).
     let has_providers = !settings.providers.is_empty();
+    let default_provider_kind = crate::user_context::worker::default_provider_kind(&settings);
     match engine_configured_prerequisite(&settings).await {
         Ok(()) => Ok(AiRuntimeStatus {
             enabled: settings.enabled,
@@ -847,6 +893,7 @@ pub async fn get_ai_runtime_status(
             configured: true,
             available: true,
             default_model: settings.default_model,
+            default_provider_kind,
             reason: None,
         }),
         Err(reason) => Ok(AiRuntimeStatus {
@@ -857,6 +904,7 @@ pub async fn get_ai_runtime_status(
             configured: reason == "local_endpoint_unreachable",
             available: false,
             default_model: settings.default_model,
+            default_provider_kind,
             reason: Some(status_reason_code(reason)),
         }),
     }
@@ -1098,7 +1146,8 @@ async fn list_fireworks_models(
         match list_fireworks_account_models(client, host, api_key, &account, false).await {
             Ok(personal) => ids.extend(personal),
             Err(error) => tauri_plugin_log::log::warn!(
-                "fireworks personal account {account} model listing skipped: {error}"
+                "fireworks personal account {account} model listing skipped: {}",
+                classify_listing_failure(&error)
             ),
         }
     }
@@ -1281,8 +1330,9 @@ pub async fn ai_runtime_list_models(
             ),
             Err(error) => {
                 tauri_plugin_log::log::warn!(
-                    "model listing skipped provider {}: {error}",
-                    provider.id
+                    "model listing skipped provider {}: {}",
+                    provider.id,
+                    classify_listing_failure(&error)
                 );
                 failures.push(AiRuntimeProviderFailure {
                     provider: provider.id.clone(),
@@ -1352,8 +1402,9 @@ pub async fn verify_ai_provider(
     let discovered = list_models_for_provider(&reqwest::Client::new(), provider)
         .await
         .map_err(|error| {
-            tauri_plugin_log::log::warn!("provider {provider_id} failed verification: {error}");
-            classify_listing_failure(&error)
+            let reason = classify_listing_failure(&error);
+            tauri_plugin_log::log::warn!("provider {provider_id} failed verification: {reason}");
+            reason
         })?;
     Ok(AiRuntimeVerifyResult {
         provider: provider_id,
@@ -1395,6 +1446,35 @@ mod tests {
             }),
             mcp_servers: Vec::new(),
         }
+    }
+
+    #[test]
+    fn ai_runtime_status_round_trips_with_has_providers_and_kind() {
+        let settings = local_settings();
+        let status = AiRuntimeStatus {
+            enabled: true,
+            has_providers: true,
+            configured: true,
+            available: false,
+            default_model: settings.default_model.clone(),
+            default_provider_kind: crate::user_context::worker::default_provider_kind(&settings),
+            reason: Some("local_endpoint_unreachable".to_string()),
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "enabled": true, "hasProviders": true, "configured": true, "available": false,
+                "defaultModel": { "provider": "ollama", "model": "llama-default" },
+                "defaultProviderKind": "ollama",
+                "reason": "local_endpoint_unreachable"
+            })
+        );
+        assert_eq!(serde_json::from_value::<AiRuntimeStatus>(value).unwrap(), status);
+
+        // No default model → no kind key at all.
+        let bare = AiRuntimeSettings { default_model: None, ..settings };
+        assert_eq!(crate::user_context::worker::default_provider_kind(&bare), None);
     }
 
     fn expect_local(config: ai_engine::EngineConfig) -> (ai_engine::LocalKind, String, String) {
@@ -1630,6 +1710,28 @@ mod tests {
         assert_eq!(base_host("http://192.168.0.9:8080/v1"), "192.168.0.9");
         assert_eq!(base_host("https://API.Fireworks.AI/v1"), "api.fireworks.ai");
         assert_eq!(base_host("https://user@host.example/v1"), "host.example");
+    }
+
+    #[test]
+    fn key_ending_never_returns_more_than_four_chars() {
+        assert_eq!(
+            key_ending("sk-ant-api03-abcdefgh4f2a").as_deref(),
+            Some("4f2a")
+        );
+        assert_eq!(
+            key_ending("  sk-proj-0123456789\n").as_deref(),
+            Some("6789")
+        );
+        // Multibyte-safe: 4 characters, not 4 bytes.
+        assert_eq!(key_ending("key-ééééééééé✓✓").as_deref(), Some("éé✓✓"));
+        // Too short for 4 characters to be a small part of it.
+        assert_eq!(key_ending("sk-12345678"), None);
+        // A ChatGPT OAuth token set is not a key.
+        assert_eq!(key_ending(r#"{"access_token":"abcdefghijklmnop"}"#), None);
+        for len in 0..64 {
+            let key = "x".repeat(len);
+            assert!(key_ending(&key).is_none_or(|end| end.chars().count() == 4));
+        }
     }
 
     #[test]

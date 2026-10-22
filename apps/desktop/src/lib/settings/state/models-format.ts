@@ -5,7 +5,6 @@ import type {
   AppleSpeechOnDeviceAvailabilityStatus,
   AudioTranscriptionModelStatus,
   OcrModelStatus,
-  SemanticSearchModelDownloadProgress,
   SpeakerAnalysisModelStatus,
 } from "$lib/types";
 
@@ -69,11 +68,6 @@ export function semanticSearchTierLabel(tier: string): string {
   if (tier === "english") return "English";
   if (tier === "multilingual") return "Multilingual";
   return "Custom";
-}
-
-export function semanticSearchProgressPercent(p: SemanticSearchModelDownloadProgress): number {
-  if (!p.totalBytes || p.totalBytes <= 0) return 0;
-  return Math.min(100, Math.round((p.downloadedBytes / p.totalBytes) * 100));
 }
 
 // Default model id for an OCR provider (tesseract has a bundled default;

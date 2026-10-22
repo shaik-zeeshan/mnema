@@ -1,172 +1,91 @@
-// The pushed feature-detail view (level 2): its navigation state, its own
-// poller, and the jobs page behind it.
+// Processor drill-in state (Pipeline › <processor>): the jobs page behind the
+// status filter, the inspected job, and the per-job actions.
 //
-// ── Navigation ────────────────────────────────────────────────────────────
-// A detail view is a pushed view *within* the /debug page, not a route: the
-// shell renders either the summary scroll or the detail, and this store's
-// `feature` is the whole of that decision. Nav state lives on the debug
-// controller (like every other debug store) because the push comes from a
-// summary card's title, deep inside the section tree.
-//
-// ── Polling ───────────────────────────────────────────────────────────────
-// A detail view polls ITS OWN feature only, and the shell stops the summary's
-// pollers while one is open — otherwise ten cards' worth of round-trips keep
-// running behind a view that renders none of them. So this store re-reads the
-// two things its feature actually needs rather than borrowing the summary's
-// `features` tick: the pipeline aggregate (for the hero's lane counts) and its
-// processor's jobs page — or, for a feature with no job lane, the semantic
-// index. The dock's `get_debug_health` poll is the one that keeps running: the
-// dock stays on screen, and the hero's diagnosis sentence is its `reason`.
+// Navigation is the controller's (`nav.processor` / `nav.jobId`); this store
+// only holds data. ProcessorView drives `fetchJobs` through `controller.poll`
+// at 2 s while it is mounted. The lanes and the meaning index come from the
+// Pipeline tab's own poll, which keeps running behind the drill-in.
 
 import { invoke } from "@tauri-apps/api/core";
 import { humanizeError } from "$lib/format-error";
-import { laneFor } from "./features.svelte";
-import { DETAIL_SPECS, type DetailFeatureId } from "../detail/specs";
+import { DETAIL_SPECS, type ProcessorKey } from "../detail/specs";
+import { jobState, matchesFilter, type JobFilter } from "../detail/jobs";
 import type {
 	ListProcessingJobsRequest,
+	ProcessingJobDto,
 	ProcessingJobListing,
 	ProcessingJobPage,
-	ProcessingJobStatus,
-	ProcessorPipelineStatus,
-	SemanticIndexStatusDto,
 } from "$lib/types";
 
-const POLL_MS = 1000;
-
-/** Rows per jobs page. `list_processing_jobs_by_processor` clamps to 0..=500. */
-export const JOBS_PAGE_SIZE = 25;
-
-export type DetailTab = "overview" | "jobs" | "config" | "log";
+/** Rows the table shows before "N more". */
+export const JOBS_SHOWN = 25;
+// ponytail: queued and retrying share the wire status, so those two filters
+// fetch a wider page and split it here. Past 100 waiting jobs the split can
+// under-fill; add a `retrying` filter to `list_processing_jobs_by_processor` then.
+const SPLIT_FETCH = 100;
 
 export function createDetailStore() {
-	let feature = $state<DetailFeatureId | null>(null);
-	let tab = $state<DetailTab>("overview");
-
-	/** `null` = the "all" chip. Filtering is server-side, so it repages. */
-	let statusFilter = $state<ProcessingJobStatus | null>(null);
-	/** Digits-only subject-id search ("segment id…"). Empty = no filter. */
-	let search = $state("");
-	let page = $state(0);
+	let processor = $state<ProcessorKey | null>(null);
+	let filter = $state<JobFilter>("all");
 	let jobs = $state<ProcessingJobListing[]>([]);
-	/** Total rows behind the current filter — the pager's "of N". */
+	/** Rows behind the server-side status filter. */
 	let total = $state(0);
-	let selectedJobId = $state<number | null>(null);
-	/** Free-text needle the "filter log to this job" action seeds the log tab with. */
-	let logNeedle = $state<string | null>(null);
-
-	let lane = $state<ProcessorPipelineStatus | null>(null);
-	let semanticIndex = $state<SemanticIndexStatusDto | null>(null);
+	/** The inspected job, kept even if it scrolls off the polled page. */
+	let inspected = $state<ProcessingJobListing | null>(null);
 	let error = $state<string | null>(null);
-
 	let acting = $state(false);
 	let actionMessage = $state<string | null>(null);
-
-	/** Ticks with the poll so "next attempt in 4m 12s" actually counts down. */
+	/** Ticks with the poll so "Next try in 42s" counts down. */
 	let now = $state(Date.now());
 
-	function open(next: DetailFeatureId) {
-		feature = next;
-		tab = "overview";
-		statusFilter = null;
-		search = "";
-		page = 0;
+	function reset(next: ProcessorKey | null) {
+		processor = next;
+		filter = "all";
 		jobs = [];
 		total = 0;
-		selectedJobId = null;
-		logNeedle = null;
-		lane = null;
-		semanticIndex = null;
+		inspected = null;
 		error = null;
 		actionMessage = null;
-		void poll();
 	}
 
-	function close() {
-		feature = null;
-	}
-
-	async function poll() {
-		const current = feature;
-		if (!current) return;
-		// Nothing to poll into an off-screen view.
-		if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-		now = Date.now();
-		const spec = DETAIL_SPECS[current];
-		const requestedPage = page;
-		const requestedStatus = statusFilter;
-		const requestedSearch = search;
+	async function fetchJobs() {
+		const key = processor;
+		const lane = key ? DETAIL_SPECS[key].processor : null;
+		if (!key || !lane) return;
+		const requested = filter;
+		const split = requested === "queued" || requested === "retrying";
+		const request: ListProcessingJobsRequest = {
+			processor: lane,
+			status: requested === "all" ? null : split ? "queued" : requested,
+			subjectId: null,
+			limit: split ? SPLIT_FETCH : JOBS_SHOWN,
+			offset: 0,
+		};
 		try {
-			if (spec.processor) {
-				const request: ListProcessingJobsRequest = {
-					processor: spec.processor,
-					status: requestedStatus,
-					subjectId: requestedSearch === "" ? null : Number(requestedSearch),
-					limit: JOBS_PAGE_SIZE,
-					offset: requestedPage * JOBS_PAGE_SIZE,
-				};
-				const [lanes, listing] = await Promise.all([
-					invoke<ProcessorPipelineStatus[]>("get_processing_pipeline_status"),
-					invoke<ProcessingJobPage>("list_processing_jobs_by_processor", { request }),
-				]);
-				// Drilled elsewhere / repaged / refiltered while this was in flight —
-				// that request owns the view now, so drop this one rather than paint a
-				// stale page.
-				if (
-					feature !== current ||
-					page !== requestedPage ||
-					statusFilter !== requestedStatus ||
-					search !== requestedSearch
-				)
-					return;
-				lane = laneFor(lanes, spec.processor);
-				jobs = listing.jobs;
-				total = listing.total;
-			} else {
-				const index = await invoke<SemanticIndexStatusDto>("get_semantic_index_status");
-				if (feature !== current) return;
-				semanticIndex = index;
-			}
+			const page = await invoke<ProcessingJobPage>("list_processing_jobs_by_processor", { request });
+			// Drilled elsewhere or refiltered while in flight: that request owns the view.
+			if (processor !== key || filter !== requested) return;
+			now = Date.now();
+			jobs = page.jobs;
+			total = page.total;
+			const open = inspected && page.jobs.find((job) => job.id === inspected!.id);
+			if (open) inspected = open;
 			error = null;
 		} catch (err) {
 			error = humanizeError(err);
 		}
 	}
 
-	/** 1s poll while a detail view is open + visible. Returns teardown. */
-	function startPolling(): () => void {
-		void poll();
-		const interval = setInterval(() => { void poll(); }, POLL_MS);
-		const onVisibility = () => {
-			if (document.visibilityState === "visible") void poll();
-		};
-		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			clearInterval(interval);
-			document.removeEventListener("visibilitychange", onVisibility);
-		};
-	}
+	/** This filter's rows, split client-side for queued/retrying. */
+	const visible = $derived(jobs.filter((job) => matchesFilter(jobState(job, now), filter)));
 
-	/** The selected row, re-read from the live page so it stays fresh. */
-	const selectedJob = $derived(jobs.find((job) => job.id === selectedJobId) ?? null);
-
-	/**
-	 * Requeue one job's subject through the reprocess command that already
-	 * exists for this processor. No bulk variant: no bulk command exists.
-	 */
-	async function reprocessSelected() {
-		const current = feature;
-		const job = selectedJob;
-		if (!current || !job || acting) return;
-		const spec = DETAIL_SPECS[current];
-		// A processor whose jobs don't carry the subject type its reprocess command
-		// takes would silently requeue the wrong row's id — refuse instead.
-		if (!spec.reprocess || job.subjectType !== spec.subjectType) return;
+	async function act(run: () => Promise<string>) {
+		if (acting) return;
 		acting = true;
 		actionMessage = null;
 		try {
-			await invoke(spec.reprocess.command, { request: { [spec.reprocess.arg]: job.subjectId } });
-			actionMessage = `requeued ${job.subjectType} #${job.subjectId}`;
-			await poll();
+			actionMessage = await run();
+			await fetchJobs();
 		} catch (err) {
 			actionMessage = humanizeError(err);
 		} finally {
@@ -174,64 +93,54 @@ export function createDetailStore() {
 		}
 	}
 
+	/** Requeue the job's subject through the processor's existing reprocess command. */
+	function reprocess(job: ProcessingJobListing) {
+		const spec = processor ? DETAIL_SPECS[processor] : null;
+		// A subject type the command doesn't take would requeue the wrong row's id.
+		if (!spec?.reprocess || job.subjectType !== spec.subjectType) return;
+		const { command, arg } = spec.reprocess;
+		return act(async () => {
+			await invoke(command, { request: { [arg]: job.subjectId } });
+			return "Queued again";
+		});
+	}
+
+	/** Skip a waiting job's backoff (B4). Only valid on a retrying job. */
+	function retryNow(jobId: number) {
+		return act(async () => {
+			const job = await invoke<ProcessingJobDto>("retry_processing_job_now", { jobId });
+			if (inspected?.id === job.id) inspected = { ...inspected, ...job, nextAttemptAt: null };
+			return "Will try again now";
+		});
+	}
+
 	return {
-		get feature() { return feature; },
-		get isOpen() { return feature !== null; },
-
-		get tab() { return tab; },
-		set tab(next: DetailTab) { tab = next; },
-
-		get statusFilter() { return statusFilter; },
-		set statusFilter(next: ProcessingJobStatus | null) {
-			if (next === statusFilter) return;
-			statusFilter = next;
-			// A filter is a different list; page 1 of it is the only honest landing.
-			page = 0;
-			void poll();
+		get processor() { return processor; },
+		get filter() { return filter; },
+		set filter(next: JobFilter) {
+			if (next === filter) return;
+			filter = next;
+			jobs = [];
+			total = 0;
+			void fetchJobs();
 		},
-
-		get search() { return search; },
-		set search(next: string) {
-			// Subject ids are integers — keep the input digits-only ("#8226" → "8226")
-			// so an unparseable search can never silently mean "no filter".
-			const digits = next.replace(/\D/g, "");
-			if (digits === search) return;
-			search = digits;
-			page = 0;
-			void poll();
-		},
-
-		get page() { return page; },
-		set page(next: number) {
-			const clamped = Math.max(0, next);
-			if (clamped === page) return;
-			page = clamped;
-			void poll();
-		},
-
 		get jobs() { return jobs; },
+		get visible() { return visible; },
 		get total() { return total; },
-		get selectedJobId() { return selectedJobId; },
-		set selectedJobId(next: number | null) { selectedJobId = next; },
-		get selectedJob() { return selectedJob; },
-
-		get logNeedle() { return logNeedle; },
-		set logNeedle(next: string | null) { logNeedle = next; },
-
-		get lane() { return lane; },
-		get semanticIndex() { return semanticIndex; },
+		get inspected() { return inspected; },
+		set inspected(next: ProcessingJobListing | null) {
+			inspected = next;
+			actionMessage = null;
+		},
 		get error() { return error; },
 		get now() { return now; },
-
 		get acting() { return acting; },
 		get actionMessage() { return actionMessage; },
-		set actionMessage(next: string | null) { actionMessage = next; },
 
-		open,
-		close,
-		poll,
-		startPolling,
-		reprocessSelected,
+		reset,
+		fetchJobs,
+		reprocess,
+		retryNow,
 	};
 }
 

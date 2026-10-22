@@ -4,6 +4,8 @@ export type ActivityMode =
 	| "system_input_or_screen_or_audio";
 
 export type AppearanceSetting = "system" | "light" | "dark";
+/** Clock style for wall-clock times; `system` follows the Mac's 24-hour setting. */
+export type TimeFormatSetting = "system" | "h12" | "h24";
 export type AudioSpeechDetector = "silero" | "webrtc" | "off";
 export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";
@@ -33,7 +35,16 @@ export interface AccessSettings {
 	 * is now a bare model id.)
 	 */
 	askAiModel?: string | null;
+	/** "Answer questions automatically" (Settings → Ask AI). Default `localOnly`. */
+	quickRecallAutoAnswer: QuickRecallAutoAnswer;
 }
+
+/**
+ * Whether Quick Recall answers a detected question on its own after a pause.
+ * `localOnly` = only when the resolved model's provider is local (Ollama,
+ * Llamafile); `never` = the user presses Tab to ask.
+ */
+export type QuickRecallAutoAnswer = "always" | "localOnly" | "never";
 
 export interface ExcludedAppEntry {
 	id: string;
@@ -216,6 +227,8 @@ export interface AiRuntimeStatus {
 	configured: boolean;
 	available: boolean;
 	defaultModel?: AiEngineRef | null;
+	/** The default model's provider kind (cloud vs local); absent with no default. */
+	defaultProviderKind?: AiProviderKind | null;
 	reason?: string | null;
 }
 
@@ -264,6 +277,20 @@ export interface Activity {
 	evidence: ActivityEvidenceRef[];
 }
 
+/** One Journal card's derived extras from `list_user_context_activity_meta`
+ * (`{ startMs, endMs }`); activities with no apps and no speakers are absent.
+ * Mirrors the Rust `ActivityMeta`. */
+export interface ActivityMeta {
+	activityId: number;
+	/** Up to three app names, most evidence frames first. */
+	apps: string[];
+	/** Distinct speakers in the activity's audio (a named person counts once). */
+	speakers: number;
+}
+
+/** The only topics `user_context_add_authored` / `_update_authored` accept (or null). */
+export type AuthoredTopic = "Work" | "Preferences" | "People" | "Goals";
+
 /** One user-authored standing context statement (issue #107 backend DTO). */
 export interface AuthoredContext {
 	id: number;
@@ -272,7 +299,9 @@ export interface AuthoredContext {
 	createdAtMs: number;
 	updatedAtMs: number;
 	/** From `list_user_context_authored` only: false when the statement falls past
-	 * the ~2,000-character prompt cap and the engine doesn't read it. */
+	 * the 4,000-character prompt cap and the engine doesn't read it. The list is
+	 * most-recently-edited first; `text` ≤280 chars; `topic` is an
+	 * `AuthoredTopic` or null. Mirrors the Rust `AuthoredContextRow`. */
 	inPrompt?: boolean;
 }
 
@@ -319,6 +348,9 @@ export interface Conclusion {
 	 *  timeline event). Absent when this belief superseded nothing. */
 	replacedStatement?: string | null;
 	replacedAtMs?: number | null;
+	/** Supporting activities the belief formed from, stamped once at formation.
+	 *  Subject page only; absent for beliefs formed before it was recorded. */
+	formedEvidenceCount?: number | null;
 }
 
 /** A single point on a Conclusion's confidence-over-time line. */
@@ -386,6 +418,8 @@ export interface UserContextStatus {
 	lastDayDigest?: UserContextDigest | null;
 	/** Set while Activity summarizing keeps failing; null when healthy. */
 	summarizingFailure?: UserContextSummarizingFailure | null;
+	/** Earliest raw capture still on disk (moves with Retention); null with none. */
+	earliestCaptureAtMs?: number | null;
 }
 
 /** Mirrors `capture_types::UserContextSummarizingFailure`. */
@@ -398,7 +432,7 @@ export interface UserContextSummarizingFailure {
 	reason: string;
 }
 
-/** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
+/** Result of a manual "Derive latest now" pass, mirroring the Rust DTO. */
 export interface UserContextDerivationRunResult {
 	activitiesDerived: number;
 	conclusionsDerived: number;
@@ -415,8 +449,22 @@ export interface UserContextDigest {
 	rangeEndMs: number;
 	narrative: string;
 	generatedAtMs: number;
-	/** One-line generated headline above the narrative; absent on old cached digests. */
+	/**
+	 * Generated full-sentence headline, optionally followed by " — " and a turn
+	 * clause; the lede de-emphasizes everything after the FIRST " — ". ≤140 chars.
+	 */
 	headline?: string | null;
+}
+
+/** Why the digest commands served no digest. Failures stay a rejected invoke
+ * (`"digest_sensitive_hold"` for the sensitive hold). Mirrors `DigestAbsentReason`. */
+export type DigestAbsentReason = "too_few" | "derivation_off" | "engine_not_ready";
+
+/** `get_user_context_digest` / `regenerate_user_context_digest` result: exactly
+ * one key is present. Mirrors the Rust `UserContextDigestResult`. */
+export interface UserContextDigestResult {
+	digest?: UserContextDigest;
+	reason?: DigestAbsentReason;
 }
 
 export interface RecordingSettings {
@@ -429,7 +477,6 @@ export interface RecordingSettings {
 	autoStart: boolean;
 	screenResolution: ScreenResolution;
 	videoBitrate: VideoBitrate;
-	nativeCaptureDebugLoggingEnabled: boolean;
 	pauseCaptureOnInactivity: boolean;
 	idleTimeoutSeconds: number;
 	activityMode: ActivityMode;
@@ -447,6 +494,7 @@ export interface RecordingSettings {
 	followTimelineLive: boolean;
 	retentionPolicy: RetentionPolicy;
 	appearance: AppearanceSetting;
+	timeFormat: TimeFormatSetting;
 	ocr: OcrSettings;
 	transcription: AudioTranscriptionSettings;
 	speakerAnalysis: SpeakerAnalysisSettings;
@@ -495,7 +543,7 @@ export type UpdateStorageSettingsRequest = Partial<
 >;
 
 export type UpdateDisplaySettingsRequest = Partial<
-	Pick<RecordingSettings, "appearance" | "followTimelineLive">
+	Pick<RecordingSettings, "appearance" | "timeFormat" | "followTimelineLive">
 >;
 
 export type UpdateMetadataSettingsRequest = Partial<MetadataSettings>;
@@ -516,7 +564,7 @@ export type UpdateProcessingSettingsRequest = Partial<
 >;
 
 export type UpdateDeveloperSettingsRequest = Partial<
-	Pick<RecordingSettings, "developerOptionsEnabled" | "nativeCaptureDebugLoggingEnabled">
+	Pick<RecordingSettings, "developerOptionsEnabled">
 >;
 
 export interface UpdateAccessSettingsRequest {
@@ -529,6 +577,8 @@ export interface UpdateAccessSettingsRequest {
 	 * engine default.
 	 */
 	askAiModel: string;
+	/** Omitted = unchanged. */
+	quickRecallAutoAnswer?: QuickRecallAutoAnswer;
 }
 
 /** One model discovered from a connected provider's models route

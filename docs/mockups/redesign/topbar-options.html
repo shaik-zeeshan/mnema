@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" /><title>Mnema — top bar options</title>
+  <link rel="stylesheet" href="kit.css" />
+  <script src="kit.js"></script>
+  <style>
+    /* Options board only. Concept A is pure kit markup (it is what shipped to every page). */
+    body { min-width: 1520px; }
+    .tb-page { padding: var(--s-6) 40px var(--s-8); display: grid; gap: var(--s-7); }
+    .tb-intro { display: grid; gap: var(--s-2); max-width: 900px; }
+    .tb-concept { display: grid; gap: var(--s-3); }
+    .tb-head { display: flex; align-items: center; gap: var(--s-3); }
+    .tb-concept .mx-prose { max-width: 120ch; }
+    .tb-concept .mx-prose b { color: var(--app-text-strong); font-weight: 600; }
+    .tb-frame { display: grid; gap: 6px; }
+    .tb-win { height: 200px; min-height: 0; grid-template-rows: var(--mx-titlebar-h) 1fr; }
+    .tb-win--b { height: 240px; }
+    .tb-stub { display: grid; align-content: start; gap: var(--s-3); padding: var(--s-4) var(--s-5); }
+    .tb-dim { color: var(--app-text-subtle); }
+    .tb-title { font: 600 var(--text-sm)/1 var(--mx-sans); color: var(--app-text-strong); }
+    .tb-title .tb-dim { font-family: var(--mx-mono); font-weight: 500; }
+    /* B: icon rail */
+    .tb-b-bar, .tb-c-bar { display: flex; align-items: center; gap: var(--s-2); padding-right: var(--s-2);
+      background: color-mix(in srgb, var(--app-titlebar-bg) 82%, transparent); border-bottom: 1px solid var(--mx-hairline); box-shadow: var(--mx-highlight); }
+    .tb-b-search { width: 300px; }
+    .tb-b-main { display: grid; grid-template-columns: 48px 1fr; min-height: 0; }
+    .tb-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: var(--s-2) 0;
+      background: var(--app-titlebar-bg); border-right: 1px solid var(--mx-hairline); }
+    .tb-rail a { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); color: var(--app-icon-fg); }
+    .tb-rail a.is-on { background: var(--app-surface-raised); color: var(--app-text-strong); box-shadow: var(--mx-highlight), 0 0 0 1px var(--app-border-strong); }
+    /* C: contextual */
+    .tb-crumb { display: inline-flex; align-items: center; gap: 6px; font: 500 var(--text-sm)/1 var(--mx-sans); color: var(--app-text-strong); }
+    .tb-crumb svg { color: var(--app-text-faint); }
+    .tb-cmdchip { display: inline-flex; align-items: center; gap: 8px; height: 24px; padding: 0 4px 0 10px; border-radius: var(--r-pill);
+      border: 1px solid var(--mx-hairline); background: color-mix(in srgb, var(--app-fg) 4%, transparent); color: var(--app-text-subtle);
+      font: 400 var(--text-sm)/1 var(--mx-sans); cursor: pointer; }
+    .tb-cmdchip kbd { height: 17px; border-bottom-width: 1px; background: transparent; border-color: var(--mx-hairline); }
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-timeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></symbol>
+    <symbol id="i-insights" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+    <symbol id="i-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 18V7l4 6 4-6 4 6 4-6v11"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></symbol>
+  </defs>
+</svg>
+<main class="tb-page">
+  <div class="tb-intro">
+    <span class="mx-kicker">Top bar · 3 options</span>
+    <h1 class="mx-h1">A tighter titlebar, with Ask always one click away</h1>
+    <p class="mx-prose">The real window uses an overlay titlebar, so this strip is the titlebar: macOS draws the traffic lights at top-left and the first 78px stay empty. Each option is shown at a full 1440px window and a narrow 1000px one.</p>
+    <p class="mx-prose"><b style="color:var(--app-text-strong)">Superseded (Oct 9).</b> A evolved into the shipped icon-led bar: icon-only Timeline/Insights switch, ONE command field (recall; Tab → Ask), and icon-only Chats · Notifications · Settings — the separate Ask button and the theme toggle are gone. See <a href="index.html" style="color:inherit">index.html → Titlebar</a>. The frames below keep their original markup for reference.</p>
+  </div>
+  
+  <section class="tb-concept tb-concept--rec" id="a">
+    <div class="tb-head"><h2 class="mx-h2">A · Unified toolbar</h2><span class="mx-chip mx-chip--accent">Recommended</span></div>
+    <p class="mx-prose"><b>What.</b> One 38px strip, Safari/Xcode-style: traffic lights, a compact Timeline | Insights switch, a centered “Recall or ask…” field that doubles as the chat door (⌘↵ asks), and Ask ⌘J on the right.<br/><b>Why / cost.</b> Keeps both surfaces one click away and visible (the app only has two), drops the brand and help icon, and puts search where the eye lands. 44px → 38px, no empty middle.</p>
+    <div class="tb-frame"><span class="mx-label">1440 px</span><div class="mx-window tb-win " style="width:1440px"><header class="mx-titlebar">
+      <div class="mx-titlebar__lead">
+        <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Main surface">
+          <a href="timeline.html" aria-current="page" ><svg width="14" height="14"><use href="#i-timeline"/></svg><span>Timeline</span></a>
+          <a href="insights.html" ><svg width="14" height="14"><use href="#i-insights"/></svg><span>Insights</span></a>
+        </nav>
+      </div>
+      <label class="mx-search mx-search--cmd"><svg width="13" height="13"><use href="#i-search"/></svg><input placeholder="Recall or ask…" /><kbd>⌘K</kbd></label>
+      <div class="mx-titlebar__trail">
+        <a class="mx-ask" href="chat.html"><svg width="13" height="13"><use href="#i-sparkle"/></svg>Ask<kbd>⌘J</kbd></a>
+        <button class="mx-icon-btn" aria-label="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge"></span></button>
+        <a class="mx-icon-btn" href="settings.html" aria-label="Settings"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+      </div>
+    </header><div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div></div></div><div class="tb-frame"><span class="mx-label">1000 px</span><div class="mx-window tb-win " style="width:1000px"><header class="mx-titlebar">
+      <div class="mx-titlebar__lead">
+        <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <nav class="mx-nav" aria-label="Main surface">
+          <a href="timeline.html" aria-current="page" ><svg width="14" height="14"><use href="#i-timeline"/></svg><span>Timeline</span></a>
+          <a href="insights.html" ><svg width="14" height="14"><use href="#i-insights"/></svg><span>Insights</span></a>
+        </nav>
+      </div>
+      <label class="mx-search mx-search--cmd"><svg width="13" height="13"><use href="#i-search"/></svg><input placeholder="Recall or ask…" /><kbd>⌘K</kbd></label>
+      <div class="mx-titlebar__trail">
+        <a class="mx-ask" href="chat.html"><svg width="13" height="13"><use href="#i-sparkle"/></svg>Ask<kbd>⌘J</kbd></a>
+        <button class="mx-icon-btn" aria-label="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg><span class="mx-badge"></span></button>
+        <a class="mx-icon-btn" href="settings.html" aria-label="Settings"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+      </div>
+    </header><div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div></div></div>
+  </section>
+  <section class="tb-concept" id="b">
+    <div class="tb-head"><h2 class="mx-h2">B · Icon rail</h2></div>
+    <p class="mx-prose"><b>What.</b> No top nav at all. A 48px vertical rail holds Timeline, Insights, Chat, then bell + settings; the titlebar keeps only page title, search and Ask.<br/><b>Why / cost.</b> Scales if sections grow and frees the whole strip, but spends 48px of width on every page (Timeline’s rail and Insights’ sidebar both want that width) for just two destinations.</p>
+    <div class="tb-frame"><span class="mx-label">1440 px</span><div class="mx-window tb-win tb-win--b" style="width:1440px"><header class="tb-b-bar">
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="tb-title">Timeline <span class="tb-dim">· Fri, Oct 9</span></span>
+      <span class="mx-spacer"></span>
+      <label class="mx-search mx-search--cmd tb-b-search"><svg width="13" height="13"><use href="#i-search"/></svg><input placeholder="Recall or ask…" /><kbd>⌘K</kbd></label>
+      <a class="mx-ask" href="chat.html"><svg width="13" height="13"><use href="#i-sparkle"/></svg>Ask<kbd>⌘J</kbd></a>
+    </header>
+    <div class="tb-b-main">
+      <nav class="tb-rail" aria-label="Main surface">
+        <a class="is-on" aria-label="Timeline"><svg width="16" height="16"><use href="#i-timeline"/></svg></a>
+        <a aria-label="Insights"><svg width="16" height="16"><use href="#i-insights"/></svg></a>
+        <a aria-label="Chat"><svg width="16" height="16"><use href="#i-chat"/></svg></a>
+        <span class="mx-spacer"></span>
+        <a aria-label="Notifications"><svg width="16" height="16"><use href="#i-bell"/></svg></a>
+        <a aria-label="Settings"><svg width="16" height="16"><use href="#i-gear"/></svg></a>
+      </nav>
+      <div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div>
+    </div></div></div><div class="tb-frame"><span class="mx-label">1000 px</span><div class="mx-window tb-win tb-win--b" style="width:1000px"><header class="tb-b-bar">
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="tb-title">Timeline <span class="tb-dim">· Fri, Oct 9</span></span>
+      <span class="mx-spacer"></span>
+      <label class="mx-search mx-search--cmd tb-b-search"><svg width="13" height="13"><use href="#i-search"/></svg><input placeholder="Recall or ask…" /><kbd>⌘K</kbd></label>
+      <a class="mx-ask" href="chat.html"><svg width="13" height="13"><use href="#i-sparkle"/></svg>Ask<kbd>⌘J</kbd></a>
+    </header>
+    <div class="tb-b-main">
+      <nav class="tb-rail" aria-label="Main surface">
+        <a class="is-on" aria-label="Timeline"><svg width="16" height="16"><use href="#i-timeline"/></svg></a>
+        <a aria-label="Insights"><svg width="16" height="16"><use href="#i-insights"/></svg></a>
+        <a aria-label="Chat"><svg width="16" height="16"><use href="#i-chat"/></svg></a>
+        <span class="mx-spacer"></span>
+        <a aria-label="Notifications"><svg width="16" height="16"><use href="#i-bell"/></svg></a>
+        <a aria-label="Settings"><svg width="16" height="16"><use href="#i-gear"/></svg></a>
+      </nav>
+      <div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div>
+    </div></div></div>
+  </section>
+  <section class="tb-concept" id="c">
+    <div class="tb-head"><h2 class="mx-h2">C · Contextual titlebar</h2></div>
+    <p class="mx-prose"><b>What.</b> Titlebar shows where you are (breadcrumb), a ⌘K command-palette chip in the middle, and a chat icon. Surfaces move into the palette and ⌘1 / ⌘2.<br/><b>Why / cost.</b> Quietest and most “native”, but hides the main switch behind a shortcut: a new user can’t see that Insights exists. Better as a later step once the palette is real.</p>
+    <div class="tb-frame"><span class="mx-label">1440 px</span><div class="mx-window tb-win " style="width:1440px"><header class="tb-c-bar">
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="tb-crumb"><span class="tb-dim">Insights</span><svg width="12" height="12"><use href="#i-chev"/></svg>Journal<svg width="12" height="12"><use href="#i-chev"/></svg><span class="tb-dim">Week 41</span></span>
+      <span class="mx-spacer"></span>
+      <button class="tb-cmdchip"><svg width="13" height="13"><use href="#i-search"/></svg>Go, recall or ask<kbd>⌘K</kbd></button>
+      <span class="mx-spacer"></span>
+      <a class="mx-icon-btn" href="chat.html" aria-label="New chat" data-tip="New chat  ⌘J"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+      <button class="mx-icon-btn" aria-label="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg></button>
+      <a class="mx-icon-btn" href="settings.html" aria-label="Settings"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+    </header><div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div></div></div><div class="tb-frame"><span class="mx-label">1000 px</span><div class="mx-window tb-win " style="width:1000px"><header class="tb-c-bar">
+      <div class="mx-lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span class="tb-crumb"><span class="tb-dim">Insights</span><svg width="12" height="12"><use href="#i-chev"/></svg>Journal<svg width="12" height="12"><use href="#i-chev"/></svg><span class="tb-dim">Week 41</span></span>
+      <span class="mx-spacer"></span>
+      <button class="tb-cmdchip"><svg width="13" height="13"><use href="#i-search"/></svg>Go, recall or ask<kbd>⌘K</kbd></button>
+      <span class="mx-spacer"></span>
+      <a class="mx-icon-btn" href="chat.html" aria-label="New chat" data-tip="New chat  ⌘J"><svg width="15" height="15"><use href="#i-chat"/></svg></a>
+      <button class="mx-icon-btn" aria-label="Notifications"><svg width="15" height="15"><use href="#i-bell"/></svg></button>
+      <a class="mx-icon-btn" href="settings.html" aria-label="Settings"><svg width="15" height="15"><use href="#i-gear"/></svg></a>
+    </header><div class="tb-stub mx-texture"><span class="mx-skel" style="width:28%;height:12px"></span><span class="mx-skel" style="width:62%;height:64px"></span><span class="mx-skel" style="width:44%;height:12px"></span></div></div></div>
+  </section>
+</main>
+</body>
+</html>

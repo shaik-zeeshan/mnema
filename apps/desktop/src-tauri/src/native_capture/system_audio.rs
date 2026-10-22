@@ -64,7 +64,7 @@ impl SegmentBus {
 
         if let Some(audio_dir) = next.parent() {
             if let Err(error) = std::fs::create_dir_all(audio_dir) {
-                super::debug_log::log(format!(
+                super::debug_log::log_error(format!(
                     "{LOG_PREFIX} failed to create system audio output directory: {error}"
                 ));
                 self.live_output_file = None;
@@ -170,8 +170,11 @@ impl SystemAudioFamily {
     /// logged and polling continues on the watchdog's own backoff.
     pub(super) fn poll(&mut self) -> Option<String> {
         let before = self.live_output_file();
-        if let Err(error) = self.session.poll() {
-            super::debug_log::log(format!(
+        let rebuilds_before = self.session.rebuild_count();
+        let polled = self.session.poll();
+        note_rebuilds(self.session.rebuild_count() - rebuilds_before);
+        if let Err(error) = polled {
+            super::debug_log::log_warn(format!(
                 "{LOG_PREFIX} tap rebuild failed; retrying on the watchdog's backoff: [{}] {}",
                 error.code, error.message
             ));
@@ -192,6 +195,51 @@ impl SystemAudioFamily {
     pub(super) fn stop(mut self) {
         self.session.stop();
     }
+
+    pub(super) fn health(&self) -> capture_system_audio::TapHealth {
+        self.session.health()
+    }
+}
+
+// ── Rebuilds today ─────────────────────────────────────────────────────────
+//
+// Process-global so the count outlives a session (stop/start keeps it). One
+// mutex holds both the local day and the count, so a midnight rollover can't
+// race a bump. Never persisted: the count restarts with the app.
+
+static REBUILDS_TODAY: Mutex<Option<(String, u64)>> = Mutex::new(None);
+
+/// Adds `added` to `slot` for `day`, restarting from zero when the day moved.
+fn bump_for_day(slot: &mut Option<(String, u64)>, day: String, added: u64) -> u64 {
+    match slot {
+        Some((stamp, count)) if *stamp == day => {
+            *count += added;
+            *count
+        }
+        _ => {
+            *slot = Some((day, added));
+            added
+        }
+    }
+}
+
+fn note_rebuilds(added: u64) {
+    if added == 0 {
+        return;
+    }
+    let mut slot = REBUILDS_TODAY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    bump_for_day(&mut slot, capture_runtime::current_date_prefix(), added);
+}
+
+/// Tap rebuilds since local midnight **within this app run** — not persisted,
+/// so a relaunch starts from zero.
+pub(super) fn rebuilds_today() -> u64 {
+    let mut slot = REBUILDS_TODAY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    bump_for_day(&mut slot, capture_runtime::current_date_prefix(), 0)
 }
 
 // ── Permission (ADR 0052) ──────────────────────────────────────────────────
@@ -283,7 +331,7 @@ pub(crate) async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
                 .map(SystemAudioEvidence::from_str)
                 .unwrap_or_default(),
         ),
-        Err(error) => super::debug_log::log(format!(
+        Err(error) => super::debug_log::log_warn(format!(
             "{LOG_PREFIX} failed to read stored permission evidence; leaving it unjudged for this session: {error}"
         )),
     }
@@ -306,7 +354,7 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
     };
     store_evidence(next);
 
-    super::debug_log::log(format!(
+    super::debug_log::log_info(format!(
         "{LOG_PREFIX} permission evidence moved to {} after {session_age_ms}ms of tap",
         next.as_str()
     ));
@@ -319,7 +367,7 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
     // uses, and this is only the durable copy catching up.
     tauri::async_runtime::spawn(async move {
         if let Err(error) = infra.system_audio_evidence().set_evidence(next.as_str()).await {
-            super::debug_log::log(format!(
+            super::debug_log::log_warn(format!(
                 "{LOG_PREFIX} failed to persist permission evidence: {error}"
             ));
         }
@@ -388,6 +436,16 @@ mod tests {
             evidence_from_cache(EVIDENCE_UNHYDRATED),
             SystemAudioEvidence::None
         );
+    }
+
+    #[test]
+    fn rebuilds_today_restart_at_local_midnight() {
+        let mut slot = None;
+        assert_eq!(bump_for_day(&mut slot, "2026/10/13".into(), 2), 2);
+        assert_eq!(bump_for_day(&mut slot, "2026/10/13".into(), 1), 3);
+        assert_eq!(bump_for_day(&mut slot, "2026/10/13".into(), 0), 3);
+        assert_eq!(bump_for_day(&mut slot, "2026/10/14".into(), 0), 0);
+        assert_eq!(bump_for_day(&mut slot, "2026/10/14".into(), 1), 1);
     }
 
     // ── SegmentBus::take_next_output_file ──────────────────────────────────

@@ -128,8 +128,20 @@ jobs:
           # The draft's latest.json points at GitHub asset URLs; repoint each
           # platform at the immutable R2 copy. The updater signature covers the
           # archive contents, not its URL, so the rewrite is safe.
-          jq --arg base "$RELEASES_BASE_URL/$artifact_path" --arg notes "$notes" \
-            '.platforms |= with_entries(.value.url = ($base + "/" + (.value.url | split("/") | last)))
+          # Also stamp each platform's archive byte size (`size`, a JSON number)
+          # from the local copy so the update window can show it before the
+          # download starts. The updater ignores unknown fields; a platform whose
+          # archive isn't in assets/ fails the promote rather than ship no size.
+          sizes='{}'
+          for file in assets/*; do
+            sizes="$(jq --arg name "$(basename "$file")" --argjson size "$(stat -c%s "$file")" \
+              '.[$name] = $size' <<<"$sizes")"
+          done
+          jq --arg base "$RELEASES_BASE_URL/$artifact_path" --arg notes "$notes" --argjson sizes "$sizes" \
+            '.platforms |= with_entries(
+               (.value.url | split("/") | last) as $name
+               | .value.url = ($base + "/" + $name)
+               | .value.size = ($sizes[$name] // error("no local asset for platform archive " + $name)))
              | .notes = $notes' \
             assets/latest.json > latest.json
 

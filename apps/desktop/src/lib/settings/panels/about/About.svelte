@@ -12,7 +12,7 @@
     appUpdateProgressText,
     appUpdateProgressPercent,
   } from "$lib/settings/state/about.svelte";
-  import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -105,7 +105,7 @@
     {#snippet control()}
       <button
         type="button"
-        class="btn btn--ghost btn--sm"
+        class="mx-btn mx-btn--sm"
         onclick={copyAboutDetails}
         aria-label="Copy version and build details to the clipboard"
       >
@@ -123,14 +123,15 @@
   {#if showUpdateChannelPicker}
     <SettingRow label="Update channel" description={switchingAppUpdateChannel ? "Saving channel and checking for updates." : `Current channel: ${updateChannelLabel(appUpdateStatus?.channel)}. Switching channels checks immediately.`} full>
       {#snippet control()}
-        <RadioGroup
+        <Segmented
+          md
           value={appUpdateStatus?.channel === "preview" ? "preview" : "stable"}
           onValueChange={(v) => chooseAppUpdateChannel(v as AppUpdateChannel)}
           disabled={switchingAppUpdateChannel || installingAppUpdate}
-          label="Update channel"
+          ariaLabel="Update channel"
           options={[
-            { value: "stable", label: "Stable", description: "Published releases" },
-            { value: "preview", label: "Preview", description: "Opt-in prereleases" },
+            { value: "stable", label: "Stable" },
+            { value: "preview", label: "Preview" },
           ]}
         />
       {/snippet}
@@ -141,10 +142,10 @@
         {#snippet control()}
           <div class="preview-warning" role="alert">
             <div class="row-actions">
-              <button class="btn btn--primary btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
+              <button class="mx-btn mx-btn--sm" type="button" onclick={() => void useAppUpdateChannel("preview")} disabled={switchingAppUpdateChannel}>
                 Use Preview Updates
               </button>
-              <button class="btn btn--ghost btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
+              <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" onclick={() => { about.previewConfirmationVisible = false; }}>
                 Keep Stable
               </button>
             </div>
@@ -159,7 +160,7 @@
       <div class="about-update">
         <div class="about-update__head">
           <span class="badge badge--neutral badge--sm">{appUpdateStateLabel(appUpdateStatus)}</span>
-          <button type="button" class="btn btn--primary btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
+          <button type="button" class="mx-btn mx-btn--sm" onclick={checkForAppUpdate} disabled={checkDisabled} aria-busy={checkingAppUpdate || appUpdateStatus?.state === "checking"}>
             {#if checkingAppUpdate || appUpdateStatus?.state === "checking"}<ButtonSpinner />Checking{:else}Check for Updates{/if}
           </button>
         </div>
@@ -200,11 +201,11 @@
 
         <div class="row-actions">
           {#if appUpdateStatus?.state === "restartRequired"}
-            <button class="btn btn--primary" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
+            <button class="mx-btn" type="button" onclick={restartAfterAppUpdate} disabled={!canRestartAfterUpdate(appUpdateStatus)} aria-busy={restartingAfterUpdate}>
               {#if restartingAfterUpdate}<ButtonSpinner />Restarting{:else}Restart to Update{/if}
             </button>
           {:else}
-            <button class="btn btn--primary" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
+            <button class="mx-btn" type="button" onclick={installAppUpdate} disabled={!canInstallAppUpdate(appUpdateStatus)} aria-busy={installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}>
               {#if installingAppUpdate || appUpdateStatus?.state === "downloading" || appUpdateStatus?.state === "installing"}<ButtonSpinner />Installing{:else}Install Update{/if}
             </button>
           {/if}
@@ -214,7 +215,7 @@
           <div class="inline-error">
             <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{about.appUpdateActionError}</span>
-            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear aria-hidden="true" /></button>
+            <button type="button" class="mx-btn mx-btn--ghost mx-btn--icon mx-btn--sm" aria-label="Dismiss error" onclick={() => about.appUpdateActionError = null}><IconClear width="14" height="14" aria-hidden="true" /></button>
           </div>
         {/if}
       </div>
@@ -222,14 +223,14 @@
   </SettingRow>
 </SettingGroup>
 
-<SettingGroup title="Acknowledgements" hint="Mnema's on-device models are built on these open projects. Each is credited under its license.">
+<SettingGroup title="Acknowledgements" hint="Mnema's on-device models and fonts come from these open projects. Each is credited under its license.">
   <SettingRow label="Third-party notices" description="The full attribution list for the bundled open-source components." full divider={false}>
     {#snippet control()}
       <div class="about-notices">
         <div class="about-notices__head">
           <button
             type="button"
-            class="btn btn--ghost btn--sm"
+            class="mx-btn mx-btn--sm"
             onclick={copyThirdPartyNotices}
             disabled={!thirdPartyNotices || loadingThirdPartyNotices}
             aria-label="Copy the full third-party notices to the clipboard"
@@ -284,25 +285,24 @@
 
 <style>
   /* Identity hero: a dedicated block (not a SettingRow) so the product name can
-     anchor the panel. Rows supply the card's own padding, so the hero replicates
-     it (16px 20px) and draws the same inset hairline beneath itself that a
-     following `.setting-row` would have drawn above. */
+     anchor the panel. It sits on the rows' left edge and draws the hairline
+     beneath itself that a `.setting-row` would. */
   .about-hero {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 18px 20px;
+    padding: 18px 0;
   }
 
   .about-hero::after {
     content: "";
     position: absolute;
-    left: 20px;
-    right: 20px;
+    left: 0;
+    right: 0;
     bottom: 0;
     height: 1px;
-    background: var(--app-border);
+    background: var(--mx-hairline);
     pointer-events: none;
   }
 
@@ -323,7 +323,6 @@
 
   .about-hero__tagline {
     margin: 0;
-    max-width: 52ch;
     font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--app-text-muted);

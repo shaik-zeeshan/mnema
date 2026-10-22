@@ -33,15 +33,15 @@ describe("screenGate", () => {
     expect(screenGate("unsupported", false)).toEqual({ ready: true, primaryLabel: "Continue" });
   });
 
-  it("holds Continue with a named reason while the grant is missing", () => {
+  // A denial gates nothing: macOS never re-prompts, and the start request
+  // already drops the screen source, so the session runs audio-only or idle.
+  it("continues past a denial, naming what is left behind", () => {
     expect(screenGate("denied", false)).toEqual({
-      ready: false,
-      primaryLabel: "Screen recording required",
+      ready: true,
+      primaryLabel: "Continue without screen recording",
     });
-    expect(screenGate("not_determined", false)).toEqual({
-      ready: false,
-      primaryLabel: "Screen recording required",
-    });
+    expect(screenGate("restricted", false).ready).toBe(true);
+    expect(screenGate("not_determined", false)).toEqual({ ready: true, primaryLabel: "Continue" });
   });
 
   // A grant made in THIS process reads as granted while ScreenCaptureKit still

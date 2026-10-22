@@ -33,6 +33,8 @@ export interface SemanticSearchPickedView {
   metaLine: string;
   available: boolean;
   approxDownloadBytes: number | null;
+  /** The installed model's own directory; null for a catalog-only pick. */
+  installPath: string | null;
 }
 
 export function createSemanticSearchView(rec: RecordingStore, models: ModelStatusStore) {
@@ -167,6 +169,7 @@ export function createSemanticSearchView(rec: RecordingStore, models: ModelStatu
         metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
         available: live.available,
         approxDownloadBytes: live.approxDownloadBytes,
+        installPath: live.installPath,
       };
     }
     const catalog = models.semanticSearchSupportedModels.find((m) => m.modelId === id);
@@ -183,6 +186,7 @@ export function createSemanticSearchView(rec: RecordingStore, models: ModelStatu
         metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
         available: false,
         approxDownloadBytes: catalog.approxDownloadBytes,
+        installPath: null,
       };
     }
     return null;

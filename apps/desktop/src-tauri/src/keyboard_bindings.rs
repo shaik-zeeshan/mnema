@@ -1117,7 +1117,7 @@ fn handle_toggle_recording(app: &tauri::AppHandle) {
         };
 
         if let Err(error) = result {
-            crate::native_capture::debug_log::log_warn(format!(
+            crate::native_capture::debug_log::log_error(format!(
                 "global shortcut failed to toggle recording: [{}] {}",
                 error.code, error.message
             ));
@@ -1139,7 +1139,7 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
         };
 
         if let Err(error) = result {
-            crate::native_capture::debug_log::log_warn(format!(
+            crate::native_capture::debug_log::log_error(format!(
                 "global shortcut failed to pause/resume recording: [{}] {}",
                 error.code, error.message
             ));

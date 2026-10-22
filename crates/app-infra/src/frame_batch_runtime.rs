@@ -54,7 +54,7 @@ impl FrameBatchRuntime {
         let cleanup_errors =
             frame_batch_artifact_cleanup::cleanup_frame_artifacts(&batch_with_frames.frames);
         if !cleanup_errors.is_empty() {
-            capture_runtime::debug_log!(
+            capture_runtime::warn_log!(
                 "[app-infra][frame-batches] frame artifact cleanup for batch {batch_id}: {} file(s) failed to delete",
                 cleanup_errors.len()
             );

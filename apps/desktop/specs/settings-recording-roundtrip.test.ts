@@ -52,7 +52,6 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   autoStart: true,
   screenResolution: { mode: "preset", preset: "1080p" },
   videoBitrate: { mode: "preset", preset: "medium", customMbps: null },
-  nativeCaptureDebugLoggingEnabled: false,
   pauseCaptureOnInactivity: true,
   idleTimeoutSeconds: 300,
   activityMode: "system_input_or_screen_or_audio",
@@ -102,6 +101,7 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   followTimelineLive: false,
   retentionPolicy: "never",
   appearance: "system",
+  timeFormat: "h24",
   ocr: {
     enabled: true,
     provider: "apple_vision",
@@ -175,7 +175,6 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftSystemAudioActivitySensitivity: s.systemAudioActivitySensitivity,
     draftMicrophoneVadAdapter: s.audioSpeechDetection.detector,
 
-    draftNativeCaptureDebugLoggingEnabled: s.nativeCaptureDebugLoggingEnabled,
     draftDeveloperOptionsEnabled: s.developerOptionsEnabled,
     draftPreviewCacheTtlSeconds: s.previewCacheTtlSeconds,
 
@@ -189,6 +188,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftAskAiEnabled: s.access.askAiEnabled,
     draftAskAiWebFetchEnabled: s.access.askAiWebFetchEnabled,
     draftAskAiModel: s.access.askAiModel ?? "",
+    draftQuickRecallAutoAnswer: s.access.quickRecallAutoAnswer ?? "localOnly",
     effectiveAskAiMaxToolCalls: cap,
 
     draftAiEnabled: s.aiRuntime.enabled,
@@ -209,6 +209,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftUserContextBackfillGoDeeper: s.userContext.backfillGoDeeper,
 
     draftAppearance: s.appearance,
+    draftTimeFormat: s.timeFormat,
 
     draftOcrEnabled: s.ocr.enabled,
     draftOcrProvider: s.ocr.provider,

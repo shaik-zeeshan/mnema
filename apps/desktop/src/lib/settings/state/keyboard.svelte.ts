@@ -38,6 +38,8 @@ export class KeyboardStore {
 
   savingKeyboardBindings = $state(false);
   keyboardBindingsError = $state<string | null>(null);
+  // LOAD failures stay in the Shortcuts section; only save failures reach the header.
+  keyboardLoadError = $state<string | null>(null);
   keyboardBindingsSaved = $state(false);
 
   lastSavedKeyboardBindingsSnapshot = $state<string | null>(null);
@@ -219,12 +221,12 @@ export class KeyboardStore {
 
   // ─── Load / save ────────────────────────────────────────────────────────────
   async loadKeyboardBindingsSettings() {
-    this.keyboardBindingsError = null;
+    this.keyboardLoadError = null;
     try {
       const s = await invoke<KeyboardBindingsSettings>("get_keyboard_bindings_settings");
       this.syncKeyboardBindingsDrafts(s);
     } catch (err) {
-      this.keyboardBindingsError = humanizeError(err);
+      this.keyboardLoadError = humanizeError(err);
     }
   }
 

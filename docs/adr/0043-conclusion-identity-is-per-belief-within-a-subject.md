@@ -87,3 +87,20 @@ sentence. A **Conclusion** must "earn the name": one atomic belief, its own evid
   not build-now).
 - **Runtime validation still outstanding** (as with 0042): that the model reliably reuses a supplied `id`,
   and that per-belief warming appears on real data.
+
+**Amended 2026-10-14 — a code-side duplicate guard backs up the cited id.** Runtime validation
+failed: on real data the distiller kept emitting rewordings as new beliefs (one subject held 44
+paraphrases of one sentence; 9,051 conclusions in total), so the "deterministic auto-merge" rejected
+above is now built as a *backstop*, scoped to one subject and never across subjects. A new belief
+that cites no `reinforces_id` is compared with its subject's existing conclusions and, on a
+near-duplicate, reinforces that row through the same `reinforces_id` path
+(`apps/desktop/src-tauri/src/user_context/conclusion_guard.rs`). Duplicate = same negation polarity,
+numbers and time-of-day/week words, AND either stemmed content-token Jaccard ≥ 0.8 or (nomic-embed
+installed) cosine ≥ 0.955 — thresholds chosen on fixtures so one-word swaps between distinct beliefs
+("plays Genshin" / "stopped playing Genshin", "dark" / "light mode", weekends / weekdays) do not merge
+(`crates/app-infra/src/user_context/conclusion_dedup.rs`). A deferred-startup heal applies the lexical
+rule to rows already stored, folding evidence into the strongest copy and deleting the rest. The
+wrong-merge risk above stands; the thresholds are what bound it. The KNOWN SUBJECTS listing now mixes
+each subject's strongest and most recent conclusions (cap 15, paraphrases skipped) instead of
+confidence order alone, which — with every long-lived belief saturated at the same ceiling — had
+shown the model a subject's oldest rows.

@@ -1,4 +1,4 @@
-// Pure playback helpers for the Activity Receipt (ActivityReceipt.svelte): a
+// Pure playback helpers for the Activity Receipt (ReceiptViewer.svelte): a
 // bounded LRU for decoded frame previews, index stepping with clamped bounds,
 // a speed→fps mapping, and a gap-based capture-segment count. No DOM, no
 // Svelte — unit-testable in bun.
@@ -144,4 +144,14 @@ export function countCaptureSegments(sortedMs: number[], gapMs = 90_000): number
     if (sortedMs[i] - sortedMs[i - 1] > gapMs) segments++;
   }
   return segments;
+}
+
+const count = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Receipt footer: "12 frames across 2 capture segments · 3 frames + 1 spoken
+ *  segment cited". A lone capture segment and zero-count parts are omitted. */
+export function receiptFootage(frames: number, segments: number, citedFrames: number, citedSpoken: number): string {
+  const strip = `${count(frames, "frame")}${segments > 1 ? ` across ${count(segments, "capture segment")}` : ""}`;
+  const cited = [citedFrames && count(citedFrames, "frame"), citedSpoken && count(citedSpoken, "spoken segment")].filter(Boolean);
+  return cited.length ? `${strip} · ${cited.join(" + ")} cited` : strip;
 }

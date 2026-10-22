@@ -12,10 +12,19 @@ export type KeyboardHelpGroup = {
 };
 
 let groupsByOwner = $state<Record<string, KeyboardHelpGroup[]>>({});
+// The shortcuts popover (status bar ?, or / and ?): one open flag shared by the
+// layout's key handler and the popover itself.
+let open = $state(false);
 
 export const keyboardHelp = {
   get contextualGroups(): KeyboardHelpGroup[] {
     return Object.values(groupsByOwner).flat();
+  },
+  get open(): boolean {
+    return open;
+  },
+  set open(next: boolean) {
+    open = next;
   },
 };
 

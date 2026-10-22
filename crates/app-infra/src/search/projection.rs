@@ -691,8 +691,11 @@ pub(super) async fn backfill_missing_url_projection(db: &CaptureDb) -> Result<()
                 .and_then(|snapshot_json| {
                     serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&snapshot_json)
                         .map_err(|error| {
-                            capture_runtime::debug_log!(
-                                "[app-infra][search] url backfill could not read a frame metadata snapshot, resolving it to no url: {error}"
+                            capture_runtime::warn_log!(
+                                "[app-infra][search] url backfill could not read a frame metadata snapshot, resolving it to no url: {:?} at line {} column {}",
+                                error.classify(),
+                                error.line(),
+                                error.column()
                             );
                         })
                         .ok()

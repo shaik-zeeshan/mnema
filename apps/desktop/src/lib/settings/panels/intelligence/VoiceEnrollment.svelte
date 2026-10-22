@@ -21,6 +21,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import { VoiceEnrollmentStore } from "$lib/voice-enrollment.svelte";
   import {
@@ -133,7 +134,7 @@
             ></audio>
             <button
               type="button"
-              class="btn btn--ghost"
+              class="mx-btn"
               onclick={togglePlayback}
               disabled={playbackFailed}
             >
@@ -148,20 +149,24 @@
         {/if}
 
         {#if voice.rejection}
-          <p class="group-hint group-hint--warn">{rejectionMessage(voice.rejection)}</p>
+          <div>
+            <span class="mx-inline" data-tone="warn" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{rejectionMessage(voice.rejection)}</span>
+          </div>
         {/if}
         {#if voice.error}
-          <p class="group-hint group-hint--warn">{voice.error}</p>
+          <div>
+            <span class="mx-inline" data-tone="danger" role="alert"><IconAlert width="13" height="13" aria-hidden="true" />{voice.error}</span>
+          </div>
         {/if}
 
         <div class="voice-actions">
           {#if voice.stage === "review"}
-            <button type="button" class="btn btn--primary" onclick={enroll}>Use this take</button>
-            <button type="button" class="btn btn--ghost" onclick={() => voice.discard()}>Discard</button>
+            <button type="button" class="mx-btn" onclick={enroll}>Use this take</button>
+            <button type="button" class="mx-btn mx-btn--ghost" onclick={() => voice.discard()}>Discard</button>
           {:else}
             <button
               type="button"
-              class="btn btn--primary"
+              class="mx-btn"
               onclick={startTake}
               disabled={voice.stage !== "idle"}
               aria-busy={voice.stage !== "idle"}
@@ -179,7 +184,7 @@
             {#if enrolled}
               <button
                 type="button"
-                class="btn btn--danger"
+                class="mx-btn mx-btn--danger"
                 onclick={removeVoiceprint}
                 disabled={voice.deleting || voice.stage !== "idle"}
                 aria-busy={voice.deleting}
@@ -260,7 +265,7 @@
 
   .voice-meter__count {
     flex-shrink: 0;
-    font-family: var(--app-font-mono);
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--app-text-muted);
   }

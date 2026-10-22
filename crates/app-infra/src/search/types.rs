@@ -54,6 +54,19 @@ pub struct SearchCaptureRefinements {
     /// title / url filters, which exist only on frames.
     #[serde(default)]
     pub speaker: Option<SearchSpeakerRefinement>,
+    /// `hours:H-H` — a time-of-day window in LOCAL time, applied to frames and
+    /// audio spans alike (`hours:12-18` = afternoon).
+    #[serde(default)]
+    pub hours: Option<SearchHoursRefinement>,
+}
+
+/// A local time-of-day window: `start_hour <= hour < end_hour`, wrapping past
+/// midnight when `start_hour > end_hour` (`hours:22-6`). Hours are 0–24.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHoursRefinement {
+    pub start_hour: u8,
+    pub end_hour: u8,
 }
 
 /// Which speaker to narrow to, as the DECODED row it addresses. The opaque
@@ -206,6 +219,19 @@ pub struct SearchCaptureResponse {
     pub residual_query: String,
     /// Strict validation problems found while interpreting query syntax.
     pub parse_errors: Vec<SearchParseError>,
+    /// Nothing is indexed at all — "nothing captured yet", not "no match".
+    #[serde(default)]
+    pub index_empty: bool,
+    /// The meaning tier failed and this page is keyword-only (it used to fall
+    /// back silently). A model mid-switch is NOT this — that is a clean empty
+    /// meaning list; the indexing status reports the build instead.
+    #[serde(default)]
+    pub semantic_degraded: bool,
+    /// Audio segments in the searched range still queued or being transcribed —
+    /// audio is searchable only once transcribed. 0 when the audio pass was
+    /// skipped (an app, window-title or `source:screen` filter).
+    #[serde(default)]
+    pub untranscribed_segments_in_range: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,6 +312,7 @@ pub(super) struct NormalizedSearchRefinements {
     pub(super) audio_sources: Vec<AudioSegmentSourceKind>,
     pub(super) screen_source: bool,
     pub(super) speaker: Option<SearchSpeakerRefinement>,
+    pub(super) hours: Option<SearchHoursRefinement>,
     pub(super) applied: SearchCaptureRefinements,
 }
 

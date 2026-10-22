@@ -1,30 +1,31 @@
 <!--
-  Screen 1 / 8 — Welcome (issue #195, slice 10).
+  Screen 1 / 8 — Welcome (issue #195, slice 10; redesign ON2).
 
   One button, one sentence, and NO "use recommended defaults" — every downstream
   choice is already answered by the resolver.
 
-  Motion lives here and on the Finale, nowhere else: a filmstrip of captured
-  screens travelling backwards under a fixed playhead (slow creep, hard snap
-  back six frames, settle), two ghost strips lagging by 100/200 ms so the snap
-  smears, a timecode reel falling with it, and the frame under the playhead
-  giving up the words it was carrying. CSS only, no script, one 10 s cycle.
-  Ported from `docs/onboarding/mockups/chosen-cinematic-rewind.html` 754-805.
+  Motion lives here and on the Finale, nowhere else, and it plays ONCE: a
+  filmstrip of captured screens rewinds under a fixed playhead and settles on
+  one frame, the timecode counting back with it, and that frame gives up the
+  words it was carrying. Reduced motion lands on the settled frame directly.
+  Skin of record: `docs/mockups/redesign/onboarding.html` (Welcome).
 
-  The timecode is derived from the real configured capture interval, not the
-  mockup's hardcoded reel — "two seconds per frame" is the actual default rate.
+  The timecode is derived from the real configured capture interval, so "one
+  frame back" is the actual default rate.
 -->
 <script lang="ts">
+  import { formatClock } from "$lib/time-format";
   import { fpsToIntervalS } from "$lib/components/capture-rate";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
+  import IconArrow from "~icons/lucide/arrow-right";
 
   let {
     flow,
     onContinue,
   }: { flow: OnboardingFlow; onContinue: () => void } = $props();
 
-  // Eight distinct wireframe tiles; index 3 is the one under the playhead when
-  // the strip settles (the "hit" that gives up its words).
+  // Eight wireframe tiles, repeated along a 30-frame strip; frame HIT is the
+  // one the rewind settles on.
   const TILES: readonly (readonly number[])[] = [
     [71, 60, 53, 73, 90],
     [55, 37, 66, 74, 90],
@@ -35,417 +36,241 @@
     [48, 65, 77, 48, 85],
     [41, 34, 37, 90, 79],
   ];
-  const HIT_INDEX = 3;
-  // Three identical groups so the strip can travel exactly one group per cycle.
-  const GROUPS = [0, 1, 2];
+  const FRAMES = Array.from({ length: 30 }, (_, k) => TILES[k % TILES.length]!);
+  const HIT = 19;
+  const PITCH = 144; // 132px tile + 12px gap
+  const TRAVEL = 9; // frames rewound
 
-  const intervalS = $derived(fpsToIntervalS(flow.controller.draftFrameRate));
+  const intervalMs = $derived(fpsToIntervalS(flow.controller.draftFrameRate) * 1000);
+  const anchor = Date.now();
 
-  // The reel falls with the strip: settle · one frame back · the snap · settle.
-  // Multiples of the real interval, anchored to the clock at mount.
-  const anchor = new Date();
-  const reel = $derived(
-    [0, 1, 4, 5].map((frames) =>
-      new Date(anchor.getTime() - frames * intervalS * 1000).toLocaleTimeString("en-GB", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
-    ),
+  let film = $state<HTMLDivElement | null>(null);
+  let strip = $state<HTMLDivElement | null>(null);
+  let x = $state(0);
+  let end = $state(0);
+  let settled = $state(false);
+
+  // Frames behind the hit, from the strip's offset: the clock runs backwards
+  // as the strip rewinds and reads the hit frame's time once it settles.
+  const timecode = $derived(
+    end === 0
+      ? "--:--:--"
+      : formatClock(anchor - (8 - Math.round((end - x) / PITCH)) * intervalMs, { seconds: true }),
   );
+
+  $effect(() => {
+    if (!film || !strip) return;
+    end = film.clientWidth / 2 - (HIT * PITCH + 66);
+    const settle = () => {
+      x = end;
+      settled = true;
+    };
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      settle();
+      return;
+    }
+    const start = end - TRAVEL * PITCH;
+    x = start;
+    const anim = strip.animate(
+      [{ transform: `translateX(${start}px)` }, { transform: `translateX(${end}px)` }],
+      { duration: 2600, easing: "cubic-bezier(0.16, 1, 0.3, 1)", fill: "forwards", delay: 250 },
+    );
+    let raf = 0;
+    const loop = () => {
+      if (strip) x = new DOMMatrix(getComputedStyle(strip).transform).m41;
+      if (anim.playState !== "finished") raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    anim.finished.then(settle, () => {});
+    return () => {
+      cancelAnimationFrame(raf);
+      anim.cancel();
+    };
+  });
 </script>
 
-{#snippet strip()}
-  {#each GROUPS as group (group)}
-    {#each TILES as widths, i (i)}
-      <div class="fr" class:hit={i === HIT_INDEX}>
-        <span class="fbar"></span>
-        <div class="fbody">
-          {#each widths as width, w (w)}
-            <i class:hl={i === HIT_INDEX && w === 1} style="width:{width}%"></i>
-          {/each}
-        </div>
-      </div>
-    {/each}
-  {/each}
-{/snippet}
-
-<div class="hero">
-  <span class="ob-m">Mnema</span>
-  <h1 class="ob-disp wl-t" style="margin-top:14px">
-    <span class="wl-echo a" aria-hidden="true">Your memory,<br />on rewind.</span>
-    <span class="wl-echo b" aria-hidden="true">Your memory,<br />on rewind.</span>
-    Your memory,<br />on rewind.
-  </h1>
-  <p class="ob-lead" style="margin-top:26px">
-    Records your screen so you can scrub back to anything you have seen. Every byte stays on
-    this Mac.
-  </p>
-  <div class="ob-acts" style="margin-top:38px">
-    <button class="ob-btn primary ring" onclick={onContinue} disabled={flow.busy}>
-      Begin setup&nbsp; →
-    </button>
-    <span class="ob-fine">About a minute. Nothing is recorded until you finish.</span>
-  </div>
-</div>
-
-<div class="rw">
-  <div class="rw-band" aria-hidden="true">
-    <div class="rw-strip e2">{@render strip()}</div>
-    <div class="rw-strip e1">{@render strip()}</div>
-    <div class="rw-strip">{@render strip()}</div>
-    <span class="rw-head"></span>
-  </div>
-  <div class="rw-rail">
-    <span class="rw-tag">◂◂ rewinding</span>
-    <div class="rw-tc" aria-hidden="true">
-      <div class="rw-reel">
-        {#each reel as stamp, i (i)}<span>{stamp}</span>{/each}
-      </div>
+<div class="ob-main welcome" class:settled>
+  <div class="hero">
+    <span class="mx-kicker">Mnema</span>
+    <h1 class="hero__title">Your memory,<br /><span>on rewind.</span></h1>
+    <p class="mx-prose">
+      Records your screen so you can scrub back to anything you have seen. Every byte stays on this
+      Mac.
+    </p>
+    <div class="ob-acts">
+      <button class="mx-btn mx-btn--primary" onclick={onContinue} disabled={flow.busy}>
+        Begin setup<IconArrow class="ob-btn-arrow" width="14" height="14" />
+      </button>
+      <span class="ob-fine">About a minute. Nothing is recorded until you finish.</span>
     </div>
-    <span class="rw-read">
-      read off that frame — <b>“Quarterly review — draft agenda”</b>
-    </span>
+  </div>
+
+  <div>
+    <div class="film" bind:this={film} aria-hidden="true">
+      <div class="film__strip" bind:this={strip} style:transform="translateX({end === 0 ? 0 : x}px)">
+        {#each FRAMES as widths, k (k)}
+          <div class="fr" class:hit={k === HIT}>
+            <div class="fr__bar"><i></i><i></i><i></i></div>
+            <div class="fr__body">
+              {#each widths as width, w (w)}<i style:width="{width}%"></i>{/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+      <span class="film__head"></span>
+    </div>
+    <div class="film__rail">
+      <span class="film__tag">◂◂ rewinding</span>
+      <time class="film__tc">{timecode}</time>
+      <span class="film__read">read off that frame — <b>“Quarterly review — draft agenda”</b></span>
+    </div>
   </div>
 </div>
 
 <style>
+  .welcome {
+    align-content: space-between;
+    padding: 88px 0 var(--s-6);
+    gap: var(--s-6);
+  }
   .hero {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    position: relative;
+    display: grid;
+    justify-items: start;
+    gap: var(--s-5);
+    padding: 0 var(--s-8);
+  }
+  .hero__title {
+    margin: 0;
+    font: 600 76px / 0.98 var(--font-sans);
+    letter-spacing: -0.045em;
+    color: var(--app-text-strong);
+  }
+  .hero__title span {
+    color: var(--app-text-subtle);
+  }
+  .hero .mx-prose {
+    font-size: 16px;
+    max-width: 46ch;
+  }
+  .hero .ob-acts {
+    margin-top: var(--s-2);
   }
 
-  /* The band bleeds to the window edges and sits on the stage's bottom padding.
-     Cancel that padding with the shell's own tokens, never a literal: the
-     hardcoded `0 -48px -40px` was tuned to a stage padding of `46px 48px 40px`,
-     and when the shell tightened to `28px 44px 20px` the band kept eating 40px
-     of a 20px gutter — 20px of stage overflow, at every window size. */
-  .rw {
+  .film {
     position: relative;
-    flex: none;
-    margin: 0 calc(-1 * var(--ob-pad-x)) calc(-1 * var(--ob-pad-b));
-    padding-bottom: 20px;
-  }
-  .rw-band {
-    position: relative;
-    height: 96px;
+    height: 104px;
     overflow: hidden;
-    -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-    mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+    -webkit-mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
+    mask-image: linear-gradient(90deg, transparent, black 14%, black 86%, transparent);
   }
-  .rw-band::after {
-    content: "";
+  .film__strip {
     position: absolute;
-    inset: 0;
-    pointer-events: none;
-    z-index: 2;
-    background: linear-gradient(to bottom, var(--app-bg), transparent 42%);
-  }
-
-  /* Geometry: tile 128px + 10px gap = 138px pitch; the strip is three identical
-     8-tile groups and travels exactly one group (1104px) per cycle, so the loop
-     is seamless. */
-  .rw-strip {
-    position: absolute;
+    left: 0;
     top: 6px;
-    left: -1104px;
     display: flex;
-    gap: 10px;
-    animation: rw-scrub 10s linear infinite;
-    will-change: transform;
+    gap: 12px;
   }
-  .rw-strip.e1 {
-    opacity: 0;
-    --gop: 0.62;
-    animation:
-      rw-scrub 10s linear infinite,
-      rw-ghost 10s linear infinite;
-    animation-delay: 0.1s;
-  }
-  .rw-strip.e2 {
-    opacity: 0;
-    --gop: 0.34;
-    animation:
-      rw-scrub 10s linear infinite,
-      rw-ghost 10s linear infinite;
-    animation-delay: 0.2s;
-  }
-  /* The trail has to be brighter than the live strip or it vanishes into the tile. */
-  .rw-strip.e1 .fr,
-  .rw-strip.e2 .fr {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  .rw-strip.e1 .fbody i,
-  .rw-strip.e2 .fbody i {
-    background: var(--app-border-strong);
-  }
-  @keyframes rw-scrub {
-    0% {
-      transform: translateX(0);
-    }
-    62% {
-      transform: translateX(138px); /* creep — one frame in 6.2s */
-    }
-    70% {
-      transform: translateX(966px); /* the snap — six frames back */
-    }
-    100% {
-      transform: translateX(1104px); /* settle — one more frame */
-    }
-  }
-  @keyframes rw-ghost {
-    0%,
-    60% {
-      opacity: 0;
-    }
-    63%,
-    69% {
-      opacity: var(--gop, 0.3);
-    }
-    72%,
-    100% {
-      opacity: 0;
-    }
-  }
-
   .fr {
-    width: 128px;
-    height: 84px;
     flex: none;
+    width: 132px;
+    height: 88px;
+    display: grid;
+    grid-template-rows: 10px 1fr;
     overflow: hidden;
-    border-radius: 4px;
-    border: 1px solid var(--app-border);
+    border-radius: var(--r-sm);
     background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    transition:
+      border-color var(--t-slow) var(--ease-quart),
+      background-color var(--t-slow) var(--ease-quart);
   }
-  .fr.hit {
-    border-color: var(--app-accent-border);
-  }
-  .fbar {
-    display: block;
-    height: 9px;
-    background: var(--app-surface-raised);
-    border-bottom: 1px solid var(--app-border);
-  }
-  .fbody {
-    padding: 9px 10px;
+  .fr__bar {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    gap: 3px;
+    align-items: center;
+    padding: 0 6px;
+    border-bottom: 1px solid var(--mx-hairline);
   }
-  .fbody i {
+  .fr__bar i {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--chart-grey-2);
+  }
+  .fr__body {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    padding: 9px 10px;
+  }
+  .fr__body i {
     display: block;
     height: 4px;
-    border-radius: 1px;
-    background: var(--app-border-hover);
+    border-radius: 2px;
+    background: var(--chart-grey-1);
+    transition: background-color var(--t-slow) var(--ease-quart);
   }
-  .fbody i.hl {
-    background: var(--app-accent-bg);
-    box-shadow: 0 0 0 1px var(--app-accent-border);
+  .settled .fr.hit {
+    border-color: var(--app-accent-border);
+    background: color-mix(in srgb, var(--app-accent) 5%, var(--app-surface));
   }
-
-  .rw-head {
+  .settled .fr.hit .fr__body i:nth-child(2) {
+    background: var(--app-accent);
+  }
+  .film__head {
     position: absolute;
-    left: 34%;
+    left: 50%;
     top: 0;
     bottom: 0;
-    width: 1px;
-    z-index: 3;
+    width: 1.5px;
+    margin-left: -0.75px;
     background: var(--app-accent);
-    box-shadow: 0 0 12px 2px var(--app-accent-glow);
   }
-  .rw-head::before {
+  .film__head::before {
     content: "";
     position: absolute;
     top: 0;
-    left: -3px;
-    width: 7px;
-    height: 5px;
+    left: -4px;
+    width: 9.5px;
+    height: 6px;
     background: var(--app-accent);
     clip-path: polygon(0 0, 100% 0, 50% 100%);
   }
-
-  /* The rail is inset back to the content column, so it must undo exactly what
-     `.rw` bled — same token, or the reel drifts off the playhead. */
-  .rw-rail {
-    position: relative;
-    height: 34px;
-    margin: 0 var(--ob-pad-x);
+  .film__rail {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-4);
+    padding: var(--s-3) var(--s-8) 0;
   }
-  .rw-rail::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    height: 1px;
-    background: repeating-linear-gradient(
-      90deg,
-      var(--app-border-hover) 0 1px,
-      transparent 1px 23px
-    );
+  .film__tag {
+    font: 500 var(--text-xs) / 1 var(--font-mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
   }
-  .rw-tc {
-    position: absolute;
-    left: calc(34% - var(--ob-pad-x));
-    top: 9px;
-    transform: translateX(-50%);
-    height: 16px;
-    overflow: hidden;
-    font-size: var(--text-sm);
+  .film__tc {
+    font: 500 var(--text-md) / 1 var(--font-mono);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.04em;
   }
-  .rw-reel {
-    display: flex;
-    flex-direction: column;
-    animation: rw-reel 10s steps(1, end) infinite;
-  }
-  .rw-reel span {
-    height: 16px;
-    line-height: 16px;
-    flex: none;
-  }
-  @keyframes rw-reel {
-    0%,
-    49.9% {
-      transform: translateY(0);
-    }
-    50%,
-    61.9% {
-      transform: translateY(-16px);
-    }
-    62%,
-    87.9% {
-      transform: translateY(-32px);
-    }
-    88%,
-    100% {
-      transform: translateY(-48px);
-    }
-  }
-  .rw-tag {
-    position: absolute;
-    left: 0;
-    top: 11px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--app-accent);
+  .film__read {
+    font: 400 var(--text-base) / 1 var(--font-sans);
+    color: var(--app-text-subtle);
     opacity: 0;
-    animation: rw-tag 10s linear infinite;
+    transition: opacity var(--t-slow) var(--ease-quart);
   }
-  @keyframes rw-tag {
-    0%,
-    60% {
-      opacity: 0;
-    }
-    63%,
-    69% {
-      opacity: 1;
-    }
-    73%,
-    100% {
-      opacity: 0;
-    }
-  }
-  .rw-read {
-    position: absolute;
-    right: 0;
-    top: 11px;
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
-    opacity: 0;
-    animation: rw-read 10s ease infinite;
-    white-space: nowrap;
-  }
-  .rw-read b {
-    font-weight: 400;
-    color: var(--app-accent);
-  }
-  @keyframes rw-read {
-    0%,
-    72% {
-      opacity: 0;
-    }
-    76%,
-    90% {
-      opacity: 1;
-    }
-    94%,
-    100% {
-      opacity: 0;
-    }
-  }
-
-  /* The hero title smears backwards on the snap, then settles. */
-  .wl-t {
-    position: relative;
-  }
-  .wl-echo {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0;
+  .film__read b {
+    font-weight: 500;
     color: var(--app-text-strong);
-    animation: wl-echo 10s cubic-bezier(0.2, 0.8, 0.3, 1) infinite;
   }
-  .wl-echo.b {
-    animation-delay: 0.07s;
+  .settled .film__read {
+    opacity: 1;
   }
-  @keyframes wl-echo {
-    0%,
-    61% {
-      opacity: 0;
-      transform: translateX(0);
-    }
-    63.5% {
-      opacity: 0.26;
-      transform: translateX(-34px);
-    }
-    67% {
-      opacity: 0.11;
-      transform: translateX(-70px);
-    }
-    70.5%,
-    100% {
-      opacity: 0;
-      transform: translateX(0);
-    }
-  }
-
-  .ob-btn.ring {
-    box-shadow: var(--app-ring);
-  }
-
-  /* Nothing is switched off — every meaning survives, only movement goes. */
   @media (prefers-reduced-motion: reduce) {
-    .rw-strip {
-      animation: none;
-      transform: translateX(1000px);
-    }
-    .rw-strip.e1,
-    .rw-strip.e2 {
-      display: none;
-    }
-    .wl-echo {
-      display: none;
-    }
-    .rw-reel {
-      animation: none;
-      transform: translateY(-32px);
-    }
-    .rw-tag {
-      animation: none;
-      opacity: 0.45;
-    }
-    .rw-read {
-      animation: none;
-      opacity: 1;
+    .fr,
+    .fr__body i,
+    .film__read {
+      transition: none;
     }
   }
 </style>

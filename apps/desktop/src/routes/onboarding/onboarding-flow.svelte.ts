@@ -64,10 +64,10 @@ interface StepDef {
   id: StepId;
   /** Shown top-left in the window chrome. */
   label: string;
-  /** Playhead position, 1-8. Change settings shares Your settings' position —
-   *  it is a round trip, not forward progress (mockup frame 05). */
+  /** Ruler position, 1-8. Change settings owns slot 5 (a short "round trip"
+   *  tick, lit only while there); the straight path jumps 4 → 6. */
   position: number;
-  /** Playhead suffix after "N / 8", e.g. "· round trip". */
+  /** Suffix after the step name, e.g. "· round trip". */
   suffix: string;
   next: StepId | null;
   back: StepId | null;
@@ -79,13 +79,17 @@ const STEPS: readonly StepDef[] = [
   { id: "permissions", label: "Permissions", position: 2, suffix: "", next: "captureStorage", back: "welcome" },
   { id: "captureStorage", label: "Capture & Storage", position: 3, suffix: "", next: "yourSettings", back: "permissions" },
   { id: "yourSettings", label: "Your settings", position: 4, suffix: "", next: "setup", back: "captureStorage" },
-  { id: "changeSettings", label: "Change settings", position: 4, suffix: "· round trip", next: "yourSettings", back: "yourSettings" },
+  { id: "changeSettings", label: "Change settings", position: 5, suffix: "· round trip", next: "yourSettings", back: "yourSettings" },
   { id: "setup", label: "Setup", position: 6, suffix: "", next: "voice", back: "yourSettings" },
   { id: "voice", label: "Voice", position: 7, suffix: "· optional", next: "finale", back: "setup" },
   { id: "finale", label: "Finale", position: 8, suffix: "", next: null, back: "voice" },
 ];
 
 export const STEP_COUNT = 8;
+
+/** The strip's flow ruler: one tick per step. The two detours (Change settings,
+ *  Voice) are the ones carrying a suffix, and draw as short "optional" ticks. */
+export const RULER = STEPS.map((step) => ({ position: step.position, optional: step.suffix !== "" }));
 
 /**
  * Resume marker. The step id is persisted, but the flow ALWAYS resumes at

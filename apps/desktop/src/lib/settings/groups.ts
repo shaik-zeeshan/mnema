@@ -44,13 +44,6 @@ export type SettingsSectionId =
   | "about"
   | "developer";
 
-// The glyph identities the settings/onboarding surfaces draw. Every section has
-// one; `lock` is the standalone "required/locked" glyph onboarding adds. The
-// concrete Lucide components are mapped in `section-icons.ts`; this type stays
-// here (framework-free) so `feature-model.ts` can type its `icon` field without
-// importing Svelte.
-export type IconName = SettingsSectionId | "lock";
-
 // The 5 navigation groups the rail renders.
 export type SettingsGroupId =
   | "general"
@@ -83,22 +76,22 @@ export interface SettingsGroup {
 // ── The 5 groups, in rail order, each stacking its sections in render order ──
 //
 //  • General:      Appearance, Startup, Shortcuts
-//  • Capture:      Capture, Video, Audio, Privacy
+//  • Capture:      Sources, Video, Microphone, Privacy
 //  • Intelligence: Providers, Ask AI, User Context, OCR, Transcription,
 //                  Speakers, Semantic Search
-//  • Data:         Storage, Access
-//  • About:        About, Developer
+//  • Data:         Storage, CLI Access
+//  • About:        License & Trial, Updates, Developer
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "general",
     label: "General",
-    description: "Appearance, startup, shortcuts",
+    description: "Appearance, startup, and keyboard shortcuts.",
     sections: [
       {
         id: "appearance",
         anchor: "settings-section-appearance",
         label: "Appearance",
-        keywords: ["theme", "dark", "light", "follow live recording"],
+        keywords: ["theme", "dark", "light", "time format", "24-hour", "12-hour", "clock", "follow live recording"],
       },
       {
         id: "startup",
@@ -117,12 +110,12 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "capture",
     label: "Capture",
-    description: "Sources, video, audio, privacy",
+    description: "What gets recorded, how it’s encoded, and what never is.",
     sections: [
       {
         id: "capture",
         anchor: "settings-section-capture",
-        label: "Capture",
+        label: "Sources",
         keywords: [
           "screen",
           "microphone",
@@ -144,8 +137,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       {
         id: "audio",
         anchor: "settings-section-audio",
-        label: "Audio",
-        keywords: ["microphone", "device", "input", "on disconnect"],
+        label: "Microphone",
+        keywords: ["audio", "device", "input", "on disconnect"],
       },
       {
         id: "privacy",
@@ -158,7 +151,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "intelligence",
     label: "Intelligence",
-    description: "Providers, Ask AI, processing",
+    description: "Models that read, transcribe, and answer over your history. Everything here is off until you turn it on.",
     sections: [
       {
         id: "intelligence",
@@ -225,18 +218,18 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "data",
     label: "Data",
-    description: "Storage, CLI access",
+    description: "Where capture lives on disk, how long it’s kept, and who else can read it.",
     sections: [
       {
         id: "storage",
         anchor: "settings-section-storage",
         label: "Storage",
-        keywords: ["retention", "save directory", "storage location", "disk"],
+        keywords: ["retention", "save directory", "storage location", "disk", "delete recent capture"],
       },
       {
         id: "access",
         anchor: "settings-section-access",
-        label: "Access",
+        label: "CLI Access",
         keywords: ["cli access", "agent", "broker"],
       },
     ],
@@ -244,7 +237,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "about",
     label: "About",
-    description: "Version, license, updates",
+    description: "License, version, updates, and diagnostics.",
     sections: [
       {
         id: "license",
@@ -264,8 +257,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       {
         id: "about",
         anchor: "settings-section-about",
-        label: "About",
-        keywords: ["version", "updates", "third-party notices", "acknowledgements"],
+        label: "Updates",
+        keywords: ["about", "version", "third-party notices", "acknowledgements"],
       },
       {
         id: "developer",

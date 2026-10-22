@@ -146,3 +146,15 @@ describe("settings deeplink resolution (verified gate expectations)", () => {
     expect(resolveFocusDeeplink("nonsense")).toBeNull();
   });
 });
+
+describe("settings rail: labels (settings.html)", () => {
+  test("renamed sections keep their ids and deeplinks", () => {
+    const label = (id: SettingsSectionId) =>
+      SETTINGS_GROUPS.flatMap((g) => g.sections).find((s) => s.id === id)?.label;
+    expect(label("capture")).toBe("Sources");
+    expect(label("audio")).toBe("Microphone");
+    expect(label("access")).toBe("CLI Access");
+    expect(label("about")).toBe("Updates");
+    expect(resolveTabDeeplink("microphone")).toBe("audio");
+  });
+});

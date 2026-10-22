@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
-    FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
-    UserContextDistillationSummary, UserContextStatus, UserContextSummarizingFailure,
-    UserContextTokenUsage,
+    Activity, ActivityCategory, ActivityMeta, AuthoredContext, Conclusion, DismissalState,
+    DismissedView, FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest,
+    UserContextDigest, UserContextDigestResult, UserContextDistillationSummary, UserContextStatus,
+    UserContextSummarizingFailure, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -25,7 +25,7 @@ use super::worker::{
     run_forward_activity_window, USER_CONTEXT_CHANGED_EVENT,
 };
 
-/// Result of a manual one-window derivation pass (the "Run derivation now"
+/// Result of a manual one-window derivation pass (the "Derive latest now"
 /// button). camelCase to match the rest of the wire DTOs.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,41 +138,13 @@ pub async fn get_user_context_status(
     // --- backfilling progress (#98) ---
     // Cheap (two store reads): backfilling is true only when the engine is
     // available AND the background History Backfill still has older history to
-    // reach. Two shapes count as "still backfilling":
-    //   1. No windowed coverage exists yet but there ARE captures — the forward
-    //      pass has not even seeded coverage, so older history is pending.
-    //   2. Coverage exists but its oldest-covered edge is still above the floor,
-    //      AND there is older captured history below that edge to derive
-    //      (earliest_capture < oldest_covered). Without older captures there is
-    //      nothing to backfill even if the floor is lower.
-    // The floor is resolved from the SAME settings the worker uses.
-    let backfilling = if !engine_available {
-        false
-    } else {
-        let oldest_covered = store
-            .oldest_derivation_run_window_start()
-            .await
-            .map_err(|e| e.to_string())?;
-        let earliest_capture = store
-            .earliest_capture_at_ms()
-            .await
-            .map_err(|e| e.to_string())?;
-        match oldest_covered {
-            // Shape 1: nothing windowed has run yet — backfilling iff captures exist.
-            None => earliest_capture.is_some(),
-            // Shape 2: coverage exists — older history remains iff the floor is
-            // below the trailing edge AND there are captures older than it.
-            Some(oldest) => {
-                let floor_ms = backfill_floor_ms(
-                    now_ms(),
-                    user_context.backfill_window_days,
-                    user_context.backfill_go_deeper,
-                    earliest_capture,
-                );
-                oldest > floor_ms && earliest_capture.map_or(false, |earliest| earliest < oldest)
-            }
-        }
-    };
+    // reach (see `still_backfilling`). `earliest_capture` doubles as Overview's date-picker floor.
+    let earliest_capture = store
+        .earliest_capture_at_ms()
+        .await
+        .map_err(|e| e.to_string())?;
+    let backfilling = engine_available
+        && still_backfilling(store, &user_context, earliest_capture).await?;
 
     Ok(UserContextStatus {
         engine_available,
@@ -191,6 +163,39 @@ pub async fn get_user_context_status(
         local_offset_minutes,
         last_day_digest,
         summarizing_failure,
+        earliest_capture_at_ms: earliest_capture,
+    })
+}
+
+/// Whether the background History Backfill still has older history to reach
+/// (engine availability is the caller's gate). Two shapes count:
+///   1. No windowed coverage exists yet but there ARE captures — the forward
+///      pass has not even seeded coverage, so older history is pending.
+///   2. Coverage exists but its oldest-covered edge is still above the floor,
+///      AND there is older captured history below that edge to derive
+///      (earliest_capture < oldest_covered). Without older captures there is
+///      nothing to backfill even if the floor is lower.
+/// The floor is resolved from the SAME settings the worker uses.
+async fn still_backfilling(
+    store: &app_infra::UserContextStore,
+    user_context: &capture_types::UserContextSettings,
+    earliest_capture: Option<i64>,
+) -> Result<bool, String> {
+    let oldest_covered = store
+        .oldest_derivation_run_window_start()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(match oldest_covered {
+        None => earliest_capture.is_some(),
+        Some(oldest) => {
+            let floor_ms = backfill_floor_ms(
+                now_ms(),
+                user_context.backfill_window_days,
+                user_context.backfill_go_deeper,
+                earliest_capture,
+            );
+            oldest > floor_ms && earliest_capture.map_or(false, |earliest| earliest < oldest)
+        }
     })
 }
 
@@ -264,6 +269,22 @@ pub async fn list_user_context_activities(
     infra
         .user_context()
         .list_recent_activities(limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Apps (top 3 by evidence frames) and distinct speaker count for every Activity
+/// overlapping `[start_ms, end_ms)` — the Journal cards' chips. Derived on read;
+/// Activities with neither are absent (invoked as `{ startMs, endMs }`).
+#[tauri::command]
+pub async fn list_user_context_activity_meta(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<ActivityMeta>, String> {
+    infra
+        .user_context()
+        .list_activity_meta_in_range(start_ms, end_ms)
         .await
         .map_err(|e| e.to_string())
 }
@@ -461,6 +482,16 @@ pub async fn user_context_run_derivation_now(
         message.push(' ');
         message.push_str(&summary);
     }
+    // The button derives only the latest window; say so while the background
+    // History Backfill is still working through older captures. Best-effort.
+    let store = infra.user_context();
+    let earliest_capture = store.earliest_capture_at_ms().await.ok().flatten();
+    if still_backfilling(store, &user_context, earliest_capture)
+        .await
+        .unwrap_or(false)
+    {
+        message.push_str(" Older history keeps filling in the background.");
+    }
 
     Ok(UserContextDerivationRunResult {
         activities_derived: run.activities_derived,
@@ -500,8 +531,8 @@ fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
 /// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
 /// lede the Insights Overview shows for one local-calendar range. Lazy +
 /// fingerprint-cached: an unchanged range returns the stored narrative with no
-/// engine call. `Ok(None)` when User Context is off, the engine is not
-/// configured, or the range holds fewer than two Activities. `Err` for a failed
+/// engine call. Returns `{ digest }`, or `{ reason }` — `derivation_off` (User
+/// Context off), `engine_not_ready`, or `too_few` (under two Activities). `Err` for a failed
 /// generation or `digest::DIGEST_SENSITIVE_HOLD` — replayed from a 15-minute
 /// in-memory cooldown on an unchanged input set, so a failure doesn't re-bill
 /// the engine on every visit. `range_kind` is `"day"` | `"week"` | `"month"`; `[start_ms,
@@ -514,7 +545,7 @@ pub async fn get_user_context_digest(
     range_kind: String,
     start_ms: i64,
     end_ms: i64,
-) -> Result<Option<UserContextDigest>, String> {
+) -> Result<UserContextDigestResult, String> {
     let settings = read_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
@@ -541,7 +572,7 @@ pub async fn regenerate_user_context_digest(
     range_kind: String,
     start_ms: i64,
     end_ms: i64,
-) -> Result<Option<UserContextDigest>, String> {
+) -> Result<UserContextDigestResult, String> {
     let settings = read_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
@@ -582,7 +613,7 @@ pub async fn user_context_dismiss_conclusion(
     if let Some(subject) = dismissed_subject {
         if let Err(error) = infra.subject_vectors().mark_subject_vector_stale(&subject).await {
             crate::native_capture::debug_log::log_warn(format!(
-                "failed to mark subject vector stale after dismissing a conclusion for '{subject}': {error}"
+                "failed to mark subject vector stale after dismissing conclusion {id}: {error}"
             ));
         }
     }
@@ -719,8 +750,8 @@ pub async fn user_context_correct_activity_focus(
 }
 
 /// One authored statement plus whether the engine actually reads it: `in_prompt`
-/// is false for statements past the authored-context char cap (CX-06).
-#[derive(Debug, Clone, Serialize)]
+/// is false for statements past the 4,000-char authored-context cap (CX-06).
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthoredContextRow {
     #[serde(flatten)]
@@ -728,7 +759,8 @@ pub struct AuthoredContextRow {
     pub in_prompt: bool,
 }
 
-/// List every **user-authored Context** statement (#107), newest first. These are
+/// List every **user-authored Context** statement (#107), most recently edited
+/// first. These are
 /// standing statements the user wrote about themselves; they are user-asserted, so
 /// they carry no confidence and never decay — but only the newest that fit the
 /// prompt cap are read, flagged per row via `inPrompt`.
@@ -749,8 +781,39 @@ pub async fn list_user_context_authored(
         .collect())
 }
 
+/// Longest authored statement, in chars (ruling #15).
+const AUTHORED_STATEMENT_CHAR_LIMIT: usize = 280;
+
+/// The fixed authored topics (ruling #9). The column stays free TEXT.
+const AUTHORED_TOPICS: [&str; 4] = ["Work", "Preferences", "People", "Goals"];
+
+/// Shared add/update validation: trimmed, non-empty, at most
+/// [`AUTHORED_STATEMENT_CHAR_LIMIT`] chars; topic one of [`AUTHORED_TOPICS`] or
+/// none (blank counts as none).
+fn validate_authored<'a>(
+    text: &'a str,
+    topic: Option<&'a str>,
+) -> Result<(&'a str, Option<&'a str>), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Authored context text cannot be empty.".to_string());
+    }
+    if text.chars().count() > AUTHORED_STATEMENT_CHAR_LIMIT {
+        return Err(format!(
+            "Keep a statement to {AUTHORED_STATEMENT_CHAR_LIMIT} characters or fewer."
+        ));
+    }
+    match topic.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) if !AUTHORED_TOPICS.contains(&t) => Err(format!(
+            "Unknown topic \"{t}\": use Work, Preferences, People or Goals."
+        )),
+        topic => Ok((text, topic)),
+    }
+}
+
 /// Add a **user-authored Context** statement (#107). Stored verbatim with an
-/// optional `topic` grouping handle; stamped with the same `now_ms` time source the
+/// optional `topic` (one of [`AUTHORED_TOPICS`]), at most
+/// [`AUTHORED_STATEMENT_CHAR_LIMIT`] chars; stamped with the same `now_ms` time source the
 /// rest of the module uses. Returns the persisted row and emits
 /// `user_context_changed` so the surface refreshes.
 #[tauri::command]
@@ -760,22 +823,18 @@ pub async fn user_context_add_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<AuthoredContext, String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Authored context text cannot be empty.".to_string());
-    }
+    let (text, topic) = validate_authored(&text, topic.as_deref())?;
     let now = now_ms();
-    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let store = infra.user_context();
     let id = store
-        .add_authored_context(text, topic.as_deref(), now)
+        .add_authored_context(text, topic, now)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(AuthoredContext {
         id,
         text: text.to_string(),
-        topic,
+        topic: topic.map(str::to_string),
         created_at_ms: now,
         updated_at_ms: now,
     })
@@ -791,14 +850,10 @@ pub async fn user_context_update_authored(
     text: String,
     topic: Option<String>,
 ) -> Result<(), String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Authored context text cannot be empty.".to_string());
-    }
-    let topic = topic.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let (text, topic) = validate_authored(&text, topic.as_deref())?;
     infra
         .user_context()
-        .update_authored_context(id, text, topic.as_deref(), now_ms())
+        .update_authored_context(id, text, topic, now_ms())
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
@@ -844,8 +899,8 @@ pub async fn user_context_delete_authored(
 ///    **Conclusion** data AND **Dismissal State** and the derivation-run ledger
 ///    (`wipe_all`). Raw captures and other settings are untouched.
 /// 3. Clear all persistent Quick Recall / Chat conversations (issue #102), the
-///    single shared store, so the same control erases every derived/recalled
-///    surface. Both data wipes run even if the first one errors, so a single
+///    single shared store, and Quick Recall's recent queries, so the same control
+///    erases every derived/recalled surface. All data wipes run even if one errors, so a single
 ///    failure cannot strand the other store half-cleared with no retry; the first
 ///    error is surfaced afterwards.
 /// 4. Emit `user_context_changed` so the now-empty surface refreshes.
@@ -877,8 +932,11 @@ pub async fn wipe_user_context(
     //    error after attempting both.
     let wipe_context = infra.user_context().wipe_all().await;
     let wipe_conversations = infra.conversation().wipe_all().await;
+    // Quick Recall's recent queries share the conversations' contract.
+    let wipe_recent_queries = ::app_infra::delete_recent_queries(infra.write_pool()).await;
     wipe_context.map_err(|e| e.to_string())?;
     wipe_conversations.map_err(|e| e.to_string())?;
+    wipe_recent_queries.map_err(|e| e.to_string())?;
 
     // 4. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
@@ -916,6 +974,41 @@ mod tests {
             dismissed_at_ms,
             source: "user".to_string(),
         }
+    }
+
+    #[test]
+    fn authored_validation_limits_length_and_fixes_topics() {
+        assert_eq!(validate_authored("  hi ", Some(" ")), Ok(("hi", None)));
+        assert_eq!(validate_authored("hi", Some("Goals")), Ok(("hi", Some("Goals"))));
+        assert!(validate_authored("hi", Some("role")).is_err());
+        assert!(validate_authored("hi", Some("work")).is_err(), "exact names only");
+        assert!(validate_authored("   ", None).is_err());
+        let at_limit = "é".repeat(AUTHORED_STATEMENT_CHAR_LIMIT);
+        assert!(validate_authored(&at_limit, None).is_ok(), "chars, not bytes");
+        assert!(validate_authored(&format!("{at_limit}x"), None).is_err());
+    }
+
+    #[test]
+    fn authored_row_round_trips_flat_with_in_prompt() {
+        let row = AuthoredContextRow {
+            item: AuthoredContext {
+                id: 5,
+                text: "I'm a designer".to_string(),
+                topic: Some("Work".to_string()),
+                created_at_ms: 10,
+                updated_at_ms: 20,
+            },
+            in_prompt: false,
+        };
+        let value = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": 5, "text": "I'm a designer", "topic": "Work",
+                "createdAtMs": 10, "updatedAtMs": 20, "inPrompt": false
+            })
+        );
+        assert_eq!(serde_json::from_value::<AuthoredContextRow>(value).unwrap(), row);
     }
 
     #[test]

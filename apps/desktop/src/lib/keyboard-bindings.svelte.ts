@@ -131,7 +131,7 @@ export function reservedShortcutConflict(
 
 export const EDITABLE_SHORTCUT_ACTIONS: EditableShortcutAction[] = [
   { id: "toggleRecording", label: "Start or stop recording", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
-  { id: "pauseResumeRecording", label: "Pause or resume recording", description: "Pauses or resumes User Capture Pause without stopping the session.", category: "global", nativeBackground: true },
+  { id: "pauseResumeRecording", label: "Pause or resume recording", description: "Pauses recording, or resumes it, without ending the session.", category: "global", nativeBackground: true },
   { id: "toggleMainWindow", label: "Show or hide Mnema", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
   { id: "toggleQuickRecall", label: "Summon Quick Recall", description: "Works even when Mnema is in the background.", category: "global", nativeBackground: true },
   { id: "openSettings", label: "Open settings", description: "Foreground app shortcut.", category: "app", nativeBackground: false },

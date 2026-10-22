@@ -71,6 +71,13 @@ impl ZeroWatchdog {
     pub fn delay(&self) -> Duration {
         self.delay
     }
+
+    /// How long until [`Self::poll`] would trip, if no sound arrives first.
+    /// Zero once the delay has elapsed.
+    pub fn next_check_in(&self, now: Instant) -> Duration {
+        self.delay
+            .saturating_sub(now.saturating_duration_since(self.last_sound))
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +148,23 @@ mod tests {
         assert_eq!(watchdog.delay(), ZERO_WATCHDOG_INITIAL_DELAY);
         assert!(!watchdog.poll(start + secs(129)));
         assert!(watchdog.poll(start + secs(130)));
+    }
+
+    #[test]
+    fn next_check_in_counts_down_and_resets_on_sound() {
+        let start = Instant::now();
+        let mut watchdog = ZeroWatchdog::new(start);
+
+        assert_eq!(watchdog.next_check_in(start), secs(30));
+        assert_eq!(watchdog.next_check_in(start + secs(12)), secs(18));
+        assert_eq!(watchdog.next_check_in(start + secs(45)), secs(0));
+
+        // A trip restarts the window at the doubled delay.
+        assert!(watchdog.poll(start + secs(30)));
+        assert_eq!(watchdog.next_check_in(start + secs(30)), secs(60));
+
+        watchdog.observe_sound(start + secs(40));
+        assert_eq!(watchdog.next_check_in(start + secs(50)), secs(20));
     }
 
     // A day of real silence must not rebuild the tap more than the cap allows.

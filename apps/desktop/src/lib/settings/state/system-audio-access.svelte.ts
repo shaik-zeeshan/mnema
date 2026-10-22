@@ -14,6 +14,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "./format";
+import { openPermissionHelper } from "$lib/shell/permission-helper";
 import {
   canDismissSystemAudioHint,
   systemAudioHintVisible,
@@ -46,7 +47,7 @@ export function createSystemAudioAccessStore() {
   async function openSettings() {
     error = null;
     try {
-      await invoke("open_capture_privacy_settings", { kind: "systemAudio" });
+      await openPermissionHelper("systemAudio");
     } catch (err) {
       error = errorText(err);
     }

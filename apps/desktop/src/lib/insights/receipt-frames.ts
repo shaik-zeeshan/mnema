@@ -1,5 +1,5 @@
 // receipt-frames — the invoke-touching frame-fetch machinery behind the
-// Activity Receipt (ActivityReceipt.svelte), split out to keep that component
+// Activity Receipt (ReceiptViewer.svelte), split out to keep that component
 // under the 800-line ceiling: a bounded preview prefetch pump around the
 // playhead, the filmstrip thumbnail queue, and per-frame display metadata.
 // Everything async is generation-guarded: `reset()` (new activity) invalidates
