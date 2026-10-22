@@ -1103,8 +1103,7 @@ mod tests {
                 .await
                 .expect("a 1024-dim vector now stores into the rebuilt table");
 
-            // The AFTER DELETE trigger survived the recreate: it still drops the
-            // matching vec0 row, so the anchor leaves the missing set.
+            // Storing into the rebuilt table takes the anchor off the work list.
             assert!(!store
                 .anchor_still_missing_vector(anchor.anchor_id)
                 .await

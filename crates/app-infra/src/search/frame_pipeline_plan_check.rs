@@ -53,8 +53,9 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
         // Was `SCAN frames` per scrub-preview call: ~72 MB each.
         let segments = plan(&infra, FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL).await;
         assert!(
-            !segments.contains("SCAN frames") && segments.contains("frames_captured_at_idx"),
-            "the window's frames sub-select must range-scan captured_at; plan was: {segments}"
+            !segments.contains("SCAN frames")
+                && segments.contains("frames_captured_at_idx (captured_at>? AND captured_at<?)"),
+            "the window's frames sub-select must range-scan captured_at from both ends; plan was: {segments}"
         );
         // ...and the outer loop must probe only the matched segments by id, never
         // walk every screen segment ever recorded (`source_kind=?`).

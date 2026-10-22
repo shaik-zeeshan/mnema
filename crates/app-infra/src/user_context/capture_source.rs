@@ -875,27 +875,34 @@ mod tests {
                 "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
                 "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
                 "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
-                "INSERT INTO frames (id, captured_at) VALUES (1, '2026-01-01T00:00:05Z')",
-                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
-                 VALUES (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+                "INSERT INTO frames (id, captured_at) VALUES \
+                    (1, '2026-01-01T00:00:05Z'), (2, '2026-01-01T00:00:06Z')",
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) VALUES \
+                    (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'), \
+                    (2, 'microphone', '2026-01-01T00:00:10Z', '2026-01-01T00:01:10Z')",
             ] {
                 sqlx::query(statement).execute(&pool).await.expect("seed schema");
             }
-            // Results in id order; the last one per (subject_type, processor) wins.
-            for (subject_type, processor, text) in [
-                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "old screen text"),
-                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "old words"),
-                (FRAME_SUBJECT_TYPE, OCR_PROCESSOR, "new screen text"),
-                (AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, "new words"),
-                (FRAME_SUBJECT_TYPE, "other_processor", "not ocr"),
-                ("other_subject", OCR_PROCESSOR, "not a frame"),
-                ("other_subject", AUDIO_TRANSCRIPTION_PROCESSOR, "not a segment"),
+            // Results in id order; the last one per subject wins. Subject 2's
+            // results come last, so a lookup that lost its subject correlation
+            // would hand subject 1 subject 2's text.
+            for (subject_type, subject_id, processor, text) in [
+                (FRAME_SUBJECT_TYPE, 1_i64, OCR_PROCESSOR, "old screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, 1, AUDIO_TRANSCRIPTION_PROCESSOR, "old words"),
+                (FRAME_SUBJECT_TYPE, 1, OCR_PROCESSOR, "new screen text"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, 1, AUDIO_TRANSCRIPTION_PROCESSOR, "new words"),
+                (FRAME_SUBJECT_TYPE, 2, OCR_PROCESSOR, "second screen"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, 2, AUDIO_TRANSCRIPTION_PROCESSOR, "second words"),
+                (FRAME_SUBJECT_TYPE, 1, "other_processor", "not ocr"),
+                ("other_subject", 1, OCR_PROCESSOR, "not a frame"),
+                ("other_subject", 1, AUDIO_TRANSCRIPTION_PROCESSOR, "not a segment"),
             ] {
                 sqlx::query(
                     "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
-                     VALUES (1, ?1, 1, ?2, ?3)",
+                     VALUES (1, ?1, ?2, ?3, ?4)",
                 )
                 .bind(subject_type)
+                .bind(subject_id)
                 .bind(processor)
                 .bind(text)
                 .execute(&pool)
@@ -908,17 +915,75 @@ mod tests {
                 .read_capture_window(0, 32_503_680_000_000, 100)
                 .await
                 .expect("read window");
-            let texts: Vec<(&str, &str)> = window
+            let texts: Vec<(&str, i64, &str)> = window
                 .items
                 .iter()
-                .map(|i| (i.subject_type.as_str(), i.text.as_str()))
+                .map(|i| (i.subject_type.as_str(), i.subject_id, i.text.as_str()))
                 .collect();
-            assert_eq!(texts.len(), 2, "one item per subject: {texts:?}");
-            assert!(texts.contains(&(FRAME_SUBJECT_TYPE, "new screen text")), "{texts:?}");
-            assert!(
-                texts.contains(&(AUDIO_SEGMENT_SUBJECT_TYPE, "new words")),
-                "{texts:?}"
-            );
+            assert_eq!(texts.len(), 4, "one item per subject: {texts:?}");
+            for expected in [
+                (FRAME_SUBJECT_TYPE, 1, "new screen text"),
+                (FRAME_SUBJECT_TYPE, 2, "second screen"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, 1, "new words"),
+                (AUDIO_SEGMENT_SUBJECT_TYPE, 2, "second words"),
+            ] {
+                assert!(texts.contains(&expected), "missing {expected:?}: {texts:?}");
+            }
+        });
+    }
+
+    /// The audio read's `started_at` lower bound is the window start minus a
+    /// lookback, so a segment that began just before the window and runs into it
+    /// is still read; one that ended before the window is not.
+    #[test]
+    fn read_capture_window_keeps_an_audio_segment_that_started_before_the_window() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+                // 1 runs into the window; 2 ended before it.
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) VALUES \
+                    (1, 'microphone', '2026-01-01T00:08:00Z', '2026-01-01T00:11:00Z'), \
+                    (2, 'microphone', '2026-01-01T00:05:00Z', '2026-01-01T00:09:00Z')",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("seed schema");
+            }
+            for (subject_id, text) in [(1_i64, "runs into the window"), (2, "over before it")] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                )
+                .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+                .bind(subject_id)
+                .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed transcription");
+            }
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            // 2026-01-01T00:10:00Z .. 00:20:00Z
+            let window = store
+                .read_capture_window(1_767_226_200_000, 1_767_226_800_000, 100)
+                .await
+                .expect("read window");
+            let ids: Vec<i64> = window.items.iter().map(|i| i.subject_id).collect();
+            assert_eq!(ids, vec![1], "{:?}", window.items);
         });
     }
 

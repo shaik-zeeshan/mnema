@@ -2203,6 +2203,65 @@ mod tests {
         });
     }
 
+    /// The screen / finalized / has-media filters sit outside the `id IN (…)`
+    /// range scans: a segment those scans find, by overlap or by a linked frame,
+    /// is still dropped when it is audio, still recording, or has no media file.
+    #[test]
+    fn screen_segment_window_query_drops_non_screen_unfinished_and_mediless_segments() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO capture_segments (
+                    id, capture_session_id, source_kind, source_session_id, segment_index,
+                    media_file_path, started_at, ended_at, status
+                 ) VALUES
+                    (1, 'c', 'screen', 's', 1, '/tmp/1.mov',
+                     '2026-05-17T10:01:00Z', '2026-05-17T10:02:00Z', 'completed'),
+                    (2, 'c', 'microphone', 's', 2, '/tmp/2.m4a',
+                     '2026-05-17T10:01:00Z', '2026-05-17T10:02:00Z', 'completed'),
+                    (3, 'c', 'screen', 's', 3, '/tmp/3.mov',
+                     '2026-05-17T10:03:00Z', '2026-05-17T10:04:00Z', 'recording'),
+                    (4, 'c', 'screen', 's', 4, NULL,
+                     '2026-05-17T10:05:00Z', '2026-05-17T10:06:00Z', 'completed')",
+            )
+            .execute(&pool)
+            .await
+            .expect("segments should insert");
+            sqlx::query(
+                "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id) VALUES
+                    ('s', '/tmp/f2.jpg', '2026-05-17T10:01:30Z', 2),
+                    ('s', '/tmp/f3.jpg', '2026-05-17T10:03:30Z', 3),
+                    ('s', '/tmp/f4.jpg', '2026-05-17T10:05:30Z', 4)",
+            )
+            .execute(&pool)
+            .await
+            .expect("linked frames should insert");
+
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
+            let ids: Vec<i64> = store
+                .list_finalized_screen_segments_overlapping_window(
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:10:00Z",
+                )
+                .await
+                .expect("segments should query")
+                .into_iter()
+                .map(|segment| segment.id)
+                .collect();
+            assert_eq!(ids, vec![1]);
+        });
+    }
+
     #[test]
     fn screen_segment_window_query_orders_mixed_precision_timestamps_by_time() {
         let runtime = tokio::runtime::Builder::new_current_thread()
