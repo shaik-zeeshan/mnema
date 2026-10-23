@@ -5,7 +5,7 @@ use capture_types::{
 
 #[cfg(target_os = "macos")]
 use capture_writers::{
-    audio_sample_format_is_compatible_with_writer_format,
+    audio_sample_format_is_compatible_with_writer_format, audio_writer_session_start_secs,
     create_audio_asset_writer_for_sample_format, derive_audio_activity_level_from_sample_buf,
     derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
@@ -637,6 +637,26 @@ mod tests {
             second_finalization.discard_reason.as_deref(),
             Some("missing_source_file")
         );
+    }
+
+    #[test]
+    fn vad_trim_range_is_relative_to_the_writer_session_start() {
+        // Host clock ~3 days after boot; speech 40-100 s into the file.
+        let session_start = 259_200.0;
+        let (start, end) = super::microphone_vad_trim_range_secs(
+            session_start + 40.0,
+            session_start + 100.0,
+            session_start,
+        );
+        assert_eq!((start, end), (39.0, 101.0));
+
+        // Speech at the very start never trims before frame 0.
+        let (start, _) = super::microphone_vad_trim_range_secs(
+            session_start,
+            session_start + 5.0,
+            session_start,
+        );
+        assert_eq!(start, 0.0);
     }
 
     #[test]
@@ -2027,6 +2047,21 @@ fn finalize_microphone_output_context(
 #[cfg(target_os = "macos")]
 const MICROPHONE_VAD_BOUNDARY_PADDING_SECS: f64 = 1.0;
 
+/// VAD boundaries are host-clock PTS; the file starts at the writer's session
+/// start, so rebase onto it before padding into a file-relative trim range.
+#[cfg(target_os = "macos")]
+fn microphone_vad_trim_range_secs(
+    first_start_secs: f64,
+    last_end_secs: f64,
+    session_start_secs: f64,
+) -> (f64, f64) {
+    let start =
+        (first_start_secs - session_start_secs - MICROPHONE_VAD_BOUNDARY_PADDING_SECS).max(0.0);
+    let end =
+        (last_end_secs - session_start_secs + MICROPHONE_VAD_BOUNDARY_PADDING_SECS).max(start);
+    (start, end)
+}
+
 #[cfg(target_os = "macos")]
 fn microphone_output_finalization_for_context(
     context: &MicrophoneOutputContext,
@@ -2114,10 +2149,22 @@ fn finalize_microphone_vad_boundary_trim(
         });
     }
 
-    let valid_boundaries = !boundaries.invalid_timing
-        && boundaries.first_start_secs.is_some()
-        && boundaries.last_end_secs.is_some();
-    if !valid_boundaries {
+    let session_start_secs = context
+        .writer
+        .as_ref()
+        .and_then(audio_writer_session_start_secs);
+    let trim_range = match (
+        boundaries.invalid_timing,
+        boundaries.first_start_secs,
+        boundaries.last_end_secs,
+        session_start_secs,
+    ) {
+        (false, Some(first_start), Some(last_end), Some(session_start)) => Some(
+            microphone_vad_trim_range_secs(first_start, last_end, session_start),
+        ),
+        _ => None,
+    };
+    let Some((trim_start_secs, trim_end_secs)) = trim_range else {
         move_microphone_source_to_output(&source_file, &output_file)?;
         return Ok(MicrophoneOutputFinalization {
             source_file: Some(source_file),
@@ -2126,12 +2173,8 @@ fn finalize_microphone_vad_boundary_trim(
             trim_start_offset_ms: 0,
             discard_reason: None,
         });
-    }
+    };
 
-    let trim_start_secs =
-        (boundaries.first_start_secs.unwrap() - MICROPHONE_VAD_BOUNDARY_PADDING_SECS).max(0.0);
-    let trim_end_secs = (boundaries.last_end_secs.unwrap() + MICROPHONE_VAD_BOUNDARY_PADDING_SECS)
-        .max(trim_start_secs);
     match trim_audio_file_to_m4a(&source_file, &output_file, trim_start_secs, trim_end_secs) {
         Ok(()) => {
             maybe_remove_microphone_output_file(&source_file);
@@ -2144,20 +2187,12 @@ fn finalize_microphone_vad_boundary_trim(
             })
         }
         Err(error) => {
-            // The empty-trim case is expected during silence; anything else is real trouble.
-            if error.message.contains("no audio frames") {
-                capture_runtime::debug_log!(
-                    "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
-                    error.code,
-                    error.message
-                );
-            } else {
-                capture_runtime::warn_log!(
-                    "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
-                    error.code,
-                    error.message
-                );
-            }
+            // Only reached after speech was detected, so any failure is real trouble.
+            capture_runtime::warn_log!(
+                "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
+                error.code,
+                error.message
+            );
             move_microphone_source_to_output(&source_file, &output_file)?;
             Ok(MicrophoneOutputFinalization {
                 source_file: Some(source_file),

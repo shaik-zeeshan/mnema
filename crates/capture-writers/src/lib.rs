@@ -310,6 +310,8 @@ pub struct AudioAssetWriterState {
     writer: cidre::arc::R<cidre::av::AssetWriter>,
     input: cidre::arc::R<cidre::av::AssetWriterInput>,
     started: bool,
+    // Host-clock PTS the session started at; the file's frame 0.
+    session_start_secs: Option<f64>,
     appended_samples: u64,
     expected_sample_format: Option<AudioSampleFormat>,
     tail_trim_seconds: u64,
@@ -375,6 +377,11 @@ fn flush_audio_tail_buffer(
     writer_state.tail_buffer.latest_sample_end_secs = None;
     writer_state.tail_buffer.observed_active_sample = false;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn audio_writer_session_start_secs(writer_state: &AudioAssetWriterState) -> Option<f64> {
+    writer_state.session_start_secs
 }
 
 #[cfg(target_os = "macos")]
@@ -931,6 +938,7 @@ fn create_audio_asset_writer_with_format_internal(
         writer,
         input,
         started: false,
+        session_start_secs: None,
         appended_samples: 0,
         expected_sample_format,
         tail_trim_seconds: 0,
@@ -1020,9 +1028,12 @@ fn append_audio_sample_to_writer_untrimmed(
             ));
         }
 
-        writer_state
-            .writer
-            .start_session_at_src_time(sample_buf.pts());
+        let pts = sample_buf.pts();
+        writer_state.writer.start_session_at_src_time(pts);
+        writer_state.session_start_secs = pts
+            .is_numeric()
+            .then(|| pts.as_secs())
+            .filter(|value| value.is_finite());
         writer_state.started = true;
     }
 
