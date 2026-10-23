@@ -20,16 +20,15 @@ use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 mod equivalence;
 
-use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
@@ -444,10 +443,6 @@ const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
 #[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE: usize = 3;
-#[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP: u64 = 32;
-#[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(target_os = "macos")]
 const MAX_ACTIVE_DISPLAY_COUNT: u32 = 16;
@@ -485,12 +480,6 @@ const FINALIZED_SCREEN_RECORDING_MISSING_FILE_MARKERS: [&str; 2] =
 
 #[cfg(target_os = "macos")]
 type CGDirectDisplayID = u32;
-#[cfg(target_os = "macos")]
-type CGImageRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CGDataProviderRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CFDataRef = *const c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -500,20 +489,6 @@ unsafe extern "C" {
         active_displays: *mut CGDirectDisplayID,
         display_count: *mut u32,
     ) -> i32;
-    fn CGDisplayCreateImage(display: CGDirectDisplayID) -> CGImageRef;
-    fn CGImageGetWidth(image: CGImageRef) -> usize;
-    fn CGImageGetHeight(image: CGImageRef) -> usize;
-    fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
-    fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
-    fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
-    fn CFDataGetLength(data: CFDataRef) -> isize;
-    fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
 }
 
 #[cfg(target_os = "macos")]
@@ -934,212 +909,6 @@ fn maybe_mark_screen_activity_for_fingerprint(fingerprint: Option<u64>) -> bool 
         return true;
     }
 
-    false
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    if bytes.is_empty() || bytes_per_row == 0 || width == 0 || height == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let mut has_content_signal = false;
-
-    for tile_row in 0..tile_rows {
-        let row_start = tile_row.saturating_mul(height) / tile_rows;
-        let row_end = ((tile_row.saturating_add(1)).saturating_mul(height) / tile_rows)
-            .max(row_start.saturating_add(1))
-            .min(height);
-
-        for tile_col in 0..tile_cols {
-            let col_start = tile_col.saturating_mul(width) / tile_cols;
-            let col_end = ((tile_col.saturating_add(1)).saturating_mul(width) / tile_cols)
-                .max(col_start.saturating_add(1))
-                .min(width);
-
-            let Some(value) = screen_activity_bitmap_tile_summary(
-                bytes,
-                bytes_per_row,
-                width,
-                height,
-                row_start,
-                row_end,
-                col_start,
-                col_end,
-            ) else {
-                continue;
-            };
-
-            has_content_signal |= value != 0;
-            mix_screen_activity_fingerprint(&mut hash, row_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, col_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, value);
-        }
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_tile_summary(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-    row_start: usize,
-    row_end: usize,
-    col_start: usize,
-    col_end: usize,
-) -> Option<u64> {
-    if row_start >= row_end || col_start >= col_end || width == 0 || height == 0 {
-        return None;
-    }
-
-    let sample_rows = (row_end - row_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let sample_cols = (col_end - col_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let mut sum_r = 0_u64;
-    let mut sum_g = 0_u64;
-    let mut sum_b = 0_u64;
-    let mut sum_a = 0_u64;
-    let mut sample_count = 0_u64;
-
-    for sample_row in 0..sample_rows {
-        let row = row_start
-            + (((sample_row.saturating_mul(2)).saturating_add(1))
-                .saturating_mul(row_end - row_start)
-                / sample_rows.saturating_mul(2))
-            .min(row_end - row_start - 1);
-
-        for sample_col in 0..sample_cols {
-            let col = col_start
-                + (((sample_col.saturating_mul(2)).saturating_add(1))
-                    .saturating_mul(col_end - col_start)
-                    / sample_cols.saturating_mul(2))
-                .min(col_end - col_start - 1);
-            let pixel_offset = row
-                .checked_mul(bytes_per_row)?
-                .checked_add(col.checked_mul(4)?)?;
-            let pixel = bytes.get(pixel_offset..pixel_offset + 4)?;
-
-            sum_b += pixel[0] as u64;
-            sum_g += pixel[1] as u64;
-            sum_r += pixel[2] as u64;
-            sum_a += pixel[3] as u64;
-            sample_count += 1;
-        }
-    }
-
-    if sample_count == 0 {
-        return None;
-    }
-
-    let avg_b = (sum_b / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_g = (sum_g / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_r = (sum_r / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_a = (sum_a / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-
-    Some(avg_b | (avg_g << 8) | (avg_r << 16) | (avg_a << 24))
-}
-
-#[cfg(all(target_os = "macos", test))]
-fn screen_frame_content_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    screen_activity_bitmap_fingerprint(bytes, bytes_per_row, width, height)
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_display_fingerprint(display_id: CGDirectDisplayID) -> Option<u64> {
-    let image = unsafe { CGDisplayCreateImage(display_id) };
-    if image.is_null() {
-        return None;
-    }
-
-    let fingerprint = (|| {
-        let width = unsafe { CGImageGetWidth(image) };
-        let height = unsafe { CGImageGetHeight(image) };
-        let bytes_per_row = unsafe { CGImageGetBytesPerRow(image) };
-        let provider = unsafe { CGImageGetDataProvider(image) };
-        if provider.is_null() {
-            return None;
-        }
-
-        let data = unsafe { CGDataProviderCopyData(provider) };
-        if data.is_null() {
-            return None;
-        }
-
-        let fingerprint = unsafe {
-            let length = CFDataGetLength(data);
-            let bytes = CFDataGetBytePtr(data);
-            if bytes.is_null() || length <= 0 {
-                None
-            } else {
-                let slice = std::slice::from_raw_parts(bytes, length as usize);
-                screen_activity_bitmap_fingerprint(slice, bytes_per_row, width, height)
-            }
-        };
-
-        unsafe { CFRelease(data) };
-        fingerprint
-    })();
-
-    unsafe { CFRelease(image) };
-    fingerprint
-}
-
-#[cfg(target_os = "macos")]
-fn polled_screen_activity_fingerprint() -> Option<u64> {
-    let mut display_ids = [0; MAX_ACTIVE_DISPLAY_COUNT as usize];
-    let mut display_count = 0;
-    let status = unsafe {
-        CGGetActiveDisplayList(
-            MAX_ACTIVE_DISPLAY_COUNT,
-            display_ids.as_mut_ptr(),
-            &mut display_count,
-        )
-    };
-    if status != 0 || display_count == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let mut has_content_signal = false;
-
-    for display_id in display_ids.into_iter().take(display_count as usize) {
-        let Some(fingerprint) = screen_activity_display_fingerprint(display_id) else {
-            continue;
-        };
-
-        has_content_signal = true;
-        mix_screen_activity_fingerprint(&mut hash, fingerprint);
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-pub fn poll_screen_activity() -> bool {
-    maybe_mark_screen_activity_for_fingerprint(polled_screen_activity_fingerprint())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn poll_screen_activity() -> bool {
     false
 }
 
@@ -5261,78 +5030,6 @@ mod tests {
             Some(CapturedFrameEquivalenceOutcome::Ready(_))
         ));
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_activity_bitmap_fingerprint_detects_localized_center_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for changed_row in 32..40 {
-            for changed_col in 32..40 {
-                let changed_offset = changed_row * bytes_per_row + changed_col * 4;
-                changed[changed_offset..changed_offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_ignores_cursor_sized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut cursor_changed = baseline.clone();
-
-        for row in 35..37 {
-            for col in 35..37 {
-                let offset = row * bytes_per_row + col * 4;
-                cursor_changed[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let cursor_changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&cursor_changed, bytes_per_row, width, height);
-
-        assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_detects_larger_localized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for row in 32..40 {
-            for col in 32..40 {
-                let offset = row * bytes_per_row + col * 4;
-                changed[offset..offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5373,4 +5070,3 @@ fn load_asset_tracks_with_timeout(
         }),
     }
 }
-
