@@ -3116,11 +3116,8 @@ fn start_screen_capture_kit_session(
             display.height().max(1) as u32,
         );
 
-        let screen_stream_cfg = configured_screen_capture_kit_stream_cfg(
-            &stream_resolution,
-            screen_frame_rate,
-            sources,
-        );
+        let screen_stream_cfg =
+            configured_screen_capture_kit_stream_cfg(&stream_resolution, screen_frame_rate);
 
         let lifecycle_state = Arc::new(Mutex::new(ScreenCaptureKitLifecycleState::default()));
         let stream_delegate = ScStreamDelegate::with(ScStreamDelegateState {
@@ -3183,7 +3180,6 @@ fn start_screen_capture_kit_session(
 fn configured_screen_capture_kit_stream_cfg(
     stream_resolution: &ScreenCaptureResolution,
     screen_frame_rate: f64,
-    sources: &ScreenCaptureSources,
 ) -> cidre::arc::R<cidre::sc::StreamCfg> {
     use cidre::{cm, sc};
 
@@ -3201,7 +3197,15 @@ fn configured_screen_capture_kit_stream_cfg(
     // Request a packed 32-bit buffer so live captured-frame equivalence can read
     // interleaved pixels directly instead of falling back to the exported JPEG.
     screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
-    screen_stream_cfg.set_shows_cursor(sources.screen);
+    // Cursor off (founder ruling 2026-10-23): input already counts as activity,
+    // and a moving pointer would otherwise churn frames and OCR for nothing.
+    screen_stream_cfg.set_shows_cursor(false);
+    // Apple's minimum. The SDK header says the unset default is 8, and each
+    // extra surface is WindowServer memory. SCK drops a frame only when a
+    // surface is held longer than interval × (depth − 1); the JPEG export holds
+    // one ~100–300 ms, so this is ample at ≤ 1 fps.
+    // ponytail: at 10 fps that budget is 200 ms; raise it if frames drop there.
+    screen_stream_cfg.set_queue_depth(3);
     // The stream is video-only: system audio is captured by `capture-system-audio`
     // on its own Core Audio process tap (ADR 0052).
     screen_stream_cfg.set_captures_audio(false);
@@ -4078,12 +4082,13 @@ mod tests {
                 height: 720,
             },
             1.0,
-            &ScreenCaptureSources { screen: true },
         );
 
         assert_eq!(cfg.width(), 1280);
         assert_eq!(cfg.height(), 720);
         assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
+        assert!(!cfg.shows_cursor());
+        assert_eq!(cfg.queue_depth(), 3);
     }
 
     #[cfg(target_os = "macos")]
@@ -4093,30 +4098,28 @@ mod tests {
             width: 1280,
             height: 720,
         };
-        let sources = ScreenCaptureSources { screen: true };
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 0.5, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 0.5).minimum_frame_interval();
         assert_eq!(interval.value, 2000);
         assert_eq!(interval.scale, 1000);
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 10.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 10.0).minimum_frame_interval();
         assert_eq!(interval.value, 100);
         assert_eq!(interval.scale, 1000);
 
         // Once per minute must be exact — the previous timescale-side encoding
         // truncated this to 62.5s.
-        let interval =
-            configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0, &sources)
-                .minimum_frame_interval();
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0)
+            .minimum_frame_interval();
         assert_eq!(interval.value, 60_000);
         assert_eq!(interval.scale, 1000);
 
         // A rate whose ms-per-frame is fractional (3 fps → 333.33ms) must round,
         // not truncate — exercises the `.round()` the ladder stops don't hit.
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 3.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 3.0).minimum_frame_interval();
         assert_eq!(interval.value, 333);
         assert_eq!(interval.scale, 1000);
     }
