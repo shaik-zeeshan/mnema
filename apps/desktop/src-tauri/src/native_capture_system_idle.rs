@@ -46,3 +46,22 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
 pub(crate) fn current_system_idle_ms() -> Option<u64> {
     None
 }
+
+/// Whether the login session's screen is locked. `CGSSessionScreenIsLocked` is
+/// only present in the session dictionary while locked.
+#[cfg(target_os = "macos")]
+pub(crate) fn session_screen_is_locked() -> bool {
+    use cidre::{arc, cf};
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> Option<arc::R<cf::Dictionary>>;
+    }
+
+    let Some(session) = (unsafe { CGSessionCopyCurrentDictionary() }) else {
+        return false;
+    };
+    session
+        .value(&cf::String::from_str("CGSSessionScreenIsLocked"))
+        .is_some_and(|value| value.equal(cf::Boolean::value_true()))
+}
