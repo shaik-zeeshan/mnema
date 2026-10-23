@@ -1849,6 +1849,18 @@ impl AvFoundationMicrophoneCaptureSession {
         finalize_microphone_output_context(self.output_delegate.inner_mut())
     }
 
+    /// Stop or restart the device without touching the output context, so the
+    /// mic hardware, its indicator and coreaudiod's input I/O go quiet. Pause the
+    /// output first: a writer left open across the gap would splice two takes.
+    pub fn set_capture_running(&mut self, running: bool) {
+        if running {
+            self.capture_session.start_running();
+        } else {
+            self.capture_session.stop_running();
+            synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
+        }
+    }
+
     pub fn rotate_output_file(&mut self, output_file: &str) -> Result<(), CaptureErrorResponse> {
         self.rotate_output_file_returning_finalization(output_file)
             .map(|_| ())

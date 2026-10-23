@@ -148,6 +148,10 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
+    /// `Some(paused_it)` while the microphone device is stopped because the Mac
+    /// is locked or every display is asleep; `paused_it` is whether this hold,
+    /// rather than inactivity, paused the output (so unlock resumes only that).
+    pub microphone_away_hold: Option<bool>,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
@@ -387,6 +391,7 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
+    runtime.microphone_away_hold = None;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

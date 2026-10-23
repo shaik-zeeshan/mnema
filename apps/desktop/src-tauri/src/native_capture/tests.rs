@@ -1737,6 +1737,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1922,6 +1923,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -2662,6 +2664,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2735,6 +2738,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2844,6 +2848,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
