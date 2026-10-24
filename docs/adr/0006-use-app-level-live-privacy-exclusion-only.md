@@ -32,3 +32,15 @@ Mnema no longer promises website-level, title-level, private-browser, or per-win
 The runtime avoids ScreenCaptureKit window-filter paths for privacy, reducing WindowServer/GPU power during recording.
 
 Because old capture data and settings do not need migration, inactive metadata privacy settings can be removed rather than preserved for compatibility.
+
+## Amendment (2026-10-24): exclude an app only while one of its windows shows
+
+The "app-only filtering stayed low-cost" figure above counted CPU, GPU and ANE only. Whole-Mac power with the IOReport memory rails tells a different story (M4 Air, bare ScreenCaptureKit stream, Mnema quit, 2 min per state): a plain display filter costs ~+0.2 W, but the same stream excluding **one running app** costs ~+2.4 W — GPU busy 64%, DRAM power ×5, the rest off-chip — and WindowServer keeps that cost for minutes after the stream stops. It applies even when the excluded app shows nothing, and excluded apps usually don't: menu-bar only, hidden, minimized, on another Space, or parked by AeroSpace as a 1-pt corner sliver. On the founder's Mac this was most of screen recording's +3.7 W.
+
+Changes:
+
+- The live filter excludes an app only while one of its on-screen windows covers at least 2×2 pt of the captured display (`crates/capture-screen/src/privacy_visibility.rs`, `plan_privacy_content_filter`). The other listed apps stay "unresolved", so the 1 s privacy poll keeps re-checking them; a filter that excludes anything also keeps the poll running, so an exclusion is dropped once its app hides.
+- The stream handler drops every frame delivered while a running listed app the filter leaves out has a window showing (an on-screen window list check after the frame was composed, failing closed). This covers the gap until the next refresh excludes it, so the guarantee is unchanged: no frame with a listed app's window is recorded.
+- While a filter update is in flight, the frame guard covers the union of the old and new left-out apps.
+
+The decision itself stands: privacy exclusion is still app-level only.
