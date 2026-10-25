@@ -454,10 +454,10 @@ impl RecordingLifecycle {
     pub(crate) fn release_microphone_for_out_of_band_recording(
         &mut self,
     ) -> Result<bool, CaptureErrorResponse> {
-        let Some(session) = self.runtime.active_microphone_session.as_mut() else {
+        if self.runtime.active_microphone_session.is_none() {
             return Ok(false);
-        };
-        session.stop()?;
+        }
+        super::segments::stop_microphone_session_for_runtime(&mut self.runtime)?;
         self.runtime.active_microphone_session = None;
         Ok(true)
     }

@@ -268,15 +268,13 @@ fn maybe_reconnect_waiting_microphone_session(
         runtime.active_microphone_session.is_some(),
         state,
     ) {
-        if let Some(session) = runtime.active_microphone_session.as_mut() {
-            if let Err(error) = session.stop() {
-                super::debug_log::log_warn(format!(
-                    "failed to stop microphone session while waiting for same device: [{}] {}",
-                    error.code, error.message
-                ));
-                emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
-                stop_failed_while_waiting = true;
-            }
+        if let Err(error) = super::segments::stop_microphone_session_for_runtime(runtime) {
+            super::debug_log::log_warn(format!(
+                "failed to stop microphone session while waiting for same device: [{}] {}",
+                error.code, error.message
+            ));
+            emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
+            stop_failed_while_waiting = true;
         }
         if !stop_failed_while_waiting {
             runtime.active_microphone_session = None;

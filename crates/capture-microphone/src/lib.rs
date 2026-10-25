@@ -94,7 +94,10 @@ pub struct MicrophoneOutputFinalization {
     pub source_file: Option<String>,
     pub output_file: Option<String>,
     pub speech_detected: bool,
-    pub trim_start_offset_ms: u64,
+    /// Where the output file's first sample sits relative to the start its path
+    /// is stamped with: later when leading silence was trimmed, earlier when a
+    /// resume flushed audio queued before it.
+    pub start_offset_ms: i64,
     pub discard_reason: Option<String>,
 }
 
@@ -447,6 +450,9 @@ struct MicrophoneOutputContext {
     first_speech_start_secs: Option<f64>,
     last_speech_end_secs: Option<f64>,
     detected_vad_speech: bool,
+    /// Host-clock instant the file was opened by a resume — the moment its path
+    /// is stamped with. `None` for a file stamped by the segment schedule.
+    resumed_at_host_secs: Option<f64>,
 }
 
 #[cfg(target_os = "macos")]
@@ -509,7 +515,8 @@ fn fallback_microphone_format(context: &MicrophoneOutputContext) -> Option<Audio
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        carry_probe_only_microphone_context, feed_microphone_vad_pcm_samples,
+        carry_probe_only_microphone_context, derive_audio_sample_format_from_sample_buf,
+        feed_microphone_vad_pcm_samples, finalize_microphone_output_context,
         flush_pending_microphone_sample_queue, last_microphone_activity_unix_ms,
         microphone_activity_idle_ms, microphone_activity_level,
         microphone_output_callback_objc_exception_error, microphone_output_callback_panic_error,
@@ -519,8 +526,9 @@ mod tests {
         record_microphone_vad_tail_speech, replace_microphone_output_context_for_rotation,
         reset_last_microphone_activity_unix_ms, reset_microphone_vad_tail_activity,
         resolve_microphone_finalize_format, resolve_microphone_live_format,
-        store_microphone_activity, take_microphone_activity_window_peak_level,
-        transfer_pending_microphone_samples, AudioSampleAppendDisposition, AudioSampleFormat,
+        resume_microphone_output_context, store_microphone_activity,
+        take_microphone_activity_window_peak_level, transfer_pending_microphone_samples,
+        AudioSampleAppendDisposition, AudioSampleFormat, BufferedMicSample,
         MicFormatStabilityState, MicrophoneInactivityTailTrimActivityMode, MicrophoneOutputContext,
         MicrophoneVadPcmFeedState, MicrophoneVadSpeechEvent, OnceLock, MAX_PENDING_MIC_SAMPLES,
         MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT, MICROPHONE_VAD_PCM_SAMPLE_RATE_HZ,
@@ -556,6 +564,7 @@ mod tests {
             first_speech_start_secs: None,
             last_speech_end_secs: None,
             detected_vad_speech: false,
+            resumed_at_host_secs: None,
         }
     }
 
@@ -839,6 +848,99 @@ mod tests {
             resolve_microphone_live_format(&resumed.format_state),
             Some(fmt)
         );
+    }
+
+    /// A packed mono f32 PCM buffer of silence whose PTS is `pts_secs`.
+    fn host_clock_pcm_sample(pts_secs: f64, frames: usize) -> BufferedMicSample {
+        let asbd = cidre::cat::AudioStreamBasicDesc {
+            sample_rate: 48_000.0,
+            format: cidre::cat::AudioFormat::LINEAR_PCM,
+            format_flags: cidre::cat::AudioFormatFlags::IS_FLOAT
+                | cidre::cat::AudioFormatFlags::IS_PACKED,
+            bytes_per_packet: 4,
+            frames_per_packet: 1,
+            bytes_per_frame: 4,
+            channels_per_frame: 1,
+            bits_per_channel: 32,
+            reserved: 0,
+        };
+        let format_desc = cidre::cm::AudioFormatDesc::with_asbd(&asbd).unwrap();
+        let mut block = cidre::cm::BlockBuf::with_mem_block(frames * 4).unwrap();
+        block.as_mut_slice().unwrap().fill(0);
+        let timing = cidre::cm::SampleTimingInfo {
+            duration: cidre::cm::Time::new(1, 48_000),
+            pts: cidre::cm::Time::with_secs(pts_secs, 48_000),
+            dts: cidre::cm::Time::invalid(),
+        };
+        let sample_size = 4usize;
+        let sample_buf = unsafe {
+            let mut created = None;
+            cidre::cm::SampleBuf::create_in(
+                None,
+                Some(&block),
+                true,
+                None,
+                std::ptr::null(),
+                Some(&format_desc),
+                frames as cidre::cm::ItemCount,
+                1,
+                &timing,
+                1,
+                &sample_size,
+                &mut created,
+            )
+            .unwrap();
+            created.unwrap()
+        };
+        let format = derive_audio_sample_format_from_sample_buf(&sample_buf).unwrap();
+        BufferedMicSample { sample_buf, format }
+    }
+
+    #[test]
+    fn resumed_microphone_file_is_stamped_from_its_first_queued_sample() {
+        let dir =
+            std::env::temp_dir().join(format!("mnema-mic-resume-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output_file = dir
+            .join("microphone-resume.m4a")
+            .to_string_lossy()
+            .to_string();
+        let output_url = cidre::ns::Url::with_fs_path_str(&output_file, false);
+
+        // Paused for inactivity: the probe-only context holds the newest
+        // MAX_PENDING_MIC_SAMPLES buffers, ending at the resume instant.
+        let resumed_at_host_secs = 1_000.0;
+        let frames = 512;
+        let mut current =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::PeakLevel, 0);
+        for index in 0..MAX_PENDING_MIC_SAMPLES {
+            let frames_before_resume = (MAX_PENDING_MIC_SAMPLES - index) * frames;
+            let sample = host_clock_pcm_sample(
+                resumed_at_host_secs - frames_before_resume as f64 / 48_000.0,
+                frames,
+            );
+            observe_microphone_format(&mut current.format_state, sample.format);
+            push_bounded_pending_microphone_sample(&mut current.pending_samples, sample);
+        }
+
+        let next = microphone_output_context_for_output_url(
+            &output_url,
+            Some(output_file.clone()),
+            0,
+            0.0,
+            MicrophoneInactivityTailTrimActivityMode::PeakLevel,
+        );
+        resume_microphone_output_context(&mut current, next, resumed_at_host_secs);
+        let finalization = finalize_microphone_output_context(&mut current);
+        let _ = std::fs::remove_dir_all(&dir);
+        let finalization = finalization.expect("resumed microphone file should finalize");
+
+        assert_eq!(
+            finalization.output_file.as_deref(),
+            Some(output_file.as_str())
+        );
+        // 128 queued buffers x 512 frames at 48 kHz = 1.365 s before the stamp.
+        assert_eq!(finalization.start_offset_ms, -1_365);
     }
 
     #[test]
@@ -1566,6 +1668,17 @@ fn carry_probe_only_microphone_context(
 }
 
 #[cfg(target_os = "macos")]
+fn resume_microphone_output_context(
+    current_context: &mut MicrophoneOutputContext,
+    mut next_context: MicrophoneOutputContext,
+    resumed_at_host_secs: f64,
+) -> MicrophoneOutputContext {
+    next_context.resumed_at_host_secs = Some(resumed_at_host_secs);
+    carry_probe_only_microphone_context(current_context, &mut next_context);
+    std::mem::replace(current_context, next_context)
+}
+
+#[cfg(target_os = "macos")]
 fn replace_microphone_output_context_for_rotation(
     current_context: &mut MicrophoneOutputContext,
     next_context: MicrophoneOutputContext,
@@ -1945,20 +2058,23 @@ impl AvFoundationMicrophoneCaptureSession {
         activity_threshold: f32,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
     ) -> Result<(), CaptureErrorResponse> {
+        // The caller stamped `output_file` with "now" just before this call.
+        let resumed_at_host_secs = cidre::cm::Clock::host_time_clock().time().as_secs();
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
 
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        let current_context = self.output_delegate.inner_mut();
-        let mut next_context = microphone_output_context_for_output_url(
+        let next_context = microphone_output_context_for_output_url(
             &output_url,
             Some(output_file.to_string()),
             tail_trim_seconds,
             activity_threshold,
             tail_activity_mode,
         );
-        carry_probe_only_microphone_context(current_context, &mut next_context);
-
-        let mut previous_context = std::mem::replace(current_context, next_context);
+        let mut previous_context = resume_microphone_output_context(
+            self.output_delegate.inner_mut(),
+            next_context,
+            resumed_at_host_secs,
+        );
         finalize_microphone_output_context(&mut previous_context)?;
 
         Ok(())
@@ -2052,8 +2168,40 @@ fn finalize_microphone_output_context(
             ))
         }
         Err(error) => Err(error),
-        Ok(()) => finalize_microphone_vad_boundary_trim(context),
+        Ok(()) => {
+            let resume_correction_ms = microphone_resume_stamp_correction_ms(context);
+            finalize_microphone_vad_boundary_trim(context).map(|mut finalization| {
+                finalization.start_offset_ms += resume_correction_ms;
+                finalization
+            })
+        }
     }
+}
+
+#[cfg(target_os = "macos")]
+const MAX_RESUME_STAMP_CORRECTION_SECS: f64 = 5.0;
+
+/// A resumed file opens with the audio queued while paused, so its first sample
+/// predates the resume instant its path is stamped with by up to
+/// `MAX_PENDING_MIC_SAMPLES` buffers (~1.4 s). Both are host-clock seconds.
+#[cfg(target_os = "macos")]
+fn microphone_resume_stamp_correction_ms(context: &MicrophoneOutputContext) -> i64 {
+    let (Some(resumed_at_secs), Some(first_sample_secs)) = (
+        context.resumed_at_host_secs,
+        context
+            .writer
+            .as_ref()
+            .and_then(audio_writer_session_start_secs),
+    ) else {
+        return 0;
+    };
+    let correction_secs = first_sample_secs - resumed_at_secs;
+    // ponytail: a gap past the queue's reach means the PTS were not host-clock;
+    // keep the resume stamp rather than move the file by garbage.
+    if !correction_secs.is_finite() || correction_secs.abs() > MAX_RESUME_STAMP_CORRECTION_SECS {
+        return 0;
+    }
+    (correction_secs * 1000.0).round() as i64
 }
 
 #[cfg(target_os = "macos")]
@@ -2078,14 +2226,14 @@ fn microphone_vad_trim_range_secs(
 fn microphone_output_finalization_for_context(
     context: &MicrophoneOutputContext,
     speech_detected: bool,
-    trim_start_offset_ms: u64,
+    start_offset_ms: i64,
     discard_reason: Option<String>,
 ) -> MicrophoneOutputFinalization {
     MicrophoneOutputFinalization {
         source_file: context.source_output_file.clone(),
         output_file: context.output_file.clone(),
         speech_detected,
-        trim_start_offset_ms,
+        start_offset_ms,
         discard_reason,
     }
 }
@@ -2156,7 +2304,7 @@ fn finalize_microphone_vad_boundary_trim(
             source_file: Some(source_file),
             output_file: None,
             speech_detected: false,
-            trim_start_offset_ms: 0,
+            start_offset_ms: 0,
             discard_reason: Some("no_vad_speech".to_string()),
         });
     }
@@ -2182,7 +2330,7 @@ fn finalize_microphone_vad_boundary_trim(
             source_file: Some(source_file),
             output_file: Some(output_file),
             speech_detected: true,
-            trim_start_offset_ms: 0,
+            start_offset_ms: 0,
             discard_reason: None,
         });
     };
@@ -2194,7 +2342,7 @@ fn finalize_microphone_vad_boundary_trim(
                 source_file: Some(source_file),
                 output_file: Some(output_file),
                 speech_detected: true,
-                trim_start_offset_ms: (trim_start_secs * 1000.0).round().max(0.0) as u64,
+                start_offset_ms: (trim_start_secs * 1000.0).round().max(0.0) as i64,
                 discard_reason: None,
             })
         }
@@ -2210,7 +2358,7 @@ fn finalize_microphone_vad_boundary_trim(
                 source_file: Some(source_file),
                 output_file: Some(output_file),
                 speech_detected: true,
-                trim_start_offset_ms: 0,
+                start_offset_ms: 0,
                 discard_reason: None,
             })
         }
@@ -2284,6 +2432,7 @@ fn microphone_output_context_for_output_url(
         first_speech_start_secs: None,
         last_speech_end_secs: None,
         detected_vad_speech: false,
+        resumed_at_host_secs: None,
     }
 }
 
@@ -2333,6 +2482,7 @@ fn microphone_probe_only_context() -> MicrophoneOutputContext {
         first_speech_start_secs: None,
         last_speech_end_secs: None,
         detected_vad_speech: false,
+        resumed_at_host_secs: None,
     }
 }
 

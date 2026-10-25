@@ -28,7 +28,8 @@ use super::runtime::{
 use super::runtime::{CaptureSuspensionKind, CaptureSuspension};
 #[cfg(target_os = "macos")]
 use super::segments::{
-    apply_microphone_output_finalization, audio_duration_time_to_ms,
+    apply_microphone_output_finalization, apply_stopped_microphone_finalization,
+    audio_duration_time_to_ms,
     audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
     cleanup_failed_segment_dirs, committed_audio_segments_for_output_files,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
@@ -758,7 +759,7 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
         source_file: Some(microphone_file.clone()),
         output_file: Some(microphone_file.clone()),
         speech_detected: true,
-        trim_start_offset_ms: 1_000,
+        start_offset_ms: 1_000,
         discard_reason: None,
     };
     let mut output_files = CaptureOutputFiles {
@@ -799,6 +800,117 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
 
 #[cfg(target_os = "macos")]
 #[test]
+fn resumed_microphone_finalization_moves_stamp_back_to_queued_audio() {
+    let dir = TestDir::new("resumed-microphone-filename");
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("microphone-native-session-microphone-segment-0001-1700000030000.m4a"),
+    );
+    let source_sessions = independent_source_sessions_fixture();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(microphone_file.clone()),
+        output_file: Some(microphone_file.clone()),
+        speech_detected: true,
+        start_offset_ms: -1_365,
+        discard_reason: None,
+    };
+    let mut output_files = CaptureOutputFiles {
+        screen_file: None,
+        screen_files: Vec::new(),
+        microphone_file: Some(microphone_file.clone()),
+        microphone_files: vec![microphone_file],
+        system_audio_file: None,
+        system_audio_files: Vec::new(),
+    };
+
+    apply_microphone_output_finalization(
+        Some(&mut output_files),
+        &finalization,
+        Some(&source_sessions),
+        Some(&schedule),
+        1,
+    );
+
+    let renamed_file = output_files
+        .microphone_file
+        .as_deref()
+        .expect("resumed microphone output should remain present");
+    assert_eq!(
+        audio_segment_started_at_unix_ms_for_file(
+            source_sessions.microphone.as_ref().unwrap(),
+            1,
+            &schedule,
+            renamed_file,
+        ),
+        1_700_000_028_635
+    );
+    assert_eq!(
+        output_files.microphone_files,
+        vec![renamed_file.to_string()]
+    );
+    assert!(Path::new(renamed_file).is_file());
+}
+
+// Every path that stops the mic outright (waiting for the same device, low
+// disk, out-of-band enrollment) must book the stop's finalization against the
+// live segment, or the file it later commits keeps an uncorrected stamp.
+#[cfg(target_os = "macos")]
+#[test]
+fn stopped_microphone_finalization_restamps_the_live_segment_file() {
+    let dir = TestDir::new("stopped-microphone-finalization");
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("microphone-native-session-microphone-segment-0001-1700000030000.m4a"),
+    );
+    let source_sessions = independent_source_sessions_fixture();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
+    let mut runtime = NativeCaptureRuntime {
+        current_segment_index: 1,
+        segment_schedule: Some(schedule.clone()),
+        source_sessions: Some(source_sessions.clone()),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(microphone_file.clone()),
+        output_file: Some(microphone_file),
+        speech_detected: true,
+        start_offset_ms: -1_365,
+        discard_reason: None,
+    };
+
+    apply_stopped_microphone_finalization(&mut runtime, &finalization);
+
+    let output_files = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("live segment outputs should remain");
+    let [restamped_file] = output_files.microphone_files.as_slice() else {
+        panic!("expected one file: {:?}", output_files.microphone_files);
+    };
+    assert_eq!(output_files.microphone_file.as_ref(), Some(restamped_file));
+    assert_eq!(
+        audio_segment_started_at_unix_ms_for_file(
+            source_sessions.microphone.as_ref().unwrap(),
+            1,
+            &schedule,
+            restamped_file,
+        ),
+        1_700_000_028_635
+    );
+    assert!(Path::new(restamped_file).is_file());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn microphone_finalization_preserves_prior_rotated_outputs() {
     let first_file = "/tmp/microphone-native-session-microphone-segment-0001-1000.m4a".to_string();
     let current_file =
@@ -809,7 +921,7 @@ fn microphone_finalization_preserves_prior_rotated_outputs() {
         source_file: Some(current_file.clone()),
         output_file: Some(finalized_file.clone()),
         speech_detected: true,
-        trim_start_offset_ms: 0,
+        start_offset_ms: 0,
         discard_reason: None,
     };
     let mut output_files = CaptureOutputFiles {
@@ -846,7 +958,7 @@ fn discarded_microphone_finalization_preserves_prior_rotated_outputs() {
         source_file: Some(current_file.clone()),
         output_file: None,
         speech_detected: false,
-        trim_start_offset_ms: 0,
+        start_offset_ms: 0,
         discard_reason: Some("no_vad_speech".to_string()),
     };
     let mut output_files = CaptureOutputFiles {
