@@ -152,6 +152,9 @@ pub struct NativeCaptureRuntime {
     /// is locked or every display is asleep; `paused_it` is whether this hold,
     /// rather than inactivity, paused the output (so unlock resumes only that).
     pub microphone_away_hold: Option<bool>,
+    /// True while a bounded out-of-band recording (voice enrollment) holds the
+    /// microphone. Capture leaves the family alone until it is handed back.
+    pub microphone_lent_out: bool,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,

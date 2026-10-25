@@ -205,6 +205,7 @@ pub(super) fn should_reconnect_waiting_microphone_session(
 ) -> bool {
     runtime.is_running
         && !runtime.inactivity.is_microphone_paused()
+        && !runtime.microphone_lent_out
         && runtime
             .requested_sources
             .as_ref()

@@ -2155,7 +2155,8 @@ fn resume_all_sources_after_low_disk(
     // leaking it (there is no `Drop` that stops a screen session) and opening a
     // second writer over overlapping segment files. Mirrors the rollback the
     // combined start path already does on a mic-start failure.
-    if recover_sources.microphone {
+    // A microphone lent to voice enrollment is restarted when it is handed back.
+    if recover_sources.microphone && !runtime.microphone_lent_out {
         let restart_result = (|| -> Result<(), CaptureErrorResponse> {
             ensure_microphone_planner_for_runtime(runtime, "recovering low-disk suspension")?;
             refresh_runtime_planner_dates(runtime);
@@ -2865,6 +2866,11 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
     if runtime.inactivity.is_microphone_paused() {
         return Ok(());
     }
+    // With no session to finalize, a pause would only drop the file the
+    // enrollment stop already closed from the segment it belongs to.
+    if runtime.microphone_lent_out {
+        return Ok(());
+    }
 
     // Skip when microphone is not a requested source.
     if !runtime
@@ -3094,6 +3100,11 @@ pub(super) fn resume_microphone_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
     if !runtime.inactivity.is_microphone_paused() {
+        return Ok(());
+    }
+    // Voice enrollment holds the device; its own speech must not wake a second
+    // session. Restoring the microphone clears this pause.
+    if runtime.microphone_lent_out {
         return Ok(());
     }
 
