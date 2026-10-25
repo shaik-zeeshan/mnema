@@ -724,12 +724,68 @@ impl RecordingLifecycle {
     }
 
     #[cfg(target_os = "macos")]
+    /// Stop the microphone device while the Mac is locked or every display is
+    /// asleep, and restart it once neither holds (founder ruling 2026-10-23:
+    /// lock is away, so speech said while locked is not recorded). The output is
+    /// inactivity-paused first, so the segment commit is the existing pause path;
+    /// unlock resumes only a pause this hold made.
+    #[cfg(target_os = "macos")]
+    fn tick_microphone_away(&mut self, app_handle: &tauri::AppHandle) {
+        let away = super::system_idle::session_screen_is_locked()
+            || !capture_screen::screen_display_available();
+        match (away, self.runtime.microphone_away_hold) {
+            (true, None) => {
+                if self.runtime.active_microphone_session.is_none() {
+                    return;
+                }
+                let paused_it = !self.runtime.inactivity.is_microphone_paused();
+                if let Err(error) = pause_microphone_for_inactivity_with_app_handle(
+                    &mut self.runtime,
+                    Some(app_handle),
+                ) {
+                    super::debug_log::log_warn(format!(
+                        "failed to pause microphone while the Mac is away; keeping it on: [{}] {}",
+                        error.code, error.message
+                    ));
+                    return;
+                }
+                if let Some(session) = self.runtime.active_microphone_session.as_mut() {
+                    session.set_capture_running(false);
+                }
+                self.runtime.microphone_away_hold = Some(paused_it);
+                super::debug_log::log_info(
+                    "stopped microphone while the Mac is locked or its displays are asleep",
+                );
+            }
+            (false, Some(paused_it)) => {
+                self.runtime.microphone_away_hold = None;
+                if let Some(session) = self.runtime.active_microphone_session.as_mut() {
+                    session.set_capture_running(true);
+                }
+                if paused_it {
+                    if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
+                        super::debug_log::log_warn(format!(
+                            "failed to resume microphone after the Mac came back; activity will retry: [{}] {}",
+                            error.code, error.message
+                        ));
+                    }
+                }
+                super::debug_log::log_info("restarted microphone after the Mac came back");
+            }
+            _ => {}
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn tick_microphone_away(&mut self, _app_handle: &tauri::AppHandle) {}
+
     pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
         }
 
         self.tick_system_audio(app_handle);
+        self.tick_microphone_away(app_handle);
 
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
@@ -752,10 +808,11 @@ impl RecordingLifecycle {
             .inactivity
             .effective_idle_for_snapshot(now, activity_snapshot);
 
-        if self
-            .runtime
-            .inactivity
-            .should_resume_microphone_from_inactivity(now, activity_snapshot)
+        if self.runtime.microphone_away_hold.is_none()
+            && self
+                .runtime
+                .inactivity
+                .should_resume_microphone_from_inactivity(now, activity_snapshot)
         {
             if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
                 super::debug_log::log_at(

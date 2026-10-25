@@ -19,17 +19,17 @@ use cidre::objc;
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 mod equivalence;
+mod privacy_visibility;
 
-use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
@@ -109,6 +109,8 @@ enum PrivacyContentFilterStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivacyFilterAvailableApp {
     bundle_id: String,
+    /// One of its windows shows on the captured display (`privacy_visibility`).
+    shows_window: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,8 +168,10 @@ impl PrivacyFilterApplicationState {
             && self.unresolved_bundle_ids == next.unresolved_bundle_ids
     }
 
+    /// An applied exclusion is dropped once its app stops showing a window, so a filter that
+    /// excludes anything keeps the privacy poll re-checking the shareable content.
     fn requires_content_refresh(&self) -> bool {
-        false
+        !self.applied_key.excluded_bundle_ids.is_empty()
     }
 }
 
@@ -181,7 +185,7 @@ fn should_log_privacy_filter_diagnostics(
 fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
     if !state.unresolved_bundle_ids.is_empty() {
         capture_runtime::debug_log!(
-            "privacy filter requested {} bundle id(s) not present in ScreenCaptureKit content",
+            "privacy filter leaves out {} requested bundle id(s) with no window showing on the captured display",
             state.unresolved_bundle_ids.len()
         );
     }
@@ -191,8 +195,11 @@ fn plan_privacy_content_filter(
     requested_bundle_ids: &std::collections::BTreeSet<String>,
     available_apps: &[PrivacyFilterAvailableApp],
 ) -> PrivacyContentFilterPlan {
+    // Only apps showing a window are excluded: excluding a running app costs WindowServer GPU
+    // work even when it shows nothing (`privacy_visibility`). The rest stay unresolved, which
+    // keeps the poll re-checking them and the stream handler guarding frames against them.
     let mut available_bundle_ids = std::collections::BTreeSet::new();
-    for app in available_apps {
+    for app in available_apps.iter().filter(|app| app.shows_window) {
         available_bundle_ids.insert(app.bundle_id.clone());
     }
 
@@ -444,10 +451,6 @@ const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
 #[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE: usize = 3;
-#[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP: u64 = 32;
-#[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(target_os = "macos")]
 const MAX_ACTIVE_DISPLAY_COUNT: u32 = 16;
@@ -485,12 +488,6 @@ const FINALIZED_SCREEN_RECORDING_MISSING_FILE_MARKERS: [&str; 2] =
 
 #[cfg(target_os = "macos")]
 type CGDirectDisplayID = u32;
-#[cfg(target_os = "macos")]
-type CGImageRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CGDataProviderRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CFDataRef = *const c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -500,20 +497,6 @@ unsafe extern "C" {
         active_displays: *mut CGDirectDisplayID,
         display_count: *mut u32,
     ) -> i32;
-    fn CGDisplayCreateImage(display: CGDirectDisplayID) -> CGImageRef;
-    fn CGImageGetWidth(image: CGImageRef) -> usize;
-    fn CGImageGetHeight(image: CGImageRef) -> usize;
-    fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
-    fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
-    fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
-    fn CFDataGetLength(data: CFDataRef) -> isize;
-    fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
 }
 
 #[cfg(target_os = "macos")]
@@ -937,212 +920,6 @@ fn maybe_mark_screen_activity_for_fingerprint(fingerprint: Option<u64>) -> bool 
     false
 }
 
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    if bytes.is_empty() || bytes_per_row == 0 || width == 0 || height == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let mut has_content_signal = false;
-
-    for tile_row in 0..tile_rows {
-        let row_start = tile_row.saturating_mul(height) / tile_rows;
-        let row_end = ((tile_row.saturating_add(1)).saturating_mul(height) / tile_rows)
-            .max(row_start.saturating_add(1))
-            .min(height);
-
-        for tile_col in 0..tile_cols {
-            let col_start = tile_col.saturating_mul(width) / tile_cols;
-            let col_end = ((tile_col.saturating_add(1)).saturating_mul(width) / tile_cols)
-                .max(col_start.saturating_add(1))
-                .min(width);
-
-            let Some(value) = screen_activity_bitmap_tile_summary(
-                bytes,
-                bytes_per_row,
-                width,
-                height,
-                row_start,
-                row_end,
-                col_start,
-                col_end,
-            ) else {
-                continue;
-            };
-
-            has_content_signal |= value != 0;
-            mix_screen_activity_fingerprint(&mut hash, row_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, col_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, value);
-        }
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_tile_summary(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-    row_start: usize,
-    row_end: usize,
-    col_start: usize,
-    col_end: usize,
-) -> Option<u64> {
-    if row_start >= row_end || col_start >= col_end || width == 0 || height == 0 {
-        return None;
-    }
-
-    let sample_rows = (row_end - row_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let sample_cols = (col_end - col_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let mut sum_r = 0_u64;
-    let mut sum_g = 0_u64;
-    let mut sum_b = 0_u64;
-    let mut sum_a = 0_u64;
-    let mut sample_count = 0_u64;
-
-    for sample_row in 0..sample_rows {
-        let row = row_start
-            + (((sample_row.saturating_mul(2)).saturating_add(1))
-                .saturating_mul(row_end - row_start)
-                / sample_rows.saturating_mul(2))
-            .min(row_end - row_start - 1);
-
-        for sample_col in 0..sample_cols {
-            let col = col_start
-                + (((sample_col.saturating_mul(2)).saturating_add(1))
-                    .saturating_mul(col_end - col_start)
-                    / sample_cols.saturating_mul(2))
-                .min(col_end - col_start - 1);
-            let pixel_offset = row
-                .checked_mul(bytes_per_row)?
-                .checked_add(col.checked_mul(4)?)?;
-            let pixel = bytes.get(pixel_offset..pixel_offset + 4)?;
-
-            sum_b += pixel[0] as u64;
-            sum_g += pixel[1] as u64;
-            sum_r += pixel[2] as u64;
-            sum_a += pixel[3] as u64;
-            sample_count += 1;
-        }
-    }
-
-    if sample_count == 0 {
-        return None;
-    }
-
-    let avg_b = (sum_b / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_g = (sum_g / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_r = (sum_r / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_a = (sum_a / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-
-    Some(avg_b | (avg_g << 8) | (avg_r << 16) | (avg_a << 24))
-}
-
-#[cfg(all(target_os = "macos", test))]
-fn screen_frame_content_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    screen_activity_bitmap_fingerprint(bytes, bytes_per_row, width, height)
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_display_fingerprint(display_id: CGDirectDisplayID) -> Option<u64> {
-    let image = unsafe { CGDisplayCreateImage(display_id) };
-    if image.is_null() {
-        return None;
-    }
-
-    let fingerprint = (|| {
-        let width = unsafe { CGImageGetWidth(image) };
-        let height = unsafe { CGImageGetHeight(image) };
-        let bytes_per_row = unsafe { CGImageGetBytesPerRow(image) };
-        let provider = unsafe { CGImageGetDataProvider(image) };
-        if provider.is_null() {
-            return None;
-        }
-
-        let data = unsafe { CGDataProviderCopyData(provider) };
-        if data.is_null() {
-            return None;
-        }
-
-        let fingerprint = unsafe {
-            let length = CFDataGetLength(data);
-            let bytes = CFDataGetBytePtr(data);
-            if bytes.is_null() || length <= 0 {
-                None
-            } else {
-                let slice = std::slice::from_raw_parts(bytes, length as usize);
-                screen_activity_bitmap_fingerprint(slice, bytes_per_row, width, height)
-            }
-        };
-
-        unsafe { CFRelease(data) };
-        fingerprint
-    })();
-
-    unsafe { CFRelease(image) };
-    fingerprint
-}
-
-#[cfg(target_os = "macos")]
-fn polled_screen_activity_fingerprint() -> Option<u64> {
-    let mut display_ids = [0; MAX_ACTIVE_DISPLAY_COUNT as usize];
-    let mut display_count = 0;
-    let status = unsafe {
-        CGGetActiveDisplayList(
-            MAX_ACTIVE_DISPLAY_COUNT,
-            display_ids.as_mut_ptr(),
-            &mut display_count,
-        )
-    };
-    if status != 0 || display_count == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let mut has_content_signal = false;
-
-    for display_id in display_ids.into_iter().take(display_count as usize) {
-        let Some(fingerprint) = screen_activity_display_fingerprint(display_id) else {
-            continue;
-        };
-
-        has_content_signal = true;
-        mix_screen_activity_fingerprint(&mut hash, fingerprint);
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-pub fn poll_screen_activity() -> bool {
-    maybe_mark_screen_activity_for_fingerprint(polled_screen_activity_fingerprint())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn poll_screen_activity() -> bool {
-    false
-}
-
 /// Whether the system currently has at least one active (drawable) display.
 ///
 /// This is a cheap CoreGraphics check used to decide whether it's worth
@@ -1187,6 +964,7 @@ struct StreamOutputContext {
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportRuntime>,
     first_error: Option<CaptureErrorResponse>,
+    privacy_frame_guard: privacy_visibility::SharedPrivacyFrameGuard,
 }
 
 #[cfg(target_os = "macos")]
@@ -1873,6 +1651,9 @@ mod stream_output_delegate {
                 if !super::should_append_screen_sample(sample_buf) {
                     return;
                 }
+                if super::privacy_visibility::frame_must_be_dropped(&ctx.privacy_frame_guard) {
+                    return;
+                }
                 let screen_activity_fingerprint =
                     super::screen_activity_sample_fingerprint(sample_buf);
                 let _ =
@@ -2278,6 +2059,7 @@ struct ScreenCaptureKitCaptureSession {
     frame_export: Option<ScreenFrameExportConfig>,
     lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
     privacy_filter_state: Option<PrivacyFilterApplicationState>,
+    privacy_frame_guard: privacy_visibility::SharedPrivacyFrameGuard,
 }
 
 #[cfg(target_os = "macos")]
@@ -2443,10 +2225,22 @@ impl ScreenCaptureKitCaptureSession {
                 log_privacy_filter_diagnostics(&built_filter.state);
             }
             self.privacy_filter_state = Some(built_filter.state);
+            *self.lock_privacy_frame_guard() = built_filter.frame_guard;
             return Ok(PrivacyFilterApplyOutcome { request_satisfied });
         }
         if should_log_diagnostics {
             log_privacy_filter_diagnostics(&built_filter.state);
+        }
+        // Until the new filter is live, guard frames against the apps either filter leaves out:
+        // one dropping an exclusion must not let a frame through before the guard covers it.
+        {
+            let mut guard = self.lock_privacy_frame_guard();
+            for bundle_id in &built_filter.frame_guard.unfiltered_bundle_ids {
+                if !guard.unfiltered_bundle_ids.contains(bundle_id) {
+                    guard.unfiltered_bundle_ids.push(bundle_id.clone());
+                }
+            }
+            guard.display = built_filter.frame_guard.display;
         }
         let (tx, rx) = mpsc::channel();
         self.stream
@@ -2464,6 +2258,7 @@ impl ScreenCaptureKitCaptureSession {
         match rx.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(())) => {
                 self.privacy_filter_state = Some(built_filter.state);
+                *self.lock_privacy_frame_guard() = built_filter.frame_guard;
                 Ok(PrivacyFilterApplyOutcome { request_satisfied })
             }
             Ok(Err(error)) => Err(error),
@@ -2472,6 +2267,14 @@ impl ScreenCaptureKitCaptureSession {
                 message: "Timed out updating ScreenCaptureKit content filter".to_string(),
             }),
         }
+    }
+
+    fn lock_privacy_frame_guard(
+        &self,
+    ) -> std::sync::MutexGuard<'_, privacy_visibility::PrivacyFrameGuard> {
+        self.privacy_frame_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn is_stream_live(&self) -> bool {
@@ -2675,6 +2478,7 @@ impl ScreenCaptureKitCaptureSession {
             &self.sources,
             self.video_bitrate_bps,
             self.frame_export.clone(),
+            self.privacy_frame_guard.clone(),
         )
         .map_err(|error| {
             log_capture_error(
@@ -2701,6 +2505,7 @@ impl ScreenCaptureKitCaptureSession {
 struct BuiltScreenCaptureKitContentFilter {
     filter: cidre::arc::R<cidre::sc::ContentFilter>,
     state: PrivacyFilterApplicationState,
+    frame_guard: privacy_visibility::PrivacyFrameGuard,
 }
 
 #[cfg(target_os = "macos")]
@@ -2748,15 +2553,33 @@ fn build_screen_capture_kit_content_filter(
     let apps = content.apps();
     let requested_bundle_ids: std::collections::BTreeSet<_> =
         privacy_filter.excluded_bundle_ids.iter().cloned().collect();
+    let display_rect = sc_rect(display.frame());
+    let showing_bundle_ids = content
+        .windows()
+        .iter()
+        .filter(|window| {
+            window.is_on_screen()
+                && privacy_visibility::shows_on_display(sc_rect(window.frame()), display_rect)
+        })
+        .filter_map(|window| window.owning_app().map(|app| app.bundle_id().to_string()))
+        .collect::<std::collections::BTreeSet<_>>();
     let available_apps = apps
         .iter()
-        .map(|app| PrivacyFilterAvailableApp {
-            bundle_id: app.bundle_id().to_string(),
+        .map(|app| {
+            let bundle_id = app.bundle_id().to_string();
+            PrivacyFilterAvailableApp {
+                shows_window: showing_bundle_ids.contains(&bundle_id),
+                bundle_id,
+            }
         })
         .collect::<Vec<_>>();
     let plan = plan_privacy_content_filter(&requested_bundle_ids, &available_apps);
 
     let state = PrivacyFilterApplicationState::from_plan(privacy_filter, &plan);
+    let frame_guard = privacy_visibility::PrivacyFrameGuard {
+        display: display_rect,
+        unfiltered_bundle_ids: plan.unresolved_bundle_ids.clone(),
+    };
 
     let filter = if plan.excluded_bundle_ids.is_empty() {
         screen_capture_kit_no_exclusion_filter(display, &apps)
@@ -2779,7 +2602,21 @@ fn build_screen_capture_kit_content_filter(
         )
     };
 
-    Ok(BuiltScreenCaptureKitContentFilter { filter, state })
+    Ok(BuiltScreenCaptureKitContentFilter {
+        filter,
+        state,
+        frame_guard,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn sc_rect(rect: cidre::cg::Rect) -> privacy_visibility::Rect {
+    privacy_visibility::Rect {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3317,6 +3154,7 @@ fn start_screen_capture_kit_session(
         })?;
 
         let initial_privacy_filter = options.initial_privacy_filter.clone();
+        let privacy_frame_guard = privacy_visibility::SharedPrivacyFrameGuard::default();
         let (filter, privacy_filter_state, initial_privacy_filter_outcome) =
             if let Some(initial_privacy_filter) = &initial_privacy_filter {
                 let built_filter = build_screen_capture_kit_content_filter(initial_privacy_filter)
@@ -3328,6 +3166,9 @@ fn start_screen_capture_kit_session(
                 let request_satisfied = built_filter
                     .state
                     .satisfies_request(&initial_privacy_filter.key());
+                *privacy_frame_guard
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = built_filter.frame_guard;
                 (
                     built_filter.filter,
                     Some(built_filter.state),
@@ -3347,11 +3188,8 @@ fn start_screen_capture_kit_session(
             display.height().max(1) as u32,
         );
 
-        let screen_stream_cfg = configured_screen_capture_kit_stream_cfg(
-            &stream_resolution,
-            screen_frame_rate,
-            sources,
-        );
+        let screen_stream_cfg =
+            configured_screen_capture_kit_stream_cfg(&stream_resolution, screen_frame_rate);
 
         let lifecycle_state = Arc::new(Mutex::new(ScreenCaptureKitLifecycleState::default()));
         let stream_delegate = ScStreamDelegate::with(ScStreamDelegateState {
@@ -3367,6 +3205,7 @@ fn start_screen_capture_kit_session(
                 sources,
                 video_bitrate_bps,
                 options.frame_export.clone(),
+                privacy_frame_guard.clone(),
             )?);
 
         if sources.screen {
@@ -3399,6 +3238,7 @@ fn start_screen_capture_kit_session(
                     frame_export: options.frame_export,
                     lifecycle_state,
                     privacy_filter_state,
+                    privacy_frame_guard,
                 }),
             },
             recording_file: output_file_str,
@@ -3414,7 +3254,6 @@ fn start_screen_capture_kit_session(
 fn configured_screen_capture_kit_stream_cfg(
     stream_resolution: &ScreenCaptureResolution,
     screen_frame_rate: f64,
-    sources: &ScreenCaptureSources,
 ) -> cidre::arc::R<cidre::sc::StreamCfg> {
     use cidre::{cm, sc};
 
@@ -3432,7 +3271,15 @@ fn configured_screen_capture_kit_stream_cfg(
     // Request a packed 32-bit buffer so live captured-frame equivalence can read
     // interleaved pixels directly instead of falling back to the exported JPEG.
     screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
-    screen_stream_cfg.set_shows_cursor(sources.screen);
+    // Cursor off (founder ruling 2026-10-23): input already counts as activity,
+    // and a moving pointer would otherwise churn frames and OCR for nothing.
+    screen_stream_cfg.set_shows_cursor(false);
+    // Apple's minimum. The SDK header says the unset default is 8, and each
+    // extra surface is WindowServer memory. SCK drops a frame only when a
+    // surface is held longer than interval × (depth − 1); the JPEG export holds
+    // one ~100–300 ms, so this is ample at ≤ 1 fps.
+    // ponytail: at 10 fps that budget is 200 ms; raise it if frames drop there.
+    screen_stream_cfg.set_queue_depth(3);
     // The stream is video-only: system audio is captured by `capture-system-audio`
     // on its own Core Audio process tap (ADR 0052).
     screen_stream_cfg.set_captures_audio(false);
@@ -3448,6 +3295,7 @@ fn stream_output_context_for_segment(
     sources: &ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
+    privacy_frame_guard: privacy_visibility::SharedPrivacyFrameGuard,
 ) -> Result<StreamOutputContext, CaptureErrorResponse> {
     let screen_video_output_file = if sources.screen {
         Some(recording_file.to_string())
@@ -3465,6 +3313,7 @@ fn stream_output_context_for_segment(
             None
         },
         first_error: None,
+        privacy_frame_guard,
     })
 }
 
@@ -4056,9 +3905,11 @@ mod tests {
         let available_apps = vec![
             PrivacyFilterAvailableApp {
                 bundle_id: "com.secret".to_string(),
+                shows_window: true,
             },
             PrivacyFilterAvailableApp {
                 bundle_id: "com.google.Chrome".to_string(),
+                shows_window: true,
             },
         ];
 
@@ -4093,12 +3944,49 @@ mod tests {
             &requested_bundle_ids,
             &[PrivacyFilterAvailableApp {
                 bundle_id: "com.secret".to_string(),
+                shows_window: true,
             }],
         );
         let resolved_state = PrivacyFilterApplicationState::from_plan(&requested, &resolved_plan);
 
-        assert!(resolved_state.satisfies_request(&requested.key()));
+        // An applied exclusion keeps the poll re-checking: it is dropped once the app hides.
+        assert!(!resolved_state.satisfies_request(&requested.key()));
         assert!(!unresolved_state.applied_filter_matches(&resolved_state));
+    }
+
+    #[test]
+    fn running_excluded_app_without_a_showing_window_is_left_out_of_the_filter() {
+        let requested = PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: vec!["com.secret".to_string()],
+        };
+        let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
+        let hidden_plan = plan_privacy_content_filter(
+            &requested_bundle_ids,
+            &[PrivacyFilterAvailableApp {
+                bundle_id: "com.secret".to_string(),
+                shows_window: false,
+            }],
+        );
+
+        assert!(hidden_plan.excluded_bundle_ids.is_empty());
+        assert_eq!(
+            hidden_plan.unresolved_bundle_ids,
+            vec!["com.secret".to_string()]
+        );
+        let hidden_state = PrivacyFilterApplicationState::from_plan(&requested, &hidden_plan);
+        assert!(!hidden_state.satisfies_request(&requested.key()));
+    }
+
+    #[test]
+    fn an_empty_exclusion_list_satisfies_the_request() {
+        let requested = PrivacyContentFilter {
+            display_id: 0,
+            excluded_bundle_ids: Vec::new(),
+        };
+        let plan = plan_privacy_content_filter(&Default::default(), &[]);
+        let state = PrivacyFilterApplicationState::from_plan(&requested, &plan);
+        assert!(state.satisfies_request(&requested.key()));
     }
 
     #[test]
@@ -4309,12 +4197,13 @@ mod tests {
                 height: 720,
             },
             1.0,
-            &ScreenCaptureSources { screen: true },
         );
 
         assert_eq!(cfg.width(), 1280);
         assert_eq!(cfg.height(), 720);
         assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
+        assert!(!cfg.shows_cursor());
+        assert_eq!(cfg.queue_depth(), 3);
     }
 
     #[cfg(target_os = "macos")]
@@ -4324,30 +4213,28 @@ mod tests {
             width: 1280,
             height: 720,
         };
-        let sources = ScreenCaptureSources { screen: true };
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 0.5, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 0.5).minimum_frame_interval();
         assert_eq!(interval.value, 2000);
         assert_eq!(interval.scale, 1000);
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 10.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 10.0).minimum_frame_interval();
         assert_eq!(interval.value, 100);
         assert_eq!(interval.scale, 1000);
 
         // Once per minute must be exact — the previous timescale-side encoding
         // truncated this to 62.5s.
-        let interval =
-            configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0, &sources)
-                .minimum_frame_interval();
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0)
+            .minimum_frame_interval();
         assert_eq!(interval.value, 60_000);
         assert_eq!(interval.scale, 1000);
 
         // A rate whose ms-per-frame is fractional (3 fps → 333.33ms) must round,
         // not truncate — exercises the `.round()` the ladder stops don't hit.
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 3.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 3.0).minimum_frame_interval();
         assert_eq!(interval.value, 333);
         assert_eq!(interval.scale, 1000);
     }
@@ -4713,6 +4600,7 @@ mod tests {
     fn finalize_rotated_segment_context_recovers_from_single_screen_video_writer_avfoundation_11800_failure(
     ) {
         let mut context = StreamOutputContext {
+            privacy_frame_guard: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4733,6 +4621,7 @@ mod tests {
     fn finalize_rotated_segment_context_rejects_single_screen_video_writer_avfoundation_11800_failure_with_extra_failures(
     ) {
         let mut context = StreamOutputContext {
+            privacy_frame_guard: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4755,6 +4644,7 @@ mod tests {
     #[test]
     fn finalize_rotated_segment_context_recovers_from_missing_screen_video() {
         let mut context = StreamOutputContext {
+            privacy_frame_guard: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4793,6 +4683,7 @@ mod tests {
     #[test]
     fn finalize_rotated_segment_context_keeps_nonrecoverable_failures_fatal() {
         let mut context = StreamOutputContext {
+            privacy_frame_guard: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -5261,78 +5152,6 @@ mod tests {
             Some(CapturedFrameEquivalenceOutcome::Ready(_))
         ));
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_activity_bitmap_fingerprint_detects_localized_center_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for changed_row in 32..40 {
-            for changed_col in 32..40 {
-                let changed_offset = changed_row * bytes_per_row + changed_col * 4;
-                changed[changed_offset..changed_offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_ignores_cursor_sized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut cursor_changed = baseline.clone();
-
-        for row in 35..37 {
-            for col in 35..37 {
-                let offset = row * bytes_per_row + col * 4;
-                cursor_changed[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let cursor_changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&cursor_changed, bytes_per_row, width, height);
-
-        assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_detects_larger_localized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for row in 32..40 {
-            for col in 32..40 {
-                let offset = row * bytes_per_row + col * 4;
-                changed[offset..offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5373,4 +5192,3 @@ fn load_asset_tracks_with_timeout(
         }),
     }
 }
-

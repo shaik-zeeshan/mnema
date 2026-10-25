@@ -1,5 +1,4 @@
 #[cfg(target_os = "macos")]
-use super::activity::should_poll_screen_activity;
 use super::activity::{
     current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
     idle_debug_family_fields, lock_runtime_for_idle_debug,
@@ -1738,6 +1737,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1923,6 +1923,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -2451,23 +2452,6 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
     assert!(snapshot.system_audio_activity.enabled);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn screen_activity_polling_skips_live_screen_streams() {
-    assert!(
-        should_poll_screen_activity(true, false),
-        "running capture without a live screen stream still needs display polling"
-    );
-    assert!(
-        should_poll_screen_activity(false, true),
-        "stopped capture can only refresh screen activity through display polling"
-    );
-    assert!(
-        !should_poll_screen_activity(true, true),
-        "live ScreenCaptureKit streams already provide activity samples, including soft-paused outputs"
-    );
-}
-
 #[test]
 fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
     let _guard = audio_activity_state_test_guard();
@@ -2680,6 +2664,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2753,6 +2738,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2862,6 +2848,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: None,
         microphone_vad: Default::default(),
         source_sessions: None,
     };

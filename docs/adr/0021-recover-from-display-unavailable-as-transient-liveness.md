@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment). Amended 2026-07-15: scope narrows to screen only once system audio leaves the shared stream (see second Amendment; [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)).
+Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment). Amended 2026-07-15: scope narrows to screen only once system audio leaves the shared stream (see second Amendment; [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)). Amended 2026-10-23: the microphone stops while the Mac is locked or every display is asleep (see third Amendment).
 
 ## Context
 
@@ -55,3 +55,9 @@ Changes:
 ## Amendment (2026-07-15): display-unavailable suspension becomes screen-only
 
 [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md) moves system audio off the shared ScreenCaptureKit stream onto a Core Audio process tap, which has no display dependency. Once that swap ships, every "screen/system-audio" pairing in this ADR reads as screen only: a display-unavailable suspension pauses and recovers screen capture alone, while system audio records through display sleep, lock, and disconnect exactly like the microphone. The suspension mechanism, recovery policy, and tail-segment handling are unchanged — only their scope narrows.
+
+## Amendment (2026-10-23): the microphone stops while the Mac is away
+
+The founder ruled that lock means away. So "the microphone keeps recording through display sleep and lock" no longer holds. While the session's screen is locked (`CGSSessionScreenIsLocked`) or no display is active, the inactivity tick pauses the microphone output through the existing inactivity-pause path and stops its `AVCaptureSession`, which turns off the device, the orange indicator and coreaudiod input I/O (the mic-only benchmark measured +0.67 W). Within one tick of neither condition holding, the session restarts, and the tick resumes only a pause this hold made (`RecordingLifecycle::tick_microphone_away`, `NativeCaptureRuntime::microphone_away_hold`). The cost is that speech said while the Mac is locked is not recorded.
+
+This hold is separate from the display-unavailable suspension, which stays screen-only. System audio still records through sleep, lock and disconnect. The `DisplayUnavailable` kind still never stops the microphone; the hold does, keyed on lock and display state rather than on a suspension.
