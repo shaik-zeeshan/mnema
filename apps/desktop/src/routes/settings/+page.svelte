@@ -371,13 +371,6 @@
   });
 
   // ─── Recording settings validation coercion ─────────────────────────────────
-  // Invariant: system audio requires screen capture.
-  $effect(() => {
-    if (!c.rec.draftCaptureScreen && c.rec.draftCaptureSystemAudio) {
-      c.rec.draftCaptureSystemAudio = false;
-    }
-  });
-
   // Invariant: coerce any non-original draft back to "original" only once we
   // have confirmed that non-original is unsupported (AVFoundation / pre-macOS 15).
   $effect(() => {
