@@ -44,7 +44,7 @@
   );
 
   // Idle timeout select (mockup stops); an off-list persisted value stays listed.
-  const IDLE_STOPS = [30, 60, 120, 300];
+  const IDLE_STOPS = [10, 30, 60, 120, 300];
   const idleLabel = (s: number) =>
     s % 60 === 0 ? `${s / 60} minute${s === 60 ? "" : "s"}` : `${s} seconds`;
   const idleOptions = $derived(
