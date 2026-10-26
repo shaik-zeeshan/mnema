@@ -1854,6 +1854,29 @@ mod tests {
     }
 
     #[test]
+    fn audio_tail_buffer_inactivity_trim_tracks_every_idle_timeout_option() {
+        // The Settings idle-timeout stops: the discarded tail is exactly that long.
+        for timeout in [10_u64, 30, 60, 120, 300] {
+            let mut buffer = AudioTailSampleBuffer::default();
+            let mut flushed = 0;
+            assert!(buffer.append_timed(0.0, Some(1.0), timeout, true));
+            // One-second idle samples ending at 2.0 ..= timeout + 6.0.
+            for end_secs in 2..=timeout + 6 {
+                let end_secs = end_secs as f64;
+                assert!(buffer.append_timed(end_secs, Some(end_secs), timeout, false));
+                while buffer.pop_sample_before_tail(timeout).is_some() {
+                    flushed += 1;
+                }
+            }
+            let trimmed = buffer.samples.len() as u64;
+            buffer.discard_tail();
+
+            assert_eq!(trimmed, timeout, "timeout {timeout}s");
+            assert_eq!(flushed, 1 + 5, "timeout {timeout}s");
+        }
+    }
+
+    #[test]
     fn audio_tail_buffer_flush_policy_preserves_full_audio_on_normal_finish() {
         let mut buffer = AudioTailSampleBuffer::default();
 
