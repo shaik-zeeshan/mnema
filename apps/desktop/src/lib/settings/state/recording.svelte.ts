@@ -179,7 +179,7 @@ export class RecordingStore {
 
   // Inactivity drafts
   draftPauseCaptureOnInactivity = $state(false);
-  draftIdleTimeoutSeconds = $state(30);
+  draftIdleTimeoutSeconds = $state(10);
   draftMicrophoneActivitySensitivity = $state(50);
   draftSystemAudioActivitySensitivity = $state(50);
   draftMicrophoneVadAdapter = $state<MicrophoneVadAdapter>("silero");
