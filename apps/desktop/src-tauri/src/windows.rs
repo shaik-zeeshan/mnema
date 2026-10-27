@@ -12,6 +12,7 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, W
 
 use crate::native_capture;
 
+pub mod parked_view;
 pub mod permission_helper;
 pub mod quick_recall_frame;
 
@@ -971,26 +972,11 @@ fn order_out_quick_recall_panel(window: &WebviewWindow) {
 /// The wake side rides `emit_system_did_wake` — the single funnel every wake
 /// path goes through — because webviews still hidden after a missed wake would
 /// leave the app a blank window. Revealing an already-visible view is a no-op,
-/// so over-calling is safe.
-#[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
+/// so over-calling is safe. A window parked off every screen stays hidden
+/// through a wake (see `parked_view`).
 pub fn set_all_webview_views_hidden(app_handle: &tauri::AppHandle, hidden: bool) {
-    use cocoa::base::{id, NO, YES};
-    use objc::{msg_send, sel, sel_impl};
-    let flag = if hidden { YES } else { NO };
-    for window in app_handle.webview_windows().values() {
-        let _ = window.with_webview(move |webview| unsafe {
-            let wv = webview.inner() as id;
-            if wv.is_null() {
-                return;
-            }
-            let _: () = msg_send![wv, setHidden: flag];
-        });
-    }
+    parked_view::set_screens_asleep(app_handle, hidden);
 }
-
-#[cfg(not(target_os = "macos"))]
-pub fn set_all_webview_views_hidden(_app_handle: &tauri::AppHandle, _hidden: bool) {}
 
 fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     let config = AppWindow::QuickRecall.config();
@@ -1373,6 +1359,19 @@ pub fn handle_window_event(
     event: &WindowEvent,
     window: Option<&WebviewWindow>,
 ) {
+    if matches!(
+        event,
+        WindowEvent::Moved(_)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::Focused(true)
+    ) {
+        if let Some(window) = window {
+            parked_view::refresh(window);
+        }
+        return;
+    }
+
     if let WindowEvent::Focused(false) = event {
         crate::webview_cache::purge_webview_memory_cache_on_blur(app);
         if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {

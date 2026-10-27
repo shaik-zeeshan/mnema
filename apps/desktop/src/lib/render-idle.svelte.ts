@@ -50,6 +50,17 @@ function flushRenderableWaiters(): void {
   for (const resolve of _renderableWaiters.splice(0)) resolve();
 }
 
+// Callers parked in `whenScreensAwake`, flushed on any wake signal.
+const _awakeWaiters: (() => void)[] = [];
+
+/** Resolves once some display is lit, whether or not this document is visible. */
+function whenScreensAwake(): Promise<void> {
+  if (!_state.screensAsleep) return Promise.resolve();
+  return new Promise((resolve) => {
+    _awakeWaiters.push(resolve);
+  });
+}
+
 let _initialized = false;
 
 export function initRenderIdle(options?: { clampWindow?: boolean }): void {
@@ -66,6 +77,7 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   const wake = () => {
     _state.screensAsleep = false;
     _state.resumeTick += 1;
+    for (const resolve of _awakeWaiters.splice(0)) resolve();
     flushRenderableWaiters();
   };
   void listen("screens_did_sleep", () => {
@@ -98,11 +110,14 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
       if (clampTimer != null) clearTimeout(clampTimer);
       clampTimer = setTimeout(() => {
         clampTimer = null;
-        // Never move the window while nothing can render: a `setPosition`
+        // Never move the window while the screens sleep: a `setPosition`
         // relayout mid-sleep-transition repaints the whole layer tree into
         // stranded IOSurfaces, and the monitor list is transient anyway.
         // Deferred, the clamp runs against the final post-wake configuration.
-        void whenRenderable().then(() => clampWindowOntoScreen());
+        // Not `whenRenderable`: the backend hides a parked window's view
+        // (`windows/parked_view.rs`), so this document stays hidden until the
+        // clamp itself brings the window back.
+        void whenScreensAwake().then(() => clampWindowOntoScreen());
       }, 500);
     });
   }
