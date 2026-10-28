@@ -39,14 +39,14 @@ The "app-only filtering stayed low-cost" figure above counted CPU, GPU and ANE o
 
 Changes:
 
-- The live filter excludes an app only while one of its on-screen windows covers at least 2×2 pt of the captured display (`crates/capture-screen/src/privacy_visibility.rs`, `plan_privacy_content_filter`). A menu-bar icon (status-item window layer) doesn't count; its menus and panels do. The other listed apps stay "unresolved", so the 1 s privacy poll keeps re-checking them; a filter that excludes anything also keeps the poll running, so an exclusion is dropped once its app hides.
+- The live filter excludes an app only while one of its on-screen windows covers at least 2×2 pt of the captured display (`crates/capture-screen/src/privacy_visibility.rs`, `plan_privacy_content_filter`). A menu-bar icon (a status-item-layer window lying within the top 50 pt of the display) doesn't count; its menus, panels and popovers do — an `NSPopover` sits on the same status-item layer, so the layer alone isn't enough. The other listed apps stay "unresolved", so the 1 s privacy poll keeps re-checking them; a filter that excludes anything also keeps the poll running, so an exclusion is dropped once its app hides.
 - A filter for "display 0" is always built for the display the stream records, never whichever display is listed first; if that display is gone, the update fails as display-unavailable.
-- A frame guard covers the gap until the next refresh: after each frame arrives, the stream handler checks the on-screen window list and drops the frame if a running listed app the filter leaves out has a window showing. If the window list can't be read, it drops the frame. While a filter update is in flight, and after one fails, it guards the union of the old and new left-out apps.
+- A frame guard covers the gap until the next refresh: after each frame arrives, the stream handler checks the on-screen window list and drops the frame if a running listed app the filter leaves out has a window showing. If the window list can't be read, it drops the frame; a listed app's window whose layer or bounds can't be read counts as showing. While a filter update is in flight, and after one fails, it guards every listed app either filter may leave out — including one just added to the list while it shows a window. After an update that starts excluding an app lands, the guard keeps watching that app in frames presented (by PTS, host clock) before the update was seen to land, since frames composed under the old filter can still be queued.
 
 This narrows the gap; it does not close it. A listed app's window can still reach a recorded frame when it:
 
 - appears and disappears between the frame being composed and the check (a sub-second popup);
-- is in a frame already in flight when a filter update that stops excluding it lands;
+- is in a frame composed under the old filter but presented after a filter update that starts excluding it lands — mitigated by the stale-frame guard above, short of a frame whose PTS doesn't reflect when it was composed;
 - belongs to a process macOS hasn't yet listed as a running app with that bundle id (just launched);
 - shows less than 2 pt on either axis.
 

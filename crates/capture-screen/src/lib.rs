@@ -1677,7 +1677,10 @@ mod stream_output_delegate {
                 if !super::should_append_screen_sample(sample_buf) {
                     return;
                 }
-                if ctx.privacy_frame_dropper.frame_must_be_dropped() {
+                if ctx
+                    .privacy_frame_dropper
+                    .frame_must_be_dropped(sample_buf.pts().as_secs())
+                {
                     return;
                 }
                 let screen_activity_fingerprint =
@@ -2253,7 +2256,8 @@ impl ScreenCaptureKitCaptureSession {
                 log_privacy_filter_diagnostics(&built_filter.state);
             }
             self.privacy_filter_state = Some(built_filter.state);
-            *self.lock_privacy_frame_guard() = built_filter.frame_guard;
+            let mut guard = self.lock_privacy_frame_guard();
+            *guard = privacy_visibility::refreshed_guard(&guard, built_filter.frame_guard);
             return Ok(PrivacyFilterApplyOutcome { request_satisfied });
         }
         if should_log_diagnostics {
@@ -2283,10 +2287,15 @@ impl ScreenCaptureKitCaptureSession {
                 message: "Timed out updating ScreenCaptureKit content filter".to_string(),
             })
         });
+        // Read after the completion handler ran, so no frame composed under the old filter
+        // is presented later than this (frame PTS is host time).
+        let landed_at_host_secs = result
+            .is_ok()
+            .then(|| cidre::cm::Clock::host_time_clock().time().as_secs());
         *self.lock_privacy_frame_guard() = privacy_visibility::settled_guard(
             in_flight_guard,
             built_filter.frame_guard,
-            result.is_ok(),
+            landed_at_host_secs,
         );
         result?;
         self.privacy_filter_state = Some(built_filter.state);
@@ -2615,6 +2624,8 @@ fn build_screen_capture_kit_content_filter(
     let frame_guard = privacy_visibility::PrivacyFrameGuard {
         display: display_rect,
         unfiltered_bundle_ids: plan.unresolved_bundle_ids.clone(),
+        excluded_bundle_ids: plan.excluded_bundle_ids.iter().cloned().collect(),
+        ..privacy_visibility::PrivacyFrameGuard::default()
     };
 
     let filter = if plan.excluded_bundle_ids.is_empty() {
@@ -3194,10 +3205,18 @@ fn start_screen_capture_kit_session(
         let privacy_frame_guard = privacy_visibility::SharedPrivacyFrameGuard::default();
         let (filter, privacy_filter_state, initial_privacy_filter_outcome) =
             if let Some(initial_privacy_filter) = &initial_privacy_filter {
+                // The display picked above can vanish before the filter re-queries it: that is
+                // display-unavailable, not a privacy-filter failure.
                 let built_filter =
                     build_screen_capture_kit_content_filter(initial_privacy_filter, display_id)
                         .map_err(|error| CaptureErrorResponse {
-                            code: "privacy_filter_apply_failed".to_string(),
+                            code: match error.kind {
+                                PrivacyFilterApplyErrorKind::DisplayUnavailable => {
+                                    "capture_display_unavailable"
+                                }
+                                _ => "privacy_filter_apply_failed",
+                            }
+                            .to_string(),
                             message: error.message,
                         })?;
                 log_privacy_filter_diagnostics(&built_filter.state);
