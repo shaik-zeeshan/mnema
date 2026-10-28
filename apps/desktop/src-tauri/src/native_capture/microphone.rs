@@ -149,6 +149,12 @@ pub(super) fn update_microphone_controller(
         .expect("microphone controller preferences state poisoned");
     runtime.preference = preference;
     runtime.disconnect_policy = disconnect_policy;
+    drop(runtime);
+
+    // A new preference can end (or start) a wait for a missing device; settle
+    // it now rather than at the next device change.
+    #[cfg(target_os = "macos")]
+    maybe_reconnect_waiting_microphone_session(app_handle, &controller_state);
 
     emit_microphone_controller_changed(app_handle, controller_state.clone());
 
@@ -198,18 +204,15 @@ pub(super) fn next_microphone_output_file_for_runtime(
         .to_string())
 }
 
+/// A paused microphone is left to the tick, which reopens it once the device is
+/// back ([`super::lifecycle::reopen_unwakeable_microphone`]).
 #[cfg(target_os = "macos")]
 pub(super) fn should_reconnect_waiting_microphone_session(
     runtime: &NativeCaptureRuntime,
     state: &MicrophoneControllerState,
 ) -> bool {
-    runtime.is_running
+    super::lifecycle::microphone_free_to_record(runtime)
         && !runtime.inactivity.is_microphone_paused()
-        && !runtime.microphone_lent_out
-        && runtime
-            .requested_sources
-            .as_ref()
-            .is_some_and(|sources| sources.microphone)
         && runtime.active_microphone_session.is_none()
         && state.preference.mode == MicrophonePreferenceMode::SpecificDevice
         && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
@@ -281,6 +284,10 @@ fn maybe_reconnect_waiting_microphone_session(
             runtime.active_microphone_session = None;
         }
     }
+    // Keeps the tick from reopening a device that is gone, whether or not a
+    // session was running when it went; once it is back, the reconnect below
+    // or the tick brings the microphone back.
+    runtime.microphone_waiting_for_device = should_wait_for_same_microphone_device(state);
 
     if stop_failed_while_waiting || !should_reconnect_waiting_microphone_session(&runtime, state) {
         return;

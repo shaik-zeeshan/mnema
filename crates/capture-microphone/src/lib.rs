@@ -13,6 +13,7 @@ use capture_writers::{
     set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
     trim_audio_file_to_m4a, try_append_audio_sample_to_writer_with_activity_override,
     AudioAssetWriterState, AudioSampleAppendDisposition, AudioSampleFormat,
+    AUDIO_TRIM_RANGE_PAST_END_CODE,
 };
 
 #[cfg(target_os = "macos")]
@@ -205,6 +206,15 @@ pub fn reset_microphone_vad_pcm_feed() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn reset_microphone_vad_pcm_feed() {}
+
+#[cfg(target_os = "macos")]
+fn reset_microphone_vad_pcm_partial_frame() {
+    let mut feed = microphone_vad_pcm_feed()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    feed.pending_source_samples.clear();
+    feed.pending_source_start_secs = None;
+}
 
 #[cfg(target_os = "macos")]
 pub fn reset_microphone_vad_tail_activity() {
@@ -652,7 +662,10 @@ mod tests {
         );
     }
 
-    fn speech_boundaries(first_start_secs: f64, last_end_secs: f64) -> super::MicrophoneVadSpeechBoundaryState {
+    fn speech_boundaries(
+        first_start_secs: f64,
+        last_end_secs: f64,
+    ) -> super::MicrophoneVadSpeechBoundaryState {
         super::MicrophoneVadSpeechBoundaryState {
             first_start_secs: Some(first_start_secs),
             last_end_secs: Some(last_end_secs),
@@ -715,23 +728,27 @@ mod tests {
     }
 
     #[test]
-    fn resume_correction_follows_the_carried_span_past_five_seconds() {
-        // 128 buffers x 2048 frames at 48 kHz carried in: 5.461 s.
-        let carried_secs = 5.461_333;
-        assert_eq!(
-            super::resume_stamp_correction_ms(1_000.0, carried_secs, 1_000.0 - carried_secs),
-            -5_461
-        );
-    }
-
-    #[test]
     fn resume_correction_ignores_a_non_host_clock_gap() {
         // PTS on some other clock: far outside anything the queue could hold.
-        assert_eq!(super::resume_stamp_correction_ms(1_000.0, 1.365, 50_000.0), 0);
+        assert_eq!(
+            super::resume_stamp_correction_ms(1_000.0, 1.365, 50_000.0),
+            0
+        );
         assert_eq!(super::resume_stamp_correction_ms(1_000.0, 1.365, 990.0), 0);
-        assert_eq!(super::resume_stamp_correction_ms(1_000.0, 1.365, f64::NAN), 0);
-        // Nothing carried: only delivery latency is believable.
-        assert_eq!(super::resume_stamp_correction_ms(1_000.0, 0.0, 1_000.25), 250);
+        assert_eq!(
+            super::resume_stamp_correction_ms(1_000.0, 1.365, f64::NAN),
+            0
+        );
+        // Nothing carried: only device start latency is believable, which a
+        // Bluetooth headset can stretch to seconds.
+        assert_eq!(
+            super::resume_stamp_correction_ms(1_000.0, 0.0, 1_000.25),
+            250
+        );
+        assert_eq!(
+            super::resume_stamp_correction_ms(1_000.0, 0.0, 1_003.0),
+            3_000
+        );
     }
 
     #[test]
@@ -1100,15 +1117,78 @@ mod tests {
             media_end_secs: Some(first_sample_secs + 3.5),
         });
         let finalization = finalize_microphone_output_context(&mut current);
+        let output_kept = std::path::Path::new(&output_file).is_file();
         let _ = std::fs::remove_dir_all(&dir);
         let finalization = finalization.expect("resumed microphone file should finalize");
 
+        assert!(output_kept, "the trimmed file must be on disk");
         assert_eq!(
             finalization.output_file.as_deref(),
             Some(output_file.as_str())
         );
         // +2000 ms of trimmed lead-in, -5461 ms of queued audio before the stamp.
         assert_eq!(finalization.start_offset_ms, 2_000 - 5_461);
+    }
+
+    #[test]
+    fn whole_file_vad_speech_keeps_the_recording() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_microphone_vad_tail_activity();
+        let dir =
+            std::env::temp_dir().join(format!("mnema-mic-whole-speech-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output_file = dir
+            .join("microphone-whole-speech.m4a")
+            .to_string_lossy()
+            .to_string();
+        let output_url = cidre::ns::Url::with_fs_path_str(&output_file, false);
+
+        let resumed_at_host_secs = 1_000.0;
+        let frames = 2_048;
+        let mut current =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::PeakLevel, 0);
+        for index in 0..MAX_PENDING_MIC_SAMPLES {
+            let frames_before_resume = (MAX_PENDING_MIC_SAMPLES - index) * frames;
+            let sample = host_clock_pcm_sample(
+                resumed_at_host_secs - frames_before_resume as f64 / 48_000.0,
+                frames,
+            );
+            observe_microphone_format(&mut current.format_state, sample.format);
+            push_bounded_pending_microphone_sample(&mut current.pending_samples, sample);
+        }
+        let first_sample_secs =
+            resumed_at_host_secs - (MAX_PENDING_MIC_SAMPLES * frames) as f64 / 48_000.0;
+
+        let next = microphone_output_context_for_output_url(
+            &output_url,
+            Some(output_file.clone()),
+            0,
+            0.0,
+            MicrophoneInactivityTailTrimActivityMode::VadSpeech,
+        );
+        resume_microphone_output_context(&mut current, next, resumed_at_host_secs);
+        let source_file = current
+            .source_output_file
+            .clone()
+            .expect("VAD trimming writes to a temp source");
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(first_sample_secs),
+            media_end_secs: Some(resumed_at_host_secs),
+        });
+        let finalization = finalize_microphone_output_context(&mut current);
+        let output_kept = std::path::Path::new(&output_file).is_file();
+        let source_left = std::path::Path::new(&source_file).exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        let finalization = finalization.expect("speech-filled microphone file should finalize");
+
+        assert!(output_kept, "a file that is all speech must be kept whole");
+        assert!(!source_left, "the temp source must be moved into place");
+        assert_eq!(
+            finalization.output_file.as_deref(),
+            Some(output_file.as_str())
+        );
+        // Nothing trimmed: only the -5461 ms of queued audio before the stamp.
+        assert_eq!(finalization.start_offset_ms, -5_461);
     }
 
     #[test]
@@ -2160,17 +2240,24 @@ impl AvFoundationMicrophoneCaptureSession {
     /// pausing the output, so nothing reaches the paused ring while the old file
     /// finalizes; a writer left open across the gap would splice two takes.
     /// Stopping drops a paused output's queued audio, so a later resume opens
-    /// with what was heard after the restart, not before the stop.
-    pub fn set_capture_running(&mut self, running: bool) {
+    /// with what was heard after the restart, not before the stop. Returns
+    /// whether the device reached the requested state: `startRunning` reports
+    /// no error, so a device that failed to come back reads as not running.
+    pub fn set_capture_running(&mut self, running: bool) -> bool {
         if running {
             self.capture_session.start_running();
-            return;
+            return self.capture_session.is_running();
         }
         self.capture_session.stop_running();
         synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         // The sync drained the last callback and the device is stopped, so no
         // other thread touches the context until the next restart.
         discard_probe_only_pending_samples(self.output_delegate.inner_mut());
+        // The first buffer after a restart re-anchors VAD frame times; a partial
+        // frame left over would carry the pre-stop times across the gap. Whole
+        // frames already queued stay for the caller to drain.
+        reset_microphone_vad_pcm_partial_frame();
+        !self.capture_session.is_running()
     }
 
     pub fn capture_running(&self) -> bool {
@@ -2381,11 +2468,17 @@ fn finalize_microphone_output_context(
     }
 }
 
-/// Delivery latency allowed either side of the carried span: the first sample
-/// can land a little after the resume instant, or a buffer's PTS a little
-/// before the carried audio's own start.
+/// Delivery jitter allowed before the carried span: a buffer's PTS can sit a
+/// little before the carried audio's own start.
 #[cfg(target_os = "macos")]
-const RESUME_STAMP_SLACK_SECS: f64 = 1.0;
+const RESUME_STAMP_EARLY_SLACK_SECS: f64 = 1.0;
+
+/// How long after the resume instant the first sample may land. A resume that
+/// carried nothing (a device just restarted, an empty ring) waits for the
+/// device to start, and a Bluetooth headset switching into its call profile
+/// takes a few seconds; anything further out is not host-clock PTS.
+#[cfg(target_os = "macos")]
+const RESUME_STAMP_LATE_SLACK_SECS: f64 = 10.0;
 
 /// A resumed file opens with the audio queued while paused, so its first sample
 /// predates the resume instant its path is stamped with by the span the resume
@@ -2418,8 +2511,8 @@ fn resume_stamp_correction_ms(
     // A gap the carried audio cannot explain means the PTS were not host-clock;
     // keep the resume stamp rather than move the file by garbage.
     if !correction_secs.is_finite()
-        || correction_secs < -(carried_secs + RESUME_STAMP_SLACK_SECS)
-        || correction_secs > RESUME_STAMP_SLACK_SECS
+        || correction_secs < -(carried_secs + RESUME_STAMP_EARLY_SLACK_SECS)
+        || correction_secs > RESUME_STAMP_LATE_SLACK_SECS
     {
         return 0;
     }
@@ -2552,8 +2645,15 @@ fn finalize_microphone_vad_boundary_trim(
             match trim_audio_file_to_m4a(&source_file, &output_file, trim_start_secs, trim_end_secs)
             {
                 Ok(trimmed) => trimmed.then_some(trim_start_secs),
+                // Speech timed past the file's last sample (VAD frames that
+                // outran the writer) leaves nothing to trim: routine.
+                Err(error) if error.code == AUDIO_TRIM_RANGE_PAST_END_CODE => {
+                    capture_runtime::debug_log!(
+                        "[capture-microphone] microphone speech starts past the file end; keeping full source"
+                    );
+                    None
+                }
                 Err(error) => {
-                    // Only reached after speech was detected, so any failure is real trouble.
                     capture_runtime::warn_log!(
                         "[capture-microphone] failed to trim microphone output; keeping full source: [{}] {}",
                         error.code,

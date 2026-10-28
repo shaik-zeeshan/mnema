@@ -9,8 +9,7 @@ use super::inactivity::{
 use super::lifecycle::RecordingLifecycle;
 #[cfg(target_os = "macos")]
 use super::lifecycle::{
-    apply_microphone_away, microphone_away_step, release_resumes_output,
-    should_resume_microphone_after_activity, MicrophoneAwayStep,
+    apply_microphone_away, reopen_unwakeable_microphone, should_resume_microphone_after_activity,
 };
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
@@ -26,18 +25,16 @@ use super::runtime::{
     microphone_planner_for_runtime, reset_runtime_after_start_error, session_from_runtime,
     should_recover_from_segment_finalize_error, should_rotate_segment,
     stopped_session_from_runtime, system_audio_planner_for_runtime,
-    system_audio_writer_active_for_runtime, validate_start_request, MicrophoneAwayHold,
-    NativeCaptureRuntime,
+    system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{CaptureSuspensionKind, CaptureSuspension};
 #[cfg(target_os = "macos")]
 use super::segments::{
     apply_microphone_output_finalization, apply_stopped_microphone_finalization,
-    audio_duration_time_to_ms,
-    audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
-    cleanup_failed_segment_dirs, committed_audio_segments_for_output_files,
-    low_disk_recovery_restarts_microphone,
+    audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
+    audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
+    committed_audio_segments_for_output_files, low_disk_recovery_sources,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
@@ -1801,7 +1798,8 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
-        microphone_away_hold: None,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
         microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
@@ -1883,13 +1881,13 @@ fn stop_capture_runtime_clears_the_microphone_away_hold() {
         is_running: true,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
-        microphone_away_hold: Some(MicrophoneAwayHold::PausedOutput),
+        microphone_away_hold: true,
         ..Default::default()
     };
 
     stop_capture_runtime(&mut runtime, None).expect("idle stop should succeed");
 
-    assert_eq!(runtime.microphone_away_hold, None);
+    assert!(!runtime.microphone_away_hold);
 }
 
 #[cfg(target_os = "macos")]
@@ -2004,7 +2002,8 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
-        microphone_away_hold: None,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
         microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
@@ -2746,7 +2745,8 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
-        microphone_away_hold: None,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
         microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
@@ -2821,7 +2821,8 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
-        microphone_away_hold: None,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
         microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
@@ -2932,7 +2933,8 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
-        microphone_away_hold: None,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
         microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
@@ -5159,203 +5161,168 @@ fn resume_microphone_from_inactivity_is_noop_when_not_paused() {
 }
 
 // The away hold (founder ruling 2026-10-23: lock is away). The live lock and
-// display state is read by the tick; the decision and its application are
-// exercised here.
+// display state is read by the tick; its application is exercised here without
+// an audio device.
+/// A paused microphone with no session, whose planner date is stale and whose
+/// file can't be opened: an attempt to reopen it refreshes the date and then
+/// fails before any audio device is touched.
 #[cfg(target_os = "macos")]
-#[test]
-fn away_with_no_microphone_session_takes_no_hold() {
-    assert_eq!(
-        microphone_away_step(true, None, false, false),
-        MicrophoneAwayStep::Nothing
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn away_with_no_microphone_session_leaves_the_runtime_alone() {
-    let mut runtime = audio_paused_runtime_fixture();
-    runtime.inactivity.microphone_paused = false;
-
-    apply_microphone_away(&mut runtime, true, None);
-
-    assert_eq!(runtime.microphone_away_hold, None);
-    assert!(!runtime.inactivity.is_microphone_paused());
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn away_while_recording_takes_a_hold_that_paused_the_output() {
-    assert_eq!(
-        microphone_away_step(true, None, true, false),
-        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput)
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn away_while_inactivity_paused_takes_a_hold_that_did_not_pause_it() {
-    assert_eq!(
-        microphone_away_step(true, None, true, true),
-        MicrophoneAwayStep::Hold(MicrophoneAwayHold::OutputAlreadyPaused)
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_held_microphone_stays_held_while_still_away() {
-    for hold in [
-        MicrophoneAwayHold::PausedOutput,
-        MicrophoneAwayHold::OutputAlreadyPaused,
-    ] {
-        assert_eq!(
-            microphone_away_step(true, Some(hold), false, true),
-            MicrophoneAwayStep::Nothing
-        );
-    }
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn coming_back_resumes_only_a_pause_the_hold_made() {
-    assert_eq!(
-        microphone_away_step(false, Some(MicrophoneAwayHold::PausedOutput), false, true),
-        MicrophoneAwayStep::Release {
-            resume_output: true
-        }
-    );
-    assert_eq!(
-        microphone_away_step(
-            false,
-            Some(MicrophoneAwayHold::OutputAlreadyPaused),
-            false,
-            true
-        ),
-        MicrophoneAwayStep::Release {
-            resume_output: false
-        }
-    );
-    assert_eq!(
-        microphone_away_step(false, None, true, false),
-        MicrophoneAwayStep::Nothing
-    );
-}
-
-// Low-disk recovery and enrollment restore can start a new session while the
-// Mac is still away; the next tick must hold that one too.
-#[cfg(target_os = "macos")]
-#[test]
-fn a_session_recreated_while_away_is_held_again() {
-    assert_eq!(
-        microphone_away_step(true, Some(MicrophoneAwayHold::PausedOutput), true, false),
-        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput)
-    );
-    assert_eq!(
-        microphone_away_step(
-            true,
-            Some(MicrophoneAwayHold::OutputAlreadyPaused),
-            true,
-            false
-        ),
-        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput),
-        "the new session records, so this hold paused it and coming back resumes it"
-    );
-    assert_eq!(
-        microphone_away_step(
-            true,
-            Some(MicrophoneAwayHold::OutputAlreadyPaused),
-            true,
-            true
-        ),
-        MicrophoneAwayStep::Hold(MicrophoneAwayHold::OutputAlreadyPaused)
-    );
-}
-
-/// Drives the step through the device/output effects `apply_microphone_away`
-/// has on a live session, for `away` per tick; returns the output's paused
-/// state after each tick.
-#[cfg(target_os = "macos")]
-fn simulate_microphone_away_ticks(output_paused: bool, ticks: &[bool]) -> Vec<bool> {
-    let (mut hold, mut device_running, mut output_paused) = (None, true, output_paused);
-    let mut paused_after = Vec::new();
-    for &away in ticks {
-        match microphone_away_step(away, hold, device_running, output_paused) {
-            MicrophoneAwayStep::Hold(next) => {
-                device_running = false;
-                output_paused = true;
-                hold = Some(next);
-            }
-            MicrophoneAwayStep::Release { resume_output } => {
-                device_running = true;
-                output_paused &= !resume_output;
-                hold = None;
-            }
-            MicrophoneAwayStep::Nothing => {}
-        }
-        assert_eq!(device_running, !away, "device follows away on every tick");
-        paused_after.push(output_paused);
-    }
-    paused_after
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_flapping_lock_pauses_and_resumes_a_recording_each_time() {
-    let ticks = [true, false, true, true, false, true, false];
-    assert_eq!(
-        simulate_microphone_away_ticks(false, &ticks),
-        vec![true, false, true, true, false, true, false]
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn a_flapping_lock_never_resumes_an_inactivity_pause() {
-    let ticks = [true, false, true, false];
-    assert_eq!(
-        simulate_microphone_away_ticks(true, &ticks),
-        vec![true, true, true, true]
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn coming_back_with_no_session_opens_a_fresh_one() {
-    // Low-disk recovery leaves the microphone down while away; the release
-    // must open a session even when inactivity, not the hold, paused it.
-    assert!(release_resumes_output(false, false, false));
-    assert!(release_resumes_output(true, false, false));
-    // Still low on disk: recovery reopens it once space returns.
-    assert!(!release_resumes_output(true, false, true));
-    assert!(!release_resumes_output(false, false, true));
-    // With a session, only a pause the hold made is resumed.
-    assert!(release_resumes_output(true, true, false));
-    assert!(!release_resumes_output(false, true, false));
-
-    // The planner can't open a file here, so the attempt fails before a
-    // device is touched and leaves the pause for activity to retry.
+fn stranded_microphone_runtime_fixture() -> NativeCaptureRuntime {
     let mut runtime = lent_out_microphone_runtime_fixture();
     runtime.microphone_lent_out = false;
-    runtime.microphone_away_hold = Some(MicrophoneAwayHold::OutputAlreadyPaused);
+    mark_microphone_planner_stale(&mut runtime);
+    runtime
+}
 
-    apply_microphone_away(&mut runtime, false, None);
+#[cfg(target_os = "macos")]
+fn mark_microphone_planner_stale(runtime: &mut NativeCaptureRuntime) {
+    runtime
+        .microphone_planner
+        .as_mut()
+        .expect("fixture has a microphone planner")
+        .set_date_prefix("2000-01-01".to_string());
+}
 
-    assert_eq!(runtime.microphone_away_hold, None);
-    assert!(runtime.active_microphone_session.is_none());
-    assert!(runtime.inactivity.is_microphone_paused());
+#[cfg(target_os = "macos")]
+fn microphone_open_was_attempted(runtime: &NativeCaptureRuntime) -> bool {
+    runtime
+        .microphone_planner
+        .as_ref()
+        .expect("fixture has a microphone planner")
+        .date_prefix()
+        == current_date_prefix()
+}
+
+// Lock is away: a microphone with no session to stop is still held, so nothing
+// reopens it until the Mac comes back.
+#[cfg(target_os = "macos")]
+#[test]
+fn away_holds_a_microphone_with_no_session_until_the_mac_comes_back() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    let mut logged = false;
+
+    apply_microphone_away(&mut runtime, true, None, &mut logged);
+    reopen_unwakeable_microphone(&mut runtime, &mut logged);
+    assert!(runtime.microphone_away_hold);
+    assert!(!microphone_open_was_attempted(&runtime));
+
+    apply_microphone_away(&mut runtime, false, None, &mut logged);
+    reopen_unwakeable_microphone(&mut runtime, &mut logged);
+    assert!(!runtime.microphone_away_hold);
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// The Mac came back while low disk had stopped the held microphone: nothing
+// reopens it while the disk is still full, and once recovery clears the
+// suspension (it never restarts a paused microphone) the tick does.
+#[cfg(target_os = "macos")]
+#[test]
+fn coming_back_on_a_full_disk_reopens_the_microphone_once_space_returns() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.microphone_away_hold = true;
+    runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+        CaptureSuspensionKind::LowDisk,
+        &CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "low disk".to_string(),
+        },
+    ));
+    let mut logged = false;
+
+    apply_microphone_away(&mut runtime, false, None, &mut logged);
+    assert!(
+        !runtime.microphone_away_hold,
+        "no session to restart, so the hold ends"
+    );
+    reopen_unwakeable_microphone(&mut runtime, &mut logged);
+    assert!(
+        !microphone_open_was_attempted(&runtime),
+        "low disk keeps the microphone down"
+    );
+
+    runtime.capture_suspension = None;
+    reopen_unwakeable_microphone(&mut runtime, &mut logged);
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// A resume that failed with no session (the waited-for device was still gone
+// at unlock, or inactivity monitoring is off) leaves nothing activity can wake:
+// the tick keeps retrying it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_paused_microphone_with_no_session_is_retried_every_tick() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    let mut logged = false;
+
+    for _ in 0..2 {
+        mark_microphone_planner_stale(&mut runtime);
+        reopen_unwakeable_microphone(&mut runtime, &mut logged);
+        assert!(microphone_open_was_attempted(&runtime));
+        assert!(runtime.inactivity.is_microphone_paused(), "the open failed");
+    }
+    assert!(logged, "the failure streak is logged once, then quietly");
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn low_disk_recovery_leaves_a_held_or_lent_out_microphone_down() {
+fn a_paused_microphone_held_elsewhere_is_not_reopened() {
+    let holds: [fn(&mut NativeCaptureRuntime); 4] = [
+        |runtime| runtime.microphone_away_hold = true,
+        |runtime| runtime.microphone_lent_out = true,
+        |runtime| runtime.microphone_waiting_for_device = true,
+        |runtime| runtime.user_capture_paused = true,
+    ];
+    for hold in holds {
+        let mut runtime = stranded_microphone_runtime_fixture();
+        hold(&mut runtime);
+
+        reopen_unwakeable_microphone(&mut runtime, &mut false);
+
+        assert!(!microphone_open_was_attempted(&runtime));
+    }
+}
+
+// Unpaused with no session (an enrollment restore or a reconnect failed, or low
+// disk left it down while away): restarted, since nothing else will.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_unpaused_microphone_with_no_session_is_restarted() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.inactivity.microphone_paused = false;
+    runtime.inactivity.system_audio_paused = false;
+    runtime.inactivity.is_paused = false;
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false);
+
+    assert!(microphone_open_was_attempted(&runtime));
+    assert!(
+        runtime.active_microphone_session.is_none(),
+        "the open failed"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn low_disk_recovery_leaves_a_paused_lent_out_or_held_microphone_down() {
     let mut runtime = audio_paused_runtime_fixture();
-    assert!(low_disk_recovery_restarts_microphone(&runtime));
+    let requested = runtime.requested_sources.clone().unwrap();
+    assert!(
+        !low_disk_recovery_sources(&runtime, &requested).microphone,
+        "a paused microphone (the away hold pauses it too) is the tick's to reopen"
+    );
 
-    runtime.microphone_away_hold = Some(MicrophoneAwayHold::PausedOutput);
-    assert!(!low_disk_recovery_restarts_microphone(&runtime));
+    runtime.inactivity.microphone_paused = false;
+    assert!(low_disk_recovery_sources(&runtime, &requested).microphone);
 
-    runtime.microphone_away_hold = None;
     runtime.microphone_lent_out = true;
-    assert!(!low_disk_recovery_restarts_microphone(&runtime));
+    assert!(!low_disk_recovery_sources(&runtime, &requested).microphone);
+
+    runtime.microphone_lent_out = false;
+    runtime.microphone_away_hold = true;
+    assert!(
+        !low_disk_recovery_sources(&runtime, &requested).microphone,
+        "lock is away: the tick reopens it once the Mac is back"
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -5385,33 +5352,45 @@ fn inactivity_resume_is_blocked_while_the_microphone_is_held() {
         snapshot
     ));
 
-    runtime.microphone_away_hold = Some(MicrophoneAwayHold::OutputAlreadyPaused);
-    assert!(!should_resume_microphone_after_activity(
-        &mut runtime,
-        20_000,
-        snapshot
-    ));
-
-    runtime.microphone_away_hold = None;
-    runtime.microphone_lent_out = true;
-    assert!(!should_resume_microphone_after_activity(
-        &mut runtime,
-        20_000,
-        snapshot
-    ));
+    let holds: [fn(&mut NativeCaptureRuntime); 4] = [
+        |runtime| runtime.microphone_away_hold = true,
+        |runtime| runtime.microphone_lent_out = true,
+        |runtime| runtime.microphone_waiting_for_device = true,
+        |runtime| {
+            runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+                CaptureSuspensionKind::LowDisk,
+                &CaptureErrorResponse {
+                    code: "capture_low_disk".to_string(),
+                    message: "low disk".to_string(),
+                },
+            ))
+        },
+    ];
+    for hold in holds {
+        let mut runtime = audio_paused_runtime_fixture();
+        runtime.inactivity.activity_mode = InactivityActivityMode::SystemInputOrScreenOrAudio;
+        hold(&mut runtime);
+        assert!(!should_resume_microphone_after_activity(
+            &mut runtime,
+            20_000,
+            snapshot
+        ));
+    }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn stopping_the_session_clears_the_microphone_away_hold() {
     let mut runtime = NativeCaptureRuntime {
-        microphone_away_hold: Some(MicrophoneAwayHold::PausedOutput),
+        microphone_away_hold: true,
+        microphone_waiting_for_device: true,
         ..Default::default()
     };
 
     mark_runtime_session_stopped(&mut runtime);
 
-    assert_eq!(runtime.microphone_away_hold, None);
+    assert!(!runtime.microphone_away_hold);
+    assert!(!runtime.microphone_waiting_for_device);
 }
 
 // Voice enrollment borrows the microphone mid-session. Its own speech reaches the

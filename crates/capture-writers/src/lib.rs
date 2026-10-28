@@ -16,15 +16,23 @@ use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
-/// Leading audio a trim may leave in place rather than re-encode the whole file.
+/// The share of a file a trim must drop to be worth re-encoding. The re-encode
+/// costs about the kept length (~0.45 s for 5 min of mono 48 kHz on an M-series
+/// Mac) and the microphone runs it on the capture lock, so a trim that would
+/// only shave a little keeps the file whole instead.
 #[cfg(target_os = "macos")]
-const AUDIO_TRIM_START_TOLERANCE_SECS: f64 = 0.5;
+const AUDIO_TRIM_MIN_DROPPED_FRACTION: f64 = 0.25;
+
+/// Error code for a range that starts at or past the end of `input`: nothing to
+/// keep, and nothing written. Expected when a range was derived from timing that
+/// outran the file, so callers can treat it as routine.
+#[cfg(target_os = "macos")]
+pub const AUDIO_TRIM_RANGE_PAST_END_CODE: &str = "audio_trim_range_past_end";
 
 /// Trim `input` to the `[start_secs, end_secs]` range and re-encode the result
 /// as AAC/m4a at `output`. Returns `Ok(false)`, writing nothing, when the range
-/// already covers the whole file (start within
-/// [`AUDIO_TRIM_START_TOLERANCE_SECS`] of 0, end at or past the end): `input`
-/// is then the result as it stands, so the caller keeps it.
+/// would drop less than [`AUDIO_TRIM_MIN_DROPPED_FRACTION`] of the file: `input`
+/// is then the result as it stands, so the caller keeps it whole.
 ///
 /// This runs entirely on AVFoundation (`AVAudioFile`) so it works inside the
 /// sandboxed/packaged desktop app, which does not inherit a shell `PATH` and so
@@ -84,9 +92,15 @@ pub fn trim_audio_file_to_m4a(
     };
     let start_frame = frame_for_secs(start_secs);
     let end_frame = frame_for_secs(end_secs).max(start_frame);
+    if total_frames > 0 && start_frame >= total_frames {
+        return Err(CaptureErrorResponse {
+            code: AUDIO_TRIM_RANGE_PAST_END_CODE.to_string(),
+            message: format!("Audio trim range starts past the end of {input}"),
+        });
+    }
+    let dropped_frames = start_frame + (total_frames - end_frame);
     if total_frames > 0
-        && start_frame <= frame_for_secs(AUDIO_TRIM_START_TOLERANCE_SECS)
-        && end_frame >= total_frames
+        && (dropped_frames as f64) < total_frames as f64 * AUDIO_TRIM_MIN_DROPPED_FRACTION
     {
         return Ok(false);
     }
@@ -1793,18 +1807,26 @@ mod tests {
             .to_string_lossy()
             .to_string();
         let output = temp
-            .join(format!("mnema-whole-trim-output-{}.m4a", std::process::id()))
+            .join(format!(
+                "mnema-whole-trim-output-{}.m4a",
+                std::process::id()
+            ))
             .to_string_lossy()
             .to_string();
         let _ = std::fs::remove_file(&output);
         write_test_tone_m4a(&input, 2.0);
 
         let trimmed = trim_audio_file_to_m4a(&input, &output, 0.25, 3.0);
+        let past_end = trim_audio_file_to_m4a(&input, &output, 2.5, 3.0);
         let output_written = std::path::Path::new(&output).exists();
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);
 
-        assert!(!trimmed.expect("a whole-file range is not an error"));
+        assert!(!trimmed.expect("a near-whole range is not an error"));
+        assert_eq!(
+            past_end.expect_err("nothing left to keep").code,
+            AUDIO_TRIM_RANGE_PAST_END_CODE
+        );
         assert!(!output_written, "nothing to re-encode, so nothing written");
     }
 

@@ -118,17 +118,6 @@ impl CaptureSuspension {
     }
 }
 
-/// Who paused the microphone output under an away hold, so the Mac coming back
-/// resumes only a pause the hold itself made.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MicrophoneAwayHold {
-    /// The hold paused a recording output; coming back resumes it.
-    PausedOutput,
-    /// Inactivity had already paused the output; coming back leaves that to
-    /// the activity policy and only restarts the device.
-    OutputAlreadyPaused,
-}
-
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {
     pub is_running: bool,
@@ -159,9 +148,14 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
-    /// Set while the microphone device is stopped because the Mac is locked or
-    /// every display is asleep.
-    pub microphone_away_hold: Option<MicrophoneAwayHold>,
+    /// Set while the Mac is locked or every display is asleep, and after until
+    /// the microphone device runs again; nothing reopens the microphone
+    /// meanwhile. A running device is stopped with its output paused for
+    /// inactivity, so activity resumes it afterwards.
+    pub microphone_away_hold: bool,
+    /// Set while a `WaitForSameDevice` microphone's device is gone, by the
+    /// device-change notifier, which clears it when the device returns.
+    pub microphone_waiting_for_device: bool,
     /// True while a bounded out-of-band recording (voice enrollment) holds the
     /// microphone. Capture leaves the family alone until it is handed back.
     pub microphone_lent_out: bool,
@@ -404,7 +398,8 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
-    runtime.microphone_away_hold = None;
+    runtime.microphone_away_hold = false;
+    runtime.microphone_waiting_for_device = false;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;
