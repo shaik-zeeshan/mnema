@@ -16,6 +16,7 @@ import { getContext, setContext } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
 import { humanizeError } from "$lib/format-error";
+import { isCaptureSourcesLocked } from "$lib/capture-controls.svelte";
 import { retentionToDays } from "$lib/components/retention";
 import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
@@ -636,7 +637,16 @@ export class SettingsController {
           }
         }
       } catch (err) {
-        this.noteSaveFailure(domain, humanizeError(err));
+        if (isCaptureSourcesLocked(err)) {
+          // Recording started under the debounce: not a failure, and a retry
+          // would only be refused again. Show the sources actually in use.
+          if (this.rec.recordingSettings) {
+            this.rec.syncRecordingDomainFromCanonical(domain, this.rec.recordingSettings, true);
+          }
+          this.clearSaveFailure(domain);
+        } else {
+          this.noteSaveFailure(domain, humanizeError(err));
+        }
       }
     } finally {
       this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: false };

@@ -149,8 +149,8 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
-  // Picker density for the ~120 days before the period (same window as Journal);
-  // only the per-day map is kept — the full usage payload is dropped.
+  // Picker density for the ~120 days before the period (same window as Journal),
+  // from `get_capture_hours` — the heatmap's non-empty hours, nothing else.
   let historyDensity = $state<Record<string, number>>({});
   // Previous-window baselines (see `loadPrev`).
   let prevUsage = $state<UsageCharts | null>(null);
@@ -438,8 +438,9 @@
   }
 
   async function loadHistory(): Promise<void> {
-    const res = await invoke<UsageCharts>("get_usage_charts", historyWindow(minDay, Date.now())).catch(() => null);
-    if (res) historyDensity = densityFromHeatmap(res.activityHeatmap);
+    // Just the hours with capture: the full usage read loads every frame row.
+    const hours = await invoke<number[]>("get_capture_hours", historyWindow(minDay, Date.now())).catch(() => null);
+    if (hours) historyDensity = densityFromHeatmap(hours.map((bucketStartMs) => ({ bucketStartMs, intensityCount: 1 })));
   }
 
   async function reloadAll(): Promise<void> {

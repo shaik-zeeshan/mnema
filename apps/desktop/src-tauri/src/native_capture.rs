@@ -1597,6 +1597,15 @@ unsafe extern "C" fn display_reconfiguration_callback(
     // park windows offscreen — notifies the frontend.
     let _ = app_handle.emit(DISPLAY_CONFIGURATION_CHANGED_EVENT, ());
 
+    // ...and re-decides every window's parked view directly: a display coming
+    // back must reveal the windows on it even when the wake recovery below is
+    // already running (it returns early) and no window event fires, and one
+    // going away hides the windows it stranded right away.
+    let windows_handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        crate::windows::parked_view::refresh_all(&windows_handle);
+    });
+
     if display_reconfiguration_flags_indicate_display_online(flags) {
         // Funnel through the shared recovery path: it is atomic-guarded
         // (`begin/finish_system_wake_recovery`) and re-checks `!session_is_live`,
@@ -2009,8 +2018,9 @@ fn start_native_capture_inner(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let incoming_sources = capture_sources_from_start_request(&request);
-    let settings = recording_settings_state.inner();
-    let settings = current_recording_settings(settings);
+    // Held to the end of the start, so a sources save racing it is refused.
+    let (settings, _sources_read) =
+        settings::recording_settings_for_start(recording_settings_state.inner());
 
     let resolved_request = StartNativeCaptureRequest {
         capture_screen: settings.capture_screen,

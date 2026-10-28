@@ -51,6 +51,20 @@ function reportCaptureError(err: unknown): void {
   void message(humanizeError(err), { title: "Recording error", kind: "error" });
 }
 
+/** The backend refused a sources change because a recording is running or
+ *  starting (`capture_sources_locked`). A race, not a failure: callers drop
+ *  the change back to the saved sources without an error dialog. */
+export function isCaptureSourcesLocked(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "capture_sources_locked";
+}
+
+// Settings registers its pending sources save here while open, so a toggle
+// still inside its debounce window is saved before Start reads the sources.
+let flushBeforeStart: (() => Promise<void>) | null = null;
+export function setFlushBeforeStart(flush: (() => Promise<void>) | null): void {
+  flushBeforeStart = flush;
+}
+
 export const captureControls = {
   get recordingSettings(): RecordingSettings | null {
     return _state.recordingSettings;
@@ -237,6 +251,7 @@ export async function startCapture(): Promise<void> {
   _state.loadingStart = true;
   _state.startError = null;
   try {
+    await flushBeforeStart?.();
     const result = await invoke<{ session: CaptureSession }>(
       "start_native_capture",
       {
@@ -391,7 +406,7 @@ export async function setSourceSelected(
   key: SourceKey,
   selected: boolean,
 ): Promise<void> {
-  if (captureControls.isRunning) return;
+  if (captureControls.isRunning || _state.loadingStart) return;
   const base = _state.recordingSettings;
   if (!base) return;
   if (_selectionState.saving[key]) return;
@@ -411,7 +426,8 @@ export async function setSourceSelected(
     });
     _state.recordingSettings = updated.settings;
   } catch (err) {
-    reportCaptureError(err);
+    // Locked: the selection reads the unchanged saved settings, so it reverts.
+    if (!isCaptureSourcesLocked(err)) reportCaptureError(err);
   } finally {
     _selectionState.saving[key] = false;
   }

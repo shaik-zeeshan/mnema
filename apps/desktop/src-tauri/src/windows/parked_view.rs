@@ -13,9 +13,11 @@
 // view-visible state, the page goes hidden, and the frontend render-idle gate
 // parks itself. Moving the window back on-screen reveals the view.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
 
 /// How much of the window must overlap some monitor, on BOTH axes, to count as
 /// meaningfully visible. Logical points: 100 physical px on a Retina display,
@@ -33,6 +35,13 @@ const MIN_SLIVER_PT: f64 = 2.0;
 /// hidden then, whatever its window's position.
 static SCREENS_ASLEEP: AtomicBool = AtomicBool::new(false);
 
+/// The hide state last sent to each window's view, by label. Every
+/// `with_webview` call in tauri-runtime-wry 2.10.1 retains the WKWebView, its
+/// controller and the NSWindow without releasing them, so it may only run when
+/// the decision actually changes, not on every move or resize. Cleared on
+/// `Destroyed` (`forget`) so a re-created window starts fresh.
+static SENT: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+
 /// `(x, y, width, height)` in the global logical-point space (top-left origin).
 type Rect = (f64, f64, f64, f64);
 
@@ -40,12 +49,19 @@ type Rect = (f64, f64, f64, f64);
 /// window rect as `points × that rect's own scale factor`, so two rects with
 /// different scales (a Retina screen beside a 1x one) aren't in a shared pixel
 /// space; dividing each by its own scale puts them back in AppKit's global
-/// point space, where they are. tao takes the monitor's position, size and
-/// scale in one snapshot, so the division round-trips exactly even when a
-/// screen spuriously reports 1.0 mid-reconfiguration (tao's fallback when the
-/// NSScreen is missing): the rect stays where it really is rather than moving,
-/// which would risk hiding an on-screen window. The window's rect and scale are
-/// separate reads; a scale change between them is followed by a
+/// point space, where they are.
+///
+/// The division only round-trips when the rect and the scale saw the same
+/// scale, and tao does not snapshot them: a monitor's position, size and scale
+/// are three separate `backingScaleFactor` lookups (tao 0.34.8
+/// `monitor.rs` `size`/`position`/`scale_factor`), which fall back to 1.0 while
+/// the NSScreen is missing mid-reconfiguration. A steady state (screen present,
+/// or missing for all three reads) is consistent; only a read straddling the
+/// moment the NSScreen appears or vanishes mixes scales and moves the rect,
+/// which can make an on-screen window look parked. So hiding takes a second,
+/// fresh read that agrees (see `decide`), and every end of a display
+/// reconfiguration re-decides every window (`refresh_all`). The window's rect and scale are
+/// separate reads too; a scale change between them is followed by a
 /// `ScaleFactorChanged` event that re-decides with consistent values.
 fn to_points(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Rect {
     (
@@ -73,39 +89,51 @@ fn meaningfully_visible(monitors: &[Rect], window: Rect) -> bool {
         })
 }
 
-/// The whole hide decision: hidden while the screens sleep, or while the window
-/// is parked off every monitor. A wake therefore keeps a parked window hidden.
-fn view_hidden(screens_asleep: bool, monitors: &[Rect], window: Rect) -> bool {
-    screens_asleep || !meaningfully_visible(monitors, window)
+/// Every monitor's rect in points; `None` when tao can't list them.
+fn monitor_rects(app_handle: &tauri::AppHandle) -> Option<Vec<Rect>> {
+    let monitors = app_handle.available_monitors().ok()?;
+    Some(
+        monitors
+            .iter()
+            .map(|m| {
+                let (p, s) = (m.position(), m.size());
+                to_points(p.x, p.y, s.width, s.height, m.scale_factor())
+            })
+            .collect(),
+    )
 }
 
-/// `None` when tao can't report the window or monitor geometry; the caller then
-/// treats the window as visible.
-fn window_geometry(window: &WebviewWindow) -> Option<(Vec<Rect>, Rect)> {
-    let (Ok(pos), Ok(size), Ok(scale), Ok(monitors)) = (
+/// Whether `window` sits parked off every monitor. Missing geometry counts as
+/// not parked: hiding on a failed read could strand a blank window.
+fn parked(window: &WebviewWindow, monitors: Option<&[Rect]>) -> bool {
+    let (Some(monitors), Ok(pos), Ok(size), Ok(scale)) = (
+        monitors,
         window.outer_position(),
         window.outer_size(),
         window.scale_factor(),
-        window.available_monitors(),
     ) else {
-        return None;
+        return false;
     };
-    let monitors = monitors
-        .iter()
-        .map(|m| {
-            let (p, s) = (m.position(), m.size());
-            to_points(p.x, p.y, s.width, s.height, m.scale_factor())
-        })
-        .collect();
-    Some((
+    !meaningfully_visible(
         monitors,
         to_points(pos.x, pos.y, size.width, size.height, scale),
-    ))
+    )
 }
 
+/// The whole hide decision: hidden while the screens sleep (no geometry read),
+/// or while the window is parked off every monitor, so a wake keeps a parked
+/// window hidden. Biased toward visible: parked takes two agreeing reads, the
+/// second fresh. A mixed-scale monitor read (see `to_points`) is a one-read
+/// glitch at the instant an NSScreen appears or vanishes, so two in a row
+/// don't happen. The re-read costs only parked windows, which rarely move.
+fn decide(screens_asleep: bool, parked_now: bool, parked_on_reread: impl FnOnce() -> bool) -> bool {
+    screens_asleep || (parked_now && parked_on_reread())
+}
+
+/// Whether the closure was queued; only then is the decision recorded as sent.
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
-fn set_view_hidden(window: &WebviewWindow, hidden: bool) {
+fn set_view_hidden(window: &WebviewWindow, hidden: bool) -> bool {
     use cocoa::base::{id, nil, BOOL, NO, YES};
     use objc::{msg_send, sel, sel_impl};
     // SAFETY: `with_webview` runs this closure on the main thread with the
@@ -114,56 +142,104 @@ fn set_view_hidden(window: &WebviewWindow, hidden: bool) {
     // `setHidden:(BOOL)` -> void, `window` -> NSWindow* (nil-checked),
     // `firstResponder` -> NSResponder*, `makeFirstResponder:(NSResponder*)`
     // -> BOOL.
-    let _ = window.with_webview(move |webview| unsafe {
-        let wv = webview.inner() as id;
-        if wv.is_null() {
-            return;
-        }
-        // Per-move calls are cheap: nothing changes, nothing is sent.
-        let is_hidden: BOOL = msg_send![wv, isHidden];
-        if (is_hidden == YES) == hidden {
-            return;
-        }
-        let _: () = msg_send![wv, setHidden: if hidden { YES } else { NO }];
-        if hidden {
-            return;
-        }
-        // Hiding a view that holds first responder makes AppKit hand focus back
-        // to the window, so a revealed page would ignore the keyboard until
-        // clicked. Give it back unless something else took focus meanwhile.
-        let ns_window: id = msg_send![wv, window];
-        if ns_window == nil {
-            return;
-        }
-        let responder: id = msg_send![ns_window, firstResponder];
-        if responder == nil || responder == ns_window {
-            let _: BOOL = msg_send![ns_window, makeFirstResponder: wv];
-        }
-    });
+    window
+        .with_webview(move |webview| unsafe {
+            let wv = webview.inner() as id;
+            if wv.is_null() {
+                return;
+            }
+            let is_hidden: BOOL = msg_send![wv, isHidden];
+            if (is_hidden == YES) == hidden {
+                return;
+            }
+            let _: () = msg_send![wv, setHidden: if hidden { YES } else { NO }];
+            if hidden {
+                return;
+            }
+            // Hiding a view that holds first responder makes AppKit hand focus back
+            // to the window, so a revealed page would ignore the keyboard until
+            // clicked. Give it back unless something else took focus meanwhile.
+            let ns_window: id = msg_send![wv, window];
+            if ns_window == nil {
+                return;
+            }
+            let responder: id = msg_send![ns_window, firstResponder];
+            if responder == nil || responder == ns_window {
+                let _: BOOL = msg_send![ns_window, makeFirstResponder: wv];
+            }
+        })
+        .is_ok()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_view_hidden(_window: &WebviewWindow, _hidden: bool) {}
+fn set_view_hidden(_window: &WebviewWindow, _hidden: bool) -> bool {
+    true
+}
+
+fn sent_hidden(label: &str) -> Option<bool> {
+    let sent = SENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    sent.as_ref()?.get(label).copied()
+}
+
+/// Re-decide one window against an already-read monitor list (`None` when
+/// asleep, where no geometry is needed). Sends to the view only on a change.
+fn apply(window: &WebviewWindow, asleep: bool, monitors: Option<&[Rect]>) {
+    let label = window.label();
+    let sent = sent_hidden(label);
+    let hidden = decide(asleep, parked(window, monitors), || {
+        parked(window, monitor_rects(window.app_handle()).as_deref())
+    });
+    if sent == Some(hidden) || !set_view_hidden(window, hidden) {
+        return;
+    }
+    SENT.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(label.to_string(), hidden);
+}
 
 /// Re-decide one window's view: hidden while the screens sleep or the window is
 /// parked. Called on every move/resize/focus of a webview window.
 pub fn refresh(window: &WebviewWindow) {
     let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
-    let hidden = match window_geometry(window) {
-        Some((monitors, rect)) => view_hidden(asleep, &monitors, rect),
-        None => asleep,
+    let monitors = if asleep {
+        None
+    } else {
+        monitor_rects(window.app_handle())
     };
-    set_view_hidden(window, hidden);
+    apply(window, asleep, monitors.as_deref());
+}
+
+/// Re-decide every window against one monitor read. Runs on each sleep/wake
+/// signal and at the end of every display reconfiguration, so a window whose
+/// display returns is revealed (and one stranded by a removal hidden) without
+/// waiting for the window to move.
+pub fn refresh_all(app_handle: &tauri::AppHandle) {
+    let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
+    let monitors = if asleep {
+        None
+    } else {
+        monitor_rects(app_handle)
+    };
+    for window in app_handle.webview_windows().values() {
+        apply(window, asleep, monitors.as_deref());
+    }
+}
+
+/// Drop a destroyed window's sent state, so a window re-created under the same
+/// label gets its first decision sent.
+pub fn forget(label: &str) {
+    let mut sent = SENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(sent) = sent.as_mut() {
+        sent.remove(label);
+    }
 }
 
 /// The screens-sleep side: `true` on `screens_did_sleep`, `false` on every wake
 /// signal. A wake reveals every view except the parked ones.
 pub fn set_screens_asleep(app_handle: &tauri::AppHandle, asleep: bool) {
-    use tauri::Manager;
     SCREENS_ASLEEP.store(asleep, Ordering::Relaxed);
-    for window in app_handle.webview_windows().values() {
-        refresh(window);
-    }
+    refresh_all(app_handle);
 }
 
 #[cfg(test)]
@@ -228,13 +304,23 @@ mod tests {
 
     #[test]
     fn wake_keeps_a_parked_window_hidden() {
-        assert!(view_hidden(false, &[AIR], (1709.5, 1111.5, 1200.0, 800.0)));
+        let is_parked = !meaningfully_visible(&[AIR], (1709.5, 1111.5, 1200.0, 800.0));
+        assert!(decide(false, is_parked, || true));
+    }
+
+    #[test]
+    fn hiding_takes_two_parked_reads() {
+        // A one-read glitch (the re-read says on-screen) keeps the view visible.
+        assert!(!decide(false, true, || false));
+        // On-screen or asleep: decided without a re-read.
+        assert!(!decide(false, false, || unreachable!()));
+        assert!(decide(true, false, || unreachable!()));
     }
 
     #[test]
     fn sleep_hides_an_on_screen_window() {
-        let on_screen = (100.0, 50.0, 1200.0, 800.0);
-        assert!(view_hidden(true, &[AIR], on_screen));
-        assert!(!view_hidden(false, &[AIR], on_screen));
+        let is_parked = !meaningfully_visible(&[AIR], (100.0, 50.0, 1200.0, 800.0));
+        assert!(decide(true, is_parked, || unreachable!()));
+        assert!(!decide(false, is_parked, || unreachable!()));
     }
 }

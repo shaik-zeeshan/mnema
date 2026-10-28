@@ -12,6 +12,7 @@ use super::equivalent_reuse::CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL;
 use super::test_support::{run_async_test, test_dir};
 use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
+use crate::usage_charts::capture_hours::CAPTURE_HOURS_SQL;
 use crate::usage_charts::USAGE_WINDOW_FRAMES_SQL;
 use crate::user_context::subject_vectors::SUBJECTS_NEEDING_EMBEDDING_SQL;
 use crate::user_context::capture_source::{
@@ -102,6 +103,14 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
         assert!(
             usage.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx"),
             "usage charts must read frames from the covering index only; plan was: {usage}"
+        );
+
+        // The date picker's density: one walk of the same covering index.
+        let hours = plan(&infra, CAPTURE_HOURS_SQL).await;
+        assert!(
+            hours.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx")
+                && !hours.contains("SCAN frames"),
+            "capture hours must read frames from the covering index only; plan was: {hours}"
         );
 
         // Read every Conclusion row and walked each vector's BLOB: ~12 MB per 30 s poll.

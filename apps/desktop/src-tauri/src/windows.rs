@@ -487,9 +487,13 @@ fn open_or_focus_window(
         return Ok(());
     }
 
+    // Built hidden: `finish_macos_window` sets the capture exclusion on the main
+    // thread, and the show below queues behind it, so the window is never on
+    // screen recordable.
     let mut builder =
         WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
     builder = builder
+        .visible(false)
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
         .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
@@ -731,12 +735,23 @@ pub fn refresh_capture_exclusion(_app_handle: &tauri::AppHandle) {}
 
 /// The single seam every window creation path ends on. Anything that builds a
 /// `WebviewWindow` without coming through here is skipping capture exclusion.
+///
+/// The AppKit calls run on the main thread: the CLI access request and Update
+/// windows are built on tokio workers. `run_on_main_thread` runs inline when
+/// already there; off it, the block joins the same event-loop queue as the
+/// window's own creation and every later `show()`/setter, so it runs after the
+/// window exists and before any show the caller issues next. Callers must build
+/// the window hidden for that ordering to keep it unrecordable. Never blocks,
+/// so a main thread waiting on the caller can't deadlock it.
 #[cfg(target_os = "macos")]
 pub(crate) fn finish_macos_window(window: &WebviewWindow, corner_radius: Option<f64>) {
-    apply_macos_capture_exclusion(window);
-    if let Some(radius) = corner_radius {
-        apply_macos_rounded_content_view(window, radius);
-    }
+    let target = window.clone();
+    let _ = window.run_on_main_thread(move || {
+        apply_macos_capture_exclusion(&target);
+        if let Some(radius) = corner_radius {
+            apply_macos_rounded_content_view(&target, radius);
+        }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1420,6 +1435,7 @@ pub fn handle_window_event(
     if !matches!(event, WindowEvent::Destroyed) {
         return;
     }
+    parked_view::forget(label);
 
     let action = match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => {

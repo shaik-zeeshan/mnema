@@ -109,12 +109,21 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
     for (const key of [...timers.keys()]) clearTimer(key);
   }
 
+  // Save one unit now instead of after its debounce (Start flushes the sources
+  // domain so the session records what the switches show). Same readiness gate.
+  async function flush(key: string): Promise<void> {
+    const unit = units.get(key);
+    if (!unit) return;
+    clearTimer(key);
+    if (unitReady(unit, host)) await unit.save();
+  }
+
   // Test/diagnostic helper: is a debounce currently armed for this unit?
   function hasPendingTimer(key: string): boolean {
     return timers.has(key);
   }
 
-  return { register, tick, cancelAll, hasPendingTimer };
+  return { register, tick, cancelAll, flush, hasPendingTimer };
 }
 
 export type AutosaveEngine = ReturnType<typeof createAutosaveEngine>;

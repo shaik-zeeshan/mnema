@@ -20,6 +20,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import AppPrivacyExclusionPrompt from "$lib/components/AppPrivacyExclusionPrompt.svelte";
+  import { setFlushBeforeStart } from "$lib/capture-controls.svelte";
   import {
     RECORDING_AUTOSAVE_DOMAINS,
   } from "$lib/settings/state/autosave-core";
@@ -446,6 +447,9 @@
     let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
+    // Start saves a still-debouncing sources toggle first (see capture-controls).
+    setFlushBeforeStart(() => c.autosaveEngine.flush("capture_sources"));
+
     // The microphone controller's two listeners live on the audio store.
     const stopMicListeners = c.audio.startListeners();
 
@@ -539,6 +543,7 @@
 
     return () => {
       destroyed = true;
+      setFlushBeforeStart(null);
       c.autosaveEngine.cancelAll();
       c.cancelPendingSaveRetries();
       stopMicListeners();
