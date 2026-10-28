@@ -57,6 +57,9 @@
   let aiStatus = $state<AiRuntimeStatus | null>(null);
   let ctxStatus = $state<UserContextStatus | null>(null);
   let statusLoaded = $state(false);
+  // Same floor as Overview: the picker starts at the first capture still on disk,
+  // so days retention deleted aren't drawn as empty days.
+  const minDay = $derived(ctxStatus ? toIso(new Date(ctxStatus.earliestCaptureAtMs ?? Date.now())) : undefined);
   const engineOn = $derived(Boolean(aiStatus?.enabled && aiStatus?.available) || Boolean(ctxStatus?.engineAvailable));
   /** Nothing new is derived (AI off, derivation off, not set up, unreachable). */
   const noDerive = $derived(statusLoaded && !ctxStatus?.engineAvailable);
@@ -472,7 +475,7 @@
 
 <section class="in-jwrap" aria-label="Journal">
   <div class="in-jctl" use:inBar>
-    <DateInput mode="day" value={dayIso} align="end" {density} onchange={(r) => (dayIso = r.start)} />
+    <DateInput mode="day" value={dayIso} min={minDay} align="end" {density} onchange={(r) => (dayIso = r.start)} />
     <button type="button" class="mx-btn" disabled={atLatest} onclick={() => (dayIso = toIso(new Date()))}>Today</button>
   </div>
   {#if !riverLoadedOnce}

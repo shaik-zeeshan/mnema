@@ -669,6 +669,12 @@ button.mx-chip:hover { border-color: var(--app-border-hover); }
 .mx-date__tape i[data-h="3"] { height: 12px; background: var(--chart-grey-4); }
 .mx-date__tape i[data-sel] { background: var(--app-accent); }
 .mx-date__tape i[data-sel][data-h="0"] { height: 2px; }
+/* week/month: the period's own days, not a scrolling tape — no edge fade; days still ahead are faint stubs */
+.mx-date[data-ruler] .mx-date__ruler { -webkit-mask-image: none; mask-image: none; background: none; }
+.mx-date[data-ruler] .mx-date__ruler::after { content: none; }
+.mx-date[data-ruler] .mx-date__tape i[data-h="-1"] { height: 2px; opacity: 0.4; background: var(--chart-grey-2); }
+.mx-date[data-ruler="month"] .mx-date__tape { gap: 1px; }
+.mx-date[data-ruler="month"] .mx-date__tape i { width: 1px; }
 
 /* popover */
 .mx-date__pop { left: 0; right: auto; width: max-content; transform-origin: top left; min-width: 0; padding: 4px; display: grid; }
