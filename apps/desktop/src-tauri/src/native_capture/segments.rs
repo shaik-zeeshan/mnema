@@ -2050,6 +2050,14 @@ fn attempt_low_disk_recovery(
     }
 }
 
+/// Whether low-disk recovery reopens the microphone now. Not while it is lent
+/// to voice enrollment (restarted when handed back), and not while the Mac is
+/// away (lock is away; the away hold's release starts a fresh session).
+#[cfg(target_os = "macos")]
+pub(super) fn low_disk_recovery_restarts_microphone(runtime: &NativeCaptureRuntime) -> bool {
+    !runtime.microphone_lent_out && runtime.microphone_away_hold.is_none()
+}
+
 /// Restart a fresh segment across every source a Low-Disk Suspension stopped:
 /// screen + system audio (via the shared privacy-filter segment start) and the
 /// microphone (its own native session). Mutates the runtime to point at the new
@@ -2155,8 +2163,7 @@ fn resume_all_sources_after_low_disk(
     // leaking it (there is no `Drop` that stops a screen session) and opening a
     // second writer over overlapping segment files. Mirrors the rollback the
     // combined start path already does on a mic-start failure.
-    // A microphone lent to voice enrollment is restarted when it is handed back.
-    if recover_sources.microphone && !runtime.microphone_lent_out {
+    if recover_sources.microphone && low_disk_recovery_restarts_microphone(runtime) {
         let restart_result = (|| -> Result<(), CaptureErrorResponse> {
             ensure_microphone_planner_for_runtime(runtime, "recovering low-disk suspension")?;
             refresh_runtime_planner_dates(runtime);

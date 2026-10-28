@@ -9,8 +9,8 @@ use super::inactivity::{
 use super::lifecycle::RecordingLifecycle;
 #[cfg(target_os = "macos")]
 use super::lifecycle::{
-    apply_microphone_away, microphone_away_step, should_resume_microphone_after_activity,
-    MicrophoneAwayStep,
+    apply_microphone_away, microphone_away_step, release_resumes_output,
+    should_resume_microphone_after_activity, MicrophoneAwayStep,
 };
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
@@ -37,6 +37,7 @@ use super::segments::{
     audio_duration_time_to_ms,
     audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
     cleanup_failed_segment_dirs, committed_audio_segments_for_output_files,
+    low_disk_recovery_restarts_microphone,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
@@ -5318,18 +5319,43 @@ fn a_flapping_lock_never_resumes_an_inactivity_pause() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn coming_back_with_no_session_just_drops_the_hold() {
-    let mut runtime = audio_paused_runtime_fixture();
-    runtime.microphone_away_hold = Some(MicrophoneAwayHold::PausedOutput);
+fn coming_back_with_no_session_opens_a_fresh_one() {
+    // Low-disk recovery leaves the microphone down while away; the release
+    // must open a session even when inactivity, not the hold, paused it.
+    assert!(release_resumes_output(false, false, false));
+    assert!(release_resumes_output(true, false, false));
+    // Still low on disk: recovery reopens it once space returns.
+    assert!(!release_resumes_output(true, false, true));
+    assert!(!release_resumes_output(false, false, true));
+    // With a session, only a pause the hold made is resumed.
+    assert!(release_resumes_output(true, true, false));
+    assert!(!release_resumes_output(false, true, false));
+
+    // The planner can't open a file here, so the attempt fails before a
+    // device is touched and leaves the pause for activity to retry.
+    let mut runtime = lent_out_microphone_runtime_fixture();
+    runtime.microphone_lent_out = false;
+    runtime.microphone_away_hold = Some(MicrophoneAwayHold::OutputAlreadyPaused);
 
     apply_microphone_away(&mut runtime, false, None);
 
     assert_eq!(runtime.microphone_away_hold, None);
-    assert!(
-        runtime.inactivity.is_microphone_paused(),
-        "with no session to restart, the pause is left for inactivity resume"
-    );
     assert!(runtime.active_microphone_session.is_none());
+    assert!(runtime.inactivity.is_microphone_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn low_disk_recovery_leaves_a_held_or_lent_out_microphone_down() {
+    let mut runtime = audio_paused_runtime_fixture();
+    assert!(low_disk_recovery_restarts_microphone(&runtime));
+
+    runtime.microphone_away_hold = Some(MicrophoneAwayHold::PausedOutput);
+    assert!(!low_disk_recovery_restarts_microphone(&runtime));
+
+    runtime.microphone_away_hold = None;
+    runtime.microphone_lent_out = true;
+    assert!(!low_disk_recovery_restarts_microphone(&runtime));
 }
 
 #[cfg(target_os = "macos")]

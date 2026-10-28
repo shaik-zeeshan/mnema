@@ -140,10 +140,16 @@ pub(super) fn apply_microphone_away(
         }
         MicrophoneAwayStep::Release { resume_output } => {
             runtime.microphone_away_hold = None;
-            let Some(session) = runtime.active_microphone_session.as_mut() else {
-                return;
-            };
-            session.set_capture_running(true);
+            let has_session = runtime.active_microphone_session.is_some();
+            if let Some(session) = runtime.active_microphone_session.as_mut() {
+                session.set_capture_running(true);
+            }
+            let low_disk_suspended = runtime
+                .capture_suspension
+                .as_ref()
+                .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk);
+            let resume_output =
+                release_resumes_output(resume_output, has_session, low_disk_suspended);
             if resume_output {
                 if let Err(error) = resume_microphone_from_inactivity(runtime) {
                     super::debug_log::log_warn(format!(
@@ -153,9 +159,29 @@ pub(super) fn apply_microphone_away(
                     return;
                 }
             }
-            super::debug_log::log_info("restarted microphone after the Mac came back");
+            if runtime.active_microphone_session.is_some() {
+                super::debug_log::log_info("restarted microphone after the Mac came back");
+            }
         }
         MicrophoneAwayStep::Nothing => {}
+    }
+}
+
+/// Whether releasing the away hold resumes the output. With a session, only a
+/// pause the hold made is resumed. With none, low-disk recovery left the
+/// microphone down while away, so resuming (which opens a fresh session) is the
+/// only way back; activity can't wake a device that isn't there. Unless the
+/// disk is still low: then recovery restarts it once space returns.
+#[cfg(target_os = "macos")]
+pub(super) fn release_resumes_output(
+    hold_paused_output: bool,
+    has_session: bool,
+    low_disk_suspended: bool,
+) -> bool {
+    if has_session {
+        hold_paused_output
+    } else {
+        !low_disk_suspended
     }
 }
 
