@@ -259,6 +259,23 @@ describe("offscreen clamp", () => {
     expect(setPositionCalls).toHaveLength(1);
   });
 
+  test("a clamp runs while the document is hidden but screens are awake", async () => {
+    resetClampHarness();
+    winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+
+    // A parked window's view is hidden backend-side, so its document is
+    // hidden — the clamp must still bring it back, or it stays parked.
+    globalThis.document.visibilityState = "hidden";
+    try {
+      emit("display_configuration_changed");
+      await runPendingClamp();
+      expect(setPositionCalls).toHaveLength(1);
+    } finally {
+      globalThis.document.visibilityState = "visible";
+    }
+  });
+
   test("a window still meaningfully visible is not moved", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 100, y: 100 }, size: { width: 800, height: 600 } };

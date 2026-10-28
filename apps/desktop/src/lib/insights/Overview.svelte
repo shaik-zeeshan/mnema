@@ -36,6 +36,8 @@
   } from "$lib/types/recording";
   import {
     startOfDay,
+    historyWindow,
+    pickerDensity,
     windowFor,
     shiftAnchor,
     buildActivityThreads,
@@ -262,7 +264,7 @@
       : activityColumns(rangeActivities, range.startMs, range.endMs, rangeMode, Date.now()),
   );
   // The period's own usage overrides history, so the visible days stay live.
-  const density = $derived({ ...historyDensity, ...densityFromHeatmap(usage?.activityHeatmap ?? []) });
+  const density = $derived(pickerDensity(historyDensity, usage?.activityHeatmap ?? []));
   // Captured days = distinct local days with any heatmap intensity.
   const capturedDays = $derived(
     new Set((usage?.activityHeatmap ?? []).filter((b) => b.intensityCount > 0).map((b) => startOfDay(b.bucketStartMs))).size,
@@ -435,12 +437,8 @@
     }, DIGEST_DEBOUNCE_MS);
   }
 
-  // ponytail: get_usage_charts loads every frame row in range, so cap at 120 days;
-  // older ticks read empty. A per-day COUNT command would lift the cap.
   async function loadHistory(): Promise<void> {
-    const endMs = Date.now();
-    const startMs = Math.max(parseIso(minDay).getTime(), endMs - 120 * DAY_MS);
-    const res = await invoke<UsageCharts>("get_usage_charts", { startMs, endMs }).catch(() => null);
+    const res = await invoke<UsageCharts>("get_usage_charts", historyWindow(minDay, Date.now())).catch(() => null);
     if (res) historyDensity = densityFromHeatmap(res.activityHeatmap);
   }
 

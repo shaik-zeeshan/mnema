@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { windowFor, shiftAnchor, humanizeMs } from "./activity-helpers";
+import { windowFor, shiftAnchor, humanizeMs, historyWindow, pickerDensity } from "./activity-helpers";
 
 // A duration should read in the coarsest non-zero unit: sub-minute activities as
 // seconds (never a rounded "0m"), minutes, then hours with a minute remainder.
@@ -66,5 +66,28 @@ describe("shiftAnchor month stepping (calendar-correct, no day overflow)", () =>
     const jan31 = noon(2026, 0, 31);
     const prev = shiftAnchor(jan31, "month", -1);
     expect(monthStart(prev)).toBe(firstOfMonth(2025, 11)); // Dec 1, 2025
+  });
+});
+
+describe("date-picker density", () => {
+  it("period_density_overrides_history_for_the_same_day", () => {
+    const at = (h) => new Date(2026, 9, 9, h).getTime();
+    // Three captured hours on Oct 9 → level 2, replacing history's stale 1.
+    const period = [9, 10, 11].map((h) => ({ bucketStartMs: at(h), intensityCount: 1 }));
+    expect(pickerDensity({ "2026-10-08": 3, "2026-10-09": 1 }, period)).toEqual({
+      "2026-10-08": 3,
+      "2026-10-09": 2,
+    });
+  });
+
+  it("history_window_is_clamped_to_min_day_and_120_days", () => {
+    const now = new Date(2026, 9, 9, 15, 30).getTime();
+    // 120 days back, from that day's local midnight — never mid-day.
+    expect(historyWindow("2025-01-01", now)).toEqual({
+      startMs: new Date(2026, 5, 11).getTime(),
+      endMs: now,
+    });
+    // A later first capture wins, also from its local midnight.
+    expect(historyWindow("2026-09-01", now).startMs).toBe(new Date(2026, 8, 1).getTime());
   });
 });

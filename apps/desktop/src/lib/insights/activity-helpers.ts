@@ -3,6 +3,7 @@
 // duplication. Pure functions + constants only — no component state.
 
 import type { Activity, ActivityCategory } from "$lib/types/recording";
+import { addDays, densityFromHeatmap, parseIso } from "$lib/components/date-input";
 
 export type { ActivityCategory };
 
@@ -38,6 +39,29 @@ export function startOfDay(ms: number): number {
   const d = new Date(ms);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
+}
+
+// ── Date-picker density (Overview) ──────────────────────────────────────
+// ponytail: get_usage_charts loads every frame row in range, so history is
+// capped at 120 days; older ticks read empty. A per-day COUNT command would
+// lift the cap.
+const HISTORY_DAYS = 120;
+
+/** The picker-history fetch: from local midnight `HISTORY_DAYS` back (never
+ *  before `minDay`'s midnight) to `nowMs`, so the oldest day is whole. */
+export function historyWindow(minDay: string, nowMs: number): { startMs: number; endMs: number } {
+  const floor = startOfDay(parseIso(minDay).getTime());
+  const back = startOfDay(addDays(new Date(nowMs), -HISTORY_DAYS).getTime());
+  return { startMs: Math.max(floor, back), endMs: nowMs };
+}
+
+/** Picker density: the history, with the period's own usage overriding it so
+ *  the visible days stay live. */
+export function pickerDensity(
+  history: Record<string, number>,
+  periodHeatmap: Parameters<typeof densityFromHeatmap>[0],
+): Record<string, number> {
+  return { ...history, ...densityFromHeatmap(periodHeatmap) };
 }
 
 // ── Date-range window math (Overview range stepper) ────────────────────

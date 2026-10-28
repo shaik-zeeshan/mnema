@@ -651,20 +651,6 @@ fn enqueue_cold_open_settings(
     }
 }
 
-/// Whether a window Mnema creates should be hidden from screen capture.
-///
-/// Exclusion is the default and developer options is the only way off it: UI
-/// work needs screenshots, and a `.none` window is invisible to ⌘⇧4, CleanShot
-/// and screen sharing alike, not just to Mnema's own recorder.
-///
-/// ponytail: reuses `developer_options_enabled` instead of carrying a setting of
-/// its own — enabling developer options therefore also makes Mnema
-/// screenshottable AND self-recordable. Split it out if that ever surprises
-/// someone.
-fn should_exclude_from_screen_capture(developer_options_enabled: bool) -> bool {
-    !developer_options_enabled
-}
-
 /// Hide one of Mnema's own windows from every screen capture, including Mnema's.
 ///
 /// Without this the app records itself: Quick Recall's results land back in the
@@ -675,36 +661,73 @@ fn should_exclude_from_screen_capture(developer_options_enabled: bool) -> bool {
 /// the ScreenCaptureKit privacy filter: that would force the app-excluding
 /// filter constructor permanently for every user, which ADR 0006 measured at
 /// ~867 mW against ~649 mW unfiltered. This costs nothing at capture time.
+///
+/// Exclusion is the default and developer options is the only way off it: UI
+/// work needs screenshots, and a `.none` window is invisible to ⌘⇧4, CleanShot
+/// and screen sharing alike, not just to Mnema's own recorder.
+///
+/// ponytail: reuses `developer_options_enabled` instead of carrying a setting of
+/// its own — enabling developer options therefore also makes Mnema
+/// screenshottable AND self-recordable. Split it out if that ever surprises
+/// someone.
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn apply_macos_capture_exclusion(window: &WebviewWindow) {
     use cocoa::base::id;
     use objc::{msg_send, sel, sel_impl};
 
+    // A missing or poisoned settings state reads as "developer options off":
+    // the window stays excluded, never accidentally recordable.
     let developer_options_enabled = window
         .app_handle()
         .try_state::<native_capture::RecordingSettingsState>()
-        .map(|state| {
-            native_capture::settings::current_recording_settings(state.inner())
-                .developer_options_enabled
+        .and_then(|state| {
+            state
+                .lock()
+                .ok()
+                .map(|runtime| runtime.settings.developer_options_enabled)
         })
         .unwrap_or(false);
-    if !should_exclude_from_screen_capture(developer_options_enabled) {
-        return;
-    }
 
     let Ok(ns_window) = window.ns_window() else {
         return;
     };
 
-    // NSWindowSharingNone
+    // NSWindowSharingNone / NSWindowSharingReadOnly (AppKit's default). Set
+    // both ways so a developer-options toggle applies to already-open windows.
     const NS_WINDOW_SHARING_NONE: u64 = 0;
+    const NS_WINDOW_SHARING_READ_ONLY: u64 = 1;
+    let sharing_type = if developer_options_enabled {
+        NS_WINDOW_SHARING_READ_ONLY
+    } else {
+        NS_WINDOW_SHARING_NONE
+    };
 
+    // SAFETY: `ns_window()` succeeded, so the pointer is this window's live
+    // NSWindow, which `window` keeps alive for the call. `setSharingType:`
+    // takes an NSWindowSharingType (NSUInteger, u64 on 64-bit) and returns
+    // void, matching the message sent here.
     unsafe {
         let ns_window = ns_window as id;
-        let _: () = msg_send![ns_window, setSharingType: NS_WINDOW_SHARING_NONE];
+        let _: () = msg_send![ns_window, setSharingType: sharing_type];
     }
 }
+
+/// Re-apply capture exclusion to every open window after developer options
+/// changes; the main window is hidden on close, not destroyed, so creation
+/// alone would leave it on the old setting until relaunch.
+#[cfg(target_os = "macos")]
+pub fn refresh_capture_exclusion(app_handle: &tauri::AppHandle) {
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        for window in handle.webview_windows().values() {
+            apply_macos_capture_exclusion(window);
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn refresh_capture_exclusion(_app_handle: &tauri::AppHandle) {}
 
 /// The single seam every window creation path ends on. Anything that builds a
 /// `WebviewWindow` without coming through here is skipping capture exclusion.
@@ -1653,18 +1676,6 @@ mod tests {
             Main | Onboarding | CliAccessRequest | Debug | QuickRecall | Update
             | PermissionHelper => {}
         }
-    }
-
-    #[test]
-    fn screen_capture_exclusion_is_the_default_and_only_developer_options_lifts_it() {
-        assert!(
-            super::should_exclude_from_screen_capture(false),
-            "a normal build must exclude Mnema's own windows from screen capture"
-        );
-        assert!(
-            !super::should_exclude_from_screen_capture(true),
-            "developer options must lift the exclusion so the UI can be screenshotted"
-        );
     }
 
     #[test]

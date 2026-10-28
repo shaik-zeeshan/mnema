@@ -3039,6 +3039,9 @@ fn finish_recording_settings_update(
     let save_directory_changed = update.save_directory_changed;
 
     debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
+    if previous_settings.developer_options_enabled != settings.developer_options_enabled {
+        crate::windows::refresh_capture_exclusion(app_handle);
+    }
     log_recording_settings_changes(&previous_settings, &settings);
 
     if save_directory_changed {
