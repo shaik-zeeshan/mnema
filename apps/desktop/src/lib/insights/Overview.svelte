@@ -147,6 +147,9 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
+  // Picker density for the ~120 days before the period (same window as Journal);
+  // only the per-day map is kept — the full usage payload is dropped.
+  let historyDensity = $state<Record<string, number>>({});
   // Previous-window baselines (see `loadPrev`).
   let prevUsage = $state<UsageCharts | null>(null);
   let prevActivities = $state<Activity[]>([]);
@@ -258,7 +261,8 @@
       ? appTimeColumns(usage?.activityHeatmap ?? [], ledeStats.trackedMs, range.startMs, range.endMs, rangeMode, Date.now())
       : activityColumns(rangeActivities, range.startMs, range.endMs, rangeMode, Date.now()),
   );
-  const density = $derived(densityFromHeatmap(usage?.activityHeatmap ?? []));
+  // The period's own usage overrides history, so the visible days stay live.
+  const density = $derived({ ...historyDensity, ...densityFromHeatmap(usage?.activityHeatmap ?? []) });
   // Captured days = distinct local days with any heatmap intensity.
   const capturedDays = $derived(
     new Set((usage?.activityHeatmap ?? []).filter((b) => b.intensityCount > 0).map((b) => startOfDay(b.bucketStartMs))).size,
@@ -431,9 +435,18 @@
     }, DIGEST_DEBOUNCE_MS);
   }
 
+  // ponytail: get_usage_charts loads every frame row in range, so cap at 120 days;
+  // older ticks read empty. A per-day COUNT command would lift the cap.
+  async function loadHistory(): Promise<void> {
+    const endMs = Date.now();
+    const startMs = Math.max(parseIso(minDay).getTime(), endMs - 120 * DAY_MS);
+    const res = await invoke<UsageCharts>("get_usage_charts", { startMs, endMs }).catch(() => null);
+    if (res) historyDensity = densityFromHeatmap(res.activityHeatmap);
+  }
+
   async function reloadAll(): Promise<void> {
     await loadStatus();
-    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest()]);
+    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest(), loadHistory()]);
   }
 
   // Re-query when the period changes. The mount effect owns the first load.
