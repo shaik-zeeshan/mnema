@@ -1,4 +1,3 @@
-#[cfg(target_os = "macos")]
 use super::activity::{
     current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
     idle_debug_family_fields, lock_runtime_for_idle_debug,
@@ -8,6 +7,11 @@ use super::inactivity::{
     ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
 use super::lifecycle::RecordingLifecycle;
+#[cfg(target_os = "macos")]
+use super::lifecycle::{
+    apply_microphone_away, microphone_away_step, should_resume_microphone_after_activity,
+    MicrophoneAwayStep,
+};
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
 use super::microphone::{
@@ -22,7 +26,8 @@ use super::runtime::{
     microphone_planner_for_runtime, reset_runtime_after_start_error, session_from_runtime,
     should_recover_from_segment_finalize_error, should_rotate_segment,
     stopped_session_from_runtime, system_audio_planner_for_runtime,
-    system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
+    system_audio_writer_active_for_runtime, validate_start_request, MicrophoneAwayHold,
+    NativeCaptureRuntime,
 };
 #[cfg(target_os = "macos")]
 use super::runtime::{CaptureSuspensionKind, CaptureSuspension};
@@ -798,63 +803,9 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
     );
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn resumed_microphone_finalization_moves_stamp_back_to_queued_audio() {
-    let dir = TestDir::new("resumed-microphone-filename");
-    let microphone_file = write_existing_audio_placeholder(
-        &dir.path()
-            .join("microphone-native-session-microphone-segment-0001-1700000030000.m4a"),
-    );
-    let source_sessions = independent_source_sessions_fixture();
-    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
-    let finalization = capture_microphone::MicrophoneOutputFinalization {
-        source_file: Some(microphone_file.clone()),
-        output_file: Some(microphone_file.clone()),
-        speech_detected: true,
-        start_offset_ms: -1_365,
-        discard_reason: None,
-    };
-    let mut output_files = CaptureOutputFiles {
-        screen_file: None,
-        screen_files: Vec::new(),
-        microphone_file: Some(microphone_file.clone()),
-        microphone_files: vec![microphone_file],
-        system_audio_file: None,
-        system_audio_files: Vec::new(),
-    };
-
-    apply_microphone_output_finalization(
-        Some(&mut output_files),
-        &finalization,
-        Some(&source_sessions),
-        Some(&schedule),
-        1,
-    );
-
-    let renamed_file = output_files
-        .microphone_file
-        .as_deref()
-        .expect("resumed microphone output should remain present");
-    assert_eq!(
-        audio_segment_started_at_unix_ms_for_file(
-            source_sessions.microphone.as_ref().unwrap(),
-            1,
-            &schedule,
-            renamed_file,
-        ),
-        1_700_000_028_635
-    );
-    assert_eq!(
-        output_files.microphone_files,
-        vec![renamed_file.to_string()]
-    );
-    assert!(Path::new(renamed_file).is_file());
-}
-
-// Every path that stops the mic outright (waiting for the same device, low
-// disk, out-of-band enrollment) must book the stop's finalization against the
-// live segment, or the file it later commits keeps an uncorrected stamp.
+// A stop's finalization (here, a resume's queued audio pulling the start
+// 1.365 s earlier) is booked against the live segment: the segment's file is
+// renamed to the corrected stamp and stays the one the commit picks up.
 #[cfg(target_os = "macos")]
 #[test]
 fn stopped_microphone_finalization_restamps_the_live_segment_file() {
@@ -1922,6 +1873,22 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
         .expect("idle recording boundary should not request another stop transition");
 
     assert_eq!(runtime.runtime_state, RuntimeState::Idle);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_clears_the_microphone_away_hold() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        runtime_controller: RuntimeController::default(),
+        runtime_state: RuntimeState::Idle,
+        microphone_away_hold: Some(MicrophoneAwayHold::PausedOutput),
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None).expect("idle stop should succeed");
+
+    assert_eq!(runtime.microphone_away_hold, None);
 }
 
 #[cfg(target_os = "macos")]
@@ -5188,6 +5155,237 @@ fn resume_microphone_from_inactivity_is_noop_when_not_paused() {
     // Not paused, so should be a no-op
     resume_microphone_from_inactivity(&mut runtime).expect("noop resume should succeed");
     assert!(!runtime.inactivity.is_microphone_paused());
+}
+
+// The away hold (founder ruling 2026-10-23: lock is away). The live lock and
+// display state is read by the tick; the decision and its application are
+// exercised here.
+#[cfg(target_os = "macos")]
+#[test]
+fn away_with_no_microphone_session_takes_no_hold() {
+    assert_eq!(
+        microphone_away_step(true, None, false, false),
+        MicrophoneAwayStep::Nothing
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn away_with_no_microphone_session_leaves_the_runtime_alone() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.inactivity.microphone_paused = false;
+
+    apply_microphone_away(&mut runtime, true, None);
+
+    assert_eq!(runtime.microphone_away_hold, None);
+    assert!(!runtime.inactivity.is_microphone_paused());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn away_while_recording_takes_a_hold_that_paused_the_output() {
+    assert_eq!(
+        microphone_away_step(true, None, true, false),
+        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn away_while_inactivity_paused_takes_a_hold_that_did_not_pause_it() {
+    assert_eq!(
+        microphone_away_step(true, None, true, true),
+        MicrophoneAwayStep::Hold(MicrophoneAwayHold::OutputAlreadyPaused)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_held_microphone_stays_held_while_still_away() {
+    for hold in [
+        MicrophoneAwayHold::PausedOutput,
+        MicrophoneAwayHold::OutputAlreadyPaused,
+    ] {
+        assert_eq!(
+            microphone_away_step(true, Some(hold), false, true),
+            MicrophoneAwayStep::Nothing
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn coming_back_resumes_only_a_pause_the_hold_made() {
+    assert_eq!(
+        microphone_away_step(false, Some(MicrophoneAwayHold::PausedOutput), false, true),
+        MicrophoneAwayStep::Release {
+            resume_output: true
+        }
+    );
+    assert_eq!(
+        microphone_away_step(
+            false,
+            Some(MicrophoneAwayHold::OutputAlreadyPaused),
+            false,
+            true
+        ),
+        MicrophoneAwayStep::Release {
+            resume_output: false
+        }
+    );
+    assert_eq!(
+        microphone_away_step(false, None, true, false),
+        MicrophoneAwayStep::Nothing
+    );
+}
+
+// Low-disk recovery and enrollment restore can start a new session while the
+// Mac is still away; the next tick must hold that one too.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_session_recreated_while_away_is_held_again() {
+    assert_eq!(
+        microphone_away_step(true, Some(MicrophoneAwayHold::PausedOutput), true, false),
+        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput)
+    );
+    assert_eq!(
+        microphone_away_step(
+            true,
+            Some(MicrophoneAwayHold::OutputAlreadyPaused),
+            true,
+            false
+        ),
+        MicrophoneAwayStep::Hold(MicrophoneAwayHold::PausedOutput),
+        "the new session records, so this hold paused it and coming back resumes it"
+    );
+    assert_eq!(
+        microphone_away_step(
+            true,
+            Some(MicrophoneAwayHold::OutputAlreadyPaused),
+            true,
+            true
+        ),
+        MicrophoneAwayStep::Hold(MicrophoneAwayHold::OutputAlreadyPaused)
+    );
+}
+
+/// Drives the step through the device/output effects `apply_microphone_away`
+/// has on a live session, for `away` per tick; returns the output's paused
+/// state after each tick.
+#[cfg(target_os = "macos")]
+fn simulate_microphone_away_ticks(output_paused: bool, ticks: &[bool]) -> Vec<bool> {
+    let (mut hold, mut device_running, mut output_paused) = (None, true, output_paused);
+    let mut paused_after = Vec::new();
+    for &away in ticks {
+        match microphone_away_step(away, hold, device_running, output_paused) {
+            MicrophoneAwayStep::Hold(next) => {
+                device_running = false;
+                output_paused = true;
+                hold = Some(next);
+            }
+            MicrophoneAwayStep::Release { resume_output } => {
+                device_running = true;
+                output_paused &= !resume_output;
+                hold = None;
+            }
+            MicrophoneAwayStep::Nothing => {}
+        }
+        assert_eq!(device_running, !away, "device follows away on every tick");
+        paused_after.push(output_paused);
+    }
+    paused_after
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_flapping_lock_pauses_and_resumes_a_recording_each_time() {
+    let ticks = [true, false, true, true, false, true, false];
+    assert_eq!(
+        simulate_microphone_away_ticks(false, &ticks),
+        vec![true, false, true, true, false, true, false]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_flapping_lock_never_resumes_an_inactivity_pause() {
+    let ticks = [true, false, true, false];
+    assert_eq!(
+        simulate_microphone_away_ticks(true, &ticks),
+        vec![true, true, true, true]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn coming_back_with_no_session_just_drops_the_hold() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.microphone_away_hold = Some(MicrophoneAwayHold::PausedOutput);
+
+    apply_microphone_away(&mut runtime, false, None);
+
+    assert_eq!(runtime.microphone_away_hold, None);
+    assert!(
+        runtime.inactivity.is_microphone_paused(),
+        "with no session to restart, the pause is left for inactivity resume"
+    );
+    assert!(runtime.active_microphone_session.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_is_blocked_while_the_microphone_is_held() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.inactivity.activity_mode = InactivityActivityMode::SystemInputOrScreenOrAudio;
+    let idle_past_timeout_ms = runtime.inactivity.idle_timeout_seconds * 1_000 + 1;
+    let snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(idle_past_timeout_ms),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(idle_past_timeout_ms),
+        microphone_activity: AudioActivitySourceState {
+            enabled: true,
+            idle_ms: Some(0),
+            latest_normalized_level: Some(0.20),
+        },
+        system_audio_activity: AudioActivitySourceState {
+            enabled: false,
+            idle_ms: None,
+            latest_normalized_level: None,
+        },
+    };
+    assert!(should_resume_microphone_after_activity(
+        &mut runtime,
+        20_000,
+        snapshot
+    ));
+
+    runtime.microphone_away_hold = Some(MicrophoneAwayHold::OutputAlreadyPaused);
+    assert!(!should_resume_microphone_after_activity(
+        &mut runtime,
+        20_000,
+        snapshot
+    ));
+
+    runtime.microphone_away_hold = None;
+    runtime.microphone_lent_out = true;
+    assert!(!should_resume_microphone_after_activity(
+        &mut runtime,
+        20_000,
+        snapshot
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stopping_the_session_clears_the_microphone_away_hold() {
+    let mut runtime = NativeCaptureRuntime {
+        microphone_away_hold: Some(MicrophoneAwayHold::PausedOutput),
+        ..Default::default()
+    };
+
+    mark_runtime_session_stopped(&mut runtime);
+
+    assert_eq!(runtime.microphone_away_hold, None);
 }
 
 // Voice enrollment borrows the microphone mid-session. Its own speech reaches the

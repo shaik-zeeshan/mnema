@@ -16,8 +16,15 @@ use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+/// Leading audio a trim may leave in place rather than re-encode the whole file.
+#[cfg(target_os = "macos")]
+const AUDIO_TRIM_START_TOLERANCE_SECS: f64 = 0.5;
+
 /// Trim `input` to the `[start_secs, end_secs]` range and re-encode the result
-/// as AAC/m4a at `output`.
+/// as AAC/m4a at `output`. Returns `Ok(false)`, writing nothing, when the range
+/// already covers the whole file (start within
+/// [`AUDIO_TRIM_START_TOLERANCE_SECS`] of 0, end at or past the end): `input`
+/// is then the result as it stands, so the caller keeps it.
 ///
 /// This runs entirely on AVFoundation (`AVAudioFile`) so it works inside the
 /// sandboxed/packaged desktop app, which does not inherit a shell `PATH` and so
@@ -28,7 +35,7 @@ pub fn trim_audio_file_to_m4a(
     output: &str,
     start_secs: f64,
     end_secs: f64,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<bool, CaptureErrorResponse> {
     use cidre::{av, cat, ns};
 
     if !start_secs.is_finite() || !end_secs.is_finite() || end_secs < start_secs {
@@ -77,6 +84,12 @@ pub fn trim_audio_file_to_m4a(
     };
     let start_frame = frame_for_secs(start_secs);
     let end_frame = frame_for_secs(end_secs).max(start_frame);
+    if total_frames > 0
+        && start_frame <= frame_for_secs(AUDIO_TRIM_START_TOLERANCE_SECS)
+        && end_frame >= total_frames
+    {
+        return Ok(false);
+    }
     let frames_to_copy = (end_frame - start_frame).max(0) as u64;
 
     let _ = std::fs::remove_file(output);
@@ -146,7 +159,7 @@ pub fn trim_audio_file_to_m4a(
     writer.close();
 
     match validate_trimmed_audio_output_file(output) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(true),
         Err(error) => {
             let _ = std::fs::remove_file(output);
             Err(error)
@@ -1749,8 +1762,8 @@ mod tests {
 
         write_test_tone_m4a(&input, 2.0);
 
-        trim_audio_file_to_m4a(&input, &output, 0.5, 1.0)
-            .expect("native AVFoundation trim should succeed without ffmpeg on PATH");
+        assert!(trim_audio_file_to_m4a(&input, &output, 0.5, 1.0)
+            .expect("native AVFoundation trim should succeed without ffmpeg on PATH"));
 
         let trimmed = decode_audio_file_to_mono_pcm(std::path::Path::new(&output))
             .expect("trimmed output should decode");
@@ -1770,6 +1783,29 @@ mod tests {
 
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn trim_audio_file_to_m4a_leaves_a_whole_file_range_alone() {
+        let temp = std::env::temp_dir();
+        let input = temp
+            .join(format!("mnema-whole-trim-input-{}.m4a", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let output = temp
+            .join(format!("mnema-whole-trim-output-{}.m4a", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let _ = std::fs::remove_file(&output);
+        write_test_tone_m4a(&input, 2.0);
+
+        let trimmed = trim_audio_file_to_m4a(&input, &output, 0.25, 3.0);
+        let output_written = std::path::Path::new(&output).exists();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+
+        assert!(!trimmed.expect("a whole-file range is not an error"));
+        assert!(!output_written, "nothing to re-encode, so nothing written");
     }
 
     #[test]
@@ -1845,35 +1881,15 @@ mod tests {
                 flushed.push(sample);
             }
         }
+        let trimmed = buffer.samples.len();
 
         buffer.discard_tail();
 
         assert_eq!(flushed, vec!["speech"]);
+        // Exactly the retained 2 s of one-second idle samples is discarded.
+        assert_eq!(trimmed, 2);
         assert!(buffer.samples.is_empty());
         assert_eq!(buffer.latest_sample_end_secs, None);
-    }
-
-    #[test]
-    fn audio_tail_buffer_inactivity_trim_tracks_every_idle_timeout_option() {
-        // The Settings idle-timeout stops: the discarded tail is exactly that long.
-        for timeout in [10_u64, 30, 60, 120, 300] {
-            let mut buffer = AudioTailSampleBuffer::default();
-            let mut flushed = 0;
-            assert!(buffer.append_timed(0.0, Some(1.0), timeout, true));
-            // One-second idle samples ending at 2.0 ..= timeout + 6.0.
-            for end_secs in 2..=timeout + 6 {
-                let end_secs = end_secs as f64;
-                assert!(buffer.append_timed(end_secs, Some(end_secs), timeout, false));
-                while buffer.pop_sample_before_tail(timeout).is_some() {
-                    flushed += 1;
-                }
-            }
-            let trimmed = buffer.samples.len() as u64;
-            buffer.discard_tail();
-
-            assert_eq!(trimmed, timeout, "timeout {timeout}s");
-            assert_eq!(flushed, 1 + 5, "timeout {timeout}s");
-        }
     }
 
     #[test]

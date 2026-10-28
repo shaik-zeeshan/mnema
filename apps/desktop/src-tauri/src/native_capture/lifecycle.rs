@@ -11,6 +11,10 @@ use super::runtime::{
     screen_planner_for_runtime, system_audio_planner_for_runtime, system_audio_stops_with_suspension,
     CaptureSuspensionKind,
 };
+#[cfg(target_os = "macos")]
+use super::inactivity::ActivitySnapshot;
+#[cfg(target_os = "macos")]
+use super::runtime::MicrophoneAwayHold;
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
@@ -57,6 +61,118 @@ pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) ->
         && !runtime.inactivity.is_system_audio_paused()
         && !system_audio_stops_with_suspension(runtime)
         && runtime.active_system_audio_session.is_none()
+}
+
+/// What the away tick does to the microphone.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MicrophoneAwayStep {
+    /// Stop the device, pause the output unless inactivity already did, and
+    /// record the hold.
+    Hold(MicrophoneAwayHold),
+    /// Restart the device, resuming the output only when the hold paused it.
+    Release { resume_output: bool },
+    Nothing,
+}
+
+/// The away hold's decision. `device_running` is "a microphone session exists
+/// and its device runs": while away that only happens to a session (re)created
+/// under the hold (low-disk recovery, enrollment restore), so it is held again.
+#[cfg(target_os = "macos")]
+pub(super) fn microphone_away_step(
+    away: bool,
+    hold: Option<MicrophoneAwayHold>,
+    device_running: bool,
+    output_paused: bool,
+) -> MicrophoneAwayStep {
+    if away && device_running {
+        let paused_output = hold == Some(MicrophoneAwayHold::PausedOutput) || !output_paused;
+        return MicrophoneAwayStep::Hold(if paused_output {
+            MicrophoneAwayHold::PausedOutput
+        } else {
+            MicrophoneAwayHold::OutputAlreadyPaused
+        });
+    }
+    match hold {
+        Some(hold) if !away => MicrophoneAwayStep::Release {
+            resume_output: hold == MicrophoneAwayHold::PausedOutput,
+        },
+        _ => MicrophoneAwayStep::Nothing,
+    }
+}
+
+/// Applies [`microphone_away_step`] for a tick that found the Mac `away` or not.
+#[cfg(target_os = "macos")]
+pub(super) fn apply_microphone_away(
+    runtime: &mut NativeCaptureRuntime,
+    away: bool,
+    app_handle: Option<&tauri::AppHandle>,
+) {
+    let device_running = runtime
+        .active_microphone_session
+        .as_ref()
+        .is_some_and(|session| session.capture_running());
+    match microphone_away_step(
+        away,
+        runtime.microphone_away_hold,
+        device_running,
+        runtime.inactivity.is_microphone_paused(),
+    ) {
+        MicrophoneAwayStep::Hold(hold) => {
+            // Device first, so nothing reaches the paused ring while the file
+            // finalizes; the pause below works on a stopped device.
+            if let Some(session) = runtime.active_microphone_session.as_mut() {
+                session.set_capture_running(false);
+            }
+            // This tick's VAD frames are speech from the file about to close.
+            super::activity::process_pending_microphone_vad_frames(runtime);
+            if let Err(error) = pause_microphone_for_inactivity_with_app_handle(runtime, app_handle)
+            {
+                super::debug_log::log_warn(format!(
+                    "failed to pause microphone output while the Mac is away; device stopped anyway: [{}] {}",
+                    error.code, error.message
+                ));
+            }
+            runtime.microphone_away_hold = Some(hold);
+            super::debug_log::log_info(
+                "stopped microphone while the Mac is locked or its displays are asleep",
+            );
+        }
+        MicrophoneAwayStep::Release { resume_output } => {
+            runtime.microphone_away_hold = None;
+            let Some(session) = runtime.active_microphone_session.as_mut() else {
+                return;
+            };
+            session.set_capture_running(true);
+            if resume_output {
+                if let Err(error) = resume_microphone_from_inactivity(runtime) {
+                    super::debug_log::log_warn(format!(
+                        "failed to resume microphone after the Mac came back; activity will retry: [{}] {}",
+                        error.code, error.message
+                    ));
+                    return;
+                }
+            }
+            super::debug_log::log_info("restarted microphone after the Mac came back");
+        }
+        MicrophoneAwayStep::Nothing => {}
+    }
+}
+
+/// Inactivity resumes the microphone on activity only while nothing else holds
+/// it: not while the Mac is away, and not while enrollment has it lent out
+/// (whose own speech would otherwise "resume" a no-op every tick).
+#[cfg(target_os = "macos")]
+pub(super) fn should_resume_microphone_after_activity(
+    runtime: &mut NativeCaptureRuntime,
+    now: u64,
+    activity_snapshot: ActivitySnapshot,
+) -> bool {
+    runtime.microphone_away_hold.is_none()
+        && !runtime.microphone_lent_out
+        && runtime
+            .inactivity
+            .should_resume_microphone_from_inactivity(now, activity_snapshot)
 }
 
 #[derive(Debug, Default)]
@@ -725,62 +841,17 @@ impl RecordingLifecycle {
             Some(now.saturating_add(self.system_audio_start_retry_delay_ms));
     }
 
-    #[cfg(target_os = "macos")]
     /// Stop the microphone device while the Mac is locked or every display is
     /// asleep, and restart it once neither holds (founder ruling 2026-10-23:
-    /// lock is away, so speech said while locked is not recorded). The output is
-    /// inactivity-paused first, so the segment commit is the existing pause path;
-    /// unlock resumes only a pause this hold made.
+    /// lock is away, so speech said while locked is not recorded).
     #[cfg(target_os = "macos")]
     fn tick_microphone_away(&mut self, app_handle: &tauri::AppHandle) {
         let away = super::system_idle::session_screen_is_locked()
             || !capture_screen::screen_display_available();
-        match (away, self.runtime.microphone_away_hold) {
-            (true, None) => {
-                if self.runtime.active_microphone_session.is_none() {
-                    return;
-                }
-                let paused_it = !self.runtime.inactivity.is_microphone_paused();
-                if let Err(error) = pause_microphone_for_inactivity_with_app_handle(
-                    &mut self.runtime,
-                    Some(app_handle),
-                ) {
-                    super::debug_log::log_warn(format!(
-                        "failed to pause microphone while the Mac is away; keeping it on: [{}] {}",
-                        error.code, error.message
-                    ));
-                    return;
-                }
-                if let Some(session) = self.runtime.active_microphone_session.as_mut() {
-                    session.set_capture_running(false);
-                }
-                self.runtime.microphone_away_hold = Some(paused_it);
-                super::debug_log::log_info(
-                    "stopped microphone while the Mac is locked or its displays are asleep",
-                );
-            }
-            (false, Some(paused_it)) => {
-                self.runtime.microphone_away_hold = None;
-                if let Some(session) = self.runtime.active_microphone_session.as_mut() {
-                    session.set_capture_running(true);
-                }
-                if paused_it {
-                    if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
-                        super::debug_log::log_warn(format!(
-                            "failed to resume microphone after the Mac came back; activity will retry: [{}] {}",
-                            error.code, error.message
-                        ));
-                    }
-                }
-                super::debug_log::log_info("restarted microphone after the Mac came back");
-            }
-            _ => {}
-        }
+        apply_microphone_away(&mut self.runtime, away, Some(app_handle));
     }
 
-    #[cfg(not(target_os = "macos"))]
-    fn tick_microphone_away(&mut self, _app_handle: &tauri::AppHandle) {}
-
+    #[cfg(target_os = "macos")]
     pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
@@ -810,12 +881,7 @@ impl RecordingLifecycle {
             .inactivity
             .effective_idle_for_snapshot(now, activity_snapshot);
 
-        if self.runtime.microphone_away_hold.is_none()
-            && self
-                .runtime
-                .inactivity
-                .should_resume_microphone_from_inactivity(now, activity_snapshot)
-        {
+        if should_resume_microphone_after_activity(&mut self.runtime, now, activity_snapshot) {
             if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
                 super::debug_log::log_at(
                     super::debug_log::streak_level(&mut self.resume_failure_logged.microphone),
@@ -839,10 +905,13 @@ impl RecordingLifecycle {
             }
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_pause_microphone_for_inactivity(now, activity_snapshot)
+        // A lent-out microphone has no session to pause; the call would no-op
+        // and log a pause every tick.
+        if !self.runtime.microphone_lent_out
+            && self
+                .runtime
+                .inactivity
+                .should_pause_microphone_for_inactivity(now, activity_snapshot)
         {
             if let Err(error) =
                 pause_microphone_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))

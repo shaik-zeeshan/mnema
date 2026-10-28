@@ -118,6 +118,17 @@ impl CaptureSuspension {
     }
 }
 
+/// Who paused the microphone output under an away hold, so the Mac coming back
+/// resumes only a pause the hold itself made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneAwayHold {
+    /// The hold paused a recording output; coming back resumes it.
+    PausedOutput,
+    /// Inactivity had already paused the output; coming back leaves that to
+    /// the activity policy and only restarts the device.
+    OutputAlreadyPaused,
+}
+
 #[derive(Debug, Default)]
 pub struct NativeCaptureRuntime {
     pub is_running: bool,
@@ -148,10 +159,9 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
-    /// `Some(paused_it)` while the microphone device is stopped because the Mac
-    /// is locked or every display is asleep; `paused_it` is whether this hold,
-    /// rather than inactivity, paused the output (so unlock resumes only that).
-    pub microphone_away_hold: Option<bool>,
+    /// Set while the microphone device is stopped because the Mac is locked or
+    /// every display is asleep.
+    pub microphone_away_hold: Option<MicrophoneAwayHold>,
     /// True while a bounded out-of-band recording (voice enrollment) holds the
     /// microphone. Capture leaves the family alone until it is handed back.
     pub microphone_lent_out: bool,

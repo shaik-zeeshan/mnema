@@ -74,7 +74,7 @@ fn capture_source_requested(
     runtime.is_running && runtime.requested_sources.as_ref().is_some_and(selector)
 }
 
-fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
+pub(super) fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
     if !capture_source_requested(runtime, |sources| sources.microphone)
         || !runtime.microphone_vad.uses_vad_adapter()
     {

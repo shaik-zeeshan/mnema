@@ -55,9 +55,15 @@ pub(crate) fn session_screen_is_locked() -> bool {
 
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
+        // `Option<arc::R<_>>` is a nullable pointer (`arc::R` is a non-null
+        // pointer wrapper, so `None` is NULL): a NULL return — no window-server
+        // session, e.g. a daemon context — reads as `None`.
         fn CGSessionCopyCurrentDictionary() -> Option<arc::R<cf::Dictionary>>;
     }
 
+    // SAFETY: takes no arguments and may be called from any thread. The result
+    // follows the Copy rule (+1 retained), which `arc::R` takes ownership of and
+    // releases on drop.
     let Some(session) = (unsafe { CGSessionCopyCurrentDictionary() }) else {
         return false;
     };

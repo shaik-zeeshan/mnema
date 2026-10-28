@@ -5760,6 +5760,8 @@ pub(super) fn stop_capture_runtime(
             }
             runtime.active_microphone_session = None;
         }
+        // An away hold belongs to the session just stopped.
+        runtime.microphone_away_hold = None;
 
         // Before the finalize below, like every other source: it closes the tap's
         // asset writer, and `finalize_capture_outputs` drops an m4a that has no
