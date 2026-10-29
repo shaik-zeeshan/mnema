@@ -31,6 +31,12 @@ const STATUS_WINDOW_LAYER: i64 = 25;
 /// notched M4 Air (24 pt on bars without a notch); a popover measured 326×226 pt.
 const MENU_BAR_STRIP_PT: f64 = 50.0;
 
+/// How long after a host time the guard still treats a frame as composed before it. A frame's
+/// PTS is when it was presented; the update completion handler, or a refresh, can run while
+/// frames composed before it are still on their way, so a cutoff with no margin lets the last
+/// of them through.
+const STALE_FRAME_MARGIN_SECS: f64 = 0.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Rect {
     pub x: f64,
@@ -100,19 +106,25 @@ pub(crate) struct PrivacyFrameGuard {
     /// Listed apps the live filter excludes — after a failed update, the ones both the old and
     /// the new filter exclude, since either may be live.
     pub excluded_bundle_ids: Vec<String>,
+    /// The processes of those apps the live filter names. ScreenCaptureKit excludes running
+    /// processes, not bundle ids, so another process of an excluded app — a second copy, or
+    /// one relaunched since the filter was built — isn't hidden by it and is guarded.
+    pub excluded_pids: Vec<i32>,
     /// Apps a landed update started excluding, still guarded in frames presented at or before
     /// `stale_until_host_secs` (host clock): frames composed under the old filter can still be
     /// queued when the update completes.
     pub stale_bundle_ids: Vec<String>,
     pub stale_until_host_secs: f64,
+    /// Host time the session last wrote this guard; it ends a drop the dropper keeps going
+    /// (`PrivacyFrameDropper`).
+    pub replaced_at_host_secs: f64,
 }
 
 impl PrivacyFrameGuard {
     /// The apps to guard in a frame presented at `frame_host_secs`. An unreadable time (NaN)
     /// fails closed to the stale set too.
     fn watched_bundle_ids(&self, frame_host_secs: f64) -> Vec<&str> {
-        let stale_frame = frame_host_secs.partial_cmp(&self.stale_until_host_secs)
-            != Some(std::cmp::Ordering::Greater);
+        let stale_frame = !composed_after(frame_host_secs, self.stale_until_host_secs);
         let stale = self.stale_bundle_ids.iter().filter(|_| stale_frame);
         self.unfiltered_bundle_ids
             .iter()
@@ -120,6 +132,12 @@ impl PrivacyFrameGuard {
             .map(String::as_str)
             .collect()
     }
+}
+
+/// Whether a frame presented at `frame_host_secs` was composed after `host_secs`. An unreadable
+/// time (NaN) says no, which keeps the frame guarded.
+fn composed_after(frame_host_secs: f64, host_secs: f64) -> bool {
+    frame_host_secs > host_secs + STALE_FRAME_MARGIN_SECS
 }
 
 pub(crate) type SharedPrivacyFrameGuard = Arc<Mutex<PrivacyFrameGuard>>;
@@ -159,8 +177,13 @@ pub(crate) fn in_flight_guard(
             .filter(|bundle_id| current.excluded_bundle_ids.contains(bundle_id))
             .cloned()
             .collect(),
-        stale_bundle_ids: Vec::new(),
-        stale_until_host_secs: 0.0,
+        excluded_pids: next
+            .excluded_pids
+            .iter()
+            .filter(|pid| current.excluded_pids.contains(pid))
+            .copied()
+            .collect(),
+        ..PrivacyFrameGuard::default()
     }
 }
 
@@ -201,15 +224,18 @@ pub(crate) fn refreshed_guard(
     }
 }
 
+fn on_screen_window_shows(window: &OnScreenWindow, display: Rect) -> bool {
+    match (window.layer, window.bounds) {
+        (Some(layer), Some(bounds)) => window_shows(layer, bounds, display),
+        _ => true,
+    }
+}
+
 /// Whether any of `windows` belongs to `pids` and shows on `display`.
 pub(crate) fn any_window_shows(windows: &[OnScreenWindow], pids: &[i32], display: Rect) -> bool {
-    windows.iter().any(|window| {
-        pids.contains(&window.pid)
-            && match (window.layer, window.bounds) {
-                (Some(layer), Some(bounds)) => window_shows(layer, bounds, display),
-                _ => true,
-            }
-    })
+    windows
+        .iter()
+        .any(|window| pids.contains(&window.pid) && on_screen_window_shows(window, display))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,19 +248,31 @@ pub(crate) enum FrameVerdict {
 }
 
 /// Whether a frame presented at `frame_host_secs` must be dropped. The window list is read only
-/// when an app the filter leaves out is running, which keeps the common case (nothing left out)
-/// free.
+/// when a process the filter leaves out is running, which keeps the common case (nothing left
+/// out) free.
 pub(crate) fn frame_verdict(
     guard: &PrivacyFrameGuard,
     frame_host_secs: f64,
-    running_pids: impl FnOnce(&[&str]) -> Vec<i32>,
+    mut running_pids: impl FnMut(&[&str]) -> Vec<i32>,
     windows: impl FnOnce() -> Option<Vec<OnScreenWindow>>,
 ) -> FrameVerdict {
     let watched = guard.watched_bundle_ids(frame_host_secs);
-    if watched.is_empty() {
-        return FrameVerdict::Keep;
+    let mut pids = Vec::new();
+    if !watched.is_empty() {
+        pids = running_pids(&watched);
     }
-    let pids = running_pids(&watched);
+    if !guard.excluded_bundle_ids.is_empty() {
+        let excluded = guard
+            .excluded_bundle_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        pids.extend(
+            running_pids(&excluded)
+                .into_iter()
+                .filter(|pid| !guard.excluded_pids.contains(pid)),
+        );
+    }
     if pids.is_empty() {
         return FrameVerdict::Keep;
     }
@@ -247,13 +285,15 @@ pub(crate) fn frame_verdict(
     }
 }
 
-/// The stream handler's side of the guard: reads it per frame and logs state changes.
-// ponytail: one per segment, so a rotation mid-drop restarts the dropped-frame count.
+/// The stream handler's side of the guard: reads it per frame and logs state changes. Segment
+/// rotation hands it to the next segment, so a drop it keeps going survives the rotation.
 #[derive(Debug, Default)]
 pub(crate) struct PrivacyFrameDropper {
     guard: SharedPrivacyFrameGuard,
     dropped_frames: u64,
     window_list_unreadable: bool,
+    /// `replaced_at_host_secs` of the guard a watched app was last seen showing under.
+    showing_seen_under: Option<f64>,
 }
 
 impl PrivacyFrameDropper {
@@ -265,8 +305,7 @@ impl PrivacyFrameDropper {
     }
 
     /// Whether the frame the stream just delivered, presented at `frame_host_secs` (its PTS,
-    /// host clock), must be dropped. The check runs after the frame was composed, so a window
-    /// that showed in it still shows here.
+    /// host clock), must be dropped.
     pub fn frame_must_be_dropped(&mut self, frame_host_secs: f64) -> bool {
         // Copy and release: the checks below call into AppKit and WindowServer.
         let guard = self
@@ -274,8 +313,35 @@ impl PrivacyFrameDropper {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        let verdict = frame_verdict(&guard, frame_host_secs, running_pids, on_screen_windows);
+        let verdict = self.verdict(&guard, frame_host_secs, running_pids, on_screen_windows);
         self.record(verdict)
+    }
+
+    /// The check runs after the frame was composed, so a window that showed in it may have
+    /// closed by now. Once a watched app is seen showing, frames keep dropping until the session
+    /// next replaces the guard — its refresh re-read the windows — and for frames presented up
+    /// to the stale margin after that, which can still have been composed before it.
+    fn verdict(
+        &mut self,
+        guard: &PrivacyFrameGuard,
+        frame_host_secs: f64,
+        running_pids: impl FnMut(&[&str]) -> Vec<i32>,
+        windows: impl FnOnce() -> Option<Vec<OnScreenWindow>>,
+    ) -> FrameVerdict {
+        if let Some(seen_under) = self.showing_seen_under {
+            // Same stamp, same guard: a host clock that didn't move keeps dropping.
+            if seen_under == guard.replaced_at_host_secs
+                || !composed_after(frame_host_secs, guard.replaced_at_host_secs)
+            {
+                return FrameVerdict::DropShowing;
+            }
+            self.showing_seen_under = None;
+        }
+        let verdict = frame_verdict(guard, frame_host_secs, running_pids, windows);
+        if verdict == FrameVerdict::DropShowing {
+            self.showing_seen_under = Some(guard.replaced_at_host_secs);
+        }
+        verdict
     }
 
     fn record(&mut self, verdict: FrameVerdict) -> bool {
@@ -306,6 +372,53 @@ impl PrivacyFrameDropper {
     }
 }
 
+/// Which processes show a window on a display, as `CGWindowList` sees them. The privacy poll
+/// takes one just before each shareable-content read; while a later one is the same and the
+/// filter excludes nothing, the read would find nothing new to hide: a listed app that starts
+/// showing a window — even one launched too recently to look up by bundle id — adds its pid.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ShowingSnapshot {
+    display: Rect,
+    pids: BTreeSet<i32>,
+}
+
+impl ShowingSnapshot {
+    fn new(windows: &[OnScreenWindow], display: Rect) -> Self {
+        Self {
+            display,
+            pids: windows
+                .iter()
+                .filter(|window| on_screen_window_shows(window, display))
+                .map(|window| window.pid)
+                .collect(),
+        }
+    }
+
+    /// `None` when the display or the window list can't be read.
+    pub fn read(display_id: u32) -> Option<Self> {
+        let bounds = core_graphics::display::CGDisplay::new(display_id).bounds();
+        let display = Rect {
+            x: bounds.origin.x,
+            y: bounds.origin.y,
+            width: bounds.size.width,
+            height: bounds.size.height,
+        };
+        // A display that is gone reads as a zero rect.
+        if display.width <= 0.0 || display.height <= 0.0 {
+            return None;
+        }
+        Some(Self::new(&on_screen_windows()?, display))
+    }
+
+    #[cfg(test)]
+    pub fn for_test(pids: &[i32]) -> Self {
+        Self {
+            display: Rect::default(),
+            pids: pids.iter().copied().collect(),
+        }
+    }
+}
+
 fn running_pids(bundle_ids: &[&str]) -> Vec<i32> {
     bundle_ids
         .iter()
@@ -320,6 +433,9 @@ fn running_pids(bundle_ids: &[&str]) -> Vec<i32> {
 
 /// On-screen windows with an owner pid. The guard only looks at listed apps' pids, so it needs
 /// no `sharingType` rule of its own; one with no pid can't be attributed and is skipped.
+/// Desktop elements stay in: the shareable content the plan reads lists them too (Finder's
+/// desktop icons and the Dock's wallpaper span the display), so a listed app's desktop-level
+/// window counts for both, and other apps' don't matter to either.
 fn on_screen_windows() -> Option<Vec<OnScreenWindow>> {
     use core_foundation::base::{CFType, TCFType};
     use core_foundation::dictionary::CFDictionary;
@@ -327,7 +443,7 @@ fn on_screen_windows() -> Option<Vec<OnScreenWindow>> {
     use core_foundation::string::{CFString, CFStringRef};
     use core_graphics::window::{
         copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowLayer,
-        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+        kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
     };
 
     fn value(dict: &CFDictionary, key: &CFString) -> Option<CFType> {
@@ -360,8 +476,7 @@ fn on_screen_windows() -> Option<Vec<OnScreenWindow>> {
         CFString::new("Height"),
     );
 
-    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
-    let infos = copy_window_info(options, kCGNullWindowID)?;
+    let infos = copy_window_info(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)?;
     Some(
         infos
             .iter()
@@ -541,14 +656,13 @@ mod tests {
 
     #[test]
     fn showing_bundle_ids_skips_hidden_elsewhere_ownerless_and_status_windows() {
-        let shareable = |owner: Option<&str>, on_screen: bool, layer: i64, bounds: Rect| {
-            ShareableWindow {
+        let shareable =
+            |owner: Option<&str>, on_screen: bool, layer: i64, bounds: Rect| ShareableWindow {
                 owner_bundle_id: owner.map(str::to_string),
                 on_screen,
                 layer,
                 bounds,
-            }
-        };
+            };
         let showing = showing_bundle_ids(
             [
                 shareable(Some("com.shown"), true, 0, SHOWN),
@@ -576,7 +690,11 @@ mod tests {
     fn only_watched_pids_with_showing_windows_drop_a_frame() {
         let windows = [window(7, PARKED), window(9, SHOWN)];
         assert!(any_window_shows(&windows, &[9], DISPLAY));
-        assert!(!any_window_shows(&[window(7, SHOWN), window(9, PARKED)], &[9], DISPLAY));
+        assert!(!any_window_shows(
+            &[window(7, SHOWN), window(9, PARKED)],
+            &[9],
+            DISPLAY
+        ));
         assert!(!any_window_shows(&[window(7, SHOWN)], &[], DISPLAY));
     }
 
@@ -685,14 +803,13 @@ mod tests {
         assert_eq!(settled.unfiltered_bundle_ids, Vec::<String>::new());
         assert_eq!(settled.excluded_bundle_ids, ids(&["com.a"]));
         assert_eq!(settled.watched_bundle_ids(4.9), ["com.a"]);
-        assert_eq!(settled.watched_bundle_ids(5.0), ["com.a"]);
         assert_eq!(settled.watched_bundle_ids(f64::NAN), ["com.a"]);
-        assert!(settled.watched_bundle_ids(5.1).is_empty());
+        assert!(settled.watched_bundle_ids(5.6).is_empty());
 
         // A refresh that keeps the filter keeps the stale set.
         let refreshed = refreshed_guard(&settled, filter_guard(&["com.b"], &["com.a"]));
         assert_eq!(refreshed.watched_bundle_ids(4.9), ["com.b", "com.a"]);
-        assert_eq!(refreshed.watched_bundle_ids(5.1), ["com.b"]);
+        assert_eq!(refreshed.watched_bundle_ids(5.6), ["com.b"]);
 
         // The next update guards the stale apps too while it is in flight.
         let in_flight = in_flight_guard(&settled, &filter_guard(&[], &["com.a"]));
@@ -701,7 +818,10 @@ mod tests {
 
     #[test]
     fn a_stale_frame_drops_on_an_app_the_update_started_excluding() {
-        let next = filter_guard(&[], &["com.a"]);
+        let next = PrivacyFrameGuard {
+            excluded_pids: vec![9],
+            ..filter_guard(&[], &["com.a"])
+        };
         let settled = settled_guard(in_flight_guard(&guard(&["com.a"]), &next), next, Some(5.0));
         let showing = || Some(vec![window(9, SHOWN)]);
         assert_eq!(
@@ -709,8 +829,189 @@ mod tests {
             FrameVerdict::DropShowing
         );
         assert_eq!(
-            frame_verdict(&settled, 6.0, |_| panic!("nothing watched"), showing),
+            frame_verdict(&settled, 6.0, |_| vec![9], showing),
             FrameVerdict::Keep
+        );
+    }
+
+    #[test]
+    fn the_stale_cutoff_covers_frames_presented_just_after_the_update_landed() {
+        let next = filter_guard(&[], &["com.a"]);
+        let settled = settled_guard(in_flight_guard(&guard(&["com.a"]), &next), next, Some(5.0));
+        // Composed under the old filter, presented just after the completion handler ran.
+        assert_eq!(settled.watched_bundle_ids(5.0), ["com.a"]);
+        assert_eq!(settled.watched_bundle_ids(5.3), ["com.a"]);
+        assert_eq!(
+            settled.watched_bundle_ids(5.0 + STALE_FRAME_MARGIN_SECS),
+            ["com.a"]
+        );
+        assert!(settled
+            .watched_bundle_ids(5.0 + STALE_FRAME_MARGIN_SECS + 0.01)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_second_process_of_an_excluded_app_is_guarded() {
+        let excluded = PrivacyFrameGuard {
+            excluded_pids: vec![9],
+            ..filter_guard(&[], &["com.a"])
+        };
+        let running = |bundle_ids: &[&str]| {
+            assert_eq!(bundle_ids, ["com.a"]);
+            vec![9, 12]
+        };
+        // The new copy (pid 12) shows a window the filter, built for pid 9, doesn't hide.
+        assert_eq!(
+            frame_verdict(&excluded, 1.0, running, || Some(vec![window(12, SHOWN)])),
+            FrameVerdict::DropShowing
+        );
+        // The filtered copy showing is fine: the filter hides it.
+        assert_eq!(
+            frame_verdict(&excluded, 1.0, running, || Some(vec![window(9, SHOWN)])),
+            FrameVerdict::Keep
+        );
+        // Only the filtered copy runs: the window list isn't even read.
+        assert_eq!(
+            frame_verdict(&excluded, 1.0, |_| vec![9], || panic!("nothing watched")),
+            FrameVerdict::Keep
+        );
+        // In flight, only the pids both filters name count as excluded.
+        let next = PrivacyFrameGuard {
+            excluded_pids: vec![9, 12],
+            ..filter_guard(&[], &["com.a"])
+        };
+        assert_eq!(in_flight_guard(&excluded, &next).excluded_pids, vec![9]);
+    }
+
+    #[test]
+    fn a_window_seen_showing_keeps_dropping_until_the_guard_is_replaced() {
+        let mut dropper = PrivacyFrameDropper::default();
+        let watched = PrivacyFrameGuard {
+            replaced_at_host_secs: 1.0,
+            ..guard(&["com.secret"])
+        };
+        let shown = || Some(vec![window(9, SHOWN)]);
+        let closed = || Some(Vec::new());
+        assert_eq!(
+            dropper.verdict(&watched, 2.0, |_| vec![9], shown),
+            FrameVerdict::DropShowing
+        );
+        // Closed by the time frame N+1 is checked, which may have been composed with it.
+        assert_eq!(
+            dropper.verdict(&watched, 3.0, |_| vec![9], closed),
+            FrameVerdict::DropShowing
+        );
+        // The session replaced the guard at 10: frames up to the margin after it still drop.
+        let replaced = PrivacyFrameGuard {
+            replaced_at_host_secs: 10.0,
+            ..watched.clone()
+        };
+        assert_eq!(
+            dropper.verdict(&replaced, 10.4, |_| vec![9], closed),
+            FrameVerdict::DropShowing
+        );
+        assert_eq!(
+            dropper.verdict(&replaced, f64::NAN, |_| vec![9], closed),
+            FrameVerdict::DropShowing
+        );
+        assert_eq!(
+            dropper.verdict(&replaced, 10.6, |_| vec![9], closed),
+            FrameVerdict::Keep
+        );
+        assert_eq!(dropper.showing_seen_under, None);
+        // An unreadable window list drops that frame only.
+        assert_eq!(
+            dropper.verdict(&replaced, 11.0, |_| vec![9], || None),
+            FrameVerdict::DropUnreadable
+        );
+        assert_eq!(
+            dropper.verdict(&replaced, 12.0, |_| vec![9], closed),
+            FrameVerdict::Keep
+        );
+    }
+
+    #[test]
+    fn a_rebuild_after_a_failed_update_keeps_the_union_guard() {
+        let current = filter_guard(&["com.a"], &["com.x"]);
+        let failed = settled_guard(
+            in_flight_guard(&current, &filter_guard(&["com.x"], &["com.a"])),
+            filter_guard(&["com.x"], &["com.a"]),
+            None,
+        );
+        assert_eq!(failed.unfiltered_bundle_ids, ids(&["com.a", "com.x"]));
+        // The next poll rebuilds (no state is recorded as applied): its in-flight guard keeps
+        // every app the failed union guards, even if the new plan is the old filter again.
+        let rebuild = in_flight_guard(&failed, &current);
+        assert_eq!(rebuild.unfiltered_bundle_ids, ids(&["com.a", "com.x"]));
+    }
+
+    #[test]
+    fn a_display_left_of_and_above_the_main_one_is_guarded_in_global_coordinates() {
+        // A secondary display arranged up and to the left: negative origin, top-left based.
+        let left = Rect {
+            x: -1920.0,
+            y: -300.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let there = Rect {
+            x: -1500.0,
+            y: -100.0,
+            width: 600.0,
+            height: 400.0,
+        };
+        assert!(window_shows(0, there, left));
+        assert!(!window_shows(0, there, DISPLAY));
+        assert!(!window_shows(0, SHOWN, left));
+        // Its menu bar sits at its own top, y = -300.
+        let icon = Rect {
+            x: -400.0,
+            y: -300.0,
+            ..MENU_BAR_ICON
+        };
+        assert!(!window_shows(STATUS_WINDOW_LAYER, icon, left));
+        let popover = Rect {
+            x: -400.0,
+            y: -300.0,
+            ..POPOVER
+        };
+        assert!(window_shows(STATUS_WINDOW_LAYER, popover, left));
+        // A window straddling the seam shows on both.
+        let straddling = Rect {
+            x: -200.0,
+            y: 100.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        assert!(window_shows(0, straddling, left));
+        assert!(window_shows(0, straddling, DISPLAY));
+    }
+
+    #[test]
+    fn the_showing_snapshot_counts_only_windows_that_show_on_the_display() {
+        let snapshot = ShowingSnapshot::new(
+            &[
+                window(7, SHOWN),
+                window(8, PARKED),
+                window(9, OTHER_DISPLAY),
+                OnScreenWindow {
+                    layer: Some(STATUS_WINDOW_LAYER),
+                    ..window(10, MENU_BAR_ICON)
+                },
+                OnScreenWindow {
+                    bounds: None,
+                    ..window(11, PARKED)
+                },
+            ],
+            DISPLAY,
+        );
+        assert_eq!(snapshot.pids, BTreeSet::from([7, 11]));
+        assert_ne!(snapshot, ShowingSnapshot::new(&[window(7, SHOWN)], DISPLAY));
+        // The display moved: not the same snapshot.
+        let moved = Rect { x: 10.0, ..DISPLAY };
+        assert_ne!(
+            ShowingSnapshot::new(&[window(7, SHOWN)], DISPLAY),
+            ShowingSnapshot::new(&[window(7, SHOWN)], moved)
         );
     }
 
