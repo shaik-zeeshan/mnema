@@ -50,7 +50,7 @@ import {
   RECORDING_AUTOSAVE_DOMAINS,
   RECORDING_DRAFT_DOMAINS,
   RECORDING_DOMAIN_COMMANDS,
-  RECORDING_AUTOSAVE_DEBOUNCE_MS,
+  recordingAutosaveDebounceMs,
   makeRecordingDomainState,
   type AutosaveRecordingDomain,
   type RecordingSettingsDraftDomain,
@@ -667,7 +667,7 @@ export class RecordingStore {
     for (const domain of RECORDING_AUTOSAVE_DOMAINS) {
       engine.register({
         key: domain,
-        debounceMs: RECORDING_AUTOSAVE_DEBOUNCE_MS,
+        debounceMs: recordingAutosaveDebounceMs(domain),
         snapshot: () => this.buildRecDomainSnapshot(domain),
         baseline: () => this.lastSavedRecSnapshots[domain],
         blocked: () => this.recDomainSaveBlocked(domain),

@@ -75,6 +75,12 @@ export const RECORDING_DOMAIN_COMMANDS: Record<AutosaveRecordingDomain, string> 
 // Debounce windows (ms). Recording domains share one window; the microphone
 // controller uses a shorter one because its applies are cheaper/snappier.
 export const RECORDING_AUTOSAVE_DEBOUNCE_MS = 450;
+// Except the source switches: discrete toggles with nothing to coalesce, and
+// the Rust-owned tray Start reads the saved sources without asking this page
+// to flush, so a debounce window is a window where Start records the old ones.
+export function recordingAutosaveDebounceMs(domain: AutosaveRecordingDomain): number {
+  return domain === "capture_sources" ? 0 : RECORDING_AUTOSAVE_DEBOUNCE_MS;
+}
 export const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
 
 // Build the initial per-domain record (e.g. saving flags `false`, baselines

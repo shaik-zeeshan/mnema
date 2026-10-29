@@ -3,7 +3,7 @@
 // duplication. Pure functions + constants only — no component state.
 
 import type { Activity, ActivityCategory } from "$lib/types/recording";
-import { addDays, densityFromHeatmap, parseIso } from "$lib/components/date-input";
+import { addDays, densityFromHeatmap, parseIso, toIso } from "$lib/components/date-input";
 
 export type { ActivityCategory };
 
@@ -42,9 +42,10 @@ export function startOfDay(ms: number): number {
 }
 
 // ── Date-picker density (Overview) ──────────────────────────────────────
-// ponytail: get_usage_charts loads every frame row in range, so history is
-// capped at 120 days; older ticks read empty. A per-day COUNT command would
-// lift the cap.
+// ponytail: history reaches 120 days back (the Journal's window), so the
+// picker doesn't ask for years on every mount. `get_capture_hours` seeks once
+// per captured hour, so the cap can grow to its 400-day ceiling if the ruler
+// needs more. Days past it read unknown (−1), never empty.
 const HISTORY_DAYS = 120;
 
 /** The picker-history fetch: from local midnight `HISTORY_DAYS` back (never
@@ -55,13 +56,39 @@ export function historyWindow(minDay: string, nowMs: number): { startMs: number;
   return { startMs: Math.max(floor, back), endMs: nowMs };
 }
 
-/** Picker density: the history, with the period's own usage overriding it so
- *  the visible days stay live. */
+/** Picker history from `get_capture_hours`: each captured UTC hour counts for
+ *  the local day it starts on, and days from `minDay` up to the window read
+ *  −1 (not fetched), so the ruler draws them out of range rather than empty.
+ *  ponytail: with a half-hour UTC offset (IST) an hour bucket straddles
+ *  midnight, so a frame at 00:15 counts for the day before. */
+export function historyDensity(
+  hours: number[],
+  window: { startMs: number },
+  minDay: string,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (let d = parseIso(minDay); startOfDay(d.getTime()) < window.startMs; d = addDays(d, 1)) out[toIso(d)] = -1;
+  // The window's first bucket can start before it (the same straddle).
+  const inWindow = hours.filter((h) => h >= window.startMs);
+  return Object.assign(out, densityFromHeatmap(inWindow.map((bucketStartMs) => ({ bucketStartMs, intensityCount: 1 }))));
+}
+
+/** Picker density: the history, with the period's own usage overriding it on
+ *  the period's days only, so the visible days stay live. An hour bucket that
+ *  starts before the period (the 23:30 bucket under a half-hour offset) files
+ *  under the day before it; letting it override would clobber that day's
+ *  history with a partial count. */
 export function pickerDensity(
   history: Record<string, number>,
-  periodHeatmap: Parameters<typeof densityFromHeatmap>[0],
+  period: { rangeStartMs: number; rangeEndMs: number; activityHeatmap: Parameters<typeof densityFromHeatmap>[0] } | null,
 ): Record<string, number> {
-  return { ...history, ...densityFromHeatmap(periodHeatmap) };
+  if (!period) return history;
+  const live = densityFromHeatmap(period.activityHeatmap);
+  const out = { ...history };
+  for (let d = new Date(startOfDay(period.rangeStartMs)); startOfDay(d.getTime()) < period.rangeEndMs; d = addDays(d, 1)) {
+    out[toIso(d)] = live[toIso(d)] ?? 0;
+  }
+  return out;
 }
 
 // ── Date-range window math (Overview range stepper) ────────────────────

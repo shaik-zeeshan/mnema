@@ -68,9 +68,19 @@ function unitReady(unit: AutosaveUnit, host: AutosaveEngineHost): boolean {
 export function createAutosaveEngine(host: AutosaveEngineHost) {
   const units = new Map<string, AutosaveUnit>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  // The save each unit has in flight, so `flush` can wait it out.
+  const inFlight = new Map<string, Promise<void>>();
 
   function register(unit: AutosaveUnit): void {
     units.set(unit.key, unit);
+  }
+
+  function run(unit: AutosaveUnit): Promise<void> {
+    const done = Promise.resolve(unit.save()).finally(() => {
+      if (inFlight.get(unit.key) === done) inFlight.delete(unit.key);
+    });
+    inFlight.set(unit.key, done);
+    return done;
   }
 
   function clearTimer(key: string): void {
@@ -97,7 +107,7 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
         timers.delete(unit.key);
         // Re-check at fire time — the gate may have closed while we waited.
         if (!unitReady(unit, host)) return;
-        void unit.save();
+        void run(unit);
       }, unit.debounceMs);
       timers.set(unit.key, timer);
     }
@@ -110,12 +120,16 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
   }
 
   // Save one unit now instead of after its debounce (Start flushes the sources
-  // domain so the session records what the switches show). Same readiness gate.
+  // domain so the session records what the switches show). A save already in
+  // flight is waited out first — skipping it let Start win the race, and the
+  // backend then refused the save as `capture_sources_locked`. Then the same
+  // readiness gate, for an edit made while that save ran.
   async function flush(key: string): Promise<void> {
     const unit = units.get(key);
     if (!unit) return;
     clearTimer(key);
-    if (unitReady(unit, host)) await unit.save();
+    await inFlight.get(key)?.catch(() => {});
+    if (unitReady(unit, host)) await run(unit);
   }
 
   // Test/diagnostic helper: is a debounce currently armed for this unit?

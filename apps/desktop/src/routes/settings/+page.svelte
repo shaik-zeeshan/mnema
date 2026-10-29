@@ -447,7 +447,7 @@
     let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
-    // Start saves a still-debouncing sources toggle first (see capture-controls).
+    // Start lands an in-flight sources save first (see capture-controls).
     setFlushBeforeStart(() => c.autosaveEngine.flush("capture_sources"));
 
     // The microphone controller's two listeners live on the audio store.

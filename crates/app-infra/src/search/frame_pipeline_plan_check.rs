@@ -105,12 +105,20 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
             "usage charts must read frames from the covering index only; plan was: {usage}"
         );
 
-        // The date picker's density: one walk of the same covering index.
+        // The date picker's density. Was a DISTINCT over every frame's index
+        // entry in the window (up to ~120 days of frames per Overview mount);
+        // now one seek per captured hour, then one probe for a non-lock frame.
         let hours = plan(&infra, CAPTURE_HOURS_SQL).await;
         assert!(
-            hours.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx")
-                && !hours.contains("SCAN frames"),
-            "capture hours must read frames from the covering index only; plan was: {hours}"
+            hours.contains("RECURSIVE STEP")
+                && hours.contains("SEARCH frames USING COVERING INDEX")
+                && hours.contains(
+                    "SEARCH f USING COVERING INDEX frames_usage_window_idx (captured_at>? AND captured_at<?)"
+                )
+                && !hours.contains("SCAN frames")
+                && !hours.contains("SCAN f ")
+                && !hours.contains("DISTINCT"),
+            "capture hours must seek hour by hour through the frames indexes; plan was: {hours}"
         );
 
         // Read every Conclusion row and walked each vector's BLOB: ~12 MB per 30 s poll.

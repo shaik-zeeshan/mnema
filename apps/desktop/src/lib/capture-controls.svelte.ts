@@ -58,8 +58,9 @@ export function isCaptureSourcesLocked(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "capture_sources_locked";
 }
 
-// Settings registers its pending sources save here while open, so a toggle
-// still inside its debounce window is saved before Start reads the sources.
+// Settings registers its sources flush here while open, so a toggle whose save
+// is still in flight lands before Start reads the sources. (The tray Start
+// can't call this; the sources save skips the debounce to keep its gap short.)
 let flushBeforeStart: (() => Promise<void>) | null = null;
 export function setFlushBeforeStart(flush: (() => Promise<void>) | null): void {
   flushBeforeStart = flush;

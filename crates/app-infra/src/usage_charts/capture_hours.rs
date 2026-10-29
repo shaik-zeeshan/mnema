@@ -6,31 +6,61 @@
 use sqlx::Row;
 
 use super::{ms_to_rfc3339, rfc3339_to_ms, UsageChartsStore};
-use crate::Result;
+use crate::{AppInfraError, Result};
 
-/// Distinct `(hour, snapshot)` pairs come off `frames_usage_window_idx`
-/// (migration 0060) without touching a frame row; only those pairs probe the
-/// snapshot table. The lock-screen test mirrors
+/// A skip-scan of the frames' `captured_at` indexes: each step seeks the first
+/// frame at or after the next UTC hour, so the walk costs a few page reads per
+/// captured hour instead of one index entry per frame in the window. `hour || ';'`
+/// is the next hour's lower bound: `captured_at` is UTC RFC3339 TEXT, its first
+/// 13 chars name the hour, and `;` sorts just past the `:` that follows them.
+///
+/// An hour counts unless every frame in it is a lock screen, mirroring
 /// `FrameMetadataSnapshot::is_lock_screen` (lock-screen frames are time away,
-/// so the heatmap drops them); a snapshot that isn't valid JSON counts as
-/// capture there too, since the Rust parse of it fails the same way.
-/// `captured_at` is UTC RFC3339 TEXT, so its first 13 chars name the UTC hour.
+/// so the heatmap drops them); the `EXISTS` stops at the hour's first other
+/// frame. A missing snapshot, or one that isn't valid JSON, counts as capture
+/// there too, since the Rust parse of it fails the same way.
 pub(crate) const CAPTURE_HOURS_SQL: &str = "\
-    SELECT DISTINCT hours.hour AS hour \
-    FROM (SELECT DISTINCT substr(captured_at, 1, 13) AS hour, metadata_snapshot_id AS snapshot_id \
-          FROM frames \
-          WHERE captured_at >= ?1 AND captured_at < ?2) AS hours \
-    LEFT JOIN frame_metadata_snapshots AS s ON s.id = hours.snapshot_id \
-    WHERE CASE WHEN json_valid(s.snapshot_json) \
-               THEN coalesce(trim(json_extract(s.snapshot_json, '$.appBundleId')) = 'com.apple.loginwindow', 0) \
-                 OR coalesce(trim(json_extract(s.snapshot_json, '$.appName')) = 'loginwindow', 0) \
-               ELSE 0 END = 0 \
+    WITH RECURSIVE hours(hour) AS ( \
+        SELECT substr((SELECT captured_at FROM frames \
+                       WHERE captured_at >= ?1 AND captured_at < ?2 \
+                       ORDER BY captured_at LIMIT 1), 1, 13) \
+        UNION ALL \
+        SELECT substr((SELECT captured_at FROM frames \
+                       WHERE captured_at >= hours.hour || ';' AND captured_at < ?2 \
+                       ORDER BY captured_at LIMIT 1), 1, 13) \
+        FROM hours WHERE hours.hour IS NOT NULL) \
+    SELECT hour FROM hours \
+    WHERE hour IS NOT NULL AND EXISTS ( \
+        SELECT 1 FROM frames AS f \
+        LEFT JOIN frame_metadata_snapshots AS s ON s.id = f.metadata_snapshot_id \
+        WHERE f.captured_at >= max(?1, hours.hour) AND f.captured_at < min(?2, hours.hour || ';') \
+          AND CASE WHEN json_valid(s.snapshot_json) \
+                   THEN coalesce(trim(json_extract(s.snapshot_json, '$.appBundleId')) = 'com.apple.loginwindow', 0) \
+                     OR coalesce(trim(json_extract(s.snapshot_json, '$.appName')) = 'loginwindow', 0) \
+                   ELSE 0 END = 0) \
     ORDER BY hour ASC";
+
+/// The widest window [`UsageChartsStore::capture_hours`] serves. The picker asks
+/// for at most ~121 days; a year plus slack keeps any caller off a walk of the
+/// whole index (an out-of-range bound formats as "", which compares below
+/// every timestamp).
+pub(crate) const CAPTURE_HOURS_MAX_SPAN_MS: i64 = 400 * 86_400_000;
 
 impl UsageChartsStore {
     /// Start (unix ms) of every UTC hour in `[start_ms, end_ms)` holding a
-    /// non-lock-screen screen frame, ascending.
+    /// non-lock-screen screen frame, ascending. Refuses a reversed window or one
+    /// wider than [`CAPTURE_HOURS_MAX_SPAN_MS`].
     pub async fn capture_hours(&self, start_ms: i64, end_ms: i64) -> Result<Vec<i64>> {
+        match end_ms.checked_sub(start_ms) {
+            Some(span) if (0..=CAPTURE_HOURS_MAX_SPAN_MS).contains(&span) => {}
+            _ => {
+                return Err(AppInfraError::InvalidSearchRequest(format!(
+                    "capture hours window must run forward and span at most \
+                     {} days, got [{start_ms}, {end_ms})",
+                    CAPTURE_HOURS_MAX_SPAN_MS / 86_400_000
+                )))
+            }
+        }
         let rows = sqlx::query(CAPTURE_HOURS_SQL)
             .bind(ms_to_rfc3339(start_ms))
             .bind(ms_to_rfc3339(end_ms))
@@ -91,18 +121,77 @@ mod tests {
                 let hours = store.capture_hours(hour("00"), hour("04")).await.unwrap();
                 assert_eq!(hours, vec![hour("00"), hour("02"), hour("03")]);
 
-                // Same buckets as the heatmap the picker used to read.
-                let charts = store
-                    .usage_charts(Some(hour("00")), Some(hour("04")))
+                // Same buckets as the heatmap the picker used to read, including
+                // windows whose bounds fall mid-hour: from 00:15 only the 00:20
+                // lock screen and the 00:59:59 app frame are in; from 00:21 only
+                // the app frame; up to 00:59 neither.
+                let minute = |m: i64| hour("00") + m * 60_000;
+                for (start, end) in [
+                    (hour("00"), hour("04")),
+                    (minute(15), hour("04")),
+                    (minute(21), hour("03")),
+                    (hour("00"), minute(59)),
+                    (hour("01"), hour("04")),
+                ] {
+                    let charts = store.usage_charts(Some(start), Some(end)).await.unwrap();
+                    let heatmap: Vec<i64> = charts
+                        .activity_heatmap
+                        .iter()
+                        .filter(|bucket| bucket.intensity_count > 0)
+                        .map(|bucket| bucket.bucket_start_ms)
+                        .collect();
+                    assert_eq!(
+                        store.capture_hours(start, end).await.unwrap(),
+                        heatmap,
+                        "window [{start}, {end})"
+                    );
+                }
+            });
+    }
+
+    #[test]
+    fn capture_hours_refuses_reversed_and_oversized_windows() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(async {
+                let pool = SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect("sqlite::memory:")
                     .await
-                    .unwrap();
-                let heatmap: Vec<i64> = charts
-                    .activity_heatmap
-                    .iter()
-                    .filter(|bucket| bucket.intensity_count > 0)
-                    .map(|bucket| bucket.bucket_start_ms)
-                    .collect();
-                assert_eq!(hours, heatmap);
+                    .expect("in-memory db");
+                sqlx::query(
+                    "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, \
+                     metadata_snapshot_id INTEGER)",
+                )
+                .execute(&pool)
+                .await
+                .expect("fixture");
+                sqlx::query(
+                    "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, \
+                     snapshot_json TEXT NOT NULL)",
+                )
+                .execute(&pool)
+                .await
+                .expect("fixture");
+                let store = UsageChartsStore::new(CaptureDb::single(pool));
+
+                for (start, end) in [
+                    (i64::MIN, i64::MAX),
+                    (1_000, 0),
+                    (0, CAPTURE_HOURS_MAX_SPAN_MS + 1),
+                ] {
+                    assert!(
+                        store.capture_hours(start, end).await.is_err(),
+                        "window [{start}, {end}) must be refused"
+                    );
+                }
+                assert!(store.capture_hours(0, 0).await.unwrap().is_empty());
+                assert!(store
+                    .capture_hours(0, CAPTURE_HOURS_MAX_SPAN_MS)
+                    .await
+                    .is_ok());
             });
     }
 }

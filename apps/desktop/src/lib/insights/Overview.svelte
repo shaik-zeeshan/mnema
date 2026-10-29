@@ -36,6 +36,7 @@
   } from "$lib/types/recording";
   import {
     startOfDay,
+    historyDensity as historyDensityFrom,
     historyWindow,
     pickerDensity,
     windowFor,
@@ -54,7 +55,7 @@
     focusHeat,
     listedAppRows,
   } from "$lib/insights/lede-stats";
-  import { addDays, capsuleLabel, densityFromHeatmap, isoWeek, parseIso, toIso } from "$lib/components/date-input";
+  import { addDays, capsuleLabel, isoWeek, parseIso, toIso } from "$lib/components/date-input";
   import DateInput from "$lib/components/DateInput.svelte";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
@@ -149,8 +150,8 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
-  // Picker density for the ~120 days before the period (same window as Journal),
-  // from `get_capture_hours` — the heatmap's non-empty hours, nothing else.
+  // Picker density for the ~120 days back (same window as Journal), from
+  // `get_capture_hours` — the heatmap's non-empty hours, nothing else.
   let historyDensity = $state<Record<string, number>>({});
   // Previous-window baselines (see `loadPrev`).
   let prevUsage = $state<UsageCharts | null>(null);
@@ -263,8 +264,8 @@
       ? appTimeColumns(usage?.activityHeatmap ?? [], ledeStats.trackedMs, range.startMs, range.endMs, rangeMode, Date.now())
       : activityColumns(rangeActivities, range.startMs, range.endMs, rangeMode, Date.now()),
   );
-  // The period's own usage overrides history, so the visible days stay live.
-  const density = $derived(pickerDensity(historyDensity, usage?.activityHeatmap ?? []));
+  // The period's own usage overrides history on its days, so they stay live.
+  const density = $derived(pickerDensity(historyDensity, usage));
   // Captured days = distinct local days with any heatmap intensity.
   const capturedDays = $derived(
     new Set((usage?.activityHeatmap ?? []).filter((b) => b.intensityCount > 0).map((b) => startOfDay(b.bucketStartMs))).size,
@@ -437,10 +438,16 @@
     }, DIGEST_DEBOUNCE_MS);
   }
 
+  // Mount, every range step and every context change: the days outside the
+  // period (today while looking back, deletions) only move through here.
+  let historyRequestToken = 0;
   async function loadHistory(): Promise<void> {
     // Just the hours with capture: the full usage read loads every frame row.
-    const hours = await invoke<number[]>("get_capture_hours", historyWindow(minDay, Date.now())).catch(() => null);
-    if (hours) historyDensity = densityFromHeatmap(hours.map((bucketStartMs) => ({ bucketStartMs, intensityCount: 1 })));
+    const token = ++historyRequestToken;
+    const day = minDay;
+    const span = historyWindow(day, Date.now());
+    const hours = await invoke<number[]>("get_capture_hours", span).catch(() => null);
+    if (hours && token === historyRequestToken) historyDensity = historyDensityFrom(hours, span, day);
   }
 
   async function reloadAll(): Promise<void> {
@@ -463,6 +470,7 @@
       void loadFree();
       void loadPrev();
       void loadEngine();
+      void loadHistory();
       scheduleDigestLoad();
     });
     return () => {
@@ -499,6 +507,7 @@
     // baseline here too — otherwise they freeze while the engine tiles update.
     void loadFree();
     void loadPrev();
+    void loadHistory();
     // Same range → cache hit; keeps the current lede up until fresh prose.
     void loadDigest();
   }
