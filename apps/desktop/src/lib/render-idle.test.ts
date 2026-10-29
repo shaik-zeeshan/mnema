@@ -27,7 +27,7 @@ mock.module("@tauri-apps/api/event", () => ({
 }));
 mock.module("@tauri-apps/api/dpi", () => ({
   // Captures {x,y} so the setPosition assertion can read what was passed.
-  PhysicalPosition: class {
+  LogicalPosition: class {
     constructor(x, y) {
       this.x = x;
       this.y = y;
@@ -42,6 +42,7 @@ const setPositionCalls = [];
 const fakeWin = {
   outerPosition: async () => winGeometry.pos,
   outerSize: async () => winGeometry.size,
+  scaleFactor: async () => 1,
   setPosition: async (position) => {
     setPositionCalls.push(position);
   },
@@ -214,14 +215,14 @@ describe("offscreen clamp", () => {
   test("a display reconfiguration that parks the window offscreen moves it back", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
-    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 1 }];
 
     emit("display_configuration_changed");
     await runPendingClamp();
 
     // The one assertion proving the halves connect: the position handed to
     // `win.setPosition` is exactly what the pure geometry returns.
-    const expected = clampTarget(monitors, winGeometry.pos, winGeometry.size);
+    const expected = clampTarget(monitors, winGeometry.pos, winGeometry.size, 1);
     expect(expected).not.toBeNull();
     expect(setPositionCalls).toHaveLength(1);
     expect({ x: setPositionCalls[0].x, y: setPositionCalls[0].y }).toEqual(expected);
@@ -230,7 +231,7 @@ describe("offscreen clamp", () => {
   test("several reconfiguration events in one burst clamp once", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
-    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 1 }];
 
     // One CG reconfiguration fires the callback several times; the debounce
     // must collapse them to a single pending timer, hence a single move.
@@ -245,7 +246,7 @@ describe("offscreen clamp", () => {
   test("a clamp due while screens sleep waits for wake", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
-    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 1 }];
 
     emit("screens_did_sleep");
     emit("display_configuration_changed");
@@ -262,7 +263,7 @@ describe("offscreen clamp", () => {
   test("a clamp runs while the document is hidden but screens are awake", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 3000, y: 200 }, size: { width: 800, height: 600 } };
-    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 1 }];
 
     // A parked window's view is hidden backend-side, so its document is
     // hidden — the clamp must still bring it back, or it stays parked.
@@ -279,8 +280,8 @@ describe("offscreen clamp", () => {
   test("a window still meaningfully visible is not moved", async () => {
     resetClampHarness();
     winGeometry = { pos: { x: 100, y: 100 }, size: { width: 800, height: 600 } };
-    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 } }];
-    expect(clampTarget(monitors, winGeometry.pos, winGeometry.size)).toBeNull();
+    monitors = [{ position: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }, scaleFactor: 1 }];
+    expect(clampTarget(monitors, winGeometry.pos, winGeometry.size, 1)).toBeNull();
 
     emit("display_configuration_changed");
     await runPendingClamp();

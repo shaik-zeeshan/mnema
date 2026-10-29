@@ -887,6 +887,48 @@ fn configure_quick_recall_panel(window: &WebviewWindow) {
     }
 }
 
+/// Run `f` on the main thread with the window's WKWebView and its NSWindow
+/// (both non-null). Returns whether `f` was queued (or run, on the main thread).
+///
+/// Plain `with_webview` leaks: tauri-runtime-wry 2.10.1 (`lib.rs:3859-3867`)
+/// hands the closure three pointers made by `Retained::into_raw` from fresh +1
+/// retains (wry 0.54.4 `lib.rs:2447-2457`: `webview.clone()`,
+/// `manager.clone()`, `webview.window()`), and nothing on the tauri side
+/// (`PlatformWebview` has no `Drop`) ever releases them. So every call kept
+/// the WKWebView, its user-content controller and the NSWindow alive one
+/// retain longer. This releases exactly those three after `f`.
+#[cfg(target_os = "macos")]
+#[allow(deprecated, unexpected_cfgs)]
+pub(crate) fn with_wk_webview(
+    window: &WebviewWindow,
+    f: impl FnOnce(cocoa::base::id, cocoa::base::id) + Send + 'static,
+) -> bool {
+    use cocoa::base::id;
+    use objc::{msg_send, sel, sel_impl};
+    window
+        .with_webview(move |webview| {
+            let owned = [
+                webview.inner() as id,
+                webview.controller() as id,
+                webview.ns_window() as id,
+            ];
+            if !owned[0].is_null() && !owned[2].is_null() {
+                f(owned[0], owned[2]);
+            }
+            for ptr in owned {
+                if !ptr.is_null() {
+                    // SAFETY: each pointer is one `Retained::into_raw` +1 that
+                    // this closure owns (see above); released once, after `f`,
+                    // while the window still holds its own references.
+                    unsafe {
+                        let _: () = msg_send![ptr, release];
+                    }
+                }
+            }
+        })
+        .is_ok()
+}
+
 // A non-activating panel is summoned while Mnema itself stays inactive, so the
 // first click into its WKWebView is an AppKit "first mouse". By default AppKit
 // swallows that click just to order the window forward, so the very first press
@@ -922,11 +964,7 @@ fn configure_quick_recall_webview(window: &WebviewWindow) {
         ) -> BOOL;
     }
 
-    let _ = window.with_webview(|webview| unsafe {
-        let wv = webview.inner() as id;
-        if wv.is_null() {
-            return;
-        }
+    with_wk_webview(window, |wv, _| unsafe {
         let class = object_getClass(wv);
         if class.is_null() {
             return;
@@ -965,17 +1003,12 @@ fn make_quick_recall_panel_key(window: &WebviewWindow) {
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn make_quick_recall_webview_first_responder(window: &WebviewWindow) {
-    use cocoa::base::{id, nil, BOOL};
+    use cocoa::base::BOOL;
     use objc::{msg_send, sel, sel_impl};
-    let _ = window.with_webview(|webview| unsafe {
-        let wv = webview.inner() as id;
-        if wv.is_null() {
-            return;
-        }
-        let panel: id = msg_send![wv, window];
-        if panel != nil {
-            let _: BOOL = msg_send![panel, makeFirstResponder: wv];
-        }
+    // SAFETY: `with_wk_webview` passes the live WKWebView and its NSWindow on
+    // the main thread; `makeFirstResponder:(NSResponder*)` -> BOOL.
+    with_wk_webview(window, |wv, panel| unsafe {
+        let _: BOOL = msg_send![panel, makeFirstResponder: wv];
     });
 }
 
@@ -1757,6 +1790,10 @@ mod tests {
             (
                 "core:window:allow-set-min-size",
                 "the developer window lowers its min size to shrink to mini",
+            ),
+            (
+                "core:window:allow-set-position",
+                "the render-idle clamp moves a window parked offscreen back onto a screen",
             ),
         ] {
             assert!(

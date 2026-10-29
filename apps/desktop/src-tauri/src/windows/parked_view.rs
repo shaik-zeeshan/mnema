@@ -19,12 +19,11 @@ use std::sync::Mutex;
 
 use tauri::{Manager, WebviewWindow};
 
-/// How much of the window must overlap some monitor, on BOTH axes, to count as
-/// meaningfully visible. Logical points: 100 physical px on a Retina display,
-/// the frontend display-disconnect clamp's threshold (`$lib/render-idle-clamp`
-/// `MIN_VISIBLE_PX`) on the Mac's own screen. A window smaller than this on an
-/// axis needs its whole extent on-screen there instead (Quick Recall's idle bar
-/// is 60 pt tall, the permission helper 62 pt).
+/// How much of the window must be on-screen, on BOTH axes, to count as
+/// meaningfully visible. Logical points, the same threshold as the frontend
+/// display-disconnect clamp (`$lib/render-idle-clamp` `MIN_VISIBLE_PT`). A
+/// window smaller than this on an axis needs its whole extent on-screen there
+/// instead (Quick Recall's idle bar is 60 pt tall, the permission helper 62 pt).
 const MIN_VISIBLE_PT: f64 = 50.0;
 
 /// The per-axis threshold never drops below this, so a tiny window still counts
@@ -35,11 +34,12 @@ const MIN_SLIVER_PT: f64 = 2.0;
 /// hidden then, whatever its window's position.
 static SCREENS_ASLEEP: AtomicBool = AtomicBool::new(false);
 
-/// The hide state last sent to each window's view, by label. Every
-/// `with_webview` call in tauri-runtime-wry 2.10.1 retains the WKWebView, its
-/// controller and the NSWindow without releasing them, so it may only run when
-/// the decision actually changes, not on every move or resize. Cleared on
-/// `Destroyed` (`forget`) so a re-created window starts fresh.
+/// The hide state last sent to each window's view, by label, so a move or
+/// resize that doesn't change the decision costs no AppKit round trip. A
+/// missing entry means "shown": a WKWebView starts un-hidden. Only touched on
+/// the main thread (window events and `refresh_all`'s hop), so the
+/// read-decide-write never races. Cleared on `Destroyed` (`forget`) so a
+/// re-created window starts fresh.
 static SENT: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
 
 /// `(x, y, width, height)` in the global logical-point space (top-left origin).
@@ -52,17 +52,14 @@ type Rect = (f64, f64, f64, f64);
 /// point space, where they are.
 ///
 /// The division only round-trips when the rect and the scale saw the same
-/// scale, and tao does not snapshot them: a monitor's position, size and scale
-/// are three separate `backingScaleFactor` lookups (tao 0.34.8
-/// `monitor.rs` `size`/`position`/`scale_factor`), which fall back to 1.0 while
-/// the NSScreen is missing mid-reconfiguration. A steady state (screen present,
-/// or missing for all three reads) is consistent; only a read straddling the
-/// moment the NSScreen appears or vanishes mixes scales and moves the rect,
-/// which can make an on-screen window look parked. So hiding takes a second,
-/// fresh read that agrees (see `decide`), and every end of a display
-/// reconfiguration re-decides every window (`refresh_all`). The window's rect and scale are
-/// separate reads too; a scale change between them is followed by a
-/// `ScaleFactorChanged` event that re-decides with consistent values.
+/// scale: a monitor's position, size and scale are three separate
+/// `backingScaleFactor` lookups (tao 0.34.8 `monitor.rs`
+/// `size`/`position`/`scale_factor`). Every read here runs on the main thread,
+/// where AppKit only updates `NSScreen` between run-loop turns, so the three
+/// agree; every end of a display reconfiguration re-decides every window
+/// (`refresh_all`). The window's rect and scale are separate reads too; a
+/// scale change between them is followed by a `ScaleFactorChanged` event that
+/// re-decides with consistent values.
 fn to_points(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Rect {
     (
         f64::from(x) / scale,
@@ -72,21 +69,36 @@ fn to_points(x: i32, y: i32, width: u32, height: u32, scale: f64) -> Rect {
     )
 }
 
-/// Whether `window` overlaps some monitor by at least `MIN_VISIBLE_PT` (or its
-/// own extent, if smaller) on both axes. No monitors (a transient
-/// mid-reconfiguration state) counts as visible: hiding on a missing list could
-/// strand a blank window.
+/// Whether the on-screen part of `window`, across all monitors, spans at least
+/// `MIN_VISIBLE_PT` (or the window's own extent, if smaller) on both axes and
+/// covers at least that much area. Pooled, not per monitor: a 60-pt bar split
+/// 30/30 across two stacked displays is fully visible yet fails 50 pt on each.
+/// No monitors (a transient mid-reconfiguration state) counts as visible:
+/// hiding on a missing list could strand a blank window.
 fn meaningfully_visible(monitors: &[Rect], window: Rect) -> bool {
     let (wx, wy, ww, wh) = window;
     let need_w = MIN_VISIBLE_PT.min(ww).max(MIN_SLIVER_PT);
     let need_h = MIN_VISIBLE_PT.min(wh).max(MIN_SLIVER_PT);
-    monitors.is_empty()
-        || monitors.iter().any(|&(mx, my, mw, mh)| {
-            // Origins are signed: a display left of or above the primary is negative.
-            let overlap_w = (wx + ww).min(mx + mw) - wx.max(mx);
-            let overlap_h = (wy + wh).min(my + mh) - wy.max(my);
-            overlap_w >= need_w && overlap_h >= need_h
-        })
+    if monitors.is_empty() {
+        return true;
+    }
+    // ponytail: area + bounding box of the per-monitor pieces, not a true
+    // "union contains a need_w x need_h square" test. Slivers along two edges
+    // on two different monitors could pass; macOS displays tile without
+    // overlap, so the area isn't double-counted.
+    let (mut area, mut left, mut top, mut right, mut bottom) =
+        (0.0, f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(mx, my, mw, mh) in monitors {
+        // Origins are signed: a display left of or above the primary is negative.
+        let (x0, y0) = (wx.max(mx), wy.max(my));
+        let (x1, y1) = ((wx + ww).min(mx + mw), (wy + wh).min(my + mh));
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        area += (x1 - x0) * (y1 - y0);
+        (left, top, right, bottom) = (left.min(x0), top.min(y0), right.max(x1), bottom.max(y1));
+    }
+    right - left >= need_w && bottom - top >= need_h && area >= need_w * need_h
 }
 
 /// Every monitor's rect in points; `None` when tao can't list them.
@@ -122,53 +134,45 @@ fn parked(window: &WebviewWindow, monitors: Option<&[Rect]>) -> bool {
 
 /// The whole hide decision: hidden while the screens sleep (no geometry read),
 /// or while the window is parked off every monitor, so a wake keeps a parked
-/// window hidden. Biased toward visible: parked takes two agreeing reads, the
-/// second fresh. A mixed-scale monitor read (see `to_points`) is a one-read
-/// glitch at the instant an NSScreen appears or vanishes, so two in a row
-/// don't happen. The re-read costs only parked windows, which rarely move.
-fn decide(screens_asleep: bool, parked_now: bool, parked_on_reread: impl FnOnce() -> bool) -> bool {
-    screens_asleep || (parked_now && parked_on_reread())
+/// window hidden.
+fn decide(screens_asleep: bool, parked: bool) -> bool {
+    screens_asleep || parked
+}
+
+/// Whether `hidden` differs from what the view last got. `None` (never sent)
+/// is "shown", so a new on-screen window costs no send at all.
+fn needs_send(sent: Option<bool>, hidden: bool) -> bool {
+    sent.unwrap_or(false) != hidden
 }
 
 /// Whether the closure was queued; only then is the decision recorded as sent.
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn set_view_hidden(window: &WebviewWindow, hidden: bool) -> bool {
-    use cocoa::base::{id, nil, BOOL, NO, YES};
+    use cocoa::base::{id, BOOL, NO, YES};
     use objc::{msg_send, sel, sel_impl};
-    // SAFETY: `with_webview` runs this closure on the main thread with the
-    // window's live WKWebView; `inner()` is that NSView (null-checked below).
-    // Every message matches its AppKit signature: `isHidden` -> BOOL,
-    // `setHidden:(BOOL)` -> void, `window` -> NSWindow* (nil-checked),
+    // SAFETY: `with_wk_webview` runs this closure on the main thread with the
+    // window's live WKWebView and its NSWindow. Every message matches its
+    // AppKit signature: `isHidden` -> BOOL, `setHidden:(BOOL)` -> void,
     // `firstResponder` -> NSResponder*, `makeFirstResponder:(NSResponder*)`
     // -> BOOL.
-    window
-        .with_webview(move |webview| unsafe {
-            let wv = webview.inner() as id;
-            if wv.is_null() {
-                return;
-            }
-            let is_hidden: BOOL = msg_send![wv, isHidden];
-            if (is_hidden == YES) == hidden {
-                return;
-            }
-            let _: () = msg_send![wv, setHidden: if hidden { YES } else { NO }];
-            if hidden {
-                return;
-            }
-            // Hiding a view that holds first responder makes AppKit hand focus back
-            // to the window, so a revealed page would ignore the keyboard until
-            // clicked. Give it back unless something else took focus meanwhile.
-            let ns_window: id = msg_send![wv, window];
-            if ns_window == nil {
-                return;
-            }
-            let responder: id = msg_send![ns_window, firstResponder];
-            if responder == nil || responder == ns_window {
-                let _: BOOL = msg_send![ns_window, makeFirstResponder: wv];
-            }
-        })
-        .is_ok()
+    super::with_wk_webview(window, move |wv, ns_window| unsafe {
+        let is_hidden: BOOL = msg_send![wv, isHidden];
+        if (is_hidden == YES) == hidden {
+            return;
+        }
+        let _: () = msg_send![wv, setHidden: if hidden { YES } else { NO }];
+        if hidden {
+            return;
+        }
+        // Hiding a view that holds first responder makes AppKit hand focus back
+        // to the window, so a revealed page would ignore the keyboard until
+        // clicked. Give it back unless something else took focus meanwhile.
+        let responder: id = msg_send![ns_window, firstResponder];
+        if responder.is_null() || responder == ns_window {
+            let _: BOOL = msg_send![ns_window, makeFirstResponder: wv];
+        }
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -185,11 +189,8 @@ fn sent_hidden(label: &str) -> Option<bool> {
 /// asleep, where no geometry is needed). Sends to the view only on a change.
 fn apply(window: &WebviewWindow, asleep: bool, monitors: Option<&[Rect]>) {
     let label = window.label();
-    let sent = sent_hidden(label);
-    let hidden = decide(asleep, parked(window, monitors), || {
-        parked(window, monitor_rects(window.app_handle()).as_deref())
-    });
-    if sent == Some(hidden) || !set_view_hidden(window, hidden) {
+    let hidden = decide(asleep, parked(window, monitors));
+    if !needs_send(sent_hidden(label), hidden) || !set_view_hidden(window, hidden) {
         return;
     }
     SENT.lock()
@@ -199,7 +200,8 @@ fn apply(window: &WebviewWindow, asleep: bool, monitors: Option<&[Rect]>) {
 }
 
 /// Re-decide one window's view: hidden while the screens sleep or the window is
-/// parked. Called on every move/resize/focus of a webview window.
+/// parked. Called on every move/resize/focus of a webview window, which tauri
+/// delivers on the main thread.
 pub fn refresh(window: &WebviewWindow) {
     let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
     let monitors = if asleep {
@@ -214,16 +216,20 @@ pub fn refresh(window: &WebviewWindow) {
 /// signal and at the end of every display reconfiguration, so a window whose
 /// display returns is revealed (and one stranded by a removal hidden) without
 /// waiting for the window to move.
+///
+/// Callable from any thread (the wake recovery runs on its own): the work hops
+/// to the main thread, inline when already there. tao reads `NSScreen` for the
+/// monitor list on the calling thread (tauri-runtime-wry 2.10.1
+/// `available_monitors`), which AppKit only allows on main.
 pub fn refresh_all(app_handle: &tauri::AppHandle) {
-    let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
-    let monitors = if asleep {
-        None
-    } else {
-        monitor_rects(app_handle)
-    };
-    for window in app_handle.webview_windows().values() {
-        apply(window, asleep, monitors.as_deref());
-    }
+    let handle = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
+        let monitors = if asleep { None } else { monitor_rects(&handle) };
+        for window in handle.webview_windows().values() {
+            apply(window, asleep, monitors.as_deref());
+        }
+    });
 }
 
 /// Drop a destroyed window's sent state, so a window re-created under the same
@@ -255,20 +261,32 @@ mod tests {
     fn aerospace_corner_sliver_is_parked() {
         // AeroSpace parks a hidden-workspace window at the bottom-right corner,
         // one pixel on-screen (half a point on Retina).
-        assert!(!meaningfully_visible(&[AIR], (1709.5, 1111.5, 1200.0, 800.0)));
+        assert!(!meaningfully_visible(
+            &[AIR],
+            (1709.5, 1111.5, 1200.0, 800.0)
+        ));
     }
 
     #[test]
     fn on_screen_and_partly_off_windows_are_visible() {
         assert!(meaningfully_visible(&[AIR], (100.0, 50.0, 1200.0, 800.0)));
-        assert!(meaningfully_visible(&[AIR], (1500.0, 1000.0, 1200.0, 800.0)));
+        assert!(meaningfully_visible(
+            &[AIR],
+            (1500.0, 1000.0, 1200.0, 800.0)
+        ));
     }
 
     #[test]
     fn negative_origin_monitor_counts() {
         let left = (-1280.0, 0.0, 1280.0, 720.0);
-        assert!(meaningfully_visible(&[AIR, left], (-1000.0, 100.0, 600.0, 400.0)));
-        assert!(!meaningfully_visible(&[AIR], (-1000.0, 100.0, 600.0, 400.0)));
+        assert!(meaningfully_visible(
+            &[AIR, left],
+            (-1000.0, 100.0, 600.0, 400.0)
+        ));
+        assert!(!meaningfully_visible(
+            &[AIR],
+            (-1000.0, 100.0, 600.0, 400.0)
+        ));
     }
 
     #[test]
@@ -303,24 +321,43 @@ mod tests {
     }
 
     #[test]
-    fn wake_keeps_a_parked_window_hidden() {
-        let is_parked = !meaningfully_visible(&[AIR], (1709.5, 1111.5, 1200.0, 800.0));
-        assert!(decide(false, is_parked, || true));
+    fn short_window_split_across_stacked_monitors_is_visible() {
+        // A 1x monitor stacked on top of the Air; Quick Recall's 60-pt bar
+        // straddles the seam, 30 pt on each. Neither alone reaches 50 pt.
+        let top = (0.0, -1080.0, 1920.0, 1080.0);
+        assert!(meaningfully_visible(
+            &[top, AIR],
+            (300.0, -30.0, 800.0, 60.0)
+        ));
     }
 
     #[test]
-    fn hiding_takes_two_parked_reads() {
-        // A one-read glitch (the re-read says on-screen) keeps the view visible.
-        assert!(!decide(false, true, || false));
-        // On-screen or asleep: decided without a re-read.
-        assert!(!decide(false, false, || unreachable!()));
-        assert!(decide(true, false, || unreachable!()));
+    fn wide_strip_on_one_axis_is_still_parked() {
+        // Full width on-screen but a 3-pt strip of height: the pooled area
+        // clears 50x50, the height doesn't.
+        assert!(!meaningfully_visible(&[AIR], (0.0, 1109.0, 1200.0, 800.0)));
+    }
+
+    #[test]
+    fn wake_keeps_a_parked_window_hidden() {
+        let is_parked = !meaningfully_visible(&[AIR], (1709.5, 1111.5, 1200.0, 800.0));
+        assert!(decide(false, is_parked));
     }
 
     #[test]
     fn sleep_hides_an_on_screen_window() {
         let is_parked = !meaningfully_visible(&[AIR], (100.0, 50.0, 1200.0, 800.0));
-        assert!(decide(true, is_parked, || unreachable!()));
-        assert!(!decide(false, is_parked, || unreachable!()));
+        assert!(decide(true, is_parked));
+        assert!(!decide(false, is_parked));
+    }
+
+    #[test]
+    fn a_never_parked_new_window_sends_nothing() {
+        // Every send is an AppKit round trip; a new window's first move/focus
+        // must not pay one just because nothing was recorded yet.
+        assert!(!needs_send(None, decide(false, false)));
+        assert!(needs_send(None, true));
+        assert!(needs_send(Some(true), false));
+        assert!(!needs_send(Some(true), true));
     }
 }

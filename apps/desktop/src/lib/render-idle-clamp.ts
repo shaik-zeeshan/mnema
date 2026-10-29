@@ -7,51 +7,66 @@
 // non-purgeable IOSurface — the leak the render-idle gate exists to stop, arriving
 // through a door the gate cannot see.
 
-/** A monitor or window rectangle in the shared global physical-pixel space. */
+/** A rectangle in physical pixels, as tauri reports monitors and windows. */
 export type Rect = {
   position: { x: number; y: number };
   size: { width: number; height: number };
 };
 
-/**
- * How much of the window must overlap some monitor, on BOTH axes, to count as
- * meaningfully visible. Physical pixels.
- */
-export const MIN_VISIBLE_PX = 100;
+/** A monitor as `availableMonitors()` returns it. */
+export type Monitor = Rect & { scaleFactor: number };
 
 /**
- * Where the window should be moved to, or `null` to leave it alone.
+ * How much of the window must overlap some monitor, on BOTH axes, to count as
+ * meaningfully visible. Logical points, the backend's `parked_view`
+ * `MIN_VISIBLE_PT`.
+ */
+export const MIN_VISIBLE_PT = 50;
+
+/**
+ * Where the window should be moved to, in global logical points, or `null` to
+ * leave it alone.
+ *
+ * Tauri's physical rects are each `points × that rect's own scale factor`, so a
+ * Retina monitor beside a 1x one share no pixel space. Every rect is divided by
+ * its own scale first; AppKit's global point space is the shared one.
  *
  * `null` means either "already meaningfully visible somewhere" or "no monitors to
  * move it to" — both are no-ops for the caller.
  */
 export function clampTarget(
-  monitors: Rect[],
+  monitors: Monitor[],
   pos: { x: number; y: number },
   size: { width: number; height: number },
+  scaleFactor: number,
 ): { x: number; y: number } | null {
   if (monitors.length === 0) return null;
 
-  const meaningfullyVisible = monitors.some((m) => {
+  const w = { x: pos.x / scaleFactor, y: pos.y / scaleFactor };
+  const ws = { width: size.width / scaleFactor, height: size.height / scaleFactor };
+  const screens = monitors.map((m) => ({
+    x: m.position.x / m.scaleFactor,
+    y: m.position.y / m.scaleFactor,
+    width: m.size.width / m.scaleFactor,
+    height: m.size.height / m.scaleFactor,
+  }));
+
+  const meaningfullyVisible = screens.some((m) => {
     // Plain interval intersection on each axis. Monitor origins are signed — a
     // display to the left of or above the primary has negative coordinates — so
     // this must never take an absolute value or assume the primary is at (0, 0).
-    const overlapW =
-      Math.min(pos.x + size.width, m.position.x + m.size.width) -
-      Math.max(pos.x, m.position.x);
-    const overlapH =
-      Math.min(pos.y + size.height, m.position.y + m.size.height) -
-      Math.max(pos.y, m.position.y);
-    return overlapW >= MIN_VISIBLE_PX && overlapH >= MIN_VISIBLE_PX;
+    const overlapW = Math.min(w.x + ws.width, m.x + m.width) - Math.max(w.x, m.x);
+    const overlapH = Math.min(w.y + ws.height, m.y + m.height) - Math.max(w.y, m.y);
+    return overlapW >= MIN_VISIBLE_PT && overlapH >= MIN_VISIBLE_PT;
   });
   if (meaningfullyVisible) return null;
 
   // Centre on the first remaining monitor. `Math.max(0, …)` keeps a window LARGER
   // than the target monitor pinned to that monitor's origin instead of being pushed
   // to a negative offset that would park it offscreen again.
-  const m = monitors[0];
+  const m = screens[0];
   return {
-    x: m.position.x + Math.max(0, Math.round((m.size.width - size.width) / 2)),
-    y: m.position.y + Math.max(0, Math.round((m.size.height - size.height) / 2)),
+    x: m.x + Math.max(0, Math.round((m.width - ws.width) / 2)),
+    y: m.y + Math.max(0, Math.round((m.height - ws.height) / 2)),
   };
 }

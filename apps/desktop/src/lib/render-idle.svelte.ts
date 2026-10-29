@@ -10,7 +10,7 @@
 // and the first tick after resume passes the gate.
 import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 
 import { setFramePreviewRenderGate } from "$lib/frame-preview";
@@ -126,18 +126,20 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
 async function clampWindowOntoScreen(): Promise<void> {
   try {
     const win = getCurrentWindow();
-    const [monitors, pos, size] = await Promise.all([
+    const [monitors, pos, size, scale] = await Promise.all([
       availableMonitors(),
       win.outerPosition(),
       win.outerSize(),
+      win.scaleFactor(),
     ]);
     // The geometry lives in `$lib/render-idle-clamp` so it can be tested without a
     // window: signed monitor origins, oversized windows, and the overlap threshold
     // are all easy to get subtly wrong and impossible to assert from here.
-    const target = clampTarget(monitors, pos, size);
+    const target = clampTarget(monitors, pos, size, scale);
     if (target === null) return;
-    await win.setPosition(new PhysicalPosition(target.x, target.y));
-  } catch {
+    await win.setPosition(new LogicalPosition(target.x, target.y));
+  } catch (error) {
     // Best-effort: a failed clamp just leaves the window where it was.
+    console.debug("render-idle: window clamp failed", error);
   }
 }
