@@ -187,6 +187,25 @@ pub struct NativeCaptureRuntime {
     /// not implement `Default`).
     #[cfg(target_os = "macos")]
     pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
+    /// Injectable "is the Mac away" probe, read wherever the microphone could
+    /// open: `None` means the live lock and display state
+    /// ([`super::lifecycle::mac_is_away`]). Tests script it, since they can lock
+    /// neither the Mac nor its displays.
+    #[cfg(target_os = "macos")]
+    pub away_probe: Option<fn() -> bool>,
+    /// Stands in for the microphone session's device where the away hold and
+    /// the reopen check look at it: a real session needs the hardware and a TCC
+    /// grant, so tests cannot hold one.
+    #[cfg(all(test, target_os = "macos"))]
+    pub test_microphone_device: Option<TestMicrophoneDevice>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[derive(Debug, Default)]
+pub struct TestMicrophoneDevice {
+    pub running: bool,
+    /// The device is gone: a restart reports it did not come back.
+    pub gone: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -400,6 +419,9 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.user_capture_paused = false;
     runtime.microphone_away_hold = false;
     runtime.microphone_waiting_for_device = false;
+    // A lend that never came back (its recording panicked) must not hold the
+    // next session's microphone.
+    runtime.microphone_lent_out = false;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

@@ -451,7 +451,8 @@ pub(super) fn apply_microphone_output_finalization(
 /// live segment, as a rotation or pause does. A bare `session.stop()` drops it,
 /// so the file later committed keeps its uncorrected stamp (trimmed silence, or
 /// audio queued before a resume). Leaves `active_microphone_session` to the
-/// caller, which decides what a failed stop means.
+/// caller, which decides what a failed stop means; a stop that succeeded leaves
+/// nothing recording ([`apply_stopped_microphone_finalization`]).
 #[cfg(target_os = "macos")]
 pub(super) fn stop_microphone_session_for_runtime(
     runtime: &mut NativeCaptureRuntime,
@@ -468,6 +469,12 @@ pub(super) fn stop_microphone_session_for_runtime(
     Ok(())
 }
 
+/// Books a stopped session's finalization: the closed file, under its corrected
+/// name, stays in the live segment's outputs for the next commit, and nothing
+/// is recording any more. The recording file must not outlive the stop — the
+/// finalization may have renamed it, so a suspension would carry the stale name
+/// instead of the real file, and a rotation carries it forward until a later
+/// commit deletes it as an intermediate.
 #[cfg(target_os = "macos")]
 pub(super) fn apply_stopped_microphone_finalization(
     runtime: &mut NativeCaptureRuntime,
@@ -480,6 +487,7 @@ pub(super) fn apply_stopped_microphone_finalization(
         runtime.segment_schedule.as_ref(),
         runtime.current_segment_index,
     );
+    runtime.microphone_recording_file = None;
 }
 
 #[cfg(target_os = "macos")]
@@ -1218,6 +1226,9 @@ pub(super) fn suspend_screen_capture(
         // inactivity-pause paths both commit this file (ADR 0040 "the current
         // segment is still healthy ... so commit it before ending").
         commit_suspended_microphone_outputs(app_handle, runtime);
+        if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+            super::output::clear_current_microphone_output_file(output_files);
+        }
         runtime.microphone_recording_file = None;
         // The tap writes to the same full volume, so it stops here too — and its
         // in-flight segment is committed by `commit_suspended_screen_system_outputs`
@@ -3975,17 +3986,29 @@ fn refresh_current_segment_sources_for_pause_state(
 /// Both are independent of the screen, so both can still be recording: the
 /// microphone on its own session, system audio on its own tap. A file dropped
 /// here is a file no rotation or stop ever commits.
+///
+/// The microphone's files closed this segment are carried too: the suspension
+/// commits screen and system audio only, and a stop that closed one (a vanished
+/// device, enrollment) leaves it for the next rotation to commit.
 #[cfg(target_os = "macos")]
 fn preserve_live_audio_continuation_outputs(runtime: &mut NativeCaptureRuntime) {
     let mut audio_continuation = empty_output_files();
-    let mut has_live_audio = false;
+    if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
+        audio_continuation.microphone_file = output_files.microphone_file.clone();
+        audio_continuation.microphone_files = output_files.microphone_files.clone();
+    }
+    let mut has_live_audio = !audio_continuation.microphone_files.is_empty();
 
     if live_microphone_continuation_file(runtime).is_some()
         || (!runtime.inactivity.microphone_paused && runtime.active_microphone_session.is_some())
     {
         has_live_audio = true;
         if let Some(mic_file) = live_microphone_continuation_file(runtime) {
-            set_current_microphone_output_file(&mut audio_continuation, mic_file);
+            if audio_continuation.microphone_files.contains(&mic_file) {
+                audio_continuation.microphone_file = Some(mic_file);
+            } else {
+                set_current_microphone_output_file(&mut audio_continuation, mic_file);
+            }
         }
     }
 
@@ -5574,11 +5597,21 @@ pub(super) fn start_capture_runtime(
                 message: format!("Failed to create capture recordings directory: {error}"),
             })?;
 
+            // Lock is away: a start while the Mac is away (a trigger, a
+            // schedule) leaves the microphone down under the away hold, and the
+            // tick opens it once the Mac is back.
+            let microphone_held_away = sources.microphone && super::lifecycle::mac_is_away(runtime);
+            let first_segment_sources = CaptureSources {
+                microphone: sources.microphone && !microphone_held_away,
+                ..sources.clone()
+            };
+
             let segment_index = 1;
             let first_segment_dir = segment_planner.segment_dir(segment_index);
             let first_screen_output_file = segment_planner.segment_screen_output(segment_index);
             let first_microphone_output_path = microphone_planner
                 .as_ref()
+                .filter(|_| first_segment_sources.microphone)
                 .map(|p| p.microphone_file(segment_index));
             let effective_screen_bitrate_bps = compute_effective_screen_bitrate_bps(settings);
 
@@ -5630,7 +5663,7 @@ pub(super) fn start_capture_runtime(
             ) = start_segment_with_inactivity_tail_trim_seconds(
                 &first_segment_dir,
                 Some(&first_screen_output_file),
-                &sources,
+                &first_segment_sources,
                 settings.screen_frame_rate,
                 &settings.screen_resolution,
                 effective_screen_bitrate_bps,
@@ -5702,6 +5735,7 @@ pub(super) fn start_capture_runtime(
             runtime.microphone_recording_file = microphone_recording_file;
             runtime.active_screen_session = active_screen_session;
             runtime.active_microphone_session = active_microphone_session;
+            runtime.microphone_away_hold = microphone_held_away;
             runtime.capture_suspension = None;
 
             // The tap starts last and on its own terms: a session with screen and
@@ -5795,6 +5829,13 @@ pub(super) fn stop_capture_runtime(
         }
         // An away hold belongs to the session just stopped.
         runtime.microphone_away_hold = false;
+        // So do the inactivity pauses: every family stops here. One left
+        // standing would keep the fresh file a user resume opens out of rotation
+        // (past the 5-minute cap) until the next activity resume closed it and
+        // dropped its finalization.
+        runtime
+            .inactivity
+            .set_family_paused_states(false, false, false);
 
         // Before the finalize below, like every other source: it closes the tap's
         // asset writer, and `finalize_capture_outputs` drops an m4a that has no

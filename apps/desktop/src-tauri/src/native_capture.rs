@@ -2736,13 +2736,26 @@ pub fn get_microphone_controller_state(
     )
 }
 
+/// Off the main thread: settling a waited-for device takes the capture lock
+/// (held for seconds while frame artifacts flush) and can start an
+/// AVCaptureSession.
 #[tauri::command]
-pub fn update_microphone_controller(
+pub async fn update_microphone_controller(
     request: UpdateMicrophoneControllerRequest,
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
 ) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
-    update_microphone_controller_impl(request, &app_handle, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        update_microphone_controller_impl(
+            request,
+            &app_handle,
+            app_handle.state::<MicrophoneControllerPreferencesState>(),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "microphone_controller_update_task_failed".to_string(),
+        message: format!("Microphone preference update task failed: {error}"),
+    })?
 }
 
 /// Longest clip the bounded recorder will take. The caller picks the length
@@ -2878,29 +2891,14 @@ fn record_bounded_microphone_clip_blocking(
         let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
         lifecycle.release_microphone_for_out_of_band_recording()?
     };
+    // Hands the microphone back when the take ends, however it ends.
+    let lend = released.then(|| MicrophoneLend(capture_state.inner()));
 
     let clip = take_bounded_microphone_clip(
         duration_ms.clamp(MIN_BOUNDED_MICROPHONE_CLIP_MS, MAX_BOUNDED_MICROPHONE_CLIP_MS),
         device_id.as_deref(),
     );
-
-    if released {
-        let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
-        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
-            // The clip itself is fine, so this only logs. Segment rotation and the
-            // device-change reconnect do NOT re-arm a microphone that has no
-            // session — rotation only rotates an existing one, and the reconnect
-            // is gated on a SpecificDevice preference. The single path that can
-            // start one from scratch is `resume_microphone_from_inactivity`, and
-            // it runs only while the family is paused, which is exactly why
-            // `restore_microphone_after_out_of_band_recording` leaves the
-            // inactivity pause standing when its restart fails.
-            debug_log::log_error(format!(
-                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
-                error.code, error.message
-            ));
-        }
-    }
+    drop(lend);
 
     // The enrollment surface plays the take back before committing to it, and
     // the asset protocol serves only explicitly-allowed paths (empty default
@@ -2915,6 +2913,31 @@ fn record_bounded_microphone_clip_blocking(
     }
 
     clip
+}
+
+/// A microphone lent to a bounded recording, handed back on drop — a take that
+/// panics included, or `microphone_lent_out` would keep the live session's
+/// microphone down for good.
+#[cfg(target_os = "macos")]
+struct MicrophoneLend<'a>(&'a NativeCaptureState);
+
+#[cfg(target_os = "macos")]
+impl Drop for MicrophoneLend<'_> {
+    fn drop(&mut self) {
+        let mut lifecycle = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
+            // The clip itself is fine, so this only logs. The tick reopens a
+            // microphone left with no session once nothing holds it
+            // (`lifecycle::reopen_unwakeable_microphone`).
+            debug_log::log_error(format!(
+                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
+                error.code, error.message
+            ));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
