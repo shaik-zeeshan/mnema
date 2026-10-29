@@ -83,7 +83,8 @@ pub(super) fn microphone_free_to_record(runtime: &NativeCaptureRuntime) -> bool 
             .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
 }
 
-/// Lock is away (founder ruling 2026-10-23): the Mac is locked or every
+/// Lock is away (founder ruling 2026-10-23): the Mac is locked, another user
+/// holds the console (fast user switching, ruling 2026-10-29), or every
 /// display is asleep. Read by the tick and by every path that opens the
 /// microphone on its own initiative.
 #[cfg(target_os = "macos")]
@@ -91,7 +92,7 @@ pub(super) fn mac_is_away(runtime: &NativeCaptureRuntime) -> bool {
     match runtime.away_probe {
         Some(probe) => probe(),
         None => {
-            super::system_idle::session_screen_is_locked()
+            super::system_idle::session_is_away()
                 || !capture_screen::screen_display_available()
         }
     }
