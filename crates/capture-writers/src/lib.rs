@@ -339,6 +339,11 @@ pub struct AudioAssetWriterState {
     started: bool,
     // Host-clock PTS the session started at; the file's frame 0.
     session_start_secs: Option<f64>,
+    // Host-clock end of the last appended sample.
+    appended_end_secs: Option<f64>,
+    // Seconds missing between appended samples, so file time no longer tracks
+    // host time past the first hole.
+    timeline_gap_secs: f64,
     appended_samples: u64,
     expected_sample_format: Option<AudioSampleFormat>,
     tail_trim_seconds: u64,
@@ -409,6 +414,28 @@ fn flush_audio_tail_buffer(
 #[cfg(target_os = "macos")]
 pub fn audio_writer_session_start_secs(writer_state: &AudioAssetWriterState) -> Option<f64> {
     writer_state.session_start_secs
+}
+
+/// Seconds of audio missing between the samples appended so far: buffers
+/// dropped after the session started (a format flip such as Bluetooth A2DP to
+/// HFP, a full queue). Any gap means a file offset no longer maps to
+/// `session_start_secs + offset` past it.
+#[cfg(target_os = "macos")]
+pub fn audio_writer_timeline_gap_secs(writer_state: &AudioAssetWriterState) -> f64 {
+    writer_state.timeline_gap_secs
+}
+
+/// Delivery jitter allowed between one sample's end and the next one's start
+/// before the difference counts as missing audio.
+#[cfg(target_os = "macos")]
+const AUDIO_TIMELINE_GAP_TOLERANCE_SECS: f64 = 0.1;
+
+#[cfg(target_os = "macos")]
+fn audio_timeline_gap_secs(previous_end_secs: Option<f64>, start_secs: Option<f64>) -> f64 {
+    match (previous_end_secs, start_secs) {
+        (Some(end), Some(start)) if start - end > AUDIO_TIMELINE_GAP_TOLERANCE_SECS => start - end,
+        _ => 0.0,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -966,6 +993,8 @@ fn create_audio_asset_writer_with_format_internal(
         input,
         started: false,
         session_start_secs: None,
+        appended_end_secs: None,
+        timeline_gap_secs: 0.0,
         appended_samples: 0,
         expected_sample_format,
         tail_trim_seconds: 0,
@@ -1091,6 +1120,12 @@ fn append_audio_sample_to_writer_untrimmed(
     }
 
     writer_state.appended_samples += 1;
+    writer_state.timeline_gap_secs += audio_timeline_gap_secs(
+        writer_state.appended_end_secs,
+        sample_buf_start_secs(sample_buf),
+    );
+    writer_state.appended_end_secs =
+        sample_buf_end_secs(sample_buf).or(writer_state.appended_end_secs);
 
     Ok(AudioSampleAppendDisposition::Appended)
 }
@@ -1828,6 +1863,18 @@ mod tests {
             AUDIO_TRIM_RANGE_PAST_END_CODE
         );
         assert!(!output_written, "nothing to re-encode, so nothing written");
+    }
+
+    #[test]
+    fn audio_timeline_gap_counts_only_holes_past_delivery_jitter() {
+        // Back to back, jittered, overlapping, or untimed: no hole.
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(10.0)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(10.05)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(9.9)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(None, Some(10.0)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), None), 0.0);
+        // Buffers dropped across a Bluetooth profile flip leave a real hole.
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(12.5)), 2.5);
     }
 
     #[test]

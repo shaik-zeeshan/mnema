@@ -6,8 +6,8 @@ use capture_types::{
 #[cfg(target_os = "macos")]
 use capture_writers::{
     audio_sample_format_is_compatible_with_writer_format, audio_writer_session_start_secs,
-    create_audio_asset_writer_for_sample_format, derive_audio_activity_level_from_sample_buf,
-    derive_audio_sample_format_from_sample_buf,
+    audio_writer_timeline_gap_secs, create_audio_asset_writer_for_sample_format,
+    derive_audio_activity_level_from_sample_buf, derive_audio_sample_format_from_sample_buf,
     finalize_microphone_output_context as writers_finalize_microphone_output_context,
     finish_audio_asset_writer_discarding_inactivity_tail, record_audio_writer_tail_activity,
     set_audio_writer_activity_threshold, set_audio_writer_inactivity_tail_trim_seconds,
@@ -682,6 +682,7 @@ mod tests {
             super::microphone_vad_trim_range_secs(
                 &speech_boundaries(session_start + 40.0, session_start + 100.0),
                 Some(session_start),
+                0.0,
             ),
             Some((39.0, 101.0))
         );
@@ -691,6 +692,7 @@ mod tests {
             super::microphone_vad_trim_range_secs(
                 &speech_boundaries(session_start, session_start + 5.0),
                 Some(session_start),
+                0.0,
             )
             .map(|(start, _)| start),
             Some(0.0)
@@ -701,6 +703,7 @@ mod tests {
             super::microphone_vad_trim_range_secs(
                 &speech_boundaries(session_start - 3.0, session_start + 5.0),
                 Some(session_start),
+                0.0,
             ),
             Some((0.0, 6.0))
         );
@@ -713,6 +716,7 @@ mod tests {
             super::microphone_vad_trim_range_secs(
                 &speech_boundaries(session_start - 2.0, session_start - 0.5),
                 Some(session_start),
+                0.0,
             ),
             None,
             "a previous file's leftover speech must keep the whole file, not trim it to nothing"
@@ -720,9 +724,57 @@ mod tests {
     }
 
     #[test]
+    fn vad_trim_keeps_a_file_with_a_timeline_gap_whole() {
+        // Buffers dropped mid-file (a Bluetooth profile flip) shift every later
+        // sample earlier in the file than its host time says.
+        let session_start = 1_000.0;
+        let boundaries = speech_boundaries(session_start + 40.0, session_start + 100.0);
+        assert_eq!(
+            super::microphone_vad_trim_range_secs(&boundaries, Some(session_start), 0.0),
+            Some((39.0, 101.0))
+        );
+        assert_eq!(
+            super::microphone_vad_trim_range_secs(&boundaries, Some(session_start), 2.5),
+            None
+        );
+    }
+
+    #[test]
+    fn dropped_vad_frames_keep_the_output_whole() {
+        let _guard = microphone_activity_state_test_guard();
+        reset_microphone_vad_tail_activity();
+        let mut context =
+            tail_activity_context(MicrophoneInactivityTailTrimActivityMode::VadSpeech, 10);
+        context.boundary_trim_enabled = true;
+
+        // A capture tick stalled past the queue: the oldest frames are lost.
+        let mut feed = MicrophoneVadPcmFeedState::default();
+        let format = pcm_format(
+            16_000.0,
+            1,
+            32,
+            cidre::cat::AudioFormatFlags::IS_FLOAT | cidre::cat::AudioFormatFlags::IS_PACKED,
+        );
+        let frame = vec![0.0; MICROPHONE_VAD_PCM_FRAME_SAMPLE_COUNT];
+        for index in 0..=super::MAX_MICROPHONE_VAD_PCM_FRAMES as u64 {
+            feed_microphone_vad_pcm_samples(&mut feed, format, index, Some(index as f64), &frame);
+        }
+        super::record_microphone_vad_speech_event(MicrophoneVadSpeechEvent {
+            media_start_secs: Some(50.0),
+            media_end_secs: Some(51.0),
+        });
+
+        let finalization = super::finalize_microphone_vad_boundary_trim(&mut context)
+            .expect("boundary finalization should tolerate a missing source file");
+        assert!(context.boundary_trim_disabled);
+        // The untrimmed path, not the trim path's "missing_source_file".
+        assert_eq!(finalization.discard_reason, None);
+    }
+
+    #[test]
     fn vad_trim_without_a_session_start_keeps_the_full_file() {
         assert_eq!(
-            super::microphone_vad_trim_range_secs(&speech_boundaries(3.0, 4.0), None),
+            super::microphone_vad_trim_range_secs(&speech_boundaries(3.0, 4.0), None, 0.0),
             None
         );
     }
@@ -956,6 +1008,11 @@ mod tests {
             dts: cidre::cm::Time::invalid(),
         };
         let sample_size = 4usize;
+        // SAFETY: every pointer is to a live local that outlives the call:
+        // `timing` and `sample_size` are single entries, matching the counts of
+        // 1, and `block` holds `frames` packed 4-byte frames as `format_desc`
+        // and `sample_size` describe. No make-data-ready callback, so its null
+        // refcon is never read.
         let sample_buf = unsafe {
             let mut created = None;
             cidre::cm::SampleBuf::create_in(
@@ -1221,6 +1278,73 @@ mod tests {
     }
 
     #[test]
+    fn delegates_created_on_many_threads_at_once_all_succeed() {
+        // Order-dependent: only catches the registration race when no earlier
+        // test in this process has registered the class yet.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    drop(super::new_mic_output_delegate(
+                        super::microphone_probe_only_context(),
+                    ));
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("delegate creation panicked");
+        }
+    }
+
+    #[test]
+    fn context_swaps_on_the_output_queue_never_lose_or_duplicate_a_sample() {
+        // Stands in for AVFoundation: sample callbacks land on the serial output
+        // queue while this thread rotates and resumes the context under them.
+        const ROUNDS: usize = 20;
+        // Under MAX_PENDING_MIC_SAMPLES, so the ring bound never drops one.
+        const SAMPLES_PER_ROUND: usize = 100;
+        let queue = cidre::dispatch::Queue::serial_with_ar_pool();
+        let mut delegate = super::new_mic_output_delegate(super::microphone_probe_only_context());
+        let delegate_addr = &mut *delegate as *mut super::MicAudioDataOutputDelegate as usize;
+
+        for round in 0..ROUNDS {
+            let mut collected = 0;
+            for index in 0..SAMPLES_PER_ROUND {
+                queue.async_once(move || {
+                    // SAFETY: the delegate outlives every block (each round
+                    // drains the queue below), and blocks run one at a time on
+                    // the serial queue, exactly as AVFoundation's callback does.
+                    let delegate =
+                        unsafe { &mut *(delegate_addr as *mut super::MicAudioDataOutputDelegate) };
+                    push_bounded_pending_microphone_sample(
+                        &mut delegate.inner_mut().pending_samples,
+                        host_clock_pcm_sample(index as f64, 16),
+                    );
+                });
+                if index % 3 != 0 {
+                    continue;
+                }
+                let previous =
+                    super::with_output_context_on_queue(&queue, &mut delegate, |context| {
+                        let next = super::microphone_probe_only_context();
+                        if index % 2 == 0 {
+                            replace_microphone_output_context_for_rotation(context, next)
+                        } else {
+                            resume_microphone_output_context(context, next, 0.0)
+                        }
+                    });
+                collected += previous.pending_samples.len();
+            }
+            collected += super::with_output_context_on_queue(&queue, &mut delegate, |context| {
+                std::mem::take(&mut context.pending_samples).len()
+            });
+            assert_eq!(collected, SAMPLES_PER_ROUND, "round {round}");
+        }
+    }
+
+    #[test]
     fn microphone_activity_state_tracks_latest_level_and_reset() {
         let _guard = microphone_activity_state_test_guard();
         reset_last_microphone_activity_unix_ms();
@@ -1327,6 +1451,8 @@ mod tests {
 
     #[test]
     fn vad_pcm_feed_is_bounded_to_recent_frames() {
+        // Overflowing bumps the shared trim-disabled sequence other tests read.
+        let _guard = microphone_activity_state_test_guard();
         let mut state = MicrophoneVadPcmFeedState::default();
         let format = pcm_format(
             16_000.0,
@@ -1580,6 +1706,9 @@ fn feed_microphone_vad_pcm_samples(
 
         while state.output_frames.len() > MAX_MICROPHONE_VAD_PCM_FRAMES {
             let _ = state.output_frames.pop_front();
+            // A frame the VAD never sees could hold speech, so the boundaries
+            // are no longer the whole story: keep this output whole.
+            disable_microphone_vad_boundary_trim_for_current_output();
         }
     }
 }
@@ -2227,12 +2356,21 @@ impl AvFoundationMicrophoneCaptureSession {
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         self.capture_session.stop_running();
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        let context = self.output_delegate.inner_mut();
-        context.inactivity_tail_trim_seconds = tail_trim_seconds;
-        context.activity_threshold = normalized_audio_activity_threshold(activity_threshold);
-        context.tail_activity_mode = tail_activity_mode;
-        finalize_microphone_output_context(self.output_delegate.inner_mut())
+        let mut previous_context = self.with_output_context(|context| {
+            std::mem::replace(context, microphone_probe_only_context())
+        });
+        previous_context.inactivity_tail_trim_seconds = tail_trim_seconds;
+        previous_context.activity_threshold =
+            normalized_audio_activity_threshold(activity_threshold);
+        previous_context.tail_activity_mode = tail_activity_mode;
+        finalize_microphone_output_context(&mut previous_context)
+    }
+
+    /// Run `f` on the context from the output queue, the serial queue the
+    /// sample callback runs on, so it never overlaps a callback mutating the
+    /// same context. Keep `f` to a swap; finalize what it hands back off-queue.
+    fn with_output_context<R>(&mut self, f: impl FnOnce(&mut MicrophoneOutputContext) -> R) -> R {
+        with_output_context_on_queue(&self.output_queue, &mut self.output_delegate, f)
     }
 
     /// Stop or restart the device without touching the output file, so the mic
@@ -2243,16 +2381,19 @@ impl AvFoundationMicrophoneCaptureSession {
     /// with what was heard after the restart, not before the stop. Returns
     /// whether the device reached the requested state: `startRunning` reports
     /// no error, so a device that failed to come back reads as not running.
+    ///
+    /// Blocks: `startRunning`/`stopRunning` are synchronous and can take
+    /// seconds on a Bluetooth device. A `true` from a restart is not a promise
+    /// either: the session can come up and die moments later (a runtime error
+    /// or interruption flips `isRunning` back), so callers must re-check
+    /// [`Self::capture_running`] rather than trust this result.
     pub fn set_capture_running(&mut self, running: bool) -> bool {
         if running {
             self.capture_session.start_running();
             return self.capture_session.is_running();
         }
         self.capture_session.stop_running();
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        // The sync drained the last callback and the device is stopped, so no
-        // other thread touches the context until the next restart.
-        discard_probe_only_pending_samples(self.output_delegate.inner_mut());
+        self.with_output_context(discard_probe_only_pending_samples);
         // The first buffer after a restart re-anchors VAD frame times; a partial
         // frame left over would carry the pre-stop times across the gap. Whole
         // frames already queued stay for the caller to drain.
@@ -2260,6 +2401,9 @@ impl AvFoundationMicrophoneCaptureSession {
         !self.capture_session.is_running()
     }
 
+    /// Whether the device is delivering audio right now. A session that exists
+    /// but reads `false` here (a restart that never came up, or one that died
+    /// after `set_capture_running(true)` returned) is capturing nothing.
     pub fn capture_running(&self) -> bool {
         self.capture_session.is_running()
     }
@@ -2275,17 +2419,16 @@ impl AvFoundationMicrophoneCaptureSession {
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
 
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        let current_context = self.output_delegate.inner_mut();
-        let next_context = microphone_output_context_for_output_url(
-            &output_url,
-            Some(output_file.to_string()),
-            current_context.inactivity_tail_trim_seconds,
-            current_context.activity_threshold,
-            current_context.tail_activity_mode,
-        );
-        let mut previous_context =
-            replace_microphone_output_context_for_rotation(current_context, next_context);
+        let mut previous_context = self.with_output_context(|current_context| {
+            let next_context = microphone_output_context_for_output_url(
+                &output_url,
+                Some(output_file.to_string()),
+                current_context.inactivity_tail_trim_seconds,
+                current_context.activity_threshold,
+                current_context.tail_activity_mode,
+            );
+            replace_microphone_output_context_for_rotation(current_context, next_context)
+        });
         finalize_microphone_output_context(&mut previous_context)
     }
 
@@ -2311,11 +2454,9 @@ impl AvFoundationMicrophoneCaptureSession {
         activity_threshold: f32,
         tail_activity_mode: MicrophoneInactivityTailTrimActivityMode,
     ) -> Result<MicrophoneOutputFinalization, CaptureErrorResponse> {
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
-        let mut previous_context = std::mem::replace(
-            self.output_delegate.inner_mut(),
-            microphone_probe_only_context(),
-        );
+        let mut previous_context = self.with_output_context(|context| {
+            std::mem::replace(context, microphone_probe_only_context())
+        });
         previous_context.inactivity_tail_trim_seconds = tail_trim_seconds;
         previous_context.activity_threshold =
             normalized_audio_activity_threshold(activity_threshold);
@@ -2352,7 +2493,6 @@ impl AvFoundationMicrophoneCaptureSession {
         let resumed_at_host_secs = cidre::cm::Clock::host_time_clock().time().as_secs();
         let output_url = cidre::ns::Url::with_fs_path_str(output_file, false);
 
-        synchronize_stream_output_queue(Some(self.output_queue.as_ref()));
         let next_context = microphone_output_context_for_output_url(
             &output_url,
             Some(output_file.to_string()),
@@ -2360,22 +2500,41 @@ impl AvFoundationMicrophoneCaptureSession {
             activity_threshold,
             tail_activity_mode,
         );
-        let mut previous_context = resume_microphone_output_context(
-            self.output_delegate.inner_mut(),
-            next_context,
-            resumed_at_host_secs,
-        );
+        let mut previous_context = self.with_output_context(|current_context| {
+            resume_microphone_output_context(current_context, next_context, resumed_at_host_secs)
+        });
         finalize_microphone_output_context(&mut previous_context)?;
 
         Ok(())
     }
 }
 
+/// cidre registers the delegate class lazily with an unguarded check-then-
+/// `objc_allocateClassPair(..).unwrap()` (cidre 0.15 `objc.rs:503-506`), so two
+/// threads creating the first delegate at once (a recording and an enrollment
+/// session) panic on the loser's nil class. Register it exactly once instead.
 #[cfg(target_os = "macos")]
-fn synchronize_stream_output_queue(queue: Option<&dispatch::Queue>) {
-    if let Some(queue) = queue {
-        queue.sync(|| ());
-    }
+fn new_mic_output_delegate(
+    context: MicrophoneOutputContext,
+) -> cidre::arc::R<MicAudioDataOutputDelegate> {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        MicAudioDataOutputDelegate::cls();
+    });
+    MicAudioDataOutputDelegate::with(context)
+}
+
+/// The delegate's context is reached through an unsynchronised raw cast, and
+/// AVFoundation calls the delegate on `queue` while the session runs, so the
+/// only safe place to touch it from another thread is a block on that serial
+/// queue. Queued callbacks run first, and none can start until `f` returns.
+#[cfg(target_os = "macos")]
+fn with_output_context_on_queue<R>(
+    queue: &dispatch::Queue,
+    delegate: &mut MicAudioDataOutputDelegate,
+    f: impl FnOnce(&mut MicrophoneOutputContext) -> R,
+) -> R {
+    queue.sync_once(|| f(delegate.inner_mut()))
 }
 
 #[cfg(target_os = "macos")]
@@ -2524,14 +2683,17 @@ const MICROPHONE_VAD_BOUNDARY_PADDING_SECS: f64 = 1.0;
 
 /// VAD boundaries are host-clock PTS; the file starts at the writer's session
 /// start, so rebase onto it before padding into a file-relative trim range.
-/// `None` keeps the whole file: no usable timing, or speech that all ended
-/// before this file's first sample (VAD frames a previous file left behind).
+/// `None` keeps the whole file: no usable timing, speech that all ended before
+/// this file's first sample (VAD frames a previous file left behind), or a file
+/// with a hole in it, where a file offset no longer maps back to host time.
 #[cfg(target_os = "macos")]
 fn microphone_vad_trim_range_secs(
     boundaries: &MicrophoneVadSpeechBoundaryState,
     session_start_secs: Option<f64>,
+    timeline_gap_secs: f64,
 ) -> Option<(f64, f64)> {
-    let (false, Some(first_start_secs), Some(last_end_secs), Some(session_start_secs)) = (
+    let (false, false, Some(first_start_secs), Some(last_end_secs), Some(session_start_secs)) = (
+        timeline_gap_secs > 0.0,
         boundaries.invalid_timing,
         boundaries.first_start_secs,
         boundaries.last_end_secs,
@@ -2640,7 +2802,20 @@ fn finalize_microphone_vad_boundary_trim(
         .writer
         .as_ref()
         .and_then(audio_writer_session_start_secs);
-    let trimmed_from_secs = microphone_vad_trim_range_secs(&boundaries, session_start_secs)
+    let timeline_gap_secs = context
+        .writer
+        .as_ref()
+        .map_or(0.0, audio_writer_timeline_gap_secs);
+    if timeline_gap_secs > 0.0 {
+        capture_runtime::debug_log!(
+            "[capture-microphone] microphone output has a {timeline_gap_secs:.2}s gap; keeping full source"
+        );
+    }
+    let trimmed_from_secs = microphone_vad_trim_range_secs(
+        &boundaries,
+        session_start_secs,
+        timeline_gap_secs,
+    )
         .and_then(|(trim_start_secs, trim_end_secs)| {
             match trim_audio_file_to_m4a(&source_file, &output_file, trim_start_secs, trim_end_secs)
             {
@@ -3236,14 +3411,13 @@ fn start_avfoundation_microphone_capture_session_with_output_file(
     })?;
 
     let mut audio_output = av::capture::AudioDataOutput::new();
-    let output_delegate =
-        MicAudioDataOutputDelegate::with(microphone_output_context_for_output_url(
-            output_url,
-            output_file,
-            tail_trim_seconds,
-            activity_threshold,
-            tail_activity_mode,
-        ));
+    let output_delegate = new_mic_output_delegate(microphone_output_context_for_output_url(
+        output_url,
+        output_file,
+        tail_trim_seconds,
+        activity_threshold,
+        tail_activity_mode,
+    ));
     let output_queue = dispatch::Queue::serial_with_ar_pool();
     audio_output.set_sample_buf_delegate(Some(output_delegate.as_ref()), Some(&output_queue));
 
