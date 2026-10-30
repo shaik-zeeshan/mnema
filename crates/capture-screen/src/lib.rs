@@ -19,17 +19,19 @@ use cidre::objc;
 use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 mod equivalence;
+mod privacy_filter;
+#[cfg(target_os = "macos")]
+mod privacy_visibility;
 
-use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 #[cfg(target_os = "macos")]
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::mpsc;
 #[cfg(target_os = "macos")]
@@ -94,6 +96,8 @@ pub struct PrivacyFilterApplyError {
     pub message: String,
 }
 
+use privacy_filter::*;
+
 pub fn privacy_filter_changed(
     previous: Option<&PrivacyContentFilter>,
     next: &PrivacyContentFilter,
@@ -102,114 +106,8 @@ pub fn privacy_filter_changed(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PrivacyContentFilterStrategy {
-    ExcludingApps,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PrivacyFilterAvailableApp {
-    bundle_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PrivacyContentFilterPlan {
-    strategy: PrivacyContentFilterStrategy,
-    excluded_bundle_ids: std::collections::BTreeSet<String>,
-    unresolved_bundle_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PrivacyFilterAppliedKey {
-    display_id: u32,
-    strategy: PrivacyContentFilterStrategy,
-    excluded_bundle_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PrivacyFilterApplicationState {
-    requested_key: capture_metadata::PrivacyFilterKey,
-    applied_key: PrivacyFilterAppliedKey,
-    unresolved_bundle_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrivacyFilterApplyOutcome {
     pub request_satisfied: bool,
-}
-
-impl PrivacyFilterApplicationState {
-    fn from_plan(privacy_filter: &PrivacyContentFilter, plan: &PrivacyContentFilterPlan) -> Self {
-        Self {
-            requested_key: privacy_filter.key(),
-            applied_key: PrivacyFilterAppliedKey {
-                display_id: privacy_filter.display_id,
-                strategy: plan.strategy,
-                excluded_bundle_ids: plan.excluded_bundle_ids.iter().cloned().collect(),
-            },
-            unresolved_bundle_ids: plan.unresolved_bundle_ids.clone(),
-        }
-    }
-
-    fn satisfies_request(&self, requested_key: &capture_metadata::PrivacyFilterKey) -> bool {
-        self.requested_key == *requested_key
-            && self.unresolved_bundle_ids.is_empty()
-            && !self.requires_content_refresh()
-    }
-
-    fn applied_filter_matches(&self, next: &Self) -> bool {
-        self.applied_key == next.applied_key
-    }
-
-    fn diagnostic_state_matches(&self, next: &Self) -> bool {
-        self.requested_key == next.requested_key
-            && self.applied_key == next.applied_key
-            && self.unresolved_bundle_ids == next.unresolved_bundle_ids
-    }
-
-    fn requires_content_refresh(&self) -> bool {
-        false
-    }
-}
-
-fn should_log_privacy_filter_diagnostics(
-    previous: Option<&PrivacyFilterApplicationState>,
-    next: &PrivacyFilterApplicationState,
-) -> bool {
-    previous.map_or(true, |previous| !previous.diagnostic_state_matches(next))
-}
-
-fn log_privacy_filter_diagnostics(state: &PrivacyFilterApplicationState) {
-    if !state.unresolved_bundle_ids.is_empty() {
-        capture_runtime::debug_log!(
-            "privacy filter requested {} bundle id(s) not present in ScreenCaptureKit content",
-            state.unresolved_bundle_ids.len()
-        );
-    }
-}
-
-fn plan_privacy_content_filter(
-    requested_bundle_ids: &std::collections::BTreeSet<String>,
-    available_apps: &[PrivacyFilterAvailableApp],
-) -> PrivacyContentFilterPlan {
-    let mut available_bundle_ids = std::collections::BTreeSet::new();
-    for app in available_apps {
-        available_bundle_ids.insert(app.bundle_id.clone());
-    }
-
-    let excluded_bundle_ids = requested_bundle_ids
-        .intersection(&available_bundle_ids)
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    let unresolved_bundle_ids = requested_bundle_ids
-        .difference(&available_bundle_ids)
-        .cloned()
-        .collect();
-
-    PrivacyContentFilterPlan {
-        strategy: PrivacyContentFilterStrategy::ExcludingApps,
-        excluded_bundle_ids,
-        unresolved_bundle_ids,
-    }
 }
 
 pub const SCREEN_SEGMENT_FRAME_INDEX_VERSION: u32 = 1;
@@ -444,10 +342,6 @@ const SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE: usize = 8;
 #[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_BYTES_PER_PROBE: usize = 4;
 #[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE: usize = 3;
-#[cfg(target_os = "macos")]
-const SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP: u64 = 32;
-#[cfg(target_os = "macos")]
 const SCREEN_ACTIVITY_FINGERPRINT_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 #[cfg(target_os = "macos")]
 const MAX_ACTIVE_DISPLAY_COUNT: u32 = 16;
@@ -485,12 +379,6 @@ const FINALIZED_SCREEN_RECORDING_MISSING_FILE_MARKERS: [&str; 2] =
 
 #[cfg(target_os = "macos")]
 type CGDirectDisplayID = u32;
-#[cfg(target_os = "macos")]
-type CGImageRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CGDataProviderRef = *const c_void;
-#[cfg(target_os = "macos")]
-type CFDataRef = *const c_void;
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -500,20 +388,6 @@ unsafe extern "C" {
         active_displays: *mut CGDirectDisplayID,
         display_count: *mut u32,
     ) -> i32;
-    fn CGDisplayCreateImage(display: CGDirectDisplayID) -> CGImageRef;
-    fn CGImageGetWidth(image: CGImageRef) -> usize;
-    fn CGImageGetHeight(image: CGImageRef) -> usize;
-    fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
-    fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
-}
-
-#[cfg(target_os = "macos")]
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(cf: *const c_void);
-    fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
-    fn CFDataGetLength(data: CFDataRef) -> isize;
-    fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
 }
 
 #[cfg(target_os = "macos")]
@@ -937,212 +811,6 @@ fn maybe_mark_screen_activity_for_fingerprint(fingerprint: Option<u64>) -> bool 
     false
 }
 
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    if bytes.is_empty() || bytes_per_row == 0 || width == 0 || height == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let tile_rows = height.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let tile_cols = width.min(SCREEN_ACTIVITY_FINGERPRINT_GRID_SIZE).max(1);
-    let mut has_content_signal = false;
-
-    for tile_row in 0..tile_rows {
-        let row_start = tile_row.saturating_mul(height) / tile_rows;
-        let row_end = ((tile_row.saturating_add(1)).saturating_mul(height) / tile_rows)
-            .max(row_start.saturating_add(1))
-            .min(height);
-
-        for tile_col in 0..tile_cols {
-            let col_start = tile_col.saturating_mul(width) / tile_cols;
-            let col_end = ((tile_col.saturating_add(1)).saturating_mul(width) / tile_cols)
-                .max(col_start.saturating_add(1))
-                .min(width);
-
-            let Some(value) = screen_activity_bitmap_tile_summary(
-                bytes,
-                bytes_per_row,
-                width,
-                height,
-                row_start,
-                row_end,
-                col_start,
-                col_end,
-            ) else {
-                continue;
-            };
-
-            has_content_signal |= value != 0;
-            mix_screen_activity_fingerprint(&mut hash, row_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, col_start as u64);
-            mix_screen_activity_fingerprint(&mut hash, value);
-        }
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_bitmap_tile_summary(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-    row_start: usize,
-    row_end: usize,
-    col_start: usize,
-    col_end: usize,
-) -> Option<u64> {
-    if row_start >= row_end || col_start >= col_end || width == 0 || height == 0 {
-        return None;
-    }
-
-    let sample_rows = (row_end - row_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let sample_cols = (col_end - col_start)
-        .min(SCREEN_ACTIVITY_TILE_SAMPLE_GRID_SIZE)
-        .max(1);
-    let mut sum_r = 0_u64;
-    let mut sum_g = 0_u64;
-    let mut sum_b = 0_u64;
-    let mut sum_a = 0_u64;
-    let mut sample_count = 0_u64;
-
-    for sample_row in 0..sample_rows {
-        let row = row_start
-            + (((sample_row.saturating_mul(2)).saturating_add(1))
-                .saturating_mul(row_end - row_start)
-                / sample_rows.saturating_mul(2))
-            .min(row_end - row_start - 1);
-
-        for sample_col in 0..sample_cols {
-            let col = col_start
-                + (((sample_col.saturating_mul(2)).saturating_add(1))
-                    .saturating_mul(col_end - col_start)
-                    / sample_cols.saturating_mul(2))
-                .min(col_end - col_start - 1);
-            let pixel_offset = row
-                .checked_mul(bytes_per_row)?
-                .checked_add(col.checked_mul(4)?)?;
-            let pixel = bytes.get(pixel_offset..pixel_offset + 4)?;
-
-            sum_b += pixel[0] as u64;
-            sum_g += pixel[1] as u64;
-            sum_r += pixel[2] as u64;
-            sum_a += pixel[3] as u64;
-            sample_count += 1;
-        }
-    }
-
-    if sample_count == 0 {
-        return None;
-    }
-
-    let avg_b = (sum_b / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_g = (sum_g / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_r = (sum_r / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-    let avg_a = (sum_a / sample_count) / SCREEN_ACTIVITY_TILE_QUANTIZATION_STEP;
-
-    Some(avg_b | (avg_g << 8) | (avg_r << 16) | (avg_a << 24))
-}
-
-#[cfg(all(target_os = "macos", test))]
-fn screen_frame_content_bitmap_fingerprint(
-    bytes: &[u8],
-    bytes_per_row: usize,
-    width: usize,
-    height: usize,
-) -> Option<u64> {
-    screen_activity_bitmap_fingerprint(bytes, bytes_per_row, width, height)
-}
-
-#[cfg(target_os = "macos")]
-fn screen_activity_display_fingerprint(display_id: CGDirectDisplayID) -> Option<u64> {
-    let image = unsafe { CGDisplayCreateImage(display_id) };
-    if image.is_null() {
-        return None;
-    }
-
-    let fingerprint = (|| {
-        let width = unsafe { CGImageGetWidth(image) };
-        let height = unsafe { CGImageGetHeight(image) };
-        let bytes_per_row = unsafe { CGImageGetBytesPerRow(image) };
-        let provider = unsafe { CGImageGetDataProvider(image) };
-        if provider.is_null() {
-            return None;
-        }
-
-        let data = unsafe { CGDataProviderCopyData(provider) };
-        if data.is_null() {
-            return None;
-        }
-
-        let fingerprint = unsafe {
-            let length = CFDataGetLength(data);
-            let bytes = CFDataGetBytePtr(data);
-            if bytes.is_null() || length <= 0 {
-                None
-            } else {
-                let slice = std::slice::from_raw_parts(bytes, length as usize);
-                screen_activity_bitmap_fingerprint(slice, bytes_per_row, width, height)
-            }
-        };
-
-        unsafe { CFRelease(data) };
-        fingerprint
-    })();
-
-    unsafe { CFRelease(image) };
-    fingerprint
-}
-
-#[cfg(target_os = "macos")]
-fn polled_screen_activity_fingerprint() -> Option<u64> {
-    let mut display_ids = [0; MAX_ACTIVE_DISPLAY_COUNT as usize];
-    let mut display_count = 0;
-    let status = unsafe {
-        CGGetActiveDisplayList(
-            MAX_ACTIVE_DISPLAY_COUNT,
-            display_ids.as_mut_ptr(),
-            &mut display_count,
-        )
-    };
-    if status != 0 || display_count == 0 {
-        return None;
-    }
-
-    let mut hash = SCREEN_ACTIVITY_FINGERPRINT_SEED;
-    let mut has_content_signal = false;
-
-    for display_id in display_ids.into_iter().take(display_count as usize) {
-        let Some(fingerprint) = screen_activity_display_fingerprint(display_id) else {
-            continue;
-        };
-
-        has_content_signal = true;
-        mix_screen_activity_fingerprint(&mut hash, fingerprint);
-    }
-
-    has_content_signal.then(|| finalize_screen_activity_fingerprint(hash))
-}
-
-#[cfg(target_os = "macos")]
-pub fn poll_screen_activity() -> bool {
-    maybe_mark_screen_activity_for_fingerprint(polled_screen_activity_fingerprint())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn poll_screen_activity() -> bool {
-    false
-}
-
 /// Whether the system currently has at least one active (drawable) display.
 ///
 /// This is a cheap CoreGraphics check used to decide whether it's worth
@@ -1187,6 +855,7 @@ struct StreamOutputContext {
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportRuntime>,
     first_error: Option<CaptureErrorResponse>,
+    privacy_frame_dropper: privacy_visibility::PrivacyFrameDropper,
 }
 
 #[cfg(target_os = "macos")]
@@ -1873,6 +1542,12 @@ mod stream_output_delegate {
                 if !super::should_append_screen_sample(sample_buf) {
                     return;
                 }
+                if ctx
+                    .privacy_frame_dropper
+                    .frame_must_be_dropped(sample_buf.pts().as_secs())
+                {
+                    return;
+                }
                 let screen_activity_fingerprint =
                     super::screen_activity_sample_fingerprint(sample_buf);
                 let _ =
@@ -2278,6 +1953,10 @@ struct ScreenCaptureKitCaptureSession {
     frame_export: Option<ScreenFrameExportConfig>,
     lifecycle_state: Arc<Mutex<ScreenCaptureKitLifecycleState>>,
     privacy_filter_state: Option<PrivacyFilterApplicationState>,
+    privacy_frame_guard: privacy_visibility::SharedPrivacyFrameGuard,
+    last_shareable_content_read: Option<ShareableContentRead>,
+    /// The display the stream was started on; privacy filters for display 0 resolve to it.
+    display_id: u32,
 }
 
 #[cfg(target_os = "macos")]
@@ -2428,7 +2107,34 @@ impl ScreenCaptureKitCaptureSession {
                 request_satisfied: true,
             });
         }
-        let built_filter = build_screen_capture_kit_content_filter(&filter)?;
+        let display_id = if filter.display_id == 0 {
+            self.display_id
+        } else {
+            filter.display_id
+        };
+        let showing = privacy_visibility::ShowingSnapshot::read(display_id);
+        if let Some(state) = self.privacy_filter_state.as_ref().filter(|state| {
+            shareable_content_read_can_be_skipped(
+                state,
+                &next_key,
+                self.last_shareable_content_read.as_ref(),
+                showing.as_ref(),
+                Instant::now(),
+            )
+        }) {
+            let request_satisfied = state.satisfies_request(&next_key);
+            // This counts as a refresh: it read the windows (`PrivacyFrameDropper`).
+            let guard = self.lock_privacy_frame_guard().clone();
+            self.replace_privacy_frame_guard(guard);
+            return Ok(PrivacyFilterApplyOutcome { request_satisfied });
+        }
+        let read_at = Instant::now();
+        let built_filter = build_screen_capture_kit_content_filter(&filter, self.display_id)?;
+        // Taken before the read, so a window that appears between the two shows up in the read.
+        self.last_shareable_content_read = showing.map(|showing| ShareableContentRead {
+            at: read_at,
+            showing,
+        });
         let request_satisfied = built_filter.state.satisfies_request(&next_key);
         let should_log_diagnostics = should_log_privacy_filter_diagnostics(
             self.privacy_filter_state.as_ref(),
@@ -2443,11 +2149,21 @@ impl ScreenCaptureKitCaptureSession {
                 log_privacy_filter_diagnostics(&built_filter.state);
             }
             self.privacy_filter_state = Some(built_filter.state);
+            let current = self.lock_privacy_frame_guard().clone();
+            self.replace_privacy_frame_guard(privacy_visibility::refreshed_guard(
+                &current,
+                built_filter.frame_guard,
+            ));
             return Ok(PrivacyFilterApplyOutcome { request_satisfied });
         }
         if should_log_diagnostics {
             log_privacy_filter_diagnostics(&built_filter.state);
         }
+        let in_flight_guard = {
+            let current = self.lock_privacy_frame_guard().clone();
+            privacy_visibility::in_flight_guard(&current, &built_filter.frame_guard)
+        };
+        self.replace_privacy_frame_guard(in_flight_guard.clone());
         let (tx, rx) = mpsc::channel();
         self.stream
             .update_content_filter_ch(&built_filter.filter, move |error| {
@@ -2461,17 +2177,39 @@ impl ScreenCaptureKitCaptureSession {
                     .map_or(Ok(()), Err);
                 let _ = tx.send(result);
             });
-        match rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(())) => {
-                self.privacy_filter_state = Some(built_filter.state);
-                Ok(PrivacyFilterApplyOutcome { request_satisfied })
-            }
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(PrivacyFilterApplyError {
+        let result = rx.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|_| {
+            Err(PrivacyFilterApplyError {
                 kind: PrivacyFilterApplyErrorKind::FilterUpdateFailed,
                 message: "Timed out updating ScreenCaptureKit content filter".to_string(),
-            }),
-        }
+            })
+        });
+        // Read after the completion handler ran; the guard's stale margin covers frames
+        // composed under the old filter and presented after this (frame PTS is host time).
+        let landed_at_host_secs = result.is_ok().then(host_time_secs);
+        self.replace_privacy_frame_guard(privacy_visibility::settled_guard(
+            in_flight_guard,
+            built_filter.frame_guard,
+            landed_at_host_secs,
+        ));
+        self.privacy_filter_state = applied_state_after_update(built_filter.state, result.is_ok());
+        result?;
+        Ok(PrivacyFilterApplyOutcome { request_satisfied })
+    }
+
+    /// The session's only write to the guard: stamps it so the dropper sees it replaced.
+    fn replace_privacy_frame_guard(&self, guard: privacy_visibility::PrivacyFrameGuard) {
+        *self.lock_privacy_frame_guard() = privacy_visibility::PrivacyFrameGuard {
+            replaced_at_host_secs: host_time_secs(),
+            ..guard
+        };
+    }
+
+    fn lock_privacy_frame_guard(
+        &self,
+    ) -> std::sync::MutexGuard<'_, privacy_visibility::PrivacyFrameGuard> {
+        self.privacy_frame_guard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn is_stream_live(&self) -> bool {
@@ -2584,18 +2322,29 @@ impl ScreenCaptureKitCaptureSession {
     }
 
     fn pause_screen_outputs_for_inactivity(&mut self) -> Result<(), CaptureErrorResponse> {
-        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
-        let ctx = self.stream_output_delegate.inner_mut();
-
-        if ctx.screen_video_output_file.is_none() && ctx.frame_export.is_none() {
+        // Take the outputs on the queue (the stream keeps delivering frames
+        // while paused), then finish them off it.
+        let Some((screen_video_output_file, mut frame_export, writer)) =
+            with_stream_output_context_on_queue(
+                &self.stream_output_queue,
+                &mut self.stream_output_delegate,
+                |ctx| {
+                    if ctx.screen_video_output_file.is_none() && ctx.frame_export.is_none() {
+                        return None;
+                    }
+                    Some((
+                        ctx.screen_video_output_file.take(),
+                        ctx.frame_export.take(),
+                        ctx.screen_video_writer.take(),
+                    ))
+                },
+            )
+        else {
             return Ok(());
-        }
-
-        let screen_video_output_file = ctx.screen_video_output_file.take();
-        let mut frame_export = ctx.frame_export.take();
+        };
         let mut failures = Vec::new();
 
-        if let Some(mut writer) = ctx.screen_video_writer.take() {
+        if let Some(mut writer) = writer {
             if let Err(error) = finish_video_asset_writer(&mut writer) {
                 if capture_writers::is_no_video_samples_error_message("screen", &error.message) {
                     if let Some(path) = screen_video_output_file.as_deref() {
@@ -2620,24 +2369,36 @@ impl ScreenCaptureKitCaptureSession {
         segment_dir: &Path,
         recording_file: &str,
     ) -> Result<(), CaptureErrorResponse> {
-        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
-        let ctx = self.stream_output_delegate.inner_mut();
-        if ctx.screen_video_output_file.is_some() || ctx.frame_export.is_some() {
+        let outputs_active = with_stream_output_context_on_queue(
+            &self.stream_output_queue,
+            &mut self.stream_output_delegate,
+            |ctx| ctx.screen_video_output_file.is_some() || ctx.frame_export.is_some(),
+        );
+        if outputs_active {
             return Err(CaptureErrorResponse {
                 code: "invalid_runtime_state".to_string(),
                 message: "Screen outputs are already active; pause before resuming".to_string(),
             });
         }
 
-        ctx.screen_video_output_file = self.sources.screen.then(|| recording_file.to_string());
-        ctx.screen_video_writer = None;
-        ctx.video_bitrate_bps = self.video_bitrate_bps;
-        ctx.frame_export = if self.sources.screen {
+        let frame_export = if self.sources.screen {
             screen_frame_export_runtime(segment_dir, self.frame_export.clone())?
         } else {
             None
         };
-        ctx.first_error = None;
+        let screen_video_output_file = self.sources.screen.then(|| recording_file.to_string());
+        let video_bitrate_bps = self.video_bitrate_bps;
+        with_stream_output_context_on_queue(
+            &self.stream_output_queue,
+            &mut self.stream_output_delegate,
+            |ctx| {
+                ctx.screen_video_output_file = screen_video_output_file;
+                ctx.screen_video_writer = None;
+                ctx.video_bitrate_bps = video_bitrate_bps;
+                ctx.frame_export = frame_export;
+                ctx.first_error = None;
+            },
+        );
         Ok(())
     }
 
@@ -2669,12 +2430,13 @@ impl ScreenCaptureKitCaptureSession {
                 error
             })?;
 
-        let next_context = stream_output_context_for_segment(
+        let mut next_context = stream_output_context_for_segment(
             segment_dir,
             &recording_file,
             &self.sources,
             self.video_bitrate_bps,
             self.frame_export.clone(),
+            self.privacy_frame_guard.clone(),
         )
         .map_err(|error| {
             log_capture_error(
@@ -2684,9 +2446,18 @@ impl ScreenCaptureKitCaptureSession {
             error
         })?;
 
-        synchronize_stream_output_queue(Some(self.stream_output_queue.as_ref()));
-        let mut previous_context =
-            std::mem::replace(self.stream_output_delegate.inner_mut(), next_context);
+        let mut previous_context = with_stream_output_context_on_queue(
+            &self.stream_output_queue,
+            &mut self.stream_output_delegate,
+            |ctx| {
+                // The dropper carries over: a drop it keeps going must survive the rotation.
+                std::mem::swap(
+                    &mut next_context.privacy_frame_dropper,
+                    &mut ctx.privacy_frame_dropper,
+                );
+                std::mem::replace(ctx, next_context)
+            },
+        );
         finalize_rotated_segment_context(&mut previous_context)?;
         drop(previous_context);
 
@@ -2701,11 +2472,13 @@ impl ScreenCaptureKitCaptureSession {
 struct BuiltScreenCaptureKitContentFilter {
     filter: cidre::arc::R<cidre::sc::ContentFilter>,
     state: PrivacyFilterApplicationState,
+    frame_guard: privacy_visibility::PrivacyFrameGuard,
 }
 
 #[cfg(target_os = "macos")]
 fn build_screen_capture_kit_content_filter(
     privacy_filter: &PrivacyContentFilter,
+    stream_display_id: u32,
 ) -> Result<BuiltScreenCaptureKitContentFilter, PrivacyFilterApplyError> {
     let (content_tx, content_rx) = mpsc::channel();
     cidre::sc::ShareableContent::current_with_ch(move |content, error| {
@@ -2730,17 +2503,24 @@ fn build_screen_capture_kit_content_filter(
         })??;
 
     let displays = content.displays();
-    let display = if privacy_filter.display_id == 0 {
-        displays.first()
-    } else {
+    let display_ids = displays
+        .iter()
+        .map(|display| display.display_id().0)
+        .collect::<Vec<_>>();
+    let display = resolve_privacy_filter_display(
+        privacy_filter.display_id,
+        stream_display_id,
+        &display_ids,
+    )
+    .and_then(|display_id| {
         displays
             .iter()
-            .find(|display| display.display_id().0 == privacy_filter.display_id)
-    }
+            .find(|display| display.display_id().0 == display_id)
+    })
     .ok_or_else(|| PrivacyFilterApplyError {
         kind: PrivacyFilterApplyErrorKind::DisplayUnavailable,
         message: format!(
-            "No ScreenCaptureKit display available for privacy filter display {}",
+            "No ScreenCaptureKit display available for privacy filter display {} (stream display {stream_display_id})",
             privacy_filter.display_id
         ),
     })?;
@@ -2748,15 +2528,45 @@ fn build_screen_capture_kit_content_filter(
     let apps = content.apps();
     let requested_bundle_ids: std::collections::BTreeSet<_> =
         privacy_filter.excluded_bundle_ids.iter().cloned().collect();
+    let display_rect = sc_rect(display.frame());
+    let showing_bundle_ids = privacy_visibility::showing_bundle_ids(
+        content
+            .windows()
+            .iter()
+            .map(|window| privacy_visibility::ShareableWindow {
+                owner_bundle_id: window.owning_app().map(|app| app.bundle_id().to_string()),
+                on_screen: window.is_on_screen(),
+                layer: window.window_layer() as i64,
+                bounds: sc_rect(window.frame()),
+            }),
+        display_rect,
+    );
     let available_apps = apps
         .iter()
-        .map(|app| PrivacyFilterAvailableApp {
-            bundle_id: app.bundle_id().to_string(),
+        .map(|app| {
+            let bundle_id = app.bundle_id().to_string();
+            PrivacyFilterAvailableApp {
+                shows_window: showing_bundle_ids.contains(&bundle_id),
+                bundle_id,
+                pid: app.process_id(),
+            }
         })
         .collect::<Vec<_>>();
     let plan = plan_privacy_content_filter(&requested_bundle_ids, &available_apps);
 
-    let state = PrivacyFilterApplicationState::from_plan(privacy_filter, &plan);
+    let state =
+        PrivacyFilterApplicationState::from_plan(privacy_filter, display.display_id().0, &plan);
+    let frame_guard = privacy_visibility::PrivacyFrameGuard {
+        display: display_rect,
+        unfiltered_bundle_ids: plan.unresolved_bundle_ids.clone(),
+        excluded_bundle_ids: plan.excluded_bundle_ids.iter().cloned().collect(),
+        excluded_pids: plan
+            .excluded_processes
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect(),
+        ..privacy_visibility::PrivacyFrameGuard::default()
+    };
 
     let filter = if plan.excluded_bundle_ids.is_empty() {
         screen_capture_kit_no_exclusion_filter(display, &apps)
@@ -2764,10 +2574,8 @@ fn build_screen_capture_kit_content_filter(
         let mut excluded_apps = Vec::new();
         let mut pushed_apps = std::collections::BTreeSet::new();
         for app in apps.iter() {
-            let bundle_id = app.bundle_id().to_string();
-            if plan.excluded_bundle_ids.contains(&bundle_id)
-                && pushed_apps.insert((app.process_id(), bundle_id))
-            {
+            let process = (app.process_id(), app.bundle_id().to_string());
+            if plan.excluded_processes.contains(&process) && pushed_apps.insert(process) {
                 excluded_apps.push(app.retained());
             }
         }
@@ -2779,7 +2587,26 @@ fn build_screen_capture_kit_content_filter(
         )
     };
 
-    Ok(BuiltScreenCaptureKitContentFilter { filter, state })
+    Ok(BuiltScreenCaptureKitContentFilter {
+        filter,
+        state,
+        frame_guard,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn host_time_secs() -> f64 {
+    cidre::cm::Clock::host_time_clock().time().as_secs()
+}
+
+#[cfg(target_os = "macos")]
+fn sc_rect(rect: cidre::cg::Rect) -> privacy_visibility::Rect {
+    privacy_visibility::Rect {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3316,18 +3143,32 @@ fn start_screen_capture_kit_session(
             message: "No display available for ScreenCaptureKit capture".to_string(),
         })?;
 
+        let display_id = display.display_id().0;
         let initial_privacy_filter = options.initial_privacy_filter.clone();
+        let privacy_frame_guard = privacy_visibility::SharedPrivacyFrameGuard::default();
         let (filter, privacy_filter_state, initial_privacy_filter_outcome) =
             if let Some(initial_privacy_filter) = &initial_privacy_filter {
-                let built_filter = build_screen_capture_kit_content_filter(initial_privacy_filter)
-                    .map_err(|error| CaptureErrorResponse {
-                        code: "privacy_filter_apply_failed".to_string(),
-                        message: error.message,
-                    })?;
+                // The display picked above can vanish before the filter re-queries it: that is
+                // display-unavailable, not a privacy-filter failure.
+                let built_filter =
+                    build_screen_capture_kit_content_filter(initial_privacy_filter, display_id)
+                        .map_err(|error| CaptureErrorResponse {
+                            code: match error.kind {
+                                PrivacyFilterApplyErrorKind::DisplayUnavailable => {
+                                    "capture_display_unavailable"
+                                }
+                                _ => "privacy_filter_apply_failed",
+                            }
+                            .to_string(),
+                            message: error.message,
+                        })?;
                 log_privacy_filter_diagnostics(&built_filter.state);
                 let request_satisfied = built_filter
                     .state
                     .satisfies_request(&initial_privacy_filter.key());
+                *privacy_frame_guard
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = built_filter.frame_guard;
                 (
                     built_filter.filter,
                     Some(built_filter.state),
@@ -3347,11 +3188,8 @@ fn start_screen_capture_kit_session(
             display.height().max(1) as u32,
         );
 
-        let screen_stream_cfg = configured_screen_capture_kit_stream_cfg(
-            &stream_resolution,
-            screen_frame_rate,
-            sources,
-        );
+        let screen_stream_cfg =
+            configured_screen_capture_kit_stream_cfg(&stream_resolution, screen_frame_rate);
 
         let lifecycle_state = Arc::new(Mutex::new(ScreenCaptureKitLifecycleState::default()));
         let stream_delegate = ScStreamDelegate::with(ScStreamDelegateState {
@@ -3367,6 +3205,7 @@ fn start_screen_capture_kit_session(
                 sources,
                 video_bitrate_bps,
                 options.frame_export.clone(),
+                privacy_frame_guard.clone(),
             )?);
 
         if sources.screen {
@@ -3399,6 +3238,9 @@ fn start_screen_capture_kit_session(
                     frame_export: options.frame_export,
                     lifecycle_state,
                     privacy_filter_state,
+                    privacy_frame_guard,
+                    last_shareable_content_read: None,
+                    display_id,
                 }),
             },
             recording_file: output_file_str,
@@ -3414,7 +3256,6 @@ fn start_screen_capture_kit_session(
 fn configured_screen_capture_kit_stream_cfg(
     stream_resolution: &ScreenCaptureResolution,
     screen_frame_rate: f64,
-    sources: &ScreenCaptureSources,
 ) -> cidre::arc::R<cidre::sc::StreamCfg> {
     use cidre::{cm, sc};
 
@@ -3432,7 +3273,15 @@ fn configured_screen_capture_kit_stream_cfg(
     // Request a packed 32-bit buffer so live captured-frame equivalence can read
     // interleaved pixels directly instead of falling back to the exported JPEG.
     screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
-    screen_stream_cfg.set_shows_cursor(sources.screen);
+    // Cursor off (founder ruling 2026-10-23): input already counts as activity,
+    // and a moving pointer would otherwise churn frames and OCR for nothing.
+    screen_stream_cfg.set_shows_cursor(false);
+    // Apple's minimum. The SDK header says the unset default is 8, and each
+    // extra surface is WindowServer memory. SCK drops a frame only when a
+    // surface is held longer than interval × (depth − 1); the JPEG export holds
+    // one ~100–300 ms, so this is ample at ≤ 1 fps.
+    // ponytail: at 10 fps that budget is 200 ms; raise it if frames drop there.
+    screen_stream_cfg.set_queue_depth(3);
     // The stream is video-only: system audio is captured by `capture-system-audio`
     // on its own Core Audio process tap (ADR 0052).
     screen_stream_cfg.set_captures_audio(false);
@@ -3448,6 +3297,7 @@ fn stream_output_context_for_segment(
     sources: &ScreenCaptureSources,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
+    privacy_frame_guard: privacy_visibility::SharedPrivacyFrameGuard,
 ) -> Result<StreamOutputContext, CaptureErrorResponse> {
     let screen_video_output_file = if sources.screen {
         Some(recording_file.to_string())
@@ -3465,6 +3315,7 @@ fn stream_output_context_for_segment(
             None
         },
         first_error: None,
+        privacy_frame_dropper: privacy_visibility::PrivacyFrameDropper::new(privacy_frame_guard),
     })
 }
 
@@ -3491,6 +3342,19 @@ fn start_screen_capture_kit_stream(stream: &cidre::sc::Stream) -> Result<(), Cap
             message: "Timed out while starting ScreenCaptureKit stream capture".to_string(),
         }),
     }
+}
+
+/// The delegate's context is reached through an unsynchronised raw cast, and
+/// ScreenCaptureKit calls the delegate on `queue` while the stream runs, so the
+/// only safe place to touch it from another thread is a block on that serial
+/// queue. Queued callbacks run first, and none can start until `f` returns.
+#[cfg(target_os = "macos")]
+fn with_stream_output_context_on_queue<R>(
+    queue: &dispatch::Queue,
+    delegate: &mut ScStreamOutputDelegate,
+    f: impl FnOnce(&mut StreamOutputContext) -> R,
+) -> R {
+    queue.sync_once(|| f(delegate.inner_mut()))
 }
 
 #[cfg(target_os = "macos")]
@@ -4051,102 +3915,6 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn privacy_plan_is_app_only() {
-        let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
-        let available_apps = vec![
-            PrivacyFilterAvailableApp {
-                bundle_id: "com.secret".to_string(),
-            },
-            PrivacyFilterAvailableApp {
-                bundle_id: "com.google.Chrome".to_string(),
-            },
-        ];
-
-        let plan = plan_privacy_content_filter(&requested_bundle_ids, &available_apps);
-
-        assert_eq!(plan.strategy, PrivacyContentFilterStrategy::ExcludingApps);
-        assert_eq!(
-            plan.excluded_bundle_ids,
-            std::collections::BTreeSet::from(["com.secret".to_string()])
-        );
-    }
-
-    #[test]
-    fn unresolved_privacy_filter_targets_do_not_satisfy_cached_request() {
-        let requested = PrivacyContentFilter {
-            display_id: 0,
-            excluded_bundle_ids: vec!["com.secret".to_string()],
-        };
-        let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
-
-        let unresolved_plan = plan_privacy_content_filter(&requested_bundle_ids, &[]);
-        let unresolved_state =
-            PrivacyFilterApplicationState::from_plan(&requested, &unresolved_plan);
-
-        assert_eq!(
-            unresolved_state.unresolved_bundle_ids,
-            vec!["com.secret".to_string()]
-        );
-        assert!(!unresolved_state.satisfies_request(&requested.key()));
-
-        let resolved_plan = plan_privacy_content_filter(
-            &requested_bundle_ids,
-            &[PrivacyFilterAvailableApp {
-                bundle_id: "com.secret".to_string(),
-            }],
-        );
-        let resolved_state = PrivacyFilterApplicationState::from_plan(&requested, &resolved_plan);
-
-        assert!(resolved_state.satisfies_request(&requested.key()));
-        assert!(!unresolved_state.applied_filter_matches(&resolved_state));
-    }
-
-    #[test]
-    fn repeated_unresolved_privacy_filter_plan_suppresses_duplicate_diagnostics() {
-        let requested = PrivacyContentFilter {
-            display_id: 0,
-            excluded_bundle_ids: vec!["com.secret".to_string()],
-        };
-        let requested_bundle_ids = std::collections::BTreeSet::from(["com.secret".to_string()]);
-        let plan = plan_privacy_content_filter(&requested_bundle_ids, &[]);
-        let previous = PrivacyFilterApplicationState::from_plan(&requested, &plan);
-        let next = PrivacyFilterApplicationState::from_plan(&requested, &plan);
-
-        assert!(should_log_privacy_filter_diagnostics(None, &next));
-        assert!(!should_log_privacy_filter_diagnostics(
-            Some(&previous),
-            &next
-        ));
-    }
-
-    #[test]
-    fn privacy_filter_diagnostics_log_when_unresolved_targets_change() {
-        let previous_request = PrivacyContentFilter {
-            display_id: 0,
-            excluded_bundle_ids: vec!["com.secret".to_string()],
-        };
-        let next_request = PrivacyContentFilter {
-            display_id: 0,
-            excluded_bundle_ids: vec!["com.other-secret".to_string()],
-        };
-        let previous_plan = plan_privacy_content_filter(
-            &std::collections::BTreeSet::from(["com.secret".to_string()]),
-            &[],
-        );
-        let next_plan = plan_privacy_content_filter(
-            &std::collections::BTreeSet::from(["com.other-secret".to_string()]),
-            &[],
-        );
-        let previous = PrivacyFilterApplicationState::from_plan(&previous_request, &previous_plan);
-        let next = PrivacyFilterApplicationState::from_plan(&next_request, &next_plan);
-
-        assert!(should_log_privacy_filter_diagnostics(
-            Some(&previous),
-            &next
-        ));
-    }
-
-    #[test]
     fn screen_segment_frame_index_binary_round_trips() {
         let index = ScreenSegmentFrameIndex {
             version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
@@ -4309,12 +4077,13 @@ mod tests {
                 height: 720,
             },
             1.0,
-            &ScreenCaptureSources { screen: true },
         );
 
         assert_eq!(cfg.width(), 1280);
         assert_eq!(cfg.height(), 720);
         assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
+        assert!(!cfg.shows_cursor());
+        assert_eq!(cfg.queue_depth(), 3);
     }
 
     #[cfg(target_os = "macos")]
@@ -4324,30 +4093,28 @@ mod tests {
             width: 1280,
             height: 720,
         };
-        let sources = ScreenCaptureSources { screen: true };
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 0.5, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 0.5).minimum_frame_interval();
         assert_eq!(interval.value, 2000);
         assert_eq!(interval.scale, 1000);
 
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 10.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 10.0).minimum_frame_interval();
         assert_eq!(interval.value, 100);
         assert_eq!(interval.scale, 1000);
 
         // Once per minute must be exact — the previous timescale-side encoding
         // truncated this to 62.5s.
-        let interval =
-            configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0, &sources)
-                .minimum_frame_interval();
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0)
+            .minimum_frame_interval();
         assert_eq!(interval.value, 60_000);
         assert_eq!(interval.scale, 1000);
 
         // A rate whose ms-per-frame is fractional (3 fps → 333.33ms) must round,
         // not truncate — exercises the `.round()` the ladder stops don't hit.
-        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 3.0, &sources)
-            .minimum_frame_interval();
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 3.0).minimum_frame_interval();
         assert_eq!(interval.value, 333);
         assert_eq!(interval.scale, 1000);
     }
@@ -4713,6 +4480,7 @@ mod tests {
     fn finalize_rotated_segment_context_recovers_from_single_screen_video_writer_avfoundation_11800_failure(
     ) {
         let mut context = StreamOutputContext {
+            privacy_frame_dropper: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4733,6 +4501,7 @@ mod tests {
     fn finalize_rotated_segment_context_rejects_single_screen_video_writer_avfoundation_11800_failure_with_extra_failures(
     ) {
         let mut context = StreamOutputContext {
+            privacy_frame_dropper: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen-writer.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4755,6 +4524,7 @@ mod tests {
     #[test]
     fn finalize_rotated_segment_context_recovers_from_missing_screen_video() {
         let mut context = StreamOutputContext {
+            privacy_frame_dropper: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -4793,6 +4563,7 @@ mod tests {
     #[test]
     fn finalize_rotated_segment_context_keeps_nonrecoverable_failures_fatal() {
         let mut context = StreamOutputContext {
+            privacy_frame_dropper: Default::default(),
             screen_video_output_file: Some("/tmp/missing-screen.mov".to_string()),
             screen_video_writer: None,
             video_bitrate_bps: None,
@@ -5261,78 +5032,6 @@ mod tests {
             Some(CapturedFrameEquivalenceOutcome::Ready(_))
         ));
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_activity_bitmap_fingerprint_detects_localized_center_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for changed_row in 32..40 {
-            for changed_col in 32..40 {
-                let changed_offset = changed_row * bytes_per_row + changed_col * 4;
-                changed[changed_offset..changed_offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_activity_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_activity_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_ignores_cursor_sized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut cursor_changed = baseline.clone();
-
-        for row in 35..37 {
-            for col in 35..37 {
-                let offset = row * bytes_per_row + col * 4;
-                cursor_changed[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let cursor_changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&cursor_changed, bytes_per_row, width, height);
-
-        assert_eq!(baseline_fingerprint, cursor_changed_fingerprint);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn screen_frame_content_bitmap_fingerprint_detects_larger_localized_change() {
-        let width = 64;
-        let height = 64;
-        let bytes_per_row = width * 4;
-        let baseline = vec![128_u8; bytes_per_row * height];
-        let mut changed = baseline.clone();
-
-        for row in 32..40 {
-            for col in 32..40 {
-                let offset = row * bytes_per_row + col * 4;
-                changed[offset..offset + 4].copy_from_slice(&[32, 32, 32, 255]);
-            }
-        }
-
-        let baseline_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&baseline, bytes_per_row, width, height);
-        let changed_fingerprint =
-            screen_frame_content_bitmap_fingerprint(&changed, bytes_per_row, width, height);
-
-        assert_ne!(baseline_fingerprint, changed_fingerprint);
-    }
 }
 
 #[cfg(target_os = "macos")]
@@ -5373,4 +5072,3 @@ fn load_asset_tracks_with_timeout(
         }),
     }
 }
-

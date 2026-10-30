@@ -96,7 +96,7 @@ export class OnboardingController {
   draftRetentionPolicy = $state<RetentionPolicy>("never");
   draftAutoStart = $state(true);
   draftPauseCaptureOnInactivity = $state(false);
-  draftIdleTimeoutSeconds = $state(30);
+  draftIdleTimeoutSeconds = $state(10);
   draftActivityMode = $state<ActivityMode>("system_input_or_screen_or_audio");
   draftMicrophoneActivitySensitivity = $state(50);
   // Voice Activity Detection adapter for the mic — mirrors real settings. "off"

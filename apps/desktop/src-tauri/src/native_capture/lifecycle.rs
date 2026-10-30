@@ -1,4 +1,9 @@
 use super::activity::current_activity_snapshot;
+#[cfg(target_os = "macos")]
+use super::microphone_away::{
+    mac_is_away, reopen_unwakeable_microphone, should_resume_microphone_after_activity,
+    tick_microphone_away,
+};
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
@@ -57,6 +62,23 @@ pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) ->
         && !runtime.inactivity.is_system_audio_paused()
         && !system_audio_stops_with_suspension(runtime)
         && runtime.active_system_audio_session.is_none()
+}
+
+/// The sources a user resume reopens, and whether the microphone stays down
+/// under the away hold. Lock is away: a resume while the Mac is away leaves the
+/// microphone held until the tick sees the Mac back. A microphone voice
+/// enrollment holds stays down too; the enrollment's restore brings it back.
+#[cfg(target_os = "macos")]
+pub(super) fn user_resume_sources(
+    runtime: &NativeCaptureRuntime,
+    sources: CaptureSources,
+) -> (CaptureSources, bool) {
+    let microphone_held_away = sources.microphone && mac_is_away(runtime);
+    let sources = CaptureSources {
+        microphone: sources.microphone && !microphone_held_away && !runtime.microphone_lent_out,
+        ..sources
+    };
+    (sources, microphone_held_away)
 }
 
 #[derive(Debug, Default)]
@@ -358,6 +380,7 @@ impl RecordingLifecycle {
                         .to_string(),
                 })?;
             let microphone_planner = microphone_planner_for_runtime(&self.runtime).cloned();
+            let (sources, microphone_held_away) = user_resume_sources(&self.runtime, sources);
             let next_index = self.runtime.current_segment_index.saturating_add(1);
             let segment_dir = screen_planner.segment_dir(next_index);
             let screen_output_file = screen_planner.segment_screen_output(next_index);
@@ -397,6 +420,7 @@ impl RecordingLifecycle {
             self.runtime.microphone_recording_file = started.2;
             self.runtime.active_screen_session = started.3;
             self.runtime.active_microphone_session = started.4;
+            self.runtime.microphone_away_hold = microphone_held_away;
             self.runtime.current_segment_index = next_index;
 
             // A user pause stopped the tap with everything else, so a user resume
@@ -454,11 +478,12 @@ impl RecordingLifecycle {
     pub(crate) fn release_microphone_for_out_of_band_recording(
         &mut self,
     ) -> Result<bool, CaptureErrorResponse> {
-        let Some(session) = self.runtime.active_microphone_session.as_mut() else {
+        if self.runtime.active_microphone_session.is_none() {
             return Ok(false);
-        };
-        session.stop()?;
+        }
+        super::segments::stop_microphone_session_for_runtime(&mut self.runtime)?;
         self.runtime.active_microphone_session = None;
+        self.runtime.microphone_lent_out = true;
         Ok(true)
     }
 
@@ -485,6 +510,7 @@ impl RecordingLifecycle {
     pub(crate) fn restore_microphone_after_out_of_band_recording(
         &mut self,
     ) -> Result<(), CaptureErrorResponse> {
+        self.runtime.microphone_lent_out = false;
         if !self.runtime.is_running
             || self.runtime.user_capture_paused
             || self
@@ -499,6 +525,13 @@ impl RecordingLifecycle {
                 .as_ref()
                 .is_some_and(|sources| sources.microphone)
         {
+            return Ok(());
+        }
+        // Lock is away: rather than record until the next tick holds it off,
+        // stay down under the away hold, which the tick lifts on return and then
+        // reopens the microphone.
+        if mac_is_away(&self.runtime) {
+            self.runtime.microphone_away_hold = true;
             return Ok(());
         }
 
@@ -730,6 +763,7 @@ impl RecordingLifecycle {
         }
 
         self.tick_system_audio(app_handle);
+        tick_microphone_away(&mut self.runtime, Some(app_handle));
 
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
@@ -752,11 +786,7 @@ impl RecordingLifecycle {
             .inactivity
             .effective_idle_for_snapshot(now, activity_snapshot);
 
-        if self
-            .runtime
-            .inactivity
-            .should_resume_microphone_from_inactivity(now, activity_snapshot)
-        {
+        if should_resume_microphone_after_activity(&mut self.runtime, now, activity_snapshot) {
             if let Err(error) = resume_microphone_from_inactivity(&mut self.runtime) {
                 super::debug_log::log_at(
                     super::debug_log::streak_level(&mut self.resume_failure_logged.microphone),
@@ -778,12 +808,21 @@ impl RecordingLifecycle {
                     self.runtime.inactivity.idle_timeout_seconds
                 ));
             }
+        } else {
+            reopen_unwakeable_microphone(
+                &mut self.runtime,
+                &mut self.resume_failure_logged.microphone,
+                || super::microphone::current_capture_microphone_device_id(app_handle),
+            );
         }
 
-        if self
-            .runtime
-            .inactivity
-            .should_pause_microphone_for_inactivity(now, activity_snapshot)
+        // A lent-out microphone has no session to pause; the call would no-op
+        // and log a pause every tick.
+        if !self.runtime.microphone_lent_out
+            && self
+                .runtime
+                .inactivity
+                .should_pause_microphone_for_inactivity(now, activity_snapshot)
         {
             if let Err(error) =
                 pause_microphone_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
@@ -1261,6 +1300,7 @@ impl RecordingLifecycle {
             self.runtime.active_screen_session = active_screen_session;
 
             if active_sources.microphone {
+                super::activity::process_pending_microphone_vad_frames(&mut self.runtime);
                 if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                     let microphone_output_file = microphone_planner
                         .as_ref()
@@ -1304,6 +1344,7 @@ impl RecordingLifecycle {
                 }
             }
         } else if active_sources.microphone {
+            super::activity::process_pending_microphone_vad_frames(&mut self.runtime);
             if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                 let microphone_output_file = microphone_planner
                     .as_ref()

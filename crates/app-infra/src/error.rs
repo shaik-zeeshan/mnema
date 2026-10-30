@@ -81,6 +81,8 @@ pub enum AppInfraError {
     InvalidFrameBatchTimestamp(String),
     #[error("invalid search request: {0}")]
     InvalidSearchRequest(String),
+    #[error("invalid time range: {0}")]
+    InvalidTimeRange(String),
     #[error("{0}")]
     BrokeredAccess(String),
     #[error("capture index encryption error: {0}")]

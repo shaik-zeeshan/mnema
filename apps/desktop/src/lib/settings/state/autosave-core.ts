@@ -7,6 +7,7 @@
 // IPC — that is the whole point of the split.
 
 import type { SettingsOwnershipDomain } from "$lib/types";
+import { isCaptureSourcesLocked } from "$lib/format-error";
 
 // The recording-settings domains that autosave (each maps to one update
 // command). `app_privacy_exclusion` is a *draft* domain (it has a snapshot and a
@@ -75,6 +76,12 @@ export const RECORDING_DOMAIN_COMMANDS: Record<AutosaveRecordingDomain, string> 
 // Debounce windows (ms). Recording domains share one window; the microphone
 // controller uses a shorter one because its applies are cheaper/snappier.
 export const RECORDING_AUTOSAVE_DEBOUNCE_MS = 450;
+// Except the source switches: discrete toggles with nothing to coalesce, and
+// the Rust-owned tray Start reads the saved sources without asking this page
+// to flush, so a debounce window is a window where Start records the old ones.
+export function recordingAutosaveDebounceMs(domain: AutosaveRecordingDomain): number {
+  return domain === "capture_sources" ? 0 : RECORDING_AUTOSAVE_DEBOUNCE_MS;
+}
 export const MIC_AUTOSAVE_DEBOUNCE_MS = 250;
 
 // Build the initial per-domain record (e.g. saving flags `false`, baselines
@@ -130,4 +137,19 @@ export type SaveStatus = "error" | "blocked" | "saving" | "saved";
 
 export function deriveSaveStatus(s: { saveFailed: boolean; blocked: boolean; saving: boolean }): SaveStatus {
   return s.saveFailed ? "error" : s.blocked ? "blocked" : s.saving ? "saving" : "saved";
+}
+
+// A recording-domain save the backend rejected. `capture_sources_locked` means
+// recording started under the save: not a failure, and a retry would only be
+// refused again — show the sources in use, record no failure, arm no retry.
+export function settleRecDomainSaveError(
+  err: unknown,
+  on: { revertToCanonical: () => void; clearFailure: () => void; noteFailure: (err: unknown) => void },
+): void {
+  if (isCaptureSourcesLocked(err)) {
+    on.revertToCanonical();
+    on.clearFailure();
+  } else {
+    on.noteFailure(err);
+  }
 }

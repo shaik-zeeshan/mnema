@@ -23,6 +23,7 @@ use capture_types::{
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Manager;
 
@@ -991,6 +992,101 @@ pub(crate) fn initialize_recording_settings_state_from_disk(
     loaded
 }
 
+/// Starts that have read their sources (`recording_settings_for_start`), and
+/// starts that have since returned. Begun only moves under the settings lock.
+static STARTS_BEGUN: AtomicU64 = AtomicU64::new(0);
+static STARTS_DONE: AtomicU64 = AtomicU64::new(0);
+
+/// Held for the whole start; dropping it marks the start returned.
+pub(crate) struct StartSourcesRead;
+
+impl Drop for StartSourcesRead {
+    fn drop(&mut self) {
+        STARTS_DONE.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The start path's settings read. Taken under the settings lock so a sources
+/// save either lands before it (and the start records the new sources) or sees
+/// the start and is refused: see [`CaptureUse`].
+pub(crate) fn recording_settings_for_start(
+    state: &RecordingSettingsState,
+) -> (RecordingSettings, StartSourcesRead) {
+    let runtime = state.lock().expect("recording settings state poisoned");
+    STARTS_BEGUN.fetch_add(1, Ordering::SeqCst);
+    (runtime.settings.clone(), StartSourcesRead)
+}
+
+/// Whether capture may be using the sources a save is about to change, read in
+/// two halves around the settings lock. Capture in use = a start in flight or a
+/// session running before the settings lock, or a start begun since (it read
+/// the old sources). Read in this order, any start overlapping the save is
+/// caught by one of the three.
+struct CaptureUse {
+    starts_begun: u64,
+    start_in_flight: bool,
+    session_running: bool,
+}
+
+impl CaptureUse {
+    /// The first half, before the settings lock: `session_running` takes the
+    /// capture lock, which is never taken inside it.
+    fn before_settings_lock(session_running: impl FnOnce() -> bool) -> Self {
+        let starts_begun = STARTS_BEGUN.load(Ordering::SeqCst);
+        let start_in_flight = starts_begun != STARTS_DONE.load(Ordering::SeqCst);
+        Self {
+            starts_begun,
+            start_in_flight,
+            session_running: !start_in_flight && session_running(),
+        }
+    }
+
+    /// The second half, under the settings lock.
+    fn in_use(&self) -> bool {
+        self.start_in_flight
+            || self.session_running
+            || STARTS_BEGUN.load(Ordering::SeqCst) != self.starts_begun
+    }
+}
+
+fn capture_session_running(app_handle: &tauri::AppHandle) -> bool {
+    app_handle
+        .try_state::<super::NativeCaptureState>()
+        .is_some_and(|capture| {
+            capture
+                .lock()
+                .is_ok_and(|lifecycle| lifecycle.runtime().is_running)
+        })
+}
+
+fn capture_sources_differ(previous: &RecordingSettings, next: &RecordingSettings) -> bool {
+    previous.capture_screen != next.capture_screen
+        || previous.capture_microphone != next.capture_microphone
+        || previous.capture_system_audio != next.capture_system_audio
+}
+
+/// Sources are fixed for a session: the running capture never picks up a
+/// change, so a saved one would read as off while it keeps recording. The
+/// Settings switches lock while recording, but their save is debounced and can
+/// land after Start; this is the backstop. Unchanged sources always pass.
+fn ensure_capture_sources_unlocked(
+    previous: &RecordingSettings,
+    next: &RecordingSettings,
+    capture_in_use: bool,
+) -> Result<(), CaptureErrorResponse> {
+    if capture_sources_differ(previous, next) && capture_in_use {
+        return Err(CaptureErrorResponse {
+            code: CAPTURE_SOURCES_LOCKED.to_string(),
+            message: "Stop recording to change sources.".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Error code for a sources change refused mid-session. The frontend reverts
+/// the toggle quietly on it (`isCaptureSourcesLocked`).
+pub(crate) const CAPTURE_SOURCES_LOCKED: &str = "capture_sources_locked";
+
 pub(crate) fn current_recording_settings(state: &RecordingSettingsState) -> RecordingSettings {
     state
         .lock()
@@ -1357,14 +1453,20 @@ pub(crate) fn apply_recording_settings_update(
 ) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
     let requested_privacy = validate_privacy_settings(request.privacy.clone())?;
     let settings = validate_recording_settings(request)?;
+    // The full save carries the sources too, so it is held to the same lock as
+    // the per-field one. Only a change asks the capture lock.
+    let capture_use = CaptureUse::before_settings_lock(|| {
+        capture_sources_differ(&current_recording_settings(state), &settings)
+            && capture_session_running(app_handle)
+    });
 
     let mut runtime = state.lock().expect("recording settings state poisoned");
-    if requested_privacy != runtime.settings.privacy {
-        return Err(CaptureErrorResponse {
-            code: "invalid_privacy_rule".to_string(),
-            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
-        });
-    }
+    check_full_recording_settings_update(
+        &runtime.settings,
+        &settings,
+        &requested_privacy,
+        &capture_use,
+    )?;
 
     let previous_settings = runtime.settings.clone();
     let previous_save_directory = previous_settings.save_directory.clone();
@@ -1381,13 +1483,46 @@ pub(crate) fn apply_recording_settings_update(
     })
 }
 
+fn check_full_recording_settings_update(
+    previous: &RecordingSettings,
+    next: &RecordingSettings,
+    requested_privacy: &capture_types::PrivacySettings,
+    capture_use: &CaptureUse,
+) -> Result<(), CaptureErrorResponse> {
+    if *requested_privacy != previous.privacy {
+        return Err(CaptureErrorResponse {
+            code: "invalid_privacy_rule".to_string(),
+            message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
+        });
+    }
+    ensure_capture_sources_unlocked(previous, next, capture_use.in_use())
+}
+
+/// Whether a patch's save must ask the capture lock: only one that changes
+/// the sources. The lock can be held for seconds while a stop flushes, and
+/// these saves run on the main thread.
+fn domain_patch_changes_sources(
+    current: &RecordingSettings,
+    patch: &RecordingSettingsDomainPatch,
+) -> bool {
+    let RecordingSettingsDomainPatch::CaptureSources(request) = patch else {
+        return false;
+    };
+    let changes = |requested: Option<bool>, current: bool| requested.is_some_and(|v| v != current);
+    changes(request.capture_screen, current.capture_screen)
+        || changes(request.capture_microphone, current.capture_microphone)
+        || changes(request.capture_system_audio, current.capture_system_audio)
+}
+
 pub(crate) fn apply_recording_settings_domain_patch(
     app_handle: &tauri::AppHandle,
     state: &RecordingSettingsState,
     patch: RecordingSettingsDomainPatch,
 ) -> Result<(SettingsOwnershipDomain, AppliedRecordingSettingsUpdate), CaptureErrorResponse> {
     let domain = patch.domain();
-    apply_recording_settings_domain_mutation(app_handle, state, domain, |settings| {
+    let sources_may_change =
+        domain_patch_changes_sources(&current_recording_settings(state), &patch);
+    apply_domain_mutation(app_handle, state, domain, sources_may_change, |settings| {
         apply_domain_patch_to_settings(settings, patch)?;
         Ok(())
     })
@@ -1400,6 +1535,25 @@ pub(crate) fn apply_recording_settings_domain_mutation(
     domain: SettingsOwnershipDomain,
     mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
 ) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let sources_domain = domain == SettingsOwnershipDomain::CaptureSources;
+    apply_domain_mutation(app_handle, state, domain, sources_domain, mutate)
+}
+
+/// `sources_may_change` is read before the settings lock, like the full save's
+/// check: a concurrent sources save landing in between is the same narrow
+/// window the full save accepts.
+fn apply_domain_mutation(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    domain: SettingsOwnershipDomain,
+    sources_may_change: bool,
+    mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
+) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let sources_domain = domain == SettingsOwnershipDomain::CaptureSources;
+    let capture_use = CaptureUse::before_settings_lock(|| {
+        sources_may_change && capture_session_running(app_handle)
+    });
+
     let mut runtime = state.lock().expect("recording settings state poisoned");
     let mut next_settings = runtime.settings.clone();
 
@@ -1418,6 +1572,10 @@ pub(crate) fn apply_recording_settings_domain_mutation(
             code: "invalid_privacy_rule".to_string(),
             message: "Privacy rules must be changed with dedicated privacy commands".to_string(),
         });
+    }
+
+    if sources_domain {
+        ensure_capture_sources_unlocked(&previous_settings, &settings, capture_use.in_use())?;
     }
 
     persist_recording_settings(app_handle, &settings)?;
@@ -2177,6 +2335,85 @@ mod tests {
         .expect_err("empty patch should be rejected");
 
         assert_eq!(error.code, "empty_settings_patch");
+    }
+
+    // A sources save that changes nothing never asks the capture lock, which a
+    // stop can hold for seconds while these saves run on the main thread.
+    #[test]
+    fn only_a_sources_patch_that_changes_them_consults_the_capture() {
+        let current = default_recording_settings();
+        let patch = |microphone: bool| {
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: Some(current.capture_screen),
+                capture_microphone: Some(microphone),
+                capture_system_audio: None,
+            })
+        };
+
+        assert!(!domain_patch_changes_sources(
+            &current,
+            &patch(current.capture_microphone)
+        ));
+        assert!(domain_patch_changes_sources(
+            &current,
+            &patch(!current.capture_microphone)
+        ));
+        assert!(!domain_patch_changes_sources(
+            &current,
+            &RecordingSettingsDomainPatch::Developer(Default::default())
+        ));
+    }
+
+    #[test]
+    fn capture_sources_change_is_refused_only_while_capture_is_in_use() {
+        let previous = default_recording_settings();
+        let mut next = previous.clone();
+        next.capture_microphone = !next.capture_microphone;
+
+        let refused = ensure_capture_sources_unlocked(&previous, &next, true)
+            .expect_err("a source change mid-session never reaches the capture");
+        assert_eq!(refused.code, CAPTURE_SOURCES_LOCKED);
+        assert!(ensure_capture_sources_unlocked(&previous, &next, false).is_ok());
+        // Re-saving the same sources mid-session is harmless.
+        assert!(ensure_capture_sources_unlocked(&previous, &previous, true).is_ok());
+    }
+
+    // The start/save counter protocol end to end, through the full save's
+    // check. One test, because the counters are process-wide.
+    #[test]
+    fn a_full_save_refuses_a_sources_change_while_a_start_overlaps_it() {
+        let state = RecordingSettingsState::default();
+        let previous = default_recording_settings();
+        let mut next = previous.clone();
+        next.capture_microphone = !next.capture_microphone;
+        let check = |next: &RecordingSettings, capture_use: &CaptureUse| {
+            check_full_recording_settings_update(&previous, next, &previous.privacy, capture_use)
+        };
+
+        // A start in flight when the save begins.
+        let start = recording_settings_for_start(&state);
+        let capture_use =
+            CaptureUse::before_settings_lock(|| panic!("a start in flight answers first"));
+        let refused =
+            check(&next, &capture_use).expect_err("the start may have read the old sources");
+        assert_eq!(refused.code, CAPTURE_SOURCES_LOCKED);
+        assert!(
+            check(&previous, &capture_use).is_ok(),
+            "unchanged sources always pass"
+        );
+        drop(start);
+
+        // A start begun between the two halves read the old sources.
+        let capture_use = CaptureUse::before_settings_lock(|| false);
+        let start = recording_settings_for_start(&state);
+        assert!(check(&next, &capture_use).is_err());
+        drop(start);
+
+        // A running session.
+        assert!(check(&next, &CaptureUse::before_settings_lock(|| true)).is_err());
+
+        // Nothing overlaps: the change saves.
+        assert!(check(&next, &CaptureUse::before_settings_lock(|| false)).is_ok());
     }
 
     #[test]

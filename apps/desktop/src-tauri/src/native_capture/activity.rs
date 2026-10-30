@@ -74,7 +74,7 @@ fn capture_source_requested(
     runtime.is_running && runtime.requested_sources.as_ref().is_some_and(selector)
 }
 
-fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
+pub(super) fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureRuntime) {
     if !capture_source_requested(runtime, |sources| sources.microphone)
         || !runtime.microphone_vad.uses_vad_adapter()
     {
@@ -125,14 +125,6 @@ fn current_activity_snapshot_with_audio_peak_mode(
     runtime: &mut NativeCaptureRuntime,
     audio_peak_read_mode: AudioPeakReadMode,
 ) -> ActivitySnapshot {
-    #[cfg(target_os = "macos")]
-    if should_poll_screen_activity(
-        runtime.is_running,
-        capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
-    ) {
-        capture_screen::poll_screen_activity();
-    }
-
     if matches!(audio_peak_read_mode, AudioPeakReadMode::Take) {
         process_pending_microphone_vad_frames(runtime);
     }
@@ -176,14 +168,6 @@ fn current_activity_snapshot_with_audio_peak_mode(
             },
         },
     }
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn should_poll_screen_activity(is_running: bool, screen_stream_live: bool) -> bool {
-    // Only poll via CGDisplayCreateImage when no live capture stream can supply
-    // screen activity samples. Soft-paused ScreenCaptureKit sessions keep the
-    // stream alive, so polling there duplicates compositor work.
-    !is_running || !screen_stream_live
 }
 
 pub(super) fn lock_runtime_for_idle_debug(

@@ -12,6 +12,7 @@ use super::equivalent_reuse::CANONICAL_DOCUMENT_FOR_RELATED_FRAME_SQL;
 use super::test_support::{run_async_test, test_dir};
 use crate::capture_retention::FINALIZED_SCREEN_SEGMENTS_IN_WINDOW_SQL;
 use crate::processing::WORKSPACE_OCR_JOBS_SQL;
+use crate::usage_charts::capture_hours::CAPTURE_HOURS_SQL;
 use crate::usage_charts::USAGE_WINDOW_FRAMES_SQL;
 use crate::user_context::subject_vectors::SUBJECTS_NEEDING_EMBEDDING_SQL;
 use crate::user_context::capture_source::{
@@ -102,6 +103,22 @@ fn frame_pipeline_hot_statements_seek_instead_of_scanning() {
         assert!(
             usage.contains("SEARCH frames USING COVERING INDEX frames_usage_window_idx"),
             "usage charts must read frames from the covering index only; plan was: {usage}"
+        );
+
+        // The date picker's density. Was a DISTINCT over every frame's index
+        // entry in the window (up to ~120 days of frames per Overview mount);
+        // now one seek per captured hour, then one probe for a non-lock frame.
+        let hours = plan(&infra, CAPTURE_HOURS_SQL).await;
+        assert!(
+            hours.contains("RECURSIVE STEP")
+                && hours.contains("SEARCH frames USING COVERING INDEX")
+                && hours.contains(
+                    "SEARCH f USING COVERING INDEX frames_usage_window_idx (captured_at>? AND captured_at<?)"
+                )
+                && !hours.contains("SCAN frames")
+                && !hours.contains("SCAN f ")
+                && !hours.contains("DISTINCT"),
+            "capture hours must seek hour by hour through the frames indexes; plan was: {hours}"
         );
 
         // Read every Conclusion row and walked each vector's BLOB: ~12 MB per 30 s poll.

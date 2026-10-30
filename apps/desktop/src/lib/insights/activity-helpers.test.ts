@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
-import { describe, expect, it } from "bun:test";
-import { windowFor, shiftAnchor, humanizeMs } from "./activity-helpers";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { windowFor, shiftAnchor, humanizeMs, historyDensity, historyWindow, pickerDensity } from "./activity-helpers";
 
 // A duration should read in the coarsest non-zero unit: sub-minute activities as
 // seconds (never a rounded "0m"), minutes, then hours with a minute remainder.
@@ -66,5 +66,90 @@ describe("shiftAnchor month stepping (calendar-correct, no day overflow)", () =>
     const jan31 = noon(2026, 0, 31);
     const prev = shiftAnchor(jan31, "month", -1);
     expect(monthStart(prev)).toBe(firstOfMonth(2025, 11)); // Dec 1, 2025
+  });
+});
+
+describe("date-picker density", () => {
+  it("period_density_overrides_history_for_the_same_day", () => {
+    const at = (h) => new Date(2026, 9, 9, h).getTime();
+    // Three captured hours on Oct 9 → level 2, replacing history's stale 1.
+    const activityHeatmap = [9, 10, 11].map((h) => ({ bucketStartMs: at(h), intensityCount: 1 }));
+    const period = { rangeStartMs: at(0), rangeEndMs: new Date(2026, 9, 10).getTime(), activityHeatmap };
+    expect(pickerDensity({ "2026-10-08": 3, "2026-10-09": 1 }, period)).toEqual({
+      "2026-10-08": 3,
+      "2026-10-09": 2,
+    });
+  });
+
+  it("period_days_without_capture_read_empty_not_unknown", () => {
+    const period = { rangeStartMs: new Date(2026, 0, 5).getTime(), rangeEndMs: new Date(2026, 0, 7).getTime(), activityHeatmap: [] };
+    expect(pickerDensity({ "2026-01-05": -1, "2026-01-06": -1, "2026-01-07": -1 }, period)).toEqual({
+      "2026-01-05": 0,
+      "2026-01-06": 0,
+      "2026-01-07": -1,
+    });
+  });
+
+  it("missing_history_reads_unknown_not_empty_outside_the_period", () => {
+    // get_capture_hours failed or is still pending: days outside the period
+    // are unknown (-1), never "nothing captured" (the ruler's `?? 0`).
+    const now = new Date(2026, 9, 9, 15).getTime();
+    const period = { rangeStartMs: new Date(2026, 9, 9).getTime(), rangeEndMs: new Date(2026, 9, 10).getTime(), activityHeatmap: [] };
+    expect(pickerDensity(null, period, "2026-10-07", now)).toEqual({
+      "2026-10-07": -1,
+      "2026-10-08": -1,
+      "2026-10-09": 0,
+    });
+  });
+
+  it("history_before_the_window_reads_unknown_not_empty", () => {
+    const span = { startMs: new Date(2026, 5, 11).getTime() };
+    const hours = [new Date(2026, 5, 11, 9).getTime()];
+    expect(historyDensity(hours, span, "2026-06-09")).toEqual({
+      "2026-06-09": -1,
+      "2026-06-10": -1,
+      "2026-06-11": 1,
+    });
+  });
+
+  it("history_window_is_clamped_to_min_day_and_120_days", () => {
+    const now = new Date(2026, 9, 9, 15, 30).getTime();
+    // 120 days back, from that day's local midnight — never mid-day.
+    expect(historyWindow("2025-01-01", now)).toEqual({
+      startMs: new Date(2026, 5, 11).getTime(),
+      endMs: now,
+    });
+    // A later first capture wins, also from its local midnight.
+    expect(historyWindow("2026-09-01", now).startMs).toBe(new Date(2026, 8, 1).getTime());
+  });
+});
+
+// India is UTC+5:30. The period's usage heatmap buckets by UTC hour, so they
+// start at :30 local and the one holding 00:00–00:30 starts at 23:30 the day
+// before; `get_capture_hours` aligns its hours to the local offset instead.
+describe("date-picker density under a half-hour offset", () => {
+  const saved = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = "Asia/Kolkata";
+  });
+  afterAll(() => {
+    process.env.TZ = saved;
+  });
+
+  it("period_bucket_starting_before_the_period_does_not_overwrite_history", () => {
+    const oct9 = new Date(2026, 9, 9).getTime();
+    expect(new Date(oct9).getTimezoneOffset()).toBe(-330);
+    // A frame at 00:15 on Oct 9 lands in the bucket starting 23:30 on Oct 8.
+    const activityHeatmap = [{ bucketStartMs: oct9 - 30 * 60_000, intensityCount: 4 }];
+    const period = { rangeStartMs: oct9, rangeEndMs: new Date(2026, 9, 10).getTime(), activityHeatmap };
+    expect(pickerDensity({ "2026-10-08": 3 }, period)).toEqual({ "2026-10-08": 3, "2026-10-09": 0 });
+  });
+
+  it("history_hour_from_local_midnight_counts_for_its_own_day", () => {
+    // get_capture_hours aligns hours to the local offset: a frame at 00:10 on
+    // Jun 11 comes back as the hour starting at local midnight, not 23:30.
+    const span = { startMs: new Date(2026, 5, 10).getTime() };
+    const hours = [new Date(2026, 5, 11).getTime()];
+    expect(historyDensity(hours, span, "2026-06-10")).toEqual({ "2026-06-11": 1 });
   });
 });

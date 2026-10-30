@@ -149,6 +149,12 @@ pub(super) fn update_microphone_controller(
         .expect("microphone controller preferences state poisoned");
     runtime.preference = preference;
     runtime.disconnect_policy = disconnect_policy;
+    drop(runtime);
+
+    // A new preference can end (or start) a wait for a missing device; settle
+    // it now rather than at the next device change.
+    #[cfg(target_os = "macos")]
+    maybe_reconnect_waiting_microphone_session(app_handle, &controller_state);
 
     emit_microphone_controller_changed(app_handle, controller_state.clone());
 
@@ -198,17 +204,15 @@ pub(super) fn next_microphone_output_file_for_runtime(
         .to_string())
 }
 
+/// A paused microphone is left to the tick, which reopens it once the device is
+/// back ([`super::microphone_away::reopen_unwakeable_microphone`]).
 #[cfg(target_os = "macos")]
 pub(super) fn should_reconnect_waiting_microphone_session(
     runtime: &NativeCaptureRuntime,
     state: &MicrophoneControllerState,
 ) -> bool {
-    runtime.is_running
+    super::microphone_away::microphone_free_to_record(runtime)
         && !runtime.inactivity.is_microphone_paused()
-        && runtime
-            .requested_sources
-            .as_ref()
-            .is_some_and(|sources| sources.microphone)
         && runtime.active_microphone_session.is_none()
         && state.preference.mode == MicrophonePreferenceMode::SpecificDevice
         && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
@@ -268,20 +272,22 @@ fn maybe_reconnect_waiting_microphone_session(
         runtime.active_microphone_session.is_some(),
         state,
     ) {
-        if let Some(session) = runtime.active_microphone_session.as_mut() {
-            if let Err(error) = session.stop() {
-                super::debug_log::log_warn(format!(
-                    "failed to stop microphone session while waiting for same device: [{}] {}",
-                    error.code, error.message
-                ));
-                emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
-                stop_failed_while_waiting = true;
-            }
+        if let Err(error) = super::segments::stop_microphone_session_for_runtime(runtime) {
+            super::debug_log::log_warn(format!(
+                "failed to stop microphone session while waiting for same device: [{}] {}",
+                error.code, error.message
+            ));
+            emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
+            stop_failed_while_waiting = true;
         }
         if !stop_failed_while_waiting {
             runtime.active_microphone_session = None;
         }
     }
+    // Keeps the tick from reopening a device that is gone, whether or not a
+    // session was running when it went; once it is back, the reconnect below
+    // or the tick brings the microphone back.
+    runtime.microphone_waiting_for_device = should_wait_for_same_microphone_device(state);
 
     if stop_failed_while_waiting || !should_reconnect_waiting_microphone_session(&runtime, state) {
         return;
@@ -292,6 +298,28 @@ fn maybe_reconnect_waiting_microphone_session(
         state.preference.device_id.as_deref(),
         "reconnecting microphone",
     );
+}
+
+/// The device a microphone reopen should use, from the current preferences:
+/// `Some(None)` is the default device, and `None` means they could not be read
+/// without waiting. The tick calls this holding the capture lock, while the
+/// device-change notifier takes the preferences lock and then the capture
+/// lock, so this only ever `try_lock`s: blocking here could deadlock.
+#[cfg(target_os = "macos")]
+pub(super) fn current_capture_microphone_device_id(
+    app_handle: &tauri::AppHandle,
+) -> Option<Option<String>> {
+    let (preference, disconnect_policy) = {
+        let state = app_handle.try_state::<MicrophoneControllerPreferencesState>()?;
+        let preferences = state.try_lock().ok()?;
+        (
+            preferences.preference.clone(),
+            preferences.disconnect_policy.clone(),
+        )
+    };
+    let state =
+        microphone_capture::microphone_controller_state(preference, disconnect_policy).ok()?;
+    Some(resolve_capture_microphone_device_id(&state))
 }
 
 pub(super) fn resolve_capture_microphone_device_id(

@@ -26,6 +26,7 @@ import {
   RECORDING_DRAFT_DOMAINS,
   RECORDING_DOMAIN_COMMANDS,
   deriveSaveStatus,
+  settleRecDomainSaveError,
   type AutosaveRecordingDomain,
 } from "./autosave-core";
 import { createAutosaveEngine } from "./autosave.svelte";
@@ -636,7 +637,15 @@ export class SettingsController {
           }
         }
       } catch (err) {
-        this.noteSaveFailure(domain, humanizeError(err));
+        settleRecDomainSaveError(err, {
+          revertToCanonical: () => {
+            if (this.rec.recordingSettings) {
+              this.rec.syncRecordingDomainFromCanonical(domain, this.rec.recordingSettings, true);
+            }
+          },
+          clearFailure: () => this.clearSaveFailure(domain),
+          noteFailure: (e) => this.noteSaveFailure(domain, humanizeError(e)),
+        });
       }
     } finally {
       this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: false };

@@ -12,6 +12,7 @@ mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
 mod microphone;
+mod microphone_away;
 pub(crate) mod not_recording_reminder;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
@@ -133,10 +134,6 @@ pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 // pauses its periodic DOM updates between these two events.
 pub const SCREENS_DID_SLEEP_EVENT: &str = "screens_did_sleep";
 pub const SCREENS_DID_WAKE_EVENT: &str = "screens_did_wake";
-// Fired at the end of every display reconfiguration (attach, detach, mode
-// change) so the frontend can clamp a window that was parked offscreen by a
-// display removal back onto a live monitor.
-pub const DISPLAY_CONFIGURATION_CHANGED_EVENT: &str = "display_configuration_changed";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
 // wake; keep recovery alive long enough that the backend does not depend on a
@@ -1593,9 +1590,12 @@ unsafe extern "C" fn display_reconfiguration_callback(
         return;
     };
 
-    // Every end-of-configuration — including a display going away, which can
-    // park windows offscreen — notifies the frontend.
-    let _ = app_handle.emit(DISPLAY_CONFIGURATION_CHANGED_EVENT, ());
+    // Every end-of-configuration re-decides every window's parked view: a
+    // display coming back must reveal the windows on it even when the wake
+    // recovery below is already running (it returns early) and no window event
+    // fires, and one going away hides the windows it stranded right away.
+    // `refresh_all` hops to the main thread itself.
+    crate::windows::parked_view::refresh_all(&app_handle);
 
     if display_reconfiguration_flags_indicate_display_online(flags) {
         // Funnel through the shared recovery path: it is atomic-guarded
@@ -2009,8 +2009,9 @@ fn start_native_capture_inner(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let incoming_sources = capture_sources_from_start_request(&request);
-    let settings = recording_settings_state.inner();
-    let settings = current_recording_settings(settings);
+    // Held to the end of the start, so a sources save racing it is refused.
+    let (settings, _sources_read) =
+        settings::recording_settings_for_start(recording_settings_state.inner());
 
     let resolved_request = StartNativeCaptureRequest {
         capture_screen: settings.capture_screen,
@@ -2726,13 +2727,26 @@ pub fn get_microphone_controller_state(
     )
 }
 
+/// Off the main thread: settling a waited-for device takes the capture lock
+/// (held for seconds while frame artifacts flush) and can start an
+/// AVCaptureSession.
 #[tauri::command]
-pub fn update_microphone_controller(
+pub async fn update_microphone_controller(
     request: UpdateMicrophoneControllerRequest,
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
 ) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
-    update_microphone_controller_impl(request, &app_handle, state)
+    tauri::async_runtime::spawn_blocking(move || {
+        update_microphone_controller_impl(
+            request,
+            &app_handle,
+            app_handle.state::<MicrophoneControllerPreferencesState>(),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "microphone_controller_update_task_failed".to_string(),
+        message: format!("Microphone preference update task failed: {error}"),
+    })?
 }
 
 /// Longest clip the bounded recorder will take. The caller picks the length
@@ -2868,29 +2882,14 @@ fn record_bounded_microphone_clip_blocking(
         let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
         lifecycle.release_microphone_for_out_of_band_recording()?
     };
+    // Hands the microphone back when the take ends, however it ends.
+    let lend = released.then(|| MicrophoneLend(capture_state.inner()));
 
     let clip = take_bounded_microphone_clip(
         duration_ms.clamp(MIN_BOUNDED_MICROPHONE_CLIP_MS, MAX_BOUNDED_MICROPHONE_CLIP_MS),
         device_id.as_deref(),
     );
-
-    if released {
-        let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
-        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
-            // The clip itself is fine, so this only logs. Segment rotation and the
-            // device-change reconnect do NOT re-arm a microphone that has no
-            // session — rotation only rotates an existing one, and the reconnect
-            // is gated on a SpecificDevice preference. The single path that can
-            // start one from scratch is `resume_microphone_from_inactivity`, and
-            // it runs only while the family is paused, which is exactly why
-            // `restore_microphone_after_out_of_band_recording` leaves the
-            // inactivity pause standing when its restart fails.
-            debug_log::log_error(format!(
-                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
-                error.code, error.message
-            ));
-        }
-    }
+    drop(lend);
 
     // The enrollment surface plays the take back before committing to it, and
     // the asset protocol serves only explicitly-allowed paths (empty default
@@ -2905,6 +2904,31 @@ fn record_bounded_microphone_clip_blocking(
     }
 
     clip
+}
+
+/// A microphone lent to a bounded recording, handed back on drop — a take that
+/// panics included, or `microphone_lent_out` would keep the live session's
+/// microphone down for good.
+#[cfg(target_os = "macos")]
+struct MicrophoneLend<'a>(&'a NativeCaptureState);
+
+#[cfg(target_os = "macos")]
+impl Drop for MicrophoneLend<'_> {
+    fn drop(&mut self) {
+        let mut lifecycle = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
+            // The clip itself is fine, so this only logs. The tick reopens a
+            // microphone left with no session once nothing holds it
+            // (`microphone_away::reopen_unwakeable_microphone`).
+            debug_log::log_error(format!(
+                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
+                error.code, error.message
+            ));
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -3039,6 +3063,9 @@ fn finish_recording_settings_update(
     let save_directory_changed = update.save_directory_changed;
 
     debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
+    if previous_settings.developer_options_enabled != settings.developer_options_enabled {
+        crate::windows::refresh_capture_exclusion(app_handle);
+    }
     log_recording_settings_changes(&previous_settings, &settings);
 
     if save_directory_changed {
@@ -3189,15 +3216,15 @@ pub(crate) fn update_recording_sources_from_app_handle(
     app_handle: &tauri::AppHandle,
     sources: CaptureSources,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let response = apply_recording_settings_domain_mutation_from_app_handle(
+    let state = app_handle.state::<RecordingSettingsState>();
+    let response = update_recording_settings_domain(
         app_handle,
-        SettingsOwnershipDomain::CaptureSources,
-        |settings| {
-            settings.capture_screen = sources.screen;
-            settings.capture_microphone = sources.microphone;
-            settings.capture_system_audio = sources.system_audio;
-            Ok(())
-        },
+        state.inner(),
+        RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+            capture_screen: Some(sources.screen),
+            capture_microphone: Some(sources.microphone),
+            capture_system_audio: Some(sources.system_audio),
+        }),
     )?;
     Ok(response.settings)
 }
@@ -3284,17 +3311,25 @@ fn update_recording_settings_domain(
     finish_recording_settings_domain_update(app_handle, domain, update)
 }
 
+/// Off the main thread: a sources change asks the capture lock, which a stop
+/// can hold for seconds while frame artifacts flush.
 #[tauri::command]
-pub fn update_capture_source_settings(
+pub async fn update_capture_source_settings(
     request: UpdateCaptureSourceSettingsRequest,
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::CaptureSources(request),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        update_recording_settings_domain(
+            &app_handle,
+            app_handle.state::<RecordingSettingsState>().inner(),
+            RecordingSettingsDomainPatch::CaptureSources(request),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "capture_source_settings_update_task_failed".to_string(),
+        message: format!("Capture source settings update task failed: {error}"),
+    })?
 }
 
 #[tauri::command]

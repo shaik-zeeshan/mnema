@@ -36,6 +36,9 @@
   } from "$lib/types/recording";
   import {
     startOfDay,
+    historyDensity as historyDensityFrom,
+    historyWindow,
+    pickerDensity,
     windowFor,
     shiftAnchor,
     buildActivityThreads,
@@ -52,7 +55,7 @@
     focusHeat,
     listedAppRows,
   } from "$lib/insights/lede-stats";
-  import { addDays, capsuleLabel, densityFromHeatmap, isoWeek, parseIso, toIso } from "$lib/components/date-input";
+  import { addDays, capsuleLabel, isoWeek, parseIso, toIso } from "$lib/components/date-input";
   import DateInput from "$lib/components/DateInput.svelte";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
@@ -147,6 +150,10 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
+  // Picker density for the ~120 days back (same window as Journal), from
+  // `get_capture_hours` — the heatmap's non-empty hours, nothing else.
+  // `null` until it loads (or when it failed): those days read unknown, not empty.
+  let historyDensity = $state<Record<string, number> | null>(null);
   // Previous-window baselines (see `loadPrev`).
   let prevUsage = $state<UsageCharts | null>(null);
   let prevActivities = $state<Activity[]>([]);
@@ -258,7 +265,8 @@
       ? appTimeColumns(usage?.activityHeatmap ?? [], ledeStats.trackedMs, range.startMs, range.endMs, rangeMode, Date.now())
       : activityColumns(rangeActivities, range.startMs, range.endMs, rangeMode, Date.now()),
   );
-  const density = $derived(densityFromHeatmap(usage?.activityHeatmap ?? []));
+  // The period's own usage overrides history on its days, so they stay live.
+  const density = $derived(pickerDensity(historyDensity, usage, minDay, Date.now()));
   // Captured days = distinct local days with any heatmap intensity.
   const capturedDays = $derived(
     new Set((usage?.activityHeatmap ?? []).filter((b) => b.intensityCount > 0).map((b) => startOfDay(b.bucketStartMs))).size,
@@ -431,9 +439,25 @@
     }, DIGEST_DEBOUNCE_MS);
   }
 
+  // Mount, every context change and window focus: the days outside the period
+  // (today while looking back, deletions) only move through here. Not on a
+  // range step — the 120-day window doesn't depend on the period, and the
+  // period's own days come live from `usage` (see `pickerDensity`).
+  let historyRequestToken = 0;
+  async function loadHistory(): Promise<void> {
+    // Just the hours with capture: the full usage read loads every frame row.
+    const token = ++historyRequestToken;
+    const day = minDay;
+    const span = historyWindow(day, Date.now());
+    // `getTimezoneOffset` is minutes BEHIND UTC; the backend wants east-positive.
+    const offsetMinutes = -new Date().getTimezoneOffset();
+    const hours = await invoke<number[]>("get_capture_hours", { ...span, offsetMinutes }).catch(() => null);
+    if (hours && token === historyRequestToken) historyDensity = historyDensityFrom(hours, span, day);
+  }
+
   async function reloadAll(): Promise<void> {
     await loadStatus();
-    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest()]);
+    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest(), loadHistory()]);
   }
 
   // Re-query when the period changes. The mount effect owns the first load.
@@ -487,6 +511,7 @@
     // baseline here too — otherwise they freeze while the engine tiles update.
     void loadFree();
     void loadPrev();
+    void loadHistory();
     // Same range → cache hit; keeps the current lede up until fresh prose.
     void loadDigest();
   }
@@ -512,7 +537,6 @@
       if (disposed) fn();
       else unlisten = fn;
     });
-
     return () => {
       disposed = true;
       unlisten?.();
@@ -679,7 +703,9 @@
   }
 </script>
 
-<svelte:window onkeydowncapture={onKeydown} />
+<!-- A deletion made elsewhere (Delete Recent Capture) emits no context change;
+     coming back to the window picks it up. -->
+<svelte:window onkeydowncapture={onKeydown} onfocus={() => { if (!renderIdle()) void loadHistory(); }} />
 
 <section class="overview" aria-label="Overview">
   <div class="ov-ctl" use:inBar>

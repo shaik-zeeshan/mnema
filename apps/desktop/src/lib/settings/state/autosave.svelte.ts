@@ -25,7 +25,7 @@
 // The pure scheduling decision (dirty? blocked? in-flight? saving?) lives in
 // `autosave-core.ts#shouldSaveDomain` so it can be unit-tested without a runtime.
 
-import { shouldSaveDomain } from "./autosave-core";
+import { isDirty, shouldSaveDomain } from "./autosave-core";
 
 // One autosave unit: a stable key plus the injected closures above. The key is
 // the domain id for recording domains, or a synthetic id ("keyboard", "mic")
@@ -68,9 +68,19 @@ function unitReady(unit: AutosaveUnit, host: AutosaveEngineHost): boolean {
 export function createAutosaveEngine(host: AutosaveEngineHost) {
   const units = new Map<string, AutosaveUnit>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  // The save each unit has in flight, so `flush` can wait it out.
+  const inFlight = new Map<string, Promise<void>>();
 
   function register(unit: AutosaveUnit): void {
     units.set(unit.key, unit);
+  }
+
+  function run(unit: AutosaveUnit): Promise<void> {
+    const done = Promise.resolve(unit.save()).finally(() => {
+      if (inFlight.get(unit.key) === done) inFlight.delete(unit.key);
+    });
+    inFlight.set(unit.key, done);
+    return done;
   }
 
   function clearTimer(key: string): void {
@@ -97,7 +107,7 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
         timers.delete(unit.key);
         // Re-check at fire time — the gate may have closed while we waited.
         if (!unitReady(unit, host)) return;
-        void unit.save();
+        void run(unit);
       }, unit.debounceMs);
       timers.set(unit.key, timer);
     }
@@ -109,12 +119,28 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
     for (const key of [...timers.keys()]) clearTimer(key);
   }
 
+  // Save one unit now instead of after its debounce (Start flushes the sources
+  // domain so the session records what the switches show). A save already in
+  // flight is waited out first — skipping it let Start win the race, and the
+  // backend then refused the save as `capture_sources_locked`. Then the same
+  // readiness gate, for an edit made while that save ran. Resolves true when
+  // nothing is left unsaved — false (backoff, privacy command, blocked, failed
+  // save) tells Start the switches and the saved sources still differ.
+  async function flush(key: string): Promise<boolean> {
+    const unit = units.get(key);
+    if (!unit) return true;
+    clearTimer(key);
+    await inFlight.get(key)?.catch(() => {});
+    if (unitReady(unit, host)) await run(unit).catch(() => {});
+    return !isDirty(unit.snapshot(), unit.baseline());
+  }
+
   // Test/diagnostic helper: is a debounce currently armed for this unit?
   function hasPendingTimer(key: string): boolean {
     return timers.has(key);
   }
 
-  return { register, tick, cancelAll, hasPendingTimer };
+  return { register, tick, cancelAll, flush, hasPendingTimer };
 }
 
 export type AutosaveEngine = ReturnType<typeof createAutosaveEngine>;
