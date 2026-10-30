@@ -20,10 +20,9 @@ use std::sync::Mutex;
 use tauri::{Manager, WebviewWindow};
 
 /// How much of the window must be on-screen, on BOTH axes, to count as
-/// meaningfully visible. Logical points, the same threshold as the frontend
-/// display-disconnect clamp (`$lib/render-idle-clamp` `MIN_VISIBLE_PT`). A
-/// window smaller than this on an axis needs its whole extent on-screen there
-/// instead (Quick Recall's idle bar is 60 pt tall, the permission helper 62 pt).
+/// meaningfully visible, in logical points. A window smaller than this on an
+/// axis needs its whole extent on-screen there instead (Quick Recall's idle bar
+/// is 60 pt tall, the permission helper 62 pt).
 const MIN_VISIBLE_PT: f64 = 50.0;
 
 /// The per-axis threshold never drops below this, so a tiny window still counts
@@ -115,6 +114,25 @@ fn monitor_rects(app_handle: &tauri::AppHandle) -> Option<Vec<Rect>> {
     )
 }
 
+/// Every monitor's rect in points as of the last `refresh_all` (every sleep/wake
+/// signal and every end of a display reconfiguration).
+static MONITORS: Mutex<Option<Vec<Rect>>> = Mutex::new(None);
+
+/// The monitor list for a single window's re-decision: the cached one when set,
+/// else a live read that seeds the cache.
+fn monitors_for(
+    cache: &Mutex<Option<Vec<Rect>>>,
+    live: impl FnOnce() -> Option<Vec<Rect>>,
+) -> Option<Vec<Rect>> {
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.is_none() {
+        *cache = live();
+    }
+    cache.clone()
+}
+
 /// Whether `window` sits parked off every monitor. Missing geometry counts as
 /// not parked: hiding on a failed read could strand a blank window.
 fn parked(window: &WebviewWindow, monitors: Option<&[Rect]>) -> bool {
@@ -201,13 +219,15 @@ fn apply(window: &WebviewWindow, asleep: bool, monitors: Option<&[Rect]>) {
 
 /// Re-decide one window's view: hidden while the screens sleep or the window is
 /// parked. Called on every move/resize/focus of a webview window, which tauri
-/// delivers on the main thread.
+/// delivers on the main thread. Reads the cached monitor list: a live read per
+/// move (~60/s while dragging) walks NSScreen and leaks a display UUID per
+/// monitor (tao 0.34.8 `monitor.rs` never releases `CGDisplayCreateUUIDFromDisplayID`).
 pub fn refresh(window: &WebviewWindow) {
     let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
     let monitors = if asleep {
         None
     } else {
-        monitor_rects(window.app_handle())
+        monitors_for(&MONITORS, || monitor_rects(window.app_handle()))
     };
     apply(window, asleep, monitors.as_deref());
 }
@@ -226,6 +246,11 @@ pub fn refresh_all(app_handle: &tauri::AppHandle) {
     let _ = app_handle.run_on_main_thread(move || {
         let asleep = SCREENS_ASLEEP.load(Ordering::Relaxed);
         let monitors = if asleep { None } else { monitor_rects(&handle) };
+        if monitors.is_some() {
+            *MONITORS
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = monitors.clone();
+        }
         for window in handle.webview_windows().values() {
             apply(window, asleep, monitors.as_deref());
         }
@@ -349,6 +374,32 @@ mod tests {
         let is_parked = !meaningfully_visible(&[AIR], (100.0, 50.0, 1200.0, 800.0));
         assert!(decide(true, is_parked));
         assert!(!decide(false, is_parked));
+    }
+
+    #[test]
+    fn a_window_move_reads_the_cached_monitors_not_appkit() {
+        // Every live read walks NSScreen and leaks a CGDisplayCreateUUID per
+        // monitor (tao never releases it); a drag fires ~60 moves a second.
+        let cache = Mutex::new(Some(vec![AIR]));
+        let mut live_reads = 0;
+        let monitors = monitors_for(&cache, || {
+            live_reads += 1;
+            Some(vec![HD])
+        });
+        assert_eq!(live_reads, 0);
+        assert_eq!(monitors, Some(vec![AIR]));
+    }
+
+    #[test]
+    fn an_empty_monitor_cache_falls_back_to_a_live_read_and_keeps_it() {
+        let cache = Mutex::new(None);
+        assert_eq!(monitors_for(&cache, || Some(vec![HD])), Some(vec![HD]));
+        let mut live_reads = 0;
+        let again = monitors_for(&cache, || {
+            live_reads += 1;
+            None
+        });
+        assert_eq!((live_reads, again), (0, Some(vec![HD])));
     }
 
     #[test]

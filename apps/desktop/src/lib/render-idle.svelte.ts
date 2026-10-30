@@ -10,11 +10,8 @@
 // and the first tick after resume passes the gate.
 import { untrack } from "svelte";
 import { listen } from "@tauri-apps/api/event";
-import { LogicalPosition } from "@tauri-apps/api/dpi";
-import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 
 import { setFramePreviewRenderGate } from "$lib/frame-preview";
-import { clampTarget } from "$lib/render-idle-clamp";
 
 const _state = $state({ screensAsleep: false, resumeTick: 0 });
 
@@ -50,20 +47,9 @@ function flushRenderableWaiters(): void {
   for (const resolve of _renderableWaiters.splice(0)) resolve();
 }
 
-// Callers parked in `whenScreensAwake`, flushed on any wake signal.
-const _awakeWaiters: (() => void)[] = [];
-
-/** Resolves once some display is lit, whether or not this document is visible. */
-function whenScreensAwake(): Promise<void> {
-  if (!_state.screensAsleep) return Promise.resolve();
-  return new Promise((resolve) => {
-    _awakeWaiters.push(resolve);
-  });
-}
-
 let _initialized = false;
 
-export function initRenderIdle(options?: { clampWindow?: boolean }): void {
+export function initRenderIdle(): void {
   if (_initialized || typeof window === "undefined") return;
   _initialized = true;
 
@@ -77,7 +63,6 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
   const wake = () => {
     _state.screensAsleep = false;
     _state.resumeTick += 1;
-    for (const resolve of _awakeWaiters.splice(0)) resolve();
     flushRenderableWaiters();
   };
   void listen("screens_did_sleep", () => {
@@ -98,48 +83,4 @@ export function initRenderIdle(options?: { clampWindow?: boolean }): void {
       flushRenderableWaiters();
     }
   });
-
-  // A display disconnect can park the window (almost) entirely outside every
-  // remaining screen — macOS keeps reporting it visible with a sliver
-  // on-screen, so it never occludes, never goes `hidden`, and every repaint
-  // strands. Clamp it back onto a real monitor. Debounced: one reconfiguration
-  // fires the CG callback several times.
-  if (options?.clampWindow) {
-    let clampTimer: ReturnType<typeof setTimeout> | null = null;
-    void listen("display_configuration_changed", () => {
-      if (clampTimer != null) clearTimeout(clampTimer);
-      clampTimer = setTimeout(() => {
-        clampTimer = null;
-        // Never move the window while the screens sleep: a `setPosition`
-        // relayout mid-sleep-transition repaints the whole layer tree into
-        // stranded IOSurfaces, and the monitor list is transient anyway.
-        // Deferred, the clamp runs against the final post-wake configuration.
-        // Not `whenRenderable`: the backend hides a parked window's view
-        // (`windows/parked_view.rs`), so this document stays hidden until the
-        // clamp itself brings the window back.
-        void whenScreensAwake().then(() => clampWindowOntoScreen());
-      }, 500);
-    });
-  }
-}
-
-async function clampWindowOntoScreen(): Promise<void> {
-  try {
-    const win = getCurrentWindow();
-    const [monitors, pos, size, scale] = await Promise.all([
-      availableMonitors(),
-      win.outerPosition(),
-      win.outerSize(),
-      win.scaleFactor(),
-    ]);
-    // The geometry lives in `$lib/render-idle-clamp` so it can be tested without a
-    // window: signed monitor origins, oversized windows, and the overlap threshold
-    // are all easy to get subtly wrong and impossible to assert from here.
-    const target = clampTarget(monitors, pos, size, scale);
-    if (target === null) return;
-    await win.setPosition(new LogicalPosition(target.x, target.y));
-  } catch (error) {
-    // Best-effort: a failed clamp just leaves the window where it was.
-    console.debug("render-idle: window clamp failed", error);
-  }
 }

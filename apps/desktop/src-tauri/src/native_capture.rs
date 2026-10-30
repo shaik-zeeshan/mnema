@@ -133,10 +133,6 @@ pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 // pauses its periodic DOM updates between these two events.
 pub const SCREENS_DID_SLEEP_EVENT: &str = "screens_did_sleep";
 pub const SCREENS_DID_WAKE_EVENT: &str = "screens_did_wake";
-// Fired at the end of every display reconfiguration (attach, detach, mode
-// change) so the frontend can clamp a window that was parked offscreen by a
-// display removal back onto a live monitor.
-pub const DISPLAY_CONFIGURATION_CHANGED_EVENT: &str = "display_configuration_changed";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
 // wake; keep recovery alive long enough that the backend does not depend on a
@@ -1593,18 +1589,12 @@ unsafe extern "C" fn display_reconfiguration_callback(
         return;
     };
 
-    // Every end-of-configuration — including a display going away, which can
-    // park windows offscreen — notifies the frontend.
-    let _ = app_handle.emit(DISPLAY_CONFIGURATION_CHANGED_EVENT, ());
-
-    // ...and re-decides every window's parked view directly: a display coming
-    // back must reveal the windows on it even when the wake recovery below is
-    // already running (it returns early) and no window event fires, and one
-    // going away hides the windows it stranded right away.
-    let windows_handle = app_handle.clone();
-    let _ = app_handle.run_on_main_thread(move || {
-        crate::windows::parked_view::refresh_all(&windows_handle);
-    });
+    // Every end-of-configuration re-decides every window's parked view: a
+    // display coming back must reveal the windows on it even when the wake
+    // recovery below is already running (it returns early) and no window event
+    // fires, and one going away hides the windows it stranded right away.
+    // `refresh_all` hops to the main thread itself.
+    crate::windows::parked_view::refresh_all(&app_handle);
 
     if display_reconfiguration_flags_indicate_display_online(flags) {
         // Funnel through the shared recovery path: it is atomic-guarded
