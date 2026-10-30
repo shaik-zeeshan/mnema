@@ -49,6 +49,23 @@ pub async fn capture_presence(
     Ok(CapturePresence { screen, audio })
 }
 
+/// Local hour starts in `[start_ms, end_ms)` holding screen capture: the
+/// Overview date picker's density, without `get_usage_charts`' per-frame load.
+/// `offset_minutes` is the frontend's UTC offset (east-positive, IST = 330).
+#[tauri::command]
+pub async fn get_capture_hours(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+    offset_minutes: i32,
+) -> Result<Vec<i64>, String> {
+    infra
+        .usage_charts()
+        .capture_hours(start_ms, end_ms, offset_minutes)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::CapturePresence;

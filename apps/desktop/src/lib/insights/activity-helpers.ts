@@ -56,35 +56,41 @@ export function historyWindow(minDay: string, nowMs: number): { startMs: number;
   return { startMs: Math.max(floor, back), endMs: nowMs };
 }
 
-/** Picker history from `get_capture_hours`: each captured UTC hour counts for
- *  the local day it starts on, and days from `minDay` up to the window read
- *  −1 (not fetched), so the ruler draws them out of range rather than empty.
- *  ponytail: with a half-hour UTC offset (IST) an hour bucket straddles
- *  midnight, so a frame at 00:15 counts for the day before. */
+/** Picker history from `get_capture_hours`: each captured local hour counts
+ *  for the day it starts on (the backend aligns hours to our UTC offset, so
+ *  none straddles midnight), and days from `minDay` up to the window read −1
+ *  (not fetched), so the ruler draws them out of range rather than empty. */
 export function historyDensity(
   hours: number[],
   window: { startMs: number },
   minDay: string,
 ): Record<string, number> {
+  const out = unknownDays(minDay, window.startMs);
+  return Object.assign(out, densityFromHeatmap(hours.map((bucketStartMs) => ({ bucketStartMs, intensityCount: 1 }))));
+}
+
+/** Every day from `minDay` that starts before `untilMs`, read −1 (unknown). */
+function unknownDays(minDay: string, untilMs: number): Record<string, number> {
   const out: Record<string, number> = {};
-  for (let d = parseIso(minDay); startOfDay(d.getTime()) < window.startMs; d = addDays(d, 1)) out[toIso(d)] = -1;
-  // The window's first bucket can start before it (the same straddle).
-  const inWindow = hours.filter((h) => h >= window.startMs);
-  return Object.assign(out, densityFromHeatmap(inWindow.map((bucketStartMs) => ({ bucketStartMs, intensityCount: 1 }))));
+  for (let d = parseIso(minDay); startOfDay(d.getTime()) < untilMs; d = addDays(d, 1)) out[toIso(d)] = -1;
+  return out;
 }
 
 /** Picker density: the history, with the period's own usage overriding it on
- *  the period's days only, so the visible days stay live. An hour bucket that
- *  starts before the period (the 23:30 bucket under a half-hour offset) files
+ *  the period's days only, so the visible days stay live. A `null` history
+ *  (fetch failed or pending) reads −1 from `minDay` to today, not empty.
+ *  An hour bucket that starts before the period (the 23:30 bucket under a half-hour offset) files
  *  under the day before it; letting it override would clobber that day's
  *  history with a partial count. */
 export function pickerDensity(
-  history: Record<string, number>,
+  history: Record<string, number> | null,
   period: { rangeStartMs: number; rangeEndMs: number; activityHeatmap: Parameters<typeof densityFromHeatmap>[0] } | null,
+  minDay: string,
+  nowMs: number,
 ): Record<string, number> {
-  if (!period) return history;
+  const out = history ? { ...history } : unknownDays(minDay, nowMs);
+  if (!period) return out;
   const live = densityFromHeatmap(period.activityHeatmap);
-  const out = { ...history };
   for (let d = new Date(startOfDay(period.rangeStartMs)); startOfDay(d.getTime()) < period.rangeEndMs; d = addDays(d, 1)) {
     out[toIso(d)] = live[toIso(d)] ?? 0;
   }

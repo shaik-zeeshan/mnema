@@ -90,6 +90,18 @@ describe("date-picker density", () => {
     });
   });
 
+  it("missing_history_reads_unknown_not_empty_outside_the_period", () => {
+    // get_capture_hours failed or is still pending: days outside the period
+    // are unknown (-1), never "nothing captured" (the ruler's `?? 0`).
+    const now = new Date(2026, 9, 9, 15).getTime();
+    const period = { rangeStartMs: new Date(2026, 9, 9).getTime(), rangeEndMs: new Date(2026, 9, 10).getTime(), activityHeatmap: [] };
+    expect(pickerDensity(null, period, "2026-10-07", now)).toEqual({
+      "2026-10-07": -1,
+      "2026-10-08": -1,
+      "2026-10-09": 0,
+    });
+  });
+
   it("history_before_the_window_reads_unknown_not_empty", () => {
     const span = { startMs: new Date(2026, 5, 11).getTime() };
     const hours = [new Date(2026, 5, 11, 9).getTime()];
@@ -112,8 +124,9 @@ describe("date-picker density", () => {
   });
 });
 
-// India is UTC+5:30, so UTC hour buckets start at :30 local and the one holding
-// 00:00–00:30 starts at 23:30 the day before.
+// India is UTC+5:30. The period's usage heatmap buckets by UTC hour, so they
+// start at :30 local and the one holding 00:00–00:30 starts at 23:30 the day
+// before; `get_capture_hours` aligns its hours to the local offset instead.
 describe("date-picker density under a half-hour offset", () => {
   const saved = process.env.TZ;
   beforeAll(() => {
@@ -132,9 +145,11 @@ describe("date-picker density under a half-hour offset", () => {
     expect(pickerDensity({ "2026-10-08": 3 }, period)).toEqual({ "2026-10-08": 3, "2026-10-09": 0 });
   });
 
-  it("history_window_first_bucket_starting_before_it_stays_unknown", () => {
-    const span = { startMs: new Date(2026, 5, 11).getTime() };
-    const hours = [span.startMs - 30 * 60_000, span.startMs + 30 * 60_000];
-    expect(historyDensity(hours, span, "2026-06-10")).toEqual({ "2026-06-10": -1, "2026-06-11": 1 });
+  it("history_hour_from_local_midnight_counts_for_its_own_day", () => {
+    // get_capture_hours aligns hours to the local offset: a frame at 00:10 on
+    // Jun 11 comes back as the hour starting at local midnight, not 23:30.
+    const span = { startMs: new Date(2026, 5, 10).getTime() };
+    const hours = [new Date(2026, 5, 11).getTime()];
+    expect(historyDensity(hours, span, "2026-06-10")).toEqual({ "2026-06-11": 1 });
   });
 });

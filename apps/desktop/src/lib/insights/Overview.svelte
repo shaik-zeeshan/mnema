@@ -152,7 +152,8 @@
   let usage = $state<UsageCharts | null>(null);
   // Picker density for the ~120 days back (same window as Journal), from
   // `get_capture_hours` — the heatmap's non-empty hours, nothing else.
-  let historyDensity = $state<Record<string, number>>({});
+  // `null` until it loads (or when it failed): those days read unknown, not empty.
+  let historyDensity = $state<Record<string, number> | null>(null);
   // Previous-window baselines (see `loadPrev`).
   let prevUsage = $state<UsageCharts | null>(null);
   let prevActivities = $state<Activity[]>([]);
@@ -265,7 +266,7 @@
       : activityColumns(rangeActivities, range.startMs, range.endMs, rangeMode, Date.now()),
   );
   // The period's own usage overrides history on its days, so they stay live.
-  const density = $derived(pickerDensity(historyDensity, usage));
+  const density = $derived(pickerDensity(historyDensity, usage, minDay, Date.now()));
   // Captured days = distinct local days with any heatmap intensity.
   const capturedDays = $derived(
     new Set((usage?.activityHeatmap ?? []).filter((b) => b.intensityCount > 0).map((b) => startOfDay(b.bucketStartMs))).size,
@@ -438,15 +439,19 @@
     }, DIGEST_DEBOUNCE_MS);
   }
 
-  // Mount, every range step and every context change: the days outside the
-  // period (today while looking back, deletions) only move through here.
+  // Mount, every context change and window focus: the days outside the period
+  // (today while looking back, deletions) only move through here. Not on a
+  // range step — the 120-day window doesn't depend on the period, and the
+  // period's own days come live from `usage` (see `pickerDensity`).
   let historyRequestToken = 0;
   async function loadHistory(): Promise<void> {
     // Just the hours with capture: the full usage read loads every frame row.
     const token = ++historyRequestToken;
     const day = minDay;
     const span = historyWindow(day, Date.now());
-    const hours = await invoke<number[]>("get_capture_hours", span).catch(() => null);
+    // `getTimezoneOffset` is minutes BEHIND UTC; the backend wants east-positive.
+    const offsetMinutes = -new Date().getTimezoneOffset();
+    const hours = await invoke<number[]>("get_capture_hours", { ...span, offsetMinutes }).catch(() => null);
     if (hours && token === historyRequestToken) historyDensity = historyDensityFrom(hours, span, day);
   }
 
@@ -470,7 +475,6 @@
       void loadFree();
       void loadPrev();
       void loadEngine();
-      void loadHistory();
       scheduleDigestLoad();
     });
     return () => {
@@ -533,7 +537,6 @@
       if (disposed) fn();
       else unlisten = fn;
     });
-
     return () => {
       disposed = true;
       unlisten?.();
@@ -700,7 +703,9 @@
   }
 </script>
 
-<svelte:window onkeydowncapture={onKeydown} />
+<!-- A deletion made elsewhere (Delete Recent Capture) emits no context change;
+     coming back to the window picks it up. -->
+<svelte:window onkeydowncapture={onKeydown} onfocus={() => { if (!renderIdle()) void loadHistory(); }} />
 
 <section class="overview" aria-label="Overview">
   <div class="ov-ctl" use:inBar>

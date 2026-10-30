@@ -105,21 +105,6 @@ struct BrokerOpenCaptureResultState {
     pending: Mutex<VecDeque<BrokerOpenCaptureResultPayload>>,
 }
 
-/// UTC hour starts in `[start_ms, end_ms)` holding screen capture: the Overview
-/// date picker's density, without `get_usage_charts`' per-frame load.
-#[tauri::command]
-async fn get_capture_hours(
-    infra: tauri::State<'_, app_infra::AppInfraState>,
-    start_ms: i64,
-    end_ms: i64,
-) -> Result<Vec<i64>, String> {
-    infra
-        .usage_charts()
-        .capture_hours(start_ms, end_ms)
-        .await
-        .map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 fn drain_pending_broker_open_capture_results(
     state: tauri::State<'_, BrokerOpenCaptureResultState>,
@@ -863,7 +848,7 @@ pub fn run() {
             conversation::commands::delete_last_turn,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,
-            get_capture_hours,
+            usage_charts::get_capture_hours,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::set_privacy_filter_system_audio,
