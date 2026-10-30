@@ -1225,7 +1225,7 @@ pub(super) fn suspend_screen_capture(
         // microphone audio lost on every low-disk pause; the normal rotation and
         // inactivity-pause paths both commit this file (ADR 0040 "the current
         // segment is still healthy ... so commit it before ending").
-        commit_suspended_microphone_outputs(app_handle, runtime);
+        commit_suspended_microphone_outputs(app_handle, runtime, "entering low-disk suspension");
         if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
             super::output::clear_current_microphone_output_file(output_files);
         }
@@ -1350,10 +1350,10 @@ fn commit_suspended_screen_system_outputs(
     }
 }
 
-/// Commit the current segment's microphone audio when entering a Low-Disk
-/// Suspension. LowDisk is the only kind that stops the mic; its `.m4a` was just
-/// finalized on disk by `stop_microphone_session_for_runtime` and lives in
-/// `current_segment_output_files`. Mirrors [`commit_suspended_screen_system_outputs`]
+/// Commit the microphone files a stop already closed and booked in
+/// `current_segment_output_files`: on entering a Low-Disk Suspension (the only
+/// kind that stops the mic), and on an idle pause with no session left to
+/// finalize. Mirrors [`commit_suspended_screen_system_outputs`]
 /// for the mic source: validate + finalize the already-closed file, append it to
 /// the committed `output_files`, and persist its audio segment row. Must run
 /// before `preserve_live_audio_continuation_outputs` clears
@@ -1364,6 +1364,7 @@ fn commit_suspended_screen_system_outputs(
 fn commit_suspended_microphone_outputs(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
+    context: &str,
 ) {
     let Some(output_files) = runtime.current_segment_output_files.as_ref() else {
         return;
@@ -1400,7 +1401,7 @@ fn commit_suspended_microphone_outputs(
         }
         Err(error) => {
             super::debug_log::log_warn(format!(
-                "failed to commit microphone outputs while entering low-disk suspension; continuing: [{}] {}",
+                "failed to commit microphone outputs while {context}; continuing: [{}] {}",
                 error.code, error.message
             ));
         }
@@ -2068,8 +2069,9 @@ fn attempt_low_disk_recovery(
 
 /// The sources low-disk recovery restarts: each requested one inactivity has not
 /// paused. Not a microphone lent to voice enrollment (restarted when handed
-/// back) or held while the Mac is away (lock is away). A microphone left down
-/// here is the tick's to reopen once nothing holds it.
+/// back) or held while the Mac is away (lock is away) — live away too: recovery
+/// runs before the tick that first sees the Mac away sets the hold. A
+/// microphone left down here is the tick's to reopen once nothing holds it.
 #[cfg(target_os = "macos")]
 pub(super) fn low_disk_recovery_sources(
     runtime: &NativeCaptureRuntime,
@@ -2080,7 +2082,8 @@ pub(super) fn low_disk_recovery_sources(
         microphone: requested_sources.microphone
             && !runtime.inactivity.is_microphone_paused()
             && !runtime.microphone_lent_out
-            && !runtime.microphone_away_hold,
+            && !runtime.microphone_away_hold
+            && !super::microphone_away::mac_is_away(runtime),
         system_audio: requested_sources.system_audio
             && !runtime.inactivity.is_screen_paused()
             && !runtime.inactivity.is_system_audio_paused(),
@@ -2950,6 +2953,11 @@ pub(super) fn pause_microphone_for_inactivity_with_app_handle(
             )?;
             finalized_microphone_outputs = Some(microphone_outputs);
         }
+    } else {
+        // No session (its device went, or a dead one was dropped): the file its
+        // stop closed is booked for the next commit, so commit it now rather
+        // than clear it below.
+        commit_suspended_microphone_outputs(app_handle, runtime, "pausing for inactivity");
     }
 
     if let Some(finalized) = finalized_microphone_outputs.as_ref() {
@@ -3993,24 +4001,8 @@ fn refresh_current_segment_sources_for_pause_state(
 #[cfg(target_os = "macos")]
 fn preserve_live_audio_continuation_outputs(runtime: &mut NativeCaptureRuntime) {
     let mut audio_continuation = empty_output_files();
-    if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
-        audio_continuation.microphone_file = output_files.microphone_file.clone();
-        audio_continuation.microphone_files = output_files.microphone_files.clone();
-    }
-    let mut has_live_audio = !audio_continuation.microphone_files.is_empty();
-
-    if live_microphone_continuation_file(runtime).is_some()
-        || (!runtime.inactivity.microphone_paused && runtime.active_microphone_session.is_some())
-    {
-        has_live_audio = true;
-        if let Some(mic_file) = live_microphone_continuation_file(runtime) {
-            if audio_continuation.microphone_files.contains(&mic_file) {
-                audio_continuation.microphone_file = Some(mic_file);
-            } else {
-                set_current_microphone_output_file(&mut audio_continuation, mic_file);
-            }
-        }
-    }
+    let mut has_live_audio =
+        merge_live_microphone_continuation_into_segment_outputs(runtime, &mut audio_continuation);
 
     if let Some(system_audio_file) = live_system_audio_continuation_file(runtime) {
         has_live_audio = true;
@@ -4043,20 +4035,28 @@ fn live_system_audio_continuation_file(runtime: &NativeCaptureRuntime) -> Option
     .flatten()
 }
 
+/// Carries the microphone into a rebuilt segment's outputs: the files its stops
+/// closed this segment (a vanished device, enrollment), which no other path
+/// commits, and the file it is still recording. Whether the microphone has
+/// anything in the new segment.
 #[cfg(target_os = "macos")]
 fn merge_live_microphone_continuation_into_segment_outputs(
     runtime: &NativeCaptureRuntime,
     segment_outputs: &mut CaptureOutputFiles,
-) {
-    let has_live_microphone = !runtime.inactivity.microphone_paused
-        && (runtime.active_microphone_session.is_some()
-            || runtime.microphone_recording_file.is_some());
-
-    if has_live_microphone {
-        if let Some(mic_file) = runtime.microphone_recording_file.as_ref() {
-            set_current_microphone_output_file(segment_outputs, mic_file.clone());
+) -> bool {
+    if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
+        segment_outputs.microphone_file = output_files.microphone_file.clone();
+        segment_outputs.microphone_files = output_files.microphone_files.clone();
+    }
+    if let Some(mic_file) = live_microphone_continuation_file(runtime) {
+        if segment_outputs.microphone_files.contains(&mic_file) {
+            segment_outputs.microphone_file = Some(mic_file);
+        } else {
+            set_current_microphone_output_file(segment_outputs, mic_file);
         }
     }
+    !segment_outputs.microphone_files.is_empty()
+        || (!runtime.inactivity.microphone_paused && runtime.active_microphone_session.is_some())
 }
 
 /// The screen's pause/resume paths rebuild `current_segment_output_files` from
@@ -5600,7 +5600,8 @@ pub(super) fn start_capture_runtime(
             // Lock is away: a start while the Mac is away (a trigger, a
             // schedule) leaves the microphone down under the away hold, and the
             // tick opens it once the Mac is back.
-            let microphone_held_away = sources.microphone && super::lifecycle::mac_is_away(runtime);
+            let microphone_held_away =
+                sources.microphone && super::microphone_away::mac_is_away(runtime);
             let first_segment_sources = CaptureSources {
                 microphone: sources.microphone && !microphone_held_away,
                 ..sources.clone()

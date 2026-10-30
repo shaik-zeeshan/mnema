@@ -1498,13 +1498,31 @@ fn check_full_recording_settings_update(
     ensure_capture_sources_unlocked(previous, next, capture_use.in_use())
 }
 
+/// Whether a patch's save must ask the capture lock: only one that changes
+/// the sources. The lock can be held for seconds while a stop flushes, and
+/// these saves run on the main thread.
+fn domain_patch_changes_sources(
+    current: &RecordingSettings,
+    patch: &RecordingSettingsDomainPatch,
+) -> bool {
+    let RecordingSettingsDomainPatch::CaptureSources(request) = patch else {
+        return false;
+    };
+    let changes = |requested: Option<bool>, current: bool| requested.is_some_and(|v| v != current);
+    changes(request.capture_screen, current.capture_screen)
+        || changes(request.capture_microphone, current.capture_microphone)
+        || changes(request.capture_system_audio, current.capture_system_audio)
+}
+
 pub(crate) fn apply_recording_settings_domain_patch(
     app_handle: &tauri::AppHandle,
     state: &RecordingSettingsState,
     patch: RecordingSettingsDomainPatch,
 ) -> Result<(SettingsOwnershipDomain, AppliedRecordingSettingsUpdate), CaptureErrorResponse> {
     let domain = patch.domain();
-    apply_recording_settings_domain_mutation(app_handle, state, domain, |settings| {
+    let sources_may_change =
+        domain_patch_changes_sources(&current_recording_settings(state), &patch);
+    apply_domain_mutation(app_handle, state, domain, sources_may_change, |settings| {
         apply_domain_patch_to_settings(settings, patch)?;
         Ok(())
     })
@@ -1518,8 +1536,23 @@ pub(crate) fn apply_recording_settings_domain_mutation(
     mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
 ) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
     let sources_domain = domain == SettingsOwnershipDomain::CaptureSources;
-    let capture_use =
-        CaptureUse::before_settings_lock(|| sources_domain && capture_session_running(app_handle));
+    apply_domain_mutation(app_handle, state, domain, sources_domain, mutate)
+}
+
+/// `sources_may_change` is read before the settings lock, like the full save's
+/// check: a concurrent sources save landing in between is the same narrow
+/// window the full save accepts.
+fn apply_domain_mutation(
+    app_handle: &tauri::AppHandle,
+    state: &RecordingSettingsState,
+    domain: SettingsOwnershipDomain,
+    sources_may_change: bool,
+    mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
+) -> Result<AppliedRecordingSettingsUpdate, CaptureErrorResponse> {
+    let sources_domain = domain == SettingsOwnershipDomain::CaptureSources;
+    let capture_use = CaptureUse::before_settings_lock(|| {
+        sources_may_change && capture_session_running(app_handle)
+    });
 
     let mut runtime = state.lock().expect("recording settings state poisoned");
     let mut next_settings = runtime.settings.clone();
@@ -2302,6 +2335,33 @@ mod tests {
         .expect_err("empty patch should be rejected");
 
         assert_eq!(error.code, "empty_settings_patch");
+    }
+
+    // A sources save that changes nothing never asks the capture lock, which a
+    // stop can hold for seconds while these saves run on the main thread.
+    #[test]
+    fn only_a_sources_patch_that_changes_them_consults_the_capture() {
+        let current = default_recording_settings();
+        let patch = |microphone: bool| {
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: Some(current.capture_screen),
+                capture_microphone: Some(microphone),
+                capture_system_audio: None,
+            })
+        };
+
+        assert!(!domain_patch_changes_sources(
+            &current,
+            &patch(current.capture_microphone)
+        ));
+        assert!(domain_patch_changes_sources(
+            &current,
+            &patch(!current.capture_microphone)
+        ));
+        assert!(!domain_patch_changes_sources(
+            &current,
+            &RecordingSettingsDomainPatch::Developer(Default::default())
+        ));
     }
 
     #[test]

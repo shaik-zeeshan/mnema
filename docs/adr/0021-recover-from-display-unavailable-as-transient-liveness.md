@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment). Amended 2026-07-15: scope narrows to screen only once system audio leaves the shared stream (see second Amendment; [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)). Amended 2026-10-23: the microphone stops while the Mac is locked or every display is asleep (see third Amendment).
+Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment). Amended 2026-07-15: scope narrows to screen only once system audio leaves the shared stream (see second Amendment; [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)). Amended 2026-10-23: the microphone stops while the Mac is locked, another user holds the console, or every display is asleep (see third Amendment).
 
 ## Context
 

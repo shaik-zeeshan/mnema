@@ -189,7 +189,7 @@ pub struct NativeCaptureRuntime {
     pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
     /// Injectable "is the Mac away" probe, read wherever the microphone could
     /// open: `None` means the live lock and display state
-    /// ([`super::lifecycle::mac_is_away`]). Tests script it, since they can lock
+    /// ([`super::microphone_away::mac_is_away`]). Tests script it, since they can lock
     /// neither the Mac nor its displays.
     #[cfg(target_os = "macos")]
     pub away_probe: Option<fn() -> bool>,

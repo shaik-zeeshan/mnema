@@ -12,6 +12,7 @@ mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
 mod microphone;
+mod microphone_away;
 pub(crate) mod not_recording_reminder;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
@@ -2921,7 +2922,7 @@ impl Drop for MicrophoneLend<'_> {
         if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
             // The clip itself is fine, so this only logs. The tick reopens a
             // microphone left with no session once nothing holds it
-            // (`lifecycle::reopen_unwakeable_microphone`).
+            // (`microphone_away::reopen_unwakeable_microphone`).
             debug_log::log_error(format!(
                 "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
                 error.code, error.message
@@ -3215,15 +3216,15 @@ pub(crate) fn update_recording_sources_from_app_handle(
     app_handle: &tauri::AppHandle,
     sources: CaptureSources,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let response = apply_recording_settings_domain_mutation_from_app_handle(
+    let state = app_handle.state::<RecordingSettingsState>();
+    let response = update_recording_settings_domain(
         app_handle,
-        SettingsOwnershipDomain::CaptureSources,
-        |settings| {
-            settings.capture_screen = sources.screen;
-            settings.capture_microphone = sources.microphone;
-            settings.capture_system_audio = sources.system_audio;
-            Ok(())
-        },
+        state.inner(),
+        RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+            capture_screen: Some(sources.screen),
+            capture_microphone: Some(sources.microphone),
+            capture_system_audio: Some(sources.system_audio),
+        }),
     )?;
     Ok(response.settings)
 }
@@ -3310,17 +3311,25 @@ fn update_recording_settings_domain(
     finish_recording_settings_domain_update(app_handle, domain, update)
 }
 
+/// Off the main thread: a sources change asks the capture lock, which a stop
+/// can hold for seconds while frame artifacts flush.
 #[tauri::command]
-pub fn update_capture_source_settings(
+pub async fn update_capture_source_settings(
     request: UpdateCaptureSourceSettingsRequest,
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::CaptureSources(request),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        update_recording_settings_domain(
+            &app_handle,
+            app_handle.state::<RecordingSettingsState>().inner(),
+            RecordingSettingsDomainPatch::CaptureSources(request),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "capture_source_settings_update_task_failed".to_string(),
+        message: format!("Capture source settings update task failed: {error}"),
+    })?
 }
 
 #[tauri::command]

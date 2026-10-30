@@ -205,13 +205,13 @@ pub(super) fn next_microphone_output_file_for_runtime(
 }
 
 /// A paused microphone is left to the tick, which reopens it once the device is
-/// back ([`super::lifecycle::reopen_unwakeable_microphone`]).
+/// back ([`super::microphone_away::reopen_unwakeable_microphone`]).
 #[cfg(target_os = "macos")]
 pub(super) fn should_reconnect_waiting_microphone_session(
     runtime: &NativeCaptureRuntime,
     state: &MicrophoneControllerState,
 ) -> bool {
-    super::lifecycle::microphone_free_to_record(runtime)
+    super::microphone_away::microphone_free_to_record(runtime)
         && !runtime.inactivity.is_microphone_paused()
         && runtime.active_microphone_session.is_none()
         && state.preference.mode == MicrophonePreferenceMode::SpecificDevice
@@ -298,6 +298,28 @@ fn maybe_reconnect_waiting_microphone_session(
         state.preference.device_id.as_deref(),
         "reconnecting microphone",
     );
+}
+
+/// The device a microphone reopen should use, from the current preferences:
+/// `Some(None)` is the default device, and `None` means they could not be read
+/// without waiting. The tick calls this holding the capture lock, while the
+/// device-change notifier takes the preferences lock and then the capture
+/// lock, so this only ever `try_lock`s: blocking here could deadlock.
+#[cfg(target_os = "macos")]
+pub(super) fn current_capture_microphone_device_id(
+    app_handle: &tauri::AppHandle,
+) -> Option<Option<String>> {
+    let (preference, disconnect_policy) = {
+        let state = app_handle.try_state::<MicrophoneControllerPreferencesState>()?;
+        let preferences = state.try_lock().ok()?;
+        (
+            preferences.preference.clone(),
+            preferences.disconnect_policy.clone(),
+        )
+    };
+    let state =
+        microphone_capture::microphone_controller_state(preference, disconnect_policy).ok()?;
+    Some(resolve_capture_microphone_device_id(&state))
 }
 
 pub(super) fn resolve_capture_microphone_device_id(
