@@ -25,7 +25,7 @@
 // The pure scheduling decision (dirty? blocked? in-flight? saving?) lives in
 // `autosave-core.ts#shouldSaveDomain` so it can be unit-tested without a runtime.
 
-import { shouldSaveDomain } from "./autosave-core";
+import { isDirty, shouldSaveDomain } from "./autosave-core";
 
 // One autosave unit: a stable key plus the injected closures above. The key is
 // the domain id for recording domains, or a synthetic id ("keyboard", "mic")
@@ -123,13 +123,16 @@ export function createAutosaveEngine(host: AutosaveEngineHost) {
   // domain so the session records what the switches show). A save already in
   // flight is waited out first — skipping it let Start win the race, and the
   // backend then refused the save as `capture_sources_locked`. Then the same
-  // readiness gate, for an edit made while that save ran.
-  async function flush(key: string): Promise<void> {
+  // readiness gate, for an edit made while that save ran. Resolves true when
+  // nothing is left unsaved — false (backoff, privacy command, blocked, failed
+  // save) tells Start the switches and the saved sources still differ.
+  async function flush(key: string): Promise<boolean> {
     const unit = units.get(key);
-    if (!unit) return;
+    if (!unit) return true;
     clearTimer(key);
     await inFlight.get(key)?.catch(() => {});
-    if (unitReady(unit, host)) await run(unit);
+    if (unitReady(unit, host)) await run(unit).catch(() => {});
+    return !isDirty(unit.snapshot(), unit.baseline());
   }
 
   // Test/diagnostic helper: is a debounce currently armed for this unit?

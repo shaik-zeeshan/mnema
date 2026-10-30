@@ -2,7 +2,7 @@
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { expect, test } from "bun:test";
 import { createAutosaveEngine } from "./autosave.svelte";
-import { recordingAutosaveDebounceMs } from "./autosave-core";
+import { recordingAutosaveDebounceMs, settleRecDomainSaveError } from "./autosave-core";
 
 function unit(key: string, current: string, saves: string[]) {
   return {
@@ -85,4 +85,65 @@ test("flush waits out a save already in flight, then saves an edit made during i
 test("source switches save without a debounce; other recording domains keep it", () => {
   expect(recordingAutosaveDebounceMs("capture_sources")).toBe(0);
   expect(recordingAutosaveDebounceMs("video")).toBe(450);
+});
+
+// Start awaits this flush, then starts with the saved sources. A unit the flush
+// could not save (backoff after a failed save, a privacy command in flight, all
+// sources off) must say so, or Start records the old sources under the new
+// switches.
+test("flush reports not-flushed when the save leaves the unit dirty (backoff)", async () => {
+  const engine = createAutosaveEngine({ privacyCommandInFlight: () => false });
+  // saveRecordingDomain's backoff gate: returns without saving.
+  engine.register({ ...unit("capture_sources", "edited", []), save: async () => {} });
+
+  expect(await engine.flush("capture_sources")).toBe(false);
+});
+
+test("flush reports not-flushed while a privacy command holds saves", async () => {
+  const saves: string[] = [];
+  const engine = createAutosaveEngine({ privacyCommandInFlight: () => true });
+  engine.register(unit("capture_sources", "edited", saves));
+
+  expect(await engine.flush("capture_sources")).toBe(false);
+  expect(saves).toEqual([]);
+});
+
+test("flush reports flushed for a clean unit and after a landed save", async () => {
+  let baseline = "saved";
+  const engine = createAutosaveEngine({ privacyCommandInFlight: () => false });
+  engine.register({
+    ...unit("capture_sources", "edited", []),
+    baseline: () => baseline,
+    save: async () => {
+      baseline = "edited";
+    },
+  });
+
+  expect(await engine.flush("capture_sources")).toBe(true); // saved now
+  expect(await engine.flush("capture_sources")).toBe(true); // clean
+});
+
+// saveRecordingDomain's catch: a sources save refused because recording started
+// under it reverts the switches to the saved sources, records no failure and
+// arms no retry; any other rejection is a failure (which arms the backoff).
+test("a capture_sources_locked rejection reverts to canonical without a failure or retry", () => {
+  const drafts = { captureMicrophone: true };
+  const canonical = { captureMicrophone: false };
+  const calls: string[] = [];
+  const on = {
+    revertToCanonical: () => {
+      Object.assign(drafts, canonical);
+      calls.push("revert");
+    },
+    clearFailure: () => calls.push("clear"),
+    noteFailure: () => calls.push("note"),
+  };
+
+  settleRecDomainSaveError({ code: "capture_sources_locked", message: "locked" }, on);
+  expect(drafts).toEqual(canonical);
+  expect(calls).toEqual(["revert", "clear"]);
+
+  calls.length = 0;
+  settleRecDomainSaveError(new Error("disk full"), on);
+  expect(calls).toEqual(["note"]);
 });

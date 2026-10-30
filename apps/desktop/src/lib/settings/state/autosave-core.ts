@@ -7,6 +7,7 @@
 // IPC — that is the whole point of the split.
 
 import type { SettingsOwnershipDomain } from "$lib/types";
+import { isCaptureSourcesLocked } from "$lib/format-error";
 
 // The recording-settings domains that autosave (each maps to one update
 // command). `app_privacy_exclusion` is a *draft* domain (it has a snapshot and a
@@ -136,4 +137,19 @@ export type SaveStatus = "error" | "blocked" | "saving" | "saved";
 
 export function deriveSaveStatus(s: { saveFailed: boolean; blocked: boolean; saving: boolean }): SaveStatus {
   return s.saveFailed ? "error" : s.blocked ? "blocked" : s.saving ? "saving" : "saved";
+}
+
+// A recording-domain save the backend rejected. `capture_sources_locked` means
+// recording started under the save: not a failure, and a retry would only be
+// refused again — show the sources in use, record no failure, arm no retry.
+export function settleRecDomainSaveError(
+  err: unknown,
+  on: { revertToCanonical: () => void; clearFailure: () => void; noteFailure: (err: unknown) => void },
+): void {
+  if (isCaptureSourcesLocked(err)) {
+    on.revertToCanonical();
+    on.clearFailure();
+  } else {
+    on.noteFailure(err);
+  }
 }

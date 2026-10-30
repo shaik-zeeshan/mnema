@@ -17,6 +17,7 @@
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import PermissionRows from "./PermissionRows.svelte";
   import { captureControls } from "$lib/capture-controls.svelte";
+  import { sourcesHint } from "./sources-hint";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -117,7 +118,7 @@
 <SettingGroup
   id="settings-section-capture"
   title="Sources"
-  hint={sourcesLocked ? "Stop recording to change sources." : "Three independent families — any can run alone."}
+  hint={sourcesHint(captureControls)}
   loading={rec.loadingRecSettings}
 >
   {#snippet actions()}

@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import { captureSession, setSession } from "$lib/session.svelte";
 import { renderIdle } from "$lib/render-idle.svelte";
-import { humanizeError } from "$lib/format-error";
+import { humanizeError, isCaptureSourcesLocked } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
@@ -51,18 +51,13 @@ function reportCaptureError(err: unknown): void {
   void message(humanizeError(err), { title: "Recording error", kind: "error" });
 }
 
-/** The backend refused a sources change because a recording is running or
- *  starting (`capture_sources_locked`). A race, not a failure: callers drop
- *  the change back to the saved sources without an error dialog. */
-export function isCaptureSourcesLocked(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "capture_sources_locked";
-}
-
 // Settings registers its sources flush here while open, so a toggle whose save
 // is still in flight lands before Start reads the sources. (The tray Start
 // can't call this; the sources save skips the debounce to keep its gap short.)
-let flushBeforeStart: (() => Promise<void>) | null = null;
-export function setFlushBeforeStart(flush: (() => Promise<void>) | null): void {
+// It resolves false when the switches could not be saved; Start then refuses
+// rather than record the old sources under the new switches.
+let flushBeforeStart: (() => Promise<boolean>) | null = null;
+export function setFlushBeforeStart(flush: (() => Promise<boolean>) | null): void {
   flushBeforeStart = flush;
 }
 
@@ -252,7 +247,9 @@ export async function startCapture(): Promise<void> {
   _state.loadingStart = true;
   _state.startError = null;
   try {
-    await flushBeforeStart?.();
+    if ((await flushBeforeStart?.()) === false) {
+      throw new Error("Your source changes haven't saved yet, so recording would use the old ones. Wait for them to save (or press Retry), then start again.");
+    }
     const result = await invoke<{ session: CaptureSession }>(
       "start_native_capture",
       {
