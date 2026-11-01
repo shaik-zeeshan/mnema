@@ -23,6 +23,8 @@ Metadata-derived website, title, private-browser, and per-window privacy decisio
 
 Any metadata collection kept after this removal must serve non-privacy product features such as timeline context, app/window labels, or debug surfaces.
 
+*(Amended 2026-11-01 by [ADR 0060](0060-linux-privacy-exclusion-pauses-while-an-excluded-app-is-in-front.md) for Linux only: there, exclusion is a per-desktop capability (Full / FocusGated / Masked / Unavailable), and FocusGated records an excluded window that is visible behind the front app. macOS is unchanged.)*
+
 ## Consequences
 
 The privacy model is simpler and predictable: Mnema records what is visible from non-excluded apps. Users who do not want browser content recorded should exclude the browser app.
