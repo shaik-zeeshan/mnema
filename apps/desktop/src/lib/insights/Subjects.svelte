@@ -491,7 +491,7 @@
   }
   .in-refresh {
     position: sticky;
-    top: 64px;
+    top: calc(var(--in-bar-h, 56px) + 8px);
     z-index: 5;
     display: flex;
     justify-content: center;

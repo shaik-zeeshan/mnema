@@ -315,7 +315,7 @@
       animation: none;
     }
   }
-  @container mx-window (max-width: 1180px) {
+  @media (max-width: 1180px) {
     .ex {
       grid-template-columns: 1fr;
     }

@@ -304,6 +304,6 @@
   .in-apps .in-cat__bar i { background: var(--chart-grey-3); }
   @keyframes in-grow-x { from { transform: scaleX(0); } }
   @keyframes in-grow-y { from { transform: scaleY(0); } }
-  @container mx-window (max-width: 1180px) { .in-feed { grid-template-columns: 1fr; } }
+  @media (max-width: 1180px) { .in-feed { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { .in-wk__bar i, .in-cat__bar i { animation: none; } }
 </style>
