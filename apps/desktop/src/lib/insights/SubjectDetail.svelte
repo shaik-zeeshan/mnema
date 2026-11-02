@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Subject detail (insights.html `openSubject`): crumb with a ghost Ask, the
-  // subject lede + four stats, "Confidence over time" beside the conclusions
-  // list (paged), with "Why Mnema believes this" and the "This conclusion" panel
-  // under the chart — beside the list, so a long list never buries them.
-  // Owns the fetch, the realtime refresh, selection, Pin / delayed-commit
-  // Dismiss, and the Timeline hand-off. Each conclusion keeps its OWN
-  // confidence — the subject is never rolled up into one score.
+  // Subject page (mockup 1-A "Numbered pages, pinned two-pane"): a slim strip
+  // (crumb, four numbers, a small chart, Ask) over two panes that fill the
+  // window — conclusions on the left, the chosen one's evidence on the right —
+  // each scrolling on its own with its pager pinned at its foot, so the row you
+  // picked and its evidence are always on screen together. The page never
+  // scrolls. Owns the fetch, the realtime refresh, selection, paging, keys,
+  // Pin / delayed-commit Dismiss, and the Timeline hand-off. Each conclusion
+  // keeps its OWN confidence — the subject is never rolled up into one score.
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { goto } from "$app/navigation";
@@ -17,19 +18,21 @@
     ActivityEvidenceRef,
   } from "$lib/types/recording";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
-  import SubjectChart from "$lib/insights/SubjectChart.svelte";
+  import SubjectStrip, { type StripStats } from "$lib/insights/SubjectStrip.svelte";
+  import ConclusionRail from "$lib/insights/ConclusionRail.svelte";
+  import ConclusionPicker from "$lib/insights/ConclusionPicker.svelte";
+  import EvidencePane from "$lib/insights/EvidencePane.svelte";
   import { buildTimeline } from "$lib/insights/subjectTimeline";
-  import { CONCLUSION_PAGE, debounce, deriveTrend, fortnightAgo, pageOf } from "$lib/insights/subjectsTiers";
+  import {
+    CONCLUSION_PAGE_SIZES,
+    EVIDENCE_PAGE,
+    debounce,
+    fortnightAgo,
+    pageSlice,
+  } from "$lib/insights/subjectsTiers";
   import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
   import { relativeTime } from "$lib/insights/conversationStore.svelte";
-  import { fmtDuration } from "$lib/insights/lede-stats";
-  import { formatClock } from "$lib/time-format";
-  import { tip } from "$lib/components/tooltip";
   import { humanizeError } from "$lib/format-error";
-  import IconBack from "~icons/lucide/chevron-left";
-  import IconSparkle from "~icons/lucide/sparkle";
-  import IconPin from "~icons/lucide/pin";
-  import IconArrow from "~icons/lucide/arrow-right";
   import IconInbox from "~icons/lucide/inbox";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconRetry from "~icons/lucide/rotate-ccw";
@@ -48,19 +51,16 @@
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
-  let sideEl = $state<HTMLElement>();
-
-  // Wide layout keeps the evidence sticky beside the list; stacked (narrow) puts
-  // it below the list, so bring it into view on pick.
-  function select(id: number): void {
-    selectedId = id;
-    if (sideEl && getComputedStyle(sideEl).position !== "sticky") {
-      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      sideEl.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
-    }
-  }
   let pinBusy = $state(false);
   let destroyed = false;
+
+  // Paging + which pane ←/→ turns (the one last clicked, or E / C).
+  let clPage = $state(0);
+  let clSize = $state<number>(CONCLUSION_PAGE_SIZES[0]);
+  let evPage = $state(0);
+  let focus = $state<"c" | "e">("c");
+  // Narrow window: the rail shows as the picker's popover.
+  let pickOpen = $state(false);
 
   // Activities the conclusions cite, resolved for row detail + the hand-off.
   let activities = $state<Map<number, Activity>>(new Map());
@@ -92,8 +92,6 @@
   });
 
   const pct = (v: number) => Math.round(v * 100);
-  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const signed = (d: number) => `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)}`;
 
   const histories = $derived(
     new Map<number, ConfidenceSnapshot[]>((view?.trajectories ?? []).map((t) => [t.conclusionId, t.history])),
@@ -102,44 +100,39 @@
   const shown = $derived(
     (view?.conclusions ?? []).filter((c) => !dismissal.has(c.id)).sort((a, b) => b.confidence - a.confidence),
   );
-  // The list pages CONCLUSION_PAGE rows at a time; a new subject starts over.
-  let clShown = $state(CONCLUSION_PAGE);
-  const clPage = $derived(pageOf(shown, clShown, CONCLUSION_PAGE));
   const selected = $derived(shown.find((c) => c.id === selectedId) ?? shown[0] ?? null);
   const selIndex = $derived(selected ? shown.indexOf(selected) : -1);
   const lead = $derived(shown[0] ?? null);
+  const clSlice = $derived(pageSlice(shown, clPage, clSize));
+  const selPage = $derived(Math.max(0, Math.floor(selIndex / clSize)));
 
-  // ── Lede ──
-  const now = Date.now();
-  const sinceMs = $derived(Math.min(...shown.map((c) => c.formedAtMs)));
-  const trendWord = $derived.by(() => {
-    if (shown.every((c) => c.status === "faded")) return "fading";
-    const points = new Map([...histories].map(([id, h]) => [id, h.map((s) => s.confidence)]));
-    return { up: "warming", steady: "steady", down: "cooling" }[deriveTrend(shown, points)];
-  });
   // Confidence change over the fortnight; null = formed inside it ("new").
+  const now = Date.now();
   const fortnightDelta = (c: Conclusion): number | null => {
     const then = fortnightAgo(c, histories.get(c.id) ?? [], now);
     return then === null ? null : pct(c.confidence) - pct(then);
   };
-  const leadDelta = $derived(lead ? fortnightDelta(lead) : null);
-  const aboveFloor = $derived(shown.filter((c) => c.status !== "faded").length);
-  const evidenceCount = $derived(new Set(shown.flatMap((c) => c.evidence.map((e) => e.activityId))).size);
-  const lastSupportMs = $derived(Math.max(...shown.map((c) => c.lastSupportedAtMs)));
-  const lastSupport = $derived.by(() => {
-    const r = relativeTime(lastSupportMs);
-    const m = /^(\d+)(\D+)$/.exec(r);
-    return m ? { n: m[1], unit: `${m[2]} ago` } : { n: r, unit: "" };
+
+  // ── The strip's four numbers ──
+  const stats = $derived.by((): StripStats | null => {
+    if (!lead) return null;
+    const aboveFloor = shown.filter((c) => c.status !== "faded").length;
+    const lastMs = Math.max(...shown.map((c) => c.lastSupportedAtMs));
+    const r = relativeTime(lastMs);
+    return {
+      leadPct: pct(lead.confidence),
+      leadDelta: fortnightDelta(lead),
+      aboveFloor,
+      faded: shown.length - aboveFloor,
+      evidence: new Set(shown.flatMap((c) => c.evidence.map((e) => e.activityId))).size,
+      lastSupport: new Date(lastMs).toDateString() === new Date().toDateString() ? "today" : /^\d/.test(r) ? `${r} ago` : r,
+    };
   });
-  const lastSupportDay = $derived(
-    new Date(lastSupportMs).toDateString() === new Date(now).toDateString() ? "today" : day(lastSupportMs),
-  );
 
   // ── Selected conclusion ──
-  const events = $derived(selected ? buildTimeline(selected, view?.trajectories.find((t) => t.conclusionId === selected.id), activities) : []);
-  const selHistory = $derived(selected ? (histories.get(selected.id) ?? []) : []);
-  const peak = $derived(selected ? Math.max(selected.confidence, ...selHistory.map((s) => s.confidence)) : 0);
-  const selActivities = $derived(selected ? new Set(selected.evidence.map((e) => e.activityId)).size : 0);
+  const events = $derived(
+    selected ? buildTimeline(selected, view?.trajectories.find((t) => t.conclusionId === selected.id), activities) : [],
+  );
   // Newest supporting Activity that resolved to a raw capture ref.
   const newestRef = $derived.by((): ActivityEvidenceRef | null => {
     let best: Activity | null = null;
@@ -149,22 +142,83 @@
     }
     return best?.evidence[0] ?? null;
   });
-  function evidenceNote(a: Activity): string {
-    const frames = a.evidence.filter((r) => r.subjectType === "frame").length;
-    // B6: the activity's clock time, not a transcript offset Mnema can't pin.
-    const parts = [formatClock(a.startedAtMs), fmtDuration(a.endedAtMs - a.startedAtMs)];
-    if (frames) parts.push(`cited ${frames} ${frames === 1 ? "frame" : "frames"}`);
-    return parts.join(" · ");
+  // A new pick starts its evidence at page 1 (keyed on the id, so a live
+  // refresh of the same conclusion keeps the page).
+  const selId = $derived(selected?.id ?? null);
+  $effect(() => {
+    selId;
+    evPage = 0;
+  });
+
+  function select(id: number): void {
+    selectedId = id;
+    pickOpen = false;
+  }
+  // Turn the list to the page holding the selection.
+  function reveal(): void {
+    if (selIndex >= 0) clPage = Math.floor(selIndex / clSize);
+  }
+  function step(d: 1 | -1): void {
+    const n = Math.min(shown.length - 1, Math.max(0, selIndex + d));
+    if (n === selIndex || !shown[n]) return;
+    selectedId = shown[n].id;
+    reveal();
+  }
+  function flip(d: 1 | -1): void {
+    if (focus === "e") {
+      const pages = Math.max(1, Math.ceil(events.length / EVIDENCE_PAGE));
+      evPage = Math.min(pages - 1, Math.max(0, Math.min(evPage, pages - 1) + d));
+    } else {
+      clPage = Math.min(clSlice.pages - 1, Math.max(0, clSlice.page + d));
+    }
+  }
+  // A new size keeps the selected row on screen (or the first row you saw).
+  function resize(size: number): void {
+    const anchor = selPage === clSlice.page ? selIndex : clSlice.from;
+    clSize = size;
+    clPage = Math.floor(anchor / size);
   }
 
   // ── Ask ──
   const askHref = $derived(`/chat?q=${encodeURIComponent(`What do you know about ${subject}?`)}`);
   // ⌘J asks about this subject (capture phase: ahead of the shell's ⌘J).
-  function onKeydown(event: KeyboardEvent): void {
+  function onAskKey(event: KeyboardEvent): void {
     if (askDisabled || frameModalOpen) return;
     if (event.key.toLowerCase() !== "j" || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
     event.preventDefault();
     void goto(askHref);
+  }
+
+  // ↑/↓ move the pick, ←/→ turn the focused pane's page, E / C focus a pane,
+  // Esc closes the picker, else goes back. Never while typing or in a modal.
+  function onKey(e: KeyboardEvent): void {
+    if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (frameModalOpen || document.querySelector("[aria-modal='true'], dialog[open]")) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.("input, textarea, select, [contenteditable], [role=textbox], [role=combobox]")) return;
+    const k = e.key;
+    if (k === "Escape") {
+      if (pickOpen) pickOpen = false;
+      else onBack();
+    } else if (!selected) {
+      return;
+    } else if (k === "ArrowDown" || k === "ArrowUp") {
+      step(k === "ArrowDown" ? 1 : -1);
+    } else if (k === "ArrowRight" || k === "ArrowLeft" || k === "PageDown" || k === "PageUp") {
+      flip(k === "ArrowRight" || k === "PageDown" ? 1 : -1);
+    } else if (k.toLowerCase() === "e" || k.toLowerCase() === "c") {
+      focus = k.toLowerCase() as "e" | "c";
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
+
+  // A press outside the open picker closes it.
+  function onPointerDown(e: PointerEvent): void {
+    if (!pickOpen) return;
+    const t = e.target as HTMLElement | null;
+    if (!t?.closest?.(".sd-rail, [data-pick-toggle]")) pickOpen = false;
   }
 
   async function loadSubject(): Promise<void> {
@@ -215,14 +269,22 @@
     }
   }
 
+  // Dismissing the pick moves it to its neighbour, on whatever page that is.
   function dismiss(c: Conclusion): void {
+    const i = shown.indexOf(c);
+    const next = c.id === selected?.id ? (shown[i + 1] ?? shown[i - 1]) : undefined;
     dismissal.start(c);
+    if (next) {
+      selectedId = next.id;
+      reveal();
+    }
     showToast({ tone: "ok", text: "Dismissed — it won't be re-inferred", undo: c });
   }
 
   function undoDismiss(c: Conclusion): void {
     dismissal.undo(c);
     selectedId = c.id;
+    reveal();
     clearTimeout(toastTimer);
     toast = null;
   }
@@ -268,7 +330,12 @@
 
   $effect(() => {
     subject;
-    clShown = CONCLUSION_PAGE;
+    // A new subject starts fresh: first conclusion, first pages, list focused.
+    selectedId = null;
+    clPage = 0;
+    evPage = 0;
+    focus = "c";
+    pickOpen = false;
     void loadSubject();
     // `user_context_changed` fires per derivation pass; coalesce bursts.
     const debouncedReload = debounce(() => void loadSubject(), 500);
@@ -286,196 +353,105 @@
   });
 </script>
 
-<svelte:window onkeydowncapture={onKeydown} />
+<svelte:window onkeydowncapture={onAskKey} onkeydown={onKey} onpointerdown={onPointerDown} />
 
-<section aria-label={`Subject — ${subject}`}>
-  <div class="in-crumb mx-reveal">
-    <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={onBack}
-      ><IconBack width="13" height="13" aria-hidden="true" />Subjects</button
-    >
-    <span>/</span>
-    <b>{subject}</b>
-    <span class="mx-spacer"></span>
-    <a
-      class="mx-btn mx-btn--ghost mx-btn--sm"
-      href={askDisabled ? undefined : askHref}
-      aria-disabled={askDisabled || undefined}
-      use:tip={askDisabled ? "Ask needs AI — turn it on in Settings" : "Opens Chat with this question"}
-      ><IconSparkle class="mx-btn__accent" width="13" height="13" aria-hidden="true" />Ask about {subject}<kbd>⌘J</kbd></a
-    >
-  </div>
+<section class="sd" aria-label={`Subject — ${subject}`}>
+  <SubjectStrip
+    {subject}
+    {onBack}
+    {askHref}
+    {askDisabled}
+    stats={view ? stats : null}
+    conclusions={shown}
+    {histories}
+    selectedId={selected?.id ?? null}
+  />
 
   {#if loadError && !view}
-    <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
-      <span class="mx-empty__glyph"><IconAlert width="18" height="18" aria-hidden="true" /></span>
-      <h4 class="mx-empty__title">Couldn't load this subject.</h4>
-      <p class="mx-empty__text">Reading its conclusions and history failed. {loadError}</p>
-      <div class="mx-empty__acts">
-        <button type="button" class="mx-btn mx-btn--sm" disabled={loading} onclick={() => void loadSubject()}>
-          <IconRetry width="13" height="13" aria-hidden="true" />Try again
-        </button>
+    <div class="sd-state">
+      <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
+        <span class="mx-empty__glyph"><IconAlert width="18" height="18" aria-hidden="true" /></span>
+        <h4 class="mx-empty__title">Couldn't load this subject.</h4>
+        <p class="mx-empty__text">Reading its conclusions and history failed. {loadError}</p>
+        <div class="mx-empty__acts">
+          <button type="button" class="mx-btn mx-btn--sm" disabled={loading} onclick={() => void loadSubject()}>
+            <IconRetry width="13" height="13" aria-hidden="true" />Try again
+          </button>
+        </div>
       </div>
     </div>
   {:else if !view}
-    <div aria-busy="true">
+    <div class="sd-panes" aria-busy="true">
       <span class="mx-sr">Loading {subject}</span>
-      <div class="in-read">
-        <div class="in-skel-read">
-          <div class="mx-skel" style="width:140px;height:9px"></div>
-          <div class="mx-skel mx-skel--title"></div>
-          <div class="mx-skel mx-skel--title"></div>
-          <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div>
-        </div>
-        <div class="in-skel-stats">
-          {#each Array.from({ length: 4 }) as _, i (i)}<div><div class="mx-skel"></div><div class="mx-skel"></div></div>{/each}
-        </div>
+      <div class="sd-skel-rail">
+        {#each Array.from({ length: 6 }) as _, i (i)}
+          <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+        {/each}
       </div>
-      <div class="in-ex">
-        <div class="mx-panel in-week"><div class="mx-skel" style="height:230px"></div></div>
-        <div>
-          {#each Array.from({ length: 4 }) as _, i (i)}
-            <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
-          {/each}
-        </div>
+      <div class="sd-skel-detail">
+        <div class="mx-skel" style="width:140px;height:9px"></div>
+        <div class="mx-skel mx-skel--title"></div>
+        <div class="mx-skel mx-skel--title"></div>
+        <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div><div class="mx-skel"></div></div>
       </div>
     </div>
-  {:else if !selected || !lead}
-    <div class="mx-empty mx-empty--center">
-      <span class="mx-empty__glyph"><IconInbox width="18" height="18" aria-hidden="true" /></span>
-      <h4 class="mx-empty__title">Nothing concluded about {subject} yet.</h4>
-      <p class="mx-empty__text">
-        Its conclusions were dismissed or haven't formed. Views appear here once two activities support them. Anything
-        you dismissed is in Context › Dismissed.
-      </p>
-    </div>
-  {:else}
-    <div class="in-read">
-      <div class="mx-reveal" style="--i:1">
-        <span class="mx-kicker">Subject · since {day(sinceMs)} · {trendWord}</span>
-        <h1 class="mx-display">{subject}</h1>
-        <p class="mx-prose lede">
-          {lead.statement} <span>— its strongest conclusion, at {pct(lead.confidence)}%.</span>
+  {:else if !selected}
+    <div class="sd-state">
+      <div class="mx-empty mx-empty--center">
+        <span class="mx-empty__glyph"><IconInbox width="18" height="18" aria-hidden="true" /></span>
+        <h4 class="mx-empty__title">Nothing concluded about {subject} yet.</h4>
+        <p class="mx-empty__text">
+          Its conclusions were dismissed or haven't formed. Views appear here once two activities support them. Anything
+          you dismissed is in Context › Dismissed.
         </p>
       </div>
-      <div class="in-lede-stats mx-reveal" style="--i:2">
-        <div class="mx-stat">
-          <span class="mx-stat__label">Lead confidence</span>
-          <span class="mx-stat__value">{pct(lead.confidence)}<small>%</small></span>
-          <span class="mx-stat__delta" class:mx-stat__delta--up={(leadDelta ?? 0) > 0}
-            >{leadDelta === null ? "formed this fortnight" : `${signed(leadDelta)} pts in 14d`}</span
-          >
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Conclusions</span>
-          <span class="mx-stat__value">{aboveFloor}</span>
-          <span class="mx-stat__delta">{shown.length - aboveFloor} faded below the display floor</span>
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Evidence</span>
-          <span class="mx-stat__value">{evidenceCount}</span>
-          <span class="mx-stat__delta">{evidenceCount === 1 ? "activity" : "activities"} cited</span>
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Last support</span>
-          <span class="mx-stat__value">{lastSupport.n}{#if lastSupport.unit}<small>{lastSupport.unit}</small>{/if}</span>
-          <span class="mx-stat__delta">{lastSupportDay}</span>
-        </div>
-      </div>
     </div>
-
-    <div class="in-ex">
-      <div class="mx-panel in-week mx-reveal" style="--i:3">
-        <div class="in-sec">
-          <span class="mx-kicker">Confidence over time</span><span class="mx-spacer"></span>
-          <span class="mx-label">selected conclusion · {shown.length > 11 ? "top 10" : "others"} in grey · ● evidence</span>
-        </div>
-        <SubjectChart conclusions={shown} {histories} selectedId={selected.id} />
-      </div>
-      <div class="in-cls-col mx-reveal" style="--i:4">
-        <div class="in-sec">
-          <span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span>
-          <span class="mx-label">{shown.length} · by confidence</span>
-        </div>
-        <div class="in-cls">
-          {#each clPage.visible as c (c.id)}
-            {@const d = fortnightDelta(c)}
-            <button type="button" class="in-cl" aria-pressed={c.id === selected.id} onclick={() => select(c.id)}>
-              <span class="num">{pct(c.confidence)}%</span>
-              <span>{c.statement}</span>
-              <small class:in-up={(d ?? 0) > 0} class:in-down={(d ?? 0) < 0}>{d === null ? "new" : signed(d)}</small>
-            </button>
-          {/each}
-        </div>
-        {#if clPage.more > 0}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown += CONCLUSION_PAGE)}>
-            Show {clPage.more} more
-          </button>
-        {:else if clPage.less}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown = CONCLUSION_PAGE)}>Show less</button>
-        {/if}
-      </div>
-
-      <!-- Sticky beside the list (wide) so picking a conclusion far down keeps its evidence in view. -->
-      <div class="in-side" bind:this={sideEl}>
-      <div class="in-why mx-reveal" style="--i:5">
-        <span class="mx-kicker">Why Mnema believes this · {selIndex + 1} of {shown.length}</span>
-        <h2 class="in-cd__statement">{selected.statement}</h2>
-        <div class="in-cd__acts">
-          <button
-            type="button"
-            class="mx-btn mx-btn--sm"
-            aria-pressed={selected.pinned}
-            aria-busy={pinBusy || undefined}
-            onclick={() => void togglePin(selected)}
-            ><IconPin width="13" height="13" aria-hidden="true" />{selected.pinned ? "Pinned" : "Pin"}</button
-          >
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => dismiss(selected)}>Dismiss</button>
-        </div>
-        <ol class="in-tl">
-          {#each events as ev, i (i)}
-            {@const act = ev.kind === "evidence" || ev.kind === "contradict" ? activities.get(ev.activityId) : undefined}
-            <li class:origin={ev.kind === "formed"} class:conf={ev.kind === "marker"} style:--i={i}>
-              <time class="num">{ev.atMs == null ? "—" : day(ev.atMs)}</time>
-              {#if ev.kind === "formed"}
-                {@const n = selected.formedEvidenceCount}
-                <!-- Beliefs formed before the count was recorded keep the old line. -->
-                <div>
-                  {n == null
-                    ? `Formed at ${pct(ev.confidence)}%`
-                    : `Formed from ${n} supporting ${n === 1 ? "activity" : "activities"} · ${pct(ev.confidence)}%`}
-                </div>
-              {:else if ev.kind === "marker"}
-                <div>Confidence {pct(ev.from)}% → {pct(ev.to)}%</div>
-              {:else if ev.kind === "replaced"}
-                <div>Replaced an earlier take<small>{ev.statement}</small></div>
-              {:else if act}
-                <button type="button" class="in-tl__ev" onclick={() => onViewInTimeline(ev.activityId)}>
-                  {ev.title}<small>{ev.kind === "contradict" ? "contradicts" : evidenceNote(act)}</small>
-                </button>
-              {:else}
-                <div>{ev.title}{#if ev.kind === "contradict"}<small>contradicts</small>{/if}</div>
-              {/if}
-            </li>
-          {/each}
-        </ol>
-      </div>
-      <div class="mx-panel mx-panel--inset in-guard mx-reveal" style="--i:6">
-        <div class="in-sec"><span class="mx-kicker">This conclusion</span></div>
-        <dl class="mx-spec">
-          <div><dt>confidence</dt><dd class="num">{pct(selected.confidence)}%</dd></div>
-          <div><dt>peak</dt><dd class="num">{pct(peak)}%</dd></div>
-          <div><dt>evidence</dt><dd>{selActivities} {selActivities === 1 ? "activity" : "activities"}</dd></div>
-          <div><dt>decay</dt><dd>halves every 30 days without support</dd></div>
-          <div><dt>pinned</dt><dd>{selected.pinned ? "yes — it won't fade" : "no — pin it to stop it fading"}</dd></div>
-        </dl>
-        {#if newestRef}
-          {@const ref = newestRef}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm open-tl" onclick={() => void openRefInTimeline(ref)}
-            >Open evidence in Timeline<IconArrow width="13" height="13" aria-hidden="true" /></button
-          >
-        {/if}
-      </div>
-      </div>
+  {:else}
+    {@const sel = selected}
+    <div class="sd-panes">
+      <ConclusionPicker
+        conclusion={sel}
+        index={selIndex}
+        total={shown.length}
+        open={pickOpen}
+        onToggle={() => {
+          pickOpen = !pickOpen;
+          focus = "c";
+        }}
+        onStep={step}
+      />
+      <ConclusionRail
+        total={shown.length}
+        slice={clSlice}
+        size={clSize}
+        selectedId={sel.id}
+        selectedPage={selPage}
+        delta={fortnightDelta}
+        active={focus === "c"}
+        open={pickOpen}
+        onSelect={select}
+        onPage={(p) => (clPage = p)}
+        onSize={resize}
+        onFocus={() => (focus = "c")}
+      />
+      <EvidencePane
+        conclusion={sel}
+        index={selIndex}
+        total={shown.length}
+        {events}
+        history={histories.get(sel.id) ?? []}
+        {activities}
+        {newestRef}
+        page={evPage}
+        active={focus === "e"}
+        {pinBusy}
+        onPage={(p) => (evPage = p)}
+        onPin={() => void togglePin(sel)}
+        onDismiss={() => dismiss(sel)}
+        onOpenEvidence={onViewInTimeline}
+        onOpenRef={(ref) => void openRefInTimeline(ref)}
+        onFocus={() => (focus = "e")}
+      />
     </div>
   {/if}
 </section>
@@ -503,84 +479,29 @@
 />
 
 <style>
-  /* insights.html Subject detail + the shared lede/exhibit/feed layout. */
-  .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-3) -9px; font: 500 var(--text-base) / 1 var(--font-sans); color: var(--app-text-subtle); }
-  .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
-  .in-crumb > a:last-child { margin-right: -9px; }
-  .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end; padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
-  .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
-  .lede { font-size: var(--text-lg); }
-  .lede span { color: var(--app-text-subtle); }
-  .in-lede-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
-  /* Chart, then "Why" and "This conclusion" down the left; the (paged) list
-     spans the right, its extra height absorbed by the last row. */
-  .in-ex {
-    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
-    grid-template-areas: "chart list" "side list"; gap: var(--s-6); align-items: start;
+  /* The host (insights/+page.svelte) gives this the height left under the bar;
+     the panes take what the strip leaves and each scrolls on its own. */
+  .sd { container: sd / inline-size; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin-top: -14px; }
+  .sd-panes {
+    position: relative; flex: 1 1 auto; min-height: 0; display: grid;
+    grid-template-columns: 380px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+    margin: 0 calc(-1 * var(--s-7)); border-top: 1px solid var(--mx-hairline);
   }
-  .in-ex > .in-week { grid-area: chart; }
-  .in-cls-col { grid-area: list; }
-  /* Sticks under the 56px Insights bar; scrolls inside itself when the evidence
-     timeline is taller than the window. ponytail: 100vh over-counts the titlebar
-     by a few px — the inner scroll absorbs it. */
-  .in-side {
-    grid-area: side; display: grid; gap: var(--s-6); align-self: start;
-    position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain;
-  }
-  .in-cls__more { margin: var(--s-2) 0 0 -9px; }
-  .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
-  .in-week { padding: var(--s-5); }
-  .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
-  .in-guard .mx-spec { grid-template-columns: 96px 1fr; }
-  .open-tl { margin: var(--s-3) 0 0 -9px; }
-  .in-up { color: var(--focus-deep); }
-  .in-down { color: var(--focus-distracted); }
+  .sd-state { flex: 1 1 auto; min-height: 0; overflow: auto; display: grid; padding: var(--s-6) 0; border-top: 1px solid var(--mx-hairline); }
 
-  .in-cls { display: grid; gap: 2px; }
-  .in-cl {
-    display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: var(--s-3); align-items: start; padding: 11px var(--s-3);
-    border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; color: var(--app-text-muted);
-    font: 400 var(--text-base) / 1.45 var(--font-sans);
-    transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
-  }
-  .in-cl:hover { background: var(--mx-wash); color: var(--app-text); }
-  .in-cl:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-  .in-cl[aria-pressed="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
-  .in-cl .num { font-size: var(--text-md); color: var(--app-text-strong); line-height: 1.3; }
-  .in-cl small { text-align: right; font: 500 var(--text-xs) / 1.9 var(--font-mono); }
+  .sd-skel-rail { display: grid; align-content: start; gap: 4px; padding: 40px 18px 0 22px; border-right: 1px solid var(--mx-hairline); }
+  .sd-skel-detail { display: grid; align-content: start; gap: 12px; padding: 16px 28px; }
+  .sd-skel-detail .mx-skel--title { height: 26px; width: 78%; }
+  .sd-skel-detail .mx-skel--title + .mx-skel--title { width: 52%; }
 
-  .in-cd__statement { font: 600 24px / 1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-3) 0 var(--s-4); max-width: 34ch; text-wrap: balance; }
-  .in-cd__acts { display: flex; gap: 6px; }
-  .in-tl { list-style: none; margin: var(--s-5) 0 0; padding: 0; position: relative; }
-  .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }
-  .in-tl li { position: relative; display: grid; grid-template-columns: 22px 72px 1fr; padding: 9px 0; animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 40ms); }
-  .in-tl li::before { content: ""; width: 11px; height: 11px; border-radius: 50%; margin-top: 3px; background: var(--app-bg); border: 1.5px solid var(--app-border-strong); }
-  .in-tl li.conf::before { border-color: var(--app-text-strong); background: var(--app-text-strong); width: 7px; height: 7px; margin: 5px 0 0 2px; }
-  .in-tl li.origin::before { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
-  .in-tl time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.9; }
-  .in-tl li > div, .in-tl__ev { color: var(--app-text); font-size: var(--text-base); }
-  .in-tl small { display: block; margin-top: 3px; font: 400 var(--text-sm) / 1.4 var(--font-sans); color: var(--app-text-subtle); }
-  .in-tl li.conf > div { font: 500 var(--text-sm) / 1.6 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong); }
-  .in-tl__ev { padding: 0; border: 0; background: none; text-align: left; font-family: inherit; line-height: inherit; cursor: pointer; border-radius: var(--r-xs); }
-  .in-tl__ev:hover { color: var(--app-text-strong); }
-  .in-tl__ev:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-
-  .in-skel-read { display: grid; gap: 12px; padding-top: var(--s-4); }
-  .in-skel-read .mx-skel--title { height: 34px; width: 78%; }
-  .in-skel-read .mx-skel--title + .mx-skel--title { width: 52%; }
-  .in-skel-stats { display: grid; grid-template-columns: repeat(2, 132px); gap: var(--s-5) var(--s-6); }
-  .in-skel-stats div { display: grid; gap: 8px; }
-  .in-skel-stats .mx-skel:first-child { height: 8px; width: 60%; }
-  .in-skel-stats .mx-skel:last-child { height: 24px; width: 90%; }
-
-  /* `.in-main` scrolls, so the toast stack pins to the window. */
+  /* `.in-main` doesn't scroll here either; the toast stack pins to the window. */
   .mx-toasts { position: fixed; }
 
-  @container mx-window (max-width: 1180px) {
-    .in-ex { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "chart" "list" "side"; }
-    .in-side { position: static; max-height: none; overflow: visible; }
+  @container sd (max-width: 920px) {
+    .sd-panes { grid-template-columns: 290px minmax(0, 1fr); }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .in-tl li { animation: none; }
+  @container sd (max-width: 620px) {
+    .sd-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .sd-skel-rail { display: none; }
   }
 </style>
