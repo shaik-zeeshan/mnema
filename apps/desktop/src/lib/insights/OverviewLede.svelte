@@ -428,4 +428,9 @@
     background: var(--c);
     flex: none;
   }
+  /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
+  @media (max-width: 1000px) {
+    .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+    .stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--s-4); }
+  }
 </style>

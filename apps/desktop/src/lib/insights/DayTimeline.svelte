@@ -631,4 +631,9 @@
   .in-skel-spine { padding: var(--s-5); margin-bottom: var(--s-7); }
   .in-center { margin-top: var(--s-6); }
   @keyframes in-fade { from { opacity: 0; } }
+  /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
+  @media (max-width: 1000px) {
+    .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+    .in-lede-stats, .in-skel-stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--s-4); }
+  }
 </style>

@@ -67,4 +67,9 @@
     gap: var(--s-5) var(--s-6);
     padding-bottom: 4px;
   }
+  /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
+  @media (max-width: 1000px) {
+    .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+    .in-lede-stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--s-4); }
+  }
 </style>
