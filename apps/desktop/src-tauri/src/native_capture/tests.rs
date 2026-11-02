@@ -1,5 +1,3 @@
-#[cfg(target_os = "macos")]
-use super::activity::should_poll_screen_activity;
 use super::activity::{
     current_activity_snapshot, current_activity_snapshot_for_debug, idle_debug_activity_sources,
     idle_debug_family_fields, lock_runtime_for_idle_debug,
@@ -8,12 +6,19 @@ use super::describe_recording_settings_changes;
 use super::inactivity::{
     ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
+#[cfg(target_os = "macos")]
+use super::lifecycle::user_resume_sources;
 use super::lifecycle::RecordingLifecycle;
 use super::microphone::microphone_auto_disconnect_transition_failed_event;
 #[cfg(target_os = "macos")]
 use super::microphone::{
     next_microphone_output_file_for_runtime, should_move_microphone_capture_to_waiting_state,
     should_reconnect_waiting_microphone_session,
+};
+#[cfg(target_os = "macos")]
+use super::microphone_away::{
+    apply_microphone_away, reopen_unwakeable_microphone, settle_microphone_reopen,
+    should_resume_microphone_after_activity, tick_microphone_away,
 };
 use super::output::set_current_microphone_output_file;
 use super::runtime::{
@@ -26,12 +31,13 @@ use super::runtime::{
     system_audio_writer_active_for_runtime, validate_start_request, NativeCaptureRuntime,
 };
 #[cfg(target_os = "macos")]
-use super::runtime::{CaptureSuspensionKind, CaptureSuspension};
+use super::runtime::{CaptureSuspension, CaptureSuspensionKind, TestMicrophoneDevice};
 #[cfg(target_os = "macos")]
 use super::segments::{
-    apply_microphone_output_finalization, audio_duration_time_to_ms,
-    audio_segment_started_at_unix_ms_for_file, audio_segment_window_from_duration_ms,
-    cleanup_failed_segment_dirs, committed_audio_segments_for_output_files,
+    apply_microphone_output_finalization, apply_stopped_microphone_finalization,
+    audio_duration_time_to_ms, audio_segment_started_at_unix_ms_for_file,
+    audio_segment_window_from_duration_ms, cleanup_failed_segment_dirs,
+    committed_audio_segments_for_output_files, low_disk_recovery_sources,
     pause_microphone_for_inactivity, pause_runtime_for_inactivity, pause_screen_for_inactivity,
     pause_system_audio_for_inactivity, plan_live_rotation_segment,
     process_inactivity_audio_transitions_for_snapshot, reanchor_active_segment_timing,
@@ -759,7 +765,7 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
         source_file: Some(microphone_file.clone()),
         output_file: Some(microphone_file.clone()),
         speech_detected: true,
-        trim_start_offset_ms: 1_000,
+        start_offset_ms: 1_000,
         discard_reason: None,
     };
     let mut output_files = CaptureOutputFiles {
@@ -798,6 +804,140 @@ fn trimmed_microphone_finalization_keeps_segment_index_in_timestamped_filename()
     );
 }
 
+// A stop renamed the microphone's file (a resume's queued audio pulled its
+// start earlier), then the display went: the suspension, which commits screen
+// and system audio only, must carry the renamed file for the next rotation,
+// not the stale name the session was recording to.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_stopped_microphone_file_renamed_by_its_finalization_survives_a_display_suspension() {
+    let dir = TestDir::new("stopped-microphone-display-suspension");
+    let screen_file = dir.path().join("screen-segment.mov");
+    fs::write(&screen_file, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+        .expect("fake openable mov should be written");
+    let screen_file = screen_file.to_string_lossy().into_owned();
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("microphone-native-session-microphone-segment-0001-1700000030000.m4a"),
+    );
+    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: false,
+        }),
+        current_segment_index: 1,
+        segment_schedule: Some(schedule),
+        source_sessions: Some(independent_source_sessions_fixture()),
+        output_files: Some(super::segments::empty_output_files()),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some(screen_file.clone()),
+            screen_files: vec![screen_file.clone()],
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: Some(screen_file),
+        microphone_recording_file: Some(microphone_file.clone()),
+        ..Default::default()
+    };
+    apply_stopped_microphone_finalization(
+        &mut runtime,
+        &capture_microphone::MicrophoneOutputFinalization {
+            source_file: Some(microphone_file.clone()),
+            output_file: Some(microphone_file.clone()),
+            speech_detected: true,
+            start_offset_ms: -1_365,
+            discard_reason: None,
+        },
+    );
+
+    super::segments::suspend_screen_capture(
+        None,
+        &mut runtime,
+        &CaptureErrorResponse {
+            code: "display_unavailable".to_string(),
+            message: "display asleep".to_string(),
+        },
+        CaptureSuspensionKind::DisplayUnavailable,
+    )
+    .expect("display suspension should succeed");
+
+    let carried = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("the closed microphone file is still owed a commit");
+    let [renamed_file] = carried.microphone_files.as_slice() else {
+        panic!("expected one file: {:?}", carried.microphone_files);
+    };
+    assert_ne!(renamed_file, &microphone_file);
+    assert!(Path::new(renamed_file).is_file());
+    assert!(
+        runtime.microphone_recording_file.is_none(),
+        "nothing records"
+    );
+}
+
+// A stop's finalization (here, a resume's queued audio pulling the start
+// 1.365 s earlier) is booked against the live segment: the segment's file is
+// renamed to the corrected stamp and stays the one the commit picks up.
+#[cfg(target_os = "macos")]
+#[test]
+fn stopped_microphone_finalization_restamps_the_live_segment_file() {
+    let dir = TestDir::new("stopped-microphone-finalization");
+    let microphone_file = write_existing_audio_placeholder(
+        &dir.path()
+            .join("microphone-native-session-microphone-segment-0001-1700000030000.m4a"),
+    );
+    let source_sessions = independent_source_sessions_fixture();
+    let schedule = SegmentSchedule::new(std::time::Duration::from_secs(60));
+    let mut runtime = NativeCaptureRuntime {
+        current_segment_index: 1,
+        segment_schedule: Some(schedule.clone()),
+        source_sessions: Some(source_sessions.clone()),
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let finalization = capture_microphone::MicrophoneOutputFinalization {
+        source_file: Some(microphone_file.clone()),
+        output_file: Some(microphone_file),
+        speech_detected: true,
+        start_offset_ms: -1_365,
+        discard_reason: None,
+    };
+
+    apply_stopped_microphone_finalization(&mut runtime, &finalization);
+
+    let output_files = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("live segment outputs should remain");
+    let [restamped_file] = output_files.microphone_files.as_slice() else {
+        panic!("expected one file: {:?}", output_files.microphone_files);
+    };
+    assert_eq!(output_files.microphone_file.as_ref(), Some(restamped_file));
+    assert_eq!(
+        audio_segment_started_at_unix_ms_for_file(
+            source_sessions.microphone.as_ref().unwrap(),
+            1,
+            &schedule,
+            restamped_file,
+        ),
+        1_700_000_028_635
+    );
+    assert!(Path::new(restamped_file).is_file());
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn microphone_finalization_preserves_prior_rotated_outputs() {
@@ -810,7 +950,7 @@ fn microphone_finalization_preserves_prior_rotated_outputs() {
         source_file: Some(current_file.clone()),
         output_file: Some(finalized_file.clone()),
         speech_detected: true,
-        trim_start_offset_ms: 0,
+        start_offset_ms: 0,
         discard_reason: None,
     };
     let mut output_files = CaptureOutputFiles {
@@ -847,7 +987,7 @@ fn discarded_microphone_finalization_preserves_prior_rotated_outputs() {
         source_file: Some(current_file.clone()),
         output_file: None,
         speech_detected: false,
-        trim_start_offset_ms: 0,
+        start_offset_ms: 0,
         discard_reason: Some("no_vad_speech".to_string()),
     };
     let mut output_files = CaptureOutputFiles {
@@ -1734,10 +1874,15 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
+        away_probe: None,
+        test_microphone_device: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
+        microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1809,6 +1954,59 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
         .expect("idle recording boundary should not request another stop transition");
 
     assert_eq!(runtime.runtime_state, RuntimeState::Idle);
+}
+
+// Lock pauses the microphone for inactivity, and a user pause/resume used to
+// leave that standing: the resume's fresh file then missed every rotation.
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_clears_inactivity_pauses_so_a_resume_rotates_the_microphone() {
+    let sources = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    };
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(sources.clone()),
+        runtime_controller: RuntimeController::default(),
+        runtime_state: RuntimeState::Idle,
+        inactivity: InactivityState {
+            enabled: true,
+            microphone_paused: true,
+            is_paused: true,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None).expect("idle stop should succeed");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+    let rotated = active_sources_for_inactivity_paused_state(
+        &sources,
+        runtime.inactivity.screen_paused,
+        runtime.inactivity.microphone_paused,
+        runtime.inactivity.system_audio_paused,
+    )
+    .expect("sources stay active");
+    assert!(rotated.microphone);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_clears_the_microphone_away_hold() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        runtime_controller: RuntimeController::default(),
+        runtime_state: RuntimeState::Idle,
+        microphone_away_hold: true,
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None).expect("idle stop should succeed");
+
+    assert!(!runtime.microphone_away_hold);
 }
 
 #[cfg(target_os = "macos")]
@@ -1919,10 +2117,15 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
+        away_probe: None,
+        test_microphone_device: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
+        microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -2451,23 +2654,6 @@ fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources(
     assert!(snapshot.system_audio_activity.enabled);
 }
 
-#[cfg(target_os = "macos")]
-#[test]
-fn screen_activity_polling_skips_live_screen_streams() {
-    assert!(
-        should_poll_screen_activity(true, false),
-        "running capture without a live screen stream still needs display polling"
-    );
-    assert!(
-        should_poll_screen_activity(false, true),
-        "stopped capture can only refresh screen activity through display polling"
-    );
-    assert!(
-        !should_poll_screen_activity(true, true),
-        "live ScreenCaptureKit streams already provide activity samples, including soft-paused outputs"
-    );
-}
-
 #[test]
 fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
     let _guard = audio_activity_state_test_guard();
@@ -2676,10 +2862,15 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
+        away_probe: None,
+        test_microphone_device: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
+        microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2749,10 +2940,15 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
+        away_probe: None,
+        test_microphone_device: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
+        microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -2858,10 +3054,15 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
+        away_probe: None,
+        test_microphone_device: None,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         inactivity: InactivityState::default(),
         user_capture_paused: false,
+        microphone_away_hold: false,
+        microphone_waiting_for_device: false,
+        microphone_lent_out: false,
         microphone_vad: Default::default(),
         source_sessions: None,
     };
@@ -5084,6 +5285,758 @@ fn resume_microphone_from_inactivity_is_noop_when_not_paused() {
     // Not paused, so should be a no-op
     resume_microphone_from_inactivity(&mut runtime).expect("noop resume should succeed");
     assert!(!runtime.inactivity.is_microphone_paused());
+}
+
+// The away hold (founder ruling 2026-10-23: lock is away). The live lock and
+// display state is read by the tick; its application is exercised here without
+// an audio device.
+/// A paused microphone with no session, whose planner date is stale and whose
+/// file can't be opened: an attempt to reopen it refreshes the date and then
+/// fails before any audio device is touched.
+#[cfg(target_os = "macos")]
+fn stranded_microphone_runtime_fixture() -> NativeCaptureRuntime {
+    let mut runtime = lent_out_microphone_runtime_fixture();
+    runtime.microphone_lent_out = false;
+    mark_microphone_planner_stale(&mut runtime);
+    runtime
+}
+
+#[cfg(target_os = "macos")]
+fn mark_microphone_planner_stale(runtime: &mut NativeCaptureRuntime) {
+    runtime
+        .microphone_planner
+        .as_mut()
+        .expect("fixture has a microphone planner")
+        .set_date_prefix("2000-01-01".to_string());
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_open_was_attempted(runtime: &NativeCaptureRuntime) -> bool {
+    runtime
+        .microphone_planner
+        .as_ref()
+        .expect("fixture has a microphone planner")
+        .date_prefix()
+        == current_date_prefix()
+}
+
+// Lock is away: a microphone with no session to stop is still held, so nothing
+// reopens it until the Mac comes back.
+#[cfg(target_os = "macos")]
+#[test]
+fn away_holds_a_microphone_with_no_session_until_the_mac_comes_back() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    let mut logged = false;
+
+    apply_microphone_away(&mut runtime, true, None);
+    reopen_unwakeable_microphone(&mut runtime, &mut logged, || None);
+    assert!(runtime.microphone_away_hold);
+    assert!(!microphone_open_was_attempted(&runtime));
+
+    apply_microphone_away(&mut runtime, false, None);
+    reopen_unwakeable_microphone(&mut runtime, &mut logged, || None);
+    assert!(!runtime.microphone_away_hold);
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// The Mac came back while low disk had stopped the held microphone: nothing
+// reopens it while the disk is still full, and once recovery clears the
+// suspension (it never restarts a paused microphone) the tick does.
+#[cfg(target_os = "macos")]
+#[test]
+fn coming_back_on_a_full_disk_reopens_the_microphone_once_space_returns() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.microphone_away_hold = true;
+    runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+        CaptureSuspensionKind::LowDisk,
+        &CaptureErrorResponse {
+            code: "capture_low_disk".to_string(),
+            message: "low disk".to_string(),
+        },
+    ));
+    let mut logged = false;
+
+    apply_microphone_away(&mut runtime, false, None);
+    assert!(
+        !runtime.microphone_away_hold,
+        "no session to restart, so the hold ends"
+    );
+    reopen_unwakeable_microphone(&mut runtime, &mut logged, || None);
+    assert!(
+        !microphone_open_was_attempted(&runtime),
+        "low disk keeps the microphone down"
+    );
+
+    runtime.capture_suspension = None;
+    reopen_unwakeable_microphone(&mut runtime, &mut logged, || None);
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// A resume that failed with no session (the waited-for device was still gone
+// at unlock, or inactivity monitoring is off) leaves nothing activity can wake:
+// the tick keeps retrying it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_paused_microphone_with_no_session_is_retried_every_tick() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    let mut logged = false;
+
+    for _ in 0..2 {
+        mark_microphone_planner_stale(&mut runtime);
+        reopen_unwakeable_microphone(&mut runtime, &mut logged, || None);
+        assert!(microphone_open_was_attempted(&runtime));
+        assert!(runtime.inactivity.is_microphone_paused(), "the open failed");
+    }
+    assert!(logged, "the failure streak is logged once, then quietly");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_paused_microphone_held_elsewhere_is_not_reopened() {
+    let holds: [fn(&mut NativeCaptureRuntime); 4] = [
+        |runtime| runtime.microphone_away_hold = true,
+        |runtime| runtime.microphone_lent_out = true,
+        |runtime| runtime.microphone_waiting_for_device = true,
+        |runtime| runtime.user_capture_paused = true,
+    ];
+    for hold in holds {
+        let mut runtime = stranded_microphone_runtime_fixture();
+        hold(&mut runtime);
+
+        reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+        assert!(!microphone_open_was_attempted(&runtime));
+    }
+}
+
+// Unpaused with no session (an enrollment restore or a reconnect failed, or low
+// disk left it down while away): restarted, since nothing else will.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_unpaused_microphone_with_no_session_is_restarted() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.inactivity.microphone_paused = false;
+    runtime.inactivity.system_audio_paused = false;
+    runtime.inactivity.is_paused = false;
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+    assert!(microphone_open_was_attempted(&runtime));
+    assert!(
+        runtime.active_microphone_session.is_none(),
+        "the open failed"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn low_disk_recovery_leaves_a_paused_lent_out_or_held_microphone_down() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.away_probe = Some(|| false);
+    let requested = runtime.requested_sources.clone().unwrap();
+    assert!(
+        !low_disk_recovery_sources(&runtime, &requested).microphone,
+        "a paused microphone (the away hold pauses it too) is the tick's to reopen"
+    );
+
+    runtime.inactivity.microphone_paused = false;
+    assert!(low_disk_recovery_sources(&runtime, &requested).microphone);
+
+    runtime.microphone_lent_out = true;
+    assert!(!low_disk_recovery_sources(&runtime, &requested).microphone);
+
+    runtime.microphone_lent_out = false;
+    runtime.microphone_away_hold = true;
+    assert!(
+        !low_disk_recovery_sources(&runtime, &requested).microphone,
+        "lock is away: the tick reopens it once the Mac is back"
+    );
+}
+
+// Recovery runs before the tick that first sees the Mac away sets the hold:
+// it reads the live away state too, or it opens the microphone just for the
+// away tick to close it again.
+#[cfg(target_os = "macos")]
+#[test]
+fn low_disk_recovery_leaves_the_microphone_down_once_the_mac_is_away() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.inactivity.microphone_paused = false;
+    runtime.away_probe = Some(|| true);
+    let requested = runtime.requested_sources.clone().unwrap();
+
+    assert!(!runtime.microphone_away_hold);
+    assert!(!low_disk_recovery_sources(&runtime, &requested).microphone);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_is_blocked_while_the_microphone_is_held() {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.inactivity.activity_mode = InactivityActivityMode::SystemInputOrScreenOrAudio;
+    let idle_past_timeout_ms = runtime.inactivity.idle_timeout_seconds * 1_000 + 1;
+    let snapshot = ActivitySnapshot {
+        system_input_idle_ms: Some(idle_past_timeout_ms),
+        screen_activity_enabled: true,
+        screen_activity_idle_ms: Some(idle_past_timeout_ms),
+        microphone_activity: AudioActivitySourceState {
+            enabled: true,
+            idle_ms: Some(0),
+            latest_normalized_level: Some(0.20),
+        },
+        system_audio_activity: AudioActivitySourceState {
+            enabled: false,
+            idle_ms: None,
+            latest_normalized_level: None,
+        },
+    };
+    assert!(should_resume_microphone_after_activity(
+        &mut runtime,
+        20_000,
+        snapshot
+    ));
+
+    let holds: [fn(&mut NativeCaptureRuntime); 4] = [
+        |runtime| runtime.microphone_away_hold = true,
+        |runtime| runtime.microphone_lent_out = true,
+        |runtime| runtime.microphone_waiting_for_device = true,
+        |runtime| {
+            runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+                CaptureSuspensionKind::LowDisk,
+                &CaptureErrorResponse {
+                    code: "capture_low_disk".to_string(),
+                    message: "low disk".to_string(),
+                },
+            ))
+        },
+    ];
+    for hold in holds {
+        let mut runtime = audio_paused_runtime_fixture();
+        runtime.inactivity.activity_mode = InactivityActivityMode::SystemInputOrScreenOrAudio;
+        hold(&mut runtime);
+        assert!(!should_resume_microphone_after_activity(
+            &mut runtime,
+            20_000,
+            snapshot
+        ));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stopping_the_session_clears_the_microphone_away_hold() {
+    let mut runtime = NativeCaptureRuntime {
+        microphone_away_hold: true,
+        microphone_waiting_for_device: true,
+        ..Default::default()
+    };
+
+    mark_runtime_session_stopped(&mut runtime);
+
+    assert!(!runtime.microphone_away_hold);
+    assert!(!runtime.microphone_waiting_for_device);
+}
+
+// A take that panicked never handed the microphone back; the stopped session's
+// lend must not hold the next session's microphone.
+#[cfg(target_os = "macos")]
+#[test]
+fn stopping_the_session_clears_a_lend_that_never_came_back() {
+    let mut runtime = NativeCaptureRuntime {
+        microphone_lent_out: true,
+        ..Default::default()
+    };
+
+    mark_runtime_session_stopped(&mut runtime);
+
+    assert!(!runtime.microphone_lent_out);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_take_that_panics_still_hands_the_microphone_back() {
+    let state: super::NativeCaptureState = std::sync::Mutex::new(RecordingLifecycle::default());
+    state.lock().unwrap().runtime_mut().microphone_lent_out = true;
+
+    let take = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _lend = super::MicrophoneLend(&state);
+        panic!("the bounded take failed");
+    }));
+
+    assert!(take.is_err());
+    assert!(!state.lock().unwrap().runtime().microphone_lent_out);
+}
+
+/// [`stranded_microphone_runtime_fixture`] with a running microphone: unpaused,
+/// recording a file, its device standing in for a session.
+#[cfg(target_os = "macos")]
+fn recording_microphone_runtime_fixture(device: TestMicrophoneDevice) -> NativeCaptureRuntime {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime
+        .inactivity
+        .set_family_paused_states(false, false, false);
+    let microphone_file = "/tmp/native-capture-tests/microphone-away.m4a".to_string();
+    set_current_microphone_output_file(
+        runtime.current_segment_output_files.as_mut().unwrap(),
+        microphone_file.clone(),
+    );
+    runtime.microphone_recording_file = Some(microphone_file);
+    runtime.test_microphone_device = Some(device);
+    runtime
+}
+
+// The path every other away test skips: a running microphone is stopped on
+// lock with its file closed, and restarted on unlock with its output left to
+// the activity policy.
+#[cfg(target_os = "macos")]
+#[test]
+fn locking_stops_a_running_microphone_and_unlocking_restarts_it() {
+    let dir = TestDir::new("locking-stops-microphone");
+    let microphone_file = dir.path().join("microphone-away.m4a");
+    write_valid_m4a_audio_file(&microphone_file);
+    let microphone_file = microphone_file.to_string_lossy().into_owned();
+    let mut runtime = recording_microphone_runtime_fixture(TestMicrophoneDevice {
+        running: true,
+        gone: false,
+    });
+    let outputs = runtime.current_segment_output_files.as_mut().unwrap();
+    super::output::clear_current_microphone_output_file(outputs);
+    set_current_microphone_output_file(outputs, microphone_file.clone());
+    runtime.microphone_recording_file = Some(microphone_file.clone());
+    runtime.output_files = Some(super::segments::empty_output_files());
+
+    apply_microphone_away(&mut runtime, true, None);
+
+    assert!(!runtime.test_microphone_device.as_ref().unwrap().running);
+    assert!(runtime.microphone_away_hold);
+    assert!(
+        runtime.inactivity.is_microphone_paused(),
+        "the file is closed"
+    );
+    assert!(runtime.microphone_recording_file.is_none());
+    assert!(runtime
+        .current_segment_output_files
+        .as_ref()
+        .unwrap()
+        .microphone_files
+        .is_empty());
+    assert_eq!(
+        runtime.output_files.as_ref().unwrap().microphone_files,
+        vec![microphone_file],
+        "the closed file is committed, not dropped"
+    );
+
+    apply_microphone_away(&mut runtime, false, None);
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+    assert!(runtime.test_microphone_device.as_ref().unwrap().running);
+    assert!(!runtime.microphone_away_hold);
+    assert!(
+        runtime.inactivity.is_microphone_paused(),
+        "activity resumes the output, not the unlock"
+    );
+    assert!(!microphone_open_was_attempted(&runtime));
+}
+
+/// A microphone whose device went (a waited-for device unplugged, a dead
+/// session dropped): no session, and the file its stop closed booked against
+/// the live segment for the next commit.
+#[cfg(target_os = "macos")]
+fn stopped_microphone_with_booked_file_fixture(dir: &TestDir) -> (NativeCaptureRuntime, String) {
+    let booked_file = dir.path().join("microphone-booked-by-stop.m4a");
+    write_valid_m4a_audio_file(&booked_file);
+    let booked_file = booked_file.to_string_lossy().into_owned();
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime
+        .inactivity
+        .set_family_paused_states(false, false, false);
+    runtime.output_files = Some(super::segments::empty_output_files());
+    let outputs = runtime.current_segment_output_files.as_mut().unwrap();
+    outputs.microphone_files = vec![booked_file.clone()];
+    runtime.microphone_recording_file = None;
+    (runtime, booked_file)
+}
+
+// A stopped microphone has no session to finalize, but the file its stop
+// closed is still owed a commit: an idle pause must commit it, not drop it.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_idle_pause_commits_the_file_a_stopped_microphone_booked() {
+    let dir = TestDir::new("idle-pause-booked-microphone");
+    let (mut runtime, booked_file) = stopped_microphone_with_booked_file_fixture(&dir);
+
+    pause_microphone_for_inactivity(&mut runtime).expect("the pause should succeed");
+
+    assert!(runtime.inactivity.is_microphone_paused());
+    assert_eq!(
+        runtime.output_files.as_ref().unwrap().microphone_files,
+        vec![booked_file],
+        "the booked file must reach the committed outputs"
+    );
+    assert!(runtime
+        .current_segment_output_files
+        .as_ref()
+        .unwrap()
+        .microphone_files
+        .is_empty());
+}
+
+// The screen's restart paths rebuild the segment's outputs from the screen;
+// with no microphone session to rotate, the file a stop booked must ride along.
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_carries_the_file_a_stopped_microphone_booked() {
+    let dir = TestDir::new("wake-recovery-booked-microphone");
+    let (booked_runtime, booked_file) = stopped_microphone_with_booked_file_fixture(&dir);
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.current_segment_output_files = booked_runtime.current_segment_output_files;
+    runtime.microphone_recording_file = None;
+    let screen_file = "/tmp/native-capture-tests/booked-wake-screen.mov".to_string();
+
+    recover_screen_capture_after_wake_with_start_segment(
+        &mut runtime,
+        None,
+        |_, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(screen_file.clone())),
+    )
+    .expect("wake recovery should restart the screen");
+
+    assert_eq!(
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .unwrap()
+            .microphone_files,
+        vec![booked_file]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn screen_resume_carries_the_file_a_stopped_microphone_booked() {
+    let dir = TestDir::new("screen-resume-booked-microphone");
+    let (booked_runtime, booked_file) = stopped_microphone_with_booked_file_fixture(&dir);
+    let mut runtime = screen_paused_runtime_fixture();
+    runtime.current_segment_output_files = booked_runtime.current_segment_output_files;
+    runtime.microphone_recording_file = None;
+    let screen_file = "/tmp/native-capture-tests/booked-resume-screen.mov".to_string();
+
+    resume_screen_from_inactivity_with_start_segment(
+        &mut runtime,
+        None,
+        |_, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(screen_file.clone())),
+    )
+    .expect("screen resume should restart the screen");
+
+    assert_eq!(
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .unwrap()
+            .microphone_files,
+        vec![booked_file]
+    );
+}
+
+// AirPods that disconnected while the Mac was locked: the session bound to them
+// never restarts, so it is dropped and the hold ends, and the tick reopens the
+// microphone on the current device instead of retrying the dead one forever.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_microphone_whose_device_left_while_away_is_reopened_on_return() {
+    let mut runtime = recording_microphone_runtime_fixture(TestMicrophoneDevice {
+        running: true,
+        gone: false,
+    });
+    apply_microphone_away(&mut runtime, true, None);
+    runtime.test_microphone_device.as_mut().unwrap().gone = true;
+
+    apply_microphone_away(&mut runtime, false, None);
+
+    assert!(!runtime.microphone_away_hold);
+    assert!(
+        runtime.test_microphone_device.is_none(),
+        "the dead session is dropped"
+    );
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// `startRunning` succeeded, then the device went: nothing holds the microphone,
+// so the stopped device is a dead one and the tick replaces it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_microphone_whose_device_died_unheld_is_reopened() {
+    let mut runtime = recording_microphone_runtime_fixture(TestMicrophoneDevice {
+        running: false,
+        gone: true,
+    });
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+    assert!(runtime.test_microphone_device.is_none());
+    assert!(microphone_open_was_attempted(&runtime));
+}
+
+// The away probe (a CGSession dictionary and a display list, 2-3×/s) is the
+// microphone's alone: a session that never records it does not pay for it.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_away_tick_does_not_probe_without_a_requested_microphone() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    });
+    runtime.away_probe = Some(|| panic!("probed the Mac's away state"));
+
+    tick_microphone_away(&mut runtime, None);
+
+    assert!(!runtime.microphone_away_hold);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_away_tick_holds_a_requested_microphone() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.away_probe = Some(|| true);
+
+    tick_microphone_away(&mut runtime, None);
+
+    assert!(runtime.microphone_away_hold);
+}
+
+// A user Pause→Resume while voice enrollment holds the microphone must not
+// open a second session that records the take (the bug 9923eaf9 fixed for
+// inactivity); the enrollment's restore brings the microphone back.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_user_resume_leaves_a_lent_out_microphone_down() {
+    let mut runtime = lent_out_microphone_runtime_fixture();
+    runtime.away_probe = Some(|| false);
+    let requested = CaptureSources {
+        screen: true,
+        microphone: true,
+        system_audio: false,
+    };
+
+    let (sources, held_away) = user_resume_sources(&runtime, requested);
+
+    assert!(!sources.microphone, "enrollment holds the microphone");
+    assert!(sources.screen);
+    assert!(!held_away, "the hold is enrollment's, not the away hold");
+}
+
+// A device that resolves but will not run: the start returned, but nothing
+// records. Counted as a failed reopen and dropped, so the tick's failure streak
+// quiets the retries instead of logging "stopped unexpectedly" and "reopened"
+// every tick.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reopen_whose_device_did_not_start_is_a_failure() {
+    let mut runtime = recording_microphone_runtime_fixture(TestMicrophoneDevice {
+        running: false,
+        gone: true,
+    });
+
+    let settled = settle_microphone_reopen(&mut runtime, Ok(()));
+
+    assert!(settled.is_err(), "a stopped device did not reopen");
+    assert!(
+        runtime.test_microphone_device.is_none(),
+        "the dead session is dropped, so the next tick does not warn about it"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reopen_whose_device_runs_stands() {
+    let mut runtime = recording_microphone_runtime_fixture(TestMicrophoneDevice {
+        running: true,
+        gone: false,
+    });
+
+    settle_microphone_reopen(&mut runtime, Ok(())).expect("a running device reopened");
+
+    assert!(runtime.test_microphone_device.is_some());
+}
+
+// A Specific Device that vanished under fallback-to-default: the reopen
+// resolves the device from the current preferences, not the one frozen at
+// start, or every reopen fails for the rest of the session.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reopen_uses_the_current_microphone_device() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.microphone_device_id_for_capture = Some("vanished-mic".to_string());
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || Some(None));
+
+    assert!(microphone_open_was_attempted(&runtime));
+    assert_eq!(
+        runtime.microphone_device_id_for_capture, None,
+        "the reopen asks for the default device the preferences now resolve to"
+    );
+}
+
+// Preferences that can't be read without waiting (the tick holds the capture
+// lock) leave the device the session started with.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_reopen_keeps_the_start_device_when_preferences_are_unreadable() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.microphone_device_id_for_capture = Some("start-mic".to_string());
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+    assert_eq!(
+        runtime.microphone_device_id_for_capture.as_deref(),
+        Some("start-mic")
+    );
+}
+
+// An inactivity pause keeps the device running (listen-only): not a reopen.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_listening_microphone_paused_for_inactivity_is_not_reopened() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.test_microphone_device = Some(TestMicrophoneDevice {
+        running: true,
+        gone: false,
+    });
+
+    reopen_unwakeable_microphone(&mut runtime, &mut false, || None);
+
+    assert!(runtime.test_microphone_device.is_some());
+    assert!(!microphone_open_was_attempted(&runtime));
+}
+
+// Lock is away: enrollment finishing while the Mac is locked leaves the
+// microphone down under the away hold instead of recording until the next
+// tick, and the tick reopens it once the Mac is back.
+#[cfg(target_os = "macos")]
+#[test]
+fn restoring_the_microphone_while_away_leaves_it_held_until_return() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = stranded_microphone_runtime_fixture();
+    lifecycle.runtime_mut().microphone_lent_out = true;
+    lifecycle.runtime_mut().away_probe = Some(|| true);
+
+    lifecycle
+        .restore_microphone_after_out_of_band_recording()
+        .expect("a held restore opens nothing");
+
+    let runtime = lifecycle.runtime_mut();
+    assert!(!runtime.microphone_lent_out);
+    assert!(runtime.microphone_away_hold);
+    assert!(!microphone_open_was_attempted(runtime));
+
+    apply_microphone_away(runtime, false, None);
+    reopen_unwakeable_microphone(runtime, &mut false, || None);
+    assert!(microphone_open_was_attempted(runtime));
+}
+
+// Voice enrollment borrows the microphone mid-session. Its own speech reaches the
+// process-global activity feed, so the inactivity tick used to "resume" a paused
+// microphone by starting a second AVCaptureSession that recorded the take into
+// the timeline. Until the microphone is handed back, capture must not start,
+// resume or pause the family.
+#[cfg(target_os = "macos")]
+fn lent_out_microphone_runtime_fixture() -> NativeCaptureRuntime {
+    let mut runtime = audio_paused_runtime_fixture();
+    runtime.microphone_lent_out = true;
+    // Opening a microphone file fails here, so any attempt to start a session
+    // surfaces as an error before an audio device is touched.
+    runtime.microphone_planner = Some(SegmentPlanner::with_date_prefix(
+        "/dev/null/mnema-microphone-lent-out",
+        "native-session-microphone",
+        current_date_prefix(),
+    ));
+    runtime
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_resume_leaves_a_lent_out_microphone_alone() {
+    let mut runtime = lent_out_microphone_runtime_fixture();
+
+    resume_microphone_from_inactivity(&mut runtime)
+        .expect("resuming a lent-out microphone must not try to start a session");
+
+    assert!(runtime.inactivity.is_microphone_paused());
+    assert!(runtime.active_microphone_session.is_none());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn inactivity_pause_keeps_the_file_a_lent_out_microphone_closed() {
+    let mut runtime = lent_out_microphone_runtime_fixture();
+    runtime.inactivity.microphone_paused = false;
+    let closed_file = "/tmp/native-capture-tests/microphone-closed-by-enrollment.m4a".to_string();
+    {
+        let output_files = runtime.current_segment_output_files.as_mut().unwrap();
+        output_files.microphone_file = Some(closed_file.clone());
+        output_files.microphone_files = vec![closed_file.clone()];
+    }
+
+    pause_microphone_for_inactivity(&mut runtime)
+        .expect("pausing a lent-out microphone is a no-op");
+
+    assert!(!runtime.inactivity.is_microphone_paused());
+    let output_files = runtime.current_segment_output_files.as_ref().unwrap();
+    assert_eq!(
+        output_files.microphone_files,
+        vec![closed_file],
+        "the file the enrollment stop closed must stay booked for the segment commit"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_waited_for_device_does_not_reconnect_a_lent_out_microphone() {
+    let runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        }),
+        microphone_lent_out: true,
+        ..Default::default()
+    };
+    let device = capture_types::MicrophoneDevice {
+        id: "mic-1".to_string(),
+        name: "Mic 1".to_string(),
+        is_default: false,
+    };
+    let state = MicrophoneControllerState {
+        devices: vec![device.clone()],
+        preference: MicrophonePreference {
+            mode: MicrophonePreferenceMode::SpecificDevice,
+            device_id: Some("mic-1".to_string()),
+        },
+        disconnect_policy: MicrophoneDisconnectPolicy::WaitForSameDevice,
+        effective_device: Some(device),
+    };
+
+    assert!(!should_reconnect_waiting_microphone_session(
+        &runtime, &state
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn restoring_hands_the_microphone_back_even_when_the_restart_fails() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = lent_out_microphone_runtime_fixture();
+
+    lifecycle
+        .restore_microphone_after_out_of_band_recording()
+        .expect_err("restoring onto a vanished volume must fail");
+
+    assert!(
+        !lifecycle.runtime().microphone_lent_out,
+        "a failed restore must still hand the microphone back, or inactivity resume can never re-arm it"
+    );
 }
 
 #[cfg(target_os = "macos")]

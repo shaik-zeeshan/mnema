@@ -12,8 +12,20 @@ use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, W
 
 use crate::native_capture;
 
+#[cfg(target_os = "macos")]
+mod macos;
+pub mod parked_view;
 pub mod permission_helper;
 pub mod quick_recall_frame;
+
+#[cfg(target_os = "macos")]
+pub(crate) use macos::with_wk_webview;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{finish_macos_window, refresh_capture_exclusion};
+#[cfg(not(target_os = "macos"))]
+pub fn refresh_capture_exclusion(_app_handle: &tauri::AppHandle) {}
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn finish_macos_window(_window: &WebviewWindow, _corner_radius: Option<f64>) {}
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -486,9 +498,13 @@ fn open_or_focus_window(
         return Ok(());
     }
 
+    // Built hidden: `finish_macos_window` sets the capture exclusion on the main
+    // thread, and the show below queues behind it, so the window is never on
+    // screen recordable.
     let mut builder =
         WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(config.path.into()));
     builder = builder
+        .visible(false)
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
         .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
@@ -504,10 +520,7 @@ fn open_or_focus_window(
 
     let built = builder.build().map_err(|err| err.to_string())?;
 
-    #[cfg(target_os = "macos")]
-    if let Some(radius) = config.macos_corner_radius {
-        apply_macos_rounded_content_view(&built, radius);
-    }
+    finish_macos_window(&built, config.macos_corner_radius);
 
     show_and_focus_window(&built);
 
@@ -653,40 +666,6 @@ fn enqueue_cold_open_settings(
     }
 }
 
-#[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
-fn apply_macos_rounded_content_view(window: &WebviewWindow, radius: f64) {
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::NSString;
-    use objc::{msg_send, sel, sel_impl};
-
-    let Ok(ns_win) = window.ns_window() else {
-        return;
-    };
-
-    unsafe {
-        let ns_win = ns_win as id;
-        let content_view: id = msg_send![ns_win, contentView];
-
-        if content_view == nil {
-            return;
-        }
-
-        let _: () = msg_send![content_view, setWantsLayer: true];
-
-        let layer: id = msg_send![content_view, layer];
-        if layer == nil {
-            return;
-        }
-
-        let _: () = msg_send![layer, setCornerRadius: radius];
-        let _: () = msg_send![layer, setMasksToBounds: true];
-
-        let continuous = NSString::alloc(nil).init_str("continuous");
-        let _: () = msg_send![layer, setCornerCurve: continuous];
-    }
-}
-
 // ── Quick Recall non-activating NSPanel ────────────────────────────────
 // A plain NSWindow cannot become key while its owning app is inactive, so we
 // reclass the tao-created window as an NSPanel subclass that reports it can
@@ -818,11 +797,7 @@ fn configure_quick_recall_webview(window: &WebviewWindow) {
         ) -> BOOL;
     }
 
-    let _ = window.with_webview(|webview| unsafe {
-        let wv = webview.inner() as id;
-        if wv.is_null() {
-            return;
-        }
+    with_wk_webview(window, |wv, _| unsafe {
         let class = object_getClass(wv);
         if class.is_null() {
             return;
@@ -861,17 +836,12 @@ fn make_quick_recall_panel_key(window: &WebviewWindow) {
 #[cfg(target_os = "macos")]
 #[allow(deprecated, unexpected_cfgs)]
 fn make_quick_recall_webview_first_responder(window: &WebviewWindow) {
-    use cocoa::base::{id, nil, BOOL};
+    use cocoa::base::BOOL;
     use objc::{msg_send, sel, sel_impl};
-    let _ = window.with_webview(|webview| unsafe {
-        let wv = webview.inner() as id;
-        if wv.is_null() {
-            return;
-        }
-        let panel: id = msg_send![wv, window];
-        if panel != nil {
-            let _: BOOL = msg_send![panel, makeFirstResponder: wv];
-        }
+    // SAFETY: `with_wk_webview` passes the live WKWebView and its NSWindow on
+    // the main thread; `makeFirstResponder:(NSResponder*)` -> BOOL.
+    with_wk_webview(window, |wv, panel| unsafe {
+        let _: BOOL = msg_send![panel, makeFirstResponder: wv];
     });
 }
 
@@ -906,26 +876,11 @@ fn order_out_quick_recall_panel(window: &WebviewWindow) {
 /// The wake side rides `emit_system_did_wake` — the single funnel every wake
 /// path goes through — because webviews still hidden after a missed wake would
 /// leave the app a blank window. Revealing an already-visible view is a no-op,
-/// so over-calling is safe.
-#[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
+/// so over-calling is safe. A window parked off every screen stays hidden
+/// through a wake (see `parked_view`).
 pub fn set_all_webview_views_hidden(app_handle: &tauri::AppHandle, hidden: bool) {
-    use cocoa::base::{id, NO, YES};
-    use objc::{msg_send, sel, sel_impl};
-    let flag = if hidden { YES } else { NO };
-    for window in app_handle.webview_windows().values() {
-        let _ = window.with_webview(move |webview| unsafe {
-            let wv = webview.inner() as id;
-            if wv.is_null() {
-                return;
-            }
-            let _: () = msg_send![wv, setHidden: flag];
-        });
-    }
+    parked_view::set_screens_asleep(app_handle, hidden);
 }
-
-#[cfg(not(target_os = "macos"))]
-pub fn set_all_webview_views_hidden(_app_handle: &tauri::AppHandle, _hidden: bool) {}
 
 fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     let config = AppWindow::QuickRecall.config();
@@ -947,10 +902,11 @@ fn build_quick_recall_window(app: &tauri::AppHandle) -> Result<WebviewWindow, St
     {
         configure_quick_recall_panel(&built);
         configure_quick_recall_webview(&built);
-        if let Some(radius) = config.macos_corner_radius {
-            apply_macos_rounded_content_view(&built, radius);
-        }
     }
+
+    // After the reclass: `finish_macos_window` sets `sharingType` on the window
+    // this ends up being, and `object_setClass` swaps the class underneath it.
+    finish_macos_window(&built, config.macos_corner_radius);
 
     Ok(built)
 }
@@ -1307,6 +1263,19 @@ pub fn handle_window_event(
     event: &WindowEvent,
     window: Option<&WebviewWindow>,
 ) {
+    if matches!(
+        event,
+        WindowEvent::Moved(_)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::Focused(true)
+    ) {
+        if let Some(window) = window {
+            parked_view::refresh(window);
+        }
+        return;
+    }
+
     if let WindowEvent::Focused(false) = event {
         crate::webview_cache::purge_webview_memory_cache_on_blur(app);
         if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {
@@ -1332,6 +1301,7 @@ pub fn handle_window_event(
     if !matches!(event, WindowEvent::Destroyed) {
         return;
     }
+    parked_view::forget(label);
 
     let action = match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => {
@@ -1660,6 +1630,24 @@ mod tests {
                 "capabilities/default.json is missing {permission:?} — {why}"
             );
         }
+    }
+
+    #[test]
+    fn no_page_may_move_its_own_window() {
+        // A page-side clamp re-centred any window less than 50 pt on-screen
+        // after a display reconfiguration — including windows a tiling window
+        // manager parks on purpose on a hidden workspace (AeroSpace's 1-px
+        // sliver). `parked_view` already stops a parked window rendering, so no
+        // page needs to move its window; keep the grant out.
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/capabilities/default.json"
+        ))
+        .expect("capabilities/default.json should exist");
+        assert!(
+            !raw.contains("core:window:allow-set-position"),
+            "capabilities/default.json must not grant core:window:allow-set-position"
+        );
     }
 
     #[test]

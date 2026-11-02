@@ -16,10 +16,17 @@
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import PermissionRows from "./PermissionRows.svelte";
+  import { captureControls } from "$lib/capture-controls.svelte";
+  import { sourcesHint } from "./sources-hint";
 
   const c = getSettingsController();
   const rec = c.rec;
   const sysAudio = c.systemAudioAccess;
+  // Sources are fixed for a session, as the tray's toggles are: a switch flipped
+  // mid-recording would save but not reach the running capture until next start.
+  const sourcesLocked = $derived(
+    captureControls.running || captureControls.loadingStart || captureControls.loadingStop,
+  );
 
   // Recording-wide save-block reasons (controller-derived). Surfaced inline so a
   // blocked save shows the specific guidance instead of failing silently.
@@ -38,7 +45,7 @@
   );
 
   // Idle timeout select (mockup stops); an off-list persisted value stays listed.
-  const IDLE_STOPS = [30, 60, 120, 300];
+  const IDLE_STOPS = [10, 30, 60, 120, 300];
   const idleLabel = (s: number) =>
     s % 60 === 0 ? `${s / 60} minute${s === 60 ? "" : "s"}` : `${s} seconds`;
   const idleOptions = $derived(
@@ -105,13 +112,13 @@
 {/snippet}
 
 {#snippet sysAudioSwitch()}
-  <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
+  <Switch bind:checked={rec.draftCaptureSystemAudio} disabled={sourcesLocked} ariaLabel="System Audio" />
 {/snippet}
 
 <SettingGroup
   id="settings-section-capture"
   title="Sources"
-  hint="Three independent families — any can run alone."
+  hint={sourcesHint(captureControls)}
   loading={rec.loadingRecSettings}
 >
   {#snippet actions()}
@@ -130,13 +137,13 @@
 
   <SettingRow label="Screen" description="Capture the display." source="screen">
     {#snippet control()}
-      <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
+      <Switch bind:checked={rec.draftCaptureScreen} disabled={sourcesLocked} ariaLabel="Screen" />
     {/snippet}
   </SettingRow>
 
   <SettingRow label="Microphone" description="Capture audio from microphone." source="mic">
     {#snippet control()}
-      <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
+      <Switch bind:checked={rec.draftCaptureMicrophone} disabled={sourcesLocked} ariaLabel="Microphone" />
     {/snippet}
   </SettingRow>
 

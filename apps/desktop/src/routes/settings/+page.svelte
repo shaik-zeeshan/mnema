@@ -20,6 +20,7 @@
   import { onDestroy, tick, untrack } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import AppPrivacyExclusionPrompt from "$lib/components/AppPrivacyExclusionPrompt.svelte";
+  import { setFlushBeforeStart } from "$lib/capture-controls.svelte";
   import {
     RECORDING_AUTOSAVE_DOMAINS,
   } from "$lib/settings/state/autosave-core";
@@ -371,13 +372,6 @@
   });
 
   // ─── Recording settings validation coercion ─────────────────────────────────
-  // Invariant: system audio requires screen capture.
-  $effect(() => {
-    if (!c.rec.draftCaptureScreen && c.rec.draftCaptureSystemAudio) {
-      c.rec.draftCaptureSystemAudio = false;
-    }
-  });
-
   // Invariant: coerce any non-original draft back to "original" only once we
   // have confirmed that non-original is unsupported (AVFoundation / pre-macOS 15).
   $effect(() => {
@@ -452,6 +446,9 @@
     let unlistenSpeakerDownloadProgress: (() => void) | undefined;
     let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let destroyed = false;
+
+    // Start lands an in-flight sources save first (see capture-controls).
+    setFlushBeforeStart(() => c.autosaveEngine.flush("capture_sources"));
 
     // The microphone controller's two listeners live on the audio store.
     const stopMicListeners = c.audio.startListeners();
@@ -546,6 +543,7 @@
 
     return () => {
       destroyed = true;
+      setFlushBeforeStart(null);
       c.autosaveEngine.cancelAll();
       c.cancelPendingSaveRetries();
       stopMicListeners();

@@ -46,3 +46,57 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
 pub(crate) fn current_system_idle_ms() -> Option<u64> {
     None
 }
+
+/// Whether this login session is away: its screen is locked, or fast user
+/// switching gave the console to another user. `CGSSessionScreenIsLocked` is
+/// only present in the session dictionary while locked;
+/// `kCGSSessionOnConsoleKey` (`kCGSessionOnConsoleKey`) is false while
+/// switched out.
+#[cfg(target_os = "macos")]
+pub(crate) fn session_is_away() -> bool {
+    use cidre::{arc, cf};
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        // `Option<arc::R<_>>` is a nullable pointer (`arc::R` is a non-null
+        // pointer wrapper, so `None` is NULL): a NULL return — no window-server
+        // session, e.g. a daemon context — reads as `None`.
+        fn CGSessionCopyCurrentDictionary() -> Option<arc::R<cf::Dictionary>>;
+    }
+
+    // SAFETY: takes no arguments and may be called from any thread. The result
+    // follows the Copy rule (+1 retained), which `arc::R` takes ownership of and
+    // releases on drop.
+    let Some(session) = (unsafe { CGSessionCopyCurrentDictionary() }) else {
+        return false;
+    };
+    let flag = |key: &str| {
+        session
+            .value(&cf::String::from_str(key))
+            .map(|value| value.equal(cf::Boolean::value_true()))
+    };
+    session_flags_are_away(
+        flag("CGSSessionScreenIsLocked"),
+        flag("kCGSSessionOnConsoleKey"),
+    )
+}
+
+/// A missing key reads as present-and-here, so an unexpected dictionary never
+/// holds the microphone off.
+#[cfg(target_os = "macos")]
+fn session_flags_are_away(screen_locked: Option<bool>, on_console: Option<bool>) -> bool {
+    screen_locked == Some(true) || on_console == Some(false)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::session_flags_are_away;
+
+    #[test]
+    fn a_session_switched_out_of_the_console_is_away() {
+        assert!(session_flags_are_away(None, Some(false)));
+        assert!(session_flags_are_away(Some(true), Some(true)));
+        assert!(!session_flags_are_away(None, Some(true)));
+        assert!(!session_flags_are_away(None, None));
+    }
+}

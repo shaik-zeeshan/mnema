@@ -16,6 +16,13 @@ const MAX_DEPTH = 6;
 // Keys Rust/JS errors commonly carry the human message under, in priority order.
 const MESSAGE_KEYS = ["message", "error", "reason", "detail"] as const;
 
+/** The backend refused a sources change because a recording is running or
+ *  starting (`capture_sources_locked`). A race, not a failure: callers drop
+ *  the change back to the saved sources without an error dialog. */
+export function isCaptureSourcesLocked(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "capture_sources_locked";
+}
+
 // Normalize an unknown thrown value into a friendly, single-line message.
 // Pass a custom `fallback` for surfaces that want something more specific than
 // the generic default when nothing readable can be extracted.

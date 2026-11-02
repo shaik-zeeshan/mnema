@@ -534,7 +534,14 @@ fn handle_recording_toggle(app: &tauri::AppHandle) {
     });
 }
 
+/// Serializes tray source toggles: each reads the sources it flips, so two
+/// running at once would both start from the same value and one would be lost.
+static SOURCE_TOGGLE: Mutex<()> = Mutex::new(());
+
 fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
+    let _serial = SOURCE_TOGGLE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let model = current_model(app);
     let Some(item) = model.source_items.iter().find(|item| item.id == id) else {
         return;
@@ -704,7 +711,11 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         DELETE_LAST_5_MINUTES_ID => confirm_delete_recent(app, 300),
         DELETE_LAST_15_MINUTES_ID => confirm_delete_recent(app, 900),
         SOURCE_SCREEN_ID | SOURCE_MICROPHONE_ID | SOURCE_SYSTEM_AUDIO_ID => {
-            handle_source_toggle(app, id)
+            // Off the main thread: the toggle reads the capture session and its
+            // save asks the capture lock, which a stop holds for seconds while
+            // it flushes. The save rebuilds the tray itself.
+            let (app, id) = (app.clone(), id.to_string());
+            tauri::async_runtime::spawn_blocking(move || handle_source_toggle(&app, &id));
         }
         UPDATE_ID => crate::app_updates::install_and_restart(app.clone()),
         OPEN_MAIN_ID => {

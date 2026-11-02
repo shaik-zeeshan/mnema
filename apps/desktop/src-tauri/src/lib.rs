@@ -848,6 +848,7 @@ pub fn run() {
             conversation::commands::delete_last_turn,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,
+            usage_charts::get_capture_hours,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::set_privacy_filter_system_audio,

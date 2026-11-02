@@ -148,6 +148,17 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
+    /// Set while the Mac is locked or every display is asleep, and after until
+    /// the microphone device runs again; nothing reopens the microphone
+    /// meanwhile. A running device is stopped with its output paused for
+    /// inactivity, so activity resumes it afterwards.
+    pub microphone_away_hold: bool,
+    /// Set while a `WaitForSameDevice` microphone's device is gone, by the
+    /// device-change notifier, which clears it when the device returns.
+    pub microphone_waiting_for_device: bool,
+    /// True while a bounded out-of-band recording (voice enrollment) holds the
+    /// microphone. Capture leaves the family alone until it is handed back.
+    pub microphone_lent_out: bool,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
@@ -176,6 +187,25 @@ pub struct NativeCaptureRuntime {
     /// not implement `Default`).
     #[cfg(target_os = "macos")]
     pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
+    /// Injectable "is the Mac away" probe, read wherever the microphone could
+    /// open: `None` means the live lock and display state
+    /// ([`super::microphone_away::mac_is_away`]). Tests script it, since they can lock
+    /// neither the Mac nor its displays.
+    #[cfg(target_os = "macos")]
+    pub away_probe: Option<fn() -> bool>,
+    /// Stands in for the microphone session's device where the away hold and
+    /// the reopen check look at it: a real session needs the hardware and a TCC
+    /// grant, so tests cannot hold one.
+    #[cfg(all(test, target_os = "macos"))]
+    pub test_microphone_device: Option<TestMicrophoneDevice>,
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[derive(Debug, Default)]
+pub struct TestMicrophoneDevice {
+    pub running: bool,
+    /// The device is gone: a restart reports it did not come back.
+    pub gone: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -387,6 +417,11 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
+    runtime.microphone_away_hold = false;
+    runtime.microphone_waiting_for_device = false;
+    // A lend that never came back (its recording panicked) must not hold the
+    // next session's microphone.
+    runtime.microphone_lent_out = false;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

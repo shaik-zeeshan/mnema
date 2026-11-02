@@ -78,10 +78,9 @@ fn build(app: &tauri::AppHandle, path: String) -> Result<WebviewWindow, String> 
         // The panel is never key when clicked, so without first-mouse the
         // Dismiss click would only order it forward.
         super::configure_quick_recall_webview(&built);
-        if let Some(radius) = config.macos_corner_radius {
-            super::apply_macos_rounded_content_view(&built, radius);
-        }
     }
+
+    super::finish_macos_window(&built, config.macos_corner_radius);
 
     Ok(built)
 }

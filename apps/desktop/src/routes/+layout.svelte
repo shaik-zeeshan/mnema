@@ -91,10 +91,8 @@
   initAppNotifications();
   initKeyboardBindings();
   initLicenseStatus();
-  // Render-idle gating for periodic DOM updaters + offscreen-window clamp.
-  // Dedicated surface windows (quick recall, onboarding, debug) manage their
-  // own placement, so only the main window self-clamps onto a live monitor.
-  initRenderIdle({ clampWindow: !isDedicatedSurfaceWindow() && !isQuickRecallWindow() });
+  // Render-idle gating for periodic DOM updaters.
+  initRenderIdle();
   $effect(() => {
     loadDeveloperOptions();
   });

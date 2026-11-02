@@ -16,8 +16,23 @@ use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+/// The share of a file a trim must drop to be worth re-encoding. The re-encode
+/// costs about the kept length (~0.45 s for 5 min of mono 48 kHz on an M-series
+/// Mac) and the microphone runs it on the capture lock, so a trim that would
+/// only shave a little keeps the file whole instead.
+#[cfg(target_os = "macos")]
+const AUDIO_TRIM_MIN_DROPPED_FRACTION: f64 = 0.25;
+
+/// Error code for a range that starts at or past the end of `input`: nothing to
+/// keep, and nothing written. Expected when a range was derived from timing that
+/// outran the file, so callers can treat it as routine.
+#[cfg(target_os = "macos")]
+pub const AUDIO_TRIM_RANGE_PAST_END_CODE: &str = "audio_trim_range_past_end";
+
 /// Trim `input` to the `[start_secs, end_secs]` range and re-encode the result
-/// as AAC/m4a at `output`.
+/// as AAC/m4a at `output`. Returns `Ok(false)`, writing nothing, when the range
+/// would drop less than [`AUDIO_TRIM_MIN_DROPPED_FRACTION`] of the file: `input`
+/// is then the result as it stands, so the caller keeps it whole.
 ///
 /// This runs entirely on AVFoundation (`AVAudioFile`) so it works inside the
 /// sandboxed/packaged desktop app, which does not inherit a shell `PATH` and so
@@ -28,7 +43,7 @@ pub fn trim_audio_file_to_m4a(
     output: &str,
     start_secs: f64,
     end_secs: f64,
-) -> Result<(), CaptureErrorResponse> {
+) -> Result<bool, CaptureErrorResponse> {
     use cidre::{av, cat, ns};
 
     if !start_secs.is_finite() || !end_secs.is_finite() || end_secs < start_secs {
@@ -77,6 +92,18 @@ pub fn trim_audio_file_to_m4a(
     };
     let start_frame = frame_for_secs(start_secs);
     let end_frame = frame_for_secs(end_secs).max(start_frame);
+    if total_frames > 0 && start_frame >= total_frames {
+        return Err(CaptureErrorResponse {
+            code: AUDIO_TRIM_RANGE_PAST_END_CODE.to_string(),
+            message: format!("Audio trim range starts past the end of {input}"),
+        });
+    }
+    let dropped_frames = start_frame + (total_frames - end_frame);
+    if total_frames > 0
+        && (dropped_frames as f64) < total_frames as f64 * AUDIO_TRIM_MIN_DROPPED_FRACTION
+    {
+        return Ok(false);
+    }
     let frames_to_copy = (end_frame - start_frame).max(0) as u64;
 
     let _ = std::fs::remove_file(output);
@@ -146,7 +173,7 @@ pub fn trim_audio_file_to_m4a(
     writer.close();
 
     match validate_trimmed_audio_output_file(output) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(true),
         Err(error) => {
             let _ = std::fs::remove_file(output);
             Err(error)
@@ -310,6 +337,13 @@ pub struct AudioAssetWriterState {
     writer: cidre::arc::R<cidre::av::AssetWriter>,
     input: cidre::arc::R<cidre::av::AssetWriterInput>,
     started: bool,
+    // Host-clock PTS the session started at; the file's frame 0.
+    session_start_secs: Option<f64>,
+    // Host-clock end of the last appended sample.
+    appended_end_secs: Option<f64>,
+    // Seconds missing between appended samples, so file time no longer tracks
+    // host time past the first hole.
+    timeline_gap_secs: f64,
     appended_samples: u64,
     expected_sample_format: Option<AudioSampleFormat>,
     tail_trim_seconds: u64,
@@ -375,6 +409,33 @@ fn flush_audio_tail_buffer(
     writer_state.tail_buffer.latest_sample_end_secs = None;
     writer_state.tail_buffer.observed_active_sample = false;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn audio_writer_session_start_secs(writer_state: &AudioAssetWriterState) -> Option<f64> {
+    writer_state.session_start_secs
+}
+
+/// Seconds of audio missing between the samples appended so far: buffers
+/// dropped after the session started (a format flip such as Bluetooth A2DP to
+/// HFP, a full queue). Any gap means a file offset no longer maps to
+/// `session_start_secs + offset` past it.
+#[cfg(target_os = "macos")]
+pub fn audio_writer_timeline_gap_secs(writer_state: &AudioAssetWriterState) -> f64 {
+    writer_state.timeline_gap_secs
+}
+
+/// Delivery jitter allowed between one sample's end and the next one's start
+/// before the difference counts as missing audio.
+#[cfg(target_os = "macos")]
+const AUDIO_TIMELINE_GAP_TOLERANCE_SECS: f64 = 0.1;
+
+#[cfg(target_os = "macos")]
+fn audio_timeline_gap_secs(previous_end_secs: Option<f64>, start_secs: Option<f64>) -> f64 {
+    match (previous_end_secs, start_secs) {
+        (Some(end), Some(start)) if start - end > AUDIO_TIMELINE_GAP_TOLERANCE_SECS => start - end,
+        _ => 0.0,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -931,6 +992,9 @@ fn create_audio_asset_writer_with_format_internal(
         writer,
         input,
         started: false,
+        session_start_secs: None,
+        appended_end_secs: None,
+        timeline_gap_secs: 0.0,
         appended_samples: 0,
         expected_sample_format,
         tail_trim_seconds: 0,
@@ -1020,9 +1084,12 @@ fn append_audio_sample_to_writer_untrimmed(
             ));
         }
 
-        writer_state
-            .writer
-            .start_session_at_src_time(sample_buf.pts());
+        let pts = sample_buf.pts();
+        writer_state.writer.start_session_at_src_time(pts);
+        writer_state.session_start_secs = pts
+            .is_numeric()
+            .then(|| pts.as_secs())
+            .filter(|value| value.is_finite());
         writer_state.started = true;
     }
 
@@ -1053,6 +1120,12 @@ fn append_audio_sample_to_writer_untrimmed(
     }
 
     writer_state.appended_samples += 1;
+    writer_state.timeline_gap_secs += audio_timeline_gap_secs(
+        writer_state.appended_end_secs,
+        sample_buf_start_secs(sample_buf),
+    );
+    writer_state.appended_end_secs =
+        sample_buf_end_secs(sample_buf).or(writer_state.appended_end_secs);
 
     Ok(AudioSampleAppendDisposition::Appended)
 }
@@ -1738,8 +1811,8 @@ mod tests {
 
         write_test_tone_m4a(&input, 2.0);
 
-        trim_audio_file_to_m4a(&input, &output, 0.5, 1.0)
-            .expect("native AVFoundation trim should succeed without ffmpeg on PATH");
+        assert!(trim_audio_file_to_m4a(&input, &output, 0.5, 1.0)
+            .expect("native AVFoundation trim should succeed without ffmpeg on PATH"));
 
         let trimmed = decode_audio_file_to_mono_pcm(std::path::Path::new(&output))
             .expect("trimmed output should decode");
@@ -1759,6 +1832,49 @@ mod tests {
 
         let _ = std::fs::remove_file(&input);
         let _ = std::fs::remove_file(&output);
+    }
+
+    #[test]
+    fn trim_audio_file_to_m4a_leaves_a_whole_file_range_alone() {
+        let temp = std::env::temp_dir();
+        let input = temp
+            .join(format!("mnema-whole-trim-input-{}.m4a", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+        let output = temp
+            .join(format!(
+                "mnema-whole-trim-output-{}.m4a",
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        let _ = std::fs::remove_file(&output);
+        write_test_tone_m4a(&input, 2.0);
+
+        let trimmed = trim_audio_file_to_m4a(&input, &output, 0.25, 3.0);
+        let past_end = trim_audio_file_to_m4a(&input, &output, 2.5, 3.0);
+        let output_written = std::path::Path::new(&output).exists();
+        let _ = std::fs::remove_file(&input);
+        let _ = std::fs::remove_file(&output);
+
+        assert!(!trimmed.expect("a near-whole range is not an error"));
+        assert_eq!(
+            past_end.expect_err("nothing left to keep").code,
+            AUDIO_TRIM_RANGE_PAST_END_CODE
+        );
+        assert!(!output_written, "nothing to re-encode, so nothing written");
+    }
+
+    #[test]
+    fn audio_timeline_gap_counts_only_holes_past_delivery_jitter() {
+        // Back to back, jittered, overlapping, or untimed: no hole.
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(10.0)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(10.05)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(9.9)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(None, Some(10.0)), 0.0);
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), None), 0.0);
+        // Buffers dropped across a Bluetooth profile flip leave a real hole.
+        assert_eq!(audio_timeline_gap_secs(Some(10.0), Some(12.5)), 2.5);
     }
 
     #[test]
@@ -1834,10 +1950,13 @@ mod tests {
                 flushed.push(sample);
             }
         }
+        let trimmed = buffer.samples.len();
 
         buffer.discard_tail();
 
         assert_eq!(flushed, vec!["speech"]);
+        // Exactly the retained 2 s of one-second idle samples is discarded.
+        assert_eq!(trimmed, 2);
         assert!(buffer.samples.is_empty());
         assert_eq!(buffer.latest_sample_end_secs, None);
     }

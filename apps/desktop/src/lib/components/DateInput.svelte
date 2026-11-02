@@ -76,22 +76,23 @@
     return k ? Math.round(t / k) : -1;
   }
 
-  // ── ruler: one tick per day (per period in period mode), height = density
-  const tickUnit = $derived(period ? unit : "day");
-  const starts = $derived.by(() => {
-    const out: Date[] = [];
-    for (let d = periodOf(min, tickUnit)[0]; d <= max; d = tickUnit === "month" ? monthOf(d, 1)[0] : addDays(d, tickUnit === "week" ? 7 : 1)) out.push(d);
+  // ── ruler: one tick per day, height = density. Week/month periods show just their
+  // own days (future ones as faint stubs); day/range scroll the whole history.
+  const own = $derived(period && unit !== "day");
+  const ticks = $derived.by(() => {
+    const out: number[] = [];
+    for (let d = own ? a : min, e = own ? b : max; d <= e; d = addDays(d, 1)) out.push(heat(d));
     return out;
   });
-  const ticks = $derived(starts.map((s) => (period ? periodHeat(s, tickUnit) : heat(s))));
-  const sel = $derived.by(() => {
-    if (unbounded) return [0, starts.length - 1];
-    if (!period) return [daysBetween(min, a), daysBetween(min, b)];
-    const k = starts.findIndex((s) => +s === +a);
-    return [k, k];
-  });
+  const sel = $derived(
+    unbounded || own ? [0, ticks.length - 1] : [daysBetween(min, a), daysBetween(min, b)],
+  );
+  const tickW = $derived(own && unit === "month" ? 1 : 2); // a month's ~31 days fit the 84px ruler at 2px pitch
+  const pitch = $derived(own && unit === "month" ? 2 : PITCH);
   let rulerW = $state(84);
-  const tapeX = $derived((rulerW || 84) / 2 - (((sel[0] + sel[1]) / 2) * PITCH + 1));
+  const tapeX = $derived(own
+    ? ((rulerW || 84) - (ticks.length * pitch - (pitch - tickW))) / 2
+    : (rulerW || 84) / 2 - (((sel[0] + sel[1]) / 2) * pitch + tickW / 2));
 
   const label = $derived(unbounded ? "All time" : capsuleLabel(mode, unit, a, b, today));
   const rel = $derived(unbounded ? "no limit" : relativeLabel(mode, unit, a, b, today));
@@ -118,7 +119,7 @@
   let dragging = $state(false);
   let drag: { x: number; applied: number } | null = null;
   let dragged = false;
-  const stepPx = (u: Unit) => (period || u === "day" ? PITCH : u === "month" ? 36 : 24);
+  const stepPx = (u: Unit) => (u === "day" ? PITCH : u === "month" ? 36 : 24);
 
   function onPointerDown(e: PointerEvent) {
     if (e.button) return;
@@ -229,7 +230,7 @@
 
 <svelte:window onpointerdown={onWindowPointerDown} onpointerup={onWindowPointerUp} onkeydown={onWindowKey} />
 
-<div class="mx-date" bind:this={host} data-mode={mode} data-align={align} data-dragging={dragging || undefined} onwheel={onWheel}>
+<div class="mx-date" bind:this={host} data-mode={mode} data-ruler={own ? unit : undefined} data-align={align} data-dragging={dragging || undefined} onwheel={onWheel}>
   <button
     type="button" class="mx-date__btn" bind:this={btn} aria-haspopup="dialog" aria-expanded={open}
     aria-label="{range ? 'Range' : period ? cap(unit) : 'Day'}: {label}, {rel}. Arrow keys or drag to step, Enter for calendar."

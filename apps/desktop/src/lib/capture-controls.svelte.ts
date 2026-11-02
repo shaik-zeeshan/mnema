@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { message } from "@tauri-apps/plugin-dialog";
 import { captureSession, setSession } from "$lib/session.svelte";
 import { renderIdle } from "$lib/render-idle.svelte";
-import { humanizeError } from "$lib/format-error";
+import { humanizeError, isCaptureSourcesLocked } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
@@ -49,6 +49,16 @@ let _settingsSyncInitialized = false;
 // alert instead of a silent snap-back. Fire-and-forget; callers don't await.
 function reportCaptureError(err: unknown): void {
   void message(humanizeError(err), { title: "Recording error", kind: "error" });
+}
+
+// Settings registers its sources flush here while open, so a toggle whose save
+// is still in flight lands before Start reads the sources. (The tray Start
+// can't call this; the sources save skips the debounce to keep its gap short.)
+// It resolves false when the switches could not be saved; Start then refuses
+// rather than record the old sources under the new switches.
+let flushBeforeStart: (() => Promise<boolean>) | null = null;
+export function setFlushBeforeStart(flush: (() => Promise<boolean>) | null): void {
+  flushBeforeStart = flush;
 }
 
 export const captureControls = {
@@ -237,6 +247,9 @@ export async function startCapture(): Promise<void> {
   _state.loadingStart = true;
   _state.startError = null;
   try {
+    if ((await flushBeforeStart?.()) === false) {
+      throw new Error("Your source changes haven't saved yet, so recording would use the old ones. Wait for them to save (or press Retry), then start again.");
+    }
     const result = await invoke<{ session: CaptureSession }>(
       "start_native_capture",
       {
@@ -391,7 +404,7 @@ export async function setSourceSelected(
   key: SourceKey,
   selected: boolean,
 ): Promise<void> {
-  if (captureControls.isRunning) return;
+  if (captureControls.isRunning || _state.loadingStart) return;
   const base = _state.recordingSettings;
   if (!base) return;
   if (_selectionState.saving[key]) return;
@@ -411,7 +424,8 @@ export async function setSourceSelected(
     });
     _state.recordingSettings = updated.settings;
   } catch (err) {
-    reportCaptureError(err);
+    // Locked: the selection reads the unchanged saved settings, so it reverts.
+    if (!isCaptureSourcesLocked(err)) reportCaptureError(err);
   } finally {
     _selectionState.saving[key] = false;
   }

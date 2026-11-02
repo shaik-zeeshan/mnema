@@ -38,6 +38,8 @@ use capture_types::{AppTransition, AppUsage, HeatmapBucket, SiteUsage, UsageChar
 use crate::db::CaptureDb;
 use crate::{Result, FRAME_SUBJECT_TYPE};
 
+pub(crate) mod capture_hours;
+
 /// Maximum gap (ms) attributed to a single frame's frontmost app. Caps idle /
 /// sleep / cross-session gaps so they do not inflate "time on app". See the
 /// module docs for the rationale.
