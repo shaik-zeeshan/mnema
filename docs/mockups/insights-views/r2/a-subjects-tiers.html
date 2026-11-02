@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Numbered pages</title>
+<title>Every tier, its own pager</title>
 <style>
 /* Anatomy-kit theme for every HTML page and postplan draft. Light and dark in one file:
    tokens live on .iso (dark) and .iso[data-theme="light"]; body carries both. Inline this whole file. */
@@ -297,7 +297,7 @@ body[data-theme="light"] .app {
 .mock-nav a { color: var(--anatomy-text); }
 
 /* ---- this mockup's own styles: scope everything under .app or #fig ---- */
-/* ---- shared replica of today's Subjects tab + subject page (Subjects.svelte, ConvictionMap.svelte, SubjectDetail.svelte, kit.css) ---- */
+/* ---- replica of today's Subjects tab (Subjects.svelte, ConvictionMap.svelte, kit.css), copied from 1-A ---- */
 .app__body { position: relative; }
 .app .mx-spacer { flex: 1; }
 .app .mx-display { font: 600 40px/1.04 var(--font-sans); letter-spacing: -.034em; color: var(--app-text-strong); margin: 0; text-wrap: balance; }
@@ -307,9 +307,7 @@ body[data-theme="light"] .app {
 .app .mx-stat { display: grid; gap: 7px; }
 .app .mx-stat__label { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); }
 .app .mx-stat__value { font: 400 28px/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.05em; color: var(--app-text-strong); }
-.app .mx-stat__value small { font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-subtle); letter-spacing: 0; margin-left: 3px; }
 .app .mx-stat__delta { font: 500 var(--text-sm)/1.2 var(--font-mono); color: var(--app-text-muted); }
-.app .mx-stat__delta.up { color: var(--focus-deep); }
 .app .mx-spec { display: grid; grid-template-columns: 96px 1fr; margin: 0; }
 .app .mx-spec > div { display: contents; }
 .app .mx-spec dt, .app .mx-spec dd { margin: 0; padding: 9px 0; border-top: 1px solid var(--mx-hairline); }
@@ -318,18 +316,14 @@ body[data-theme="light"] .app {
 .app .mx-spec dd { color: var(--app-text-strong); }
 .app .mx-panel--inset { background: var(--app-surface-subtle); }
 .app .mx-btn--sm { height: 24px; padding: 0 8px; }
-.app .mx-btn svg, .app .ic { flex: none; }
+.app .ic { flex: none; }
 .app .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
-.app .up, .app .in-up { color: var(--focus-deep); } .app .down, .app .in-down { color: var(--focus-distracted); } .app .in-new { color: var(--app-accent); }
-/* bar controls */
+.app .in-up { color: var(--focus-deep); } .app .in-down { color: var(--focus-distracted); } .app .in-new { color: var(--app-accent); }
 .app .s-ctl { display: flex; align-items: center; gap: var(--s-3); margin: 0 0 var(--s-2); }
 .app .s-ctl .mx-search { width: 220px; }
-/* lede */
 .app .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end; padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
 .app .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
-.app .in-read .lede { font-size: var(--text-lg); } .app .in-read .lede span { color: var(--app-text-subtle); }
 .app .in-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
-/* conviction map */
 .app .in-map { padding: var(--s-5); margin-bottom: var(--s-7); }
 .app .in-map__legend { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
 .app .in-map__legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -361,15 +355,10 @@ body[data-theme="light"] .app {
 .app .in-map__val { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; padding-right: var(--s-3); font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
 .app .in-map__val small { width: 34px; text-align: right; font-size: var(--text-xs); color: var(--app-text-subtle); }
 .app .in-map__val small.up { color: var(--focus-deep); } .app .in-map__val small.down { color: var(--focus-distracted); } .app .in-map__val small.new { color: var(--app-accent); }
-.app .in-map__more .mx-btn { flex: none; }
 .app .in-map__more { display: flex; align-items: center; gap: var(--s-3); padding-top: var(--s-3); font-size: var(--text-sm); color: var(--app-text-subtle); }
-/* feed: tiers + side column */
+.app .in-map__more .mx-btn { flex: none; }
 .app .in-feed { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); align-items: start; }
 .app .in-side { display: grid; gap: var(--s-6); align-content: start; }
-.app .in-tier { margin-bottom: var(--s-5); }
-.app .in-group { margin: var(--s-4) 0 var(--s-1); font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); display: flex; align-items: center; gap: var(--s-2); }
-.app .in-group::after { content: ""; flex: 1; height: 1px; background: var(--mx-hairline); }
-.app .in-group__note { text-transform: none; letter-spacing: 0; color: var(--app-text-faint); }
 .app .in-subj { display: grid; grid-template-columns: 150px minmax(0, 1fr) 84px 40px 14px; gap: var(--s-4); align-items: center; width: calc(100% + var(--s-3) * 2); padding: 12px var(--s-3); margin: 0 calc(var(--s-3) * -1);
   border: 0; border-bottom: 1px solid var(--mx-hairline); border-radius: var(--r-sm); background: none; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
 .app .in-subj:hover { background: var(--app-surface-hover); }
@@ -380,64 +369,61 @@ body[data-theme="light"] .app {
 .app .in-subj .num { text-align: right; color: var(--app-text-strong); }
 .app .in-subj .arrow { color: var(--app-text-faint); transition: transform var(--t-med) var(--ease-expo); }
 .app .in-subj:hover .arrow { transform: translateX(3px); color: var(--app-text-strong); }
-.app .in-tier--faded .in-subj, .app .in-subj.faded { opacity: .62; }
+.app .in-subj.faded { opacity: .62; }
 .app .in-move { grid-template-columns: 1fr auto; }
 .app .in-move > div { cursor: pointer; }
 .app .in-move dt { font-size: var(--text-base); color: var(--app-text); }
 .app .in-move dd { text-align: right; font: 500 var(--text-sm)/1.4 var(--font-mono); }
 .app .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
 .app .in-key { grid-template-columns: 104px 1fr; } .app .in-key dd { font-size: var(--text-base); color: var(--app-text-muted); }
-/* subject page */
-.app .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-3) -9px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+.app .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-5) -9px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
 .app .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
 .app .in-crumb kbd { font: 500 10px/1 var(--font-mono); color: var(--app-text-faint); margin-left: 4px; }
-.app .in-cls { display: grid; gap: 2px; }
-.app .in-cl { width: 100%; display: grid; grid-template-columns: 40px minmax(0, 1fr) 36px; gap: var(--s-3); align-items: start; padding: 11px var(--s-3); border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left;
-  color: var(--app-text-muted); font: 400 var(--text-base)/1.45 var(--font-sans); transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
-.app .in-cl:hover { background: var(--mx-wash); color: var(--app-text); }
-.app .in-cl[aria-pressed="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
-.app .in-cl .num { font-size: var(--text-md); color: var(--app-text-strong); line-height: 1.3; }
-.app .in-cl small { text-align: right; font: 500 var(--text-xs)/1.9 var(--font-mono); }
-.app .in-cd__statement { font: 600 22px/1.25 var(--font-sans); letter-spacing: -.02em; color: var(--app-text-strong); margin: var(--s-3) 0 var(--s-4); max-width: 34ch; text-wrap: balance; }
-.app .in-cd__acts { display: flex; gap: 6px; }
-.app .in-tl { list-style: none; margin: var(--s-5) 0 0; padding: 0; position: relative; }
-.app .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }
-.app .in-tl li { position: relative; display: grid; grid-template-columns: 22px 64px minmax(0, 1fr); padding: 9px 0; border-radius: var(--r-xs); }
-.app .in-tl li::before { content: ""; width: 11px; height: 11px; border-radius: 50%; margin-top: 3px; background: var(--app-bg); border: 1.5px solid var(--app-border-strong); }
-.app .in-tl li.conf::before { border-color: var(--app-text-strong); background: var(--app-text-strong); width: 7px; height: 7px; margin: 5px 0 0 2px; }
-.app .in-tl li.origin::before { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
-.app .in-tl li.contra::before { border-color: var(--focus-distracted); }
-.app .in-tl time { font: 400 var(--text-xs)/1.9 var(--font-mono); color: var(--app-text-subtle); }
-.app .in-tl li > div, .app .in-tl__ev { color: var(--app-text); font-size: var(--text-base); min-width: 0; }
-.app .in-tl small { display: block; margin-top: 3px; font: 400 var(--text-sm)/1.4 var(--font-sans); color: var(--app-text-subtle); }
-.app .in-tl li.conf > div { font: 500 var(--text-sm)/1.6 var(--font-mono); color: var(--app-text-strong); }
-.app .in-tl li.contra small { color: var(--focus-distracted); }
-.app .in-tl__ev { padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
-.app .in-tl__ev:hover { color: var(--app-text-strong); }
-.app .in-cc { position: relative; height: 200px; margin: var(--s-5) 0 0 30px; }
-.app .in-cc svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.app .in-cc path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.app .in-cc__y { position: absolute; left: -30px; top: 0; bottom: 0; width: 22px; }
-.app .in-cc__y span { position: absolute; right: 0; translate: 0 50%; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
-.app .in-cc__ev { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: var(--app-surface); border: 2px solid var(--app-text-strong); }
-.app .in-cc__ev.origin { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
-.app .in-cc__x { display: flex; justify-content: space-between; margin: var(--s-2) 0 0 30px; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
-/* keyboard place + toast + shared pager bits */
-.app .is-cur { box-shadow: inset 2px 0 0 var(--app-accent); background: var(--mx-wash); }
-.app .fx { animation: l1-in var(--t-med) var(--ease-quart); }
-@keyframes l1-in { from { opacity: .35; } }
-.app .pg { display: flex; align-items: center; gap: 2px var(--s-2); flex-wrap: wrap; margin-top: var(--s-3); }
-.app .pg__b { min-width: 26px; height: 26px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--r-sm); background: none; color: var(--app-text-muted); font: 500 var(--text-sm)/1 var(--font-mono); cursor: pointer; }
-.app .pg__b:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
-.app .pg__b[aria-current] { background: var(--app-surface); color: var(--app-text-strong); box-shadow: inset 0 0 0 1px var(--app-border-strong); }
-.app .pg__b:disabled { opacity: .3; cursor: default; }
-.app .pg__pos { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.app .pg__gap { width: 18px; text-align: center; color: var(--app-text-faint); font: var(--text-sm)/1 var(--font-mono); }
-.app .l1-toast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9; display: flex; align-items: center; gap: var(--s-3); padding: 6px 6px 6px 12px; border-radius: var(--r-md);
-  background: var(--app-surface-raised); border: 1px solid var(--app-border-strong); color: var(--app-text-strong); font-size: var(--text-sm); box-shadow: 0 10px 30px -10px rgba(0,0,0,.4); white-space: nowrap; }
-@container app (max-width: 1000px) {
-  .app .in-feed { grid-template-columns: 1fr; }
-}
+.app .fx { animation: t-in var(--t-med) var(--ease-quart); }
+@keyframes t-in { from { opacity: .3; } }
+
+/* ---- NEW: one section per tier, its pager in the kicker line (or one quiet line under the list) ---- */
+.app .t-sec { margin-bottom: var(--s-5); }
+.app .t-head { position: relative; display: flex; align-items: center; gap: var(--s-2); min-height: 28px; margin: var(--s-4) 0 var(--s-1);
+  font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); }
+.app .t-k { white-space: nowrap; } .app .t-k i { font-style: normal; color: var(--app-text-faint); margin-right: 2px; }
+.app .t-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; color: var(--app-text-faint); }
+.app .t-rule { flex: 1 1 12px; height: 1px; background: var(--mx-hairline); }
+.app .t-range, .app .t-link { height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; white-space: nowrap;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+.app .t-range:hover, .app .t-range[aria-expanded="true"], .app .t-link:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-link:disabled { color: var(--app-text-faint); cursor: default; }
+.app .t-steps { display: inline-flex; gap: 2px; margin-right: -3px; }
+.app .t-step { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--app-text-muted); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+.app .t-step:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-step:disabled { opacity: .3; cursor: default; }
+.app .t-rw { position: relative; display: inline-flex; }
+.app .t-menu { position: absolute; z-index: 6; right: 0; top: calc(100% + 4px); min-width: 140px; padding: 4px; display: grid; gap: 1px; border: 1px solid var(--app-border-strong); border-radius: var(--r-md);
+  background: var(--app-surface-raised); box-shadow: 0 14px 34px -14px rgba(0,0,0,.5); text-transform: none; letter-spacing: 0; animation: t-pop var(--t-med) var(--ease-expo); }
+.app .t-menu--up { top: auto; bottom: calc(100% + 4px); left: 0; right: auto; }
+.app .t-menu p { margin: 5px 8px 6px; font: 500 10px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-faint); }
+.app .t-menu button { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer;
+  color: var(--app-text-muted); font: 500 var(--text-sm)/1 var(--font-sans); text-align: left; }
+.app .t-menu button:hover { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-menu button[aria-checked="true"] { color: var(--app-text-strong); }
+.app .t-menu button[aria-checked="false"] svg { visibility: hidden; }
+@keyframes t-pop { from { opacity: 0; transform: translateY(-4px); } }
+.app .t-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 0; margin-top: var(--s-2); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+.app .t-foot .t-range, .app .t-foot .t-link { padding: 0 4px; }
+.app .t-foot .t-link:not(:disabled) { text-decoration: underline; text-decoration-color: var(--app-border-strong); text-underline-offset: 3px; }
+.app .t-dot { padding: 0 2px; color: var(--app-text-faint); }
+.app .t-empty { margin: var(--s-2) 0 0; font-size: var(--text-sm); color: var(--app-text-faint); }
+.app .in-subj.is-cur { background: var(--mx-wash-strong); }
+.app .in-subj.is-open { background: var(--mx-wash); }
+.app .t-tag { margin-left: 6px; font: 500 10px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--app-accent); white-space: nowrap; }
+/* stand-in subject page (the real one is mockup B) */
+.app .t-subj .mx-display { margin: var(--s-3) 0 var(--s-4); }
+.app .t-subj .mx-prose { max-width: 60ch; }
+.app .t-stand { margin-top: var(--s-6); padding: var(--s-5); display: grid; gap: var(--s-4); justify-items: start; border-style: dashed; background: var(--app-surface-subtle); }
+.app .t-stand p { margin: 0; max-width: 62ch; font-size: var(--text-md); line-height: 1.55; color: var(--app-text-muted); }
+.app .t-stand b { color: var(--app-text-strong); }
+@container app (max-width: 1000px) { .app .in-feed { grid-template-columns: 1fr; } }
 @container app (max-width: 700px) {
   .app .in-read { grid-template-columns: 1fr; gap: var(--s-4); }
   .app .mx-display { font-size: 30px; }
@@ -449,86 +435,24 @@ body[data-theme="light"] .app {
   .app .in-subj__name small { white-space: normal; line-height: 1.35; margin-top: 3px; }
   .app .in-subj__spark { display: none; }
   .app .s-ctl .mx-search { width: auto; flex: 1; }
+  .app .t-note { display: none; }
 }
-@media (prefers-reduced-motion: reduce) { .app *, .app *::before { animation: none !important; transition: none !important; } }
-#fig:focus { outline: none; }
-.app .l1-toast[hidden] { display: none; }
 @container app (max-width: 420px) {
   .app .s-ctl { flex-wrap: wrap; }
   .app .in-subj { grid-template-columns: minmax(0, 1fr) 36px 14px; }
   .app .in-subj__lead { grid-column: 1; grid-row: 2; }
   .app .in-subj .num { grid-row: 1 / span 2; grid-column: 2; }
   .app .in-subj .arrow { grid-row: 1 / span 2; grid-column: 3; }
-  .app .in-map__plot { --nm: 84px; --vl: 64px; }
+  .app .in-map__plot { --nm: 84px; --vl: 88px; }
+  .app .t-head .t-rw { margin-left: auto; }
   .app .in-stats { gap: var(--s-4); }
+  .app .t-head { flex-wrap: wrap; row-gap: 2px; }
+  .app .t-rule { flex-basis: 8px; }
 }
+@media (prefers-reduced-motion: reduce) { .app *, .app *::before { animation: none !important; transition: none !important; } }
+#fig:focus { outline: none; }
+.pp-callout code { overflow-wrap: anywhere; }
 @media (max-width: 560px) { .iso-plate-corner[data-corner="hint"] { display: none; } .iso-plate-corner[data-corner="readout"] { left: 0; white-space: normal; text-align: right; } }
-
-.app [data-list="e"] .pg, .app [data-list="c"] .pg { margin-top: var(--s-2); }
-.app [data-list="s"] > .pg { padding-top: var(--s-3); border-top: 1px solid var(--mx-hairline); }
-/* ---- subject page: a slim strip over two pinned panes, each with its own pager at its foot ---- */
-.app .app__body.n-pin { overflow: hidden; display: flex; flex-direction: column; padding-bottom: 0; }
-.app .n-strip { flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "crumb stats chart ask"; align-items: center; gap: 6px var(--s-5); margin-top: -6px; padding-bottom: 12px; }
-.app .n-crumb { grid-area: crumb; margin: 0 0 0 -9px; min-width: 0; }
-.app .n-crumb b { font: 600 18px/1.2 var(--font-sans); letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
-.app .n-stats { grid-area: stats; display: flex; flex-wrap: wrap; gap: 4px 16px; min-width: 0; font-size: var(--text-sm); color: var(--app-text-subtle); }
-.app .n-stats span { white-space: nowrap; }
-.app .n-stats b { font: 600 var(--text-md)/1.2 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong); }
-.app .n-stats small { font: 500 var(--text-xs)/1 var(--font-mono); }
-.app .n-chart { grid-area: chart; width: 168px; }
-.app .n-chart .in-cc { height: 32px; margin: 0; }
-.app .n-chart .in-cc__y, .app .n-chart .in-cc__x, .app .n-chart .in-cc__ev { display: none; }
-.app .n-ask { grid-area: ask; margin-right: -9px; }
-.app .n-ask kbd { font: 500 10px/1 var(--font-mono); color: var(--app-text-faint); }
-.app .n-panes { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 380px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); margin: 0 -24px; border-top: 1px solid var(--mx-hairline); }
-.app .n-pick { display: none; }
-.app .n-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.app .n-rail { border-right: 1px solid var(--mx-hairline); }
-.app .n-pane__h { flex: none; display: flex; align-items: baseline; gap: var(--s-3); padding: 12px 18px 6px 22px; }
-.app .n-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-.app .n-rail .n-scroll { padding: 0 8px 10px 12px; }
-.app .n-rail .in-cl { grid-template-columns: 36px minmax(0, 1fr) 32px; gap: 10px; padding: 8px 10px; font-size: var(--text-sm); }
-.app .n-rail .in-cl > span:nth-child(2) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.app .n-rail .in-cl[aria-pressed="true"] { box-shadow: inset 2px 0 0 var(--app-accent); }
-.app .n-detail .n-scroll { padding: 16px 28px 24px; }
-.app .n-detail .in-cd__statement { margin: 8px 0 12px; max-width: 46ch; }
-.app .n-spec { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 12px 0 0; padding: 8px 0; border-top: 1px solid var(--mx-hairline); border-bottom: 1px solid var(--mx-hairline); font: 500 var(--text-xs)/1.5 var(--font-mono); color: var(--app-text-subtle); }
-.app .n-spec b { font-weight: 600; color: var(--app-text-strong); }
-.app .n-detail .in-tl { margin-top: 10px; }
-.app .n-foot { flex: none; padding: 6px 12px 7px; border-top: 1px solid var(--mx-hairline); }
-.app .n-foot:empty { display: none; }
-.app .n-foot .pg { margin: 0; }
-.app .n-detail .n-foot { padding: 6px 22px 7px; }
-.app .n-pane[data-on] > .n-foot { box-shadow: inset 0 1px 0 var(--app-accent); }
-.app .n-selp { height: 26px; padding: 0 4px; border: 0; background: none; cursor: pointer; white-space: nowrap; color: var(--app-accent); font: 500 var(--text-xs)/1 var(--font-mono); text-decoration: underline; text-underline-offset: 3px; }
-.app .n-pick__btn .num { font-family: var(--font-mono); color: var(--app-text-strong); }
-.app .n-pick__btn small { font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; }
-.app .n-popin { animation: n-pop var(--t-med) var(--ease-expo); }
-@keyframes n-pop { from { opacity: 0; transform: translateY(-6px); } }
-@container app (max-width: 1000px) {
-  .app .n-panes { grid-template-columns: 290px minmax(0, 1fr); }
-  .app .n-chart { width: 130px; }
-  .app .n-ask__l { display: none; }
-  .app .n-detail .n-scroll { padding: 14px 20px 22px; }
-  .app .n-detail .n-foot { padding: 6px 16px 7px; }
-}
-@container app (max-width: 700px) {
-  .app .n-strip { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "crumb chart ask" "stats stats stats"; }
-  .app .n-chart { width: 110px; }
-  .app .n-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .app .n-pick { display: flex; gap: 4px; padding: 8px 14px; border-bottom: 1px solid var(--mx-hairline); }
-  .app .n-pick__btn { flex: 1; min-width: 0; height: var(--h-md); }
-  .app .n-pick__btn .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
-  .app .n-step { width: var(--h-md); height: var(--h-md); padding: 0; justify-content: center; }
-  .app .n-rail { display: none; position: absolute; z-index: 10; top: 52px; left: 14px; right: 14px; max-height: calc(100% - 64px); border: 1px solid var(--app-border-strong); border-radius: var(--r-md);
-    background: var(--app-surface-raised); box-shadow: 0 18px 40px -16px rgba(0,0,0,.5); }
-  .app .n-panes[data-pick] .n-rail { display: flex; }
-  .app .n-detail .n-scroll { padding: 14px 18px 20px; }
-  .app .n-detail .n-foot { padding: 6px 14px 7px; }
-  .app .n-detail .in-cd__statement { font-size: 18px; }
-}
-@container app (max-width: 420px) { .app .n-chart { width: 60px; } .app .n-ask kbd { display: none; } }
-@media (max-width: 560px) { .app .n-panes { margin: 0 -14px; } }
 </style>
 </head>
 <body class="iso" data-theme="light">
@@ -537,14 +461,14 @@ body[data-theme="light"] .app {
 <article class="pp-doc">
   <div class="pp-top">
     <div>
-      <p class="pp-kicker">Mnema · Insights views · Issue 1 of 4 · Mockup A of 5</p>
-      <h1>Numbered pages — one pager per list, and it always says where you are</h1>
+      <p class="pp-kicker">Mnema · Insights views · Round 2 · Mockup A</p>
+      <h1>Every tier, its own pager — read top to bottom at any size</h1>
     </div>
     <button type="button" class="pp-button" data-theme-toggle aria-label="Switch light or dark theme">Dark</button>
   </div>
-  <p class="pp-lede">Today's Subjects tab and subject page, unchanged, except how long lists page. Today each tier has its own "Show 10 more / Show less", the map has its own "Show all 138", conclusions have another, and the evidence sits in a box that scrolls by itself. Here every list gets exactly one small pager — "‹ 1 2 3 … 7 ›  21–40 of 138" — and tier names become dividers inside it. A subject opens as two side-by-side panes that never scroll the page: conclusions on the left, the chosen one's evidence on the right, each with its pager pinned at its foot, so the row you picked and its details are always on screen together.</p>
-  <p class="pp-meta">2026-11-02 · sample data: 138 subjects, 674 conclusions, 933 activities · Rust: 24 conclusions, up to 49 evidence each</p>
-  <div class="pp-verdict"><span class="pp-chip" data-tone="strong">Best for</span><p>People who come back to a specific item: "it was on page 3" is a real place, and you can jump from page 1 to 7 in one click. On a subject, the conclusion you picked and its evidence never leave the screen. Main cost: a tier is split across pages, and the subject's big title, numbers and chart shrink to one slim strip.</p></div>
+  <p class="pp-lede">Today's Subjects tab with paging redone after your notes. In 1-A one paged list put only Strongly held on page 1, so the other tiers vanished. Here all four tiers — Strongly held, Forming, Just taking shape, Fading — are always on screen as their own sections, 10 subjects each. Each tier turns its own pages from a quiet stepper inside its heading line, "11–20 of 69 ‹ ›", in the same small type as the heading, with no boxes and no green bar. Fading is history, so it starts folded.</p>
+  <p class="pp-meta">2026-11-02 · sample data: 138 subjects, 674 conclusions, 933 activities · Heavy dossier: the same subjects with confidences scaled so 86 are strongly held</p>
+  <div class="pp-verdict"><span class="pp-chip" data-tone="strong">Best for</span><p>Reading the dossier tier by tier however big it gets: with 86 strongly held, Forming, Just taking shape and Fading still start on screen, one scroll down. Main cost: four small pagers instead of one, so there is no single "page 3" for the whole list, and the lower tiers sit below a long Strongly held section.</p></div>
 
   <h2><span class="pp-n">01</span>Try it</h2>
   <div class="mock-stage">
@@ -552,17 +476,16 @@ body[data-theme="light"] .app {
       <label>Window</label>
       <div class="pp-seg" data-w-seg><button type="button" data-w="wide" aria-pressed="true">Wide</button><button type="button" data-w="medium">Medium</button><button type="button" data-w="narrow">Narrow</button></div>
       <label>Dossier</label>
-      <div class="pp-seg" data-sc-seg><button type="button" data-sc="young">Young (8 subjects)</button><button type="button" data-sc="today" aria-pressed="true">Today (138)</button></div>
-      <label>Jump to</label>
-      <div class="pp-seg" data-start><button type="button" data-go="list">Subjects list</button><button type="button" data-go="big">A big subject</button></div>
-
+      <div class="pp-seg" data-sc-seg><button type="button" data-sc="young">Young (8 subjects)</button><button type="button" data-sc="today" aria-pressed="true">Today (138)</button><button type="button" data-sc="heavy">Heavy</button></div>
+      <label>Pager style</label>
+      <div class="pp-seg" data-style-seg><button type="button" data-style="head" aria-pressed="true">In the heading</button><button type="button" data-style="foot">Under the list</button></div>
     </div>
     <figure class="iso-figure" id="fig">
       <div class="iso-plate">
         <div class="iso-plate-corners">
-          <span class="iso-plate-corner" data-corner="fig">FIG 1.A</span>
-          <span class="iso-plate-corner" data-corner="title">Numbered pages</span>
-          <span class="iso-plate-corner" data-corner="hint">Try: ↑↓ move · Enter open · ←/→ turn pages · E / C switch pane · Esc back</span>
+          <span class="iso-plate-corner" data-corner="fig">FIG R2.A</span>
+          <span class="iso-plate-corner" data-corner="title">Every tier, its own pager</span>
+          <span class="iso-plate-corner" data-corner="hint">Try: ‹ › in a heading · ←/→ over a tier · ↑↓ Enter open · Esc back</span>
           <span class="iso-plate-corner" data-corner="readout" data-status>Loading…</span>
         </div>
         <div class="app" data-w="wide">
@@ -572,32 +495,33 @@ body[data-theme="light"] .app {
         </div>
       </div>
       <div class="iso-legend"><div class="iso-keys">
-        <span class="iso-key"><svg class="iso-swatch" data-mark="lit" viewBox="0 0 16 10"><path d="M1 1v8"/><path d="M3 5h12"/></svg>Green edge = your place: the subject you're on, or the chosen conclusion whose details fill the right pane</span>
-        <span class="iso-key"><svg class="iso-swatch" data-mark="lit" viewBox="0 0 16 10"><path d="M1 2h14"/><path d="M2 5h12v4H2z"/></svg>Green line over a pager = the pane ←/→ turns (click a pane, or press E / C)</span>
-        <span class="iso-key"><svg class="iso-swatch" data-mark="dashed" viewBox="0 0 16 10"><path d="M1 8h14"/></svg>"selected: page 3" = the list is paged away from your pick; click to jump back</span>
-        <span class="iso-key"><svg class="iso-swatch" data-mark="raised" viewBox="0 0 16 10"><path d="M2 1h12v8H2z"/></svg>Boxed number = the page you're on; "21–40 of 138" = which rows of the whole list you see</span>
-        <span class="iso-key"><svg class="iso-swatch" data-mark="dim" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>Tier divider ("Forming · 70"); "(cont.)" when a tier carries over from the previous page</span>
-        <span class="iso-key"><svg class="iso-swatch" data-mark="dotted" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>20 / 50 / 100 = rows per page (10 / 20 / 50 for a subject's conclusions); switching keeps your row on screen</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dim" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>Tier heading "// Forming · 69" — the anchor; turning its pages never moves it</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="raised" viewBox="0 0 16 10"><path d="M2 5h7"/><path d="m11 2 3 3-3 3"/></svg>"11–20 of 69 ‹ ›" = which rows of that tier you see; click the numbers for 10 / 25 / 50 / Show all</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dotted" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>No stepper = the tier fits on one page; the heading just gives its count</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dashed" viewBox="0 0 16 10"><path d="M1 8h14"/></svg>"Show N fading" = Fading is history, folded until you ask</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="lit" viewBox="0 0 16 10"><path d="M2 2h12v6H2z"/></svg>Soft wash + green "opened" tag = the subject you last opened, still marked when you come back</span>
       </div></div>
     </figure>
   </div>
 
   <h2><span class="pp-n">02</span>How it behaves</h2>
   <ol class="pp-steps" data-steps>
-    <li data-step="index"><span class="pp-sn">01</span><span class="pp-st"><b>Open Subjects</b><small>Tiers are dividers inside one list. With the Young dossier everything fits, so there is no pager at all.</small></span></li>
-    <li data-step="spage"><span class="pp-sn">02</span><span class="pp-st"><b>Turn pages</b><small>Click a number, ‹ ›, or press ←/→. The pager stays under your pointer; "21–40 of 138" always says where you are. Changing 20/50/100 keeps your row.</small></span></li>
-    <li data-step="subject"><span class="pp-sn">03</span><span class="pp-st"><b>Open a subject</b><small>Click a row or press Enter. A slim strip holds the name, four numbers and a small chart; below it two panes fill the window and the page itself never scrolls. Conclusions page 10 at a time on the left.</small></span></li>
-    <li data-step="concl"><span class="pp-sn">04</span><span class="pp-st"><b>Pick a conclusion</b><small>Click a row or press ↑/↓; the right pane follows and starts at its top. Page the list away and the right pane keeps your pick; "selected: page 3" jumps back. In a narrow window the list folds into a picker with ‹ ›.</small></span></li>
-    <li data-step="ev"><span class="pp-sn">05</span><span class="pp-st"><b>Page its evidence</b><small>8 entries per page, newest first, pager pinned at the bottom of the right pane. Press E (or click the pane) so ←/→ turns the evidence; C hands them back to the list. Neither pane ever moves the other.</small></span></li>
-    <li data-step="back"><span class="pp-sn">06</span><span class="pp-st"><b>Go back</b><small>Esc or the crumb lands you on the page holding the subject you opened, with it marked.</small></span></li>
+    <li data-step="index"><span class="pp-sn">01</span><span class="pp-st"><b>Open Subjects</b><small>All four tiers are on screen, 10 subjects each, in reading order. With the Young dossier every tier fits, so no stepper shows — just the counts.</small></span></li>
+    <li data-step="turn"><span class="pp-sn">02</span><span class="pp-st"><b>Turn one tier</b><small>‹ › in a tier's heading, or ←/→ while the pointer (or the row you're on) is in that tier. Only that tier's rows change; its heading stays exactly where it was and the other tiers keep their pages.</small></span></li>
+    <li data-step="size"><span class="pp-sn">03</span><span class="pp-st"><b>More per page</b><small>Click "11–20 of 69" for a tiny menu: 10 / 25 / 50 / Show all. The first row you were looking at stays on the page.</small></span></li>
+    <li data-step="fading"><span class="pp-sn">04</span><span class="pp-st"><b>Look at Fading</b><small>It starts folded to its heading and a "Show N fading" link. Unfolded, it pages like the others, and "Hide" folds it again.</small></span></li>
+    <li data-step="filter"><span class="pp-sn">05</span><span class="pp-st"><b>Filter</b><small>Typing in the search box swaps the tiers for one "Matches · 23" section with the same pager. Clear it and every tier is back on the page it was on.</small></span></li>
+    <li data-step="back"><span class="pp-sn">06</span><span class="pp-st"><b>Open a subject, come back</b><small>Click a row (or ↑/↓ then Enter). Esc or the crumb brings you back to the same scroll spot, every tier on its page, and the row you opened marked.</small></span></li>
   </ol>
+
   <h2><span class="pp-n">03</span>Trade-offs</h2>
   <div class="pp-grid">
-    <div class="pp-card"><span class="pp-label">Good at</span><p>Most predictable of the five: one look tells you the size of the list and your place in it. Jumping far is one click (1 … 7). The subject page never scrolls as a whole: the chosen row and its evidence sit in two panes, each with its own pager, so one can't push the other off screen. The same pager works for 10 items or 10,000.</p></div>
-    <div class="pp-card"><span class="pp-label">Costs</span><p>A tier is cut into pages ("Forming (cont.)"), so you can't see a whole tier at once unless you pick 100 per page. On a subject, the big title, four large numbers and the 200-pixel chart shrink to a one-line strip with a small chart, and list rows clip long statements to two lines (the full text is in the right pane). Page numbers shift as new subjects form, so "page 3" is only stable for a while.</p></div>
+    <div class="pp-card"><span class="pp-label">Good at</span><p>Keeps the app's core reading — strongest to faintest — intact at every size: no tier can be pushed off the first screen by another. The pager is part of the heading, in the heading's own type, so it reads as Mnema rather than a web table, and it disappears when a tier fits. Each tier remembers its page, so coming back from a subject is exactly where you left.</p></div>
+    <div class="pp-card"><span class="pp-label">Costs</span><p>Four little pagers instead of one: there's no "page 3 of the whole list", and jumping far inside a big tier takes several ‹ › clicks (or "Show all"). With a very large Strongly held tier on 25 or 50 per page, the tiers below need a long scroll. The chevrons are small (22px) on purpose, which makes them a smaller target than 1-A's buttons.</p></div>
   </div>
-  <div class="pp-callout"><p><b>What changes in the app.</b> <code>subjectsTiers.ts</code>: <code>pageOf</code> ("Show N more / Show less") becomes a page-slice helper that returns the rows for page N plus the "21–40 of 138" numbers; TIER_PAGE becomes the default page size, CONCLUSION_PAGE drops to 10, and an evidence page size of 8 is added. <code>Subjects.svelte</code>: the per-tier pagers go; the tiers render as dividers inside one paged list with one shared pager, and the page is remembered when you open a subject and come back. <code>ConvictionMap.svelte</code>: "Show all 138" goes — the map stays the top 12 with a "Go to the list" link. <code>SubjectDetail.svelte</code>: the grid with its sticky, inner-scrolling side column becomes two fixed-height panes that fill the window, each with the same pager pinned at its foot; the big header and stats become a slim strip, and in a narrow window the conclusions list becomes a picker above the details. <code>SubjectChart.svelte</code> gets a small strip-sized version.</p></div>
-  <nav class="mock-nav"><a href="../index.html">← Prev</a><a href="../index.html">All mockups</a><a href="b-tier-tabs.html">Next →</a></nav>
+  <div class="pp-callout"><p><b>What changes in the app.</b> <code>apps/desktop/src/lib/insights/SubjectsList.svelte</code>: the one paged list with tier dividers becomes one section per tier again, each with its own page and page size (10 by default), kept while you're on a subject; Fading starts folded behind "Show N fading"; ←/→ turns the tier under the pointer or holding focus. <code>Pager.svelte</code>: the number buttons, the boxed current page, the 20/50/100 row and the green "active" rule go; it becomes the heading-line stepper — "11–20 of 69" (click for 10 / 25 / 50 / Show all) plus ‹ ›, hidden when the tier fits — with an "under the list" text-link variant. <code>Subjects.svelte</code>: coming back from a subject turns the opened subject's tier to its page, restores the scroll spot and marks the row. <code>subjectsTiers.ts</code>: <code>pageSlice</code> stays; <code>pageNumbers</code> is no longer needed; a small page/size map per axis and tier is added, and only the Matches page resets when the filter text changes.</p></div>
+
+  <nav class="mock-nav"><a href="../index.html">← Prev</a><a href="../index.html">All mockups</a><a href="b-subject-drawer.html">Next →</a></nav>
   <footer class="pp-footer">Generated with Claude Code</footer>
 </article>
 </main>
@@ -791,160 +715,100 @@ body[data-theme="light"] .app {
 </script>
 <script>
 (function () {
-var A = { s: { p: 0, size: 20 }, c: { p: 0, size: 10 }, e: { p: 0, size: 8 } }, SIZES = { s: [20, 50, 100], c: [10, 20, 50], e: null };
-var STEP = { s: "spage", c: "concl", e: "ev" };
-function pagesOf(k) { return Math.max(1, Math.ceil(S.lists[k].length / A[k].size)); }
-function clampP(k) { A[k].p = Math.min(Math.max(0, A[k].p), pagesOf(k) - 1); }
-function pager(k, extra, after) {
-  var a = A[k], total = S.lists[k].length; if (total <= (SIZES[k] ? SIZES[k][0] : a.size)) return "";
-  var from = a.p * a.size, to = Math.min(total, from + a.size);
-  return pgNav(k, { p: a.p, n: pagesOf(k), from: from, to: to, total: total, nums: true, sizes: SIZES[k], size: a.size, label: pos(from, to, total) + (extra || ""), after: after });
-}
-function anchorKeep(k, fn) {
-  var go = function () { fn(); S.fx = k; S.last = STEP[k]; S.rs[k] = 1; };
-  if (S.view === "subject") { go(); render(); } else keep('[data-anchor="' + k + '"]', go); /* panes are pinned: nothing to hold steady */
-}
-window.L1P = {
-  subjects: function (ord, T) {
-    clampP("s"); var a = A.s, page = ord.slice(a.p * a.size, a.p * a.size + a.size), at = {}, h = "", last = null;
-    T.forEach(function (t) { t.items.forEach(function (r, i) { at[r.name] = { t: t, i: i }; }); });
-    page.forEach(function (r) {
-      var ti = at[r.name];
-      if (ti.t !== last) {
-        if (last) h += "</div>";
-        h += '<div class="in-tier' + (ti.t.faded ? " in-tier--faded" : "") + '">' + groupHead(ti.t.title + (ti.i > 0 ? " (cont.)" : ""), ti.t.id === "search" ? null : ti.t.items.length, ti.i > 0 ? "from #" + (ti.i + 1) : ti.t.note);
-        last = ti.t;
-      }
-      h += subjRow(r);
-    });
-    return h + (last ? "</div>" : "") + pager("s");
-  },
-  concl: function (list, c) { clampP("c"); var a = A.c; return '<div class="in-cls">' + list.slice(a.p * a.size, a.p * a.size + a.size).map(function (x) { return clRow(x, c); }).join("") + "</div>"; },
-  cpager: function () {
-    var i = S.lists.c.indexOf(String(S.sel)), sp = Math.floor(i / A.c.size);
-    return pager("c", "", i >= 0 && sp !== A.c.p ? '<button type="button" class="n-selp" data-do="page:c:' + sp + '">selected: page ' + (sp + 1) + "</button>" : "");
-  },
-  ev: function (evs) { clampP("e"); var a = A.e; return '<ol class="in-tl">' + evs.slice(a.p * a.size, a.p * a.size + a.size).map(function (e) { return evLi(e); }).join("") + "</ol>"; },
-  epager: function () { return pager("e", " · newest first"); },
-  reset: function (w) { if (w === "scen" || w === "filter" || w === "axis") A.s.p = 0; if (w === "subject") A.c.p = 0; if (w === "subject" || w === "concl") A.e.p = 0; },
-  reveal: function (k, i) { if (i >= 0) A[k].p = Math.floor(i / A[k].size); },
-  flip: function (k, d) { var np = A[k].p + d; if (np < 0 || np >= pagesOf(k)) return false; A[k].p = np; S.last = STEP[k]; S.rs[k] = 1; return true; },
-  /* subject page: ↑/↓ always move the chosen conclusion; ←/→ turn the focused pane's page; Esc closes the narrow picker first */
-  key: function (e) {
-    if (S.view !== "subject") return false;
-    var k = e.key;
-    if (k === "Escape" && S.pick) { S.pick = false; render(); return true; }
-    if (k === "ArrowDown" || k === "ArrowUp") { stepSel(k === "ArrowDown" ? 1 : -1); return true; }
-    if (k === "ArrowRight" || k === "ArrowLeft" || k === "PageDown" || k === "PageUp") { var f = S.focus === "e" ? "e" : "c"; if (L1P.flip(f, k === "ArrowRight" || k === "PageDown" ? 1 : -1)) { S.fx = f; render(); } return true; }
-    return false;
-  },
-  init: function (H) {
-    if (S.view !== "subject") return;
-    if (H.ci) L1P.reveal("c", +H.ci); if (H.cp) A.c.p = +H.cp; if (H.ep) A.e.p = +H.ep; if (H.pick) S.pick = true;
-  },
-  act: {
-    go: function (k, d) { anchorKeep(k, function () { L1P.flip(k, +d); }); },
-    page: function (k, i) { anchorKeep(k, function () { A[k].p = +i; }); },
-    size: function (k, v) {
-      var i = S.lists[k].indexOf(String(S.cur[k] != null ? S.cur[k] : "")); if (i < 0) i = A[k].p * A[k].size;
-      anchorKeep(k, function () { A[k].size = +v; A[k].p = Math.floor(i / +v); });
-    }
-  },
-  status: function () {
-    function part(k, noun) { var a = A[k], n = S.lists[k].length, f = a.p * a.size; return n > (SIZES[k] ? SIZES[k][0] : a.size) ? noun + " " + pos(f, Math.min(n, f + a.size), n) + " · page " + (a.p + 1) + " of " + pagesOf(k) : "all " + n + " " + noun.toLowerCase() + " fit"; }
-    if (S.view === "index") return part("s", "Subjects") + (S.lists.s.length > 20 ? " · " + A.s.size + " per page" : " — no pager");
-    var i = S.lists.c.indexOf(String(S.sel)), off = Math.floor(i / A.c.size) !== A.c.p;
-    var pg = function (k) { var a = A[k]; return "page " + (a.p + 1) + "/" + pagesOf(k); };
-    return S.subj + " · list " + pg("c") + " · chosen #" + (i + 1) + (off ? " (page " + (Math.floor(i / A.c.size) + 1) + ")" : "") + " · evidence " + pg("e") + (S.pick ? " · picker open" : " · ←/→ turns " + (S.focus === "e" ? "evidence" : "list"));
-  }
-};
-var L1P = window.L1P;
-/* ---- shared replica: Subjects tab -> subject page (today's design), with paging hooks the page fills in (window.L1P) ---- */
-var M = window.MNEMA_MOCK, NOW = M.NOW, DAY = M.DAY, pct = M.pct, day = M.day;
+var M = window.MNEMA_MOCK, NOW = M.NOW, DAY = M.DAY, pct = M.pct, day = M.day, MIN = 10;
 var $ = function (s, r) { return (r || document).querySelector(s); };
 var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
-var ICONS = { right: '<path d="m9 18 6-6-6-6"/>', left: '<path d="m15 18-6-6 6-6"/>', down: '<path d="m6 9 6 6 6-6"/>', up: '<path d="m18 15-6-6-6 6"/>',
-  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>', arrow: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>', list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-  pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
-  sparkle: '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0l1.58 6.14a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96l-6.14 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/>' };
+var ICONS = { right: '<path d="m9 18 6-6-6-6"/>', left: '<path d="m15 18-6-6 6-6"/>', search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', check: '<path d="M20 6 9 17l-5-5"/>' };
 function ic(n, s, cls) { return '<svg class="ic ' + (cls || "") + '" width="' + (s || 13) + '" height="' + (s || 13) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[n] + "</svg>"; }
-function pos(a, b, n) { return (n ? a + 1 : 0) + "–" + b + " of " + n; }
-function dur(ms) { var m = Math.round(ms / 60000); return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + (m % 60) + "m"; }
-function interp(h, ms, fb) {
-  if (!h.length) return fb;
-  if (ms <= h[0].snapshotAtMs) return h[0].confidence;
-  for (var i = 1; i < h.length; i++) if (h[i].snapshotAtMs >= ms) { var a = h[i - 1], b = h[i]; return a.confidence + (b.confidence - a.confidence) * (ms - a.snapshotAtMs) / (b.snapshotAtMs - a.snapshotAtMs || 1); }
-  return h[h.length - 1].confidence;
-}
-function fortnight(c) { return c.formedAtMs > NOW - 14 * DAY ? null : pct(c.confidence) - pct(interp(c.history, NOW - 14 * DAY, c.confidence)); }
 function signed(d) { return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d); }
 
-/* ---- data: two scenarios ---- */
+/* ---- data: three dossiers ---- */
 function trendOf(cs) { var d = 0, n = 0; cs.forEach(function (c) { var h = c.history; if (h.length > 1) { d += h[h.length - 1].confidence - h[0].confidence; n++; } }); var a = n ? d / n : 0; return a > 0.04 ? "up" : a < -0.04 ? "down" : "steady"; }
 function mkRow(s) {
-  var cs = s.conclusions.slice().sort(function (a, b) { return b.confidence - a.confidence; }), ids = {};
-  cs.forEach(function (c) { c.evidence.forEach(function (e) { ids[e.activityId] = 1; }); });
+  var cs = s.conclusions.slice().sort(function (a, b) { return b.confidence - a.confidence; });
   return { name: s.subject, cs: cs, lead: cs[0], top: cs[0].confidence, then: s.thenConfidence, since: Math.min.apply(null, cs.map(function (c) { return c.formedAtMs; })),
-    tier: M.tierOf(cs[0].confidence), trend: trendOf(cs), moved: s.lastSupportedAtMs, ev: Object.keys(ids).length };
+    tier: M.tierOf(cs[0].confidence), trend: trendOf(cs), moved: s.lastSupportedAtMs };
 }
-var SC = { today: M.subjects.map(mkRow), young: (function () {
+function clamp(v) { return Math.max(0.02, Math.min(0.99, v)); }
+/* Heavy: the same 138 subjects, each subject's confidences scaled so the lead lands on a target by rank: 62% strongly held, 22% forming, 8% / 8% shaping / fading. */
+function scaled(s, k) {
+  return { subject: s.subject, thenConfidence: s.thenConfidence == null ? null : clamp(s.thenConfidence * k), lastSupportedAtMs: s.lastSupportedAtMs,
+    conclusions: s.conclusions.map(function (c) { return Object.assign({}, c, { confidence: clamp(c.confidence * k), history: c.history.map(function (h) { return { confidence: clamp(h.confidence * k), snapshotAtMs: h.snapshotAtMs }; }) }); }) };
+}
+var SC = { today: M.subjects.map(mkRow), heavy: M.subjects.map(function (s, i) {
+  var q = i / M.subjects.length, t = q < .62 ? .97 - q / .62 * .28 : q < .84 ? .67 - (q - .62) / .22 * .36 : q < .92 ? .29 - (q - .84) / .08 * .13 : .14 - (q - .92) / .08 * .1;
+  return mkRow(scaled(s, t / s.topConfidence));
+}), young: (function () {
   var want = { strong: 3, forming: 3, shaping: 1, fading: 1 }, big = { Rust: 1, Svelte: 1, Tauri: 1, SQLite: 1 }, out = [];
   M.subjects.forEach(function (s) {
     var t = M.tierOf(s.topConfidence); if (big[s.subject] || !(want[t] > 0)) return; want[t]--;
     out.push({ subject: s.subject, thenConfidence: s.thenConfidence, lastSupportedAtMs: s.lastSupportedAtMs, conclusions: s.conclusions.slice(0, 4).map(function (c) {
-      var o = Object.assign({}, c); o.evidence = c.evidence.slice(-4); o.history = c.history.slice(-4); o.formedAtMs = o.history[0].snapshotAtMs; return o; }) });
+      var o = Object.assign({}, c); o.history = c.history.slice(-4); o.formedAtMs = o.history[0].snapshotAtMs; return o; }) });
   });
   return out.map(mkRow);
 })() };
-var TIERS = { conviction: [["strong", "Strongly held", "lead ≥ 68%"], ["forming", "Forming", "30 – 68% · building support"], ["shaping", "Just taking shape", "under 30% · early"], ["fading", "Fading · kept for history", "every conclusion below the 15% floor"]],
-  movement: [["warming", "Warming", "gaining support"], ["steady", "Steady", "holding"], ["cooling", "Cooling", "losing support"], ["fading", "Fading · kept for history", "every conclusion below the 15% floor"]] };
-var SHORT = { strong: "Strongly held", forming: "Forming", shaping: "Taking shape", fading: "Fading", warming: "Warming", steady: "Steady", cooling: "Cooling" };
+$('[data-sc="heavy"]').textContent = "Heavy (" + SC.heavy.filter(function (r) { return r.tier === "strong"; }).length + " strongly held)";
+var TIERS = { conviction: [["strong", "Strongly held", "confidence 68% and up"], ["forming", "Forming", "confidence 30–68% · building support"], ["shaping", "Just taking shape", "confidence under 30% · early"], ["fading", "Fading", "kept for history"]],
+  movement: [["warming", "Warming", "gaining support"], ["steady", "Steady", "holding"], ["cooling", "Cooling", "losing support"], ["fading", "Fading", "kept for history"]] };
 
-/* ---- state ---- */
-var S = { scen: "today", view: "index", subj: null, sel: null, q: "", axis: "conviction", focus: "s", cur: { s: null, c: null, e: null }, dis: {}, last: "index", fx: null, lists: { s: [], c: [], e: [] }, rs: {}, pick: false };
-var P = window.L1P;
+/* ---- state: every tier keeps its own page and page size (keyed by axis + tier; "search" for Matches) ---- */
+var S = { scen: "today", axis: "conviction", q: "", style: "head", view: "index", subj: null, opened: null, cur: null, pg: {}, sz: {}, fade: false, menu: null, hov: null, last: "index", fx: null, y: 0 };
 function tierIdOf(r) { if (r.tier === "fading") return "fading"; if (S.axis === "conviction") return r.tier; return r.trend === "up" ? "warming" : r.trend === "down" ? "cooling" : "steady"; }
 function listed() { var q = S.q.trim().toLowerCase(), rows = SC[S.scen]; return q ? rows.filter(function (r) { return r.name.toLowerCase().indexOf(q) >= 0 || r.lead.statement.toLowerCase().indexOf(q) >= 0; }) : rows; }
-function tiersOf(rows) {
-  if (S.q.trim()) return rows.length ? [{ id: "search", title: rows.length + " match" + (rows.length === 1 ? "" : "es"), short: "Matches", note: "", items: rows }] : [];
-  return TIERS[S.axis].map(function (t) {
-    var items = rows.filter(function (r) { return tierIdOf(r) === t[0]; }).sort(S.axis === "conviction" ? function (a, b) { return b.top - a.top; } : function (a, b) { return b.moved - a.moved; });
-    return { id: t[0], title: t[1], short: SHORT[t[0]], note: t[2], faded: t[0] === "fading", items: items };
-  }).filter(function (t) { return t.items.length; });
+function sections() {
+  var rows = listed(), T = TIERS[S.axis].map(function (t) {
+    var items = rows.filter(function (r) { return tierIdOf(r) === t[0]; }).sort(S.axis === "conviction" || t[0] === "fading" ? function (a, b) { return b.top - a.top; } : function (a, b) { return b.moved - a.moved; });
+    return { key: S.axis + ":" + t[0], id: t[0], title: t[1], note: t[2], items: items };
+  });
+  if (!S.q.trim()) return T;
+  return [{ key: "search", id: "search", title: "Matches", note: "", items: [].concat.apply([], T.map(function (t) { return t.items; })) }];
 }
-function ordered() { return [].concat.apply([], tiersOf(listed()).map(function (t) { return t.items; })); }
-function subj() { return SC[S.scen].filter(function (r) { return r.name === S.subj; })[0]; }
-function shown() { return subj().cs.filter(function (c) { return !S.dis[c.id]; }); }
-function selC() { var l = shown(); return l.filter(function (c) { return c.id === S.sel; })[0] || l[0]; }
-function clTier(c) { return M.tierOf(c.confidence); }
-function clTiers(list) { return TIERS.conviction.map(function (t) { return { id: t[0], title: t[1], short: SHORT[t[0]], note: t[2], items: list.filter(function (c) { return clTier(c) === t[0]; }) }; }).filter(function (t) { return t.items.length; }); }
-function cur(kind, key) { return S.cur[kind] === String(key) && S.focus === kind ? " is-cur" : ""; }
+function folded(sec) { return sec.id === "fading" && !S.fade; }
+function slice(sec) {
+  var total = sec.items.length, size = S.sz[sec.key] == null ? MIN : S.sz[sec.key], per = size || total || 1, pages = Math.max(1, Math.ceil(total / per));
+  var p = Math.min(Math.max(0, S.pg[sec.key] || 0), pages - 1); S.pg[sec.key] = p;
+  return { total: total, size: size, per: per, pages: pages, p: p, from: p * per, to: Math.min(total, p * per + per) };
+}
+function secOf(key) { return sections().filter(function (s) { return s.key === key; })[0]; }
 
-/* ---- timeline entries for one conclusion (subjectTimeline.ts buildTimeline: evidence + confidence markers newest first, formed last) ---- */
-function events(c) {
-  var out = [], h = c.history, run = null, mk = [];
-  c.evidence.forEach(function (e) { var a = M.activityById[e.activityId]; out.push({ k: e.stance === "contradict" ? "contra" : "ev", at: e.activityStartedAtMs, key: "a" + e.activityId, title: a ? a.title : e.activityTitle, a: a }); });
-  function flush() { if (run) { mk.push(run); run = null; } }
-  for (var i = 1; i < h.length; i++) {
-    var f = h[i - 1].confidence, t = h[i].confidence, d = t - f, dir = d > 0 ? 1 : -1;
-    if (!d) { flush(); continue; }
-    if (Math.abs(d) >= 0.04) { flush(); mk.push({ from: f, to: t, at: h[i].snapshotAtMs, dir: dir }); continue; }
-    if (run && run.dir === dir) { run.to = t; run.at = h[i].snapshotAtMs; } else { flush(); run = { from: f, to: t, at: h[i].snapshotAtMs, dir: dir }; }
-  }
-  flush();
-  mk.forEach(function (m) { if (pct(m.from) !== pct(m.to)) out.push({ k: "conf", at: m.at, key: "m" + m.at, from: m.from, to: m.to }); });
-  out.sort(function (x, y) { return y.at - x.at; });
-  out.push({ k: "origin", at: c.formedAtMs, key: "f", n: c.formedEvidenceCount, conf: h[0] ? h[0].confidence : c.confidence });
-  return out;
+/* ---- the new pager ---- */
+function rangeText(sl) { return sl.per >= sl.total ? "All " + sl.total : (sl.from + 1) + "–" + sl.to + " of " + sl.total; }
+function menuHtml(sec, sl, up) {
+  return '<div class="t-menu' + (up ? " t-menu--up" : "") + '" role="menu" aria-label="Rows per page"><p>Rows per page</p>' + [[10, "10"], [25, "25"], [50, "50"], [0, "Show all " + sl.total]].map(function (o) {
+    return '<button type="button" role="menuitemradio" aria-checked="' + (o[0] === sl.size) + '" data-do="size:' + sec.key + ":" + o[0] + '">' + o[1] + ic("check", 13) + "</button>"; }).join("") + "</div>";
 }
-function evNote(a) { var p = [M.time(a.startedAtMs), dur(a.endedAtMs - a.startedAtMs), "cited " + a.frames + " frames"]; if (a.audioSegments) p.push(a.audioSegments + " audio clip" + (a.audioSegments > 1 ? "s" : "")); return p.join(" · "); }
-function evLi(e, cls) {
-  var body = e.k === "origin" ? "<div>Formed from " + e.n + " supporting activities · " + pct(e.conf) + "%</div>" : e.k === "conf" ? "<div>Confidence " + pct(e.from) + "% → " + pct(e.to) + "%</div>"
-    : '<button type="button" class="in-tl__ev" tabindex="-1">' + esc(e.title) + "<small>" + (e.k === "contra" ? "contradicts" : evNote(e.a)) + "</small></button>";
-  return '<li class="' + ({ origin: "origin", conf: "conf", contra: "contra" }[e.k] || "") + (cls ? " " + cls : "") + cur("e", e.key) + '" data-k="e:' + e.key + '" data-ev="' + e.key + '"><time>' + day(e.at) + "</time>" + body + "</li>";
+function rangeBtn(sec, sl, up) {
+  var open = S.menu === sec.key;
+  return '<span class="t-rw"><button type="button" class="t-range" data-do="menu:' + sec.key + '" aria-haspopup="menu" aria-expanded="' + open + '" title="Rows per page">' +
+    (S.style === "foot" ? rangeText(sl).replace(/^All/, "all") : rangeText(sl)) + "</button>" + (open ? menuHtml(sec, sl, up) : "") + "</span>";
+}
+function stepper(sec, sl) {
+  var name = esc(sec.title);
+  return '<span class="t-steps"><button type="button" class="t-step" data-do="go:' + sec.key + ':-1" aria-label="Previous ' + sl.per + " " + name + '"' + (sl.p <= 0 ? " disabled" : "") + ">" + ic("left", 15) + "</button>" +
+    '<button type="button" class="t-step" data-do="go:' + sec.key + ':1" aria-label="Next ' + sl.per + " " + name + '"' + (sl.p >= sl.pages - 1 ? " disabled" : "") + ">" + ic("right", 15) + "</button></span>";
+}
+function headHtml(sec, sl) {
+  var h = '<div class="t-head"><span class="t-k"><i>//</i> ' + esc(sec.title) + " · " + sl.total + "</span>" + (sec.note ? '<span class="t-note">' + esc(sec.note) + "</span>" : "") + '<span class="t-rule"></span>';
+  if (folded(sec)) return h + (sl.total ? '<button type="button" class="t-link" data-do="fade">Show ' + sl.total + " fading</button>" : "") + "</div>";
+  if (S.style === "head" && sl.total > MIN) h += rangeBtn(sec, sl) + (sl.pages > 1 ? stepper(sec, sl) : "");
+  if (sec.id === "fading") h += '<button type="button" class="t-link" data-do="fade">Hide</button>';
+  return h + "</div>";
+}
+function footHtml(sec, sl) {
+  if (S.style !== "foot" || folded(sec) || sl.total <= MIN) return "";
+  var nextN = Math.min(sl.per, sl.total - sl.to), h = '<div class="t-foot">Showing ' + rangeBtn(sec, sl, true);
+  if (sl.pages > 1) h += '<span class="t-dot">·</span><button type="button" class="t-link" data-do="go:' + sec.key + ':-1"' + (sl.p <= 0 ? " disabled" : "") + ">‹ Previous</button>" +
+    '<span class="t-dot">·</span><button type="button" class="t-link" data-do="go:' + sec.key + ':1"' + (nextN ? "" : " disabled") + ">Next" + (nextN ? " " + nextN : "") + " ›</button>";
+  return h + "</div>";
+}
+function sectionHtml(sec) {
+  var sl = slice(sec), rows = "";
+  if (!folded(sec)) rows = sl.total ? '<div class="t-rows' + (S.fx === sec.key ? " fx" : "") + '">' + sec.items.slice(sl.from, sl.to).map(subjRow).join("") + "</div>" : '<p class="t-empty">None right now.</p>';
+  return '<section class="t-sec" data-tier="' + sec.key + '" aria-label="' + esc(sec.title) + '">' + headHtml(sec, sl) + rows + footHtml(sec, sl) + "</section>";
 }
 
-/* ---- pieces of today's design ---- */
+/* ---- pieces of today's design (from 1-A) ---- */
 function spark(r) {
   var s = r.cs.slice(0, 6).map(function (c, i) {
     var h = c.history, n = h.length - 1 || 1;
@@ -952,29 +816,11 @@ function spark(r) {
   });
   return '<svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">' + s.reverse().join("") + "</svg>";
 }
-function subjRow(r, cls) {
-  return '<button type="button" class="in-subj' + (r.tier === "fading" ? " faded" : "") + (cls ? " " + cls : "") + cur("s", r.name) + '" data-k="s:' + esc(r.name) + '" data-open="' + esc(r.name) + '" tabindex="-1"><span class="in-subj__name">' + esc(r.name) + "<small>" + r.cs.length + " concl. · since " + day(r.since) +
-    '</small></span><span class="in-subj__lead">' + esc(r.lead.statement) + '</span><span class="in-subj__spark">' + spark(r) + '</span><span class="num">' + pct(r.top) + "%</span>" + ic("right", 14, "arrow") + "</button>";
-}
-function groupHead(title, count, note, extra) { return '<p class="in-group">' + esc(title) + (count != null ? " · " + count : "") + (note ? ' <span class="in-group__note">' + esc(note) + "</span>" : "") + (extra || "") + "</p>"; }
-function clRow(c, sel, cls) {
-  var d = fortnight(c);
-  return '<button type="button" class="in-cl' + (cls ? " " + cls : "") + cur("c", c.id) + '" aria-pressed="' + (c.id === sel.id) + '" data-k="c:' + c.id + '" data-sel="' + c.id + '" tabindex="-1"><span class="num">' + pct(c.confidence) + "%</span><span>" + esc(c.statement) + '</span><small class="' + (d === null ? "in-new" : d > 0 ? "in-up" : d < 0 ? "in-down" : "") + '">' + (d === null ? "new" : signed(d)) + "</small></button>";
-}
-function pgNav(kind, o) {
-  var h = '<nav class="pg ' + (o.cls || "") + '" data-anchor="' + kind + '" aria-label="Pages">';
-  h += '<button type="button" class="pg__b" data-do="go:' + kind + ':-1" aria-label="Previous"' + (o.p <= 0 ? " disabled" : "") + ">" + ic("left", 14) + "</button>";
-  if (o.nums) numsOf(o.p, o.n).forEach(function (i) { h += i === "…" ? '<span class="pg__gap">…</span>' : '<button type="button" class="pg__b" data-do="page:' + kind + ":" + i + '"' + (i === o.p ? ' aria-current="page"' : "") + ">" + (i + 1) + "</button>"; });
-  h += '<button type="button" class="pg__b" data-do="go:' + kind + ':1" aria-label="Next"' + (o.p >= o.n - 1 ? " disabled" : "") + ">" + ic("right", 14) + "</button>";
-  h += '<span class="pg__pos">' + (o.label || pos(o.from, o.to, o.total)) + "</span>";
-  if (o.after) h += o.after;
-  if (o.sizes) h += '<span class="mx-spacer"></span><span class="mx-seg" role="group" aria-label="Rows per page">' + o.sizes.map(function (v) { return '<button type="button" data-do="size:' + kind + ":" + v + '" aria-pressed="' + (v === o.size) + '">' + v + "</button>"; }).join("") + "</span>";
-  return h + "</nav>";
-}
-function numsOf(p, n) {
-  var r = [], i; if (n <= 7) { for (i = 0; i < n; i++) r.push(i); return r; }
-  var a = Math.max(1, p - 1), b = Math.min(n - 2, p + 1); if (p <= 3) { a = 1; b = 4; } if (p >= n - 4) { a = n - 5; b = n - 2; }
-  r.push(0); if (a > 1) r.push("…"); for (i = a; i <= b; i++) r.push(i); if (b < n - 2) r.push("…"); r.push(n - 1); return r;
+function subjRow(r) {
+  var open = S.opened === r.name;
+  return '<button type="button" class="in-subj' + (r.tier === "fading" ? " faded" : "") + (S.cur === r.name ? " is-cur" : "") + (open ? " is-open" : "") + '" data-k="' + esc(r.name) + '" data-open="' + esc(r.name) + '" tabindex="-1"><span class="in-subj__name">' + esc(r.name) +
+    (open ? '<span class="t-tag">opened</span>' : "") + "<small>" + r.cs.length + " concl. · since " + day(r.since) + '</small></span><span class="in-subj__lead">' + esc(r.lead.statement) + '</span><span class="in-subj__spark">' + spark(r) +
+    '</span><span class="num">' + pct(r.top) + "%</span>" + ic("right", 14, "arrow") + "</button>";
 }
 function headline(all) {
   var names = { strong: [], forming: [], shaping: [], fading: [] }; all.forEach(function (r) { names[r.tier].push(r.name); });
@@ -983,7 +829,7 @@ function headline(all) {
   var lead = [cl(names.strong, "strongly held"), cl(names.forming, "forming")].filter(Boolean), fade = cl(names.fading, "fading into history");
   return { names: names, html: lead.join(". ") + (fade ? " <em>— and " + fade + ".</em>" : ".") };
 }
-function mapHtml(rows, total) {
+function mapHtml(rows) {
   var top = rows.slice().sort(function (a, b) { return (a.tier === "fading") - (b.tier === "fading") || b.top - a.top; }).slice(0, 12);
   var h = '<div class="mx-panel in-map"><div class="in-sec"><span class="mx-kicker">Conviction map</span><span class="mx-spacer"></span><span class="in-map__legend"><span><i class="d"></i>now</span><span><i class="o"></i>14 days ago</span><span><i class="t"></i>other conclusions</span></span></div>';
   h += '<div class="in-map__plot"><div class="in-map__bands" aria-hidden="true"><span class="fade" style="left:0;width:15%"><b>fading</b></span><span style="left:15%;width:15%"><b>taking shape</b></span><span style="left:30%;width:38%"><b>forming</b></span><span class="firm" style="left:68%;width:32%"><b>strongly held</b></span></div>';
@@ -997,182 +843,145 @@ function mapHtml(rows, total) {
       '<i class="in-map__now' + (d === null ? " new" : "") + '" style="left:' + c + '%"></i></span><span class="in-map__val">' + c + '%<small class="' + (d === null ? "new" : d > 0 ? "up" : d < 0 ? "down" : "") + '">' + (d === null ? "new" : d ? signed(d) : "±0") + "</small></span></button>";
   });
   h += "</div>";
-  if (rows.length > 12) h += '<div class="in-map__more"><span>Top 12 by conviction · all ' + rows.length + ' are in the list below</span><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="tolist">' + ic("list", 13) + "Go to the list</button></div>";
+  if (rows.length > 12) h += '<div class="in-map__more"><span>Top 12 by conviction · all ' + rows.length + ' are in the tiers below</span><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="tolist">' + ic("list", 13) + "Go to the list</button></div>";
   return h + "</div>";
 }
 function indexHtml() {
-  var all = SC[S.scen], rows = listed(), T = tiersOf(rows), ord = [].concat.apply([], T.map(function (t) { return t.items; })), hd = headline(all), ncl = 0;
+  var all = SC[S.scen], rows = listed(), hd = headline(all), ncl = 0, secs = sections();
   all.forEach(function (r) { ncl += r.cs.length; });
-  S.lists.s = ord.map(function (r) { return r.name; });
   var mv = rows.filter(function (r) { return r.then != null && pct(r.top) !== pct(r.then); }).sort(function (a, b) { return Math.abs(pct(b.top) - pct(b.then)) - Math.abs(pct(a.top) - pct(a.then)); })
     .concat(rows.filter(function (r) { return r.then == null; }).sort(function (a, b) { return b.since - a.since; })).slice(0, 8);
-  var h = '<div class="s-ctl"><label class="mx-search">' + ic("search", 14) + '<input id="l1q" placeholder="Filter subjects" aria-label="Filter subjects" autocomplete="off" spellcheck="false" value="' + esc(S.q) + '"></label>' +
+  var h = '<div class="s-ctl"><label class="mx-search">' + ic("search", 14) + '<input id="tq" placeholder="Filter subjects" aria-label="Filter subjects" autocomplete="off" spellcheck="false" value="' + esc(S.q) + '"></label>' +
     '<span class="mx-seg" role="group" aria-label="Group by"><button type="button" data-axis="conviction" aria-pressed="' + (S.axis === "conviction") + '">Conviction</button><button type="button" data-axis="movement" aria-pressed="' + (S.axis === "movement") + '">Movement</button></span></div>';
   h += '<div class="in-read"><div><span class="mx-kicker">Your dossier · ' + all.length + " subjects · " + ncl + ' conclusions</span><h1 class="mx-display">' + hd.html + '</h1><p class="mx-prose">What Mnema has come to believe about you. Each subject is scored by its strongest conclusion; confidence rises with fresh evidence, halves every 30 days without it, and drops faster when activity contradicts it.</p></div>';
   h += '<div class="in-stats">' + [["strong", "Strongly held", "lead ≥ 68%"], ["forming", "Forming", "30 – 68%"], ["shaping", "Just taking shape", "under 30%"], ["fading", "Fading", "kept for history"]].map(function (t) {
     return '<div class="mx-stat"><span class="mx-stat__label">' + t[1] + '</span><span class="mx-stat__value">' + hd.names[t[0]].length + '</span><span class="mx-stat__delta">' + t[2] + "</span></div>"; }).join("") + "</div></div>";
-  h += mapHtml(rows, all.length);
-  h += '<div class="in-feed"><div data-list="s"' + (S.fx === "s" ? ' class="fx"' : "") + ">" + (ord.length ? P.subjects(ord, T) : '<p class="mx-label">No subjects match “' + esc(S.q) + "”.</p>") + '</div><div class="in-side">';
+  h += mapHtml(rows);
+  h += '<div class="in-feed"><div data-list>' + (secs[0].key === "search" && !secs[0].items.length ? '<p class="mx-label">No subjects match “' + esc(S.q) + "”.</p>" : secs.map(sectionHtml).join("")) + '</div><div class="in-side">';
   if (mv.length) h += '<div><div class="in-sec"><span class="mx-kicker">Moving this fortnight</span></div><dl class="mx-spec in-move">' + mv.map(function (r) {
     var d = r.then == null ? null : pct(r.top) - pct(r.then);
     return '<div data-open="' + esc(r.name) + '"><dt>' + esc(r.name) + '</dt><dd class="' + (d === null ? "in-new" : d > 0 ? "in-up" : "in-down") + '">' + (d === null ? "formed " + day(r.since) : signed(d) + " pts") + "</dd></div>"; }).join("") + "</dl></div>";
   h += '<div class="mx-panel mx-panel--inset in-guard"><div class="in-sec"><span class="mx-kicker">How conviction works</span></div><dl class="mx-spec in-key"><div><dt>strongly held</dt><dd>Lead conclusion at 68% or more.</dd></div><div><dt>forming</dt><dd>30–68%. Building support.</dd></div><div><dt>taking shape</dt><dd>Under 30% — early, or cooling.</dd></div><div><dt>fading</dt><dd>Every conclusion below the 15% display floor. History kept, never deleted.</dd></div><div><dt>decay</dt><dd>Halves every 30 days without fresh evidence. Pin stops it.</dd></div></dl></div>';
   return h + "</div></div>";
 }
-function chartHtml(list, c) {
-  var W = 600, H = 200, lines = list.slice(0, 10); if (lines.indexOf(c) < 0) lines.push(c);
-  var from = Math.min.apply(null, lines.map(function (l) { return l.history[0].snapshotAtMs; })), X = function (ms) { return (ms - from) / (NOW - from || 1); };
-  var path = function (h) { return h.map(function (s, i) { return (i ? "L" : "M") + (X(s.snapshotAtMs) * W).toFixed(1) + " " + ((1 - s.confidence) * H).toFixed(1); }).join(" "); };
-  var g = [30, 68, 100].map(function (v) { return '<line x1="0" x2="' + W + '" y1="' + H * (1 - v / 100) + '" y2="' + H * (1 - v / 100) + '" stroke="var(--mx-hairline)" vector-effect="non-scaling-stroke"/>'; }).join("");
-  g += '<line x1="0" x2="' + W + '" y1="' + H * 0.85 + '" y2="' + H * 0.85 + '" stroke="var(--app-border-strong)" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>';
-  lines.forEach(function (l) { if (l !== c) g += '<path d="' + path(l.history) + '" stroke="var(--chart-grey-2)" vector-effect="non-scaling-stroke"/>'; });
-  var sp = path(c.history), h0 = c.history;
-  g += '<path d="' + sp + " L" + (X(h0[h0.length - 1].snapshotAtMs) * W) + " " + H + " L" + (X(h0[0].snapshotAtMs) * W) + " " + H + 'Z" style="fill:color-mix(in srgb, var(--app-text-strong) 7%, transparent);stroke:none"/><path d="' + sp + '" stroke="var(--app-text-strong)" stroke-width="2" vector-effect="non-scaling-stroke"/>';
-  var dots = [{ at: Math.max(c.formedAtMs, h0[0].snapshotAtMs), o: 1 }].concat(c.evidence.filter(function (e) { return e.stance === "support" && e.activityStartedAtMs >= h0[0].snapshotAtMs; }).slice(-40).map(function (e) { return { at: e.activityStartedAtMs }; }));
-  var mid = new Date((from + NOW) / 2).toLocaleDateString(undefined, { month: "short" });
-  return '<div class="in-cc"><div class="in-cc__y">' + [100, 68, 30, 15, 0].map(function (v) { return '<span style="bottom:' + v + '%">' + v + "</span>"; }).join("") + '</div><svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" aria-hidden="true">' + g + "</svg>" +
-    dots.map(function (d) { return '<i class="in-cc__ev' + (d.o ? " origin" : "") + '" style="left:' + (X(d.at) * 100).toFixed(2) + "%;top:" + ((1 - interp(h0, d.at, c.confidence)) * 100).toFixed(2) + '%"></i>'; }).join("") +
-    '</div><div class="in-cc__x"><span>' + day(from) + "</span><span>" + mid + "</span><span>today</span></div>";
-}
 function subjectHtml() {
-  var r = subj(), list = shown(), c = selC(); S.sel = c.id;
-  var ev = events(c), lead = list[0], ld = fortnight(lead), above = list.filter(function (x) { return x.confidence >= 0.15; }).length, ids = {}, last = 0, ci = list.indexOf(c);
-  list.forEach(function (x) { last = Math.max(last, x.lastSupportedAtMs); x.evidence.forEach(function (e) { ids[e.activityId] = 1; }); });
-  var nEv = Object.keys(ids).length, lastD = Math.round((NOW - last) / DAY), peak = Math.max.apply(null, c.history.map(function (s) { return s.confidence; }).concat(c.confidence));
-  var sup = c.evidence.filter(function (e) { return e.stance !== "contradict"; }).length, con = c.evidence.length - sup;
-  var on = function (k) { return S.focus === k ? " data-on" : ""; };
-  S.lists.c = list.map(function (x) { return String(x.id); }); S.lists.e = ev.map(function (e) { return e.key; });
-  var h = '<div class="n-strip"><div class="in-crumb n-crumb"><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="back">' + ic("left", 13) + "Subjects</button><span>/</span><b>" + esc(r.name) + "</b></div>";
-  h += '<div class="n-stats"><span><b>' + pct(lead.confidence) + "%</b> lead " + (ld === null ? '<small class="in-new">new</small>' : '<small class="' + (ld > 0 ? "in-up" : ld < 0 ? "in-down" : "") + '">' + signed(ld) + "</small>") + "</span>" +
-    '<span title="' + (list.length - above) + ' faded below the floor"><b>' + above + "</b> conclusions</span><span><b>" + nEv + "</b> evidence</span><span>last support <b>" + (lastD <= 0 ? "today" : lastD + "d ago") + "</b></span></div>";
-  h += '<div class="n-chart" title="Confidence over time: the chosen conclusion in bold, the others in grey">' + chartHtml(list, c) + "</div>";
-  h += '<span class="mx-btn mx-btn--ghost mx-btn--sm n-ask">' + ic("sparkle", 13) + '<span class="n-ask__l">Ask about ' + esc(r.name) + "</span><kbd>⌘J</kbd></span></div>";
-  h += '<div class="n-panes"' + (S.pick ? " data-pick" : "") + ">";
-  h += '<div class="n-pick"><button type="button" class="mx-btn n-pick__btn" data-act="pick" aria-haspopup="listbox" aria-expanded="' + S.pick + '"><span class="num">' + pct(c.confidence) + '%</span><span class="t">' + esc(c.statement) + "</span><small>" + (ci + 1) + " of " + list.length + "</small>" + ic(S.pick ? "up" : "down", 13) + "</button>" +
-    '<button type="button" class="mx-btn mx-btn--ghost n-step" data-act="step" data-d="-1" aria-label="Previous conclusion"' + (ci ? "" : " disabled") + ">" + ic("left", 14) + '</button><button type="button" class="mx-btn mx-btn--ghost n-step" data-act="step" data-d="1" aria-label="Next conclusion"' + (ci < list.length - 1 ? "" : " disabled") + ">" + ic("right", 14) + "</button></div>";
-  h += '<section class="n-pane n-rail' + (S.pickNew ? " n-popin" : "") + '" data-pane="c"' + on("c") + '><div class="n-pane__h"><span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span><span class="mx-label">' + list.length + ' · by confidence</span></div>' +
-    '<div class="n-scroll" data-scroll="c"><div data-list="c"' + (S.fx === "c" ? ' class="fx"' : "") + ">" + P.concl(list, c) + '</div></div><div class="n-foot">' + P.cpager() + "</div></section>";
-  h += '<section class="n-pane n-detail" data-pane="e"' + on("e") + '><div class="n-scroll" data-scroll="e"><span class="mx-kicker">Why Mnema believes this · ' + (ci + 1) + " of " + list.length + '</span><h2 class="in-cd__statement">' + esc(c.statement) + "</h2>" +
-    '<div class="in-cd__acts"><button type="button" class="mx-btn mx-btn--sm" data-act="pin" aria-pressed="' + !!c.pinned + '">' + ic("pin", 13) + (c.pinned ? "Pinned" : "Pin") + '</button><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="dismiss">Dismiss</button></div>' +
-    '<p class="n-spec"><span>now <b>' + pct(c.confidence) + "%</b></span><span>peak <b>" + pct(peak) + "%</b></span><span><b>" + sup + "</b> support · <b" + (con ? ' class="in-down"' : "") + ">" + con + "</b> contradict</span><span>formed <b>" + day(c.formedAtMs) + "</b></span><span>decay <b>" + (c.pinned ? "pinned, won't fade" : "halves in 30d without support") + "</b></span></p>" +
-    '<div data-list="e"' + (S.fx === "e" ? ' class="fx"' : "") + ">" + P.ev(ev, c) + '</div></div><div class="n-foot">' + P.epager() + "</div></section></div>";
-  S.pickNew = false;
-  return h;
+  var r = SC[S.scen].filter(function (x) { return x.name === S.subj; })[0], tier = { strong: "Strongly held", forming: "Forming", shaping: "Just taking shape", fading: "Fading" }[r.tier];
+  return '<div class="t-subj"><div class="in-crumb"><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="back">' + ic("left", 13) + "Subjects</button><span>/</span><b>" + esc(r.name) + "</b><kbd>esc</kbd></div>" +
+    '<span class="mx-kicker">// ' + tier + " · " + pct(r.top) + "% · " + r.cs.length + ' conclusions</span><h1 class="mx-display">' + esc(r.name) + '</h1><p class="mx-prose">' + esc(r.lead.statement) + "</p>" +
+    '<div class="mx-panel t-stand"><p><b>Stand-in for the subject page.</b> The real page is the next mockup (B). This one only lets you try the trip back: go back and every tier is on the page you left it on, the scroll spot is restored, and ' + esc(r.name) + " is marked.</p>" +
+    '<button type="button" class="mx-btn" data-act="back">' + ic("left", 13) + "Back to Subjects</button></div></div>";
 }
 
 /* ---- render + behaviour ---- */
-var app = $(".app"), body = $(".app__body"), toastEl = document.createElement("div"), toastT;
-toastEl.className = "l1-toast"; toastEl.hidden = true; app.appendChild(toastEl);
-function toast(html) { clearTimeout(toastT); toastEl.innerHTML = html; toastEl.hidden = false; toastT = setTimeout(function () { toastEl.hidden = true; }, 5000); }
+var app = $(".app"), body = $(".app__body");
+function targetKey() {
+  var a = document.activeElement, f = a && a.closest && a.closest("[data-tier]"), c = S.cur && body.querySelector('[data-k="' + esc(S.cur) + '"]');
+  return S.hov || (f && f.dataset.tier) || (c && c.closest("[data-tier]").dataset.tier) || null;
+}
+function status() {
+  if (S.view === "subject") return S.subj + " · stand-in subject page · Esc goes back with every tier's page kept";
+  var secs = sections(), k = targetKey(), sec = k && secOf(k), paged = secs.filter(function (s) { return !folded(s) && slice(s).pages > 1; });
+  var line = paged.length ? paged.map(function (s) { var sl = slice(s); return s.title + " " + (sl.p + 1) + "/" + sl.pages; }).join(" · ") : "every tier fits — no steppers, just counts";
+  if (sec) { var sl = slice(sec); line = sec.title + " " + rangeText(sl) + (folded(sec) ? " · folded" : sl.pages > 1 ? " · page " + (sl.p + 1) + "/" + sl.pages + " · ←/→ turns it" : " · fits on one page"); }
+  return line;
+}
+function paint() { $("[data-status]").textContent = status(); document.querySelectorAll("[data-steps] li").forEach(function (li) { li.toggleAttribute("data-now", li.dataset.step === S.last); }); }
 function render() {
-  var q = document.activeElement && document.activeElement.id === "l1q" ? document.activeElement.selectionStart : -1;
-  var sc = {}; body.querySelectorAll("[data-scroll]").forEach(function (el) { sc[el.dataset.scroll] = el.scrollTop; });
-  body.classList.toggle("n-pin", S.view === "subject");
+  var a = document.activeElement, q = a && a.id === "tq" ? a.selectionStart : -1;
   body.innerHTML = S.view === "index" ? indexHtml() : subjectHtml();
-  body.querySelectorAll("[data-scroll]").forEach(function (el) { el.scrollTop = S.rs[el.dataset.scroll] ? 0 : sc[el.dataset.scroll] || 0; });
-  if (S.rs.c || S.rs.sel) nearest($('[data-scroll="c"] [aria-pressed="true"]', body), $('[data-scroll="c"]', body));
-  S.rs = {};
-  if (q >= 0) { var qi = $("#l1q"); qi.focus(); qi.setSelectionRange(q, q); }
-  $("[data-status]").textContent = P.status();
-  document.querySelectorAll("[data-steps] li").forEach(function (li) { li.toggleAttribute("data-now", li.dataset.step === S.last); });
-  if (P.after) P.after();
-  S.fx = null;
+  if (q >= 0) { var qi = $("#tq"); qi.focus(); qi.setSelectionRange(q, q); }
+  S.fx = null; paint();
   if (S.engaged && (!document.activeElement || document.activeElement === document.body)) $("#fig").focus({ preventScroll: true });
 }
-/* Re-render while keeping `sel` (default: the list's pager) at the same spot on screen, so the page never jumps under the pointer. */
+/* Re-render keeping one element (the tier's heading, or its foot line) at the same spot on screen. */
 function keep(sel, fn) {
   var el = $(sel, body), top = el ? el.getBoundingClientRect().top : null;
   fn(); render();
   var n = top == null ? null : $(sel, body); if (n) body.scrollTop += n.getBoundingClientRect().top - top;
 }
-function nearest(el, box) {
-  if (!el || !box) return; var r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
-  if (r.top < b.top) box.scrollTop += r.top - b.top - 8; else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom + 8;
+function anchorOf(key) { return '[data-tier="' + key + '"] ' + (S.style === "foot" && $('[data-tier="' + key + '"] .t-foot', body) ? ".t-foot" : ".t-head"); }
+function turn(key, d) {
+  var sec = secOf(key); if (!sec || folded(sec)) return false;
+  var sl = slice(sec), np = sl.p + d; if (np < 0 || np >= sl.pages) return false;
+  var inSec = S.cur && sec.items.slice(sl.from, sl.to).some(function (r) { return r.name === S.cur; });
+  keep(anchorOf(key), function () { S.pg[key] = np; S.fx = key; S.last = "turn"; S.menu = null; if (inSec) S.cur = sec.items[np * sl.per].name; });
+  return true;
 }
-function curEl(kind) { var k = S.cur[kind]; return k == null ? null : body.querySelector('[data-k="' + kind + ":" + String(k).replace(/"/g, '\\"') + '"]'); }
-function select(id) { S.sel = +id; S.cur.c = String(id); S.cur.e = null; S.rs.e = 1; P.reset("concl"); }
-function stepSel(d) {
-  var l = shown(), i = l.map(function (x) { return x.id; }).indexOf(S.sel), n = Math.max(0, Math.min(l.length - 1, i + d)), p0 = A.c.p;
-  if (n === i) return;
-  select(l[n].id); P.reveal("c", n); if (A.c.p !== p0) S.rs.c = 1; S.rs.sel = 1; S.last = "concl"; render();
+function rowsOnScreen() { return Array.prototype.slice.call(body.querySelectorAll("[data-k]")); }
+function move(d) {
+  var its = rowsOnScreen(); if (!its.length) return;
+  var i = its.map(function (el) { return el.dataset.k; }).indexOf(S.cur), n = i < 0 ? (d > 0 ? 0 : its.length - 1) : Math.max(0, Math.min(its.length - 1, i + d));
+  S.cur = its[n].dataset.k; render(); var el = body.querySelector('[data-k="' + esc(S.cur) + '"]'); if (el) el.scrollIntoView({ block: "nearest" });
 }
-function setCur(kind, key) { S.cur[kind] = key; S.focus = kind; if (kind === "c" && /^\d+$/.test(key)) { select(key); S.last = "concl"; } }
-function items(kind) { return Array.prototype.slice.call(body.querySelectorAll('[data-k^="' + kind + ':"]')); }
-function move(kind, d) {
-  var its = items(kind); if (!its.length) return;
-  var keys = its.map(function (el) { return el.dataset.k.slice(2); }), i = keys.indexOf(String(S.cur[kind])), next = i < 0 ? (d > 0 ? 0 : its.length - 1) : i + d;
-  if (next < 0 || next >= its.length) {
-    if (!P.flip(kind, d, true)) return;
-    S.fx = kind; render(); its = items(kind);
-    var j = its.map(function (el) { return el.dataset.k.slice(2); }).indexOf(String(S.cur[kind]));
-    next = j >= 0 && j + d >= 0 && j + d < its.length ? j + d : d > 0 ? 0 : its.length - 1;
-  }
-  setCur(kind, its[next].dataset.k.slice(2)); render();
-  var el = curEl(kind); if (el) el.scrollIntoView({ block: "nearest" });
-}
-function openSubject(name) { S.pick = false; S.view = "subject"; S.subj = name; S.cur.s = name; S.sel = shown()[0].id; S.cur.c = String(S.sel); S.cur.e = null; S.focus = "c"; S.last = "subject"; P.reset("subject"); render(); body.scrollTop = 0; }
+function openSubject(name) { S.y = body.scrollTop; S.view = "subject"; S.subj = S.opened = S.cur = name; S.menu = null; S.hov = null; S.last = "back"; render(); body.scrollTop = 0; }
+/* Back: nothing about the tiers resets. If the subject was opened from the map or the side column and its row isn't on its tier's current page, turn just that tier to it. */
 function back() {
-  S.pick = false; S.view = "index"; S.focus = "s"; S.last = "back"; P.reveal("s", ordered().map(function (r) { return r.name; }).indexOf(S.cur.s), S.cur.s); render();
-  var el = curEl("s"); body.scrollTop = 0; if (el) body.scrollTop = el.getBoundingClientRect().top - body.getBoundingClientRect().top - body.clientHeight / 2;
+  S.view = "index"; S.last = "back";
+  var sec = sections().filter(function (s) { return s.items.some(function (r) { return r.name === S.opened; }); })[0];
+  if (sec) { var i = sec.items.map(function (r) { return r.name; }).indexOf(S.opened), sl = slice(sec); if (sec.id === "fading") S.fade = true; if (i < sl.from || i >= sl.to) S.pg[sec.key] = Math.floor(i / sl.per); }
+  render(); body.scrollTop = S.y;
+  var el = body.querySelector('[data-k="' + esc(S.opened) + '"]');
+  if (el) { var r = el.getBoundingClientRect(), b = body.getBoundingClientRect(); if (r.top < b.top || r.bottom > b.bottom) body.scrollTop += r.top - b.top - body.clientHeight / 2; }
 }
+var ACT = {
+  go: function (k, d) { turn(k, +d); },
+  menu: function (k) { S.menu = S.menu === k ? null : k; render(); },
+  size: function (k, v) {
+    var sec = secOf(k), first = slice(sec).from; v = +v;
+    keep(anchorOf(k), function () { S.sz[k] = v; S.pg[k] = v ? Math.floor(first / v) : 0; S.menu = null; S.fx = k; S.last = "size"; });
+  },
+  fade: function () { var k = S.axis + ":fading"; keep('[data-tier="' + (S.q.trim() ? "search" : k) + '"] .t-head', function () { S.fade = !S.fade; S.fx = k; S.last = "fading"; }); }
+};
 app.addEventListener("click", function (e) {
   S.engaged = true;
-  var t = e.target.closest("[data-do],[data-open],[data-sel],[data-ev],[data-axis],[data-act]"); if (!t || !app.contains(t)) return;
-  if (t.dataset.do) { var a = t.dataset.do.split(":"); P.act[a[0]](a[1], a[2], t); return; }
-  if (t.dataset.open) return openSubject(t.dataset.open);
-  if (t.dataset.sel) { setCur("c", t.dataset.sel); S.pick = false; render(); return; }
-  if (t.dataset.ev) { S.cur.e = t.dataset.ev; S.focus = "e"; render(); $("[data-status]").textContent = "Would open this moment in the Timeline (frame peek)"; return; }
-  if (t.dataset.axis) { S.axis = t.dataset.axis; P.reset("axis"); render(); return; }
-  var c = S.view === "subject" ? selC() : null, act = t.dataset.act;
-  if (act === "back") back();
-  else if (act === "pick") { S.pick = S.pickNew = !S.pick; render(); }
-  else if (act === "step") stepSel(+t.dataset.d);
-  else if (act === "tolist") { var l = $('[data-list="s"]', body); body.scrollTop += l.getBoundingClientRect().top - body.getBoundingClientRect().top - 8; }
-  else if (act === "pin") { c.pinned = !c.pinned; render(); if (c.pinned) toast("Pinned — it won't fade"); }
-  else if (act === "dismiss") {
-    var list = shown(), i = list.indexOf(c); S.dis[c.id] = 1; list = shown(); var n = list[Math.min(i, list.length - 1)];
-    select(n.id); P.reveal("c", Math.min(i, list.length - 1), String(n.id)); render();
-    toast("Dismissed — it won't be re-inferred" + '<button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="undo" data-id="' + c.id + '">Undo</button>');
-  } else if (act === "undo") { delete S.dis[t.dataset.id]; select(t.dataset.id); P.reveal("c", shown().map(function (x) { return x.id; }).indexOf(+t.dataset.id), t.dataset.id); toastEl.hidden = true; render(); }
+  var t = e.target.closest("[data-do],[data-open],[data-axis],[data-act]"); if (t && !app.contains(t)) t = null;
+  var D = t ? Object.assign({}, t.dataset) : {};
+  /* an open size menu closes on any click outside it; the click still does what it was for */
+  if (S.menu && !(D.do && /^(menu|size):/.test(D.do))) { S.menu = null; render(); }
+  if (D.do) { /* go:<axis>:<tier>:<d> · go:search:<d> · menu/size likewise · fade */
+    var a = D.do.split(":"); if (a[0] === "fade") return ACT.fade();
+    var s = a[1] === "search"; return ACT[a[0]](s ? "search" : a[1] + ":" + a[2], s ? a[2] : a[3]); }
+  if (D.open) return openSubject(D.open);
+  if (D.axis) { S.axis = D.axis; S.last = "index"; render(); return; }
+  if (D.act === "back") back();
+  else if (D.act === "tolist") { var l = $("[data-list]", body); body.scrollTop += l.getBoundingClientRect().top - body.getBoundingClientRect().top - 8; }
 });
-/* the pane you last touched owns ←/→; a press outside the narrow picker closes it */
-app.addEventListener("mousedown", function (e) {
-  if (S.view !== "subject") return;
-  if (S.pick && !e.target.closest(".n-rail,[data-act=pick]")) { S.pick = false; render(); return; }
-  var p = e.target.closest("[data-pane]"); if (!p || S.focus === p.dataset.pane) return;
-  S.focus = p.dataset.pane; body.querySelectorAll("[data-pane]").forEach(function (x) { x.toggleAttribute("data-on", x === p); }); $("[data-status]").textContent = P.status();
+/* ←/→ follow the tier under the pointer; the status line names it. No decoration on the tier itself. */
+app.addEventListener("mouseover", function (e) {
+  var t = e.target.closest("[data-tier]"), k = t ? t.dataset.tier : null; if (k !== S.hov) { S.hov = k; paint(); }
 });
-app.addEventListener("input", function (e) { if (e.target.id === "l1q") { S.q = e.target.value; S.last = "index"; P.reset("filter"); render(); } });
+app.addEventListener("mouseleave", function () { if (S.hov) { S.hov = null; paint(); } });
+app.addEventListener("input", function (e) { if (e.target.id === "tq") { S.q = e.target.value; S.pg.search = 0; S.last = S.q.trim() ? "filter" : "index"; S.menu = null; render(); } });
 $("#fig").addEventListener("keydown", function (e) {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.target.id === "l1q" && e.key !== "Escape" && e.key !== "ArrowDown") return;
-  if (P.key && P.key(e)) { e.preventDefault(); return; }
-  var k = e.key, f = S.focus;
-  if (k === "ArrowDown" || k === "ArrowUp") { if (e.target.id === "l1q") e.target.blur(); move(f, k === "ArrowDown" ? 1 : -1); }
-  else if (k === "ArrowRight" || k === "ArrowLeft" || k === "PageDown" || k === "PageUp") { if (!P.flip(f, k === "ArrowRight" || k === "PageDown" ? 1 : -1)) return; S.fx = f; render(); var its = items(f); if (its[0] && f !== "c") { setCur(f, its[0].dataset.k.slice(2)); render(); } }
-  else if (k === "Enter") { var el = curEl(f); if (!el) return; el.click(); }
-  else if (k === "Escape") { if (S.view === "subject") back(); else return; }
-  else if ((k === "e" || k === "c") && S.view === "subject") { S.focus = k === "e" ? "e" : "c"; if (S.focus === "e" && S.cur.e == null) { var it = items("e")[0]; if (it) S.cur.e = it.dataset.k.slice(2); } render(); }
+  var k = e.key;
+  if (e.target.id === "tq") { if (k === "Escape" || k === "ArrowDown") e.target.blur(); else return; if (k === "Escape") { e.preventDefault(); return; } }
+  if (k === "Escape" && S.menu) { S.menu = null; render(); }
+  else if (S.view === "subject") { if (k === "Escape") back(); else return; }
+  else if (k === "ArrowRight" || k === "ArrowLeft") { var key = targetKey(); if (!key || !turn(key, k === "ArrowRight" ? 1 : -1)) return; }
+  else if (k === "ArrowDown" || k === "ArrowUp") move(k === "ArrowDown" ? 1 : -1);
+  else if (k === "Enter") { if (!S.cur || e.target.closest("button")) return; openSubject(S.cur); }
   else return;
   e.preventDefault();
 });
 $("#fig").tabIndex = 0;
-function scen(v) { S.scen = v; S.view = "index"; S.q = ""; S.dis = {}; S.cur = { s: null, c: null, e: null }; S.focus = "s"; S.last = "index"; P.reset("scen"); body.scrollTop = 0;
-  document.querySelectorAll("[data-sc-seg] button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.sc === v)); }); }
+function setSeg(attr, v) { document.querySelectorAll("[data-" + attr + "-seg] button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset[attr] === v)); }); }
+function scen(v) { S.scen = v; S.view = "index"; S.q = ""; S.pg = {}; S.sz = {}; S.fade = false; S.menu = null; S.cur = S.opened = null; S.last = "index"; body.scrollTop = 0; setSeg("sc", v); }
 document.querySelectorAll("[data-sc-seg] button").forEach(function (b) { b.addEventListener("click", function () { scen(b.dataset.sc); render(); }); });
-document.querySelectorAll("[data-start] button").forEach(function (b) { b.addEventListener("click", function () {
-  if (b.dataset.go === "list") { S.view = "index"; S.last = "index"; render(); body.scrollTop = 0; } else openSubject(S.scen === "today" ? "Rust" : SC.young[0].name); }); });
-/* #w=narrow&sc=young&s=Rust&ci=3&f=e&y=600 · subject page: #big=1&ci=22&ep=3 (chosen #23, evidence page 4), &cp=0 (list paged away), &pick=1 (narrow picker open) */
+document.querySelectorAll("[data-style-seg] button").forEach(function (b) { b.addEventListener("click", function () { S.style = b.dataset.style; S.menu = null; setSeg("style", S.style); render(); }); });
+/* screenshot states: #sc=heavy&w=narrow&style=foot&axis=movement&q=ru&p=forming:1,strong:2&fade=1&menu=forming&open=Rust&back=1&y=600 */
 var H = {}; location.hash.slice(1).split("&").forEach(function (kv) { var p = kv.split("="); if (p[0]) H[p[0]] = decodeURIComponent(p[1] || ""); });
-if (H.sc) scen(H.sc); P.reset("scen");
-if (H.big) H.s = S.scen === "today" ? "Rust" : SC.young[0].name;
-if (H.s && SC[S.scen].some(function (r) { return r.name === H.s; })) { openSubject(H.s); if (H.ci) select(shown()[+H.ci].id); }
-if (H.f) S.focus = H.f;
-if (P.init) P.init(H);
+if (H.sc && SC[H.sc]) scen(H.sc);
+if (H.style) { S.style = H.style; setSeg("style", H.style); }
+if (H.axis) S.axis = H.axis;
+if (H.q) { S.q = H.q; S.last = "filter"; }
+if (H.p) H.p.split(",").forEach(function (kv) { var p = kv.split(":"); S.pg[p[0] === "search" ? "search" : S.axis + ":" + p[0]] = +p[1]; S.last = "turn"; });
+if (H.fade) { S.fade = true; S.last = "fading"; }
+if (H.menu) { S.menu = H.menu === "search" ? "search" : S.axis + ":" + H.menu; S.last = "size"; }
 render();
+if (H.y) body.scrollTop = +H.y;
+if (H.open) { openSubject(H.open); if (H.back) back(); }
 if (H.w) { var wb = $('[data-w-seg] [data-w="' + H.w + '"]'); if (wb) wb.click(); }
-if (H.y) setTimeout(function () { body.scrollTop = +H.y; }, H.w ? 500 : 0);
-
 })();
 </script>
 </body>
