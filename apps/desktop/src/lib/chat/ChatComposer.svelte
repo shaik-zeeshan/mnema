@@ -188,8 +188,12 @@
   textarea:focus-visible { box-shadow: none; }
   textarea:disabled { opacity: 1; }
   .ch-composer--docked textarea { min-height: 48px; font-size: var(--text-md); padding: var(--s-3) var(--s-4) var(--s-1); }
-  .ch-bar { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
-  .ch-ctxbtn { --_gap: 6px; --_fg: var(--app-text-muted); }
+  .ch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3); }
+  /* Narrow windows: the bar wraps (Send drops to its own line, right-aligned); a label
+     still too long for a whole line ends in an ellipsis instead of leaving the card. */
+  .ch-ctxbtn { --_gap: 6px; --_fg: var(--app-text-muted); flex: 0 1 auto; min-width: 0; }
+  .ch-send { margin-left: auto; }
+  .ch-ctxbtn > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ch-ctxbtn > :global(svg) { transition: transform var(--t-med) var(--ease-expo); }
   .ch-ctxbtn--open > :global(svg) { transform: rotate(180deg); }
   .ch-send--stop :global(rect) { fill: currentColor; } /* lucide draws it hollow; the stop is solid */

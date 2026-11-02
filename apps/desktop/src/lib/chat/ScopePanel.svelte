@@ -84,6 +84,10 @@
   }
   .ch-ctx > dt { padding: 16px 0 0; font: 500 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); }
   .ch-ctx > dd { margin: 0; padding: 8px 0 0; min-width: 0; }
+  /* Narrow windows: the scope picker fits its cell; the ruler gives up width (it measures itself). */
+  .ch-ctx > dd > :global(.mx-date) { flex: 0 1 auto; max-width: 100%; }
+  .ch-ctx > dd :global(.mx-date__btn) { min-width: 0; max-width: 100%; }
+  .ch-ctx > dd :global(.mx-date__ruler) { flex: 0 1 84px; min-width: 28px; }
   .ch-ctx--up :global(.mx-date__pop) { top: auto; bottom: calc(100% + 8px); transform-origin: bottom left; }
   /* One switch row (the kit has no label+helper row; settings.html keeps its own the same way). */
   .ch-about { display: flex; align-items: flex-start; gap: 10px; padding-top: 8px; cursor: pointer; }
