@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { FORTNIGHT_MS, fortnightAgo, pageLabel, pageNumbers, pageSlice, rankMovers, subjectsHeadline } from "./subjectsTiers";
+import { FORTNIGHT_MS, fortnightAgo, pageLabel, pageSlice, SHOW_ALL, rankMovers, subjectsHeadline } from "./subjectsTiers";
 import { rankSubjects } from "./subjectSearch";
 
 const none = { strong: [], forming: [], shaping: [], fading: [] };
@@ -76,16 +76,12 @@ describe("pageSlice", () => {
     expect(pageSlice(xs, -3, 20)).toMatchObject({ page: 0, from: 0 });
     expect(pageSlice([], 2, 20)).toMatchObject({ page: 0, pages: 1, from: 0, to: 0, total: 0 });
   });
+  test("Show all is one page holding everything", () => {
+    const p = pageSlice(xs, 3, SHOW_ALL);
+    expect(p).toMatchObject({ page: 0, pages: 1, from: 0, to: 138 });
+    expect(p.visible).toHaveLength(138);
+    expect(pageLabel(p)).toBe("All 138");
+    expect(pageLabel(pageSlice(xs.slice(0, 11), 1, 10))).toBe("11 of 11");
+  });
 });
 
-describe("pageNumbers", () => {
-  test("all pages when there are few", () => expect(pageNumbers(2, 5)).toEqual([0, 1, 2, 3, 4]));
-  test("ends, current ±1 and gaps", () => {
-    expect(pageNumbers(0, 20)).toEqual([0, 1, 2, 3, 4, null, 19]);
-    expect(pageNumbers(10, 20)).toEqual([0, null, 9, 10, 11, null, 19]);
-    expect(pageNumbers(19, 20)).toEqual([0, null, 15, 16, 17, 18, 19]);
-  });
-  test("never more than 7 entries", () => {
-    for (let n = 1; n < 60; n++) for (let p = 0; p < n; p++) expect(pageNumbers(p, n).length).toBeLessThanOrEqual(7);
-  });
-});

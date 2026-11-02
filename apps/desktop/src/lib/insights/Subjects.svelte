@@ -67,8 +67,8 @@
     return d ? d.guardrailSuppressed + d.belowFormationBar + d.resurfaceBlocked + d.ungrounded : 0;
   });
 
-  // The paged list (one pager for every tier); `lastOpened` is marked in it
-  // and paged back to when the reader returns from that subject's page.
+  // The tiered list (each tier pages on its own); `lastOpened` is marked in it
+  // and its tier paged back to when the reader returns from that subject's page.
   let listView = $state<SubjectsList>();
   let lastOpened = $state<string | null>(null);
   function open(subject: string): void {
@@ -163,7 +163,7 @@
     return Number(a.faded) - Number(b.faded) || b.topConfidence - a.topConfidence || a.subject.localeCompare(b.subject);
   }
   const displayRows = $derived([...rows].sort(byDisplay));
-  const tiers = $derived(buildTiers(displayRows, axis).filter((t) => t.items.length > 0));
+  const tiers = $derived(buildTiers(displayRows, axis));
   const sparse = $derived(isSparse(displayRows.length));
   const searching = $derived(appliedQuery.trim().length > 0);
   const searchResults = $derived(searching ? rankSubjects(displayRows, appliedQuery) : []);
@@ -181,16 +181,31 @@
   // A set filter scopes the whole page below the lede to its matches.
   const listed = $derived(searching ? searchResults : displayRows);
 
-  // What the paged list shows: the matches, one untitled run while sparse,
-  // or the axis tiers as dividers.
+  // The list's headings (mockup r2-A): the tier's count is printed after the
+  // title, so the title drops "kept for history" into the note.
+  const HEAD_NOTE: Record<string, string> = {
+    strong: "confidence 68% and up",
+    forming: "confidence 30–68% · building support",
+    shaping: "confidence under 30% · early",
+    fading: "kept for history",
+  };
+
+  // What the list shows: one "Matches" section, one untitled run while sparse,
+  // or every axis tier (empty ones too). Ids carry the axis so each axis keeps
+  // its own pages.
   const groups = $derived<SubjectGroup[]>(
     searching
       ? searchResults.length
-        ? [{ id: "search", title: `${searchResults.length} match${searchResults.length === 1 ? "" : "es"}`, note: "", faded: false, items: searchResults }]
+        ? [{ id: "search", title: "Matches", note: "", faded: false, items: searchResults }]
         : []
       : sparse
         ? [{ id: "all", title: "", note: "", faded: false, items: displayRows }]
-        : tiers.map((t) => ({ ...t, count: t.items.length })),
+        : tiers.map((t) => ({
+            ...t,
+            id: `${axis}:${t.id}`,
+            title: t.faded ? "Fading" : t.title,
+            note: HEAD_NOTE[t.id] ?? t.note,
+          })),
   );
 
   // The map always shows the top MAP_PAGE; the rest are in the list below.
@@ -341,7 +356,7 @@
           oninput={() => { applySearch(searchQuery); onFilter?.(); }}
         />
       </label>
-      <Segmented md options={AXIS_OPTIONS} value={axis} onValueChange={(v) => { axis = v as Axis; listView?.reset(); }} ariaLabel="Group by" />
+      <Segmented md options={AXIS_OPTIONS} value={axis} onValueChange={(v) => (axis = v as Axis)} ariaLabel="Group by" />
     </div>
   {/if}
 

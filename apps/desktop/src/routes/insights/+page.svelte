@@ -208,8 +208,7 @@
   });
 </script>
 
-<!-- A subject's page pins two panes under the bar: nothing here scrolls then. -->
-<div class="in-main" class:in-main--pinned={view === "subjects" && selectedSubject !== null} bind:this={main}>
+<div class="in-main" bind:this={main}>
   <div class="in-bar">
     <div class="in-bar__in">
       <nav class="in-tabs" aria-label="Insights sections">
@@ -296,24 +295,7 @@
     overflow-x: hidden;
     position: relative;
   }
-  .in-main--pinned {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .in-main--pinned .in-view {
-    flex: 1 1 auto;
-    min-height: 0;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    padding-bottom: 0;
-  }
-  .in-main--pinned .in-notices {
-    flex: none;
-  }
   .in-bar {
-    flex: none;
     position: sticky;
     top: 0;
     z-index: 20;

@@ -4,8 +4,6 @@
   // fitted to the data those lines carry (`chartScope`). The selected line is strong with a 7% area, the rest grey; one dot
   // per supporting evidence on the selected line, an accent dot at formation.
   // y ticks are the shared Subjects cuts plus the dashed display floor.
-  // `compact` is the subject page's strip version: lines only (no axes, labels
-  // or evidence dots), sized by its container.
   import type { Conclusion, ConfidenceSnapshot } from "$lib/types/recording";
   import { tip } from "$lib/components/tooltip";
   import { chartPoints, chartScope, chartX, interpolateConfidence, type ChartPoint } from "$lib/insights/subjectTimeline";
@@ -15,9 +13,8 @@
     conclusions: Conclusion[];
     histories: Map<number, ConfidenceSnapshot[]>;
     selectedId: number | null;
-    compact?: boolean;
   }
-  let { conclusions, histories, selectedId, compact = false }: Props = $props();
+  let { conclusions, histories, selectedId }: Props = $props();
 
   const W = 600;
   const H = 230;
@@ -66,12 +63,10 @@
   const y = (v: number) => H - (v / 100) * H;
 </script>
 
-<div class="in-cc" class:in-cc--compact={compact}>
-  {#if !compact}
-    <div class="in-cc__y">
-      {#each TICKS as v (v)}<span style:bottom="{v}%">{v}</span>{/each}
-    </div>
-  {/if}
+<div class="in-cc">
+  <div class="in-cc__y">
+    {#each TICKS as v (v)}<span style:bottom="{v}%">{v}</span>{/each}
+  </div>
   <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" aria-hidden="true">
     {#each GRID as v (v)}
       <line x1="0" x2={W} y1={y(v)} y2={y(v)} stroke="var(--mx-hairline)" vector-effect="non-scaling-stroke" />
@@ -96,7 +91,6 @@
       <path d={path(selPts)} stroke="var(--app-text-strong)" stroke-width="2" vector-effect="non-scaling-stroke" />
     {/if}
   </svg>
-  {#if !compact}
   <span class="in-cc__fade" style:top="{100 - pct(DISPLAY_FLOOR)}%">display floor {pct(DISPLAY_FLOOR)}%</span>
   {#each dots as d, i (i)}
     <i
@@ -108,16 +102,12 @@
       use:tip={d.label}
     ></i>
   {/each}
-  {/if}
 </div>
-{#if !compact}
-  <div class="in-cc__x"><span>{day(fromMs)}</span><span>{midMonth}</span><span>{toLabel}</span></div>
-{/if}
+<div class="in-cc__x"><span>{day(fromMs)}</span><span>{midMonth}</span><span>{toLabel}</span></div>
 
 <style>
   /* insights.html `.in-cc`. */
   .in-cc { position: relative; height: 230px; margin: var(--s-5) 0 0 34px; }
-  .in-cc--compact { height: 32px; margin: 0; }
   .in-cc svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
   .in-cc path { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
   .in-cc__y { position: absolute; left: -34px; top: 0; bottom: 0; width: 26px; }

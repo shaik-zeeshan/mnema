@@ -1,11 +1,14 @@
 <script lang="ts">
-  // One numbered pager for any Insights list: ‹ 1 … 4 5 6 … 12 ›, "21–40 of 138",
-  // and an optional rows-per-page choice. Pure view: the caller owns `page` and
-  // `size` (and the ←/→ keys), so a list keeps its place when it re-renders.
-  import type { Snippet } from "svelte";
-  import { pageLabel, pageNumbers } from "$lib/insights/subjectsTiers";
+  // A section's pager, drawn INSIDE its kicker heading (mockup r2-A):
+  //   // FORMING · 69  ───────────  11–20 OF 69  ‹ ›
+  // The range text opens a tiny rows-per-page menu (10 / 25 / 50 / Show all).
+  // Pure view: the caller owns `page`/`size` and any ←/→ keys. Renders nothing
+  // when the section fits on its smallest page.
+  import { tick } from "svelte";
+  import { pageLabel, SHOW_ALL, TIER_PAGE_SIZES } from "$lib/insights/subjectsTiers";
   import IconPrev from "~icons/lucide/chevron-left";
   import IconNext from "~icons/lucide/chevron-right";
+  import IconCheck from "~icons/lucide/check";
 
   interface Props {
     /** From `pageSlice`: 0-based page, page count, and the visible row range. */
@@ -15,71 +18,120 @@
     to: number;
     total: number;
     onPage: (page: number) => void;
-    /** Rows-per-page choices (e.g. 20/50/100); omit for a fixed size. */
-    sizes?: readonly number[];
-    size?: number;
+    /** Current rows per page (SHOW_ALL = everything). */
+    size: number;
+    /** Rows-per-page choices; `null` = a fixed size with no menu. */
+    sizes?: readonly number[] | null;
     onSize?: (size: number) => void;
-    /** Marks the pager whose list ←/→ currently turns (a green rule). */
-    active?: boolean;
-    /** What the list is, for screen readers ("Subjects", "Evidence"). */
+    /** What the section is, for screen readers ("Forming", "Evidence"). */
     label: string;
-    /** Extra inline content after the position (e.g. "selected: page 3"). */
-    extra?: Snippet;
   }
-  let { page, pages, from, to, total, onPage, sizes, size, onSize, active = false, label, extra }: Props = $props();
+  let { page, pages, from, to, total, onPage, size, sizes = TIER_PAGE_SIZES, onSize, label }: Props = $props();
 
-  const nums = $derived(pageNumbers(page, pages));
+  let open = $state(false);
+  let rootEl = $state<HTMLElement | null>(null);
+  let rangeEl = $state<HTMLButtonElement | null>(null);
+  const shown = $derived(total > (sizes?.[0] ?? size));
+  const choices = $derived(sizes ? [...sizes, SHOW_ALL] : []);
+
+  function pick(s: number): void {
+    open = false;
+    onSize?.(s);
+    void tick().then(() => rangeEl?.focus());
+  }
+  function onDown(e: PointerEvent): void {
+    if (open && !rootEl?.contains(e.target as Node)) open = false;
+  }
+  function onKey(e: KeyboardEvent): void {
+    if (open && e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation(); // Esc closes the menu, not the page under it
+      open = false;
+      rangeEl?.focus();
+    }
+  }
 </script>
 
-<nav class="in-pg" class:in-pg--active={active} aria-label="{label} pages">
-  {#if pages > 1}
-    <button type="button" class="in-pg__b" disabled={page === 0} aria-label="Previous page" onclick={() => onPage(page - 1)}>
-      <IconPrev width="14" height="14" aria-hidden="true" />
-    </button>
-    {#each nums as n, i (n ?? `gap-${i}`)}
-      {#if n === null}
-        <span class="in-pg__gap" aria-hidden="true">…</span>
-      {:else}
+<svelte:window onpointerdown={onDown} onkeydowncapture={onKey} />
+
+{#if shown}
+  <span class="in-pg" bind:this={rootEl}>
+    {#if sizes && onSize}
+      <span class="in-pg__rw">
         <button
           type="button"
-          class="in-pg__b"
-          aria-current={n === page ? "page" : undefined}
-          aria-label="Page {n + 1}"
-          onclick={() => onPage(n)}>{n + 1}</button>
-      {/if}
-    {/each}
-    <button type="button" class="in-pg__b" disabled={page >= pages - 1} aria-label="Next page" onclick={() => onPage(page + 1)}>
-      <IconNext width="14" height="14" aria-hidden="true" />
-    </button>
-  {/if}
-  <span class="in-pg__pos">{pageLabel({ from, to, total })}</span>
-  {#if extra}{@render extra()}{/if}
-  {#if sizes && onSize && total > sizes[0]}
-    <span class="in-pg__sizes" role="group" aria-label="Rows per page">
-      {#each sizes as s (s)}
-        <button type="button" class="in-pg__b" aria-pressed={s === size} onclick={() => onSize(s)}>{s}</button>
-      {/each}
-    </span>
-  {/if}
-</nav>
+          class="in-pg__range"
+          bind:this={rangeEl}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="{label}: showing {pageLabel({ from, to, total })}. Rows per page"
+          onclick={() => (open = !open)}>{pageLabel({ from, to, total })}</button>
+        {#if open}
+          <span class="in-pg__menu" role="menu" aria-label="Rows per page">
+            <span class="in-pg__menu-k" aria-hidden="true">Rows per page</span>
+            {#each choices as s (s)}
+              <button type="button" role="menuitemradio" aria-checked={s === size} onclick={() => pick(s)}>
+                {s === SHOW_ALL ? `Show all ${total}` : s}
+                <IconCheck width="13" height="13" aria-hidden="true" />
+              </button>
+            {/each}
+          </span>
+        {/if}
+      </span>
+    {:else}
+      <span class="in-pg__range in-pg__range--static">{pageLabel({ from, to, total })}</span>
+    {/if}
+    {#if pages > 1}
+      <span class="in-pg__steps">
+        <button type="button" class="in-pg__step" disabled={page === 0} aria-label="{label}: previous page" onclick={() => onPage(page - 1)}>
+          <IconPrev width="15" height="15" aria-hidden="true" />
+        </button>
+        <button type="button" class="in-pg__step" disabled={page >= pages - 1} aria-label="{label}: next page" onclick={() => onPage(page + 1)}>
+          <IconNext width="15" height="15" aria-hidden="true" />
+        </button>
+      </span>
+    {/if}
+  </span>
+{/if}
 
 <style>
-  .in-pg { display: flex; align-items: center; flex-wrap: wrap; gap: 2px var(--s-2); position: relative; }
-  .in-pg--active::before { content: ""; position: absolute; left: 0; right: 0; top: -1px; height: 2px; border-radius: 1px; background: var(--app-accent); }
-  .in-pg__b {
-    min-width: 26px; height: 26px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center;
-    border: 0; border-radius: var(--r-sm); background: none; cursor: pointer;
-    color: var(--app-text-muted); font: 500 var(--text-sm) / 1 var(--font-mono); font-variant-numeric: tabular-nums;
+  /* Inherits the heading's kicker type: mono, xs, uppercase, subtle. */
+  .in-pg { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+  .in-pg__rw { position: relative; display: inline-flex; }
+  .in-pg__range {
+    height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; white-space: nowrap;
+    font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--app-text-subtle); font-variant-numeric: tabular-nums;
     transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
   }
-  .in-pg__b:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
-  .in-pg__b[aria-current="page"], .in-pg__b[aria-pressed="true"] {
-    background: var(--app-surface); color: var(--app-text-strong); box-shadow: inset 0 0 0 1px var(--app-border-strong);
+  .in-pg__range--static { display: inline-flex; align-items: center; cursor: default; }
+  button.in-pg__range:hover, .in-pg__range[aria-expanded="true"] { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+  .in-pg__steps { display: inline-flex; gap: 2px; margin-right: -3px; }
+  .in-pg__step {
+    width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    border: 0; border-radius: var(--r-xs); background: none; color: var(--app-text-muted); cursor: pointer;
+    transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
   }
-  .in-pg__b:disabled { opacity: 0.3; cursor: default; }
-  .in-pg__b:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
-  .in-pg__gap { width: 18px; text-align: center; color: var(--app-text-faint); font: var(--text-sm) / 1 var(--font-mono); }
-  .in-pg__pos { margin-left: var(--s-1); font: 500 var(--text-xs) / 1 var(--font-mono); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .in-pg__sizes { display: inline-flex; gap: 2px; margin-left: auto; }
-  @media (prefers-reduced-motion: reduce) { .in-pg__b { transition: none; } }
+  .in-pg__step:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+  .in-pg__step:disabled { opacity: 0.3; cursor: default; }
+  .in-pg__range:focus-visible, .in-pg__step:focus-visible, .in-pg__menu button:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  .in-pg__menu {
+    position: absolute; z-index: 20; right: 0; top: calc(100% + 4px); min-width: 140px; padding: 4px; display: grid; gap: 1px;
+    border: 1px solid var(--app-border-strong); border-radius: var(--r-md); background: var(--app-surface-raised);
+    box-shadow: 0 14px 34px -14px rgba(0, 0, 0, 0.5); text-transform: none; letter-spacing: 0;
+    animation: in-pg-pop var(--t-med) var(--ease-expo);
+  }
+  .in-pg__menu-k { margin: 5px 8px 6px; font: 500 10px / 1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-faint); }
+  .in-pg__menu button {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); height: 26px; padding: 0 8px;
+    border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left;
+    color: var(--app-text-muted); font: 500 var(--text-sm) / 1 var(--font-sans);
+  }
+  .in-pg__menu button:hover { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+  .in-pg__menu button[aria-checked="true"] { color: var(--app-text-strong); }
+  .in-pg__menu button[aria-checked="false"] :global(svg) { visibility: hidden; }
+  @keyframes in-pg-pop { from { opacity: 0; transform: translateY(-4px); } }
+  @media (prefers-reduced-motion: reduce) {
+    .in-pg__range, .in-pg__step { transition: none; }
+    .in-pg__menu { animation: none; }
+  }
 </style>
