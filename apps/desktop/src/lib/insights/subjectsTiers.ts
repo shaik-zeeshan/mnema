@@ -250,18 +250,8 @@ export function fortnightAgo(
 
 // ---- Paging + "Moving this fortnight" (pure, testable) ----------------------
 
-export const TIER_PAGE = 10; // subject rows per tier (and per search page)
-export const MAP_PAGE = 12; // conviction-map rows before "Show all N"
+export const MAP_PAGE = 12; // conviction-map rows (the rest are in the paged list)
 export const MOVING_LIMIT = 8; // "Moving this fortnight" rows
-export const CONCLUSION_PAGE = 20; // a subject page's conclusion rows
-
-/** The first `shown` of `items`, how many the next "Show N more" adds, and
- *  whether "Show less" applies (everything is out, past the first page). */
-export function pageOf<T>(items: readonly T[], shown: number, step: number): { visible: T[]; more: number; less: boolean } {
-  const visible = items.slice(0, shown);
-  const hidden = items.length - visible.length;
-  return { visible, more: Math.min(step, hidden), less: hidden === 0 && shown > step };
-}
 
 // Numbered paging: one pager per list, "21–40 of 138", a fixed page height.
 export const SUBJECT_PAGE_SIZES = [20, 50, 100] as const; // Subjects list (tiers are dividers inside it)

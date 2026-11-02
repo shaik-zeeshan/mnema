@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { FORTNIGHT_MS, fortnightAgo, pageLabel, pageNumbers, pageOf, pageSlice, rankMovers, subjectsHeadline } from "./subjectsTiers";
+import { FORTNIGHT_MS, fortnightAgo, pageLabel, pageNumbers, pageSlice, rankMovers, subjectsHeadline } from "./subjectsTiers";
 import { rankSubjects } from "./subjectSearch";
 
 const none = { strong: [], forming: [], shaping: [], fading: [] };
@@ -34,17 +34,6 @@ describe("fortnightAgo", () => {
   });
   test("no history falls back to today's confidence (no tail)", () => {
     expect(fortnightAgo({ formedAtMs: 0, confidence: 0.5 }, [], NOW)).toBe(0.5);
-  });
-});
-
-describe("pageOf", () => {
-  const xs = Array.from({ length: 45 }, (_, i) => i);
-  test("first page, then a capped 'more', then 'less' once everything is out", () => {
-    expect(pageOf(xs, 20, 20)).toMatchObject({ more: 20, less: false });
-    expect(pageOf(xs, 20, 20).visible).toHaveLength(20);
-    expect(pageOf(xs, 40, 20)).toMatchObject({ more: 5, less: false });
-    expect(pageOf(xs, 60, 20)).toMatchObject({ more: 0, less: true });
-    expect(pageOf(xs.slice(0, 7), 20, 20)).toMatchObject({ more: 0, less: false });
   });
 });
 
