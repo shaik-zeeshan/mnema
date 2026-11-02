@@ -313,6 +313,7 @@
     box-shadow: none;
   }
   .st-side .mx-search input {
+    width: 0; /* flex: 1 fills; drops the input's built-in ~20ch width so the field fits a narrow rail */
     font-size: var(--text-base);
   }
   .st-side .mx-search kbd {
@@ -482,5 +483,9 @@
     gap: 4px;
     font: 400 var(--text-sm)/1 var(--font-sans);
     color: var(--app-text-subtle);
+  }
+  /* Narrow windows: hand the content pane some of the rail's width. */
+  @media (max-width: 800px) {
+    .st-side { width: 200px; }
   }
 </style>

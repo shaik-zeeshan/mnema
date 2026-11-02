@@ -83,11 +83,14 @@
 </div>
 
 <style>
+  /* Copy beside its control; when the copy would drop under ~240px (narrow
+     window, wide control) the control wraps onto its own line instead of
+     squeezing the copy to a word per line. */
   .setting-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--s-6);
+    gap: var(--s-3) var(--s-6);
     padding: 14px 0;
     border-bottom: 1px solid var(--mx-hairline);
     min-width: 0;
@@ -106,6 +109,7 @@
 
   /* Copy column + the optional compact `aside` control beside it. */
   .setting-row__main {
+    flex: 1 1 240px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
@@ -186,17 +190,24 @@
 
   .setting-row__control {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: var(--s-2);
     min-width: 0;
+    max-width: 100%;
+    margin-left: auto;
   }
 
   /* `.st-row--stack`: one column, the control on its own full-width line. A
      tall copy block pins its aside control to the label line. */
   .setting-row--full {
-    grid-template-columns: minmax(0, 1fr);
     gap: var(--s-3);
+  }
+
+  .setting-row--full .setting-row__main,
+  .setting-row--full .setting-row__control {
+    flex-basis: 100%;
   }
 
   .setting-row--full .setting-row__main {
