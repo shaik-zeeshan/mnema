@@ -413,12 +413,12 @@
     <span>today <span class="num">{formatTracked(trackedMs)}</span></span>
   {/if}
   {#if storageBytes}
-    {#if trackedMs !== null}<span class="mx-sep"></span>{/if}
-    <span><span class="num">{formatBytes(storageBytes)}</span> stored</span>
+    {#if trackedMs !== null}<span class="mx-sep ss-wide"></span>{/if}
+    <span class="ss-wide"><span class="num">{formatBytes(storageBytes)}</span> stored</span>
   {/if}
   {#if localOnly}
-    {#if trackedMs !== null || storageBytes}<span class="mx-sep"></span>{/if}
-    <span>local only</span>
+    {#if trackedMs !== null || storageBytes}<span class="mx-sep ss-wide"></span>{/if}
+    <span class="ss-wide">local only</span>
   {/if}
   <ShortcutsPop
     {platform}
@@ -431,6 +431,8 @@
 </footer>
 
 <style>
+  /* Narrow windows: the bar is one nowrap row, so the least-needed readouts go first. */
+  @media (max-width: 760px) { .ss-wide { display: none; } }
   .ss-anchor { display: flex; align-items: center; gap: var(--s-3); }
   .ss-trig { display: inline-flex; align-items: center; gap: var(--s-3); height: 22px; margin: 0 -6px; padding: 0 6px; border: 0; border-radius: var(--r-sm);
     background: none; color: inherit; font: inherit; letter-spacing: inherit; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
