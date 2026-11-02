@@ -263,6 +263,51 @@ export function pageOf<T>(items: readonly T[], shown: number, step: number): { v
   return { visible, more: Math.min(step, hidden), less: hidden === 0 && shown > step };
 }
 
+// Numbered paging: one pager per list, "21–40 of 138", a fixed page height.
+export const SUBJECT_PAGE_SIZES = [20, 50, 100] as const; // Subjects list (tiers are dividers inside it)
+export const CONCLUSION_PAGE_SIZES = [10, 20, 50] as const; // a subject's conclusions
+export const EVIDENCE_PAGE = 8; // a conclusion's evidence entries
+
+export interface Page<T> {
+  visible: T[];
+  page: number; // 0-based, clamped into range
+  pages: number; // ≥ 1
+  from: number; // index of the first visible row
+  to: number; // one past the last visible row
+  total: number;
+}
+
+/** The rows on page `page` (0-based, clamped) of `size` rows each. */
+export function pageSlice<T>(items: readonly T[], page: number, size: number): Page<T> {
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / size));
+  const p = Math.min(Math.max(0, Math.floor(page) || 0), pages - 1);
+  const from = p * size;
+  const to = Math.min(total, from + size);
+  return { visible: items.slice(from, to), page: p, pages, from, to, total };
+}
+
+/** "21–40 of 138" (en dash, 1-based). */
+export function pageLabel(p: { from: number; to: number; total: number }): string {
+  return p.total === 0 ? "0 of 0" : `${p.from + 1}–${p.to} of ${p.total}`;
+}
+
+/** Page numbers to draw (0-based); null = an ellipsis gap. Always the first,
+ *  the last and the current ±1 — never more than 7 entries. */
+export function pageNumbers(page: number, pages: number): (number | null)[] {
+  if (pages <= 7) return Array.from({ length: pages }, (_, i) => i);
+  const keep = new Set([0, pages - 1, page - 1, page, page + 1]);
+  if (page <= 3) [1, 2, 3, 4].forEach((i) => keep.add(i));
+  if (page >= pages - 4) [pages - 5, pages - 4, pages - 3, pages - 2].forEach((i) => keep.add(i));
+  const sorted = [...keep].filter((i) => i >= 0 && i < pages).sort((a, b) => a - b);
+  const out: (number | null)[] = [];
+  sorted.forEach((n, i) => {
+    if (i > 0 && n - sorted[i - 1] > 1) out.push(null);
+    out.push(n);
+  });
+  return out;
+}
+
 interface Mover {
   topConfidence: number;
   then: number | null; // lead's confidence 14 days ago; null = formed this fortnight
