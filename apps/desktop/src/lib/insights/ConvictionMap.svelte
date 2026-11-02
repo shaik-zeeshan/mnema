@@ -29,7 +29,7 @@
     query: string;
     onOpen: (subject: string) => void;
     onClear: () => void;
-    /** Footer under the rows (Subjects' "Show all N"). */
+    /** Footer under the rows (Subjects' "Go to the list"). */
     children?: Snippet;
   }
   let { rows, query, onOpen, onClear, children }: Props = $props();
@@ -301,7 +301,12 @@
     color: var(--app-accent);
   }
   .in-map__more {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
     padding-top: var(--s-3);
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
   }
   .in-map__legend {
     display: flex;
