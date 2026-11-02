@@ -79,6 +79,7 @@
   // the pointer (what ←/→ turn).
   let tierPg = $state<Record<string, { page: number; size: number }>>({});
   let evPage = $state(0);
+  let evSize = $state(EVIDENCE_PAGE); // replaced by what fits the drawer's height
   let hovered: string | null = null;
 
   // Activities the conclusions cite, resolved for row detail + the hand-off.
@@ -241,7 +242,7 @@
   // and is brought back into view if it had scrolled away.
   async function turnTo(key: string, page: number): Promise<void> {
     if (key === "e") {
-      evPage = Math.min(Math.max(0, page), Math.max(0, Math.ceil(events.length / EVIDENCE_PAGE) - 1));
+      evPage = Math.min(Math.max(0, page), Math.max(0, Math.ceil(events.length / evSize) - 1));
     } else {
       const v = tierViews.find((t) => `t:${t.id}` === key);
       if (!v) return;
@@ -524,6 +525,11 @@
     {activities}
     {newestRef}
     page={evPage}
+    size={evSize}
+    onFit={(n) => {
+      evPage = Math.floor((evPage * evSize) / n); // keep the first row you were reading
+      evSize = n;
+    }}
     {pinBusy}
     box={geo}
     sheet={geo.sheet}

@@ -3,13 +3,15 @@
   // under the Insights bar, beside the page (which narrows to make room) or, in
   // a narrow window, over it as a full sheet with a back arrow. It holds the
   // open conclusion: Pin / Dismiss, a one-line spec, and its evidence timeline
-  // (newest first), EVIDENCE_PAGE at a time with the pager in its heading. It
+  // (newest first), as many rows as fit the drawer's height (at least
+  // EVIDENCE_MIN_FIT) with the pager in its heading. It
   // scrolls on its own and starts at its top for each conclusion. Pure view:
   // the page owns state, geometry and actions.
   import type { Activity, ActivityEvidenceRef, Conclusion, ConfidenceSnapshot } from "$lib/types/recording";
   import type { TimelineEvent } from "$lib/insights/subjectTimeline";
+  import { tick } from "svelte";
   import Pager from "$lib/insights/Pager.svelte";
-  import { EVIDENCE_PAGE, pageSlice } from "$lib/insights/subjectsTiers";
+  import { EVIDENCE_MIN_FIT, pageSlice } from "$lib/insights/subjectsTiers";
   import { fmtDuration } from "$lib/insights/lede-stats";
   import { formatClock } from "$lib/time-format";
   import IconPin from "~icons/lucide/pin";
@@ -30,6 +32,9 @@
     activities: Map<number, Activity>;
     newestRef: ActivityEvidenceRef | null;
     page: number;
+    /** Evidence rows per page; the drawer reports what fits via `onFit`. */
+    size: number;
+    onFit: (size: number) => void;
     pinBusy: boolean;
     /** Window-pinned box (px) and whether it covers the page as a sheet. */
     box: { top: number; right: number; bottom: number; width: number };
@@ -53,6 +58,8 @@
     activities,
     newestRef,
     page,
+    size,
+    onFit,
     pinBusy,
     box,
     sheet,
@@ -66,10 +73,11 @@
   }: Props = $props();
 
   let scrollEl = $state<HTMLElement>();
+  let listEl = $state<HTMLOListElement>();
   const pct = (v: number) => Math.round(v * 100);
   const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-  const slice = $derived(pageSlice(events, page, EVIDENCE_PAGE));
+  const slice = $derived(pageSlice(events, page, size));
   const peak = $derived(Math.max(c.confidence, ...history.map((s) => s.confidence)));
   const support = $derived(c.evidence.filter((e) => e.stance === "support").length);
   const contra = $derived(c.evidence.length - support);
@@ -79,6 +87,28 @@
   $effect(() => {
     cid;
     if (scrollEl) scrollEl.scrollTop = 0;
+  });
+
+  // Height-responsive page: fill the drawer from the list's top to its foot,
+  // using the rendered rows' average height. Re-measured when the drawer
+  // resizes or the conclusion changes (its statement height moves the list),
+  // never on a page turn, so pages don't reshuffle under you.
+  function fit(): void {
+    if (!scrollEl || !listEl || listEl.children.length === 0) return;
+    const rowH = listEl.offsetHeight / listEl.children.length;
+    const top = listEl.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop;
+    const foot = parseFloat(getComputedStyle(scrollEl).paddingBottom) || 0;
+    const n = Math.max(EVIDENCE_MIN_FIT, Math.floor((scrollEl.clientHeight - top - foot) / rowH));
+    if (n !== size) onFit(n);
+  }
+  $effect(() => {
+    cid;
+    const el = scrollEl;
+    if (!el) return;
+    const ro = new ResizeObserver(() => fit());
+    ro.observe(el);
+    void tick().then(fit);
+    return () => ro.disconnect();
   });
 
   function evidenceNote(a: Activity): string {
@@ -147,10 +177,10 @@
     <div class="sd-h">
       <span class="mx-kicker">Evidence · {slice.total}<small>newest first</small></span>
       <i class="sd-h__rule"></i>
-      <Pager page={slice.page} pages={slice.pages} from={slice.from} to={slice.to} total={slice.total} size={EVIDENCE_PAGE} sizes={null} {onPage} label="Evidence" />
+      <Pager page={slice.page} pages={slice.pages} from={slice.from} to={slice.to} total={slice.total} {size} sizes={null} {onPage} label="Evidence" />
     </div>
     {#key `${c.id}:${slice.page}`}
-      <ol class="in-tl">
+      <ol class="in-tl" bind:this={listEl}>
         {#each slice.visible as ev, i (slice.from + i)}
           {@const act = ev.kind === "evidence" || ev.kind === "contradict" ? activities.get(ev.activityId) : undefined}
           <li class:origin={ev.kind === "formed"} class:conf={ev.kind === "marker"} class:contra={ev.kind === "contradict"} style:--i={i}>

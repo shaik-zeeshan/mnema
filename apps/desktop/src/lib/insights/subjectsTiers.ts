@@ -257,7 +257,8 @@ export const MOVING_LIMIT = 8; // "Moving this fortnight" rows
 // with "11–20 of 69 ‹ ›" in the section's heading.
 export const TIER_PAGE_SIZES = [10, 25, 50] as const; // rows per tier; plus "Show all" (= SHOW_ALL)
 export const SHOW_ALL = Number.POSITIVE_INFINITY;
-export const EVIDENCE_PAGE = 8; // a conclusion's evidence entries
+export const EVIDENCE_PAGE = 8; // a conclusion's evidence entries before the drawer measures
+export const EVIDENCE_MIN_FIT = 4; // never fewer per page, however short the window
 
 export interface Page<T> {
   visible: T[];
