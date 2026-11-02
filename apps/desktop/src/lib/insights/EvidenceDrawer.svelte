@@ -213,7 +213,7 @@
 
 <style>
   .sd-drawer {
-    position: fixed; z-index: 15; min-width: 0; overflow: auto; overscroll-behavior: contain; padding: 0 24px 28px;
+    position: fixed; z-index: 15; min-width: 0; overflow: auto; overscroll-behavior: none; padding: 0 24px 28px;
     border-left: 1px solid var(--app-border-strong); background: var(--app-surface-subtle);
     animation: sd-in var(--t-slow) var(--ease-expo);
   }

@@ -293,6 +293,7 @@
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
+    overscroll-behavior: none; /* no rubber-band bounce (html/body already opt out) */
     position: relative;
   }
   .in-bar {
