@@ -431,6 +431,9 @@
   /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
   @media (max-width: 1000px) {
     .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
-    .stats { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: var(--s-4); }
+    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-4); }
+  }
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>

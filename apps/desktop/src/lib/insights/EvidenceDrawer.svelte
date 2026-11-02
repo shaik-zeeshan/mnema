@@ -250,13 +250,15 @@
   .sd-open:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 
   /* Same heading as a tier's, so the Pager inherits kicker type. */
+  /* A narrow drawer wraps the pager onto its own line rather than pushing ‹ › out of view. */
   .sd-h {
-    display: flex; align-items: center; gap: var(--s-3); min-height: 24px; margin: var(--s-5) 0 var(--s-1);
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); min-height: 24px; margin: var(--s-5) 0 var(--s-1);
     font: 500 var(--text-xs) / 1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-subtle);
   }
   .sd-h .mx-kicker { white-space: nowrap; }
   .sd-h .mx-kicker small { margin-left: 6px; font: 400 var(--text-xs) / 1 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--app-text-faint); }
   .sd-h__rule { flex: 1; min-width: 12px; height: 1px; background: var(--mx-hairline); }
+  .sd-h > :global(.in-pg) { margin-left: auto; }
 
   .in-tl { list-style: none; margin: var(--s-2) 0 0; padding: 0; position: relative; }
   .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }

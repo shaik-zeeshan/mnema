@@ -135,10 +135,12 @@
 <style>
   /* insights.html `.in-spine` / `.in-sp*` (kit tokens only). */
   .in-spine { padding: var(--s-5); margin-bottom: var(--s-7); }
-  .in-sec { display: flex; align-items: baseline; gap: var(--s-3); }
+  /* Narrow windows: the legend wraps to its own line(s) instead of breaking words. */
+  .in-sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2) var(--s-3); }
+  .in-sec > :not(.in-sp__legend), .in-sp__legend > span { white-space: nowrap; }
   .in-spacer { flex: 1; }
   .in-sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--c); flex: none; }
-  .in-sp__legend { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+  .in-sp__legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
   .in-sp__legend > span { display: inline-flex; align-items: center; gap: 6px; }
   .in-sp { position: relative; margin-top: var(--s-5); padding-bottom: 22px; }
   .in-sp__grid { position: absolute; inset: -6px 0 0; pointer-events: none; }
