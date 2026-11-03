@@ -1,0 +1,33 @@
+---
+import { DOWNLOAD_URL } from "../../config";
+---
+
+<section class="w-sec">
+  <div class="w-wrap">
+    <div class="mx-panel cta">
+      <div class="w-stack">
+        <span class="mx-kicker">Get started</span>
+        <h2 class="w-title">Stop forgetting. Start recalling.</h2>
+        <p class="w-prose">Try it free for 30 days. No account, no card. Then $69 once, with a year of updates.</p>
+      </div>
+      <div class="acts">
+        <a
+          class="mx-btn mx-btn--primary w-btn-lg"
+          href={DOWNLOAD_URL}
+          data-umami-event="download"
+          data-umami-event-source="final-cta"
+          ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17V3"></path><path d="m6 11 6 6 6-6"></path><path d="M19 21H5"></path></svg>Download for macOS</a
+        >
+        <a class="mx-btn w-btn-lg" href="/pricing/">Pricing</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .cta { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-6); align-items: end; padding: clamp(28px, 5vw, 56px); }
+  .acts { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+  @media (max-width: 760px) {
+    .cta { grid-template-columns: 1fr; }
+  }
+</style>

@@ -1,0 +1,188 @@
+---
+// The hero's illustrated command field. The examples are fictional; every
+// example × mode is rendered here and the script only flips which one shows,
+// so the page reads complete without JS. Click-driven, nothing loops.
+const APP: Record<string, string> = {
+  Figma: "#a259ff",
+  Zoom: "#2d8cff",
+  Safari: "#1a7cf5",
+  Slack: "#611f69",
+  Notes: "#d9a400",
+  Xcode: "#147efb",
+};
+
+type Row = [app: string, title: string, snippet: string, when: string, source: "screen" | "mic"];
+type Example = { chip: string; q: string; ask: string; rows: Row[]; answer: string; cites: string[] };
+
+const EX: Example[] = [
+  {
+    chip: "pricing table from Tuesday",
+    q: "pricing table from Tuesday",
+    ask: "What did the pricing table look like on Tuesday?",
+    rows: [
+      ["Figma", "Pricing page · v3", "Starter, Team and <mark>Pricing table</mark> with annual toggle", "Tue 14:41", "screen"],
+      ["Safari", "Competitor pricing", "Three tiers, <mark>pricing table</mark> with feature matrix", "Tue 10:05", "screen"],
+      ["Slack", "#launch", "“can we simplify the <mark>pricing table</mark> before Thursday?”", "Tue 16:12", "screen"],
+    ],
+    answer:
+      "On Tuesday afternoon the pricing page in Figma had three tiers, Starter, Team and Business, with an annual toggle<sup>1</sup>. Later that day Maya asked to drop Business before Thursday's review<sup>2</sup>.",
+    cites: ["Figma · Tue 14:41", "Slack · Tue 16:12"],
+  },
+  {
+    chip: "what Maya said about the launch",
+    q: "maya launch date",
+    ask: "What did Maya say about the launch date?",
+    rows: [
+      ["Zoom", "Weekly sync", "Maya: “the <mark>launch</mark> moves to the 14th so design can finish onboarding”", "Mon 11:22", "mic"],
+      ["Notes", "Launch checklist", "<mark>Launch</mark> 14th · copy freeze Wed", "Mon 11:40", "screen"],
+    ],
+    answer:
+      "In Monday's sync Maya said the launch moves to the 14th so design can finish the onboarding flow<sup>1</sup>. She asked for the updated copy by Thursday, and you noted a copy freeze on Wednesday night<sup>2</sup>.",
+    cites: ["Zoom · Mon 11:22", "Notes · Mon 11:40"],
+  },
+  {
+    chip: "that regex from last week",
+    q: "regex email validation",
+    ask: "Which regex did I use for email validation last week?",
+    rows: [
+      ["Xcode", "Validator.swift", 'let pattern = #"^[^@\\s]+@[^@\\s]+$"# // <mark>email validation</mark>', "Thu 15:03", "screen"],
+      ["Safari", "Stack Overflow", "Simple <mark>regex</mark> for <mark>email validation</mark>", "Thu 14:58", "screen"],
+    ],
+    answer:
+      "Last Thursday you used a deliberately simple pattern in Validator.swift: anything, an @, anything, with no spaces<sup>1</sup>. You'd just read a thread arguing against stricter patterns<sup>2</sup>.",
+    cites: ["Xcode · Thu 15:03", "Safari · Thu 14:58"],
+  },
+];
+---
+
+<div class="door w-in" style="--d:180ms" data-door>
+  <div class="cmd" role="group" aria-label="Command field (illustration)">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+    <span class="cmd__q"><span data-query>{EX[0].q}</span><span class="cmd__caret" aria-hidden="true"></span></span>
+    <div class="mx-seg" role="radiogroup" aria-label="Mode">
+      <span class="mx-seg__thumb" aria-hidden="true"></span>
+      <button type="button" role="radio" aria-checked="true" data-mode="recall">Recall</button>
+      <button type="button" role="radio" aria-checked="false" data-mode="ask">Ask</button>
+    </div>
+  </div>
+  <div class="examples" role="group" aria-label="Try an example">
+    {
+      EX.map((e, i) => (
+        <button
+          type="button"
+          class="mx-btn mx-btn--sm"
+          aria-pressed={i === 0 ? "true" : "false"}
+          data-example
+          data-q={e.q}
+          data-ask={e.ask}
+        >
+          {e.chip}
+        </button>
+      ))
+    }
+  </div>
+  <div class="mx-panel res" aria-live="polite">
+    {
+      EX.map((e, i) => (
+        <>
+          <div data-view={`${i}-recall`} hidden={i !== 0}>
+            <div class="res__head w-meta">
+              <span>{e.rows.length} moments</span>
+              <span class="mx-spacer" />
+              <span>all apps · past 7 days</span>
+            </div>
+            {e.rows.map(([app, title, snippet, when, source], r) => (
+              <div class="row" aria-selected={r === 0 ? "true" : undefined}>
+                <span class="row__ico" style={`--c:${APP[app]}`}>{app[0]}</span>
+                <div>
+                  <div class="row__t">{app} · {title}</div>
+                  <div class="row__s" set:html={snippet} />
+                </div>
+                <div class="row__m">
+                  <span class="w-meta">{when}</span>
+                  <span class={`mx-chip mx-chip--${source}`}>{source}</span>
+                </div>
+              </div>
+            ))}
+            <div class="res__foot w-meta">
+              <span><kbd>↵</kbd> jump to moment</span>
+              <span><kbd>⇥</kbd> ask instead</span>
+            </div>
+          </div>
+          <div data-view={`${i}-ask`} hidden>
+            <div class="ans">
+              <span class="mx-kicker">Answer</span>
+              <p set:html={e.answer} />
+              <div class="cites">
+                {e.cites.map((c, n) => (
+                  <span class="mx-chip mx-chip--accent">{n + 1} · {c}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </>
+      ))
+    }
+  </div>
+</div>
+
+<script>
+  const door = document.querySelector<HTMLElement>("[data-door]")!;
+  const query = door.querySelector<HTMLElement>("[data-query]")!;
+  const thumb = door.querySelector<HTMLElement>(".mx-seg__thumb")!;
+  const examples = [...door.querySelectorAll<HTMLButtonElement>("[data-example]")];
+  const modes = [...door.querySelectorAll<HTMLButtonElement>("[data-mode]")];
+  const views = [...door.querySelectorAll<HTMLElement>("[data-view]")];
+  let cur = 0;
+  let mode = "recall";
+
+  function render() {
+    examples.forEach((b, i) => b.setAttribute("aria-pressed", String(i === cur)));
+    modes.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.mode === mode)));
+    views.forEach((v) => (v.hidden = v.dataset.view !== `${cur}-${mode}`));
+    const ex = examples[cur].dataset;
+    query.textContent = (mode === "ask" ? ex.ask : ex.q) ?? "";
+    const on = modes.find((b) => b.dataset.mode === mode)!;
+    thumb.style.width = `${on.offsetWidth}px`;
+    thumb.style.transform = `translateX(${on.offsetLeft}px)`;
+  }
+
+  examples.forEach((b, i) => b.addEventListener("click", () => ((cur = i), render())));
+  modes.forEach((b) => b.addEventListener("click", () => ((mode = b.dataset.mode!), render())));
+  render();
+  // The segment labels change width once the web font lands; re-seat the thumb.
+  document.fonts?.ready.then(render);
+</script>
+
+<style>
+  .door { max-width: 760px; margin: clamp(32px, 5vw, 56px) auto 0; text-align: left; }
+  .cmd {
+    display: flex; align-items: center; gap: 12px; height: 60px; padding: 0 10px 0 18px; border-radius: 14px;
+    background: var(--app-surface-subtle); box-shadow: inset 0 0 0 1px var(--app-border-hover), var(--app-ring);
+    color: var(--app-accent);
+  }
+  .cmd__q { flex: 1; min-width: 0; font: 400 19px/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd__caret { display: inline-block; width: 2px; height: 22px; margin-left: 2px; vertical-align: -4px; background: var(--app-accent); }
+  .cmd .mx-seg { --_h: 32px; }
+  .cmd .mx-seg button { padding: 0 12px; font-size: 13px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: var(--s-4); }
+  .examples .mx-btn[aria-pressed="true"] { --_bd: var(--app-accent-border); color: var(--app-text-strong); }
+
+  .res { margin-top: var(--s-3); overflow: hidden; }
+  .res__head { display: flex; align-items: center; gap: var(--s-3); padding: 10px var(--s-4); border-bottom: 1px solid var(--mx-hairline); }
+  .row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: var(--s-3); padding: 12px var(--s-4); align-items: start; }
+  .row + .row { border-top: 1px solid var(--mx-hairline); }
+  .row[aria-selected="true"] { background: var(--mx-selected); }
+  .row__ico { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font: 600 13px/1 var(--font-sans); color: #fff; background: var(--c); }
+  .row__t { font: 600 14px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  .row__s { font-size: 13.5px; line-height: 1.5; color: var(--app-text-muted); margin-top: 2px; }
+  .row__m { display: grid; justify-items: end; gap: 6px; }
+  /* Matches read as highlighted text here, not the kit's green ink. */
+  .row__s :global(mark) { color: var(--app-text-strong); }
+  .ans { padding: var(--s-5); display: grid; gap: var(--s-4); }
+  .ans p { margin: 0; font-size: 15.5px; line-height: 1.65; color: var(--app-text); max-width: 64ch; }
+  .ans p :global(sup) { font: 500 10px/1 var(--font-mono); color: var(--app-accent); margin-left: 1px; }
+  .cites { display: flex; flex-wrap: wrap; gap: 6px; }
+  .res__foot { display: flex; gap: var(--s-4); padding: 9px var(--s-4); border-top: 1px solid var(--mx-hairline); }
+  .res__foot span { display: inline-flex; gap: 6px; align-items: center; }
+</style>

@@ -5,6 +5,7 @@
 import Base from "../../layouts/Base.astro";
 import TopBar from "../../components/TopBar.astro";
 import Footer from "../../components/Footer.astro";
+import Hero from "../../components/compare/Hero.astro";
 
 const pageTitle = "Mnema vs Rewind, Recall, Limitless, and Screenpipe";
 const pageDescription =
@@ -40,154 +41,57 @@ const comparisons = [
 
 <Base title={pageTitle} description={pageDescription}>
   <TopBar />
-  <main class="docs">
-    <article class="docs-col">
-      <header class="docs-hero">
-        <p class="kicker">// comparisons</p>
-        <h1 class="docs-title">How Mnema compares</h1>
-        <p class="docs-sub">
-          Screen memory has had a rough couple of years — one shutdown, one
-          acquisition, one feature that never came to the Mac. Here's how Mnema
-          lines up against each of them.
-        </p>
-        <p class="docs-meta">// on-device · open source · one-time purchase</p>
-      </header>
+  <main>
+    <Hero
+      kicker="Comparisons"
+      title="How Mnema compares"
+      lede="Screen memory has had a rough couple of years — one shutdown, one acquisition, one feature that never came to the Mac. Here's how Mnema lines up against each of them."
+      fine={["on-device", "open source", "one-time purchase"]}
+    />
 
-      <section class="docs-section" aria-labelledby="comparisons">
-        <p class="kicker">// pick a comparison</p>
-        <h2 class="section-heading" id="comparisons">
-          Coming from something else?
-        </h2>
-        <div class="channel-list">
+    <section class="w-sec w-sec--rule" aria-labelledby="comparisons">
+      <div class="w-wrap pick">
+        <div class="pick__head w-stack">
+          <span class="mx-kicker">Pick a comparison</span>
+          <h2 class="w-title" id="comparisons">Coming from something else?</h2>
+        </div>
+        <ul class="alts">
           {
-            comparisons.map((c) => (
-              <div class="channel-item">
-                <div class="channel-text">
-                  <span class="channel-label">{c.label}</span>
-                  <span class="channel-detail">{c.detail}</span>
-                </div>
-                <a class="channel-cta" href={c.href}>
-                  Read the comparison →
+            comparisons.map((c, i) => (
+              <li>
+                <a class="alt" href={c.href}>
+                  <span class="w-meta">{String(i + 1).padStart(2, "0")}</span>
+                  <div>
+                    <h3 class="w-sub">{c.label}</h3>
+                    <p class="w-prose">{c.detail}</p>
+                  </div>
+                  <span class="mx-btn mx-btn--sm">Read the comparison →</span>
                 </a>
-              </div>
+              </li>
             ))
           }
-        </div>
-      </section>
-    </article>
+        </ul>
+      </div>
+    </section>
   </main>
   <Footer />
 </Base>
 
 <style>
-  /* ---- Docs layout shell (matches support.astro) ---- */
-  .docs {
-    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
-  }
+  /* A heading rail + one hairline row per comparison page (no cards); the
+     whole row is the link, the button is just its signifier. */
+  .pick { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); gap: var(--s-7); }
+  .pick__head { position: sticky; top: 96px; align-self: start; }
+  @media (max-width: 900px) { .pick { grid-template-columns: 1fr; gap: var(--s-5); } .pick__head { position: static; } }
 
-  .docs-col {
-    max-width: 44rem;
-    margin: 0 auto;
-    line-height: 1.7;
-  }
-
-  .kicker {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--accent);
-    letter-spacing: 0.04em;
-    margin-bottom: var(--space-xs);
-  }
-
-  .docs-hero {
-    padding-bottom: var(--space-xl);
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-xl);
-  }
-
-  .docs-title {
-    font-family: var(--font-sans);
-    font-size: var(--text-3xl);
-    margin-bottom: var(--space-sm);
-    max-width: 22ch;
-  }
-
-  .docs-sub {
-    font-family: var(--font-sans);
-    color: var(--fg-muted);
-    font-size: var(--text-base);
-    line-height: 1.7;
-    max-width: 60ch;
-    margin-bottom: var(--space-md);
-  }
-
-  .docs-meta {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    letter-spacing: 0.02em;
-  }
-
-  .docs-section {
-    margin-bottom: var(--space-2xl);
-  }
-
-  .section-heading {
-    font-family: var(--font-sans);
-    font-size: var(--text-2xl);
-    margin-bottom: var(--space-sm);
-    max-width: 26ch;
-  }
-
-  /* ---- Comparison list ---- */
-  .channel-list {
-    display: grid;
-    gap: var(--space-sm);
-    margin-top: var(--space-md);
-  }
-
-  .channel-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    flex-wrap: wrap;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    padding: var(--space-md) var(--space-lg);
-  }
-
-  .channel-text {
-    display: grid;
-    gap: 0.25rem;
-    min-width: 16rem;
-    flex: 1 1 16rem;
-  }
-
-  .channel-label {
-    font-weight: 600;
-    color: var(--fg);
-  }
-
-  .channel-detail {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    line-height: 1.6;
-  }
-
-  .channel-cta {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    text-decoration: none;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-    transition: color 0.2s var(--ease-out-quart);
-  }
-
-  .channel-cta:hover {
-    color: var(--accent);
-    text-decoration: none;
-  }
+  .alts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--mx-hairline); }
+  .alt { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: var(--s-2) var(--s-4); align-items: start;
+    padding: var(--s-5) 0; border-bottom: 1px solid var(--mx-hairline); text-decoration: none; color: inherit;
+    transition: background-color var(--t-fast) var(--ease-quart); }
+  .alt:hover { background: var(--mx-wash); }
+  .alt:hover .mx-btn { --_fg: var(--app-text-strong); }
+  .alt > .w-meta { color: var(--app-text-faint); padding-top: 5px; }
+  .alt .w-sub { margin-bottom: 6px; }
+  .alt .mx-btn { pointer-events: none; margin-top: 1px; }
+  @media (max-width: 640px) { .alt { grid-template-columns: 28px minmax(0, 1fr); } .alt .mx-btn { grid-column: 2; justify-self: start; } }
 </style>

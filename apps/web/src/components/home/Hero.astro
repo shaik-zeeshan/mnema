@@ -1,0 +1,45 @@
+---
+import CommandField from "./CommandField.astro";
+import { DOWNLOAD_URL, GITHUB_URL, PLATFORM_LABEL } from "../../config";
+
+// "macOS · Apple Silicon" → "Apple Silicon": the button already says macOS.
+const chip = PLATFORM_LABEL.split(" · ").at(-1);
+---
+
+<section class="hero w-texture">
+  <div class="w-wrap">
+    <span class="mx-kicker w-in">Screen and audio memory · on your Mac</span>
+    <h1 class="w-display w-in" style="--d:60ms">Recall anything you've seen or heard.</h1>
+    <p class="w-lede w-in" style="--d:120ms">
+      Mnema keeps a private record of your Mac, so “where did I see that?” finally has an answer.
+    </p>
+    <div class="acts w-in" style="--d:150ms">
+      <a
+        class="mx-btn mx-btn--primary w-btn-lg"
+        href={DOWNLOAD_URL}
+        data-umami-event="download"
+        data-umami-event-source="hero"
+        ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17V3"></path><path d="m6 11 6 6 6-6"></path><path d="M19 21H5"></path></svg>Download for macOS</a
+      >
+      <a class="mx-btn w-btn-lg" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">View source</a>
+    </div>
+    <div class="fine w-meta w-in" style="--d:150ms">
+      <span>{chip}</span><span>30-day free trial</span><span>$69 once</span>
+    </div>
+    <CommandField />
+  </div>
+</section>
+
+<style>
+  .hero {
+    padding-top: clamp(56px, 9vw, 120px);
+    padding-bottom: var(--s-8);
+    text-align: center;
+  }
+  .w-display { max-width: 15ch; margin: var(--s-4) auto 0; }
+  .w-lede { margin: var(--s-4) auto 0; }
+  .acts { display: flex; flex-wrap: wrap; gap: var(--s-2); justify-content: center; margin-top: var(--s-5); }
+  .fine { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s-2) var(--s-4); margin-top: var(--s-3); }
+  .fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .fine span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+</style>

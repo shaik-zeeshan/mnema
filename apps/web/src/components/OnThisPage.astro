@@ -1,0 +1,86 @@
+---
+// Sticky "On this page" rail for the long reading pages (agents, the
+// comparisons, privacy). Numbers follow item order, so they always match the
+// sections. `ruled` = the comparison pages' look: larger links on hairlines.
+// `spy` = the privacy look: links on a left rail that marks the section being
+// read, and the rail stays (unstuck) above the column on phones.
+interface Props {
+  items: [id: string, label: string][];
+  ruled?: boolean;
+  spy?: boolean;
+}
+
+const { items, ruled = false, spy = false } = Astro.props;
+---
+
+<nav class:list={["toc", { ruled, spy }]} aria-label="On this page">
+  {spy ? <h2>On this page</h2> : <span class="mx-kicker">On this page</span>}
+  <ol>
+    {
+      items.map(([id, label], i) => (
+        <li>
+          <a href={`#${id}`}>
+            <span>{String(i + 1).padStart(2, "0")}</span>
+            {label}
+          </a>
+        </li>
+      ))
+    }
+  </ol>
+</nav>
+
+{
+  spy && (
+    <script is:inline>
+      (function () {
+        // Mark the section currently in the reading band. Without JS the rail is plain anchor links.
+        var links = document.querySelectorAll(".toc.spy a");
+        if (!links.length || !("IntersectionObserver" in window)) return;
+        function mark(id) {
+          links.forEach(function (a) { a.setAttribute("aria-current", a.getAttribute("href") === "#" + id ? "true" : "false"); });
+        }
+        mark(links[0].getAttribute("href").slice(1));
+        var io = new IntersectionObserver(function (es) {
+          es.forEach(function (e) { if (e.isIntersecting) mark(e.target.id); });
+        }, { rootMargin: "-30% 0px -60% 0px" });
+        // The sections come after the rail in the document, so wait for them to be parsed.
+        document.addEventListener("DOMContentLoaded", function () {
+          links.forEach(function (a) {
+            var s = document.getElementById(a.getAttribute("href").slice(1));
+            if (s) io.observe(s);
+          });
+        });
+      })();
+    </script>
+  )
+}
+
+<style>
+  .toc { position: sticky; top: 88px; align-self: start; padding-top: var(--s-7); display: grid; gap: 2px; }
+  .toc .mx-kicker { margin-bottom: var(--s-3); }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .toc a { font: 450 12px/1.4 var(--font-mono); color: var(--app-text-subtle); text-decoration: none; padding: 6px 0; display: flex; gap: 10px; }
+  .toc a span { color: var(--app-text-faint); }
+  .toc a:hover { color: var(--app-text-strong); }
+
+  .ruled { padding-top: 0; }
+  .ruled a { font: 450 13.5px/1.4 var(--font-mono); color: var(--app-text-muted); border-top: 1px solid var(--mx-hairline); }
+  .ruled a span { font: 450 12px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  .spy { top: 96px; gap: var(--s-3); }
+  .spy h2 { margin: 0; font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--app-text-subtle); }
+  .spy ol { gap: 0; border-left: 1px solid var(--mx-hairline); }
+  .spy a {
+    display: grid; grid-template-columns: 22px 1fr; gap: 4px; padding: 7px 0 7px 12px; margin-left: -1px;
+    border-left: 1px solid transparent; font: 400 13.5px/1.4 var(--font-sans); color: var(--app-text-muted);
+    transition: color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart);
+  }
+  .spy a span { font: 450 11px/1.6 var(--font-mono); }
+  .spy a[aria-current="true"] { color: var(--app-text-strong); border-left-color: var(--app-accent); }
+  .spy a[aria-current="true"] span { color: var(--app-accent); }
+
+  @media (max-width: 900px) {
+    .toc { display: none; }
+    .spy { display: grid; position: static; padding-top: var(--s-5); }
+  }
+</style>

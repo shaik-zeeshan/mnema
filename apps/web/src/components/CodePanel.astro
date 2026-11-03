@@ -1,0 +1,52 @@
+---
+// Inset code well with a mono label row. Pass `lines` for one-command-per-row
+// with a faint prompt glyph (a ::before, so it is never selected or copied and
+// has empty alt text for screen readers), or `code` for a preformatted block
+// whose JSON strings get the key/value tint.
+interface Props {
+  label: string;
+  ariaLabel: string;
+  prompt?: string;
+  lines?: string[];
+  code?: string;
+}
+
+const { label, ariaLabel, prompt = "$", lines, code } = Astro.props;
+
+// Odd split indices are string literals; a literal followed by ":" is a key.
+const parts = code?.split(/("(?:[^"\\]|\\.)*")/) ?? [];
+const isKey = (i: number) => /^\s*:/.test(parts[i + 1] ?? "");
+---
+
+<div class="mx-panel mx-panel--inset code" aria-label={ariaLabel}>
+  <div class="mx-panel__head w-meta"><span>{label}</span></div>
+  {
+    lines && (
+      <ol class="code__lines">
+        {lines.map((line) => (
+          <li data-prompt={prompt}>
+            <code>{line}</code>
+          </li>
+        ))}
+      </ol>
+    )
+  }
+  {
+    code && (
+      <pre><code>{parts.map((p, i) => (i % 2 ? <span class={isKey(i) ? "k" : "s"}>{p}</span> : p))}</code></pre>
+    )
+  }
+</div>
+
+<style>
+  .code { overflow: hidden; }
+  .code .mx-panel__head { padding: 8px var(--s-4); }
+  .code__lines { list-style: none; margin: 0; padding: var(--s-3) var(--s-4); display: grid; gap: 6px; font: 450 13px/1.55 var(--font-mono); }
+  .code__lines li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; min-width: 0; }
+  .code__lines code { color: var(--app-text-strong); overflow-wrap: anywhere; }
+  .code__lines li::before { content: attr(data-prompt); content: attr(data-prompt) / ""; color: var(--app-text-faint); }
+  pre { margin: 0; padding: var(--s-3) var(--s-4); overflow-x: auto; font: 450 13px/1.6 var(--font-mono); color: var(--app-text); }
+  pre .k { color: var(--app-text-strong); }
+  pre .s { color: var(--app-text-muted); }
+  @media (max-width: 640px) { pre, .code__lines { font-size: 12px; } }
+</style>

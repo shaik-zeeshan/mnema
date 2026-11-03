@@ -1,0 +1,63 @@
+---
+import Shot from "./Shot.astro";
+import timelineDark from "../../assets/shots/timeline-dark.webp";
+import timelineLight from "../../assets/shots/timeline-light.webp";
+---
+
+<section class="w-sec w-sec--rule w-texture" id="timeline">
+  <div class="w-wrap">
+    <div class="head">
+      <span class="mx-kicker">Timeline</span>
+      <h2 class="w-title">Then scrub straight to the moment.</h2>
+      <p class="w-prose">
+        A result is a doorway. Open it and you're on your timeline at that second: the full screen, the audio, and the
+        words on both.
+      </p>
+    </div>
+    <Shot
+      class="shot"
+      dark={timelineDark}
+      light={timelineLight}
+      alt="Mnema's timeline: a day of screen, microphone and system audio, scrubbable to the exact moment"
+      sizes="(max-width: 1280px) calc(100vw - 32px), 1200px"
+    />
+    <div class="pillars">
+      <div class="pillar pillar--rec">
+        <span class="w-meta"><b>●</b> 01 record</span>
+        <h3 class="w-sub">It records</h3>
+        <p class="w-prose">Screen, what you hear and what you say. It pauses when you step away, and you can hide any app.</p>
+      </div>
+      <div class="pillar">
+        <span class="w-meta"><b>⌕</b> 02 recall</span>
+        <h3 class="w-sub">You recall</h3>
+        <p class="w-prose">
+          Press <span class="keys"><kbd>⌘</kbd><kbd>⌥</kbd><kbd>Space</kbd></span> over any app. Search by words, by meaning,
+          by app or by time.
+        </p>
+      </div>
+      <div class="pillar">
+        <span class="w-meta"><b>∴</b> 03 reason</span>
+        <h3 class="w-sub">It reasons</h3>
+        <p class="w-prose">Ask plain questions about your past and get answers that point to where they came from.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .head { display: grid; gap: var(--s-4); justify-items: center; text-align: center; }
+  .shot { margin-top: clamp(32px, 5vw, 56px); }
+
+  .pillars { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--mx-hairline); margin-top: var(--s-7); }
+  .pillar { padding: var(--s-5) var(--s-5) 0 0; display: grid; gap: var(--s-2); align-content: start; }
+  .pillar + .pillar { padding-left: var(--s-5); border-left: 1px solid var(--mx-hairline); }
+  .pillar .w-meta { color: var(--app-text-subtle); }
+  .pillar .w-meta b { color: var(--app-accent); font-weight: 500; }
+  .pillar--rec .w-meta b { color: var(--app-status-running-dot); }
+  .keys { display: inline-flex; gap: 4px; align-items: center; }
+  .keys kbd { height: 26px; min-width: 26px; font-size: 12px; color: var(--app-text); border-color: var(--app-border-strong); background: var(--app-surface-raised); }
+  @media (max-width: 760px) {
+    .pillars { grid-template-columns: 1fr; }
+    .pillar + .pillar { padding-left: 0; border-left: 0; border-top: 1px solid var(--mx-hairline); }
+  }
+</style>

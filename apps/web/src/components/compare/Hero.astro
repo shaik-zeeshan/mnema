@@ -1,0 +1,42 @@
+---
+// Texture hero shared by the comparisons hub and the four comparison pages.
+// `back` turns the kicker into a link to the hub.
+interface Props {
+  kicker: string;
+  back?: boolean;
+  title: string;
+  lede: string;
+  fine: string[];
+  compact?: boolean;
+}
+
+const { kicker, back = false, title, lede, fine, compact = false } = Astro.props;
+---
+
+<section class:list={["hero w-texture", { compact }]}>
+  <div class="w-wrap">
+    {
+      back ? (
+        <a class="mx-kicker w-in" href="/alternatives/">{kicker}</a>
+      ) : (
+        <span class="mx-kicker w-in">{kicker}</span>
+      )
+    }
+    <h1 class="w-display w-in" style="--d:60ms">{title}</h1>
+    <p class="w-lede w-in" style="--d:120ms">{lede}</p>
+    <div class="fine w-meta w-in" style="--d:150ms">{fine.map((part) => <span>{part}</span>)}</div>
+  </div>
+</section>
+
+<style>
+  .hero { padding-top: clamp(56px, 8vw, 104px); padding-bottom: clamp(48px, 6vw, 80px); }
+  .hero .w-display { max-width: 16ch; margin-top: var(--s-4); }
+  .hero .w-lede { margin-top: var(--s-5); }
+  .compact .w-display { font-size: clamp(36px, 5.2vw, 62px); max-width: 19ch; }
+  .compact .w-lede { max-width: 62ch; }
+  a.mx-kicker { text-decoration: none; }
+  a.mx-kicker:hover { color: var(--app-text-strong); }
+  .fine { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin-top: var(--s-5); }
+  .fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .fine span + span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+</style>

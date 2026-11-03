@@ -30,214 +30,182 @@ const channels = [
 
 <Base title={pageTitle} description={pageDescription}>
   <TopBar />
-  <main class="docs">
-    <article class="docs-col">
-      <header class="docs-hero">
-        <p class="kicker">// support</p>
-        <h1 class="docs-title">Need a hand?</h1>
-        <p class="docs-sub">
-          A real person reads every email. Purchases, refunds, licenses, or
-          anything you can't figure out — write to us and we'll sort it out.
-        </p>
-        <p class="docs-meta">// replies from a human, usually within a day</p>
-      </header>
-
-      <section class="docs-section" aria-labelledby="email">
-        <div class="support-card">
-          <p class="kicker">// email us</p>
-          <a class="support-email" href="mailto:support@mnema.day"
-            >support@mnema.day</a
-          >
-          <p class="support-hint">
-            Include your macOS version and the Mnema version (shown in
-            <span class="path">Settings → About</span>) — it saves a round
-            trip.
+  <main>
+    <section class="hero w-texture">
+      <div class="w-wrap hero__grid">
+        <div>
+          <span class="mx-kicker w-in">Support</span>
+          <h1 class="w-display w-in" style="--d:60ms">Need a hand?</h1>
+          <p class="w-lede w-in" style="--d:120ms">
+            A real person reads every email. Purchases, refunds, licenses, or
+            anything you can't figure out — write to us and we'll sort it out.
+          </p>
+          <p class="w-meta w-in" style="--d:150ms">
+            replies from a human, usually within a day
           </p>
         </div>
-      </section>
-
-      <section class="docs-section" aria-labelledby="other-channels">
-        <p class="kicker">// or go direct</p>
-        <h2 class="section-heading" id="other-channels">
-          Some things are faster elsewhere
-        </h2>
-        <div class="channel-list">
-          {
-            channels.map((c) => (
-              <div class="channel-item">
-                <div class="channel-text">
-                  <span class="channel-label">{c.label}</span>
-                  <span class="channel-detail">{c.detail}</span>
-                </div>
-                <a
-                  class="channel-cta"
-                  href={c.href}
-                  {...(c.external
-                    ? { target: "_blank", rel: "noopener noreferrer" }
-                    : {})}
-                >
-                  {c.cta} →
-                </a>
-              </div>
-            ))
-          }
+        <div class="mx-panel mail w-in" style="--d:180ms" aria-labelledby="email">
+          <span class="mx-kicker" id="email">Email us</span>
+          <a class="mail__addr" href="mailto:support@mnema.day">support@mnema.day</a>
+          <p class="w-prose">
+            Include your macOS version and the Mnema version (shown in
+            <span class="path">Settings → About</span>) — it saves a round trip.
+          </p>
         </div>
-      </section>
-    </article>
+      </div>
+    </section>
+
+    <section class="w-sec w-sec--rule" aria-labelledby="other-channels">
+      <div class="w-wrap">
+        <div class="col">
+          <div class="head">
+            <span class="mx-kicker">Or go direct</span>
+            <h2 class="w-title" id="other-channels">Some things are faster elsewhere</h2>
+          </div>
+          <div class="rows">
+            {
+              channels.map((c) => (
+                <div class="srow">
+                  <div>
+                    <div class="srow__label">{c.label}</div>
+                    <p class="srow__desc">{c.detail}</p>
+                  </div>
+                  <a
+                    class="mx-btn"
+                    href={c.href}
+                    {...(c.external
+                      ? { target: "_blank", rel: "noopener noreferrer" }
+                      : {})}
+                  >
+                    {c.cta} →
+                  </a>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
   <Footer />
 </Base>
 
 <style>
-  /* ---- Docs layout shell (lifted pattern) ---- */
-  .docs {
-    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  /* Hero with the email card beside it, then the faster channels as app
+     Settings rows (copy left, action right, hairline between). */
+  .col {
+    max-width: 760px;
   }
-
-  .docs-col {
-    max-width: 44rem;
-    margin: 0 auto;
-    line-height: 1.7;
+  .hero {
+    padding-top: clamp(56px, 9vw, 112px);
+    padding-bottom: clamp(40px, 6vw, 72px);
   }
-
-  .kicker {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--accent);
-    letter-spacing: 0.04em;
-    margin-bottom: var(--space-xs);
-  }
-
-  .docs-hero {
-    padding-bottom: var(--space-xl);
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-xl);
-  }
-
-  .docs-title {
-    font-family: var(--font-sans);
-    font-size: var(--text-3xl);
-    margin-bottom: var(--space-sm);
-    max-width: 22ch;
-  }
-
-  .docs-sub {
-    font-family: var(--font-sans);
-    color: var(--fg-muted);
-    font-size: var(--text-base);
-    line-height: 1.7;
-    max-width: 60ch;
-    margin-bottom: var(--space-md);
-  }
-
-  .docs-meta {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    letter-spacing: 0.02em;
-  }
-
-  .docs-section {
-    margin-bottom: var(--space-2xl);
-  }
-
-  .section-heading {
-    font-family: var(--font-sans);
-    font-size: var(--text-2xl);
-    margin-bottom: var(--space-sm);
-    max-width: 26ch;
-  }
-
-  /* ---- Email card ---- */
-  .support-card {
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    padding: var(--space-lg);
+  .hero__grid {
     display: grid;
-    gap: var(--space-sm);
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--s-7);
+    align-items: end;
   }
-
-  .support-email {
-    font-family: var(--font-mono);
-    font-size: var(--text-xl);
-    color: var(--fg);
-    text-decoration: none;
-    width: max-content;
-    max-width: 100%;
-    word-break: break-all;
-    border-bottom: 1px solid var(--accent);
-    transition: color 0.2s var(--ease-out-quart);
+  @media (max-width: 900px) {
+    .hero__grid {
+      grid-template-columns: 1fr;
+      gap: var(--s-6);
+    }
   }
-
-  .support-email:hover {
-    color: var(--accent);
-    text-decoration: none;
+  .hero .w-display {
+    margin-top: var(--s-4);
+    max-width: 14ch;
   }
-
-  .support-hint {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    line-height: 1.7;
-    max-width: 52ch;
+  .hero .w-lede {
+    margin-top: var(--s-4);
   }
-
-  .path {
-    font-family: var(--font-mono);
-    font-size: 0.85em;
-    color: var(--accent);
-    white-space: nowrap;
-  }
-
-  /* ---- Channel list ---- */
-  .channel-list {
-    display: grid;
-    gap: var(--space-sm);
-    margin-top: var(--space-md);
-  }
-
-  .channel-item {
-    display: flex;
+  .hero .w-meta {
+    margin-top: var(--s-5);
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-md);
-    flex-wrap: wrap;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    padding: var(--space-md) var(--space-lg);
+    gap: 8px;
+  }
+  .hero .w-meta::before {
+    content: "";
+    width: 4px;
+    height: 4px;
+    border-radius: 1px;
+    background: var(--app-text-faint);
   }
 
-  .channel-text {
+  .mail {
+    padding: clamp(20px, 3vw, 28px);
     display: grid;
-    gap: 0.25rem;
-    min-width: 16rem;
-    flex: 1 1 16rem;
+    gap: var(--s-3);
   }
-
-  .channel-label {
-    font-weight: 600;
-    color: var(--fg);
-  }
-
-  .channel-detail {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    line-height: 1.6;
-  }
-
-  .channel-cta {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
+  .mail__addr {
+    justify-self: start;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    font: 400 clamp(20px, 2.4vw, 26px) / 1.25 var(--font-mono);
+    letter-spacing: -0.02em;
+    color: var(--app-text-strong);
     text-decoration: none;
-    letter-spacing: 0.02em;
+    border-bottom: 1px solid var(--app-accent-border);
+    transition:
+      color var(--t-fast) var(--ease-quart),
+      border-color var(--t-fast) var(--ease-quart);
+  }
+  .mail__addr:hover {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+  .mail .w-prose {
+    font-size: 14px;
+    max-width: 54ch;
+  }
+  .path {
+    font: 450 0.86em/1 var(--font-mono);
+    color: var(--app-text-strong);
     white-space: nowrap;
-    transition: color 0.2s var(--ease-out-quart);
+    padding: 2px 6px;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 1px var(--app-border);
   }
 
-  .channel-cta:hover {
-    color: var(--accent);
-    text-decoration: none;
+  .head {
+    display: grid;
+    gap: var(--s-3);
+    margin-bottom: var(--s-5);
+  }
+  .rows {
+    border-top: 1px solid var(--app-border);
+  }
+  .srow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--s-6);
+    padding: 18px 0;
+    border-bottom: 1px solid var(--mx-hairline);
+  }
+  .srow__label {
+    font: 600 15px/1.35 var(--font-sans);
+    color: var(--app-text-strong);
+  }
+  .srow__desc {
+    margin: 4px 0 0;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--app-text-muted);
+    max-width: 58ch;
+  }
+  .srow .mx-btn {
+    white-space: nowrap;
+  }
+  @media (max-width: 600px) {
+    .srow {
+      grid-template-columns: 1fr;
+      gap: var(--s-3);
+    }
+    .srow .mx-btn {
+      justify-self: start;
+    }
   }
 </style>

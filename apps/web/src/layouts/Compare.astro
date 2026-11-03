@@ -1,0 +1,184 @@
+---
+// The comparison-page template (rewind-ai, limitless, microsoft-recall-mac,
+// screenpipe): texture hero, then a contents rail + one reading column of
+// numbered sections. Pages are data; Questions and Get started always close
+// the column, and the FAQ JSON-LD is built from the same list it renders.
+import Base from "./Base.astro";
+import TopBar from "../components/TopBar.astro";
+import Footer from "../components/Footer.astro";
+import OnThisPage from "../components/OnThisPage.astro";
+import Hero from "../components/compare/Hero.astro";
+import Field from "../components/compare/Field.astro";
+import type { Faq, Section } from "../components/compare/types";
+import { DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
+
+interface Props {
+  title: string;
+  description: string;
+  /** The page's path segment; also the download link's analytics source. */
+  slug: string;
+  hero: { kicker: string; title: string; lede: string; fine: string[] };
+  sections: Section[];
+  faqs: Faq[];
+  faqTitle?: string;
+  ctaTitle: string;
+  endLine: string;
+}
+
+const { title, description, slug, hero, sections, faqs, faqTitle = "Frequently asked", ctaTitle, endLine } =
+  Astro.props;
+
+const [platform, chip] = PLATFORM_LABEL.split(" · ");
+const num = (i: number) => String(i + 1).padStart(2, "0");
+const toc: [string, string][] = [
+  ...sections.map((s): [string, string] => [s.id, s.toc]),
+  ["faq", "Questions"],
+  ["cta", "Get started"],
+];
+
+const faqJsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqs.map((f) => ({
+    "@type": "Question",
+    name: f.q,
+    acceptedAnswer: { "@type": "Answer", text: f.a },
+  })),
+});
+---
+
+<Base title={title} description={description}>
+  <TopBar />
+  <main>
+    <Hero back compact {...hero} />
+
+    <div class="w-wrap doc">
+      <OnThisPage items={toc} ruled />
+
+      <article>
+        {
+          sections.map((s, i) => (
+            <section class="part" id={s.id} aria-labelledby={`h-${s.id}`}>
+              <span class="mx-kicker">
+                {s.kicker} <b>· {num(i)}</b>
+              </span>
+              <h2 class="w-title" id={`h-${s.id}`}>{s.title}</h2>
+              {s.intro && <p class="w-prose">{s.intro}</p>}
+              {s.kind === "prose" && s.paras.map((p) => <p class="w-prose">{p}</p>)}
+              {s.kind === "history" && (
+                <dl class="mx-spec story">
+                  {s.rows.map((r) => (
+                    <div>
+                      <dt>{r.when}</dt>
+                      <dd>{r.text}</dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+              {s.kind === "criteria" && (
+                <ul class="crit">
+                  {s.items.map((c) => (
+                    <li>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
+                      <div>
+                        <b>{c.label}</b>
+                        <span>{c.detail}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {s.kind === "field" && <Field columns={s.columns} rows={s.rows} note={s.note} />}
+            </section>
+          ))
+        }
+
+        <section class="part" id="faq" aria-labelledby="h-faq">
+          <span class="mx-kicker">Questions <b>· {num(sections.length)}</b></span>
+          <h2 class="w-title" id="h-faq">{faqTitle}</h2>
+          <dl class="mx-spec faq">
+            {
+              faqs.map((f) => (
+                <div>
+                  <dt>
+                    <h3>{f.q}</h3>
+                  </dt>
+                  <dd>{f.a}</dd>
+                </div>
+              ))
+            }
+          </dl>
+        </section>
+
+        <section class="part" id="cta" aria-labelledby="h-cta">
+          <div class="mx-panel cta w-texture">
+            <div class="w-stack">
+              <span class="mx-kicker">Get started</span>
+              <h2 class="w-title" id="h-cta">{ctaTitle}</h2>
+              <p class="w-prose">
+                Download Mnema and build a private, searchable memory of your work — one you can scrub, search, and ask
+                anything. Open source, free for 30 days.
+              </p>
+            </div>
+            <div class="acts">
+              <a
+                class="mx-btn mx-btn--primary w-btn-lg"
+                href={DOWNLOAD_URL}
+                data-umami-event="download"
+                data-umami-event-source={slug}
+                ><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17V3"></path><path d="m6 11 6 6 6-6"></path><path d="M19 21H5"></path></svg>Download for {platform}</a
+              >
+              <span class="w-meta">{chip}</span>
+            </div>
+          </div>
+          <div class="end">
+            <span class="w-meta">{endLine}</span>
+            <a class="mx-btn mx-btn--ghost mx-btn--sm" href="/">← Back to mnema</a>
+          </div>
+        </section>
+      </article>
+    </div>
+  </main>
+  <Footer />
+  <script type="application/ld+json" set:html={faqJsonLd} is:inline />
+</Base>
+
+<style>
+  .doc { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: var(--s-8); padding-block: clamp(48px, 7vw, 88px); }
+  @media (max-width: 900px) { .doc { grid-template-columns: 1fr; } }
+
+  .part { display: grid; gap: var(--s-4); scroll-margin-top: 80px; }
+  .part + .part { margin-top: clamp(56px, 7vw, 88px); padding-top: clamp(40px, 5vw, 56px); border-top: 1px solid var(--mx-hairline); }
+  .part .w-title { font-size: clamp(26px, 3vw, 36px); }
+  .part > .mx-kicker b { color: var(--app-text-faint); font-weight: 500; }
+  .w-prose + .w-prose { margin-top: calc(var(--s-4) * -0.25); }
+
+  /* history: dated rows (labels are the source's own dates) */
+  .story { grid-template-columns: minmax(96px, max-content) 1fr; margin-top: var(--s-3); }
+  .story dt { font: 450 12px/1.6 var(--font-mono); color: var(--app-text-subtle); padding-top: 13px; }
+  .story dd { color: var(--app-text-muted); font-size: 15px; line-height: 1.65; padding-block: 10px; }
+  .story > div:last-child dd { color: var(--app-text-strong); }
+
+  /* criteria: 2x2 hairline grid, check = the one green signal */
+  .crit { list-style: none; margin: var(--s-3) 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--mx-hairline); }
+  .crit li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s-3); padding: var(--s-5) var(--s-5) var(--s-5) 0; border-bottom: 1px solid var(--mx-hairline); }
+  .crit li:nth-child(even) { padding-left: var(--s-5); border-left: 1px solid var(--mx-hairline); }
+  .crit svg { color: var(--app-accent); margin-top: 3px; }
+  .crit b { display: block; font: 600 15px/1.4 var(--font-sans); color: var(--app-text-strong); margin-bottom: 4px; }
+  .crit span { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); }
+  @media (max-width: 640px) { .crit { grid-template-columns: 1fr; } .crit li:nth-child(even) { padding-left: 0; border-left: 0; } }
+
+  /* FAQ: question/answer rows */
+  .faq { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); margin-top: var(--s-3); }
+  .faq dt { padding: var(--s-4) var(--s-5) var(--s-4) 0; }
+  .faq dt h3 { margin: 0; font: 600 15.5px/1.45 var(--font-sans); color: var(--app-text-strong); letter-spacing: -0.01em; }
+  .faq dd { padding-block: var(--s-4); font-size: 14.5px; line-height: 1.65; color: var(--app-text-muted); }
+  @media (max-width: 720px) { .faq { grid-template-columns: 1fr; } .faq dt { padding-bottom: 0; } .faq dd { border-top: 0; padding-top: var(--s-2); } }
+
+  .cta { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-6); align-items: end; padding: clamp(24px, 4vw, 44px); }
+  .cta .w-title { font-size: clamp(24px, 2.6vw, 32px); }
+  .acts { display: grid; gap: var(--s-2); justify-items: start; }
+  @media (max-width: 760px) { .cta { grid-template-columns: 1fr; } }
+  .end { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-5); margin-top: var(--s-5); }
+  .end .w-meta { flex: 1 1 320px; }
+</style>
