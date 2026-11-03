@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · 05 Tour</title>
+<link rel="stylesheet" href="site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* 05 · Tour — one window, four surfaces. The app's choice list on the left
+     switches the window on the right (explicit control + a status line saying
+     what you're looking at). Pricing and FAQ live on the page, in the kit's
+     own choice tiles and spec rows. */
+  .hero { padding-top: clamp(48px, 7vw, 88px); padding-bottom: var(--s-6); }
+  .hero__in { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-6); align-items: end; }
+  .hero .w-display { max-width: 16ch; margin-top: var(--s-4); }
+  .acts { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+  @media (max-width: 860px) { .hero__in { grid-template-columns: 1fr; } }
+
+  .tour { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+  .tour__side { position: sticky; top: 80px; display: grid; gap: var(--s-4); }
+  .tour .mx-choice__desc { font-size: 13px; }
+  .tour .mx-choice__icon svg { width: 15px; height: 15px; }
+  .status { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: var(--r-md); background: var(--mx-wash); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+  .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); flex: none; }
+  .status b { color: var(--app-text-strong); font-weight: 500; }
+  .stage { display: grid; }
+  .stage > figure { grid-area: 1 / 1; margin: 0; opacity: 0; transform: translateY(6px) scale(0.995); transition: opacity var(--t-slow) var(--ease-expo), transform var(--t-slow) var(--ease-expo); pointer-events: none; }
+  .stage > figure[data-on] { opacity: 1; transform: none; pointer-events: auto; }
+  .stage__caps { display: flex; gap: var(--s-4); margin-top: var(--s-3); }
+  @media (max-width: 980px) { .tour { grid-template-columns: 1fr; } .tour__side { position: static; } }
+
+  .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--mx-hairline); border-bottom: 1px solid var(--mx-hairline); }
+  .facts > div { padding: var(--s-5) var(--s-4) var(--s-5) 0; }
+  .facts > div + div { padding-left: var(--s-4); border-left: 1px solid var(--mx-hairline); }
+  .facts .mx-stat__value { font-size: 32px; }
+  @media (max-width: 760px) { .facts { grid-template-columns: 1fr 1fr; } .facts > div:nth-child(3) { border-left: 0; padding-left: 0; } .facts > div:nth-child(n+3) { border-top: 1px solid var(--mx-hairline); } }
+
+  .price { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--s-7); align-items: start; }
+  .price .mx-choice { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .price .mx-choice__opt { padding: 18px 18px 20px; }
+  .price__amt { font: 400 34px/1 var(--font-mono); letter-spacing: -0.05em; color: var(--app-text-strong); margin: 8px 0 4px; }
+  .price__amt small { font: 500 13px/1 var(--font-sans); letter-spacing: 0; color: var(--app-text-subtle); margin-left: 4px; }
+  @media (max-width: 900px) { .price { grid-template-columns: 1fr; } }
+
+  .faq { border-top: 1px solid var(--mx-hairline); }
+  .faq details { border-bottom: 1px solid var(--mx-hairline); }
+  .faq summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--s-3); padding: 16px 0; font: 600 15px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; margin-left: auto; font: 400 18px/1 var(--font-mono); color: var(--app-text-subtle); transition: transform var(--t-med) var(--ease-expo); }
+  .faq details[open] summary::after { transform: rotate(45deg); }
+  .faq details p { margin: 0 0 18px; max-width: 64ch; font-size: 14.5px; line-height: 1.6; color: var(--app-text-muted); }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup 05 · Tour</b><span>One window, four surfaces, switched with the app's own choice list. Pricing and FAQ on the page.</span><span class="mx-spacer"></span><a href="index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="#tour">Tour</a>
+      <a class="mx-btn mx-btn--ghost" href="#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="#pricing">Pricing</a>
+      <a class="mx-btn mx-btn--ghost" href="#faq">FAQ</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Agents</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="w-wrap hero__in">
+      <div class="w-in">
+        <span class="mx-kicker mx-kicker--live">Mnema for Mac</span>
+        <h1 class="w-display">A private memory you can scrub, search and ask.</h1>
+      </div>
+      <div class="w-stack w-in" style="--d:100ms; max-width: 380px">
+        <p class="w-lede">Your screen and audio, kept on your Mac and turned into something you can actually find.</p>
+        <div class="acts"><a class="mx-btn mx-btn--primary w-btn-lg" href="#">Download for macOS</a><a class="mx-btn w-btn-lg" href="#tour">Take the tour</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-texture" id="tour" style="padding-block: var(--s-7) var(--w-sec); border-top: 1px solid var(--mx-hairline)">
+    <div class="w-wrap tour">
+      <div class="tour__side">
+        <span class="mx-kicker">Four surfaces</span>
+        <div class="mx-choice mx-choice--list" role="radiogroup" aria-label="Choose a surface">
+          <label class="mx-choice__opt"><input type="radio" name="s" value="timeline" checked>
+            <span class="mx-choice__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></span>
+            <span class="mx-choice__title">Timeline</span><span class="mx-choice__desc">Scrub your day to the exact frame.</span></label>
+          <label class="mx-choice__opt"><input type="radio" name="s" value="quick-recall">
+            <span class="mx-choice__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+            <span class="mx-choice__title">Quick Recall <span class="mx-choice__tag">⌘⌥Space</span></span><span class="mx-choice__desc">Search from over any app.</span></label>
+          <label class="mx-choice__opt"><input type="radio" name="s" value="chat">
+            <span class="mx-choice__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg></span>
+            <span class="mx-choice__title">Ask</span><span class="mx-choice__desc">Questions about your past, with receipts.</span></label>
+          <label class="mx-choice__opt"><input type="radio" name="s" value="insights">
+            <span class="mx-choice__icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16V9"/><path d="M12 16V5"/><path d="M17 16v-4"/></svg></span>
+            <span class="mx-choice__title">Insights</span><span class="mx-choice__desc">Where your week actually went.</span></label>
+        </div>
+        <p class="status w-meta" aria-live="polite"><span>Showing <b id="now">Timeline</b> · <span id="nowd">scrub any moment</span></span></p>
+      </div>
+      <div>
+        <div class="stage">
+          <figure class="w-shot" data-s="timeline" data-on><div class="w-shot__lights"><i></i><i></i><i></i></div><img class="w-dark" src="shots/timeline-dark.webp" alt="Timeline"><img class="w-light" src="shots/timeline-light.webp" alt=""></figure>
+          <figure class="w-float" data-s="quick-recall"><img class="w-float__desk" src="shots/desk-code.webp" alt=""><img class="w-float__panel w-dark" src="shots/quick-recall-dark.webp" alt="Quick Recall over another app: results with matches highlighted"><img class="w-float__panel w-light" src="shots/quick-recall-light.webp" alt=""></figure>
+          <figure class="w-shot" data-s="chat"><div class="w-shot__lights"><i></i><i></i><i></i></div><img class="w-dark" src="shots/chat-dark.webp" alt="Ask"><img class="w-light" src="shots/chat-light.webp" alt=""></figure>
+          <figure class="w-shot" data-s="insights"><div class="w-shot__lights"><i></i><i></i><i></i></div><img class="w-dark" src="shots/insights-dark.webp" alt="Insights"><img class="w-light" src="shots/insights-light.webp" alt=""></figure>
+        </div>
+        <div class="stage__caps w-meta"><span>Real app · sample data</span><span class="mx-spacer"></span><span>←/→ to switch</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec" id="privacy">
+    <div class="w-wrap w-stack" style="gap: var(--s-6)">
+      <div class="w-stack" style="max-width: 640px">
+        <span class="mx-kicker">Private by construction</span>
+        <h2 class="w-title">Nothing about you leaves to us. There's no us to leave to.</h2>
+        <p class="w-prose">Recording, reading your screen, transcribing and search all run on your Mac. No account, no Mnema cloud, no telemetry. AI answers use the provider you pick, or a model that runs on your Mac.</p>
+      </div>
+      <div class="facts">
+        <div class="mx-stat"><span class="mx-stat__label">Servers</span><span class="mx-stat__value">0</span><span class="mx-stat__delta">no Mnema cloud</span></div>
+        <div class="mx-stat"><span class="mx-stat__label">Encrypted</span><span class="mx-stat__value">at rest</span><span class="mx-stat__delta">on your disk</span></div>
+        <div class="mx-stat"><span class="mx-stat__label">Keep for</span><span class="mx-stat__value">7–∞<small>days</small></span><span class="mx-stat__delta">your call</span></div>
+        <div class="mx-stat"><span class="mx-stat__label">Secrets</span><span class="mx-stat__value">redacted</span><span class="mx-stat__delta">before search or AI</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="pricing">
+    <div class="w-wrap price">
+      <div class="w-stack">
+        <span class="mx-kicker">Pricing</span>
+        <h2 class="w-title">Pay once. Own it.</h2>
+        <p class="w-prose">Try everything for 30 days, no account and no card. Buy it once and keep every version you own, forever. Want another year of new builds later? Renew whenever you like.</p>
+        <div class="acts" style="margin-top: var(--s-2)"><a class="mx-btn mx-btn--primary w-btn-lg" href="#">Download free trial</a><a class="mx-btn w-btn-lg" href="#">Buy · $69</a></div>
+      </div>
+      <div class="mx-choice" role="radiogroup" aria-label="Plan">
+        <label class="mx-choice__opt"><input type="radio" name="p" checked>
+          <span class="mx-choice__title">License</span>
+          <span class="price__amt">$69<small>once</small></span>
+          <span class="mx-choice__desc">A year of updates included. Up to 3 Macs. Verified on-device.</span></label>
+        <label class="mx-choice__opt"><input type="radio" name="p">
+          <span class="mx-choice__title">Renewal <span class="mx-choice__tag">optional</span></span>
+          <span class="price__amt">$29<small>/ year</small></span>
+          <span class="mx-choice__desc">Another year of new builds, whenever you want it. No penalty for lapsing.</span></label>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="faq">
+    <div class="w-wrap price">
+      <div class="w-stack"><span class="mx-kicker">Questions</span><h2 class="w-title">Fair questions.</h2></div>
+      <div class="faq">
+        <details open><summary>Does anything leave my Mac?</summary><p>Not to us. Recording, text from your screen, transcription and search run on your Mac. Ask AI uses the provider you choose, and you can pick a local model so even that stays home.</p></details>
+        <details><summary>Will it slow my Mac down or eat my disk?</summary><p>It's built to run all day in the background. You choose how long to keep things, and recording pauses itself if your disk runs low.</p></details>
+        <details><summary>Can I keep some apps out?</summary><p>Yes. Hide any app and it is never recorded. You can also pause everything with one click.</p></details>
+        <details><summary>What happens when the trial ends?</summary><p>Mnema switches to read-only. Everything you recorded stays browsable, searchable and askable. Only new recording pauses until you buy.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="#">Pricing</a></li><li><a href="#">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="#">Rewind alternative</a></li><li><a href="#">Recall for Mac</a></li><li><a href="#">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="#">Support</a></li><li><a href="#">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+
+  var DESC = { timeline: ["Timeline", "scrub any moment"], "quick-recall": ["Quick Recall", "search from anywhere"], chat: ["Ask", "an answer with its sources"], insights: ["Insights", "your week at a glance"] };
+  var radios = [].slice.call(document.querySelectorAll('input[name="s"]'));
+  function show(v) {
+    document.querySelectorAll(".stage > figure").forEach(function (f) { f.toggleAttribute("data-on", f.dataset.s === v); });
+    document.getElementById("now").textContent = DESC[v][0];
+    document.getElementById("nowd").textContent = DESC[v][1];
+  }
+  radios.forEach(function (i) { i.addEventListener("change", function () { show(i.value); }); });
+  addEventListener("keydown", function (e) {
+    if (e.target.closest("input, textarea") && e.target.name !== "s") return;
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    var k = radios.findIndex(function (i) { return i.checked; });
+    k = (k + (e.key === "ArrowRight" ? 1 : radios.length - 1)) % radios.length;
+    radios[k].checked = true; show(radios[k].value);
+    if (e.target.name === "s") e.preventDefault();
+  });
+})();
+</script>
+</body>
+</html>

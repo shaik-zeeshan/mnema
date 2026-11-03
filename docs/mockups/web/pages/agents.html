@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · Agents</title>
+<meta name="description" content="Give your local AI agents and CLI tools read-only, brokered access to your redacted Mnema history. Setup, privacy guarantees, and example commands.">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Agents — the one docs page. Same shell as 06; the machine voice (mono, inset
+     panels, hairlines) carries the commands. No terminal chrome, no glow. */
+  .hero { padding-top: clamp(56px, 8vw, 104px); padding-bottom: clamp(48px, 6vw, 80px); }
+  .hero .w-display { max-width: 17ch; margin-top: var(--s-4); font-size: clamp(36px, 5.2vw, 64px); }
+  .hero .w-lede { margin-top: var(--s-4); max-width: 62ch; }
+  .hero__fine { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin-top: var(--s-5); }
+  .hero__fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .hero__fine span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+
+  .docs { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: clamp(32px, 6vw, 96px); align-items: start; }
+  .toc { position: sticky; top: 88px; padding-top: var(--s-7); display: grid; gap: 2px; }
+  .toc .mx-kicker { margin-bottom: var(--s-3); }
+  .toc a { font: 450 12px/1.4 var(--font-mono); color: var(--app-text-subtle); text-decoration: none; padding: 6px 0; display: flex; gap: 10px; }
+  .toc a span { color: var(--app-text-faint); }
+  .toc a:hover { color: var(--app-text-strong); }
+  .col { max-width: 760px; min-width: 0; }
+  @media (max-width: 900px) { .docs { grid-template-columns: 1fr; } .toc { display: none; } }
+
+  .dsec { padding-block: var(--s-7); display: grid; gap: var(--s-4); }
+  .dsec + .dsec { border-top: 1px solid var(--mx-hairline); }
+  .dsec .mx-title { font-size: clamp(24px, 2.6vw, 30px); margin-bottom: var(--s-1); }
+  .w-prose strong, .w-prose b { color: var(--app-text-strong); font-weight: 600; }
+  .w-prose a { color: var(--app-text-strong); text-decoration: none; border-bottom: 1px solid var(--app-border-strong); }
+  .w-prose a:hover { border-bottom-color: var(--app-text-muted); }
+  .w-prose--sm { font-size: 14px; }
+  :where(.w-prose, .mx-title, .step h3, .note) code {
+    font-size: 0.88em; color: var(--app-text-strong); background: var(--mx-wash); padding: 1px 5px;
+    border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--mx-hairline); white-space: nowrap;
+  }
+  .note { font: 400 13.5px/1.6 var(--font-sans); color: var(--app-text-subtle); margin: 0; max-width: 62ch; }
+
+  /* Flow: agent -> CLI -> app broker -> history. Restates the prose, nothing more. */
+  .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: var(--s-3); }
+  .flow__n { position: relative; padding: var(--s-3) var(--s-4); display: grid; gap: 4px; align-content: start; }
+  .flow__n + .flow__n { border-left: 1px solid var(--mx-hairline); }
+  .flow__n + .flow__n::before {
+    content: ""; position: absolute; left: -5px; top: 22px; width: 8px; height: 8px;
+    border-top: 1px solid var(--app-border-strong); border-right: 1px solid var(--app-border-strong);
+    background: var(--app-surface); transform: rotate(45deg);
+  }
+  .flow__n b { font: 600 14px/1.3 var(--font-sans); color: var(--app-text-strong); }
+  .flow__n .w-meta { color: var(--app-text-subtle); }
+  .flow__checks { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .flow__foot { display: flex; align-items: center; gap: var(--s-2); padding: 9px var(--s-4); border-top: 1px solid var(--mx-hairline); }
+  @media (max-width: 760px) {
+    .flow { grid-template-columns: 1fr; }
+    .flow__n + .flow__n { border-left: 0; border-top: 1px solid var(--mx-hairline); }
+    .flow__n + .flow__n::before { left: 22px; top: -5px; transform: rotate(135deg); }
+  }
+
+  /* Guarantees: the home page's privacy spec rows. */
+  .guar { grid-template-columns: minmax(170px, 230px) 1fr; margin-top: var(--s-2); }
+  .guar dt { color: var(--app-text-strong); font-weight: 600; font-size: 14px; }
+  .guar dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.6; }
+  @media (max-width: 640px) {
+    .guar { display: block; }
+    .guar dt { padding-bottom: 2px; }
+    .guar dd { border-top: 0; padding-top: 0; }
+  }
+
+  /* Code: an inset well with a mono label row. Prompt glyph stays faint. */
+  .code { overflow: hidden; }
+  .code .mx-panel__head { padding: 8px var(--s-4); }
+  .code__lines { list-style: none; margin: 0; padding: var(--s-3) var(--s-4); display: grid; gap: 6px; font: 450 13px/1.55 var(--font-mono); }
+  .code__lines li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 8px; min-width: 0; }
+  .code__lines code { color: var(--app-text-strong); overflow-wrap: anywhere; }
+  .code__p { color: var(--app-text-faint); user-select: none; }
+  .code pre { margin: 0; padding: var(--s-3) var(--s-4); overflow-x: auto; font: 450 13px/1.6 var(--font-mono); color: var(--app-text); }
+  @media (max-width: 640px) { .code pre, .code__lines { font-size: 12px; } .step { padding: var(--s-4); } }
+  .code pre .k { color: var(--app-text-strong); }
+  .code pre .s { color: var(--app-text-muted); }
+
+  .steps { list-style: none; margin: var(--s-2) 0 0; padding: 0; display: grid; gap: var(--s-3); }
+  .step { padding: var(--s-5); display: grid; gap: var(--s-4); }
+  .step__head { display: flex; align-items: baseline; gap: var(--s-3); }
+  .step__num { font: 500 13px/1 var(--font-mono); color: var(--app-text-faint); font-variant-numeric: tabular-nums; }
+  .step h3 { margin: 0; font: 600 17px/1.3 var(--font-sans); letter-spacing: -0.012em; color: var(--app-text-strong); }
+
+  /* Command walkthrough: mono term over sans explanation. */
+  .walk { margin: var(--s-2) 0 0; display: grid; }
+  .walk > div { display: grid; gap: 4px; padding: var(--s-4) 0; border-top: 1px solid var(--mx-hairline); }
+  .walk dt { font: 450 13px/1.5 var(--font-mono); color: var(--app-text-strong); overflow-wrap: anywhere; }
+  .walk dt span { color: var(--app-text-faint); }
+  .walk dd { margin: 0; font-size: 14px; line-height: 1.6; color: var(--app-text-muted); max-width: 62ch; }
+  .walk .mx-chip { margin-left: 6px; vertical-align: 1px; }
+
+  .dfoot { border-top: 1px solid var(--mx-hairline); padding-block: var(--s-6) var(--s-8); display: grid; gap: var(--s-4); justify-items: start; }
+  .dfoot p { margin: 0; font: 450 12px/1.7 var(--font-mono); color: var(--app-text-subtle); max-width: 70ch; }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Agents</b><span>The docs page for agent access: read-only, brokered, per-tool. Commands in the app's mono voice.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html" aria-current="page">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <span class="mx-kicker w-in">Agent access · docs</span>
+      <h1 class="w-display w-in" style="--d:60ms">Give your agents a read-only window into your memory.</h1>
+      <p class="w-lede w-in" style="--d:120ms">Mnema isn't just a desktop timeline. Approved local tools and AI agents, like Claude Code, can search your redacted history through a brokered command-line bridge. Read-only, scoped, and approved by you, per tool, from inside the app.</p>
+      <div class="hero__fine w-meta w-in" style="--d:150ms"><span>reading time ~3 min</span><span>macOS</span><span>Apple Silicon</span></div>
+    </div>
+  </section>
+
+  <div class="w-sec--rule"><div class="w-wrap docs">
+    <nav class="toc" aria-label="On this page">
+      <span class="mx-kicker">On this page</span>
+      <a href="#what-it-is"><span>01</span>What it is</a>
+      <a href="#guarantees"><span>02</span>Guarantees</a>
+      <a href="#setup"><span>03</span>Setup</a>
+      <a href="#usage"><span>04</span>Usage</a>
+      <a href="#mcp-server"><span>05</span>Chat apps</a>
+      <a href="#mcp"><span>06</span>The other direction</a>
+    </nav>
+
+    <article class="col">
+      <section class="dsec" aria-labelledby="what-it-is">
+        <span class="mx-kicker">What it is</span>
+        <h2 class="mx-title" id="what-it-is">A broker, not a back door.</h2>
+        <p class="w-prose">When an AI agent on your Mac wants to look something up in your history, it can't touch your recordings or database directly. Instead it asks the <code>mnema</code> command-line tool, which checks that you've approved that tool, that the request is within the scope you approved for it, and that the results are redacted, then hands back only what's allowed. You stay in control of who gets access and how far back it reaches.</p>
+        <figure class="mx-panel flow-wrap" style="margin:var(--s-2) 0 0;overflow:hidden" aria-label="How a request travels">
+          <div class="flow">
+            <div class="flow__n"><span class="w-meta">01 · asks</span><b>Your agent</b><span class="w-meta">a local tool you approved</span></div>
+            <div class="flow__n"><span class="w-meta">02 · relays</span><b><code style="font:inherit;font-family:var(--font-mono);font-size:13.5px">mnema</code> CLI</b><span class="w-meta">local, per-user channel</span></div>
+            <div class="flow__n"><span class="w-meta">03 · checks</span><b>Mnema app</b><span class="flow__checks"><span class="mx-chip">approved</span><span class="mx-chip">in scope</span><span class="mx-chip">redacted</span></span></div>
+            <div class="flow__n"><span class="w-meta">04 · answers</span><b>Your history</b><span class="w-meta">read-only</span></div>
+          </div>
+          <figcaption class="flow__foot w-meta">no direct database or media read, ever</figcaption>
+        </figure>
+        <p class="w-prose w-prose--sm">Under the hood, every request is mediated by Mnema's broker: the same privacy policy, redaction, and retention rules that govern the app apply to agent access. Tools never read the database or media files directly. Every call goes through the <code>mnema</code> CLI, which talks to the running app over a local, per-user channel. Access is read-only and can be blocked from Settings at any time.</p>
+      </section>
+
+      <section class="dsec" aria-labelledby="guarantees">
+        <span class="mx-kicker">Guarantees</span>
+        <h2 class="mx-title" id="guarantees">What an agent can and can't do.</h2>
+        <dl class="mx-spec guar">
+          <div><dt>Read-only</dt><dd>Agents can search and read your history. They can't edit, delete, or change anything.</dd></div>
+          <div><dt>You approve each tool</dt><dd>Every client is approved individually, from inside Mnema. Nothing gets in without your explicit grant.</dd></div>
+          <div><dt>You set how far back, and it doesn't expire</dt><dd>You choose how far back a tool can read: the last day, the last 7 days, or all retained history. Access has no clock on it: it stands until you block it, and lapses on its own 30 days after the tool last used it.</dd></div>
+          <div><dt>Redacted at the source</dt><dd>Results come back already redacted by the same rules the app uses. Passwords, keys, tokens, and card numbers are stripped before an agent ever sees them.</dd></div>
+          <div><dt>Blockable any time</dt><dd>Block a tool from Settings → Access and it is refused immediately, with no approval window, until you re-enable it there.</dd></div>
+          <div><dt>Brokered, never direct</dt><dd>The skill always goes through the <code>mnema</code> CLI, never a direct database or media read.</dd></div>
+        </dl>
+      </section>
+
+      <section class="dsec" aria-labelledby="setup">
+        <span class="mx-kicker">Setup</span>
+        <h2 class="mx-title" id="setup">Two steps to wire it up.</h2>
+        <ol class="steps">
+          <li class="mx-panel step">
+            <div class="step__head"><span class="step__num">01</span><h3>Install the <code>mnema</code> CLI</h3></div>
+            <p class="w-prose w-prose--sm">In Mnema, open <strong>Settings → Access</strong> and install the CLI. Mnema places the <code>mnema</code> command in its managed CLI directory, usually <code>~/.local/bin</code> on macOS. If that directory isn't on your shell's PATH yet, Settings shows you the one-line follow-up to add it. Access is read-only, scoped, and approved per client from inside the app.</p>
+          </li>
+          <li class="mx-panel step">
+            <div class="step__head"><span class="step__num">02</span><h3>Add the <code>mnema-data</code> skill to your agent</h3></div>
+            <p class="w-prose w-prose--sm">In <strong>Claude Code</strong>, install it from the Mnema marketplace:</p>
+            <div class="mx-panel mx-panel--inset code" aria-label="Claude Code skill install">
+              <div class="mx-panel__head w-meta"><span>claude code</span></div>
+              <ol class="code__lines">
+                <li><span class="code__p" aria-hidden="true">&gt;</span><code>/plugin marketplace add shaik-zeeshan/mnema</code></li>
+                <li><span class="code__p" aria-hidden="true">&gt;</span><code>/plugin install mnema-data@mnema</code></li>
+                <li><span class="code__p" aria-hidden="true">&gt;</span><code>/reload-plugins</code></li>
+              </ol>
+            </div>
+            <p class="w-prose w-prose--sm">Using Codex, Cursor, OpenCode, or PI? Install it in one command with the open-source <a href="https://github.com/vercel-labs/skills" target="_blank" rel="noopener noreferrer"><code>skills</code></a> CLI:</p>
+            <div class="mx-panel mx-panel--inset code" aria-label="skills CLI install">
+              <div class="mx-panel__head w-meta"><span>terminal</span></div>
+              <ol class="code__lines">
+                <li><span class="code__p" aria-hidden="true">$</span><code>npx skills@latest add shaik-zeeshan/mnema</code></li>
+              </ol>
+            </div>
+            <p class="note">The skill always goes through the CLI, never a direct database or media read.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="dsec" aria-labelledby="usage">
+        <span class="mx-kicker">Usage</span>
+        <h2 class="mx-title" id="usage">Then ask your agent for things like…</h2>
+        <p class="w-prose">You won't usually type these yourself. Your agent runs them for you. But here's the shape of what's happening under the hood.</p>
+        <div class="mx-panel mx-panel--inset code" aria-label="Mnema CLI examples">
+          <div class="mx-panel__head w-meta"><span>mnema cli</span></div>
+          <ol class="code__lines">
+            <li><span class="code__p" aria-hidden="true">$</span><code>mnema access request --scope last-day</code></li>
+            <li><span class="code__p" aria-hidden="true">$</span><code>mnema search --query "launch notes" --format json</code></li>
+            <li><span class="code__p" aria-hidden="true">$</span><code>mnema show-text &lt;result-id&gt;</code></li>
+            <li><span class="code__p" aria-hidden="true">$</span><code>mnema open &lt;result-id&gt;</code></li>
+          </ol>
+        </div>
+        <dl class="walk">
+          <div><dt><span>mnema</span> access request --scope last-day<span class="mx-chip">optional</span></dt><dd>Asks you to approve read-only access covering the last day of history, before an agent needs it. You confirm inside Mnema. Agents don't need to run it: any data command opens the same approval window by itself.</dd></div>
+          <div><dt><span>mnema</span> search --query "launch notes" --format json</dt><dd>Searches your redacted history and returns structured results (timestamps, source app, matched text), ready for the agent to reason over.</dd></div>
+          <div><dt><span>mnema</span> show-text &lt;result-id&gt;</dt><dd>Pulls the full redacted text for one result, so the agent can read it in context.</dd></div>
+          <div><dt><span>mnema</span> open &lt;result-id&gt;</dt><dd>Opens that exact moment in the Mnema app (the full-res frame or audio clip) so you can verify it yourself.</dd></div>
+        </dl>
+      </section>
+
+      <section class="dsec" aria-labelledby="mcp-server">
+        <span class="mx-kicker">Chat apps</span>
+        <h2 class="mx-title" id="mcp-server">No terminal? Ask from a chat app.</h2>
+        <p class="w-prose">The same brokered access works from desktop chat apps that speak MCP, like the Claude desktop app. Run <code>mnema mcp</code> and the CLI becomes a local MCP server exposing the same five read-only tools: search, timeline, speakers, full text, and open-in-Mnema. Same approval dialog, same grants, same redaction. Nothing new to trust.</p>
+        <p class="w-prose w-prose--sm">Add this to your chat app's MCP configuration (for Claude Desktop: <strong>Settings → Developer → Edit Config</strong>), replacing <code>&lt;you&gt;</code> with your macOS username:</p>
+        <div class="mx-panel mx-panel--inset code" aria-label="MCP server configuration">
+          <div class="mx-panel__head w-meta"><span>claude_desktop_config.json</span></div>
+<pre><code>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"mnema"</span>: {
+      <span class="k">"command"</span>: <span class="s">"/Users/&lt;you&gt;/.local/bin/mnema"</span>,
+      <span class="k">"args"</span>: [<span class="s">"--client"</span>, <span class="s">"Claude Desktop"</span>, <span class="s">"mcp"</span>]
+    }
+  }
+}</code></pre>
+        </div>
+        <p class="note">The first question that needs your history pauses while Mnema shows its approval dialog. Approve once and it stays approved until you block the tool.</p>
+      </section>
+
+      <section class="dsec" aria-labelledby="mcp">
+        <span class="mx-kicker">The other direction</span>
+        <h2 class="mx-title" id="mcp">Bring your tools into Ask AI.</h2>
+        <p class="w-prose">This page is about letting outside agents read your history. The reverse works too: inside the app, Ask AI can connect to MCP servers you configure, so its answers can call your own tools alongside your history. Set it up in <strong>Settings → Intelligence</strong>. Nothing connects unless you add it.</p>
+      </section>
+
+      <div class="dfoot">
+        <p>read-only, scoped, brokered through the same privacy policy as the app · all retained history requires explicit approval</p>
+        <a class="mx-btn mx-btn--sm" href="../06-combined.html">← Back to mnema</a>
+      </div>
+    </article>
+  </div></div>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

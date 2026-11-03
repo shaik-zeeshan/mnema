@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · 03 Recall</title>
+<link rel="stylesheet" href="site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* 03 · Recall anything — the hero IS the app's command field, scaled up.
+     Pick an example and the panel below answers with the app's own rows,
+     chips and match marks. Click-driven; nothing types or loops by itself. */
+  .hero { padding-top: clamp(56px, 9vw, 120px); padding-bottom: var(--s-8); text-align: center; }
+  .hero .w-display { max-width: 15ch; margin: var(--s-4) auto 0; }
+  .hero .w-lede { margin: var(--s-4) auto 0; }
+  .door { max-width: 760px; margin: clamp(32px, 5vw, 56px) auto 0; text-align: left; }
+  .cmd {
+    display: flex; align-items: center; gap: 12px; height: 60px; padding: 0 10px 0 18px; border-radius: 14px;
+    background: var(--app-surface-subtle); box-shadow: inset 0 0 0 1px var(--app-border-hover), var(--app-ring);
+    color: var(--app-accent);
+  }
+  .cmd__q { flex: 1; min-width: 0; font: 400 19px/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd__caret { display: inline-block; width: 2px; height: 22px; margin-left: 2px; vertical-align: -4px; background: var(--app-accent); }
+  .cmd .mx-seg { --_h: 32px; }
+  .cmd .mx-seg button { padding: 0 12px; font-size: 13px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: var(--s-4); }
+  .examples .mx-btn[aria-pressed="true"] { --_bd: var(--app-accent-border); color: var(--app-text-strong); }
+
+  .res { margin-top: var(--s-3); overflow: hidden; }
+  .res__head { display: flex; align-items: center; gap: var(--s-3); padding: 10px var(--s-4); border-bottom: 1px solid var(--mx-hairline); }
+  .row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: var(--s-3); padding: 12px var(--s-4); align-items: start; }
+  .row + .row { border-top: 1px solid var(--mx-hairline); }
+  .row[aria-selected="true"] { background: var(--mx-selected); }
+  .row__ico { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; font: 600 13px/1 var(--font-sans); color: #fff; background: var(--c); }
+  .row__t { font: 600 14px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  .row__s { font-size: 13.5px; line-height: 1.5; color: var(--app-text-muted); margin-top: 2px; }
+  .row__m { display: grid; justify-items: end; gap: 6px; }
+  mark { background: var(--app-accent-bg); color: var(--app-text-strong); box-shadow: inset 0 -1px 0 var(--app-accent-border); border-radius: 2px; padding: 0 2px; }
+  .ans { padding: var(--s-5); display: grid; gap: var(--s-4); }
+  .ans p { margin: 0; font-size: 15.5px; line-height: 1.65; color: var(--app-text); max-width: 64ch; }
+  .ans sup { font: 500 10px/1 var(--font-mono); color: var(--app-accent); margin-left: 1px; }
+  .cites { display: flex; flex-wrap: wrap; gap: 6px; }
+  .res__foot { display: flex; gap: var(--s-4); padding: 9px var(--s-4); border-top: 1px solid var(--mx-hairline); }
+  .res__foot span { display: inline-flex; gap: 6px; align-items: center; }
+
+  .three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-6); }
+  .three > div { display: grid; gap: var(--s-3); align-content: start; }
+  .three .w-meta b { color: var(--app-accent); font-weight: 500; }
+  @media (max-width: 860px) { .three { grid-template-columns: 1fr; } }
+
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: var(--s-7); align-items: center; }
+  .split--flip { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+  .split--flip > :first-child { order: 2; }
+  @media (max-width: 900px) { .split, .split--flip { grid-template-columns: 1fr; } .split--flip > :first-child { order: 0; } }
+  .keys { display: inline-flex; gap: 4px; align-items: center; }
+  .keys kbd { height: 26px; min-width: 26px; font-size: 12px; color: var(--app-text); border-color: var(--app-border-strong); background: var(--app-surface-raised); }
+
+  .ledger { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--s-6); }
+  .ledger .mx-spec { grid-template-columns: minmax(130px, max-content) 1fr; }
+  .ledger dt { color: var(--app-text-strong) !important; font-weight: 600 !important; }
+  .ledger dd { color: var(--app-text-muted) !important; font-size: 14px; }
+  @media (max-width: 860px) { .ledger { grid-template-columns: 1fr; } }
+  .cta { text-align: center; }
+  .cta .w-title { margin: var(--s-3) auto 0; max-width: 18ch; }
+  .cta .acts { display: flex; gap: var(--s-2); justify-content: center; margin-top: var(--s-5); flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup 03 · Recall anything</b><span>Search-led: the hero is the app's command field. Pick an example; Recall and Ask both answer.</span><span class="mx-spacer"></span><a href="index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="#how">How it works</a>
+      <a class="mx-btn mx-btn--ghost" href="#app">The app</a>
+      <a class="mx-btn mx-btn--ghost" href="#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <span class="mx-kicker w-in">Perfect memory · fully private</span>
+      <h1 class="w-display w-in" style="--d:60ms">Recall anything you've seen or heard.</h1>
+      <p class="w-lede w-in" style="--d:120ms">Mnema keeps a private record of your Mac, so “where did I see that?” finally has an answer.</p>
+
+      <div class="door w-in" style="--d:180ms">
+        <div class="cmd" role="group" aria-label="Command field (illustration)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <span class="cmd__q"><span id="q"></span><span class="cmd__caret" aria-hidden="true"></span></span>
+          <div class="mx-seg" role="radiogroup" aria-label="Mode">
+            <button type="button" role="radio" aria-checked="true" data-mode="recall">Recall</button>
+            <button type="button" role="radio" aria-checked="false" data-mode="ask">Ask</button>
+          </div>
+        </div>
+        <div class="examples" id="examples" aria-label="Try an example"></div>
+        <div class="mx-panel res" id="res" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="how">
+    <div class="w-wrap">
+      <div class="three">
+        <div><span class="w-meta"><b>01</b> · it records</span><h2 class="w-sub">Quietly, in the background</h2><p class="w-prose">Your screen, what you hear and what you say. It pauses when you step away, and you can hide any app.</p></div>
+        <div><span class="w-meta"><b>02</b> · you recall</span><h2 class="w-sub">From anywhere, in seconds</h2><p class="w-prose">Press <span class="keys"><kbd>⌘</kbd><kbd>⌥</kbd><kbd>Space</kbd></span> over any app. Search by words, by meaning, by app or by time.</p></div>
+        <div><span class="w-meta"><b>03</b> · it answers</span><h2 class="w-sub">With receipts</h2><p class="w-prose">Ask about your past in plain words. Every answer links to the exact moment it came from.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="app">
+    <div class="w-wrap split">
+      <div class="w-stack">
+        <span class="mx-kicker">Timeline</span>
+        <h2 class="w-title">Then scrub straight to the moment.</h2>
+        <p class="w-prose">A result is a doorway. Open it and you're on your timeline at that second: the full screen, the audio, and the words on both.</p>
+      </div>
+      <figure class="w-shot" style="margin:0"><div class="w-shot__lights"><i></i><i></i><i></i></div>
+        <img class="w-dark" src="shots/timeline-dark.webp" alt="Mnema timeline"><img class="w-light" src="shots/timeline-light.webp" alt=""></figure>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule">
+    <div class="w-wrap split split--flip">
+      <div class="w-stack">
+        <span class="mx-kicker">Ask</span>
+        <h2 class="w-title">Keep the thread going.</h2>
+        <p class="w-prose">Follow up, refine, and come back tomorrow. Answers draw charts and timelines when words aren't enough. Use your ChatGPT plan, your own key, or a local model.</p>
+      </div>
+      <figure class="w-shot" style="margin:0"><div class="w-shot__lights"><i></i><i></i><i></i></div>
+        <img class="w-dark" src="shots/chat-dark.webp" alt="Ask conversation"><img class="w-light" src="shots/chat-light.webp" alt=""></figure>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule w-texture" id="privacy">
+    <div class="w-wrap w-stack" style="gap: var(--s-6)">
+      <div class="w-stack" style="max-width: 640px">
+        <span class="mx-kicker">Private by construction</span>
+        <h2 class="w-title">A memory only you can search.</h2>
+        <p class="w-prose">Recording, reading your screen, transcribing and search all run on your Mac. There's no Mnema cloud to send anything to.</p>
+      </div>
+      <div class="ledger">
+        <dl class="mx-spec">
+          <div><dt>Stays on your Mac</dt><dd>No account, no Mnema cloud, no telemetry.</dd></div>
+          <div><dt>Secrets redacted</dt><dd>Passwords, keys and card numbers never reach search or AI.</dd></div>
+          <div><dt>Encrypted at rest</dt><dd>Protected on disk.</dd></div>
+        </dl>
+        <dl class="mx-spec">
+          <div><dt>You choose what's kept</dt><dd>Forever, or 7, 14 or 30 days.</dd></div>
+          <div><dt>Delete in one click</dt><dd>The last few minutes, or everything AI learned.</dd></div>
+          <div><dt>Hide any app</dt><dd>Excluded apps are never recorded.</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec cta">
+    <div class="w-wrap">
+      <span class="mx-kicker">Get started</span>
+      <h2 class="w-title">Stop searching your memory. Search Mnema.</h2>
+      <p class="w-lede" style="margin: var(--s-4) auto 0">Free for 30 days. Then $69 once, with a year of updates.</p>
+      <div class="acts"><a class="mx-btn mx-btn--primary w-btn-lg" href="#">Download for macOS</a><a class="mx-btn w-btn-lg" href="#">Pricing</a></div>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="#">Pricing</a></li><li><a href="#">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="#">Rewind alternative</a></li><li><a href="#">Recall for Mac</a></li><li><a href="#">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="#">Support</a></li><li><a href="#">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+
+  // Fictional examples. Recall = result rows; Ask = an answer with numbered receipts.
+  var APP = { Figma: "#a259ff", Zoom: "#2d8cff", Safari: "#1a7cf5", Slack: "#611f69", Notes: "#d9a400", Xcode: "#147efb" };
+  var EX = [
+    { chip: "pricing table from Tuesday", q: "pricing table from Tuesday", ask: "What did the pricing table look like on Tuesday?",
+      rows: [["Figma", "Pricing page · v3", "Starter, Team and <mark>Pricing table</mark> with annual toggle", "Tue 14:41", "screen"],
+             ["Safari", "Competitor pricing", "Three tiers, <mark>pricing table</mark> with feature matrix", "Tue 10:05", "screen"],
+             ["Slack", "#launch", "“can we simplify the <mark>pricing table</mark> before Thursday?”", "Tue 16:12", "screen"]],
+      answer: "On Tuesday afternoon the pricing page in Figma had three tiers, Starter, Team and Business, with an annual toggle<sup>1</sup>. Later that day Maya asked to drop Business before Thursday's review<sup>2</sup>." , cites: ["Figma · Tue 14:41", "Slack · Tue 16:12"] },
+    { chip: "what Maya said about the launch", q: "maya launch date", ask: "What did Maya say about the launch date?",
+      rows: [["Zoom", "Weekly sync", "Maya: “the <mark>launch</mark> moves to the 14th so design can finish onboarding”", "Mon 11:22", "mic"],
+             ["Notes", "Launch checklist", "<mark>Launch</mark> 14th · copy freeze Wed", "Mon 11:40", "screen"]],
+      answer: "In Monday's sync Maya said the launch moves to the 14th so design can finish the onboarding flow<sup>1</sup>. She asked for the updated copy by Thursday, and you noted a copy freeze on Wednesday night<sup>2</sup>.", cites: ["Zoom · Mon 11:22", "Notes · Mon 11:40"] },
+    { chip: "that regex from last week", q: "regex email validation", ask: "Which regex did I use for email validation last week?",
+      rows: [["Xcode", "Validator.swift", "let pattern = #\"^[^@\\s]+@[^@\\s]+$\"# // <mark>email validation</mark>", "Thu 15:03", "screen"],
+             ["Safari", "Stack Overflow", "Simple <mark>regex</mark> for <mark>email validation</mark>", "Thu 14:58", "screen"]],
+      answer: "Last Thursday you used a deliberately simple pattern in Validator.swift: anything, an @, anything, with no spaces<sup>1</sup>. You'd just read a thread arguing against stricter patterns<sup>2</sup>.", cites: ["Xcode · Thu 15:03", "Safari · Thu 14:58"] },
+  ];
+  var cur = 0, mode = "recall";
+  var $ = function (id) { return document.getElementById(id); };
+  var ex = $("examples");
+  EX.forEach(function (e, i) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "mx-btn mx-btn--sm"; b.textContent = e.chip;
+    b.addEventListener("click", function () { cur = i; render(); });
+    ex.appendChild(b);
+  });
+  document.querySelectorAll("[data-mode]").forEach(function (b) {
+    b.addEventListener("click", function () { mode = b.dataset.mode; render(); });
+  });
+  function render() {
+    var e = EX[cur];
+    [].forEach.call(ex.children, function (b, i) { b.setAttribute("aria-pressed", i === cur ? "true" : "false"); });
+    document.querySelectorAll("[data-mode]").forEach(function (b) { b.setAttribute("aria-checked", b.dataset.mode === mode ? "true" : "false"); });
+    $("q").textContent = mode === "ask" ? e.ask : e.q;
+    var h = "";
+    if (mode === "recall") {
+      h += '<div class="res__head w-meta"><span>' + e.rows.length + ' moments</span><span class="mx-spacer"></span><span>all apps · past 7 days</span></div>';
+      e.rows.forEach(function (row, i) {
+        h += '<div class="row"' + (i === 0 ? ' aria-selected="true"' : "") + '><span class="row__ico" style="--c:' + APP[row[0]] + '">' + row[0][0] + '</span>' +
+          '<div><div class="row__t">' + row[0] + ' · ' + row[1] + '</div><div class="row__s">' + row[2] + '</div></div>' +
+          '<div class="row__m"><span class="w-meta">' + row[3] + '</span><span class="mx-chip mx-chip--' + row[4] + '">' + row[4] + '</span></div></div>';
+      });
+      h += '<div class="res__foot w-meta"><span><kbd>↵</kbd> jump to moment</span><span><kbd>⇥</kbd> ask instead</span></div>';
+    } else {
+      h += '<div class="ans"><span class="mx-kicker">Answer</span><p>' + e.answer + '</p><div class="cites">' +
+        e.cites.map(function (c, i) { return '<span class="mx-chip mx-chip--accent">' + (i + 1) + ' · ' + c + '</span>'; }).join("") + '</div></div>';
+    }
+    $("res").innerHTML = h;
+    var seg = document.querySelector(".cmd .mx-seg");
+    var on = seg.querySelector('[aria-checked="true"]');
+    var th = seg.querySelector(".mx-seg__thumb");
+    if (!th) { th = document.createElement("span"); th.className = "mx-seg__thumb"; seg.prepend(th); }
+    th.style.width = on.offsetWidth + "px"; th.style.transform = "translateX(" + on.offsetLeft + "px)";
+  }
+  render();
+})();
+</script>
+</body>
+</html>

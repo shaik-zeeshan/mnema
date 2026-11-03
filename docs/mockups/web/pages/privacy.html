@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · Privacy</title>
+<meta name="description" content="What Mnema collects and what it never does. Your recordings stay on your Mac. The website uses cookieless analytics; purchases and support are handled by named processors.">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Privacy — a calm reading page: one comfortable column, an on-page contents
+     rail that stays put on wide screens, spec rows for the four processors. */
+  .doc-hero { padding-block: clamp(48px, 8vw, 104px) clamp(36px, 5vw, 56px); }
+  .doc-hero .w-title { font-size: clamp(32px, 4.4vw, 52px); max-width: 20ch; }
+  .doc-hero .w-lede { max-width: 60ch; }
+  .doc-hero__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4); }
+
+  .doc { display: grid; grid-template-columns: 200px minmax(0, 44rem); gap: clamp(40px, 6vw, 88px); justify-content: center; padding-bottom: var(--w-sec); }
+  .doc__inner { width: min(var(--w-max), 100% - 2 * var(--w-gutter)); margin-inline: auto; }
+
+  /* Contents rail */
+  .toc { position: sticky; top: 96px; align-self: start; display: grid; gap: var(--s-3); padding-top: var(--s-7); }
+  .toc h2 { margin: 0; font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--app-text-subtle); }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: grid; border-left: 1px solid var(--mx-hairline); }
+  .toc a { display: grid; grid-template-columns: 22px 1fr; gap: 4px; padding: 7px 0 7px 12px; margin-left: -1px; border-left: 1px solid transparent;
+    text-decoration: none; font-size: 13.5px; line-height: 1.4; color: var(--app-text-muted); transition: color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart); }
+  .toc a span { font: 450 11px/1.6 var(--font-mono); color: var(--app-text-faint); }
+  .toc a:hover { color: var(--app-text-strong); }
+  .toc a[aria-current="true"] { color: var(--app-text-strong); border-left-color: var(--app-accent); }
+  .toc a[aria-current="true"] span { color: var(--app-accent); }
+
+  /* Reading column */
+  .art { min-width: 0; }
+  .art section { padding-top: var(--s-7); scroll-margin-top: 72px; }
+  .art section + section { margin-top: var(--s-7); border-top: 1px solid var(--mx-hairline); }
+  .art h2 { margin: var(--s-3) 0 var(--s-5); font: 600 clamp(22px, 2.4vw, 28px)/1.2 var(--font-sans); letter-spacing: -0.024em; color: var(--app-text-strong); text-wrap: balance; }
+  .art p { margin: 0; font-size: 16px; line-height: 1.75; color: var(--app-text-muted); max-width: 64ch; text-wrap: pretty; }
+  .art p + p { margin-top: var(--s-4); }
+  .art em { color: var(--app-text-strong); }
+  .art a { color: var(--app-accent); text-decoration: underline; text-decoration-color: var(--app-accent-border); text-underline-offset: 3px; }
+  .art a:hover { text-decoration-color: currentColor; }
+
+  .never { list-style: none; margin: 0 0 var(--s-6); padding: 0; counter-reset: n; }
+  .never li { counter-increment: n; display: grid; grid-template-columns: 36px 1fr; gap: var(--s-3); padding: 14px 0; border-top: 1px solid var(--mx-hairline);
+    font-size: 15.5px; line-height: 1.65; color: var(--app-text); }
+  .never li:last-child { border-bottom: 1px solid var(--mx-hairline); }
+  .never li::before { content: counter(n, decimal-leading-zero); font: 450 12px/2.1 var(--font-mono); color: var(--app-text-faint); }
+
+  .aside { padding: var(--s-4) var(--s-5); border-left: 2px solid var(--app-accent-border); background: var(--app-surface-subtle); border-radius: 0 var(--r-md) var(--r-md) 0; }
+  .art .aside p { font-size: 15px; line-height: 1.7; }
+
+  .proc { grid-template-columns: minmax(150px, max-content) 1fr; }
+  .proc dt { color: var(--app-text-strong); font-weight: 600; font-size: 15px; padding-block: 18px; }
+  .proc dt small { display: block; margin-top: 4px; font: 450 12px/1.4 var(--font-mono); color: var(--app-text-subtle); }
+  .proc dd { display: grid; gap: 6px; padding-block: 18px; font-size: 15px; line-height: 1.6; }
+  .proc dd span { color: var(--app-text); }
+  .proc dd span + span { color: var(--app-text-muted); }
+  .proc dd .proc__note { position: relative; margin-top: 2px; padding-left: 14px; font: 450 12.5px/1.6 var(--font-mono); color: var(--app-text-subtle); }
+  .proc dd .proc__note::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 1px; background: var(--app-accent); }
+
+  @media (max-width: 900px) {
+    .doc { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .toc { position: static; padding-top: var(--s-5); }
+  }
+  @media (max-width: 560px) {
+    .proc { grid-template-columns: 1fr; }
+    .proc dt { padding-bottom: 0; }
+    .proc dd { border-top: 0; padding-top: 8px; }
+    .proc > div:first-child > dd { padding-top: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Privacy</b><span>The privacy policy as a calm reading page: contents rail, numbered never-list, processor spec rows.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="doc-hero w-texture">
+    <div class="doc__inner">
+      <div class="doc" style="padding-bottom:0">
+        <span aria-hidden="true"></span>
+        <div class="w-stack">
+          <span class="mx-kicker w-in">Privacy</span>
+          <h1 class="w-title w-in" style="--d:60ms">What we collect, and what we never touch</h1>
+          <p class="w-lede w-in" style="--d:120ms">Mnema records your screen and audio, so the honest answer matters more here than a page of legal boilerplate. Everything Mnema captures stays on your Mac. The only data that reaches us comes from this website, buying a license, and emailing support.</p>
+          <div class="doc-hero__meta w-in" style="--d:150ms"><span class="mx-chip mx-chip--accent">local only</span><span class="w-meta">last updated 2026-07-25</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="doc__inner w-sec--rule">
+    <div class="doc">
+      <nav class="toc" aria-label="On this page">
+        <h2>On this page</h2>
+        <ol>
+          <li><a href="#never"><span>01</span>What Mnema never sends anywhere</a></li>
+          <li><a href="#processors"><span>02</span>The four services involved</a></li>
+          <li><a href="#rights"><span>03</span>Removing your data</a></li>
+        </ol>
+      </nav>
+
+      <article class="art">
+        <section id="never" aria-labelledby="never-h">
+          <span class="mx-kicker">Never leaves your Mac</span>
+          <h2 id="never-h">What Mnema never sends anywhere</h2>
+          <ul class="never">
+            <li>Your screen recordings, screenshots, audio, or transcripts — these are written to an encrypted database on your Mac and are never uploaded anywhere.</li>
+            <li>Anything about which apps you use, what you type, or what you search for inside Mnema.</li>
+            <li>Usage analytics, telemetry, or crash reports from inside the app.</li>
+          </ul>
+          <div class="aside">
+            <p>If you turn on a cloud AI provider or cloud transcription in Settings, the app sends data to <em>your own</em> account with that provider, using your own API key or subscription sign-in. That is your arrangement with them — it never passes through us.</p>
+          </div>
+        </section>
+
+        <section id="processors" aria-labelledby="processors-h">
+          <span class="mx-kicker">Who touches what</span>
+          <h2 id="processors-h">The four services involved</h2>
+          <dl class="mx-spec proc">
+            <div><dt>Umami Cloud</dt><dd>
+              <span>Anonymous website analytics: page views, referrer, country, browser, and download-button clicks.</span>
+              <span>So we know whether the site explains the product well enough for people to try it.</span>
+              <span class="proc__note">No cookies, no fingerprinting, no personal data — nothing that identifies you as a visitor.</span>
+            </dd></div>
+            <div><dt>Polar</dt><dd>
+              <span>Your email and billing details when you buy a license.</span>
+              <span>Polar is our merchant of record — it takes the payment, handles tax, and issues receipts.</span>
+              <span class="proc__note">We never see or store your card details.</span>
+            </dd></div>
+            <div><dt>License server <small>(mnema.day)</small></dt><dd>
+              <span>A one-way hash of your Mac's hardware id, plus your license key, when the app activates.</span>
+              <span>So a license runs on up to 3 Macs and can't be shared endlessly. After activation the app verifies offline.</span>
+              <span class="proc__note">The hash can't be reversed into anything about you or your machine.</span>
+            </dd></div>
+            <div><dt>Email (support)</dt><dd>
+              <span>Whatever you write to support@mnema.day, and your email address.</span>
+              <span>So a human can answer you.</span>
+            </dd></div>
+          </dl>
+        </section>
+
+        <section id="rights" aria-labelledby="rights-h">
+          <span class="mx-kicker">Your call</span>
+          <h2 id="rights-h">Removing your data</h2>
+          <p>Recordings are yours to delete from inside the app at any time — we can't delete them for you, because we never had them. For anything we do hold (your purchase record, your support emails, your license activations), write to <a href="mailto:support@mnema.day">support@mnema.day</a> and we'll remove it.</p>
+          <p>Questions about any of this go to the same address. If this page ever disagrees with what the app actually does, treat it as a bug and tell us.</p>
+        </section>
+      </article>
+    </div>
+  </div>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+
+  // Contents rail: mark the section currently in the reading band.
+  var links = document.querySelectorAll(".toc a");
+  function mark(id) { links.forEach(function (a) { a.setAttribute("aria-current", a.getAttribute("href") === "#" + id ? "true" : "false"); }); }
+  mark("never");
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) mark(e.target.id); });
+    }, { rootMargin: "-30% 0px -60% 0px" });
+    document.querySelectorAll(".art section").forEach(function (s) { io.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

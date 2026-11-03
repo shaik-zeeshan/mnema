@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · Pricing</title>
+<meta name="description" content="Mnema is a one-time $69 purchase with a year of updates included. 30-day free trial — no account, no card. Keep every version you own forever.">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Pricing — apps/web/src/pages/pricing.astro restyled: one license card
+     (price, what's included as spec rows, two actions), the renewal note,
+     then the fine print as the app's disclosure rows. */
+  .hero { padding-top: clamp(56px, 9vw, 112px); padding-bottom: clamp(48px, 7vw, 88px); text-align: center; }
+  .hero .w-display { max-width: 14ch; margin: var(--s-4) auto 0; }
+  .hero .w-lede { margin: var(--s-4) auto 0; }
+  .hero .w-meta { margin-top: var(--s-5); }
+
+  .lic { max-width: 820px; margin: 0 auto; }
+  .lic-sec { padding-top: clamp(48px, 6vw, 72px); }
+  .card { overflow: hidden; }
+  .card__head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: var(--s-5); padding: clamp(20px, 4vw, 32px); border-bottom: 1px solid var(--mx-hairline); }
+  .card__amt { font: 400 clamp(48px, 7vw, 64px)/1 var(--font-mono); letter-spacing: -0.05em; color: var(--app-text-strong); margin-top: var(--s-3); font-variant-numeric: tabular-nums; }
+  .card__amt small { font: 500 14px/1 var(--font-mono); letter-spacing: 0; color: var(--app-text-subtle); margin-left: 8px; }
+  .card__acts { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+  .card__body { padding: var(--s-2) clamp(20px, 4vw, 32px) var(--s-3); }
+  .card .mx-spec { grid-template-columns: 22px minmax(170px, max-content) 1fr; }
+  .card .mx-spec dt, .card .mx-spec dd { padding: 14px 0; }
+  .card .mx-spec .tick { color: var(--app-accent); padding-right: 0; }
+  .card .mx-spec .tick svg { width: 14px; height: 14px; display: block; margin-top: 3px; }
+  .card .mx-spec dt:not(.tick) { color: var(--app-text-strong); font-weight: 600; font-size: 14px; }
+  .card .mx-spec dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.55; }
+  @media (max-width: 640px) {
+    .card .mx-spec { grid-template-columns: 22px 1fr; }
+    .card .mx-spec dd { grid-column: 2; border-top: 0; padding-top: 0; }
+    .card .mx-spec dt:not(.tick) { padding-bottom: 4px; }
+  }
+  .renew { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-2) var(--s-3); margin-top: var(--s-4); padding: 0 4px; }
+  .renew .mx-chip { font-family: var(--font-mono); }
+  .renew .w-prose { font-size: 14px; }
+
+  .faq-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--s-7); align-items: start; }
+  @media (max-width: 900px) { .faq-grid { grid-template-columns: 1fr; gap: var(--s-5); } }
+  .faq { border-top: 1px solid var(--mx-hairline); }
+  .faq details { border-bottom: 1px solid var(--mx-hairline); }
+  .faq summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--s-3); padding: 16px 0; font: 600 15px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: "+"; margin-left: auto; font: 400 18px/1 var(--font-mono); color: var(--app-text-subtle); transition: transform var(--t-med) var(--ease-expo); }
+  .faq details[open] summary::after { transform: rotate(45deg); }
+  .faq details p { margin: 0 0 18px; max-width: 64ch; font-size: 14.5px; line-height: 1.6; color: var(--app-text-muted); }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Pricing</b><span>/pricing in the 06 style: one license card, the renewal note, and the fine print as disclosure rows.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html" aria-current="page">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <span class="mx-kicker w-in">Pricing</span>
+      <h1 class="w-display w-in" style="--d:60ms">Pay once. Own it.</h1>
+      <p class="w-lede w-in" style="--d:120ms">Mnema is a one-time purchase, not a subscription. Try it free for 30 days, buy it once, and keep every version you own forever.</p>
+      <p class="w-meta w-in" style="--d:150ms">one license · macOS · Apple Silicon</p>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule lic-sec" aria-labelledby="license">
+    <div class="w-wrap lic">
+      <div class="mx-panel card">
+        <div class="card__head">
+          <div>
+            <span class="mx-kicker" id="license">Mnema license</span>
+            <p class="card__amt" style="margin-bottom:0">$69<small>one-time</small></p>
+          </div>
+          <div class="card__acts">
+            <a class="mx-btn mx-btn--primary w-btn-lg" href="#">Buy Mnema — $69</a>
+            <a class="mx-btn w-btn-lg" href="#"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></svg>Try free for 30 days</a>
+          </div>
+        </div>
+        <div class="card__body">
+          <dl class="mx-spec">
+            <div><dt class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></dt><dt>30-day free trial first</dt><dd>No account, no card. The clock starts the first time you record — not when you install.</dd></div>
+            <div><dt class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></dt><dt>One year of new builds</dt><dd>Every update released within a year of your purchase is yours.</dd></div>
+            <div><dt class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></dt><dt>Keep it forever</dt><dd>The versions you own never expire, never need a subscription, never stop working.</dd></div>
+            <div><dt class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></dt><dt>Everything included</dt><dd>Recall, Ask AI, Insights, agent access — no tiers, nothing metered.</dd></div>
+            <div><dt class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></dt><dt>Verified on your Mac</dt><dd>Your license activates once per Mac, then it's verified on-device — no account, nothing personal sent.</dd></div>
+          </dl>
+        </div>
+      </div>
+      <div class="renew">
+        <span class="mx-chip">+ $29/year, optional</span>
+        <p class="w-prose">After your update window, renew only if you want another year of new builds. Your app never stops working either way.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" aria-labelledby="pricing-faq">
+    <div class="w-wrap faq-grid">
+      <div class="w-stack"><span class="mx-kicker">The fine print</span><h2 class="w-title" id="pricing-faq">Questions people ask</h2></div>
+      <div class="faq">
+        <details open><summary>What happens when the trial ends?</summary><p>Mnema switches to read-only. Everything you recorded stays browsable, searchable, and Ask-AI-able — only new recording pauses until you buy.</p></details>
+        <details><summary>What happens after my year of updates?</summary><p>Nothing breaks. The app keeps working forever on the builds you own. If you want another year of new builds, renew for $29 — whenever you like, with no penalty for lapsing.</p></details>
+        <details><summary>Is there a subscription?</summary><p>No. $69 once. The optional $29 renewal is a purchase you make on your terms, not a plan that charges you.</p></details>
+        <details><summary>How many Macs can I use it on?</summary><p>Up to 3 at a time. Your license key is a signed string you paste into the app. Replaced a machine? Free up your old devices yourself from Settings, once every 30 days.</p></details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

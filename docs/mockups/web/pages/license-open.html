@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Mnema</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/png" href="../icon.png">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* /license/open — the bounce page a checkout or email CTA lands on. Self-contained like the
+     real page: no site nav or footer, one centred dialog on the dot-grid. */
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  .stage { flex: 1 1 auto; display: grid; place-items: center; padding: var(--s-7) var(--w-gutter); }
+  .card { width: 100%; max-width: 460px; padding: var(--s-6); background: var(--app-surface); }
+  .card__logo { width: 44px; height: 44px; border-radius: 10px; }
+  .card h1 { font: 600 22px/1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-5) 0 var(--s-2); }
+  .card p { margin: 0 0 var(--s-5); }
+  .card .mx-btn { width: 100%; }
+  .card .hint { margin: var(--s-3) 0 0; font-size: var(--text-base); line-height: 1.55; color: var(--app-text-muted); }
+  .hint b { color: var(--app-text-strong); font-weight: 600; }
+  .path { font: 500 12.5px/1 var(--font-mono); color: var(--app-text-strong); white-space: nowrap; }
+  @media (max-width: 480px) { .card { padding: var(--s-5); } }
+
+  /* Mockup-only: the state switcher strip and what each state would fire. */
+  .mx-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); padding: 8px var(--w-gutter);
+    border-bottom: 1px solid var(--mx-hairline); background: var(--app-bg); }
+  .mx-ctl .w-meta { overflow-wrap: anywhere; }
+  body:not([data-view="claim"]) [data-state="claim"],
+  body:not([data-view="renewal"]) [data-state="renewal"],
+  body:not([data-view="noid"]) [data-state="noid"] { display: none; }
+  body[data-view="noid"] .card { display: none; }
+</style>
+</head>
+<body data-view="claim">
+<div class="w-mockbar"><b>Web mockup · License open</b><span>Where checkout and license emails land; it bounces the browser into the desktop app.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<div class="mx-ctl">
+  <span class="mx-kicker">State</span>
+  <div class="mx-seg" role="radiogroup" aria-label="Page state">
+    <button type="button" data-view="claim" aria-pressed="true">Claim</button>
+    <button type="button" data-view="renewal" aria-pressed="false">Renewal</button>
+    <button type="button" data-view="noid" aria-pressed="false">No checkout id</button>
+  </div>
+  <span class="w-meta" data-state="claim">?flow=claim&amp;checkout_id=chk_FAKE0000 → mnema://license/claim?checkout_id=chk_FAKE0000</span>
+  <span class="w-meta" data-state="renewal">?flow=renewal&amp;checkout_id=chk_FAKE0000 → mnema://license/renewed</span>
+  <span class="w-meta" data-state="noid">no checkout_id → location.replace("/")</span>
+  <span class="mx-spacer"></span>
+  <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+</div>
+
+<main class="stage w-texture">
+  <div class="card mx-panel">
+    <img class="card__logo" src="../icon.png" alt="Mnema" width="44" height="44">
+
+    <div data-state="claim">
+      <h1>Thanks for buying Mnema</h1>
+      <p class="mx-prose">Opening the app to apply your license…</p>
+    </div>
+    <div data-state="renewal">
+      <h1>Thanks for renewing Mnema</h1>
+      <p class="mx-prose">Opening the app to confirm your extended update window…</p>
+    </div>
+
+    <a class="mx-btn mx-btn--primary w-btn-lg" href="#">Open Mnema</a>
+
+    <p class="hint" data-state="claim">Didn't open? Your license key is also on its way by email — paste it into <span class="path">Settings → About → License &amp; Trial</span>.</p>
+    <p class="hint" data-state="renewal">Didn't open? Use the <b>Refresh license status</b> button in <span class="path">Settings → About → License &amp; Trial</span>.</p>
+  </div>
+
+  <div class="mx-empty mx-empty--center" data-state="noid">
+    <span class="mx-empty__glyph" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+    </span>
+    <p class="mx-empty__title">Nothing renders here</p>
+    <p class="mx-empty__text">Mockup note: reached without a checkout id (a crawler or a guessed URL), the page sends the browser straight to the home page so it never reads as a real page.</p>
+    <div class="mx-empty__acts"><a class="mx-btn mx-btn--sm" href="../06-combined.html">Go to home mockup</a></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+
+  // Mockup-only state switcher (the real page picks the state from ?flow= and ?checkout_id=).
+  var seg = document.querySelector(".mx-ctl .mx-seg");
+  var th = document.createElement("span"); th.className = "mx-seg__thumb"; seg.prepend(th);
+  function show(view) {
+    document.body.dataset.view = view;
+    seg.querySelectorAll("button").forEach(function (b) { b.setAttribute("aria-pressed", b.dataset.view === view ? "true" : "false"); });
+    var on = seg.querySelector('[aria-pressed="true"]');
+    th.style.width = on.offsetWidth + "px"; th.style.transform = "translateX(" + on.offsetLeft + "px)";
+  }
+  seg.addEventListener("click", function (e) { var b = e.target.closest("button"); if (b) show(b.dataset.view); });
+  show("claim");
+})();
+</script>
+</body>
+</html>

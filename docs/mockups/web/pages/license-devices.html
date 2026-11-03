@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Move Mnema to a new Mac</title>
+<meta name="description" content="Your Mnema license works on up to 3 Macs. Free them up from inside the app to move to a new one.">
+<link rel="icon" type="image/png" href="../icon.png">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* /license/devices — the support note the license server's reset link points at when a new
+     Mac is refused at the device cap. Self-contained like the real page: no site nav or footer,
+     one centred dialog on the dot-grid. Static: the page has no script and one state. */
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  .stage { flex: 1 1 auto; display: grid; place-items: center; padding: var(--s-7) var(--w-gutter); }
+  .card { width: 100%; max-width: 520px; padding: var(--s-6); background: var(--app-surface); }
+  .card__logo { display: block; width: 44px; height: 44px; border-radius: 10px; }
+  .card__logo img { width: 44px; height: 44px; border-radius: 10px; }
+  .card h1 { font: 600 22px/1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-5) 0 var(--s-2); }
+  .card .mx-prose { margin: 0 0 var(--s-4); }
+  .card .mx-prose b { color: var(--app-text-strong); font-weight: 600; }
+  .path { font: 500 12.5px/1 var(--font-mono); color: var(--app-text-strong); white-space: nowrap; }
+
+  /* The three steps as settings-style rows: mono number, hairline between. */
+  .steps { list-style: none; margin: 0 0 var(--s-4); padding: 0; border: 1px solid var(--app-border); border-radius: var(--r-md);
+    background: var(--app-surface-subtle); }
+  .steps li { display: grid; grid-template-columns: 22px 1fr; align-items: center; gap: var(--s-3); padding: 10px var(--s-3);
+    font-size: var(--text-md); line-height: 1.45; color: var(--app-text); }
+  .steps li + li { border-top: 1px solid var(--mx-hairline); }
+  .steps li::before { counter-increment: step; content: counter(step); display: grid; place-items: center; width: 22px; height: 22px;
+    border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--app-border-strong); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-muted); }
+  .steps { counter-reset: step; }
+  .steps b { color: var(--app-text-strong); font-weight: 600; }
+
+  .card .mx-rule { margin: var(--s-5) 0; }
+  .fine { margin: 0; font-size: var(--text-base); line-height: 1.55; color: var(--app-text-muted); }
+  .fine a { color: var(--app-text-strong); text-underline-offset: 2px; }
+  @media (max-width: 480px) { .card { padding: var(--s-5); } }
+
+  /* Mockup-only: theme toggle strip (the real page has no chrome to hold it). */
+  .mx-ctl { display: flex; align-items: center; gap: var(--s-3); padding: 8px var(--w-gutter);
+    border-bottom: 1px solid var(--mx-hairline); background: var(--app-bg); }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · License devices</b><span>The help note behind the "device limit reached" link; the fix itself happens inside the app.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<div class="mx-ctl">
+  <span class="w-meta">one state · static page, no script</span>
+  <span class="mx-spacer"></span>
+  <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+</div>
+
+<main class="stage w-texture">
+  <div class="card mx-panel">
+    <a class="card__logo" href="../06-combined.html"><img src="../icon.png" alt="Mnema" width="44" height="44"></a>
+    <h1>Move Mnema to a new Mac</h1>
+    <p class="mx-prose">
+      Your Mnema license works on up to <b>3 Macs</b>. If you just tried to activate
+      a new one and were told the limit is reached, you can free up your devices yourself —
+      right from the app, no forms, no waiting.
+    </p>
+    <ol class="steps">
+      <li><span>Open Mnema on the Mac you want to use.</span></li>
+      <li><span>Go to <span class="path">Settings → About → License &amp; Trial</span>.</span></li>
+      <li><span>Click <b>Free up my devices</b>.</span></li>
+    </ol>
+    <p class="mx-prose">
+      That one click clears the license's device list and activates the Mac you're on. To keep
+      the limit meaningful, it works once every 30 days — if you reset recently, the app shows
+      the date it opens up again.
+    </p>
+    <hr class="mx-rule">
+    <p class="fine">Still stuck? Email <a href="mailto:support@mnema.day">support@mnema.day</a> and we'll sort it out.</p>
+  </div>
+</main>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>
