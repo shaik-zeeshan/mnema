@@ -634,7 +634,9 @@
   /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
   @media (max-width: 1000px) {
     .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
-    .in-lede-stats, .in-skel-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-4); }
+    /* min-content floor: a one-word value ("Communication") never breaks (.in-jwrap's
+       overflow-wrap: anywhere would split it) or runs past its cell. */
+    .in-lede-stats, .in-skel-stats { grid-template-columns: repeat(4, minmax(min-content, 1fr)); gap: var(--s-4); overflow-wrap: normal; }
   }
   @media (max-width: 760px) {
     .in-lede-stats, .in-skel-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }

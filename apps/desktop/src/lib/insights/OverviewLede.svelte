@@ -431,7 +431,8 @@
   /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
   @media (max-width: 1000px) {
     .in-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
-    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-4); }
+    /* min-content floor: a one-word value ("Communication") never runs past its cell. */
+    .stats { grid-template-columns: repeat(4, minmax(min-content, 1fr)); gap: var(--s-4); }
   }
   @media (max-width: 760px) {
     .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
