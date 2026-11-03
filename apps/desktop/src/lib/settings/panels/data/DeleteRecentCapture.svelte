@@ -84,11 +84,12 @@
     background: var(--app-danger-bg-soft);
     padding: 0 20px;
   }
+  /* Same wrap rule as SettingRow: the controls drop below before the copy squeezes. */
   .st-danger__row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--s-6);
+    gap: var(--s-3) var(--s-6);
     padding: 14px 0;
   }
   .st-danger__label {
@@ -106,11 +107,17 @@
     flex-wrap: nowrap;
     margin: -4px 0 var(--s-3);
   }
+  .st-danger__row > :first-child {
+    flex: 1 1 240px;
+    min-width: 0;
+  }
   .st-danger__ctl {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     align-items: center;
     gap: var(--s-2);
-    justify-self: end;
+    margin-left: auto;
   }
   .st-danger__note {
     margin: 0;

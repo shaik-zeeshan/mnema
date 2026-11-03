@@ -13,27 +13,24 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import type { Conclusion, ConfidenceSnapshot, UserContextStatus } from "$lib/types/recording";
-  import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import { loadSubjectHistories } from "$lib/insights/subject-histories";
   import Segmented from "$lib/components/Segmented.svelte";
   import { inBar } from "$lib/insights/in-bar";
   import ConvictionMap, { type MapRow } from "$lib/insights/ConvictionMap.svelte";
   import SubjectsLede from "$lib/insights/SubjectsLede.svelte";
+  import SubjectsList, { type SubjectGroup, type SubjectRow } from "$lib/insights/SubjectsList.svelte";
   import {
     type Axis,
     type ConvictionTier,
-    type TierSubject,
     MAP_PAGE,
-    TIER_PAGE,
-    buildTiers,
     convictionTierId,
     debounce,
     decideRefresh,
     deriveTrend,
     fortnightAgo,
     isSparse,
+    listGroups,
     movePts,
-    pageOf,
     rankMovers,
     subjectsDiff,
   } from "$lib/insights/subjectsTiers";
@@ -42,7 +39,7 @@
   import IconInbox from "~icons/lucide/inbox";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconRetry from "~icons/lucide/rotate-ccw";
-  import IconRight from "~icons/lucide/chevron-right";
+  import IconList from "~icons/lucide/list";
 
   interface Props {
     onOpenSubject: (subject: string) => void;
@@ -59,15 +56,6 @@
   const SPARK_LEAD = "--app-text-strong";
   const SPARK_REST = "--chart-grey-2";
 
-  interface SubjectRow extends TierSubject {
-    subject: string;
-    conclusions: Conclusion[]; // confidence desc
-    headline: string; // the lead conclusion's statement
-    sinceMs: number; // earliest formation
-    then: number | null; // lead's confidence 14 days ago; null = formed this fortnight
-    spark: { colorVar: string; faded: boolean; points: number[] }[];
-  }
-
   let conclusions = $state<Conclusion[] | null>(null);
   let loadError = $state(false);
   let loading = $state(true);
@@ -78,6 +66,15 @@
     const d = ctx?.lastDistillation;
     return d ? d.guardrailSuppressed + d.belowFormationBar + d.resurfaceBlocked + d.ungrounded : 0;
   });
+
+  // The tiered list (each tier pages on its own); `lastOpened` is marked in it
+  // and its tier paged back to when the reader returns from that subject's page.
+  let listView = $state<SubjectsList>();
+  let lastOpened = $state<string | null>(null);
+  function open(subject: string): void {
+    lastOpened = subject;
+    onOpenSubject(subject);
+  }
 
   let axis = $state<Axis>("conviction");
   const AXIS_OPTIONS = [
@@ -91,23 +88,12 @@
   let appliedQuery = $state("");
   const applySearch = debounce((q: string) => {
     appliedQuery = q;
-    setShown("search", null);
+    listView?.reset();
   }, 200);
   function clearSearch(): void {
     applySearch.cancel();
     searchQuery = appliedQuery = "";
-  }
-
-  // Per-tier paging: TIER_PAGE rows at a time so a crowded tier never floods
-  // the surface (search results page the same way, as tier "search"). Reassign
-  // the Map so the $state reacts.
-  let tierShown = $state<Map<string, number>>(new Map());
-  const shownCount = (id: string) => tierShown.get(id) ?? TIER_PAGE;
-  function setShown(id: string, n: number | null): void {
-    const next = new Map(tierShown);
-    if (n === null) next.delete(id);
-    else next.set(id, n);
-    tierShown = next;
+    listView?.reset();
   }
 
   // subject → (conclusionId → oldest-first Confidence History). The generation
@@ -177,7 +163,6 @@
     return Number(a.faded) - Number(b.faded) || b.topConfidence - a.topConfidence || a.subject.localeCompare(b.subject);
   }
   const displayRows = $derived([...rows].sort(byDisplay));
-  const tiers = $derived(buildTiers(displayRows, axis).filter((t) => t.items.length > 0));
   const sparse = $derived(isSparse(displayRows.length));
   const searching = $derived(appliedQuery.trim().length > 0);
   const searchResults = $derived(searching ? rankSubjects(displayRows, appliedQuery) : []);
@@ -195,10 +180,12 @@
   // A set filter scopes the whole page below the lede to its matches.
   const listed = $derived(searching ? searchResults : displayRows);
 
-  // The map shows the top MAP_PAGE subjects until "Show all N".
-  let mapAll = $state(false);
+  // What the list shows (mockup r2-A): Matches, a sparse run, or every axis tier.
+  const groups = $derived<SubjectGroup[]>(listGroups(displayRows, axis, searching ? searchResults : null));
+
+  // The map always shows the top MAP_PAGE; the rest are in the list below.
   const mapRows = $derived<MapRow[]>(
-    listed.slice(0, mapAll ? undefined : MAP_PAGE).map((r) => ({
+    listed.slice(0, MAP_PAGE).map((r) => ({
       subject: r.subject,
       headline: r.headline,
       count: r.conclusions.filter(isVisible).length,
@@ -212,7 +199,6 @@
 
   const moving = $derived(rankMovers(listed));
 
-  const pct = (c: number) => Math.round(Math.max(0, Math.min(1, c)) * 100);
   const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
   // Subject display order for any list — the same grouping + sort the page
@@ -331,33 +317,6 @@
   });
 </script>
 
-{#snippet subjRow(r: SubjectRow)}
-  <button type="button" class="in-subj" onclick={() => onOpenSubject(r.subject)}>
-    <span class="in-subj__name">{r.subject}<small>{r.conclusions.length} concl. · since {day(r.sinceMs)}</small></span>
-    <span class="in-subj__lead">{r.headline}</span>
-    <span class="in-subj__spark">
-      <Sparkline series={r.spark} label={`${r.subject} — confidence over time across ${r.conclusions.length} conclusions`} />
-    </span>
-    <span class="num">{pct(r.topConfidence)}%</span>
-    <IconRight class="arrow" width="14" height="14" aria-hidden="true" />
-  </button>
-{/snippet}
-
-{#snippet pagedTier(id: string, title: string, note: string, faded: boolean, items: SubjectRow[])}
-  {@const page = pageOf(items, shownCount(id), TIER_PAGE)}
-  <div class="in-tier" class:in-tier--faded={faded}>
-    <p class="in-group">{title} {#if note}<span class="in-group__note">{note}</span>{/if}</p>
-    {#each page.visible as r (r.subject)}{@render subjRow(r)}{/each}
-    {#if page.more > 0}
-      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(id, shownCount(id) + TIER_PAGE)}>
-        Show {page.more} more
-      </button>
-    {:else if page.less}
-      <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => setShown(id, null)}>Show less</button>
-    {/if}
-  </div>
-{/snippet}
-
 <section class="subjects" aria-label="Subjects" bind:this={rootEl}>
   {#if conclusions && displayRows.length > 0}
     <div class="s-ctl" use:inBar>
@@ -444,28 +403,21 @@
     </div>
   {:else}
     <SubjectsLede subjectCount={displayRows.length} conclusionCount={conclusionTotal} {names} />
-    <ConvictionMap rows={mapRows} query={appliedQuery.trim()} onOpen={onOpenSubject} onClear={clearSearch}>
+    <ConvictionMap rows={mapRows} query={appliedQuery.trim()} onOpen={open} onClear={clearSearch}>
       {#if listed.length > MAP_PAGE}
-        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => (mapAll = !mapAll)}>
-          {mapAll ? `Show top ${MAP_PAGE}` : `Show all ${listed.length}`}
+        <span>Top {MAP_PAGE} by conviction · all {listed.length} are in the list below</span>
+        <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => listView?.show()}>
+          <IconList width="13" height="13" aria-hidden="true" />Go to the list
         </button>
       {/if}
     </ConvictionMap>
 
     <div class="in-feed">
       <div class="mx-reveal" style="--i:4">
-        {#if searching}
-          <!-- No matches: the map above carries the empty state + Clear. -->
-          {#if searchResults.length}
-            {@render pagedTier("search", `${searchResults.length} match${searchResults.length === 1 ? "" : "es"}`, "", false, searchResults)}
-          {/if}
-        {:else if sparse}
-          <div class="in-tier">{#each displayRows as r (r.subject)}{@render subjRow(r)}{/each}</div>
+        <!-- No matches: the map above carries the empty state + Clear. -->
+        <SubjectsList bind:this={listView} {groups} current={lastOpened} onOpen={open} />
+        {#if sparse && !searching}
           <p class="mx-body-sm">Tiers appear once there are five or more subjects.</p>
-        {:else}
-          {#each tiers as tier (tier.id)}
-            {@render pagedTier(tier.id, `${tier.title} · ${tier.items.length}`, tier.note, tier.faded, tier.items)}
-          {/each}
         {/if}
       </div>
       <div class="in-side mx-reveal" style="--i:5">
@@ -477,7 +429,7 @@
                 {@const d = movePts(r)}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div class="in-move__row" onclick={() => onOpenSubject(r.subject)}>
+                <div class="in-move__row" onclick={() => open(r.subject)}>
                   <dt>{r.subject}</dt>
                   <dd class={d === null ? "in-new" : d > 0 ? "in-up" : "in-down"}>
                     {d === null ? `formed ${day(r.sinceMs)}` : `${d > 0 ? "+" : "−"}${Math.abs(d)} pts`}
@@ -514,7 +466,7 @@
   }
   .in-refresh {
     position: sticky;
-    top: 64px;
+    top: calc(var(--in-bar-h, 56px) + 8px);
     z-index: 5;
     display: flex;
     justify-content: center;
@@ -536,96 +488,6 @@
     align-items: baseline;
     gap: var(--s-3);
     margin: 0 0 var(--s-3);
-  }
-  .in-tier {
-    margin-bottom: var(--s-5);
-  }
-  .in-group {
-    margin: var(--s-4) 0 var(--s-1);
-    font: 500 var(--text-xs) / 1 var(--font-mono);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-  }
-  .in-group::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: var(--mx-hairline);
-  }
-  .in-group__note {
-    text-transform: none;
-    letter-spacing: 0;
-    color: var(--app-text-faint);
-  }
-  .in-subj {
-    display: grid;
-    grid-template-columns: 170px minmax(0, 1fr) 100px 44px 14px;
-    gap: var(--s-4);
-    align-items: center;
-    width: calc(100% + var(--s-3) * 2);
-    padding: 12px var(--s-3);
-    margin: 0 calc(var(--s-3) * -1);
-    border: 0;
-    border-bottom: 1px solid var(--mx-hairline);
-    border-radius: var(--r-sm);
-    background: none;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: background-color var(--t-fast) var(--ease-quart);
-  }
-  .in-subj:last-of-type {
-    border-bottom: 0;
-  }
-  .in-subj:hover {
-    background: var(--app-surface-hover);
-  }
-  .in-subj:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .in-subj__name {
-    font: 600 var(--text-md) / 1.2 var(--font-sans);
-    color: var(--app-text-strong);
-  }
-  .in-subj__name small {
-    display: block;
-    margin-top: 5px;
-    white-space: nowrap;
-    font: 400 var(--text-xs) / 1 var(--font-mono);
-    color: var(--app-text-subtle);
-  }
-  .in-subj__lead {
-    color: var(--app-text-muted);
-    font-size: var(--text-base);
-    line-height: 1.45;
-  }
-  .in-subj__spark {
-    display: block;
-    height: 30px;
-  }
-  .in-subj__spark :global(svg) {
-    width: 100%;
-    height: 100%;
-  }
-  .in-subj .num {
-    text-align: right;
-    color: var(--app-text-strong);
-  }
-  .in-subj :global(.arrow) {
-    color: var(--app-text-faint);
-    transition: transform var(--t-med) var(--ease-expo);
-  }
-  .in-subj:hover :global(.arrow) {
-    transform: translateX(3px);
-    color: var(--app-text-strong);
-  }
-  .in-tier--faded .in-subj {
-    opacity: 0.62;
   }
   .in-move {
     grid-template-columns: 1fr auto;
@@ -701,5 +563,13 @@
     .in-feed {
       grid-template-columns: 1fr;
     }
+  }
+  /* Narrow windows: stats drop under the headline (as SubjectHeader does on the subject page). */
+  @media (max-width: 1000px) {
+    .s-skel-read { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+    .s-skel-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-4); }
+  }
+  @media (max-width: 760px) {
+    .s-skel-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>

@@ -684,7 +684,7 @@
 </section>
 
 <style>
-  .ch-main { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+  .ch-main { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
   .ch-head {
     grid-row: 1;
     display: flex;

@@ -1,11 +1,14 @@
 <script lang="ts">
-  // Subject detail (insights.html `openSubject`): crumb with a ghost Ask, the
-  // subject lede + four stats, "Confidence over time" beside the conclusions
-  // list (paged), with "Why Mnema believes this" and the "This conclusion" panel
-  // under the chart — beside the list, so a long list never buries them.
-  // Owns the fetch, the realtime refresh, selection, Pin / delayed-commit
-  // Dismiss, and the Timeline hand-off. Each conclusion keeps its OWN
-  // confidence — the subject is never rolled up into one score.
+  // Subject page (mockup r2-B "Evidence drawer"): the whole window is the
+  // subject — crumb + Ask, big title, four stats, the full-width chart, then
+  // every conclusion grouped by tier, each tier paging on its own. Clicking a
+  // conclusion opens its evidence in a drawer pinned to the window's right
+  // under the Insights bar; the page PUSHES (narrows) instead of hiding under
+  // it, so the clicked row stays on screen, shaded, beside its proof. Owns the
+  // fetch, the realtime refresh, the open conclusion, paging, keys, the drawer's
+  // geometry, Pin / delayed-commit Dismiss, and the Timeline hand-off. Each
+  // conclusion keeps its OWN confidence — the subject is never rolled up.
+  import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { goto } from "$app/navigation";
@@ -17,19 +20,26 @@
     ActivityEvidenceRef,
   } from "$lib/types/recording";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
-  import SubjectChart from "$lib/insights/SubjectChart.svelte";
+  import SubjectHeader from "$lib/insights/SubjectHeader.svelte";
+  import ConclusionTiers, { type TierView } from "$lib/insights/ConclusionTiers.svelte";
+  import EvidenceDrawer from "$lib/insights/EvidenceDrawer.svelte";
   import { buildTimeline } from "$lib/insights/subjectTimeline";
-  import { CONCLUSION_PAGE, debounce, deriveTrend, fortnightAgo, pageOf } from "$lib/insights/subjectsTiers";
+  import {
+    DISPLAY_FLOOR,
+    EVIDENCE_PAGE,
+    INITIAL_BASE,
+    STRONGLY_HELD,
+    TIER_PAGE_SIZES,
+    convictionTierId,
+    debounce,
+    fortnightAgo,
+    neighbourAfter,
+    pageHolding,
+    pageSlice,
+    stepIndex,
+  } from "$lib/insights/subjectsTiers";
   import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
-  import { relativeTime } from "$lib/insights/conversationStore.svelte";
-  import { fmtDuration } from "$lib/insights/lede-stats";
-  import { formatClock } from "$lib/time-format";
-  import { tip } from "$lib/components/tooltip";
   import { humanizeError } from "$lib/format-error";
-  import IconBack from "~icons/lucide/chevron-left";
-  import IconSparkle from "~icons/lucide/sparkle";
-  import IconPin from "~icons/lucide/pin";
-  import IconArrow from "~icons/lucide/arrow-right";
   import IconInbox from "~icons/lucide/inbox";
   import IconAlert from "~icons/lucide/triangle-alert";
   import IconRetry from "~icons/lucide/rotate-ccw";
@@ -44,23 +54,36 @@
   }
   let { subject, onBack, askDisabled = false }: Props = $props();
 
+  const pct = (v: number) => Math.round(v * 100);
+  // Top→bottom; membership is the Subjects list's own tier test, per conclusion.
+  const TIERS = [
+    { id: "strong", title: "Strongly held", note: `confidence ${pct(STRONGLY_HELD)}% and up` },
+    { id: "forming", title: "Forming", note: `confidence ${pct(INITIAL_BASE)}–${pct(STRONGLY_HELD)}%` },
+    { id: "shaping", title: "Just taking shape", note: `confidence ${pct(DISPLAY_FLOOR)}–${pct(INITIAL_BASE)}%` },
+    { id: "fading", title: "Fading", note: `confidence under ${pct(DISPLAY_FLOOR)}% · kept for history` },
+  ];
+  const tierOf = (c: Conclusion): string =>
+    convictionTierId({ topConfidence: c.confidence, faded: c.status === "faded", trend: "steady", lastMovedAtMs: 0 });
+  // The drawer takes this share of the Insights pane; below SHEET_BELOW px it
+  // covers the pane as a sheet instead of pushing the page.
+  const DRAWER_SHARE = 0.44;
+  const SHEET_BELOW = 700;
+  const PUSH_GAP = 24;
+
   let view = $state<SubjectView | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
-  let selectedId = $state<number | null>(null);
-  let sideEl = $state<HTMLElement>();
-
-  // Wide layout keeps the evidence sticky beside the list; stacked (narrow) puts
-  // it below the list, so bring it into view on pick.
-  function select(id: number): void {
-    selectedId = id;
-    if (sideEl && getComputedStyle(sideEl).position !== "sticky") {
-      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-      sideEl.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
-    }
-  }
+  let openId = $state<number | null>(null);
   let pinBusy = $state(false);
   let destroyed = false;
+  let sectionEl = $state<HTMLElement>();
+
+  // Per-tier page + rows per page, the evidence page, and the section under
+  // the pointer (what ←/→ turn).
+  let tierPg = $state<Record<string, { page: number; size: number }>>({});
+  let evPage = $state(0);
+  let evSize = $state(EVIDENCE_PAGE); // replaced by what fits the drawer's height
+  let hovered: string | null = null;
 
   // Activities the conclusions cite, resolved for row detail + the hand-off.
   let activities = $state<Map<number, Activity>>(new Map());
@@ -91,10 +114,6 @@
     dismissal.flush();
   });
 
-  const pct = (v: number) => Math.round(v * 100);
-  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const signed = (d: number) => `${d > 0 ? "+" : d < 0 ? "−" : "±"}${Math.abs(d)}`;
-
   const histories = $derived(
     new Map<number, ConfidenceSnapshot[]>((view?.trajectories ?? []).map((t) => [t.conclusionId, t.history])),
   );
@@ -102,69 +121,197 @@
   const shown = $derived(
     (view?.conclusions ?? []).filter((c) => !dismissal.has(c.id)).sort((a, b) => b.confidence - a.confidence),
   );
-  // The list pages CONCLUSION_PAGE rows at a time; a new subject starts over.
-  let clShown = $state(CONCLUSION_PAGE);
-  const clPage = $derived(pageOf(shown, clShown, CONCLUSION_PAGE));
-  const selected = $derived(shown.find((c) => c.id === selectedId) ?? shown[0] ?? null);
-  const selIndex = $derived(selected ? shown.indexOf(selected) : -1);
-  const lead = $derived(shown[0] ?? null);
+  const tiers = $derived(
+    TIERS.map((t) => ({ ...t, items: shown.filter((c) => tierOf(c) === t.id) })).filter((t) => t.items.length > 0),
+  );
+  // Reading order for ↑/↓: tier by tier.
+  const flat = $derived(tiers.flatMap((t) => t.items));
+  const tierViews = $derived(
+    tiers.map((t): TierView => {
+      const st = tierPg[t.id] ?? { page: 0, size: TIER_PAGE_SIZES[0] };
+      return { id: t.id, title: t.title, note: t.note, size: st.size, slice: pageSlice(t.items, st.page, st.size) };
+    }),
+  );
+  const open = $derived(flat.find((c) => c.id === openId) ?? null);
+  const openIndex = $derived(open ? flat.indexOf(open) : -1);
 
-  // ── Lede ──
-  const now = Date.now();
-  const sinceMs = $derived(Math.min(...shown.map((c) => c.formedAtMs)));
-  const trendWord = $derived.by(() => {
-    if (shown.every((c) => c.status === "faded")) return "fading";
-    const points = new Map([...histories].map(([id, h]) => [id, h.map((s) => s.confidence)]));
-    return { up: "warming", steady: "steady", down: "cooling" }[deriveTrend(shown, points)];
-  });
   // Confidence change over the fortnight; null = formed inside it ("new").
+  const now = Date.now();
   const fortnightDelta = (c: Conclusion): number | null => {
     const then = fortnightAgo(c, histories.get(c.id) ?? [], now);
     return then === null ? null : pct(c.confidence) - pct(then);
   };
-  const leadDelta = $derived(lead ? fortnightDelta(lead) : null);
-  const aboveFloor = $derived(shown.filter((c) => c.status !== "faded").length);
-  const evidenceCount = $derived(new Set(shown.flatMap((c) => c.evidence.map((e) => e.activityId))).size);
-  const lastSupportMs = $derived(Math.max(...shown.map((c) => c.lastSupportedAtMs)));
-  const lastSupport = $derived.by(() => {
-    const r = relativeTime(lastSupportMs);
-    const m = /^(\d+)(\D+)$/.exec(r);
-    return m ? { n: m[1], unit: `${m[2]} ago` } : { n: r, unit: "" };
-  });
-  const lastSupportDay = $derived(
-    new Date(lastSupportMs).toDateString() === new Date(now).toDateString() ? "today" : day(lastSupportMs),
-  );
 
-  // ── Selected conclusion ──
-  const events = $derived(selected ? buildTimeline(selected, view?.trajectories.find((t) => t.conclusionId === selected.id), activities) : []);
-  const selHistory = $derived(selected ? (histories.get(selected.id) ?? []) : []);
-  const peak = $derived(selected ? Math.max(selected.confidence, ...selHistory.map((s) => s.confidence)) : 0);
-  const selActivities = $derived(selected ? new Set(selected.evidence.map((e) => e.activityId)).size : 0);
+  // ── The open conclusion ──
+  const events = $derived(
+    open ? buildTimeline(open, view?.trajectories.find((t) => t.conclusionId === open.id), activities) : [],
+  );
   // Newest supporting Activity that resolved to a raw capture ref.
   const newestRef = $derived.by((): ActivityEvidenceRef | null => {
     let best: Activity | null = null;
-    for (const e of selected?.evidence ?? []) {
+    for (const e of open?.evidence ?? []) {
       const a = activities.get(e.activityId);
       if (e.stance === "support" && a?.evidence[0] && (!best || a.startedAtMs > best.startedAtMs)) best = a;
     }
     return best?.evidence[0] ?? null;
   });
-  function evidenceNote(a: Activity): string {
-    const frames = a.evidence.filter((r) => r.subjectType === "frame").length;
-    // B6: the activity's clock time, not a transcript offset Mnema can't pin.
-    const parts = [formatClock(a.startedAtMs), fmtDuration(a.endedAtMs - a.startedAtMs)];
-    if (frames) parts.push(`cited ${frames} ${frames === 1 ? "frame" : "frames"}`);
-    return parts.join(" · ");
+
+  // ── Drawer geometry: pinned to the Insights pane under its bar ──
+  let geo = $state({ top: 0, right: 0, bottom: 0, width: 0, push: 0, sheet: false });
+  const mainEl = (): HTMLElement | null => sectionEl?.closest<HTMLElement>(".in-main") ?? null;
+  function measure(): void {
+    const main = mainEl();
+    if (!main || !sectionEl) return;
+    const r = main.getBoundingClientRect();
+    const bar = (main.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0;
+    const sheet = r.width < SHEET_BELOW;
+    const width = sheet ? r.width : Math.round(r.width * DRAWER_SHARE);
+    // The section's own padding (the push) never moves its border box.
+    const s = sectionEl.getBoundingClientRect();
+    const push = sheet ? 0 : Math.max(0, Math.round(s.right - (r.right - width) + PUSH_GAP));
+    const next = { top: r.top + bar, right: innerWidth - r.right, bottom: innerHeight - r.bottom, width, push, sheet };
+    if (JSON.stringify(next) !== JSON.stringify(geo)) geo = next;
+  }
+  $effect(() => {
+    const el = sectionEl;
+    if (!el) return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    const main = mainEl();
+    if (main) ro.observe(main);
+    addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      removeEventListener("resize", measure);
+    };
+  });
+
+  // ── Scrolling helpers ──
+  const rowEl = (id: number) => sectionEl?.querySelector<HTMLElement>(`.sd-row[data-cid="${id}"]`) ?? null;
+  const drawerEl = () => document.querySelector<HTMLElement>(".sd-drawer");
+  // Bring `el` fully into `box`, below the box's own sticky bar (its first child).
+  function keepInView(el: Element | null, box: HTMLElement | null): void {
+    if (!el || !box) return;
+    const r = el.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const top = b.top + ((box.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0);
+    if (r.top < top) box.scrollTop -= top - r.top + 8;
+    else if (r.bottom > b.bottom) box.scrollTop += r.bottom - b.bottom + 8;
+  }
+  // Run `change`, then scroll the page so row `id` stays where it was on screen
+  // (the push reflows every row) and fully in view.
+  async function holdRow(id: number, change: () => void): Promise<void> {
+    const before = rowEl(id)?.getBoundingClientRect().top;
+    change();
+    await tick();
+    const main = mainEl();
+    const row = rowEl(id);
+    if (main && row && before !== undefined) main.scrollTop += row.getBoundingClientRect().top - before;
+    keepInView(row, main);
+  }
+
+  // ── Opening, stepping, paging ──
+  function setTier(id: string, page: number, size = tierPg[id]?.size ?? TIER_PAGE_SIZES[0]): void {
+    tierPg = { ...tierPg, [id]: { page, size } };
+  }
+  // Turn the tier holding conclusion `id` to the page that shows it.
+  function reveal(id: number): void {
+    for (const t of tiers) {
+      const i = t.items.findIndex((c) => c.id === id);
+      if (i >= 0) return setTier(t.id, pageHolding(i, tierPg[t.id]?.size ?? TIER_PAGE_SIZES[0]));
+    }
+  }
+  function openConclusion(id: number): void {
+    void holdRow(id, () => {
+      if (id !== openId) evPage = 0;
+      openId = id;
+      reveal(id);
+    });
+  }
+  function close(): void {
+    if (openId === null) return;
+    const id = openId;
+    void holdRow(id, () => (openId = null));
+  }
+  function toggle(id: number): void {
+    if (id === openId) close();
+    else openConclusion(id);
+  }
+  function step(d: 1 | -1): void {
+    const n = stepIndex(openIndex, d, flat.length);
+    if (n !== null) openConclusion(flat[n].id);
+  }
+  // Turn a section's page; its heading holds still (only rows below it change)
+  // and is brought back into view if it had scrolled away.
+  async function turnTo(key: string, page: number): Promise<void> {
+    if (key === "e") {
+      evPage = pageSlice(events, page, evSize).page;
+    } else {
+      const v = tierViews.find((t) => `t:${t.id}` === key);
+      if (!v) return;
+      setTier(v.id, Math.min(Math.max(0, page), v.slice.pages - 1));
+    }
+    await tick();
+    const head = document.querySelector(`[data-sec="${key}"] > .sd-h`);
+    keepInView(head, key === "e" ? drawerEl() : mainEl());
+  }
+  function turn(d: 1 | -1): void {
+    const firstPaged = tierViews.find((t) => t.slice.pages > 1);
+    const key = hovered ?? (open ? "e" : firstPaged ? `t:${firstPaged.id}` : null);
+    if (key === "e") void turnTo("e", pageSlice(events, evPage, evSize).page + d); // evPage may be past a shrunk list
+    else if (key) {
+      const v = tierViews.find((t) => `t:${t.id}` === key);
+      if (v) void turnTo(key, v.slice.page + d);
+    }
+  }
+  // A new size keeps the open row (or the first row you saw) on screen.
+  function resize(tierId: string, size: number): void {
+    const t = tiers.find((x) => x.id === tierId);
+    const v = tierViews.find((x) => x.id === tierId);
+    if (!t || !v) return;
+    const openAt = t.items.findIndex((c) => c.id === openId);
+    const anchor = openAt >= v.slice.from && openAt < v.slice.to ? openAt : v.slice.from;
+    setTier(tierId, pageHolding(anchor, size), size); // SHOW_ALL → page 0
   }
 
   // ── Ask ──
   const askHref = $derived(`/chat?q=${encodeURIComponent(`What do you know about ${subject}?`)}`);
   // ⌘J asks about this subject (capture phase: ahead of the shell's ⌘J).
-  function onKeydown(event: KeyboardEvent): void {
+  function onAskKey(event: KeyboardEvent): void {
     if (askDisabled || frameModalOpen) return;
     if (event.key.toLowerCase() !== "j" || !(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
     event.preventDefault();
     void goto(askHref);
+  }
+
+  // ↑/↓ walk the conclusions (across tiers and tier pages) and the drawer
+  // follows; ←/→ turn the section under the pointer (else the evidence, else
+  // the first paged tier); Enter opens the first; Esc closes the drawer, else
+  // goes back. Never while typing or in a modal.
+  function onKey(e: KeyboardEvent): void {
+    if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (frameModalOpen || document.querySelector("[aria-modal='true'], dialog[open]")) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest?.("input, textarea, select, [contenteditable], [role=textbox], [role=combobox]")) return;
+    const k = e.key;
+    if (k === "Escape") {
+      if (open) close(); // not openId: it can outlive its row (dismissed, refreshed away)
+      else onBack();
+    } else if (!flat.length) {
+      return;
+    } else if (k === "ArrowDown" || k === "ArrowUp") {
+      step(k === "ArrowDown" ? 1 : -1);
+    } else if (k === "ArrowRight" || k === "ArrowLeft") {
+      turn(k === "ArrowRight" ? 1 : -1);
+    } else if (k === "Enter" && !open && !t?.closest?.("button, a")) {
+      step(1);
+    } else {
+      return;
+    }
+    e.preventDefault();
+  }
+  function onPointerOver(e: PointerEvent): void {
+    hovered = (e.target as Element | null)?.closest?.("[data-sec]")?.getAttribute("data-sec") ?? null;
   }
 
   async function loadSubject(): Promise<void> {
@@ -215,16 +362,21 @@
     }
   }
 
+  // Dismissing the open conclusion moves the drawer to its neighbour.
   function dismiss(c: Conclusion): void {
+    const i = flat.indexOf(c);
+    const j = c.id === openId ? neighbourAfter(i, flat.length) : null;
+    const next = j === null ? null : flat[j]; // before start(): it drops `c` from `flat`
     dismissal.start(c);
+    if (next) openConclusion(next.id);
     showToast({ tone: "ok", text: "Dismissed — it won't be re-inferred", undo: c });
   }
 
   function undoDismiss(c: Conclusion): void {
     dismissal.undo(c);
-    selectedId = c.id;
     clearTimeout(toastTimer);
     toast = null;
+    void tick().then(() => openConclusion(c.id));
   }
 
   // In-place frame peek; audio refs hand off to the Timeline.
@@ -268,7 +420,10 @@
 
   $effect(() => {
     subject;
-    clShown = CONCLUSION_PAGE;
+    // A new subject starts fresh: drawer closed, every section on page 1.
+    openId = null;
+    tierPg = {};
+    evPage = 0;
     void loadSubject();
     // `user_context_changed` fires per derivation pass; coalesce bursts.
     const debouncedReload = debounce(() => void loadSubject(), 500);
@@ -286,199 +441,111 @@
   });
 </script>
 
-<svelte:window onkeydowncapture={onKeydown} />
+<svelte:window onkeydowncapture={onAskKey} onkeydown={onKey} onpointerover={onPointerOver} />
 
-<section aria-label={`Subject — ${subject}`}>
-  <div class="in-crumb mx-reveal">
-    <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={onBack}
-      ><IconBack width="13" height="13" aria-hidden="true" />Subjects</button
-    >
-    <span>/</span>
-    <b>{subject}</b>
-    <span class="mx-spacer"></span>
-    <a
-      class="mx-btn mx-btn--ghost mx-btn--sm"
-      href={askDisabled ? undefined : askHref}
-      aria-disabled={askDisabled || undefined}
-      use:tip={askDisabled ? "Ask needs AI — turn it on in Settings" : "Opens Chat with this question"}
-      ><IconSparkle class="mx-btn__accent" width="13" height="13" aria-hidden="true" />Ask about {subject}<kbd>⌘J</kbd></a
-    >
-  </div>
+<section
+  class="sd"
+  bind:this={sectionEl}
+  style:padding-right={open ? `${geo.push}px` : null}
+  aria-label={`Subject — ${subject}`}
+>
+  <div class="sd-page">
+    <SubjectHeader
+      {subject}
+      {onBack}
+      {askHref}
+      {askDisabled}
+      conclusions={view && !loadError ? shown : null}
+      {histories}
+      openId={open?.id ?? null}
+      delta={fortnightDelta}
+    />
 
-  {#if loadError && !view}
-    <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
-      <span class="mx-empty__glyph"><IconAlert width="18" height="18" aria-hidden="true" /></span>
-      <h4 class="mx-empty__title">Couldn't load this subject.</h4>
-      <p class="mx-empty__text">Reading its conclusions and history failed. {loadError}</p>
-      <div class="mx-empty__acts">
-        <button type="button" class="mx-btn mx-btn--sm" disabled={loading} onclick={() => void loadSubject()}>
-          <IconRetry width="13" height="13" aria-hidden="true" />Try again
-        </button>
-      </div>
-    </div>
-  {:else if !view}
-    <div aria-busy="true">
-      <span class="mx-sr">Loading {subject}</span>
-      <div class="in-read">
-        <div class="in-skel-read">
-          <div class="mx-skel" style="width:140px;height:9px"></div>
-          <div class="mx-skel mx-skel--title"></div>
-          <div class="mx-skel mx-skel--title"></div>
-          <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div>
-        </div>
-        <div class="in-skel-stats">
-          {#each Array.from({ length: 4 }) as _, i (i)}<div><div class="mx-skel"></div><div class="mx-skel"></div></div>{/each}
+    {#if loadError && !view}
+      <div class="mx-empty mx-empty--center" data-tone="danger" role="alert">
+        <span class="mx-empty__glyph"><IconAlert width="18" height="18" aria-hidden="true" /></span>
+        <h4 class="mx-empty__title">Couldn't load this subject.</h4>
+        <p class="mx-empty__text">Reading its conclusions and history failed. {loadError}</p>
+        <div class="mx-empty__acts">
+          <button type="button" class="mx-btn mx-btn--sm" disabled={loading} onclick={() => void loadSubject()}>
+            <IconRetry width="13" height="13" aria-hidden="true" />Try again
+          </button>
         </div>
       </div>
-      <div class="in-ex">
-        <div class="mx-panel in-week"><div class="mx-skel" style="height:230px"></div></div>
-        <div>
-          {#each Array.from({ length: 4 }) as _, i (i)}
-            <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
-          {/each}
+    {:else if !view}
+      <div aria-busy="true">
+        <span class="mx-sr">Loading {subject}</span>
+        <div class="sd-skel-read">
+          <div class="sd-skel-title">
+            <div class="mx-skel" style="width:140px;height:9px"></div>
+            <div class="mx-skel mx-skel--title"></div>
+            <div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div>
+          </div>
+          <div class="sd-skel-stats">
+            {#each Array.from({ length: 4 }) as _, i (i)}<div><div class="mx-skel"></div><div class="mx-skel"></div></div>{/each}
+          </div>
         </div>
+        <div class="mx-panel sd-skel-chart"><div class="mx-skel" style="height:230px"></div></div>
+        {#each Array.from({ length: 5 }) as _, i (i)}
+          <div class="mx-skel-row"><div class="mx-skel"></div><div class="mx-skel-lines"><div class="mx-skel"></div><div class="mx-skel"></div></div><div class="mx-skel"></div></div>
+        {/each}
       </div>
-    </div>
-  {:else if !selected || !lead}
-    <div class="mx-empty mx-empty--center">
-      <span class="mx-empty__glyph"><IconInbox width="18" height="18" aria-hidden="true" /></span>
-      <h4 class="mx-empty__title">Nothing concluded about {subject} yet.</h4>
-      <p class="mx-empty__text">
-        Its conclusions were dismissed or haven't formed. Views appear here once two activities support them. Anything
-        you dismissed is in Context › Dismissed.
-      </p>
-    </div>
-  {:else}
-    <div class="in-read">
-      <div class="mx-reveal" style="--i:1">
-        <span class="mx-kicker">Subject · since {day(sinceMs)} · {trendWord}</span>
-        <h1 class="mx-display">{subject}</h1>
-        <p class="mx-prose lede">
-          {lead.statement} <span>— its strongest conclusion, at {pct(lead.confidence)}%.</span>
+    {:else if !shown.length}
+      <div class="mx-empty mx-empty--center">
+        <span class="mx-empty__glyph"><IconInbox width="18" height="18" aria-hidden="true" /></span>
+        <h4 class="mx-empty__title">Nothing concluded about {subject} yet.</h4>
+        <p class="mx-empty__text">
+          Its conclusions were dismissed or haven't formed. Views appear here once two activities support them. Anything
+          you dismissed is in Context › Dismissed.
         </p>
       </div>
-      <div class="in-lede-stats mx-reveal" style="--i:2">
-        <div class="mx-stat">
-          <span class="mx-stat__label">Lead confidence</span>
-          <span class="mx-stat__value">{pct(lead.confidence)}<small>%</small></span>
-          <span class="mx-stat__delta" class:mx-stat__delta--up={(leadDelta ?? 0) > 0}
-            >{leadDelta === null ? "formed this fortnight" : `${signed(leadDelta)} pts in 14d`}</span
-          >
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Conclusions</span>
-          <span class="mx-stat__value">{aboveFloor}</span>
-          <span class="mx-stat__delta">{shown.length - aboveFloor} faded below the display floor</span>
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Evidence</span>
-          <span class="mx-stat__value">{evidenceCount}</span>
-          <span class="mx-stat__delta">{evidenceCount === 1 ? "activity" : "activities"} cited</span>
-        </div>
-        <div class="mx-stat">
-          <span class="mx-stat__label">Last support</span>
-          <span class="mx-stat__value">{lastSupport.n}{#if lastSupport.unit}<small>{lastSupport.unit}</small>{/if}</span>
-          <span class="mx-stat__delta">{lastSupportDay}</span>
-        </div>
+    {:else}
+      <div class="mx-reveal" style="--i:4">
+        <ConclusionTiers
+          total={shown.length}
+          tiers={tierViews}
+          openId={open?.id ?? null}
+          {histories}
+          delta={fortnightDelta}
+          onOpen={toggle}
+          onPage={(id, p) => void turnTo(`t:${id}`, p)}
+          onSize={resize}
+        />
       </div>
-    </div>
-
-    <div class="in-ex">
-      <div class="mx-panel in-week mx-reveal" style="--i:3">
-        <div class="in-sec">
-          <span class="mx-kicker">Confidence over time</span><span class="mx-spacer"></span>
-          <span class="mx-label">selected conclusion · {shown.length > 11 ? "top 10" : "others"} in grey · ● evidence</span>
-        </div>
-        <SubjectChart conclusions={shown} {histories} selectedId={selected.id} />
-      </div>
-      <div class="in-cls-col mx-reveal" style="--i:4">
-        <div class="in-sec">
-          <span class="mx-kicker">Conclusions</span><span class="mx-spacer"></span>
-          <span class="mx-label">{shown.length} · by confidence</span>
-        </div>
-        <div class="in-cls">
-          {#each clPage.visible as c (c.id)}
-            {@const d = fortnightDelta(c)}
-            <button type="button" class="in-cl" aria-pressed={c.id === selected.id} onclick={() => select(c.id)}>
-              <span class="num">{pct(c.confidence)}%</span>
-              <span>{c.statement}</span>
-              <small class:in-up={(d ?? 0) > 0} class:in-down={(d ?? 0) < 0}>{d === null ? "new" : signed(d)}</small>
-            </button>
-          {/each}
-        </div>
-        {#if clPage.more > 0}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown += CONCLUSION_PAGE)}>
-            Show {clPage.more} more
-          </button>
-        {:else if clPage.less}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm in-cls__more" onclick={() => (clShown = CONCLUSION_PAGE)}>Show less</button>
-        {/if}
-      </div>
-
-      <!-- Sticky beside the list (wide) so picking a conclusion far down keeps its evidence in view. -->
-      <div class="in-side" bind:this={sideEl}>
-      <div class="in-why mx-reveal" style="--i:5">
-        <span class="mx-kicker">Why Mnema believes this · {selIndex + 1} of {shown.length}</span>
-        <h2 class="in-cd__statement">{selected.statement}</h2>
-        <div class="in-cd__acts">
-          <button
-            type="button"
-            class="mx-btn mx-btn--sm"
-            aria-pressed={selected.pinned}
-            aria-busy={pinBusy || undefined}
-            onclick={() => void togglePin(selected)}
-            ><IconPin width="13" height="13" aria-hidden="true" />{selected.pinned ? "Pinned" : "Pin"}</button
-          >
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" onclick={() => dismiss(selected)}>Dismiss</button>
-        </div>
-        <ol class="in-tl">
-          {#each events as ev, i (i)}
-            {@const act = ev.kind === "evidence" || ev.kind === "contradict" ? activities.get(ev.activityId) : undefined}
-            <li class:origin={ev.kind === "formed"} class:conf={ev.kind === "marker"} style:--i={i}>
-              <time class="num">{ev.atMs == null ? "—" : day(ev.atMs)}</time>
-              {#if ev.kind === "formed"}
-                {@const n = selected.formedEvidenceCount}
-                <!-- Beliefs formed before the count was recorded keep the old line. -->
-                <div>
-                  {n == null
-                    ? `Formed at ${pct(ev.confidence)}%`
-                    : `Formed from ${n} supporting ${n === 1 ? "activity" : "activities"} · ${pct(ev.confidence)}%`}
-                </div>
-              {:else if ev.kind === "marker"}
-                <div>Confidence {pct(ev.from)}% → {pct(ev.to)}%</div>
-              {:else if ev.kind === "replaced"}
-                <div>Replaced an earlier take<small>{ev.statement}</small></div>
-              {:else if act}
-                <button type="button" class="in-tl__ev" onclick={() => onViewInTimeline(ev.activityId)}>
-                  {ev.title}<small>{ev.kind === "contradict" ? "contradicts" : evidenceNote(act)}</small>
-                </button>
-              {:else}
-                <div>{ev.title}{#if ev.kind === "contradict"}<small>contradicts</small>{/if}</div>
-              {/if}
-            </li>
-          {/each}
-        </ol>
-      </div>
-      <div class="mx-panel mx-panel--inset in-guard mx-reveal" style="--i:6">
-        <div class="in-sec"><span class="mx-kicker">This conclusion</span></div>
-        <dl class="mx-spec">
-          <div><dt>confidence</dt><dd class="num">{pct(selected.confidence)}%</dd></div>
-          <div><dt>peak</dt><dd class="num">{pct(peak)}%</dd></div>
-          <div><dt>evidence</dt><dd>{selActivities} {selActivities === 1 ? "activity" : "activities"}</dd></div>
-          <div><dt>decay</dt><dd>halves every 30 days without support</dd></div>
-          <div><dt>pinned</dt><dd>{selected.pinned ? "yes — it won't fade" : "no — pin it to stop it fading"}</dd></div>
-        </dl>
-        {#if newestRef}
-          {@const ref = newestRef}
-          <button type="button" class="mx-btn mx-btn--ghost mx-btn--sm open-tl" onclick={() => void openRefInTimeline(ref)}
-            >Open evidence in Timeline<IconArrow width="13" height="13" aria-hidden="true" /></button
-          >
-        {/if}
-      </div>
-      </div>
-    </div>
-  {/if}
+    {/if}
+  </div>
 </section>
+
+{#if open}
+  {@const c = open}
+  <EvidenceDrawer
+    conclusion={c}
+    index={openIndex}
+    total={flat.length}
+    tierTitle={TIERS.find((t) => t.id === tierOf(c))?.title ?? ""}
+    {subject}
+    {events}
+    history={histories.get(c.id) ?? []}
+    {activities}
+    {newestRef}
+    page={evPage}
+    size={evSize}
+    onFit={(n) => {
+      evPage = pageHolding(pageSlice(events, evPage, evSize).from, n); // keep the first row you were reading
+      evSize = n;
+    }}
+    {pinBusy}
+    box={geo}
+    sheet={geo.sheet}
+    onPage={(p) => void turnTo("e", p)}
+    onStep={step}
+    onClose={close}
+    onPin={() => void togglePin(c)}
+    onDismiss={() => dismiss(c)}
+    onOpenEvidence={onViewInTimeline}
+    onOpenRef={(ref) => void openRefInTimeline(ref)}
+  />
+{/if}
 
 {#if toast}
   {@const t = toast}
@@ -503,84 +570,26 @@
 />
 
 <style>
-  /* insights.html Subject detail + the shared lede/exhibit/feed layout. */
-  .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-3) -9px; font: 500 var(--text-base) / 1 var(--font-sans); color: var(--app-text-subtle); }
-  .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
-  .in-crumb > a:last-child { margin-right: -9px; }
-  .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end; padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
-  .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
-  .lede { font-size: var(--text-lg); }
-  .lede span { color: var(--app-text-subtle); }
-  .in-lede-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
-  /* Chart, then "Why" and "This conclusion" down the left; the (paged) list
-     spans the right, its extra height absorbed by the last row. */
-  .in-ex {
-    display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); grid-template-rows: auto 1fr;
-    grid-template-areas: "chart list" "side list"; gap: var(--s-6); align-items: start;
-  }
-  .in-ex > .in-week { grid-area: chart; }
-  .in-cls-col { grid-area: list; }
-  /* Sticks under the 56px Insights bar; scrolls inside itself when the evidence
-     timeline is taller than the window. ponytail: 100vh over-counts the titlebar
-     by a few px — the inner scroll absorbs it. */
-  .in-side {
-    grid-area: side; display: grid; gap: var(--s-6); align-self: start;
-    position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto; overscroll-behavior: contain;
-  }
-  .in-cls__more { margin: var(--s-2) 0 0 -9px; }
-  .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
-  .in-week { padding: var(--s-5); }
-  .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
-  .in-guard .mx-spec { grid-template-columns: 96px 1fr; }
-  .open-tl { margin: var(--s-3) 0 0 -9px; }
-  .in-up { color: var(--focus-deep); }
-  .in-down { color: var(--focus-distracted); }
+  /* `.sd-page` is the container the page's breakpoints query: the column left
+     beside the drawer (the push is the section's padding). */
+  .sd-page { container: sd / inline-size; }
 
-  .in-cls { display: grid; gap: 2px; }
-  .in-cl {
-    display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; gap: var(--s-3); align-items: start; padding: 11px var(--s-3);
-    border: 0; border-radius: var(--r-sm); background: none; cursor: pointer; text-align: left; color: var(--app-text-muted);
-    font: 400 var(--text-base) / 1.45 var(--font-sans);
-    transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart);
+  .sd-skel-read {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end;
+    padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline);
   }
-  .in-cl:hover { background: var(--mx-wash); color: var(--app-text); }
-  .in-cl:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-  .in-cl[aria-pressed="true"] { background: var(--mx-selected); color: var(--app-text-strong); }
-  .in-cl .num { font-size: var(--text-md); color: var(--app-text-strong); line-height: 1.3; }
-  .in-cl small { text-align: right; font: 500 var(--text-xs) / 1.9 var(--font-mono); }
-
-  .in-cd__statement { font: 600 24px / 1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-3) 0 var(--s-4); max-width: 34ch; text-wrap: balance; }
-  .in-cd__acts { display: flex; gap: 6px; }
-  .in-tl { list-style: none; margin: var(--s-5) 0 0; padding: 0; position: relative; }
-  .in-tl::before { content: ""; position: absolute; left: 5px; top: 6px; bottom: 6px; width: 1px; background: var(--app-border); }
-  .in-tl li { position: relative; display: grid; grid-template-columns: 22px 72px 1fr; padding: 9px 0; animation: mx-rise var(--t-slow) var(--ease-expo) both; animation-delay: calc(var(--i) * 40ms); }
-  .in-tl li::before { content: ""; width: 11px; height: 11px; border-radius: 50%; margin-top: 3px; background: var(--app-bg); border: 1.5px solid var(--app-border-strong); }
-  .in-tl li.conf::before { border-color: var(--app-text-strong); background: var(--app-text-strong); width: 7px; height: 7px; margin: 5px 0 0 2px; }
-  .in-tl li.origin::before { border-color: var(--app-accent); background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); }
-  .in-tl time { font-size: var(--text-xs); color: var(--app-text-subtle); line-height: 1.9; }
-  .in-tl li > div, .in-tl__ev { color: var(--app-text); font-size: var(--text-base); }
-  .in-tl small { display: block; margin-top: 3px; font: 400 var(--text-sm) / 1.4 var(--font-sans); color: var(--app-text-subtle); }
-  .in-tl li.conf > div { font: 500 var(--text-sm) / 1.6 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--app-text-strong); }
-  .in-tl__ev { padding: 0; border: 0; background: none; text-align: left; font-family: inherit; line-height: inherit; cursor: pointer; border-radius: var(--r-xs); }
-  .in-tl__ev:hover { color: var(--app-text-strong); }
-  .in-tl__ev:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-
-  .in-skel-read { display: grid; gap: 12px; padding-top: var(--s-4); }
-  .in-skel-read .mx-skel--title { height: 34px; width: 78%; }
-  .in-skel-read .mx-skel--title + .mx-skel--title { width: 52%; }
-  .in-skel-stats { display: grid; grid-template-columns: repeat(2, 132px); gap: var(--s-5) var(--s-6); }
-  .in-skel-stats div { display: grid; gap: 8px; }
-  .in-skel-stats .mx-skel:first-child { height: 8px; width: 60%; }
-  .in-skel-stats .mx-skel:last-child { height: 24px; width: 90%; }
+  .sd-skel-title { display: grid; gap: 12px; }
+  .sd-skel-title .mx-skel--title { height: 34px; width: 50%; }
+  .sd-skel-stats { display: grid; grid-template-columns: repeat(2, 132px); gap: var(--s-5) var(--s-6); }
+  .sd-skel-stats div { display: grid; gap: 8px; }
+  .sd-skel-stats .mx-skel:first-child { height: 8px; width: 60%; }
+  .sd-skel-stats .mx-skel:last-child { height: 24px; width: 90%; }
+  .sd-skel-chart { padding: var(--s-5); margin-bottom: var(--s-6); }
 
   /* `.in-main` scrolls, so the toast stack pins to the window. */
   .mx-toasts { position: fixed; }
 
-  @container mx-window (max-width: 1180px) {
-    .in-ex { grid-template-columns: 1fr; grid-template-rows: none; grid-template-areas: "chart" "list" "side"; }
-    .in-side { position: static; max-height: none; overflow: visible; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .in-tl li { animation: none; }
+  @container sd (max-width: 760px) {
+    .sd-skel-read { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

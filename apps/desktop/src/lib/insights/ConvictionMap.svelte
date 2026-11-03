@@ -29,7 +29,7 @@
     query: string;
     onOpen: (subject: string) => void;
     onClear: () => void;
-    /** Footer under the rows (Subjects' "Show all N"). */
+    /** Footer under the rows (Subjects' "Go to the list"). */
     children?: Snippet;
   }
   let { rows, query, onOpen, onClear, children }: Props = $props();
@@ -119,6 +119,7 @@
     gap: var(--s-3);
   }
   .in-map {
+    --map-name: 168px; /* the name column; the bands start where it ends */
     padding: var(--s-5);
     margin-bottom: var(--s-7);
   }
@@ -128,7 +129,7 @@
   }
   .in-map__bands {
     position: absolute;
-    left: 168px;
+    left: var(--map-name);
     right: 104px;
     top: 0;
     bottom: 0;
@@ -149,6 +150,10 @@
     text-transform: uppercase;
     color: var(--app-text-faint);
     white-space: nowrap;
+    /* A narrow band clips its label rather than running into the next one. */
+    max-width: calc(100% - 12px);
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .in-map__bands .firm {
     background: color-mix(in srgb, var(--app-fg) 2.5%, transparent);
@@ -159,7 +164,7 @@
   .in-map__axis,
   .in-map__row {
     display: grid;
-    grid-template-columns: 168px minmax(0, 1fr) 104px;
+    grid-template-columns: var(--map-name) minmax(0, 1fr) 104px;
     align-items: center;
   }
   .in-map__axis {
@@ -301,7 +306,12 @@
     color: var(--app-accent);
   }
   .in-map__more {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
     padding-top: var(--s-3);
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
   }
   .in-map__legend {
     display: flex;
@@ -345,5 +355,9 @@
     .in-map__tail {
       animation: none;
     }
+  }
+  /* Narrow windows: give the track the room the name column can spare. */
+  @media (max-width: 1000px) {
+    .in-map { --map-name: 128px; }
   }
 </style>

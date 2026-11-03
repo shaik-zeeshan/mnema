@@ -1,0 +1,988 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Every tier, its own pager</title>
+<style>
+/* Anatomy-kit theme for every HTML page and postplan draft. Light and dark in one file:
+   tokens live on .iso (dark) and .iso[data-theme="light"]; body carries both. Inline this whole file. */
+
+.iso{
+  --anatomy-page:#0b0b0b;--anatomy-card:#131313;--anatomy-text:#a3a3a3;--anatomy-strong:#e6e6e6;--anatomy-muted:#6e6e6e;
+  --anatomy-paper:#131313;--anatomy-face:#1b1b1b;--anatomy-top:#1c1c1c;
+  --anatomy-shade-0:#0f0f0f;--anatomy-shade-1:#121212;--anatomy-shade-2:#151515;--anatomy-shade-3:#181818;
+  --anatomy-lit-top:#262626;--anatomy-lit-shade:#1d1d1d;
+  --anatomy-hi:#d4d4d4;--anatomy-mid:#6a6a6a;--anatomy-lo:#3e3e3e;--anatomy-faint:#2a2a2a;--anatomy-lit:#ffffff;
+  --anatomy-halo:#050505;--anatomy-halo-opacity:.9;--anatomy-dot:#e6e6e6;
+  --anatomy-red:#ff6b6b;--anatomy-green:#6be0a0;--anatomy-blue:#6b9bff;
+  --anatomy-weight:.6px;--anatomy-ease:cubic-bezier(.32,.72,0,1);
+  --anatomy-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff0a,inset 0 0 0 1px #ffffff06,0 0 0 1px #00000026,0 1px 1px -.5px #00000014,0 3px 3px -1.5px #00000014,0 6px 6px -3px #00000014,0 12px 12px -6px #00000014;
+}
+.iso[data-theme="light"]{
+  --anatomy-page:#f2f2ef;--anatomy-card:#fbfbfa;--anatomy-text:#57575a;--anatomy-strong:#18181a;--anatomy-muted:#8c8c90;
+  --anatomy-paper:#fbfbfa;--anatomy-face:#ffffff;--anatomy-top:#ffffff;
+  --anatomy-shade-0:#dcdcd9;--anatomy-shade-1:#e5e5e2;--anatomy-shade-2:#ededea;--anatomy-shade-3:#f4f4f1;
+  --anatomy-lit-top:#ffffff;--anatomy-lit-shade:#eeeeeb;
+  --anatomy-hi:#26262a;--anatomy-mid:#8a8a8f;--anatomy-lo:#b4b4b8;--anatomy-faint:#d4d4d6;--anatomy-lit:#000000;
+  --anatomy-halo:#8a8a80;--anatomy-halo-opacity:.32;--anatomy-dot:#3a3a3e;
+  --anatomy-red:#e5484d;--anatomy-green:#30a46c;--anatomy-blue:#3e63dd;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff,0 0 0 1px #0000000f,0 1px 1px -.5px #0000000a,0 3px 3px -1.5px #0000000a,0 6px 6px -3px #0000000a,0 12px 12px -6px #0000000a;
+}
+.iso-svg{display:block;width:100%;height:auto;overflow:visible}
+.iso-svg path,.iso-svg circle{vector-effect:non-scaling-stroke}
+.iso-fill{fill:var(--anatomy-paper);stroke:none}
+.iso-solid[data-lit]>.iso-fill{fill:var(--anatomy-face)}
+.iso-shade,.iso-top{stroke:none}
+.iso-shade[data-shade="0"]{fill:var(--anatomy-shade-0)}
+.iso-shade[data-shade="1"]{fill:var(--anatomy-shade-1)}
+.iso-shade[data-shade="2"]{fill:var(--anatomy-shade-2)}
+.iso-shade[data-shade="3"]{fill:var(--anatomy-shade-3)}
+.iso-top{fill:var(--anatomy-top)}
+.iso-solid[data-lit]>.iso-top{fill:var(--anatomy-lit-top)}
+.iso-solid[data-lit]>.iso-shade{fill:var(--anatomy-lit-shade)}
+.iso-solid[data-seamless]>.iso-shade,.iso-solid[data-seamless]>.iso-top{stroke-width:.4;stroke-linejoin:round}
+.iso-solid[data-seamless]>.iso-shade[data-shade="0"]{stroke:var(--anatomy-shade-0)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="1"]{stroke:var(--anatomy-shade-1)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="2"]{stroke:var(--anatomy-shade-2)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="3"]{stroke:var(--anatomy-shade-3)}
+.iso-solid[data-seamless]>.iso-top{stroke:var(--anatomy-top)}
+.iso-solid[data-seamless][data-lit]>.iso-top{stroke:var(--anatomy-lit-top)}
+.iso-solid[data-seamless][data-lit]>.iso-shade{stroke:var(--anatomy-lit-shade)}
+.iso-solid[data-lit]>.iso-edge{stroke:var(--anatomy-lit)}
+.iso-halo{fill:var(--anatomy-halo);stroke:none;filter:blur(9px);opacity:var(--anatomy-halo-opacity);transform:translateY(3px)}
+.iso-line{fill:none;stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight);stroke-linecap:round;stroke-linejoin:round}
+.iso-line[data-tone="hi"]{stroke:var(--anatomy-hi)}
+.iso-line[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.iso-line[data-tone="lo"]{stroke:var(--anatomy-lo)}
+.iso-line[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.iso-line[data-tone="lit"]{stroke:var(--anatomy-lit)}
+.iso-line[data-tone="red"]{stroke:var(--anatomy-red)}
+.iso-line[data-tone="green"]{stroke:var(--anatomy-green)}
+.iso-line[data-tone="blue"]{stroke:var(--anatomy-blue)}
+.iso-line[data-dotted]{stroke-dasharray:.01 3.5;stroke-width:1}
+.iso-line[data-dashed]{stroke-dasharray:3 3}
+.iso-line[data-flow]{stroke-dasharray:2 6}
+.iso-wire-end{fill:var(--anatomy-paper);stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight)}
+.iso-wire[data-tone="hi"] .iso-wire-end{stroke:var(--anatomy-hi)}
+.iso-wire[data-tone="mid"] .iso-wire-end{stroke:var(--anatomy-mid)}
+.iso-wire[data-tone="faint"] .iso-wire-end{stroke:var(--anatomy-faint)}
+.iso-wire[data-tone="lit"] .iso-wire-end{stroke:var(--anatomy-lit)}
+.iso-dots circle{fill:var(--anatomy-dot);stroke:none;opacity:.32}
+.iso-dots[data-tone="hi"] circle{opacity:.85}
+.iso-dots[data-tone="mid"] circle{opacity:.45}
+.iso-dots[data-tone="lo"] circle{opacity:.22}
+.iso-dots[data-tone="faint"] circle{opacity:.12}
+.iso-face-text{fill:var(--anatomy-mid);font-family:var(--anatomy-mono);letter-spacing:.04em}
+.iso-face-text[data-tone="hi"]{fill:var(--anatomy-hi)}
+.iso-face-text[data-tone="lo"]{fill:var(--anatomy-lo)}
+.iso-face-text[data-tone="faint"]{fill:var(--anatomy-faint)}
+.tb-body{fill:var(--anatomy-shade-2);stroke:none}
+.tb-shine{fill:var(--anatomy-top);stroke:none}
+.tb-shade{fill:var(--anatomy-shade-0);stroke:none}
+.tb-ring{fill:none;stroke:var(--anatomy-lo);stroke-width:.45;stroke-linecap:butt;stroke-linejoin:round}
+.tb-ring[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.tb-ring[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.tb-ring[data-tone="hi"]{stroke:var(--anatomy-hi)}
+@keyframes iso-flow{to{stroke-dashoffset:-32}}
+@keyframes iso-pulse{0%,100%{opacity:.18}12%{opacity:1}40%{opacity:.18}}
+.iso-line[data-flow]{animation:iso-flow 1600ms linear infinite}
+.iso-dots circle[data-pulse]{animation:iso-pulse 1600ms steps(1,end) infinite;animation-delay:var(--pulse-at,0ms)}
+.iso-figure{margin:32px 0 36px}
+.iso-plate{position:relative;padding:52px 24px;border-radius:0;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);--anatomy-paper:var(--anatomy-card)}
+.iso-plate-corners{position:absolute;inset:18px 20px;pointer-events:none}
+.iso-plate-corner{position:absolute;color:var(--anatomy-muted);font-family:var(--anatomy-mono);font-size:10.5px;line-height:1;letter-spacing:.04em;white-space:nowrap}
+.iso-plate-corner[data-corner="fig"]{top:0;left:0;color:var(--anatomy-text)}
+.iso-plate-corner[data-corner="title"]{top:0;right:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="hint"]{bottom:0;left:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="readout"]{right:0;bottom:0;color:var(--anatomy-text);font-variant-numeric:tabular-nums}
+.iso-plate .iso-svg{margin:0 auto}
+.iso-legend{display:grid;gap:8px;margin-top:12px;color:var(--anatomy-muted);font-size:13px;line-height:1.55}
+.iso-keys{display:flex;flex-wrap:wrap;gap:6px 18px}
+.iso-key{display:inline-flex;align-items:center;gap:7px}
+.iso-swatch{width:16px;height:10px;flex:none;overflow:visible}
+.iso-swatch path{fill:none;stroke:var(--anatomy-hi);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.iso-swatch[data-mark="raised"] path,.iso-swatch[data-mark="flat"] path{stroke:var(--anatomy-mid)}
+.iso-swatch[data-mark="lit"] path{stroke:var(--anatomy-lit)}
+.iso-swatch[data-mark="dim"] path{stroke:var(--anatomy-lo)}
+.iso-swatch[data-mark="dotted"] path{stroke-dasharray:.01 3;stroke-width:1.4}
+.iso-swatch[data-mark="dashed"] path{stroke-dasharray:3 2.5}
+.iso-swatch[data-mark="red"] path{stroke:var(--anatomy-red)}
+.iso-swatch[data-mark="green"] path{stroke:var(--anatomy-green)}
+.iso-swatch[data-mark="blue"] path{stroke:var(--anatomy-blue)}
+.iso-swatch-crease{stroke:var(--anatomy-lo)!important}
+@media (max-width:560px){.iso-plate{padding:48px 12px 70px}.iso-plate-corner[data-corner="hint"]{bottom:18px}}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.iso-dots circle[data-pulse]{animation:none}}
+
+/* Page shell */
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body[data-theme="light"]{color-scheme:light}
+body{margin:0;background:var(--anatomy-page);color:var(--anatomy-text);font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.iso-page{width:min(720px,100% - 32px);margin:64px auto 96px}
+
+/* Document components (pp-*) */
+.pp-doc{color:var(--anatomy-text)}
+.pp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.pp-kicker{font:500 11px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin:0 0 12px}
+.pp-doc h1{color:var(--anatomy-strong);font-size:22px;line-height:1.25;letter-spacing:-.01em;margin:0 0 10px;font-weight:600}
+.pp-doc h2{color:var(--anatomy-strong);font-size:15px;margin:34px 0 8px;font-weight:600}
+.pp-doc h2 .pp-n{font:500 11px/1 var(--anatomy-mono);color:var(--anatomy-muted);margin-right:8px;letter-spacing:.06em}
+.pp-doc h3{color:var(--anatomy-strong);font-size:13.5px;margin:20px 0 6px;font-weight:600}
+.pp-lede{font-size:15px;margin:0 0 6px}
+.pp-meta{font:500 11.5px/1.5 var(--anatomy-mono);color:var(--anatomy-muted)}
+.pp-doc ol,.pp-doc ul{padding-left:20px;margin:8px 0}
+.pp-doc li{margin:6px 0}
+.pp-doc b,.pp-doc strong{color:var(--anatomy-strong);font-weight:600}
+.pp-doc a{color:var(--anatomy-strong);text-underline-offset:3px}
+.pp-doc code{font:12.5px/1.5 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-faint);padding:1px 4px}
+.pp-doc pre{font:12.5px/1.55 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px;overflow-x:auto}
+.pp-doc pre code{background:none;box-shadow:none;padding:0}
+.pp-doc table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;display:block;overflow-x:auto}
+.pp-doc th{font:500 10.5px/1.2 var(--anatomy-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--anatomy-muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--anatomy-mid)}
+.pp-doc td{padding:8px 10px;border-bottom:1px solid var(--anatomy-faint);vertical-align:top}
+.pp-doc td.num,.pp-doc th.num{text-align:right;font-variant-numeric:tabular-nums}
+/* A card: same frame as the figure plate, with corner labels */
+.pp-card{position:relative;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:16px 18px;margin:14px 0}
+.pp-card>.pp-label{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin-bottom:10px}
+.pp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.pp-grid .pp-card{margin:0}
+/* Verdict: the one-line answer up top */
+.pp-verdict{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong);padding:16px 18px;margin:18px 0}
+.pp-verdict p{margin:6px 0 0;color:var(--anatomy-strong);font-size:15px}
+/* Chips and buttons */
+.pp-chip{display:inline-block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.05em;text-transform:uppercase;padding:4px 6px;box-shadow:0 0 0 1px var(--anatomy-mid);color:var(--anatomy-text);white-space:nowrap}
+.pp-chip[data-tone="strong"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:none}
+.pp-chip[data-tone="good"]{box-shadow:0 0 0 1px var(--anatomy-green);color:var(--anatomy-green)}
+.pp-chip[data-tone="bad"]{box-shadow:0 0 0 1px var(--anatomy-red);color:var(--anatomy-red)}
+.pp-button,.pp-seg button{font:500 12px/1 var(--anatomy-mono);letter-spacing:.02em;color:var(--anatomy-text);background:var(--anatomy-card);border:0;box-shadow:0 0 0 1px var(--anatomy-mid);padding:8px 11px;border-radius:0;cursor:pointer}
+.pp-button:hover,.pp-seg button:hover{color:var(--anatomy-strong)}
+.pp-button:focus-visible,.pp-seg button:focus-visible{outline:1px solid var(--anatomy-muted);outline-offset:3px}
+.pp-seg{display:inline-flex}
+.pp-seg button+button{margin-left:1px}
+.pp-seg button[aria-pressed="true"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Callouts */
+.pp-callout{padding:12px 14px;margin:14px 0;box-shadow:inset 2px 0 0 var(--anatomy-strong),0 0 0 1px var(--anatomy-faint);background:var(--anatomy-card)}
+.pp-callout[data-tone="good"]{box-shadow:inset 2px 0 0 var(--anatomy-green),0 0 0 1px var(--anatomy-faint)}
+.pp-callout[data-tone="bad"]{box-shadow:inset 2px 0 0 var(--anatomy-red),0 0 0 1px var(--anatomy-faint)}
+.pp-callout>:first-child{margin-top:0}.pp-callout>:last-child{margin-bottom:0}
+/* Numbered steps; mark the current one with data-now */
+.pp-steps{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px}
+.pp-doc .pp-steps{padding:0}
+.pp-doc .pp-steps li{margin:0}
+.pp-steps li{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:10px;padding:7px 10px;box-shadow:0 0 0 1px var(--anatomy-faint);color:var(--anatomy-text)}
+.pp-steps .pp-sn{font:11px/1 var(--anatomy-mono);text-align:center;color:var(--anatomy-muted)}
+.pp-steps .pp-st{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline}
+.pp-doc .pp-steps b{color:inherit}
+.pp-steps small{font-size:12px;color:var(--anatomy-muted)}
+.pp-steps li[data-now]{background:var(--anatomy-page);color:var(--anatomy-strong);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Metrics and bars */
+.pp-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
+.pp-metric{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px}
+.pp-metric span{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--anatomy-muted)}
+.pp-metric b{display:block;margin-top:8px;font:600 22px/1.1 ui-sans-serif,system-ui,sans-serif;color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-metric small{color:var(--anatomy-muted);font-size:12px}
+.pp-bar{display:grid;grid-template-columns:minmax(80px,30%) 1fr auto;align-items:center;gap:10px;font-size:12.5px;margin:6px 0}
+.pp-bar i{display:block;height:10px;box-shadow:0 0 0 1px var(--anatomy-mid)}
+.pp-bar i>span{display:block;height:100%;background:var(--anatomy-strong)}
+.pp-bar output{font:12px/1 var(--anatomy-mono);color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--anatomy-faint);font:500 11px/1.6 var(--anatomy-mono);color:var(--anatomy-muted)}
+@media (max-width:560px){.pp-seg{width:100%}.pp-seg button{flex:1;padding:8px 6px;font-size:11px}}
+
+/* Shared Mnema app-window look for the Insights-views mockups.
+   Inline this whole file into each mockup page's <style> AFTER theme.css.
+   Values are lifted from apps/desktop/src/routes/+layout.svelte and
+   apps/desktop/src/lib/styles/kit.css. Everything is scoped under `.app`
+   so it never fights the anatomy page theme; the page's body[data-theme]
+   flips it between Mnema's dark and light palettes. */
+.app {
+  --app-bg: #0c0c0e; --app-fg: #e2e2e8;
+  --app-surface: #0e0e16; --app-surface-subtle: #101018; --app-surface-raised: #13131a;
+  --app-surface-hover: #1a1a2a; --app-surface-active: #131320;
+  --app-border: #1e1e2e; --app-border-strong: #2a2a3a; --app-border-hover: #3a3a5a;
+  --app-text-strong: #e2e2e8; --app-text: #c0c0d0; --app-text-muted: #9696ae;
+  --app-text-subtle: #7e7e98; --app-text-faint: #4a4a64;
+  --app-accent: #3dffa0; --app-accent-strong: #2a8a60; --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30; --app-accent-glow: rgba(61, 255, 160, 0.18);
+  --app-danger: #ff6b7a; --app-warn: #d6a14a; --app-info: #60b0ff;
+  --chart-grey-1: #2c2c3a; --chart-grey-2: #3e3e50; --chart-grey-3: #565669; --chart-grey-4: #757589; --chart-grey-5: #9a9ab0;
+  --focus-deep: #3dffa0; --focus-mid: #d6a14a; --focus-distracted: #ff6b7a;
+  --cat-creating: #5fe07a; --cat-communication: #c0b0ff; --cat-meetings: #ff9fd0; --cat-research: #60b0ff;
+  --cat-learning: #4fd8c8; --cat-organizing: #b0c080; --cat-personal: #d6a14a; --cat-entertainment: #ff7a4d;
+  --mx-wash: color-mix(in srgb, var(--app-fg) 4%, transparent);
+  --mx-wash-strong: color-mix(in srgb, var(--app-fg) 8%, transparent);
+  --mx-selected: var(--mx-wash-strong);
+  --mx-hairline: color-mix(in srgb, var(--app-border) 80%, transparent);
+
+  --font-sans: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --text-xs: 11px; --text-sm: 12px; --text-base: 13px; --text-md: 14px; --text-lg: 16px; --text-xl: 20px;
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px;
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --h-sm: 26px; --h-md: 32px;
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1); --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --t-fast: 120ms; --t-med: 220ms; --t-slow: 420ms;
+
+  position: relative; display: flex; flex-direction: column;
+  height: 640px; overflow: hidden; border-radius: 10px;
+  background: var(--app-bg); color: var(--app-text);
+  font: 400 var(--text-base) / 1.45 var(--font-sans);
+  box-shadow: 0 0 0 1px var(--app-border-strong), 0 24px 60px -20px rgba(0, 0, 0, 0.45);
+  text-align: left;
+}
+body[data-theme="light"] .app {
+  --app-bg: #f6f6f4; --app-fg: #14141a;
+  --app-surface: #ffffff; --app-surface-subtle: #f6f6f4; --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec; --app-surface-active: #e8f1ea;
+  --app-border: #d8d8d4; --app-border-strong: #c4c4c0; --app-border-hover: #a4a4a0;
+  --app-text-strong: #14141a; --app-text: #2a2a32; --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a; --app-text-faint: #9a9aa4;
+  --app-accent: #1f7a4a; --app-accent-strong: #155a36; --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4; --app-accent-glow: rgba(31, 122, 74, 0.16);
+  --app-danger: #c43a48; --app-warn: #9a5a12; --app-info: #2b78c5;
+  --chart-grey-1: #e4e4e8; --chart-grey-2: #b6b6c0; --chart-grey-3: #9a9aa6; --chart-grey-4: #7a7a88; --chart-grey-5: #5a5a68;
+  --focus-deep: #1f7a4a; --focus-mid: #9a5a12; --focus-distracted: #c43a48;
+  --mx-wash: color-mix(in srgb, var(--app-fg) 5%, transparent);
+  --mx-wash-strong: color-mix(in srgb, var(--app-fg) 9%, transparent);
+}
+.app *, .app *::before, .app *::after { box-sizing: border-box; }
+.app button { font: inherit; color: inherit; }
+.app .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Window chrome: traffic lights + title, then the Insights tab bar. */
+.app__titlebar { flex: none; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
+  border-bottom: 1px solid var(--app-border); background: color-mix(in srgb, var(--app-bg) 70%, #000 0%); }
+.app__lights { display: flex; gap: 7px; }
+.app__lights i { width: 11px; height: 11px; border-radius: 50%; background: var(--app-border-strong); }
+.app__title { flex: 1; text-align: center; font-size: var(--text-xs); color: var(--app-text-faint); letter-spacing: .02em; }
+.app__tabs { flex: none; display: flex; align-items: center; gap: 18px; height: 44px; padding: 0 20px; border-bottom: 1px solid var(--mx-hairline); }
+.app__tabs span { position: relative; height: 44px; display: flex; align-items: center; color: var(--app-text-subtle); font-weight: 500; }
+.app__tabs span[aria-current] { color: var(--app-text-strong); }
+.app__tabs span[aria-current]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--app-text-strong); }
+.app__body { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px; }
+
+/* Shared kit bits the mockups may use. */
+.app .mx-kicker { font: 500 var(--text-xs) / 1.2 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-subtle); }
+.app .mx-btn { display: inline-flex; align-items: center; gap: 6px; height: var(--h-sm); padding: 0 10px; border-radius: var(--r-sm);
+  border: 1px solid var(--app-border-strong); background: var(--app-surface); color: var(--app-text); cursor: pointer; font-size: var(--text-sm); font-weight: 500;
+  transition: background-color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart); }
+.app .mx-btn:hover { border-color: var(--app-border-hover); color: var(--app-text-strong); }
+.app .mx-btn--ghost { border-color: transparent; background: none; color: var(--app-text-muted); }
+.app .mx-btn--ghost:hover { background: var(--mx-wash-strong); }
+.app .mx-btn[aria-pressed="true"], .app .mx-btn[aria-current] { background: var(--mx-selected); color: var(--app-text-strong); }
+.app .mx-btn:disabled { opacity: .4; cursor: default; }
+.app .mx-btn:focus-visible, .app button:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+.app .mx-search { display: flex; align-items: center; gap: 6px; height: var(--h-md); padding: 0 10px; border: 1px solid var(--mx-hairline);
+  border-radius: var(--r-sm); background: var(--app-surface); color: var(--app-text-subtle); }
+.app .mx-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--app-text-strong); font: inherit; }
+.app .mx-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-md); background: var(--mx-wash); box-shadow: inset 0 0 0 1px var(--mx-hairline); }
+.app .mx-seg button { height: 24px; padding: 0 10px; border: 0; border-radius: var(--r-sm); background: none; color: var(--app-text-muted); font-size: var(--text-sm); font-weight: 500; cursor: pointer; }
+.app .mx-seg button[aria-pressed="true"] { background: var(--app-surface); color: var(--app-text-strong); box-shadow: 0 0 0 1px var(--app-border-strong); }
+.app .mx-chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-pill);
+  border: 1px solid var(--mx-hairline); font: 500 var(--text-xs) / 1 var(--font-sans); color: var(--app-text-muted); }
+.app .mx-panel { border: 1px solid var(--mx-hairline); border-radius: var(--r-lg); background: var(--app-surface); }
+.app .up { color: var(--focus-deep); } .app .down { color: var(--focus-distracted); }
+@media (max-width: 560px) { .app { height: 560px; } .app__body { padding: 14px; } .app__tabs { gap: 12px; padding: 0 14px; overflow-x: auto; } }
+
+/* Page-level helpers for the mockup pages (outside .app). */
+.mock-stage { width: min(1180px, 100vw - 32px); margin-left: 50%; transform: translateX(-50%); }
+.mock-stage .iso-plate { padding: 52px 24px 56px; }
+.mock-controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin: 0 0 14px; }
+.mock-controls .pp-seg { width: auto; }
+.mock-controls label { font: 500 11px/1 var(--anatomy-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--anatomy-muted); }
+.app { container: app / inline-size; margin: 0 auto; max-width: 100%; transition: width var(--t-slow, 420ms) cubic-bezier(0.16, 1, 0.3, 1); }
+.app[data-w="wide"] { width: 1120px; } .app[data-w="medium"] { width: 860px; } .app[data-w="narrow"] { width: 600px; }
+.mock-nav { display: flex; justify-content: space-between; gap: 12px; margin: 40px 0 0; font: 500 12px/1.4 var(--anatomy-mono); }
+.mock-nav a { color: var(--anatomy-text); }
+
+/* ---- this mockup's own styles: scope everything under .app or #fig ---- */
+/* ---- replica of today's Subjects tab (Subjects.svelte, ConvictionMap.svelte, kit.css), copied from 1-A ---- */
+.app__body { position: relative; }
+.app .mx-spacer { flex: 1; }
+.app .mx-display { font: 600 40px/1.04 var(--font-sans); letter-spacing: -.034em; color: var(--app-text-strong); margin: 0; text-wrap: balance; }
+.app .mx-display em { font-style: normal; font-weight: 500; color: var(--app-text-subtle); }
+.app .mx-prose { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); margin: 0; text-wrap: pretty; }
+.app .mx-label { font: 500 var(--text-sm)/1.35 var(--font-sans); color: var(--app-text-subtle); }
+.app .mx-stat { display: grid; gap: 7px; }
+.app .mx-stat__label { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); }
+.app .mx-stat__value { font: 400 28px/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -.05em; color: var(--app-text-strong); }
+.app .mx-stat__delta { font: 500 var(--text-sm)/1.2 var(--font-mono); color: var(--app-text-muted); }
+.app .mx-spec { display: grid; grid-template-columns: 96px 1fr; margin: 0; }
+.app .mx-spec > div { display: contents; }
+.app .mx-spec dt, .app .mx-spec dd { margin: 0; padding: 9px 0; border-top: 1px solid var(--mx-hairline); }
+.app .mx-spec > div:first-child > * { border-top: 0; }
+.app .mx-spec dt { font: 500 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); padding-right: var(--s-4); }
+.app .mx-spec dd { color: var(--app-text-strong); }
+.app .mx-panel--inset { background: var(--app-surface-subtle); }
+.app .mx-btn--sm { height: 24px; padding: 0 8px; }
+.app .ic { flex: none; }
+.app .in-sec { display: flex; align-items: baseline; gap: var(--s-3); margin: 0 0 var(--s-3); }
+.app .in-up { color: var(--focus-deep); } .app .in-down { color: var(--focus-distracted); } .app .in-new { color: var(--app-accent); }
+.app .s-ctl { display: flex; align-items: center; gap: var(--s-3); margin: 0 0 var(--s-2); }
+.app .s-ctl .mx-search { width: 220px; }
+.app .in-read { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-7); align-items: end; padding: var(--s-4) 0 var(--s-6); margin-bottom: var(--s-6); border-bottom: 1px solid var(--mx-hairline); }
+.app .in-read .mx-display { margin: var(--s-4) 0; max-width: 24ch; }
+.app .in-stats { display: grid; grid-template-columns: repeat(2, minmax(132px, auto)); gap: var(--s-5) var(--s-6); padding-bottom: 4px; }
+.app .in-map { padding: var(--s-5); margin-bottom: var(--s-7); }
+.app .in-map__legend { display: flex; gap: var(--s-4); font: 500 var(--text-sm)/1 var(--font-sans); color: var(--app-text-subtle); }
+.app .in-map__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.app .in-map__legend .d { width: 9px; height: 9px; border-radius: 50%; background: var(--app-text-strong); }
+.app .in-map__legend .o { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--chart-grey-4); }
+.app .in-map__legend .t { width: 2px; height: 10px; border-radius: 1px; background: var(--chart-grey-3); }
+.app .in-map__plot { position: relative; margin-top: var(--s-4); --nm: 168px; --vl: 104px; }
+.app .in-map__bands { position: absolute; left: var(--nm); right: var(--vl); top: 0; bottom: 0; pointer-events: none; }
+.app .in-map__bands span { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--mx-hairline); }
+.app .in-map__bands b { position: absolute; top: 0; left: 8px; font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-faint); white-space: nowrap; }
+.app .in-map__bands .firm { background: color-mix(in srgb, var(--app-fg) 2.5%, transparent); }
+.app .in-map__bands .fade { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--app-fg) 3%, transparent) 0 1px, transparent 1px 7px); }
+.app .in-map__axis, .app .in-map__row { display: grid; grid-template-columns: var(--nm) minmax(0, 1fr) var(--vl); align-items: center; }
+.app .in-map__axis { height: 44px; } .app .in-map__axis div { position: relative; height: 100%; }
+.app .in-map__axis div span { position: absolute; bottom: 4px; translate: -50% 0; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+.app .in-map__row { width: 100%; height: 38px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; border-radius: var(--r-sm); position: relative; }
+.app .in-map__row:hover { background: var(--mx-wash); }
+.app .in-map__name { padding-left: var(--s-3); font: 600 var(--text-md)/1 var(--font-sans); color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app .in-map__name small { margin-left: 6px; font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-faint); }
+.app .in-map__track { position: relative; height: 100%; }
+.app .in-map__track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--mx-hairline); }
+.app .in-map__track i { position: absolute; }
+.app .in-map__tick { top: calc(50% - 5px); width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--chart-grey-3); }
+.app .in-map__tail { top: calc(50% - 1.5px); height: 3px; border-radius: 2px; opacity: .75; }
+.app .in-map__then { top: calc(50% - 4px); width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--app-surface); border: 1.5px solid var(--chart-grey-4); }
+.app .in-map__now { top: calc(50% - 6px); width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--app-text-strong); box-shadow: 0 0 0 3px var(--app-surface); }
+.app .in-map__now.new { background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-surface), 0 0 0 5px var(--app-accent-glow); }
+.app .in-map__row.faded .in-map__now { background: var(--chart-grey-4); }
+.app .in-map__val { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; padding-right: var(--s-3); font: 500 var(--text-md)/1 var(--font-mono); color: var(--app-text-strong); }
+.app .in-map__val small { width: 34px; text-align: right; font-size: var(--text-xs); color: var(--app-text-subtle); }
+.app .in-map__val small.up { color: var(--focus-deep); } .app .in-map__val small.down { color: var(--focus-distracted); } .app .in-map__val small.new { color: var(--app-accent); }
+.app .in-map__more { display: flex; align-items: center; gap: var(--s-3); padding-top: var(--s-3); font-size: var(--text-sm); color: var(--app-text-subtle); }
+.app .in-map__more .mx-btn { flex: none; }
+.app .in-feed { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+.app .in-side { display: grid; gap: var(--s-6); align-content: start; }
+.app .in-subj { display: grid; grid-template-columns: 150px minmax(0, 1fr) 84px 40px 14px; gap: var(--s-4); align-items: center; width: calc(100% + var(--s-3) * 2); padding: 12px var(--s-3); margin: 0 calc(var(--s-3) * -1);
+  border: 0; border-bottom: 1px solid var(--mx-hairline); border-radius: var(--r-sm); background: none; text-align: left; cursor: pointer; transition: background-color var(--t-fast) var(--ease-quart); }
+.app .in-subj:hover { background: var(--app-surface-hover); }
+.app .in-subj__name { font: 600 var(--text-md)/1.2 var(--font-sans); color: var(--app-text-strong); min-width: 0; overflow-wrap: anywhere; }
+.app .in-subj__name small { display: block; margin-top: 5px; white-space: nowrap; font: 400 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+.app .in-subj__lead { color: var(--app-text-muted); font-size: var(--text-base); line-height: 1.45; }
+.app .in-subj__spark { display: block; height: 30px; } .app .in-subj__spark svg { width: 100%; height: 100%; display: block; }
+.app .in-subj .num { text-align: right; color: var(--app-text-strong); }
+.app .in-subj .arrow { color: var(--app-text-faint); transition: transform var(--t-med) var(--ease-expo); }
+.app .in-subj:hover .arrow { transform: translateX(3px); color: var(--app-text-strong); }
+.app .in-subj.faded { opacity: .62; }
+.app .in-move { grid-template-columns: 1fr auto; }
+.app .in-move > div { cursor: pointer; }
+.app .in-move dt { font-size: var(--text-base); color: var(--app-text); }
+.app .in-move dd { text-align: right; font: 500 var(--text-sm)/1.4 var(--font-mono); }
+.app .in-guard { padding: var(--s-4); font-size: var(--text-sm); color: var(--app-text-muted); line-height: 1.55; }
+.app .in-key { grid-template-columns: 104px 1fr; } .app .in-key dd { font-size: var(--text-base); color: var(--app-text-muted); }
+.app .in-crumb { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-5) -9px; font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-subtle); }
+.app .in-crumb b { color: var(--app-text-strong); font-weight: 500; }
+.app .in-crumb kbd { font: 500 10px/1 var(--font-mono); color: var(--app-text-faint); margin-left: 4px; }
+.app .fx { animation: t-in var(--t-med) var(--ease-quart); }
+@keyframes t-in { from { opacity: .3; } }
+
+/* ---- NEW: one section per tier, its pager in the kicker line (or one quiet line under the list) ---- */
+.app .t-sec { margin-bottom: var(--s-5); }
+.app .t-head { position: relative; display: flex; align-items: center; gap: var(--s-2); min-height: 28px; margin: var(--s-4) 0 var(--s-1);
+  font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--app-text-subtle); }
+.app .t-k { white-space: nowrap; } .app .t-k i { font-style: normal; color: var(--app-text-faint); margin-right: 2px; }
+.app .t-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; color: var(--app-text-faint); }
+.app .t-rule { flex: 1 1 12px; height: 1px; background: var(--mx-hairline); }
+.app .t-range, .app .t-link { height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; cursor: pointer; white-space: nowrap;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+.app .t-range:hover, .app .t-range[aria-expanded="true"], .app .t-link:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-link:disabled { color: var(--app-text-faint); cursor: default; }
+.app .t-steps { display: inline-flex; gap: 2px; margin-right: -3px; }
+.app .t-step { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--app-text-muted); cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-quart), color var(--t-fast) var(--ease-quart); }
+.app .t-step:hover:not(:disabled) { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-step:disabled { opacity: .3; cursor: default; }
+.app .t-rw { position: relative; display: inline-flex; }
+.app .t-menu { position: absolute; z-index: 6; right: 0; top: calc(100% + 4px); min-width: 140px; padding: 4px; display: grid; gap: 1px; border: 1px solid var(--app-border-strong); border-radius: var(--r-md);
+  background: var(--app-surface-raised); box-shadow: 0 14px 34px -14px rgba(0,0,0,.5); text-transform: none; letter-spacing: 0; animation: t-pop var(--t-med) var(--ease-expo); }
+.app .t-menu--up { top: auto; bottom: calc(100% + 4px); left: 0; right: auto; }
+.app .t-menu p { margin: 5px 8px 6px; font: 500 10px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--app-text-faint); }
+.app .t-menu button { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); height: 26px; padding: 0 8px; border: 0; border-radius: var(--r-sm); background: none; cursor: pointer;
+  color: var(--app-text-muted); font: 500 var(--text-sm)/1 var(--font-sans); text-align: left; }
+.app .t-menu button:hover { background: var(--mx-wash-strong); color: var(--app-text-strong); }
+.app .t-menu button[aria-checked="true"] { color: var(--app-text-strong); }
+.app .t-menu button[aria-checked="false"] svg { visibility: hidden; }
+@keyframes t-pop { from { opacity: 0; transform: translateY(-4px); } }
+.app .t-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 0; margin-top: var(--s-2); font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle); }
+.app .t-foot .t-range, .app .t-foot .t-link { padding: 0 4px; }
+.app .t-foot .t-link:not(:disabled) { text-decoration: underline; text-decoration-color: var(--app-border-strong); text-underline-offset: 3px; }
+.app .t-dot { padding: 0 2px; color: var(--app-text-faint); }
+.app .t-empty { margin: var(--s-2) 0 0; font-size: var(--text-sm); color: var(--app-text-faint); }
+.app .in-subj.is-cur { background: var(--mx-wash-strong); }
+.app .in-subj.is-open { background: var(--mx-wash); }
+.app .t-tag { margin-left: 6px; font: 500 10px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--app-accent); white-space: nowrap; }
+/* stand-in subject page (the real one is mockup B) */
+.app .t-subj .mx-display { margin: var(--s-3) 0 var(--s-4); }
+.app .t-subj .mx-prose { max-width: 60ch; }
+.app .t-stand { margin-top: var(--s-6); padding: var(--s-5); display: grid; gap: var(--s-4); justify-items: start; border-style: dashed; background: var(--app-surface-subtle); }
+.app .t-stand p { margin: 0; max-width: 62ch; font-size: var(--text-md); line-height: 1.55; color: var(--app-text-muted); }
+.app .t-stand b { color: var(--app-text-strong); }
+@container app (max-width: 1000px) { .app .in-feed { grid-template-columns: 1fr; } }
+@container app (max-width: 700px) {
+  .app .in-read { grid-template-columns: 1fr; gap: var(--s-4); }
+  .app .mx-display { font-size: 30px; }
+  .app .in-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app .in-map__legend { display: none; }
+  .app .in-map__plot { --nm: 104px; --vl: 76px; }
+  .app .in-map__bands b { display: none; }
+  .app .in-subj { grid-template-columns: 112px minmax(0, 1fr) 36px 14px; gap: var(--s-3); }
+  .app .in-subj__name small { white-space: normal; line-height: 1.35; margin-top: 3px; }
+  .app .in-subj__spark { display: none; }
+  .app .s-ctl .mx-search { width: auto; flex: 1; }
+  .app .t-note { display: none; }
+}
+@container app (max-width: 420px) {
+  .app .s-ctl { flex-wrap: wrap; }
+  .app .in-subj { grid-template-columns: minmax(0, 1fr) 36px 14px; }
+  .app .in-subj__lead { grid-column: 1; grid-row: 2; }
+  .app .in-subj .num { grid-row: 1 / span 2; grid-column: 2; }
+  .app .in-subj .arrow { grid-row: 1 / span 2; grid-column: 3; }
+  .app .in-map__plot { --nm: 84px; --vl: 88px; }
+  .app .t-head .t-rw { margin-left: auto; }
+  .app .in-stats { gap: var(--s-4); }
+  .app .t-head { flex-wrap: wrap; row-gap: 2px; }
+  .app .t-rule { flex-basis: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .app *, .app *::before { animation: none !important; transition: none !important; } }
+#fig:focus { outline: none; }
+.pp-callout code { overflow-wrap: anywhere; }
+@media (max-width: 560px) { .iso-plate-corner[data-corner="hint"] { display: none; } .iso-plate-corner[data-corner="readout"] { left: 0; white-space: normal; text-align: right; } }
+</style>
+</head>
+<body class="iso" data-theme="light">
+<script>document.body.setAttribute("data-theme",matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");</script>
+<main class="iso-page">
+<article class="pp-doc">
+  <div class="pp-top">
+    <div>
+      <p class="pp-kicker">Mnema · Insights views · Round 2 · Mockup A</p>
+      <h1>Every tier, its own pager — read top to bottom at any size</h1>
+    </div>
+    <button type="button" class="pp-button" data-theme-toggle aria-label="Switch light or dark theme">Dark</button>
+  </div>
+  <p class="pp-lede">Today's Subjects tab with paging redone after your notes. In 1-A one paged list put only Strongly held on page 1, so the other tiers vanished. Here all four tiers — Strongly held, Forming, Just taking shape, Fading — are always on screen as their own sections, 10 subjects each. Each tier turns its own pages from a quiet stepper inside its heading line, "11–20 of 69 ‹ ›", in the same small type as the heading, with no boxes and no green bar. Fading is history, so it starts folded.</p>
+  <p class="pp-meta">2026-11-02 · sample data: 138 subjects, 674 conclusions, 933 activities · Heavy dossier: the same subjects with confidences scaled so 86 are strongly held</p>
+  <div class="pp-verdict"><span class="pp-chip" data-tone="strong">Best for</span><p>Reading the dossier tier by tier however big it gets: with 86 strongly held, Forming, Just taking shape and Fading still start on screen, one scroll down. Main cost: four small pagers instead of one, so there is no single "page 3" for the whole list, and the lower tiers sit below a long Strongly held section.</p></div>
+
+  <h2><span class="pp-n">01</span>Try it</h2>
+  <div class="mock-stage">
+    <div class="mock-controls">
+      <label>Window</label>
+      <div class="pp-seg" data-w-seg><button type="button" data-w="wide" aria-pressed="true">Wide</button><button type="button" data-w="medium">Medium</button><button type="button" data-w="narrow">Narrow</button></div>
+      <label>Dossier</label>
+      <div class="pp-seg" data-sc-seg><button type="button" data-sc="young">Young (8 subjects)</button><button type="button" data-sc="today" aria-pressed="true">Today (138)</button><button type="button" data-sc="heavy">Heavy</button></div>
+      <label>Pager style</label>
+      <div class="pp-seg" data-style-seg><button type="button" data-style="head" aria-pressed="true">In the heading</button><button type="button" data-style="foot">Under the list</button></div>
+    </div>
+    <figure class="iso-figure" id="fig">
+      <div class="iso-plate">
+        <div class="iso-plate-corners">
+          <span class="iso-plate-corner" data-corner="fig">FIG R2.A</span>
+          <span class="iso-plate-corner" data-corner="title">Every tier, its own pager</span>
+          <span class="iso-plate-corner" data-corner="hint">Try: ‹ › in a heading · ←/→ over a tier · ↑↓ Enter open · Esc back</span>
+          <span class="iso-plate-corner" data-corner="readout" data-status>Loading…</span>
+        </div>
+        <div class="app" data-w="wide">
+          <div class="app__titlebar"><span class="app__lights"><i></i><i></i><i></i></span><span class="app__title">Mnema — Insights</span><span style="width:47px"></span></div>
+          <div class="app__tabs"><span>Overview</span><span>Journal</span><span aria-current="page">Subjects</span><span>Context</span></div>
+          <div class="app__body"></div>
+        </div>
+      </div>
+      <div class="iso-legend"><div class="iso-keys">
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dim" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>Tier heading "// Forming · 69" — the anchor; turning its pages never moves it</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="raised" viewBox="0 0 16 10"><path d="M2 5h7"/><path d="m11 2 3 3-3 3"/></svg>"11–20 of 69 ‹ ›" = which rows of that tier you see; click the numbers for 10 / 25 / 50 / Show all</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dotted" viewBox="0 0 16 10"><path d="M1 5h14"/></svg>No stepper = the tier fits on one page; the heading just gives its count</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="dashed" viewBox="0 0 16 10"><path d="M1 8h14"/></svg>"Show N fading" = Fading is history, folded until you ask</span>
+        <span class="iso-key"><svg class="iso-swatch" data-mark="lit" viewBox="0 0 16 10"><path d="M2 2h12v6H2z"/></svg>Soft wash + green "opened" tag = the subject you last opened, still marked when you come back</span>
+      </div></div>
+    </figure>
+  </div>
+
+  <h2><span class="pp-n">02</span>How it behaves</h2>
+  <ol class="pp-steps" data-steps>
+    <li data-step="index"><span class="pp-sn">01</span><span class="pp-st"><b>Open Subjects</b><small>All four tiers are on screen, 10 subjects each, in reading order. With the Young dossier every tier fits, so no stepper shows — just the counts.</small></span></li>
+    <li data-step="turn"><span class="pp-sn">02</span><span class="pp-st"><b>Turn one tier</b><small>‹ › in a tier's heading, or ←/→ while the pointer (or the row you're on) is in that tier. Only that tier's rows change; its heading stays exactly where it was and the other tiers keep their pages.</small></span></li>
+    <li data-step="size"><span class="pp-sn">03</span><span class="pp-st"><b>More per page</b><small>Click "11–20 of 69" for a tiny menu: 10 / 25 / 50 / Show all. The first row you were looking at stays on the page.</small></span></li>
+    <li data-step="fading"><span class="pp-sn">04</span><span class="pp-st"><b>Look at Fading</b><small>It starts folded to its heading and a "Show N fading" link. Unfolded, it pages like the others, and "Hide" folds it again.</small></span></li>
+    <li data-step="filter"><span class="pp-sn">05</span><span class="pp-st"><b>Filter</b><small>Typing in the search box swaps the tiers for one "Matches · 23" section with the same pager. Clear it and every tier is back on the page it was on.</small></span></li>
+    <li data-step="back"><span class="pp-sn">06</span><span class="pp-st"><b>Open a subject, come back</b><small>Click a row (or ↑/↓ then Enter). Esc or the crumb brings you back to the same scroll spot, every tier on its page, and the row you opened marked.</small></span></li>
+  </ol>
+
+  <h2><span class="pp-n">03</span>Trade-offs</h2>
+  <div class="pp-grid">
+    <div class="pp-card"><span class="pp-label">Good at</span><p>Keeps the app's core reading — strongest to faintest — intact at every size: no tier can be pushed off the first screen by another. The pager is part of the heading, in the heading's own type, so it reads as Mnema rather than a web table, and it disappears when a tier fits. Each tier remembers its page, so coming back from a subject is exactly where you left.</p></div>
+    <div class="pp-card"><span class="pp-label">Costs</span><p>Four little pagers instead of one: there's no "page 3 of the whole list", and jumping far inside a big tier takes several ‹ › clicks (or "Show all"). With a very large Strongly held tier on 25 or 50 per page, the tiers below need a long scroll. The chevrons are small (22px) on purpose, which makes them a smaller target than 1-A's buttons.</p></div>
+  </div>
+  <div class="pp-callout"><p><b>What changes in the app.</b> <code>apps/desktop/src/lib/insights/SubjectsList.svelte</code>: the one paged list with tier dividers becomes one section per tier again, each with its own page and page size (10 by default), kept while you're on a subject; Fading starts folded behind "Show N fading"; ←/→ turns the tier under the pointer or holding focus. <code>Pager.svelte</code>: the number buttons, the boxed current page, the 20/50/100 row and the green "active" rule go; it becomes the heading-line stepper — "11–20 of 69" (click for 10 / 25 / 50 / Show all) plus ‹ ›, hidden when the tier fits — with an "under the list" text-link variant. <code>Subjects.svelte</code>: coming back from a subject turns the opened subject's tier to its page, restores the scroll spot and marks the row. <code>subjectsTiers.ts</code>: <code>pageSlice</code> stays; <code>pageNumbers</code> is no longer needed; a small page/size map per axis and tier is added, and only the Matches page resets when the filter text changes.</p></div>
+
+  <nav class="mock-nav"><a href="../index.html">← Prev</a><a href="../index.html">All mockups</a><a href="b-subject-drawer.html">Next →</a></nav>
+  <footer class="pp-footer">Generated with Claude Code</footer>
+</article>
+</main>
+<script>
+// Shared, deterministic sample data for the Insights-views mockups.
+// Paste this whole file INLINE into each mockup page (classic <script>, no modules,
+// no storage). It defines one global: window.MNEMA_MOCK.
+// Shapes mirror apps/desktop/src/lib/types/recording.ts (Activity, Conclusion,
+// ConfidenceSnapshot) closely enough to feel real; sizes are deliberately large
+// (≈140 subjects, ≈650 conclusions, ≈900 activities) so paging/scale problems show.
+(function () {
+  var seed = 20261102;
+  function rnd() { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }
+  function pick(a) { return a[Math.floor(rnd() * a.length)]; }
+  var DAY = 86400000;
+  var NOW = Date.UTC(2026, 10, 2, 15, 30);
+
+  var SUBJECT_NAMES = [
+    "Rust", "Svelte", "Tauri", "SQLite", "Battery life", "Onboarding", "Licensing", "Speaker diarization",
+    "Whisper", "Parakeet", "Semantic search", "Embeddings", "Core Audio", "ScreenCaptureKit", "Privacy",
+    "Deepgram", "Ask AI", "ChatGPT", "Anthropic", "Ollama", "Polar", "Pricing", "Landing page", "Obsidian",
+    "Morning routine", "Running", "Sleep", "Coffee", "Reading", "Music", "Zen browser", "Orca", "Ghostty",
+    "Figma", "Design systems", "Typography", "Dark mode", "Accessibility", "Keyboard shortcuts", "Git",
+    "Code review", "Testing", "Benchmarks", "Power usage", "Thermals", "Memory leaks", "CoreML", "OpenBLAS",
+    "Fortran toolchain", "Signing", "Keychain", "Notarization", "Release process", "R2", "Cloudflare",
+    "Hacker News", "Twitter", "YouTube", "Podcasts", "Email", "Calendar", "Meetings", "1:1s", "Hiring",
+    "Investors", "Taxes", "Travel", "Hyderabad", "Family calls", "Cooking", "Groceries", "Gym", "Cycling",
+    "Meditation", "Journaling", "Writing", "Blog", "Documentation", "ADRs", "Planning", "Roadmap",
+    "Customer support", "Bug triage", "GitHub issues", "CI", "Turbo", "Bun", "TypeScript", "Effect",
+    "WebKit", "WKWebView", "Tooltips", "Charts", "Timeline", "Journal", "Subjects", "Context", "Recall",
+    "Quick Recall", "Search ranking", "FTS5", "sqlite-vec", "Migrations", "Retention", "Disk usage",
+    "Video encoding", "HEVC", "Frame sampling", "OCR", "Tesseract", "Vision framework", "Browser URLs",
+    "AppleScript", "Accessibility API", "Windows port", "Linux port", "Rex terminal", "Claude Code",
+    "Agents", "MCP", "Prompt design", "Evals", "Tokens", "Rate limits", "Spanish", "Chess", "Football",
+    "Formula 1", "Movies", "Anime", "Photography", "Guitar", "Home network", "NAS", "Umbrel", "Bitcoin",
+    "Budgeting", "Health checkups"
+  ];
+
+  var STATEMENT_TEMPLATES = [
+    "You return to {s} most weekday mornings before 11am.",
+    "You prefer reading the source over the docs when {s} misbehaves.",
+    "{s} is a long-running project you keep coming back to every few days.",
+    "You usually look at {s} in short bursts of under 20 minutes.",
+    "You compare several options before committing on anything {s}-related.",
+    "Work on {s} tends to happen late at night, after 10pm.",
+    "You talk about {s} in meetings more than you work on it directly.",
+    "You treat {s} as a hobby, not work — it shows up mostly on weekends.",
+    "You've been moving away from {s} over the last month.",
+    "{s} usually comes up right after a code review session.",
+    "You keep notes about {s} in Obsidian rather than in the app itself.",
+    "When {s} breaks, you measure first and change code second."
+  ];
+
+  var APPS = ["Zen", "Ghostty", "Orca", "Xcode", "Figma", "Obsidian", "Slack", "Mail", "Safari", "Notion", "Zoom", "Music", "Finder", "Rex"];
+  var CATS = ["Coding", "Research", "Communication", "Writing", "Design", "Meetings", "Media", "Admin", "Learning"];
+  var FOCUS = ["deep", "deep", "mixed", "mixed", "distracted"];
+  var VERBS = ["Debugged", "Read about", "Planned", "Reviewed", "Wrote up", "Measured", "Refactored", "Discussed", "Sketched", "Compared", "Tested", "Researched"];
+
+  // Activities: ~900 over the last 120 days, 3–12 per day, newest first.
+  var activities = [];
+  var aid = 1;
+  for (var d = 0; d < 120; d++) {
+    var dayStart = NOW - d * DAY - (NOW % DAY);
+    var n = 3 + Math.floor(rnd() * 10);
+    var t = dayStart + 8 * 3600000;
+    for (var k = 0; k < n; k++) {
+      var dur = (10 + Math.floor(rnd() * 110)) * 60000;
+      var topic = rnd() < 0.4 ? SUBJECT_NAMES[Math.floor(rnd() * 4)] : pick(SUBJECT_NAMES);
+      var apps = [pick(APPS), pick(APPS)].filter(function (v, i, a) { return a.indexOf(v) === i; });
+      activities.push({
+        id: aid++,
+        title: pick(VERBS) + " " + topic,
+        summary: "Spent " + Math.round(dur / 60000) + " minutes on " + topic + " across " + apps.join(" and ") + ". " +
+          pick(["Mostly reading and taking notes.", "Several back-and-forths with a terminal.", "Ended with a short write-up.", "Interrupted twice by chat.", "Clear goal, finished it."]),
+        category: pick(CATS),
+        focus: pick(FOCUS),
+        apps: apps,
+        speakers: rnd() < 0.2 ? 1 + Math.floor(rnd() * 4) : 0,
+        frames: 5 + Math.floor(rnd() * 120),
+        audioSegments: rnd() < 0.3 ? 1 + Math.floor(rnd() * 6) : 0,
+        startedAtMs: t,
+        endedAtMs: t + dur,
+        topic: topic
+      });
+      t += dur + Math.floor(rnd() * 50) * 60000;
+    }
+  }
+  activities.sort(function (a, b) { return b.startedAtMs - a.startedAtMs; });
+  var byTopic = {};
+  activities.forEach(function (a) { (byTopic[a.topic] = byTopic[a.topic] || []).push(a); });
+
+  // Conclusions: 1–12 per subject (a few subjects have 20–40), with history + evidence.
+  var conclusions = [];
+  var cid = 1;
+  SUBJECT_NAMES.forEach(function (s, si) {
+    var count = si < 4 ? 20 + Math.floor(rnd() * 20) : 1 + Math.floor(rnd() * 8);
+    var pool = byTopic[s] || [];
+    for (var i = 0; i < count; i++) {
+      var formed = NOW - Math.floor(rnd() * 110 + 2) * DAY;
+      var conf = Math.max(0.05, Math.min(0.97, (i === 0 ? rnd() * 0.85 : rnd() * rnd() * 0.9) + 0.06));
+      // history: a snapshot every 2–6 days from formation, random walk to `conf`.
+      var hist = [];
+      var c = 0.25 + rnd() * 0.15;
+      for (var ts = formed; ts < NOW; ts += (2 + Math.floor(rnd() * 5)) * DAY) {
+        c = Math.max(0.02, Math.min(0.99, c + (conf - c) * 0.25 + (rnd() - 0.5) * 0.08));
+        hist.push({ confidence: c, snapshotAtMs: ts });
+      }
+      hist.push({ confidence: conf, snapshotAtMs: NOW });
+      var evN = Math.min(pool.length, 2 + Math.floor(rnd() * (si < 4 ? 60 : 14)));
+      var ev = [];
+      for (var e = 0; e < evN; e++) {
+        var a = pool[Math.floor(rnd() * pool.length)];
+        if (ev.some(function (x) { return x.activityId === a.id; })) continue;
+        ev.push({ activityId: a.id, stance: rnd() < 0.88 ? "support" : "contradict", activityTitle: a.title, activityStartedAtMs: a.startedAtMs });
+      }
+      ev.sort(function (x, y) { return x.activityStartedAtMs - y.activityStartedAtMs; });
+      var tpl = STATEMENT_TEMPLATES[(si + i) % STATEMENT_TEMPLATES.length];
+      conclusions.push({
+        id: cid++,
+        subject: s,
+        statement: tpl.replace("{s}", s) + (i >= STATEMENT_TEMPLATES.length ? " (" + (i + 1) + ")" : ""),
+        confidence: conf,
+        pinned: rnd() < 0.06,
+        formedAtMs: formed,
+        lastSupportedAtMs: ev.length ? ev[ev.length - 1].activityStartedAtMs : formed,
+        evidence: ev,
+        history: hist,
+        formedEvidenceCount: 2 + Math.floor(rnd() * 3),
+        replacedStatement: rnd() < 0.08 ? "An earlier, narrower take on " + s + "." : null
+      });
+    }
+  });
+
+  // Subject rows (what the Subjects index lists).
+  var subjects = SUBJECT_NAMES.map(function (s) {
+    var cs = conclusions.filter(function (c) { return c.subject === s; }).sort(function (a, b) { return b.confidence - a.confidence; });
+    var lead = cs[0];
+    var then = lead.history.find(function (h) { return h.snapshotAtMs >= NOW - 14 * DAY; });
+    var evidenceIds = {};
+    cs.forEach(function (c) { c.evidence.forEach(function (e) { evidenceIds[e.activityId] = 1; }); });
+    return {
+      subject: s,
+      conclusions: cs,
+      lead: lead,
+      topConfidence: lead.confidence,
+      thenConfidence: lead.formedAtMs > NOW - 14 * DAY ? null : (then ? then.confidence : lead.confidence),
+      sinceMs: Math.min.apply(null, cs.map(function (c) { return c.formedAtMs; })),
+      lastSupportedAtMs: Math.max.apply(null, cs.map(function (c) { return c.lastSupportedAtMs; })),
+      evidenceCount: Object.keys(evidenceIds).length
+    };
+  }).sort(function (a, b) { return b.topConfidence - a.topConfidence; });
+
+  // The app's real tier cuts (subjectsTiers.ts).
+  var CUTS = { DISPLAY_FLOOR: 0.15, INITIAL_BASE: 0.3, STRONGLY_HELD: 0.68 };
+  function tierOf(conf) {
+    return conf >= CUTS.STRONGLY_HELD ? "strong" : conf >= CUTS.INITIAL_BASE ? "forming" : conf >= CUTS.DISPLAY_FLOOR ? "shaping" : "fading";
+  }
+
+  window.MNEMA_MOCK = {
+    NOW: NOW, DAY: DAY, CUTS: CUTS, tierOf: tierOf,
+    subjects: subjects,           // ≈140, sorted by lead confidence
+    conclusions: conclusions,     // ≈650
+    activities: activities,       // ≈900, newest first
+    activityById: activities.reduce(function (m, a) { m[a.id] = a; return m; }, {}),
+    // Helpers
+    pct: function (v) { return Math.round(v * 100); },
+    day: function (ms) { return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }); },
+    time: function (ms) { return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); },
+    ago: function (ms) { var d = Math.round((NOW - ms) / DAY); return d <= 0 ? "today" : d === 1 ? "yesterday" : d + "d ago"; }
+  };
+})();
+
+</script>
+<script>
+(function () {
+  var toggle = document.querySelector("[data-theme-toggle]");
+  var label = function () { toggle.textContent = document.body.getAttribute("data-theme") === "dark" ? "Light" : "Dark"; };
+  label();
+  toggle.addEventListener("click", function () {
+    document.body.setAttribute("data-theme", document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+    label();
+  });
+  var app = document.querySelector(".app");
+  document.querySelectorAll("[data-w-seg] button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      app.setAttribute("data-w", b.dataset.w);
+      document.querySelectorAll("[data-w-seg] button").forEach(function (x) { x.setAttribute("aria-pressed", String(x === b)); });
+    });
+  });
+})();
+</script>
+<script>
+(function () {
+var M = window.MNEMA_MOCK, NOW = M.NOW, DAY = M.DAY, pct = M.pct, day = M.day, MIN = 10;
+var $ = function (s, r) { return (r || document).querySelector(s); };
+var esc = function (s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+var ICONS = { right: '<path d="m9 18 6-6-6-6"/>', left: '<path d="m15 18-6-6 6-6"/>', search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>', check: '<path d="M20 6 9 17l-5-5"/>' };
+function ic(n, s, cls) { return '<svg class="ic ' + (cls || "") + '" width="' + (s || 13) + '" height="' + (s || 13) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[n] + "</svg>"; }
+function signed(d) { return (d > 0 ? "+" : d < 0 ? "−" : "±") + Math.abs(d); }
+
+/* ---- data: three dossiers ---- */
+function trendOf(cs) { var d = 0, n = 0; cs.forEach(function (c) { var h = c.history; if (h.length > 1) { d += h[h.length - 1].confidence - h[0].confidence; n++; } }); var a = n ? d / n : 0; return a > 0.04 ? "up" : a < -0.04 ? "down" : "steady"; }
+function mkRow(s) {
+  var cs = s.conclusions.slice().sort(function (a, b) { return b.confidence - a.confidence; });
+  return { name: s.subject, cs: cs, lead: cs[0], top: cs[0].confidence, then: s.thenConfidence, since: Math.min.apply(null, cs.map(function (c) { return c.formedAtMs; })),
+    tier: M.tierOf(cs[0].confidence), trend: trendOf(cs), moved: s.lastSupportedAtMs };
+}
+function clamp(v) { return Math.max(0.02, Math.min(0.99, v)); }
+/* Heavy: the same 138 subjects, each subject's confidences scaled so the lead lands on a target by rank: 62% strongly held, 22% forming, 8% / 8% shaping / fading. */
+function scaled(s, k) {
+  return { subject: s.subject, thenConfidence: s.thenConfidence == null ? null : clamp(s.thenConfidence * k), lastSupportedAtMs: s.lastSupportedAtMs,
+    conclusions: s.conclusions.map(function (c) { return Object.assign({}, c, { confidence: clamp(c.confidence * k), history: c.history.map(function (h) { return { confidence: clamp(h.confidence * k), snapshotAtMs: h.snapshotAtMs }; }) }); }) };
+}
+var SC = { today: M.subjects.map(mkRow), heavy: M.subjects.map(function (s, i) {
+  var q = i / M.subjects.length, t = q < .62 ? .97 - q / .62 * .28 : q < .84 ? .67 - (q - .62) / .22 * .36 : q < .92 ? .29 - (q - .84) / .08 * .13 : .14 - (q - .92) / .08 * .1;
+  return mkRow(scaled(s, t / s.topConfidence));
+}), young: (function () {
+  var want = { strong: 3, forming: 3, shaping: 1, fading: 1 }, big = { Rust: 1, Svelte: 1, Tauri: 1, SQLite: 1 }, out = [];
+  M.subjects.forEach(function (s) {
+    var t = M.tierOf(s.topConfidence); if (big[s.subject] || !(want[t] > 0)) return; want[t]--;
+    out.push({ subject: s.subject, thenConfidence: s.thenConfidence, lastSupportedAtMs: s.lastSupportedAtMs, conclusions: s.conclusions.slice(0, 4).map(function (c) {
+      var o = Object.assign({}, c); o.history = c.history.slice(-4); o.formedAtMs = o.history[0].snapshotAtMs; return o; }) });
+  });
+  return out.map(mkRow);
+})() };
+$('[data-sc="heavy"]').textContent = "Heavy (" + SC.heavy.filter(function (r) { return r.tier === "strong"; }).length + " strongly held)";
+var TIERS = { conviction: [["strong", "Strongly held", "confidence 68% and up"], ["forming", "Forming", "confidence 30–68% · building support"], ["shaping", "Just taking shape", "confidence under 30% · early"], ["fading", "Fading", "kept for history"]],
+  movement: [["warming", "Warming", "gaining support"], ["steady", "Steady", "holding"], ["cooling", "Cooling", "losing support"], ["fading", "Fading", "kept for history"]] };
+
+/* ---- state: every tier keeps its own page and page size (keyed by axis + tier; "search" for Matches) ---- */
+var S = { scen: "today", axis: "conviction", q: "", style: "head", view: "index", subj: null, opened: null, cur: null, pg: {}, sz: {}, fade: false, menu: null, hov: null, last: "index", fx: null, y: 0 };
+function tierIdOf(r) { if (r.tier === "fading") return "fading"; if (S.axis === "conviction") return r.tier; return r.trend === "up" ? "warming" : r.trend === "down" ? "cooling" : "steady"; }
+function listed() { var q = S.q.trim().toLowerCase(), rows = SC[S.scen]; return q ? rows.filter(function (r) { return r.name.toLowerCase().indexOf(q) >= 0 || r.lead.statement.toLowerCase().indexOf(q) >= 0; }) : rows; }
+function sections() {
+  var rows = listed(), T = TIERS[S.axis].map(function (t) {
+    var items = rows.filter(function (r) { return tierIdOf(r) === t[0]; }).sort(S.axis === "conviction" || t[0] === "fading" ? function (a, b) { return b.top - a.top; } : function (a, b) { return b.moved - a.moved; });
+    return { key: S.axis + ":" + t[0], id: t[0], title: t[1], note: t[2], items: items };
+  });
+  if (!S.q.trim()) return T;
+  return [{ key: "search", id: "search", title: "Matches", note: "", items: [].concat.apply([], T.map(function (t) { return t.items; })) }];
+}
+function folded(sec) { return sec.id === "fading" && !S.fade; }
+function slice(sec) {
+  var total = sec.items.length, size = S.sz[sec.key] == null ? MIN : S.sz[sec.key], per = size || total || 1, pages = Math.max(1, Math.ceil(total / per));
+  var p = Math.min(Math.max(0, S.pg[sec.key] || 0), pages - 1); S.pg[sec.key] = p;
+  return { total: total, size: size, per: per, pages: pages, p: p, from: p * per, to: Math.min(total, p * per + per) };
+}
+function secOf(key) { return sections().filter(function (s) { return s.key === key; })[0]; }
+
+/* ---- the new pager ---- */
+function rangeText(sl) { return sl.per >= sl.total ? "All " + sl.total : (sl.from + 1) + "–" + sl.to + " of " + sl.total; }
+function menuHtml(sec, sl, up) {
+  return '<div class="t-menu' + (up ? " t-menu--up" : "") + '" role="menu" aria-label="Rows per page"><p>Rows per page</p>' + [[10, "10"], [25, "25"], [50, "50"], [0, "Show all " + sl.total]].map(function (o) {
+    return '<button type="button" role="menuitemradio" aria-checked="' + (o[0] === sl.size) + '" data-do="size:' + sec.key + ":" + o[0] + '">' + o[1] + ic("check", 13) + "</button>"; }).join("") + "</div>";
+}
+function rangeBtn(sec, sl, up) {
+  var open = S.menu === sec.key;
+  return '<span class="t-rw"><button type="button" class="t-range" data-do="menu:' + sec.key + '" aria-haspopup="menu" aria-expanded="' + open + '" title="Rows per page">' +
+    (S.style === "foot" ? rangeText(sl).replace(/^All/, "all") : rangeText(sl)) + "</button>" + (open ? menuHtml(sec, sl, up) : "") + "</span>";
+}
+function stepper(sec, sl) {
+  var name = esc(sec.title);
+  return '<span class="t-steps"><button type="button" class="t-step" data-do="go:' + sec.key + ':-1" aria-label="Previous ' + sl.per + " " + name + '"' + (sl.p <= 0 ? " disabled" : "") + ">" + ic("left", 15) + "</button>" +
+    '<button type="button" class="t-step" data-do="go:' + sec.key + ':1" aria-label="Next ' + sl.per + " " + name + '"' + (sl.p >= sl.pages - 1 ? " disabled" : "") + ">" + ic("right", 15) + "</button></span>";
+}
+function headHtml(sec, sl) {
+  var h = '<div class="t-head"><span class="t-k"><i>//</i> ' + esc(sec.title) + " · " + sl.total + "</span>" + (sec.note ? '<span class="t-note">' + esc(sec.note) + "</span>" : "") + '<span class="t-rule"></span>';
+  if (folded(sec)) return h + (sl.total ? '<button type="button" class="t-link" data-do="fade">Show ' + sl.total + " fading</button>" : "") + "</div>";
+  if (S.style === "head" && sl.total > MIN) h += rangeBtn(sec, sl) + (sl.pages > 1 ? stepper(sec, sl) : "");
+  if (sec.id === "fading") h += '<button type="button" class="t-link" data-do="fade">Hide</button>';
+  return h + "</div>";
+}
+function footHtml(sec, sl) {
+  if (S.style !== "foot" || folded(sec) || sl.total <= MIN) return "";
+  var nextN = Math.min(sl.per, sl.total - sl.to), h = '<div class="t-foot">Showing ' + rangeBtn(sec, sl, true);
+  if (sl.pages > 1) h += '<span class="t-dot">·</span><button type="button" class="t-link" data-do="go:' + sec.key + ':-1"' + (sl.p <= 0 ? " disabled" : "") + ">‹ Previous</button>" +
+    '<span class="t-dot">·</span><button type="button" class="t-link" data-do="go:' + sec.key + ':1"' + (nextN ? "" : " disabled") + ">Next" + (nextN ? " " + nextN : "") + " ›</button>";
+  return h + "</div>";
+}
+function sectionHtml(sec) {
+  var sl = slice(sec), rows = "";
+  if (!folded(sec)) rows = sl.total ? '<div class="t-rows' + (S.fx === sec.key ? " fx" : "") + '">' + sec.items.slice(sl.from, sl.to).map(subjRow).join("") + "</div>" : '<p class="t-empty">None right now.</p>';
+  return '<section class="t-sec" data-tier="' + sec.key + '" aria-label="' + esc(sec.title) + '">' + headHtml(sec, sl) + rows + footHtml(sec, sl) + "</section>";
+}
+
+/* ---- pieces of today's design (from 1-A) ---- */
+function spark(r) {
+  var s = r.cs.slice(0, 6).map(function (c, i) {
+    var h = c.history, n = h.length - 1 || 1;
+    return '<polyline fill="none" stroke="var(' + (i ? "--chart-grey-2" : "--app-text-strong") + ')" stroke-width="' + (i ? 1 : 1.5) + '" vector-effect="non-scaling-stroke" points="' + h.map(function (p, k) { return (k / n * 100).toFixed(1) + "," + ((1 - p.confidence) * 30).toFixed(1); }).join(" ") + '"/>';
+  });
+  return '<svg viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">' + s.reverse().join("") + "</svg>";
+}
+function subjRow(r) {
+  var open = S.opened === r.name;
+  return '<button type="button" class="in-subj' + (r.tier === "fading" ? " faded" : "") + (S.cur === r.name ? " is-cur" : "") + (open ? " is-open" : "") + '" data-k="' + esc(r.name) + '" data-open="' + esc(r.name) + '" tabindex="-1"><span class="in-subj__name">' + esc(r.name) +
+    (open ? '<span class="t-tag">opened</span>' : "") + "<small>" + r.cs.length + " concl. · since " + day(r.since) + '</small></span><span class="in-subj__lead">' + esc(r.lead.statement) + '</span><span class="in-subj__spark">' + spark(r) +
+    '</span><span class="num">' + pct(r.top) + "%</span>" + ic("right", 14, "arrow") + "</button>";
+}
+function headline(all) {
+  var names = { strong: [], forming: [], shaping: [], fading: [] }; all.forEach(function (r) { names[r.tier].push(r.name); });
+  var ln = function (xs) { return xs.length <= 2 ? xs.join(" and ") : xs.slice(0, 2).join(", ") + " and " + (xs.length - 2) + " more"; };
+  var cl = function (xs, w) { return xs.length ? ln(xs) + " " + (xs.length > 1 ? "are" : "is") + " " + w : ""; };
+  var lead = [cl(names.strong, "strongly held"), cl(names.forming, "forming")].filter(Boolean), fade = cl(names.fading, "fading into history");
+  return { names: names, html: lead.join(". ") + (fade ? " <em>— and " + fade + ".</em>" : ".") };
+}
+function mapHtml(rows) {
+  var top = rows.slice().sort(function (a, b) { return (a.tier === "fading") - (b.tier === "fading") || b.top - a.top; }).slice(0, 12);
+  var h = '<div class="mx-panel in-map"><div class="in-sec"><span class="mx-kicker">Conviction map</span><span class="mx-spacer"></span><span class="in-map__legend"><span><i class="d"></i>now</span><span><i class="o"></i>14 days ago</span><span><i class="t"></i>other conclusions</span></span></div>';
+  h += '<div class="in-map__plot"><div class="in-map__bands" aria-hidden="true"><span class="fade" style="left:0;width:15%"><b>fading</b></span><span style="left:15%;width:15%"><b>taking shape</b></span><span style="left:30%;width:38%"><b>forming</b></span><span class="firm" style="left:68%;width:32%"><b>strongly held</b></span></div>';
+  h += '<div class="in-map__axis" aria-hidden="true"><span></span><div>' + [0, 15, 30, 68, 100].map(function (v) { return '<span style="left:' + v + '%">' + v + "%</span>"; }).join("") + "</div><span></span></div>";
+  top.forEach(function (r) {
+    var c = pct(r.top), d = r.then == null ? null : c - pct(r.then), ticks = {};
+    r.cs.slice(1).forEach(function (x) { ticks[pct(x.confidence)] = 1; });
+    h += '<button type="button" class="in-map__row' + (r.tier === "fading" ? " faded" : "") + '" data-open="' + esc(r.name) + '" tabindex="-1"><span class="in-map__name">' + esc(r.name) + "<small>" + r.cs.length + '</small></span><span class="in-map__track">' +
+      Object.keys(ticks).map(function (t) { return '<i class="in-map__tick" style="left:' + t + '%"></i>'; }).join("") +
+      (d ? '<i class="in-map__tail" style="left:' + Math.min(pct(r.then), c) + "%;width:" + Math.abs(d) + "%;background:var(" + (d > 0 ? "--focus-deep" : "--focus-distracted") + ')"></i><i class="in-map__then" style="left:' + pct(r.then) + '%"></i>' : "") +
+      '<i class="in-map__now' + (d === null ? " new" : "") + '" style="left:' + c + '%"></i></span><span class="in-map__val">' + c + '%<small class="' + (d === null ? "new" : d > 0 ? "up" : d < 0 ? "down" : "") + '">' + (d === null ? "new" : d ? signed(d) : "±0") + "</small></span></button>";
+  });
+  h += "</div>";
+  if (rows.length > 12) h += '<div class="in-map__more"><span>Top 12 by conviction · all ' + rows.length + ' are in the tiers below</span><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="tolist">' + ic("list", 13) + "Go to the list</button></div>";
+  return h + "</div>";
+}
+function indexHtml() {
+  var all = SC[S.scen], rows = listed(), hd = headline(all), ncl = 0, secs = sections();
+  all.forEach(function (r) { ncl += r.cs.length; });
+  var mv = rows.filter(function (r) { return r.then != null && pct(r.top) !== pct(r.then); }).sort(function (a, b) { return Math.abs(pct(b.top) - pct(b.then)) - Math.abs(pct(a.top) - pct(a.then)); })
+    .concat(rows.filter(function (r) { return r.then == null; }).sort(function (a, b) { return b.since - a.since; })).slice(0, 8);
+  var h = '<div class="s-ctl"><label class="mx-search">' + ic("search", 14) + '<input id="tq" placeholder="Filter subjects" aria-label="Filter subjects" autocomplete="off" spellcheck="false" value="' + esc(S.q) + '"></label>' +
+    '<span class="mx-seg" role="group" aria-label="Group by"><button type="button" data-axis="conviction" aria-pressed="' + (S.axis === "conviction") + '">Conviction</button><button type="button" data-axis="movement" aria-pressed="' + (S.axis === "movement") + '">Movement</button></span></div>';
+  h += '<div class="in-read"><div><span class="mx-kicker">Your dossier · ' + all.length + " subjects · " + ncl + ' conclusions</span><h1 class="mx-display">' + hd.html + '</h1><p class="mx-prose">What Mnema has come to believe about you. Each subject is scored by its strongest conclusion; confidence rises with fresh evidence, halves every 30 days without it, and drops faster when activity contradicts it.</p></div>';
+  h += '<div class="in-stats">' + [["strong", "Strongly held", "lead ≥ 68%"], ["forming", "Forming", "30 – 68%"], ["shaping", "Just taking shape", "under 30%"], ["fading", "Fading", "kept for history"]].map(function (t) {
+    return '<div class="mx-stat"><span class="mx-stat__label">' + t[1] + '</span><span class="mx-stat__value">' + hd.names[t[0]].length + '</span><span class="mx-stat__delta">' + t[2] + "</span></div>"; }).join("") + "</div></div>";
+  h += mapHtml(rows);
+  h += '<div class="in-feed"><div data-list>' + (secs[0].key === "search" && !secs[0].items.length ? '<p class="mx-label">No subjects match “' + esc(S.q) + "”.</p>" : secs.map(sectionHtml).join("")) + '</div><div class="in-side">';
+  if (mv.length) h += '<div><div class="in-sec"><span class="mx-kicker">Moving this fortnight</span></div><dl class="mx-spec in-move">' + mv.map(function (r) {
+    var d = r.then == null ? null : pct(r.top) - pct(r.then);
+    return '<div data-open="' + esc(r.name) + '"><dt>' + esc(r.name) + '</dt><dd class="' + (d === null ? "in-new" : d > 0 ? "in-up" : "in-down") + '">' + (d === null ? "formed " + day(r.since) : signed(d) + " pts") + "</dd></div>"; }).join("") + "</dl></div>";
+  h += '<div class="mx-panel mx-panel--inset in-guard"><div class="in-sec"><span class="mx-kicker">How conviction works</span></div><dl class="mx-spec in-key"><div><dt>strongly held</dt><dd>Lead conclusion at 68% or more.</dd></div><div><dt>forming</dt><dd>30–68%. Building support.</dd></div><div><dt>taking shape</dt><dd>Under 30% — early, or cooling.</dd></div><div><dt>fading</dt><dd>Every conclusion below the 15% display floor. History kept, never deleted.</dd></div><div><dt>decay</dt><dd>Halves every 30 days without fresh evidence. Pin stops it.</dd></div></dl></div>';
+  return h + "</div></div>";
+}
+function subjectHtml() {
+  var r = SC[S.scen].filter(function (x) { return x.name === S.subj; })[0], tier = { strong: "Strongly held", forming: "Forming", shaping: "Just taking shape", fading: "Fading" }[r.tier];
+  return '<div class="t-subj"><div class="in-crumb"><button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="back">' + ic("left", 13) + "Subjects</button><span>/</span><b>" + esc(r.name) + "</b><kbd>esc</kbd></div>" +
+    '<span class="mx-kicker">// ' + tier + " · " + pct(r.top) + "% · " + r.cs.length + ' conclusions</span><h1 class="mx-display">' + esc(r.name) + '</h1><p class="mx-prose">' + esc(r.lead.statement) + "</p>" +
+    '<div class="mx-panel t-stand"><p><b>Stand-in for the subject page.</b> The real page is the next mockup (B). This one only lets you try the trip back: go back and every tier is on the page you left it on, the scroll spot is restored, and ' + esc(r.name) + " is marked.</p>" +
+    '<button type="button" class="mx-btn" data-act="back">' + ic("left", 13) + "Back to Subjects</button></div></div>";
+}
+
+/* ---- render + behaviour ---- */
+var app = $(".app"), body = $(".app__body");
+function targetKey() {
+  var a = document.activeElement, f = a && a.closest && a.closest("[data-tier]"), c = S.cur && body.querySelector('[data-k="' + esc(S.cur) + '"]');
+  return S.hov || (f && f.dataset.tier) || (c && c.closest("[data-tier]").dataset.tier) || null;
+}
+function status() {
+  if (S.view === "subject") return S.subj + " · stand-in subject page · Esc goes back with every tier's page kept";
+  var secs = sections(), k = targetKey(), sec = k && secOf(k), paged = secs.filter(function (s) { return !folded(s) && slice(s).pages > 1; });
+  var line = paged.length ? paged.map(function (s) { var sl = slice(s); return s.title + " " + (sl.p + 1) + "/" + sl.pages; }).join(" · ") : "every tier fits — no steppers, just counts";
+  if (sec) { var sl = slice(sec); line = sec.title + " " + rangeText(sl) + (folded(sec) ? " · folded" : sl.pages > 1 ? " · page " + (sl.p + 1) + "/" + sl.pages + " · ←/→ turns it" : " · fits on one page"); }
+  return line;
+}
+function paint() { $("[data-status]").textContent = status(); document.querySelectorAll("[data-steps] li").forEach(function (li) { li.toggleAttribute("data-now", li.dataset.step === S.last); }); }
+function render() {
+  var a = document.activeElement, q = a && a.id === "tq" ? a.selectionStart : -1;
+  body.innerHTML = S.view === "index" ? indexHtml() : subjectHtml();
+  if (q >= 0) { var qi = $("#tq"); qi.focus(); qi.setSelectionRange(q, q); }
+  S.fx = null; paint();
+  if (S.engaged && (!document.activeElement || document.activeElement === document.body)) $("#fig").focus({ preventScroll: true });
+}
+/* Re-render keeping one element (the tier's heading, or its foot line) at the same spot on screen. */
+function keep(sel, fn) {
+  var el = $(sel, body), top = el ? el.getBoundingClientRect().top : null;
+  fn(); render();
+  var n = top == null ? null : $(sel, body); if (n) body.scrollTop += n.getBoundingClientRect().top - top;
+}
+function anchorOf(key) { return '[data-tier="' + key + '"] ' + (S.style === "foot" && $('[data-tier="' + key + '"] .t-foot', body) ? ".t-foot" : ".t-head"); }
+function turn(key, d) {
+  var sec = secOf(key); if (!sec || folded(sec)) return false;
+  var sl = slice(sec), np = sl.p + d; if (np < 0 || np >= sl.pages) return false;
+  var inSec = S.cur && sec.items.slice(sl.from, sl.to).some(function (r) { return r.name === S.cur; });
+  keep(anchorOf(key), function () { S.pg[key] = np; S.fx = key; S.last = "turn"; S.menu = null; if (inSec) S.cur = sec.items[np * sl.per].name; });
+  return true;
+}
+function rowsOnScreen() { return Array.prototype.slice.call(body.querySelectorAll("[data-k]")); }
+function move(d) {
+  var its = rowsOnScreen(); if (!its.length) return;
+  var i = its.map(function (el) { return el.dataset.k; }).indexOf(S.cur), n = i < 0 ? (d > 0 ? 0 : its.length - 1) : Math.max(0, Math.min(its.length - 1, i + d));
+  S.cur = its[n].dataset.k; render(); var el = body.querySelector('[data-k="' + esc(S.cur) + '"]'); if (el) el.scrollIntoView({ block: "nearest" });
+}
+function openSubject(name) { S.y = body.scrollTop; S.view = "subject"; S.subj = S.opened = S.cur = name; S.menu = null; S.hov = null; S.last = "back"; render(); body.scrollTop = 0; }
+/* Back: nothing about the tiers resets. If the subject was opened from the map or the side column and its row isn't on its tier's current page, turn just that tier to it. */
+function back() {
+  S.view = "index"; S.last = "back";
+  var sec = sections().filter(function (s) { return s.items.some(function (r) { return r.name === S.opened; }); })[0];
+  if (sec) { var i = sec.items.map(function (r) { return r.name; }).indexOf(S.opened), sl = slice(sec); if (sec.id === "fading") S.fade = true; if (i < sl.from || i >= sl.to) S.pg[sec.key] = Math.floor(i / sl.per); }
+  render(); body.scrollTop = S.y;
+  var el = body.querySelector('[data-k="' + esc(S.opened) + '"]');
+  if (el) { var r = el.getBoundingClientRect(), b = body.getBoundingClientRect(); if (r.top < b.top || r.bottom > b.bottom) body.scrollTop += r.top - b.top - body.clientHeight / 2; }
+}
+var ACT = {
+  go: function (k, d) { turn(k, +d); },
+  menu: function (k) { S.menu = S.menu === k ? null : k; render(); },
+  size: function (k, v) {
+    var sec = secOf(k), first = slice(sec).from; v = +v;
+    keep(anchorOf(k), function () { S.sz[k] = v; S.pg[k] = v ? Math.floor(first / v) : 0; S.menu = null; S.fx = k; S.last = "size"; });
+  },
+  fade: function () { var k = S.axis + ":fading"; keep('[data-tier="' + (S.q.trim() ? "search" : k) + '"] .t-head', function () { S.fade = !S.fade; S.fx = k; S.last = "fading"; }); }
+};
+app.addEventListener("click", function (e) {
+  S.engaged = true;
+  var t = e.target.closest("[data-do],[data-open],[data-axis],[data-act]"); if (t && !app.contains(t)) t = null;
+  var D = t ? Object.assign({}, t.dataset) : {};
+  /* an open size menu closes on any click outside it; the click still does what it was for */
+  if (S.menu && !(D.do && /^(menu|size):/.test(D.do))) { S.menu = null; render(); }
+  if (D.do) { /* go:<axis>:<tier>:<d> · go:search:<d> · menu/size likewise · fade */
+    var a = D.do.split(":"); if (a[0] === "fade") return ACT.fade();
+    var s = a[1] === "search"; return ACT[a[0]](s ? "search" : a[1] + ":" + a[2], s ? a[2] : a[3]); }
+  if (D.open) return openSubject(D.open);
+  if (D.axis) { S.axis = D.axis; S.last = "index"; render(); return; }
+  if (D.act === "back") back();
+  else if (D.act === "tolist") { var l = $("[data-list]", body); body.scrollTop += l.getBoundingClientRect().top - body.getBoundingClientRect().top - 8; }
+});
+/* ←/→ follow the tier under the pointer; the status line names it. No decoration on the tier itself. */
+app.addEventListener("mouseover", function (e) {
+  var t = e.target.closest("[data-tier]"), k = t ? t.dataset.tier : null; if (k !== S.hov) { S.hov = k; paint(); }
+});
+app.addEventListener("mouseleave", function () { if (S.hov) { S.hov = null; paint(); } });
+app.addEventListener("input", function (e) { if (e.target.id === "tq") { S.q = e.target.value; S.pg.search = 0; S.last = S.q.trim() ? "filter" : "index"; S.menu = null; render(); } });
+$("#fig").addEventListener("keydown", function (e) {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  var k = e.key;
+  if (e.target.id === "tq") { if (k === "Escape" || k === "ArrowDown") e.target.blur(); else return; if (k === "Escape") { e.preventDefault(); return; } }
+  if (k === "Escape" && S.menu) { S.menu = null; render(); }
+  else if (S.view === "subject") { if (k === "Escape") back(); else return; }
+  else if (k === "ArrowRight" || k === "ArrowLeft") { var key = targetKey(); if (!key || !turn(key, k === "ArrowRight" ? 1 : -1)) return; }
+  else if (k === "ArrowDown" || k === "ArrowUp") move(k === "ArrowDown" ? 1 : -1);
+  else if (k === "Enter") { if (!S.cur || e.target.closest("button")) return; openSubject(S.cur); }
+  else return;
+  e.preventDefault();
+});
+$("#fig").tabIndex = 0;
+function setSeg(attr, v) { document.querySelectorAll("[data-" + attr + "-seg] button").forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset[attr] === v)); }); }
+function scen(v) { S.scen = v; S.view = "index"; S.q = ""; S.pg = {}; S.sz = {}; S.fade = false; S.menu = null; S.cur = S.opened = null; S.last = "index"; body.scrollTop = 0; setSeg("sc", v); }
+document.querySelectorAll("[data-sc-seg] button").forEach(function (b) { b.addEventListener("click", function () { scen(b.dataset.sc); render(); }); });
+document.querySelectorAll("[data-style-seg] button").forEach(function (b) { b.addEventListener("click", function () { S.style = b.dataset.style; S.menu = null; setSeg("style", S.style); render(); }); });
+/* screenshot states: #sc=heavy&w=narrow&style=foot&axis=movement&q=ru&p=forming:1,strong:2&fade=1&menu=forming&open=Rust&back=1&y=600 */
+var H = {}; location.hash.slice(1).split("&").forEach(function (kv) { var p = kv.split("="); if (p[0]) H[p[0]] = decodeURIComponent(p[1] || ""); });
+if (H.sc && SC[H.sc]) scen(H.sc);
+if (H.style) { S.style = H.style; setSeg("style", H.style); }
+if (H.axis) S.axis = H.axis;
+if (H.q) { S.q = H.q; S.last = "filter"; }
+if (H.p) H.p.split(",").forEach(function (kv) { var p = kv.split(":"); S.pg[p[0] === "search" ? "search" : S.axis + ":" + p[0]] = +p[1]; S.last = "turn"; });
+if (H.fade) { S.fade = true; S.last = "fading"; }
+if (H.menu) { S.menu = H.menu === "search" ? "search" : S.axis + ":" + H.menu; S.last = "size"; }
+render();
+if (H.y) body.scrollTop = +H.y;
+if (H.open) { openSubject(H.open); if (H.back) back(); }
+if (H.w) { var wb = $('[data-w-seg] [data-w="' + H.w + '"]'); if (wb) wb.click(); }
+})();
+</script>
+</body>
+</html>

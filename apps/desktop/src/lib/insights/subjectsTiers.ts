@@ -213,6 +213,32 @@ export function buildTiers<T extends TierSubject>(
   }));
 }
 
+// The Subjects list's headings print the tier's count after the title, so the
+// title drops "kept for history" into the note. Derived from the thresholds so
+// they can't drift from the subject page's notes.
+const pctOf = (x: number) => Math.round(x * 100);
+const LIST_NOTE: Record<string, string> = {
+  strong: `confidence ${pctOf(STRONGLY_HELD)}% and up`,
+  forming: `confidence ${pctOf(INITIAL_BASE)}–${pctOf(STRONGLY_HELD)}% · building support`,
+  shaping: `confidence under ${pctOf(INITIAL_BASE)}% · early`,
+  fading: "kept for history",
+};
+
+/** The Subjects list's sections: one "Matches" section while searching
+ *  (`matches` non-null; none when nothing matched), one untitled run while
+ *  sparse, else every tier of `axis`, empty ones too. A section's id keys its
+ *  page + size, so tier ids carry the axis and each axis keeps its own pages. */
+export function listGroups<T extends TierSubject>(rows: T[], axis: Axis, matches: T[] | null): Tier<T>[] {
+  if (matches) return matches.length ? [{ id: "search", title: "Matches", note: "", faded: false, items: matches }] : [];
+  if (isSparse(rows.length)) return [{ id: "all", title: "", note: "", faded: false, items: rows }];
+  return buildTiers(rows, axis).map((t) => ({
+    ...t,
+    id: `${axis}:${t.id}`,
+    title: t.faded ? "Fading" : t.title,
+    note: LIST_NOTE[t.id] ?? t.note,
+  }));
+}
+
 // ---- Lede headline + conviction-map tail (pure, testable) -------------------
 
 /** "A and B", or "A, B and 3 more" past two names. */
@@ -250,17 +276,73 @@ export function fortnightAgo(
 
 // ---- Paging + "Moving this fortnight" (pure, testable) ----------------------
 
-export const TIER_PAGE = 10; // subject rows per tier (and per search page)
-export const MAP_PAGE = 12; // conviction-map rows before "Show all N"
+export const MAP_PAGE = 12; // conviction-map rows (the rest are in the paged list)
 export const MOVING_LIMIT = 8; // "Moving this fortnight" rows
-export const CONCLUSION_PAGE = 20; // a subject page's conclusion rows
 
-/** The first `shown` of `items`, how many the next "Show N more" adds, and
- *  whether "Show less" applies (everything is out, past the first page). */
-export function pageOf<T>(items: readonly T[], shown: number, step: number): { visible: T[]; more: number; less: boolean } {
-  const visible = items.slice(0, shown);
-  const hidden = items.length - visible.length;
-  return { visible, more: Math.min(step, hidden), less: hidden === 0 && shown > step };
+// Section paging: every tier (and a conclusion's evidence) pages on its own,
+// with "11–20 of 69 ‹ ›" in the section's heading.
+export const TIER_PAGE_SIZES = [10, 25, 50] as const; // rows per tier; plus "Show all" (= SHOW_ALL)
+export const SHOW_ALL = Number.POSITIVE_INFINITY;
+export const EVIDENCE_PAGE = 8; // a conclusion's evidence entries before the drawer measures
+export const EVIDENCE_MIN_FIT = 4; // never fewer per page, however short the window
+
+export interface Page<T> {
+  visible: T[];
+  page: number; // 0-based, clamped into range
+  pages: number; // ≥ 1
+  from: number; // index of the first visible row
+  to: number; // one past the last visible row
+  total: number;
+}
+
+/** The rows on page `page` (0-based, clamped) of `size` rows each; a `size`
+ *  of SHOW_ALL is one page holding everything. */
+export function pageSlice<T>(items: readonly T[], page: number, size: number): Page<T> {
+  const total = items.length;
+  const per = Math.max(1, Math.min(size, total));
+  const pages = Math.max(1, Math.ceil(total / per));
+  const p = Math.min(Math.max(0, Math.floor(page) || 0), pages - 1);
+  const from = p * per;
+  const to = Math.min(total, from + per);
+  return { visible: items.slice(from, to), page: p, pages, from, to, total };
+}
+
+/** "21–40 of 138", or "All 30" when one page holds everything. */
+export function pageLabel(p: { from: number; to: number; total: number }): string {
+  if (p.from === 0 && p.to === p.total) return `All ${p.total}`;
+  if (p.to - p.from === 1) return `${p.to} of ${p.total}`; // a last page of one row
+  return `${p.from + 1}–${p.to} of ${p.total}`;
+}
+
+/** The page (0-based) holding row `index` at `size` rows a page (SHOW_ALL → 0). */
+export function pageHolding(index: number, size: number): number {
+  return Math.max(0, Math.floor(index / size)) || 0;
+}
+
+/** The page to turn to so row `index` shows, or null when it already does (or
+ *  isn't in this section, index < 0). */
+export function pageToShow(index: number, p: { from: number; to: number }, size: number): number | null {
+  if (index < 0 || (index >= p.from && index < p.to)) return null;
+  return pageHolding(index, size);
+}
+
+/** ↑/↓ from row `current` (-1 = none open) in `length` rows: nothing open goes
+ *  to the first (↓) or last (↑) row; null at either end (no wrap-around). */
+export function stepIndex(current: number, d: 1 | -1, length: number): number | null {
+  const n = current < 0 ? (d > 0 ? 0 : length - 1) : current + d;
+  return n >= 0 && n < length ? n : null;
+}
+
+/** Row `i` of `length` is going away: move to the next row, else the previous. */
+export function neighbourAfter(i: number, length: number): number | null {
+  return i + 1 < length ? i + 1 : i > 0 ? i - 1 : null;
+}
+
+/** Evidence rows of `rowH` px that fit `space` px; never under
+ *  EVIDENCE_MIN_FIT, and the minimum while rows are unmeasured (0 px / NaN). */
+export function fitRows(space: number, rowH: number): number {
+  if (!(rowH > 0)) return EVIDENCE_MIN_FIT;
+  return Math.max(EVIDENCE_MIN_FIT, Math.floor(space / rowH));
 }
 
 interface Mover {

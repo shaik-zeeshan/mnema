@@ -381,7 +381,7 @@
     border-radius: 2px;
     background: var(--c);
   }
-  @container mx-window (max-width: 1180px) {
+  @media (max-width: 1180px) {
     .feed {
       grid-template-columns: 1fr;
     }

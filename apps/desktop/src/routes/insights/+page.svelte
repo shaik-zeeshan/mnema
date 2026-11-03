@@ -34,6 +34,7 @@
   // Subject drill-in over the Subjects tab (null = the index).
   let selectedSubject = $state<string | null>(null);
   let main = $state<HTMLElement>();
+  let barH = $state(56);
 
   function openTab(tab: InsightsTab): void {
     view = tab;
@@ -208,8 +209,8 @@
   });
 </script>
 
-<div class="in-main" bind:this={main}>
-  <div class="in-bar">
+<div class="in-main" bind:this={main} style:--in-bar-h="{barH}px">
+  <div class="in-bar" bind:clientHeight={barH}>
     <div class="in-bar__in">
       <nav class="in-tabs" aria-label="Insights sections">
         {#each TABS as tab (tab.id)}
@@ -293,6 +294,7 @@
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
+    overscroll-behavior: none; /* no rubber-band bounce (html/body already opt out) */
     position: relative;
   }
   .in-bar {
@@ -315,14 +317,17 @@
     max-width: 1280px;
     margin: 0 auto;
     padding: 0 var(--s-7);
-    height: 56px;
+    min-height: 56px;
     display: flex;
+    /* Narrow windows: the view's controls drop to a second row instead of running off the edge. */
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--s-3);
+    column-gap: var(--s-3);
   }
   .in-tabs {
     display: flex;
     align-self: stretch;
+    min-height: 56px;
     gap: var(--s-5);
   }
   .in-tabs button {
@@ -372,6 +377,8 @@
     display: flex;
     align-items: center;
     gap: var(--s-3);
+    margin-left: auto;
+    padding-block: var(--s-3);
   }
   /* A view's moved-in controls drop the spacing and wrapping they had in-flow. */
   .in-bar__ctl > :global(*) {
