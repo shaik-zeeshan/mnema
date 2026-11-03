@@ -23,13 +23,13 @@
     type Axis,
     type ConvictionTier,
     MAP_PAGE,
-    buildTiers,
     convictionTierId,
     debounce,
     decideRefresh,
     deriveTrend,
     fortnightAgo,
     isSparse,
+    listGroups,
     movePts,
     rankMovers,
     subjectsDiff,
@@ -163,7 +163,6 @@
     return Number(a.faded) - Number(b.faded) || b.topConfidence - a.topConfidence || a.subject.localeCompare(b.subject);
   }
   const displayRows = $derived([...rows].sort(byDisplay));
-  const tiers = $derived(buildTiers(displayRows, axis));
   const sparse = $derived(isSparse(displayRows.length));
   const searching = $derived(appliedQuery.trim().length > 0);
   const searchResults = $derived(searching ? rankSubjects(displayRows, appliedQuery) : []);
@@ -181,32 +180,8 @@
   // A set filter scopes the whole page below the lede to its matches.
   const listed = $derived(searching ? searchResults : displayRows);
 
-  // The list's headings (mockup r2-A): the tier's count is printed after the
-  // title, so the title drops "kept for history" into the note.
-  const HEAD_NOTE: Record<string, string> = {
-    strong: "confidence 68% and up",
-    forming: "confidence 30–68% · building support",
-    shaping: "confidence under 30% · early",
-    fading: "kept for history",
-  };
-
-  // What the list shows: one "Matches" section, one untitled run while sparse,
-  // or every axis tier (empty ones too). Ids carry the axis so each axis keeps
-  // its own pages.
-  const groups = $derived<SubjectGroup[]>(
-    searching
-      ? searchResults.length
-        ? [{ id: "search", title: "Matches", note: "", faded: false, items: searchResults }]
-        : []
-      : sparse
-        ? [{ id: "all", title: "", note: "", faded: false, items: displayRows }]
-        : tiers.map((t) => ({
-            ...t,
-            id: `${axis}:${t.id}`,
-            title: t.faded ? "Fading" : t.title,
-            note: HEAD_NOTE[t.id] ?? t.note,
-          })),
-  );
+  // What the list shows (mockup r2-A): Matches, a sparse run, or every axis tier.
+  const groups = $derived<SubjectGroup[]>(listGroups(displayRows, axis, searching ? searchResults : null));
 
   // The map always shows the top MAP_PAGE; the rest are in the list below.
   const mapRows = $derived<MapRow[]>(

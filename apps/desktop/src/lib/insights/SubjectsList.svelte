@@ -33,7 +33,7 @@
   import { tick } from "svelte";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Pager from "$lib/insights/Pager.svelte";
-  import { TIER_PAGE_SIZES, pageSlice } from "$lib/insights/subjectsTiers";
+  import { TIER_PAGE_SIZES, pageHolding, pageSlice, pageToShow } from "$lib/insights/subjectsTiers";
   import IconRight from "~icons/lucide/chevron-right";
 
   interface Props {
@@ -70,7 +70,7 @@
   const turn = (id: string, p: number) => (pages[id] = p);
   // A new size keeps the first row you were looking at on the page.
   function resize(id: string, s: number): void {
-    pages[id] = Math.floor((slices.get(id)?.from ?? 0) / s);
+    pages[id] = pageHolding(slices.get(id)?.from ?? 0, s);
     sizes[id] = s;
   }
   // Fold/unfold, keeping focus on the link that took the toggle's place.
@@ -124,7 +124,8 @@
         if (g && sl) {
           const i = g.items.findIndex((r) => r.subject === current);
           if (g.faded) showFading = true;
-          if (i < sl.from || i >= sl.to) pages[g.id] = Math.floor(i / (sizes[g.id] ?? PER));
+          const p = pageToShow(i, sl, sizes[g.id] ?? PER);
+          if (p !== null) pages[g.id] = p;
         }
         void tick().then(() => rootEl?.querySelector(".is-cur")?.scrollIntoView({ block: "center" }));
       }
@@ -189,7 +190,7 @@
 <style>
   /* insights.html Subjects tier rows + mockup r2-A's tier headings. */
   .in-list {
-    scroll-margin-top: 88px; /* clear the sticky tab bar on "Go to the list" */
+    scroll-margin-top: calc(var(--in-bar-h, 56px) + 32px); /* clear the sticky tab bar (taller once it wraps) on "Go to the list" */
   }
   .in-tier {
     margin-bottom: var(--s-5);

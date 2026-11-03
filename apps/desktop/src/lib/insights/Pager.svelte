@@ -55,7 +55,14 @@
 <svelte:window onpointerdown={onDown} onkeydowncapture={onKey} />
 
 {#if shown}
-  <span class="in-pg" bind:this={rootEl}>
+  <!-- Tabbing out closes the menu, or it would stay open unseen and eat the next Esc.
+       A null relatedTarget (a click; WebKit doesn't focus clicked buttons) is onDown's job. -->
+  <span
+    class="in-pg"
+    bind:this={rootEl}
+    onfocusout={(e) => {
+      if (open && e.relatedTarget && !rootEl?.contains(e.relatedTarget as Node)) open = false;
+    }}>
     {#if sizes && onSize}
       <span class="in-pg__rw">
         <button

@@ -33,7 +33,10 @@
     convictionTierId,
     debounce,
     fortnightAgo,
+    neighbourAfter,
+    pageHolding,
     pageSlice,
+    stepIndex,
   } from "$lib/insights/subjectsTiers";
   import { DelayedDismiss, DISMISS_UNDO_MS } from "$lib/insights/dismissUndo.svelte";
   import { humanizeError } from "$lib/format-error";
@@ -215,7 +218,7 @@
   function reveal(id: number): void {
     for (const t of tiers) {
       const i = t.items.findIndex((c) => c.id === id);
-      if (i >= 0) return setTier(t.id, Math.floor(i / (tierPg[t.id]?.size ?? TIER_PAGE_SIZES[0])));
+      if (i >= 0) return setTier(t.id, pageHolding(i, tierPg[t.id]?.size ?? TIER_PAGE_SIZES[0]));
     }
   }
   function openConclusion(id: number): void {
@@ -235,14 +238,14 @@
     else openConclusion(id);
   }
   function step(d: 1 | -1): void {
-    const n = openIndex < 0 ? (d > 0 ? 0 : flat.length - 1) : openIndex + d;
-    if (flat[n]) openConclusion(flat[n].id);
+    const n = stepIndex(openIndex, d, flat.length);
+    if (n !== null) openConclusion(flat[n].id);
   }
   // Turn a section's page; its heading holds still (only rows below it change)
   // and is brought back into view if it had scrolled away.
   async function turnTo(key: string, page: number): Promise<void> {
     if (key === "e") {
-      evPage = Math.min(Math.max(0, page), Math.max(0, Math.ceil(events.length / evSize) - 1));
+      evPage = pageSlice(events, page, evSize).page;
     } else {
       const v = tierViews.find((t) => `t:${t.id}` === key);
       if (!v) return;
@@ -255,7 +258,7 @@
   function turn(d: 1 | -1): void {
     const firstPaged = tierViews.find((t) => t.slice.pages > 1);
     const key = hovered ?? (open ? "e" : firstPaged ? `t:${firstPaged.id}` : null);
-    if (key === "e") void turnTo("e", evPage + d);
+    if (key === "e") void turnTo("e", pageSlice(events, evPage, evSize).page + d); // evPage may be past a shrunk list
     else if (key) {
       const v = tierViews.find((t) => `t:${t.id}` === key);
       if (v) void turnTo(key, v.slice.page + d);
@@ -268,7 +271,7 @@
     if (!t || !v) return;
     const openAt = t.items.findIndex((c) => c.id === openId);
     const anchor = openAt >= v.slice.from && openAt < v.slice.to ? openAt : v.slice.from;
-    setTier(tierId, Math.floor(anchor / size), size); // SHOW_ALL → page 0
+    setTier(tierId, pageHolding(anchor, size), size); // SHOW_ALL → page 0
   }
 
   // ── Ask ──
@@ -292,7 +295,7 @@
     if (t?.closest?.("input, textarea, select, [contenteditable], [role=textbox], [role=combobox]")) return;
     const k = e.key;
     if (k === "Escape") {
-      if (openId !== null) close();
+      if (open) close(); // not openId: it can outlive its row (dismissed, refreshed away)
       else onBack();
     } else if (!flat.length) {
       return;
@@ -300,7 +303,7 @@
       step(k === "ArrowDown" ? 1 : -1);
     } else if (k === "ArrowRight" || k === "ArrowLeft") {
       turn(k === "ArrowRight" ? 1 : -1);
-    } else if (k === "Enter" && openId === null && !t?.closest?.("button, a")) {
+    } else if (k === "Enter" && !open && !t?.closest?.("button, a")) {
       step(1);
     } else {
       return;
@@ -362,7 +365,8 @@
   // Dismissing the open conclusion moves the drawer to its neighbour.
   function dismiss(c: Conclusion): void {
     const i = flat.indexOf(c);
-    const next = c.id === openId ? (flat[i + 1] ?? flat[i - 1]) : undefined;
+    const j = c.id === openId ? neighbourAfter(i, flat.length) : null;
+    const next = j === null ? null : flat[j]; // before start(): it drops `c` from `flat`
     dismissal.start(c);
     if (next) openConclusion(next.id);
     showToast({ tone: "ok", text: "Dismissed — it won't be re-inferred", undo: c });
@@ -527,7 +531,7 @@
     page={evPage}
     size={evSize}
     onFit={(n) => {
-      evPage = Math.floor((evPage * evSize) / n); // keep the first row you were reading
+      evPage = pageHolding(pageSlice(events, evPage, evSize).from, n); // keep the first row you were reading
       evSize = n;
     }}
     {pinBusy}

@@ -11,7 +11,7 @@
   import type { TimelineEvent } from "$lib/insights/subjectTimeline";
   import { tick } from "svelte";
   import Pager from "$lib/insights/Pager.svelte";
-  import { EVIDENCE_MIN_FIT, pageSlice } from "$lib/insights/subjectsTiers";
+  import { fitRows, pageSlice } from "$lib/insights/subjectsTiers";
   import { fmtDuration } from "$lib/insights/lede-stats";
   import { formatClock } from "$lib/time-format";
   import IconPin from "~icons/lucide/pin";
@@ -98,7 +98,7 @@
     const rowH = listEl.offsetHeight / listEl.children.length;
     const top = listEl.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop;
     const foot = parseFloat(getComputedStyle(scrollEl).paddingBottom) || 0;
-    const n = Math.max(EVIDENCE_MIN_FIT, Math.floor((scrollEl.clientHeight - top - foot) / rowH));
+    const n = fitRows(scrollEl.clientHeight - top - foot, rowH);
     if (n !== size) onFit(n);
   }
   $effect(() => {
@@ -106,7 +106,9 @@
     const el = scrollEl;
     if (!el) return;
     const ro = new ResizeObserver(() => fit());
-    ro.observe(el);
+    // Border box: the classic scrollbar a fit can add or remove changes the
+    // content box, which would re-fit, re-toggle it, and loop every frame.
+    ro.observe(el, { box: "border-box" });
     void tick().then(fit);
     return () => ro.disconnect();
   });
