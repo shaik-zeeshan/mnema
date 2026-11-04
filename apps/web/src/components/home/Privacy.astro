@@ -1,0 +1,49 @@
+---
+const rows: [string, string][] = [
+  ["Stays on your Mac", "No account, no Mnema cloud, no telemetry."],
+  ["Secrets redacted", "Passwords, keys, tokens and card numbers it recognises are stripped from searchable text."],
+  ["Encrypted search", "Every word, transcript and page name is encrypted on disk, keyed in your Keychain. Video and audio are files in a folder you choose; FileVault encrypts those."],
+  ["You choose what's kept", "Forever, or auto-delete after 7, 14 or 30 days."],
+  ["Delete in one click", "Wipe the last few minutes, or everything the AI learned about you."],
+  ["Hide any app", "Exclude apps from recording, or pause any time."],
+  ["Recording calls?", "Mnema records your Mac, not a meeting bot. Telling the people you record is on you, and some places require it by law."],
+];
+---
+
+<section class="w-sec w-sec--rule w-texture" id="privacy">
+  <div class="w-wrap privacy">
+    <div class="w-stack">
+      <span class="mx-kicker">Private by construction</span>
+      <h2 class="w-title">It all stays on your machine.</h2>
+      <p class="w-prose">
+        Recording, reading your screen, transcribing and search run on your Mac. There's no Mnema cloud to send anything
+        to. AI answers use the provider you pick, or a model that runs locally.
+      </p>
+      <p class="w-prose">
+        The app goes online for two things: checking your license and looking for updates. Neither carries anything you
+        recorded. <a href="/privacy/#network">See exactly what's sent.</a>
+      </p>
+      <p><span class="mx-chip mx-chip--accent">local only</span></p>
+    </div>
+    <dl class="mx-spec">
+      {
+        rows.map(([term, detail]) => (
+          <div>
+            <dt>{term}</dt>
+            <dd>{detail}</dd>
+          </div>
+        ))
+      }
+    </dl>
+  </div>
+</section>
+
+<style>
+  .privacy { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: var(--s-7); }
+  .mx-spec { grid-template-columns: minmax(150px, max-content) 1fr; }
+  .mx-spec dt { color: var(--app-text-strong); font-weight: 600; font-size: 14px; }
+  .mx-spec dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.55; }
+  @media (max-width: 900px) {
+    .privacy { grid-template-columns: 1fr; }
+  }
+</style>

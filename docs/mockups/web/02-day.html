@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · 02 A Day</title>
+<link rel="stylesheet" href="site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* 02 · A day on the record — the page is one recorded day. The app's own status
+     bar is pinned to the bottom; scrolling moves its clock from 09:00 to 18:00 and
+     flips its source lanes per section. Sections are timestamped like episodes. */
+  body { padding-bottom: 34px; }
+  .sb { position: fixed; z-index: 70; left: 0; right: 0; bottom: 0; height: 32px; }
+  .sb .num { color: inherit; }
+  .sb__loc { color: var(--app-text-subtle); }
+  @media (max-width: 640px) { .sb .sb__hide { display: none; } }
+
+  .hero { padding-top: clamp(48px, 7vw, 96px); padding-bottom: var(--s-7); }
+  .hero__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s-7); align-items: center; }
+  .hero__clock { font: 300 clamp(56px, 9vw, 120px)/0.9 var(--font-mono); letter-spacing: -0.06em; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+  .hero__clock small { font-size: 0.32em; letter-spacing: -0.02em; color: var(--app-text-subtle); margin-left: 0.2em; }
+  .hero .w-display { font-size: clamp(36px, 5vw, 60px); margin-top: var(--s-4); }
+  .acts { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: var(--s-5); }
+  @media (max-width: 900px) { .hero__grid { grid-template-columns: 1fr; } }
+
+  /* Lane chart: the day's three capture families, drawn with the app's source tokens. */
+  .lanes { padding: var(--s-5); display: grid; gap: var(--s-3); }
+  .lanes__row { display: grid; grid-template-columns: 64px 1fr; gap: var(--s-3); align-items: center; }
+  .lanes__track { position: relative; height: 18px; border-radius: 4px; background: var(--mx-wash); }
+  .lanes__track i { position: absolute; top: 3px; bottom: 3px; border-radius: 2px; background: var(--c); left: var(--a); width: var(--w); }
+  .lanes__row[data-k="screen"] { --c: var(--app-source-screen); }
+  .lanes__row[data-k="mic"] { --c: var(--app-source-mic); }
+  .lanes__row[data-k="sys"] { --c: var(--app-source-sysaudio); }
+  .lanes__axis { display: grid; grid-template-columns: 64px 1fr; gap: var(--s-3); }
+  .lanes__axis div { display: flex; justify-content: space-between; }
+  .lanes__wrap { position: relative; }
+  .lanes__head { position: absolute; top: var(--s-5); bottom: 40px; left: calc(var(--s-5) + 64px + var(--s-3)); right: var(--s-5); pointer-events: none; }
+  .lanes__head b { position: absolute; top: -6px; bottom: -6px; width: 1.5px; margin-left: -0.75px; background: var(--app-text-strong); left: var(--p, 0%); transition: left var(--t-slow) var(--ease-expo); }
+  .lanes__head b::before { content: ""; position: absolute; top: -4px; left: -3.25px; width: 8px; height: 8px; border-radius: 2px; background: var(--app-text-strong); }
+
+  /* The day: a rail on the left, one episode per section. */
+  .day { position: relative; }
+  .ep { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: var(--s-6); padding-block: clamp(56px, 8vw, 104px); border-top: 1px solid var(--mx-hairline); }
+  .ep__time { position: sticky; top: 88px; align-self: start; display: grid; gap: var(--s-3); }
+  .ep__time time { font: 400 28px/1 var(--font-mono); letter-spacing: -0.04em; color: var(--app-text-strong); font-variant-numeric: tabular-nums; }
+  .ep__chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .ep__body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: var(--s-6); align-items: start; }
+  .ep__body--wide { grid-template-columns: 1fr; }
+  .ep__text { display: grid; gap: var(--s-4); align-content: start; }
+  @media (max-width: 980px) { .ep__body { grid-template-columns: 1fr; } }
+  @media (max-width: 700px) { .ep { grid-template-columns: 1fr; gap: var(--s-4); } .ep__time { position: static; grid-auto-flow: column; justify-content: start; align-items: center; } }
+
+  .quote { display: grid; gap: 10px; padding: var(--s-4); }
+  .quote__row { display: grid; grid-template-columns: 56px 1fr; gap: var(--s-3); font-size: 14px; line-height: 1.5; color: var(--app-text); }
+  .quote__row .w-meta { padding-top: 2px; }
+  .quote__who { font-weight: 600; color: var(--app-text-strong); margin-right: 6px; }
+  .quote mark { background: var(--app-accent-bg); color: var(--app-text-strong); box-shadow: inset 0 -1px 0 var(--app-accent-border); border-radius: 2px; padding: 0 2px; }
+
+  .priv { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--app-border); border-radius: var(--r-lg); overflow: hidden; background: var(--app-surface); }
+  .priv > div { padding: var(--s-5); display: grid; gap: var(--s-2); align-content: start; border-right: 1px solid var(--mx-hairline); border-bottom: 1px solid var(--mx-hairline); }
+  .priv > div:nth-child(3n) { border-right: 0; }
+  .priv > div:nth-last-child(-n+3) { border-bottom: 0; }
+  .priv h3 { margin: 0; font: 600 15px/1.3 var(--font-sans); color: var(--app-text-strong); }
+  .priv p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--app-text-muted); }
+  @media (max-width: 860px) { .priv { grid-template-columns: 1fr; } .priv > div { border-right: 0; border-bottom: 1px solid var(--mx-hairline) !important; } }
+
+  .end { text-align: left; }
+  .end .w-display { max-width: 14ch; }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup 02 · A day on the record</b><span>The page is one recorded day: the app's status bar is pinned below, its clock runs as you scroll.</span><span class="mx-spacer"></span><a href="index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="#t0941">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="#t1120">Meetings</a>
+      <a class="mx-btn mx-btn--ghost" href="#t1402">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="#t1630">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="#t1745">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture" data-t="09:00" data-lanes="screen mic sys">
+    <div class="w-wrap hero__grid">
+      <div>
+        <div class="hero__clock w-in" aria-hidden="true">09:00<small>tue</small></div>
+        <h1 class="w-display w-in" style="--d:80ms">Your whole day, on the record. Only for you.</h1>
+        <p class="w-lede w-in" style="--d:140ms; margin-top: var(--s-4)">Mnema quietly keeps your screen and audio as a private, searchable record. Scroll this page like a day, and see what it remembers.</p>
+        <div class="acts w-in" style="--d:200ms">
+          <a class="mx-btn mx-btn--primary w-btn-lg" href="#">Download for macOS</a>
+          <a class="mx-btn w-btn-lg" href="#t0941">Start the day<kbd>↓</kbd></a>
+        </div>
+      </div>
+      <div class="mx-panel lanes__wrap w-in" style="--d:240ms" aria-label="A day of capture across screen, microphone and system audio">
+        <div class="lanes">
+          <div class="lanes__row" data-k="screen"><span class="mx-lane mx-lane--on mx-lane--screen w-meta">screen</span><div class="lanes__track"><i style="--a:0%;--w:22%"></i><i style="--a:24%;--w:14%"></i><i style="--a:44%;--w:30%"></i><i style="--a:78%;--w:20%"></i></div></div>
+          <div class="lanes__row" data-k="mic"><span class="mx-lane mx-lane--on mx-lane--mic w-meta">mic</span><div class="lanes__track"><i style="--a:26%;--w:9%"></i><i style="--a:58%;--w:5%"></i><i style="--a:84%;--w:6%"></i></div></div>
+          <div class="lanes__row" data-k="sys"><span class="mx-lane mx-lane--on mx-lane--sysaudio w-meta">system</span><div class="lanes__track"><i style="--a:26%;--w:10%"></i><i style="--a:47%;--w:4%"></i><i style="--a:84%;--w:6%"></i></div></div>
+          <div class="lanes__axis w-meta"><span></span><div><span>09</span><span>11</span><span>13</span><span>15</span><span>17</span></div></div>
+        </div>
+        <div class="lanes__head"><b id="playhead"></b></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="w-wrap day">
+    <section class="ep" id="t0941" data-t="09:41" data-lanes="screen">
+      <div class="ep__time"><time>09:41</time><div class="ep__chips"><span class="mx-chip mx-chip--screen">screen</span></div></div>
+      <div class="ep__body">
+        <div class="ep__text">
+          <span class="mx-kicker">Recall</span>
+          <h2 class="w-title">Everything on screen becomes words you can search.</h2>
+          <p class="w-prose">Every window, tab and document you look at. Find a paragraph by its exact words, or by what it was about when the wording is gone.</p>
+        </div>
+        <figure class="w-float" style="margin:0"><img class="w-float__desk" src="shots/desk-code.webp" alt=""><img class="w-float__panel w-dark" src="shots/quick-recall-dark.webp" alt="Quick Recall over another app: results with matches highlighted"><img class="w-float__panel w-light" src="shots/quick-recall-light.webp" alt=""></figure>
+      </div>
+    </section>
+
+    <section class="ep" id="t1120" data-t="11:20" data-lanes="screen mic sys">
+      <div class="ep__time"><time>11:20</time><div class="ep__chips"><span class="mx-chip mx-chip--mic">mic</span><span class="mx-chip mx-chip--sysaudio">system</span></div></div>
+      <div class="ep__body">
+        <div class="ep__text">
+          <span class="mx-kicker">Meetings</span>
+          <h2 class="w-title">Who said what, worked out on your Mac.</h2>
+          <p class="w-prose">Calls and meetings are transcribed with speaker labels. Name a voice once and Mnema knows it next time. Search what was said as easily as what was written.</p>
+        </div>
+        <div class="mx-panel quote" aria-label="Transcript excerpt">
+          <div class="quote__row"><span class="w-meta">11:22</span><span><span class="quote__who">Maya</span>Can we move the onboarding review to Thursday?</span></div>
+          <div class="quote__row"><span class="w-meta">11:22</span><span><span class="quote__who">You</span>Thursday works. I'll have the <mark>new welcome flow</mark> ready by then.</span></div>
+          <div class="quote__row"><span class="w-meta">11:23</span><span><span class="quote__who">Theo</span>Then copy freezes Wednesday night.</span></div>
+          <hr class="mx-rule">
+          <div class="w-meta" style="display:flex;gap:8px;align-items:center"><span class="mx-chip mx-chip--accent">match</span>“welcome flow” · jump to 11:22:41</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ep" id="t1402" data-t="14:02" data-lanes="screen">
+      <div class="ep__time"><time>14:02</time><div class="ep__chips"><span class="mx-chip mx-chip--screen">screen</span></div></div>
+      <div class="ep__body ep__body--wide">
+        <div class="ep__text" style="max-width: 62ch">
+          <span class="mx-kicker">Ask</span>
+          <h2 class="w-title">“What did we decide this morning?”</h2>
+          <p class="w-prose">Ask your own memory in plain words. Every answer links to the frame or clip it came from, so you can check the receipt. Use your ChatGPT plan, your own key, or a model that runs locally.</p>
+        </div>
+        <figure class="w-shot" style="margin:0"><div class="w-shot__lights"><i></i><i></i><i></i></div>
+          <img class="w-dark" src="shots/chat-dark.webp" alt="Ask: an answer with linked sources"><img class="w-light" src="shots/chat-light.webp" alt=""></figure>
+      </div>
+    </section>
+
+    <section class="ep" id="t1630" data-t="16:30" data-lanes="screen sys">
+      <div class="ep__time"><time>16:30</time><div class="ep__chips"><span class="mx-chip mx-chip--screen">screen</span><span class="mx-chip mx-chip--sysaudio">system</span></div></div>
+      <div class="ep__body">
+        <div class="ep__text">
+          <span class="mx-kicker">Insights</span>
+          <h2 class="w-title">At the end of the day, see where it went.</h2>
+          <p class="w-prose">Time by category and focus, the projects you're deep in, the things you keep coming back to. Pin what rings true. Dismiss what doesn't, and it won't come back.</p>
+        </div>
+        <figure class="w-shot" style="margin:0"><div class="w-shot__lights"><i></i><i></i><i></i></div>
+          <img class="w-dark" src="shots/insights-dark.webp" alt="Insights for the week"><img class="w-light" src="shots/insights-light.webp" alt=""></figure>
+      </div>
+    </section>
+
+    <section class="ep" id="t1745" data-t="17:45" data-lanes="mic sys" data-screen="paused">
+      <div class="ep__time"><time>17:45</time><div class="ep__chips"><span class="mx-chip">screen hidden</span></div></div>
+      <div class="ep__body ep__body--wide">
+        <div class="ep__text" style="max-width: 62ch">
+          <span class="mx-kicker">Private by construction</span>
+          <h2 class="w-title">Hide an app, and Mnema looks away.</h2>
+          <p class="w-prose">Hide any app and it is never recorded. Everything else stays on your Mac: recording, reading the screen, transcribing and search. There's no Mnema cloud to send anything to.</p>
+        </div>
+        <div class="priv">
+          <div><h3>Stays on your Mac</h3><p>No account, no Mnema cloud, no telemetry.</p></div>
+          <div><h3>Secrets redacted</h3><p>Passwords, keys and card numbers are stripped from searchable text.</p></div>
+          <div><h3>Encrypted at rest</h3><p>Your record is encrypted on disk.</p></div>
+          <div><h3>You choose what's kept</h3><p>Forever, or auto-delete after 7, 14 or 30 days.</p></div>
+          <div><h3>Delete in one click</h3><p>Wipe the last few minutes, or everything the AI learned.</p></div>
+          <div><h3>Hide any app</h3><p>Excluded apps are never recorded.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ep end" id="t1800" data-t="18:00" data-lanes="" data-rec="paused">
+      <div class="ep__time"><time>18:00</time><div class="ep__chips"><span class="mx-rec mx-rec--paused w-meta"><span class="mx-rec__dot"></span>paused</span></div></div>
+      <div class="ep__text">
+        <span class="mx-kicker">You stepped away</span>
+        <h2 class="w-display">Tomorrow, you'll remember all of it.</h2>
+        <p class="w-lede">Free for 30 days, no account and no card. Then $69 once, with a year of updates.</p>
+        <div class="acts">
+          <a class="mx-btn mx-btn--primary w-btn-lg" href="#">Download for macOS</a>
+          <a class="mx-btn w-btn-lg" href="#">Pricing</a>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="#">Pricing</a></li><li><a href="#">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="#">Rewind alternative</a></li><li><a href="#">Recall for Mac</a></li><li><a href="#">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="#">Support</a></li><li><a href="#">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<!-- The app's status bar, pinned. Driven by scroll position, never by a timer. -->
+<footer class="mx-statusbar sb" aria-label="Recording status (illustration)">
+  <span class="mx-rec mx-rec--running" id="sb-rec"><span class="mx-rec__dot"></span><span id="sb-label">REC</span> <span class="num" id="sb-clock">09:00:00</span></span>
+  <span class="mx-sep"></span>
+  <span class="mx-lane mx-lane--on mx-lane--screen" data-lane="screen">screen</span>
+  <span class="mx-lane mx-lane--on mx-lane--mic" data-lane="mic">mic</span>
+  <span class="mx-lane mx-lane--on mx-lane--sysaudio" data-lane="sys">system</span>
+  <span class="mx-spacer"></span>
+  <span class="sb__loc sb__hide">tue · on this Mac</span>
+  <span class="mx-sep sb__hide"></span>
+  <span class="sb__loc">local only</span>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+
+  // Scroll → time of day. Each [data-t] section is a keyframe; the clock
+  // interpolates between the section above the fold line and the next one.
+  var secs = [].slice.call(document.querySelectorAll("[data-t]"));
+  var mins = secs.map(function (s) { var p = s.dataset.t.split(":"); return +p[0] * 60 + +p[1]; });
+  var clock = document.getElementById("sb-clock"), rec = document.getElementById("sb-rec"), lbl = document.getElementById("sb-label");
+  var lanes = { screen: document.querySelector('[data-lane="screen"]'), mic: document.querySelector('[data-lane="mic"]'), sys: document.querySelector('[data-lane="sys"]') };
+  var head = document.getElementById("playhead");
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  function update() {
+    var line = innerHeight * 0.45, i = 0;
+    for (var k = 0; k < secs.length; k++) if (secs[k].getBoundingClientRect().top <= line) i = k;
+    var s = secs[i], top = s.getBoundingClientRect().top, h = s.offsetHeight || 1;
+    var f = Math.max(0, Math.min(1, (line - top) / h));
+    var m = i < secs.length - 1 ? mins[i] + (mins[i + 1] - mins[i]) * f : mins[i];
+    var sec = Math.floor((m % 1) * 60);
+    clock.textContent = pad(Math.floor(m / 60)) + ":" + pad(Math.floor(m % 60)) + ":" + pad(sec);
+    head.style.setProperty("--p", Math.max(0, Math.min(100, (m - 540) / 540 * 100)) + "%");
+    var on = (s.dataset.lanes || "").split(" ");
+    Object.keys(lanes).forEach(function (k) {
+      var el = lanes[k];
+      el.classList.remove("mx-lane--on", "mx-lane--off", "mx-lane--paused");
+      if (k === "screen" && s.dataset.screen === "paused") { el.classList.add("mx-lane--paused"); el.innerHTML = "screen<small>hidden app</small>"; return; }
+      el.textContent = k === "sys" ? "system" : k;
+      el.classList.add(on.indexOf(k) >= 0 ? "mx-lane--on" : "mx-lane--off");
+    });
+    var paused = s.dataset.rec === "paused";
+    rec.className = "mx-rec " + (paused ? "mx-rec--paused" : "mx-rec--running");
+    lbl.textContent = paused ? "PAUSED" : "REC";
+  }
+  addEventListener("scroll", update, { passive: true });
+  addEventListener("resize", update);
+  update();
+})();
+</script>
+</body>
+</html>

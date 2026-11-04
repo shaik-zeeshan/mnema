@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · How Mnema compares</title>
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Comparisons hub: texture hero, then a heading rail + four hairline rows
+     (no cards), each a doorway into its comparison page. */
+  .hero { padding-top: clamp(56px, 8vw, 104px); padding-bottom: clamp(48px, 6vw, 80px); }
+  .hero .w-display { max-width: 16ch; margin-top: var(--s-4); }
+  .hero .w-lede { margin-top: var(--s-5); }
+  .fine { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin-top: var(--s-5); }
+  .fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .fine span + span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+
+  .pick { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.6fr); gap: var(--s-7); }
+  .pick__head { position: sticky; top: 96px; align-self: start; }
+  @media (max-width: 900px) { .pick { grid-template-columns: 1fr; gap: var(--s-5); } .pick__head { position: static; } }
+
+  .alts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--mx-hairline); }
+  .alt { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; gap: var(--s-2) var(--s-4); align-items: start;
+    padding: var(--s-5) 0; border-bottom: 1px solid var(--mx-hairline); text-decoration: none; color: inherit;
+    transition: background-color var(--t-fast) var(--ease-quart); }
+  .alt:hover { background: var(--mx-wash); }
+  .alt:hover .mx-btn { --_fg: var(--app-text-strong); }
+  .alt > .w-meta { color: var(--app-text-faint); padding-top: 5px; }
+  .alt .w-sub { margin-bottom: 6px; }
+  .alt .mx-btn { pointer-events: none; margin-top: 1px; }
+  @media (max-width: 640px) { .alt { grid-template-columns: 28px minmax(0, 1fr); } .alt .mx-btn { grid-column: 2; justify-self: start; } }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Comparisons</b><span>The /alternatives hub: one hairline row per comparison page.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <span class="mx-kicker w-in">Comparisons</span>
+      <h1 class="w-display w-in" style="--d:60ms">How Mnema compares</h1>
+      <p class="w-lede w-in" style="--d:120ms">Screen memory has had a rough couple of years — one shutdown, one acquisition, one feature that never came to the Mac. Here's how Mnema lines up against each of them.</p>
+      <div class="fine w-meta w-in" style="--d:150ms"><span>on-device</span><span>open source</span><span>one-time purchase</span></div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" aria-labelledby="comparisons">
+    <div class="w-wrap pick">
+      <div class="pick__head w-stack">
+        <span class="mx-kicker">Pick a comparison</span>
+        <h2 class="w-title" id="comparisons">Coming from something else?</h2>
+      </div>
+      <ul class="alts">
+        <li><a class="alt" href="alternatives-rewind-ai.html"><span class="w-meta">01</span><div><h3 class="w-sub">Rewind AI alternative</h3><p class="w-prose">Rewind AI shut down in December 2025. Mnema keeps capture, transcription, and search on your Mac, so no acquisition can switch your history off.</p></div><span class="mx-btn mx-btn--sm">Read the comparison →</span></a></li>
+        <li><a class="alt" href="#"><span class="w-meta">02</span><div><h3 class="w-sub">Microsoft Recall for Mac</h3><p class="w-prose">Recall is a Windows 11 Copilot+ feature and doesn't exist for macOS. Mnema brings the same idea — continuous capture, searchable screen history, ask-AI — to your Mac.</p></div><span class="mx-btn mx-btn--sm">Read the comparison →</span></a></li>
+        <li><a class="alt" href="#"><span class="w-meta">03</span><div><h3 class="w-sub">Limitless alternative</h3><p class="w-prose">Meta acquired Limitless and Pendant sales stopped. Mnema needs no wearable: your Mac already sees the meetings, calls, and documents worth remembering.</p></div><span class="mx-btn mx-btn--sm">Read the comparison →</span></a></li>
+        <li><a class="alt" href="#"><span class="w-meta">04</span><div><h3 class="w-sub">Screenpipe alternative</h3><p class="w-prose">Screenpipe is plumbing you wire agents into. Mnema ships the recall product itself — timeline, search, and ask-AI — fully open source, one-time purchase.</p></div><span class="mx-btn mx-btn--sm">Read the comparison →</span></a></li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

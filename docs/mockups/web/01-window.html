@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · 01 Window</title>
+<link rel="stylesheet" href="site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* 01 · Window — the app is the hero. A left-aligned headline on the app's own
+     dot-grid desk; the real window floats beneath it; every section after is one
+     surface, explained with the app's spec rows. */
+  .hero { padding-top: clamp(56px, 8vw, 104px); }
+  .hero__head { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: var(--s-7); align-items: end; }
+  .hero .w-display { max-width: 13ch; margin-top: var(--s-4); }
+  .hero__side { display: grid; gap: var(--s-5); padding-bottom: 6px; }
+  .hero__acts { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+  .hero__fine { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); }
+  .hero__fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .hero__fine span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+  .hero__window { margin-top: clamp(40px, 6vw, 72px); }
+  @media (max-width: 900px) { .hero__head { grid-template-columns: 1fr; } }
+
+  .pillars { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--mx-hairline); margin-top: var(--s-7); }
+  .pillar { padding: var(--s-5) var(--s-5) 0 0; display: grid; gap: var(--s-2); align-content: start; }
+  .pillar + .pillar { padding-left: var(--s-5); border-left: 1px solid var(--mx-hairline); }
+  .pillar .w-meta { color: var(--app-text-subtle); }
+  .pillar .w-meta b { color: var(--app-accent); font-weight: 500; }
+  .pillar--rec .w-meta b { color: var(--app-status-running-dot); }
+  @media (max-width: 760px) { .pillars { grid-template-columns: 1fr; } .pillar + .pillar { padding-left: 0; border-left: 0; border-top: 1px solid var(--mx-hairline); } }
+
+  .feature { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr); gap: var(--s-7); align-items: start; }
+  .feature--flip { grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); }
+  .feature--flip .feature__text { order: 2; }
+  .feature__text { position: sticky; top: 96px; display: grid; gap: var(--s-4); }
+  .feature .mx-spec { grid-template-columns: minmax(110px, max-content) 1fr; margin-top: var(--s-3); }
+  .feature .mx-spec dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.5; }
+  @media (max-width: 900px) { .feature, .feature--flip { grid-template-columns: 1fr; } .feature__text { position: static; } .feature--flip .feature__text { order: 0; } }
+
+  .privacy { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: var(--s-7); }
+  .privacy .mx-spec { grid-template-columns: minmax(150px, max-content) 1fr; }
+  .privacy .mx-spec dt { color: var(--app-text-strong); font-weight: 600; font-size: 14px; }
+  .privacy .mx-spec dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.55; }
+  @media (max-width: 900px) { .privacy { grid-template-columns: 1fr; } }
+
+  .cta { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-6); align-items: end; padding: clamp(28px, 5vw, 56px); }
+  @media (max-width: 760px) { .cta { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup 01 · Window</b><span>The app is the hero: real windows on the app's dot-grid desk, spec rows instead of cards.</span><span class="mx-spacer"></span><a href="index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="#">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <div class="hero__head">
+        <div class="w-in">
+          <span class="mx-kicker">Total recall · on your Mac</span>
+          <h1 class="w-display">Everything you've seen, heard and done. Findable.</h1>
+        </div>
+        <div class="hero__side w-in" style="--d:80ms">
+          <p class="w-lede">Mnema quietly records your screen and audio, then lets you search it, scrub back to any moment, and ask about your own past. All of it stays on your Mac.</p>
+          <div class="hero__acts">
+            <a class="mx-btn mx-btn--primary w-btn-lg" href="#"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></svg>Download for macOS</a>
+            <a class="mx-btn w-btn-lg" href="#">View source</a>
+          </div>
+          <div class="hero__fine w-meta"><span>Apple Silicon</span><span>30-day free trial</span><span>$69 once</span></div>
+        </div>
+      </div>
+      <figure class="w-shot hero__window w-in" style="--d:160ms; margin-inline: 0; margin-bottom: 0;">
+        <div class="w-shot__lights"><i></i><i></i><i></i></div>
+        <img class="w-dark" src="shots/timeline-dark.webp" alt="Mnema's timeline: a day of screen, microphone and system audio, scrubbable to the exact moment">
+        <img class="w-light" src="shots/timeline-light.webp" alt="">
+      </figure>
+
+      <div class="pillars">
+        <div class="pillar pillar--rec"><span class="w-meta"><b>●</b> 01 record</span><h3 class="w-sub">It records</h3><p class="w-prose">Screen, what you hear and what you say. It pauses when you step away, and you can hide any app.</p></div>
+        <div class="pillar"><span class="w-meta"><b>⌕</b> 02 recall</span><h3 class="w-sub">You recall</h3><p class="w-prose">Find any moment by what was on screen, what was said, or which app you were in.</p></div>
+        <div class="pillar"><span class="w-meta"><b>∴</b> 03 reason</span><h3 class="w-sub">It reasons</h3><p class="w-prose">Ask plain questions about your past and get answers that point to where they came from.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="recall">
+    <div class="w-wrap feature">
+      <div class="feature__text">
+        <span class="mx-kicker">Recall</span>
+        <h2 class="w-title">Find the one moment in a year of them.</h2>
+        <p class="w-prose">Scrub your day like a video. Every frame keeps its words, every conversation keeps its speakers, so the moment you half-remember is a search away.</p>
+        <dl class="mx-spec">
+          <div><dt>Screen</dt><dd>Every window becomes searchable text.</dd></div>
+          <div><dt>Audio</dt><dd>Meetings and calls, transcribed with who said what.</dd></div>
+          <div><dt>Activity</dt><dd>Which app, which page, for how long.</dd></div>
+        </dl>
+      </div>
+      <figure class="w-float" style="margin:0"><img class="w-float__desk" src="shots/desk-code.webp" alt=""><img class="w-float__panel w-dark" src="shots/quick-recall-dark.webp" alt="Quick Recall over another app: results with matches highlighted"><img class="w-float__panel w-light" src="shots/quick-recall-light.webp" alt=""></figure>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="ask">
+    <div class="w-wrap feature feature--flip">
+      <div class="feature__text">
+        <span class="mx-kicker">Ask</span>
+        <h2 class="w-title">Ask your own memory a question.</h2>
+        <p class="w-prose">Ask the way you'd ask a colleague who never forgets. Answers come from your own history, and every claim links to the moment it came from.</p>
+        <dl class="mx-spec">
+          <div><dt>Receipts</dt><dd>Jump from any answer to the exact frame or clip.</dd></div>
+          <div><dt>Threads</dt><dd>Follow up, refine, come back tomorrow.</dd></div>
+          <div><dt>Your model</dt><dd>Your ChatGPT plan, your own key, or a local model.</dd></div>
+        </dl>
+      </div>
+      <figure class="w-shot" style="margin:0">
+        <div class="w-shot__lights"><i></i><i></i><i></i></div>
+        <img class="w-dark" src="shots/chat-dark.webp" alt="Ask: an answer with charts and linked sources">
+        <img class="w-light" src="shots/chat-light.webp" alt="">
+      </figure>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" id="insights">
+    <div class="w-wrap feature">
+      <div class="feature__text">
+        <span class="mx-kicker">Insights</span>
+        <h2 class="w-title">See where your week actually went.</h2>
+        <p class="w-prose">Mnema builds a quiet picture of how you work: the projects you're deep in, where focus goes, and what you keep coming back to. Yours to read, correct, or wipe.</p>
+        <dl class="mx-spec">
+          <div><dt>Time</dt><dd>By app, by category, by focus.</dd></div>
+          <div><dt>Subjects</dt><dd>The threads you keep returning to.</dd></div>
+          <div><dt>Control</dt><dd>Pin what rings true. Dismiss what doesn't.</dd></div>
+        </dl>
+      </div>
+      <figure class="w-shot" style="margin:0">
+        <div class="w-shot__lights"><i></i><i></i><i></i></div>
+        <img class="w-dark" src="shots/insights-dark.webp" alt="Insights: time by category and focus across the week">
+        <img class="w-light" src="shots/insights-light.webp" alt="">
+      </figure>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule w-texture" id="privacy">
+    <div class="w-wrap privacy">
+      <div class="w-stack">
+        <span class="mx-kicker">Private by construction</span>
+        <h2 class="w-title">It all stays on your machine.</h2>
+        <p class="w-prose">Recording, reading your screen, transcribing and search run on your Mac. There's no Mnema cloud to send anything to. AI answers use the provider you pick, or a model that runs locally.</p>
+        <p><span class="mx-chip mx-chip--accent">local only</span></p>
+      </div>
+      <dl class="mx-spec">
+        <div><dt>Stays on your Mac</dt><dd>No account, no Mnema cloud, no telemetry.</dd></div>
+        <div><dt>Secrets redacted</dt><dd>Passwords, keys and card numbers are stripped from searchable text.</dd></div>
+        <div><dt>Encrypted at rest</dt><dd>Your record is encrypted on disk.</dd></div>
+        <div><dt>You choose what's kept</dt><dd>Forever, or auto-delete after 7, 14 or 30 days.</dd></div>
+        <div><dt>Delete in one click</dt><dd>Wipe the last few minutes, or everything the AI learned about you.</dd></div>
+        <div><dt>Hide any app</dt><dd>Exclude apps from recording, or pause any time.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="w-sec">
+    <div class="w-wrap">
+      <div class="mx-panel cta">
+        <div class="w-stack">
+          <span class="mx-kicker">Get started</span>
+          <h2 class="w-title">Stop forgetting. Start recalling.</h2>
+          <p class="w-prose">Try it free for 30 days. No account, no card. Then $69 once, with a year of updates.</p>
+        </div>
+        <div class="hero__acts">
+          <a class="mx-btn mx-btn--primary w-btn-lg" href="#"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></svg>Download for macOS</a>
+          <a class="mx-btn w-btn-lg" href="#">Pricing</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="#"><img src="icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="#">Pricing</a></li><li><a href="#">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="#">Rewind alternative</a></li><li><a href="#">Recall for Mac</a></li><li><a href="#">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="#">Support</a></li><li><a href="#">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

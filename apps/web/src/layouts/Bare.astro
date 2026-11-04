@@ -1,0 +1,53 @@
+---
+// Chrome-less page for the two /license/* notes: one centred card on the dot-grid,
+// no nav or footer. Deliberately not Base.astro: no analytics (the open page's URL
+// carries a checkout id), no release-feed fetch, no canonical/OG.
+import "../styles/global.css";
+import "@fontsource-variable/hanken-grotesk";
+import "@fontsource/spline-sans-mono/400.css";
+import "@fontsource/spline-sans-mono/500.css";
+
+interface Props {
+  title: string;
+  description?: string;
+  noindex?: boolean;
+}
+
+const { title, description, noindex = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    {description && <meta name="description" content={description} />}
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <!-- Same theme rule as Base.astro: the choice remembered from the site's
+         toggle, else the system theme. -->
+    <script is:inline>
+      document.documentElement.setAttribute(
+        "data-theme",
+        localStorage.getItem("theme") ||
+          (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
+      );
+    </script>
+  </head>
+  <body>
+    <main class="stage w-texture">
+      <slot />
+    </main>
+  </body>
+</html>
+
+<style is:global>
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+  .stage { flex: 1 1 auto; display: grid; place-items: center; padding: var(--s-7) var(--w-gutter); }
+  .card { width: 100%; padding: var(--s-6); background: var(--app-surface); }
+  .card__logo { display: block; width: 44px; height: 44px; border-radius: 10px; }
+  .card h1 { font: 600 22px/1.25 var(--font-sans); letter-spacing: -0.02em; color: var(--app-text-strong); margin: var(--s-5) 0 var(--s-2); }
+  .path { font: 500 12.5px/1 var(--font-mono); color: var(--app-text-strong); white-space: nowrap; }
+  @media (max-width: 480px) { .card { padding: var(--s-5); } }
+</style>

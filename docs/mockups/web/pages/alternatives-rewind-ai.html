@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · Rewind AI alternative</title>
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Comparison-page template (rewind-ai, limitless, microsoft-recall-mac, screenpipe
+     share it): texture hero, then a contents rail + one reading column of numbered
+     sections. History = dated spec rows, criteria = 2x2 hairline grid, the field =
+     a hairline table that stacks per row on a phone, FAQ = question/answer rows. */
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .hero { padding-top: clamp(56px, 8vw, 104px); padding-bottom: clamp(48px, 6vw, 80px); }
+  .hero .w-display { font-size: clamp(36px, 5.2vw, 62px); max-width: 19ch; margin-top: var(--s-4); }
+  .hero .w-lede { margin-top: var(--s-5); max-width: 62ch; }
+  .fine { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); margin-top: var(--s-5); }
+  .fine span { display: inline-flex; align-items: center; gap: 6px; }
+  .fine span + span::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+
+  .doc { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: var(--s-8); padding-block: clamp(48px, 7vw, 88px); }
+  .toc { position: sticky; top: 88px; align-self: start; display: grid; gap: 2px; }
+  .toc .mx-kicker { margin-bottom: var(--s-3); }
+  .toc a { display: flex; gap: 10px; padding: 6px 0; text-decoration: none; font-size: 13.5px; color: var(--app-text-muted); border-top: 1px solid var(--mx-hairline); }
+  .toc a:hover { color: var(--app-text-strong); }
+  .toc a .w-meta { color: var(--app-text-faint); }
+  @media (max-width: 900px) { .doc { grid-template-columns: 1fr; } .toc { display: none; } }
+
+  .part { display: grid; gap: var(--s-4); scroll-margin-top: 80px; }
+  .part + .part { margin-top: clamp(56px, 7vw, 88px); padding-top: clamp(40px, 5vw, 56px); border-top: 1px solid var(--mx-hairline); }
+  .part .w-title { font-size: clamp(26px, 3vw, 36px); }
+  .part > .mx-kicker b { color: var(--app-text-faint); font-weight: 500; }
+  .w-prose + .w-prose { margin-top: calc(var(--s-4) * -0.25); }
+
+  /* history: dated rows (dates are the source's own) */
+  .story { grid-template-columns: minmax(96px, max-content) 1fr; margin-top: var(--s-3); }
+  .story dt { font: 450 12px/1.6 var(--font-mono); color: var(--app-text-subtle); padding-top: 13px; }
+  .story dd { color: var(--app-text-muted); font-size: 15px; line-height: 1.65; padding-block: 10px; }
+  .story > div:last-child dd { color: var(--app-text-strong); }
+
+  /* criteria: 2x2 hairline grid, check = the one green signal */
+  .crit { list-style: none; margin: var(--s-3) 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--mx-hairline); }
+  .crit li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--s-3); padding: var(--s-5) var(--s-5) var(--s-5) 0; border-bottom: 1px solid var(--mx-hairline); }
+  .crit li:nth-child(even) { padding-left: var(--s-5); border-left: 1px solid var(--mx-hairline); }
+  .crit svg { color: var(--app-accent); margin-top: 3px; }
+  .crit b { display: block; font: 600 15px/1.4 var(--font-sans); color: var(--app-text-strong); margin-bottom: 4px; }
+  .crit span { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); }
+  @media (max-width: 640px) { .crit { grid-template-columns: 1fr; } .crit li:nth-child(even) { padding-left: 0; border-left: 0; } }
+
+  /* the field: hairline table, Mnema column carries the selected wash */
+  .field { width: 100%; border-collapse: collapse; margin-top: var(--s-3); font-size: 14px; }
+  .field th, .field td { text-align: left; vertical-align: top; padding: 11px 14px; border-top: 1px solid var(--mx-hairline); }
+  .field thead th { border-top: 0; padding-block: 10px; font: 500 var(--text-xs)/1.3 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); border-bottom: 1px solid var(--app-border-strong); }
+  .field tbody tr:first-child > * { border-top: 0; }
+  .field tbody th { font: 450 12px/1.5 var(--font-mono); color: var(--app-text-subtle); white-space: nowrap; padding-left: 0; padding-top: 13px; }
+  .field td { color: var(--app-text-muted); line-height: 1.5; }
+  .field .us { background: var(--mx-selected); color: var(--app-text-strong); }
+  .field thead .us { color: var(--app-accent); border-radius: var(--r-sm) var(--r-sm) 0 0; }
+  .field tbody tr:last-child .us { border-radius: 0 0 var(--r-sm) var(--r-sm); }
+  .field .none { color: var(--app-text-faint); }
+  .note { color: var(--app-text-subtle); max-width: 72ch; }
+  @media (max-width: 720px) {
+    .field thead { display: none; }
+    .field, .field tbody, .field tr, .field th, .field td { display: block; }
+    .field tr { padding: var(--s-4) 0; border-top: 1px solid var(--mx-hairline); }
+    .field tbody tr:first-child { border-top: 0; }
+    .field tbody th { padding: 0 0 var(--s-2); white-space: normal; }
+    .field td { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--s-3); padding: 7px 10px; border-top: 0; }
+    .field td::before { content: attr(data-col); font: 450 12px/1.5 var(--font-mono); color: var(--app-text-subtle); }
+    .field .us { border-radius: var(--r-sm) !important; }
+    .field .us::before { color: var(--app-accent); }
+  }
+
+  /* FAQ: question/answer rows */
+  .faq { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr); margin-top: var(--s-3); }
+  .faq dt { padding: var(--s-4) var(--s-5) var(--s-4) 0; }
+  .faq dt h3 { margin: 0; font: 600 15.5px/1.45 var(--font-sans); color: var(--app-text-strong); letter-spacing: -0.01em; }
+  .faq dd { padding-block: var(--s-4); font-size: 14.5px; line-height: 1.65; color: var(--app-text-muted); }
+  @media (max-width: 720px) { .faq { grid-template-columns: 1fr; } .faq dt { padding-bottom: 0; } .faq dd { border-top: 0; padding-top: var(--s-2); } }
+
+  .cta-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-6); align-items: end; padding: clamp(24px, 4vw, 44px); }
+  .cta-panel .w-title { font-size: clamp(24px, 2.6vw, 32px); }
+  .cta-panel .acts { display: grid; gap: var(--s-2); justify-items: start; }
+  @media (max-width: 760px) { .cta-panel { grid-template-columns: 1fr; } }
+  .end { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-5); margin-top: var(--s-5); }
+  .end .w-meta { flex: 1 1 320px; }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Rewind AI alternative</b><span>Comparison-page template: the same layout serves Limitless, Recall for Mac and Screenpipe.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap">
+      <a class="mx-kicker w-in" href="alternatives.html" style="text-decoration:none">Rewind AI alternative</a>
+      <h1 class="w-display w-in" style="--d:60ms">A private Rewind AI alternative that stays on your Mac.</h1>
+      <p class="w-lede w-in" style="--d:120ms">Rewind is gone — the Mac app shut down in December 2025. Mnema picks up where it left off: a local-first screen memory that quietly records your screen, audio, and activity, then lets you search it, scrub back to any moment, and ask an AI about your own past. None of it leaves your Mac.</p>
+      <div class="fine w-meta w-in" style="--d:150ms"><span>reading time ~4 min</span><span>macOS</span><span>Apple Silicon</span></div>
+    </div>
+  </section>
+
+  <div class="w-wrap doc">
+    <nav class="toc w-meta" aria-label="On this page">
+      <span class="mx-kicker">On this page</span>
+      <a href="#what-happened"><span class="w-meta">01</span>What happened</a>
+      <a href="#criteria"><span class="w-meta">02</span>What to look for</a>
+      <a href="#comparison"><span class="w-meta">03</span>The field</a>
+      <a href="#faq"><span class="w-meta">04</span>Questions</a>
+      <a href="#cta"><span class="w-meta">05</span>Get started</a>
+    </nav>
+
+    <article>
+      <section class="part" id="what-happened" aria-labelledby="h-what">
+        <span class="mx-kicker">The short version <b>· 01</b></span>
+        <h2 class="w-title" id="h-what">What happened to Rewind AI</h2>
+        <dl class="mx-spec story">
+          <div><dt>Late 2022</dt><dd>Rewind launched in late 2022 as a Mac app that recorded your screen and audio locally and made it searchable — “the search engine for your life.” For a while it was the reference point for personal screen memory on the Mac.</dd></div>
+          <div><dt>2024</dt><dd>In 2024 the company rebranded to Limitless and pivoted to a cloud-based wearable, the Limitless Pendant. The Mac app stopped being the focus.</dd></div>
+          <div><dt>Dec 2025</dt><dd>In December 2025, Meta acquired Limitless. The Rewind Mac app shut down on December 19, 2025, Pendant sales stopped, and service was discontinued in the EU and UK, with remaining support winding down through 2026.</dd></div>
+          <div><dt>Now</dt><dd>If you relied on Rewind, you're now looking for a replacement — and the shutdown itself is a useful lesson in what to look for next.</dd></div>
+        </dl>
+      </section>
+
+      <section class="part" id="criteria" aria-labelledby="h-crit">
+        <span class="mx-kicker">Choosing a replacement <b>· 02</b></span>
+        <h2 class="w-title" id="h-crit">What to look for in a replacement</h2>
+        <p class="w-prose">A tool that records everything you see and hear is only as good as its answer to one question: who else can see it? Four things worth insisting on.</p>
+        <ul class="crit">
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Stays on your Mac</b><span>Capture, text extraction, transcription, and search should all run on-device, with the record encrypted at rest. If a company can read your history, an acquisition can too.</span></div></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Captures everything you'd want back</b><span>Screen, audio, and activity — not just screenshots. The moments you need to recall are as often something said in a call as something on screen.</span></div></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>Search plus ask-AI</b><span>Keyword search finds what you can name; asking an AI about your own past finds what you can only half-describe.</span></div></li>
+          <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><div><b>You control retention and deletion</b><span>Keep history forever or auto-delete on a schedule, and delete any stretch of it in one click. Your record, your rules.</span></div></li>
+        </ul>
+      </section>
+
+      <section class="part" id="comparison" aria-labelledby="h-field">
+        <span class="mx-kicker">The field <b>· 03</b></span>
+        <h2 class="w-title" id="h-field">Mnema vs Screenpipe vs ScreenMemory vs OpenRecall</h2>
+        <p class="w-prose">These are the main tools people move to after Rewind. All of them keep your data local — the differences are in scope and platform.</p>
+        <table class="field">
+          <thead>
+            <tr><th scope="col"><span class="sr-only">Feature</span></th><th scope="col" class="us">Mnema</th><th scope="col">Screenpipe</th><th scope="col">ScreenMemory</th><th scope="col">OpenRecall</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Platform</th><td class="us" data-col="Mnema">macOS (Apple Silicon)</td><td data-col="Screenpipe">Cross-platform</td><td data-col="ScreenMemory">macOS</td><td data-col="OpenRecall">Cross-platform</td></tr>
+            <tr><th scope="row">Open source</th><td class="us" data-col="Mnema">Yes</td><td data-col="Screenpipe">Source-available</td><td data-col="ScreenMemory">No</td><td data-col="OpenRecall">Yes</td></tr>
+            <tr><th scope="row">Local-first</th><td class="us" data-col="Mnema">Yes — on-device, encrypted at rest</td><td data-col="Screenpipe">Yes</td><td data-col="ScreenMemory">Yes</td><td data-col="OpenRecall">Yes</td></tr>
+            <tr><th scope="row">Audio transcription</th><td class="us" data-col="Mnema">Yes — on-device, with speaker labels</td><td data-col="Screenpipe">Yes</td><td data-col="ScreenMemory">Screen-focused</td><td data-col="OpenRecall">Screen-focused</td></tr>
+            <tr><th scope="row">Ask-AI / chat</th><td class="us" data-col="Mnema">Yes — over your own history</td><td data-col="Screenpipe">Yes (via plugins)</td><td data-col="ScreenMemory">Search only</td><td data-col="OpenRecall">Search-focused</td></tr>
+            <tr><th scope="row">Agent / CLI access</th><td class="us" data-col="Mnema">Yes — brokered, read-only CLI</td><td data-col="Screenpipe">Yes (API)</td><td class="none" data-col="ScreenMemory">—</td><td class="none" data-col="OpenRecall">—</td></tr>
+            <tr><th scope="row">Price</th><td class="us" data-col="Mnema">$69 once, 30-day free trial</td><td data-col="Screenpipe">Free tier; paid from $21/mo</td><td data-col="ScreenMemory">Free tier; $29 or $39 once</td><td data-col="OpenRecall">Free (open source)</td></tr>
+          </tbody>
+        </table>
+        <p class="w-meta note">Competitor details reflect public information as of November 2026 — check each project directly before deciding.</p>
+      </section>
+
+      <section class="part" id="faq" aria-labelledby="h-faq">
+        <span class="mx-kicker">Questions <b>· 04</b></span>
+        <h2 class="w-title" id="h-faq">Frequently asked</h2>
+        <dl class="mx-spec faq">
+          <div><dt><h3>Is Rewind AI still available?</h3></dt><dd>No. The Rewind Mac app shut down on December 19, 2025, after Meta acquired Limitless (the company Rewind became). Pendant sales stopped, service was discontinued in the EU and UK, and remaining support winds down through 2026.</dd></div>
+          <div><dt><h3>What is the best Rewind AI alternative for Mac?</h3></dt><dd>If you want what Rewind originally promised — a private, searchable record of everything on your Mac — Mnema is the closest match: it captures screen, audio, and activity on-device, encrypts it at rest, and lets you search it, scrub back to any moment, and ask an AI about it. Screenpipe (source-available) and OpenRecall (open source) are cross-platform options worth a look too.</dd></div>
+          <div><dt><h3>Does Mnema send my recordings to the cloud?</h3></dt><dd>No. Capture, text extraction, transcription, and search all run on-device — there's no account, no telemetry, and no Mnema cloud to send anything to. The one exception is opt-in: you can use your own Deepgram account for higher-accuracy transcripts, and audio leaves your Mac only if you turn that on.</dd></div>
+          <div><dt><h3>Can I still use my Rewind data?</h3></dt><dd>Rewind stored its recordings locally, so the files may still be on your Mac — but Mnema does not import Rewind archives. Starting with Mnema means starting a fresh record from the day you install it.</dd></div>
+        </dl>
+      </section>
+
+      <section class="part" id="cta" aria-labelledby="h-cta">
+        <div class="mx-panel cta-panel w-texture">
+          <div class="w-stack">
+            <span class="mx-kicker">Get started</span>
+            <h2 class="w-title" id="h-cta">Start a record you actually own.</h2>
+            <p class="w-prose">Download Mnema and build a private, searchable memory of your work — one you can scrub, search, and ask anything. Open source, free for 30 days.</p>
+          </div>
+          <div class="acts">
+            <a class="mx-btn mx-btn--primary w-btn-lg" href="#"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V3"/><path d="m6 11 6 6 6-6"/><path d="M19 21H5"/></svg>Download for macOS</a>
+            <span class="w-meta">Apple Silicon</span>
+          </div>
+        </div>
+        <div class="end">
+          <span class="w-meta">local-first · encrypted at rest · no account, no Mnema cloud, no telemetry — your record never leaves your Mac.</span>
+          <a class="mx-btn mx-btn--ghost mx-btn--sm" href="../06-combined.html">← Back to mnema</a>
+        </div>
+      </section>
+    </article>
+  </div>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

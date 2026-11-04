@@ -3,97 +3,68 @@
 // server's `reset_url` points at when an activation is refused with
 // "device cap reached" (set it to https://mnema.day/license/devices in the
 // licensegate console). Everything self-service happens inside the app
-// ("Free up my devices" in Settings → License); this page just explains it
+// ("Free up my devices" in Settings → About → License & Trial); this page just explains it
 // for people who land here from the link. Subject-named route on purpose:
 // the page moves you to a new Mac, it doesn't reset anything itself.
 //
-// Self-contained on purpose, like /license/open: no Base.astro (its release-fetch
-// machinery is dead weight here). Palette mirrors src/styles/tokens.css.
+// Chrome-less like /license/open: Bare.astro, not Base.astro (its release-fetch
+// machinery is dead weight here).
+import Bare from "../../layouts/Bare.astro";
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Move Mnema to a new Mac</title>
-    <link rel="icon" type="image/png" href="/icon.png" />
-    <meta
-      name="description"
-      content="Your Mnema license works on up to 3 Macs. Free them up from inside the app to move to a new one."
-    />
-    <style>
-      :root {
-        --bg: #0c0c0e;
-        --surface: #14141a;
-        --fg: #e2e2e8;
-        --fg-muted: #8a8aaa;
-        --border: #1e1e2e;
-        --accent: #3dffa0;
-        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-        --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        padding: 24px;
-        background: var(--bg);
-        color: var(--fg);
-        font-family: var(--sans);
-      }
-      .card {
-        width: 100%;
-        max-width: 520px;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 32px;
-      }
-      .logo { width: 44px; height: 44px; border-radius: 10px; display: block; }
-      h1 { font-size: 22px; margin: 20px 0 8px; }
-      p, li { color: var(--fg-muted); font-size: 14px; line-height: 1.6; }
-      p { margin: 0 0 16px; }
-      ol { margin: 0 0 16px; padding-left: 20px; }
-      li { margin-bottom: 6px; }
-      .path {
-        font-family: var(--mono);
-        font-size: 12.5px;
-        color: var(--accent);
-        white-space: nowrap;
-      }
-      .fine { font-size: 12.5px; margin-bottom: 0; }
-      a { color: var(--fg); }
-      a:hover { color: var(--accent); }
-      hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
-    </style>
-  </head>
-  <body>
-    <main class="card">
-      <a href="/"><img class="logo" src="/icon.png" alt="Mnema" /></a>
-      <h1>Move Mnema to a new Mac</h1>
-      <p>
-        Your Mnema license works on up to <strong>3 Macs</strong>. If you just tried to activate
-        a new one and were told the limit is reached, you can free up your devices yourself —
-        right from the app, no forms, no waiting.
-      </p>
-      <ol>
-        <li>Open Mnema on the Mac you want to use.</li>
-        <li>Go to <span class="path">Settings → License</span>.</li>
-        <li>Click <strong>Free up my devices</strong>.</li>
-      </ol>
-      <p>
-        That one click clears the license's device list and activates the Mac you're on. To keep
-        the limit meaningful, it works once every 30 days — if you reset recently, the app shows
-        the date it opens up again.
-      </p>
-      <hr />
-      <p class="fine">
-        Still stuck? Email <a href="mailto:support@mnema.day">support@mnema.day</a> and we'll
-        sort it out.
-      </p>
-    </main>
-  </body>
-</html>
+<Bare
+  title="Move Mnema to a new Mac"
+  description="Your Mnema license works on up to 3 Macs. Free them up from inside the app to move to a new one."
+>
+  <div class="card mx-panel">
+    <a class="card__logo" href="/"><img src="/icon.png" alt="Mnema" width="44" height="44" /></a>
+    <h1>Move Mnema to a new Mac</h1>
+    <p class="mx-prose">
+      Your Mnema license works on up to <b>3 Macs</b>. If you just tried to activate
+      a new one and were told the limit is reached, you can free up your devices yourself —
+      right from the app, no forms, no waiting.
+    </p>
+    <ol class="steps">
+      <li><span>Open Mnema on the Mac you want to use.</span></li>
+      <li><span>Go to <span class="path">Settings → About → License &amp; Trial</span>.</span></li>
+      <li><span>Click <b>Free up my devices</b>.</span></li>
+    </ol>
+    <p class="mx-prose">
+      That one click clears the license's device list and activates the Mac you're on. To keep
+      the limit meaningful, it works once every 30 days — if you reset recently, the app shows
+      the date it opens up again.
+    </p>
+    <hr class="mx-rule" />
+    <p class="fine">
+      Still stuck? Email <a href="mailto:support@mnema.day">support@mnema.day</a> and we'll sort it out.
+    </p>
+  </div>
+</Bare>
+
+<style>
+  .card { max-width: 520px; }
+  .card__logo img { border-radius: 10px; }
+  .mx-prose { margin: 0 0 var(--s-4); }
+  .mx-prose b { color: var(--app-text-strong); font-weight: 600; }
+
+  /* The three steps as settings-style rows: mono number, hairline between. */
+  .steps {
+    list-style: none; margin: 0 0 var(--s-4); padding: 0; counter-reset: step;
+    border: 1px solid var(--app-border); border-radius: var(--r-md); background: var(--app-surface-subtle);
+  }
+  .steps li {
+    display: grid; grid-template-columns: 22px 1fr; align-items: center; gap: var(--s-3); padding: 10px var(--s-3);
+    font-size: var(--text-md); line-height: 1.45; color: var(--app-text);
+  }
+  .steps li + li { border-top: 1px solid var(--mx-hairline); }
+  .steps li::before {
+    counter-increment: step; content: counter(step); display: grid; place-items: center; width: 22px; height: 22px;
+    border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--app-border-strong);
+    font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-muted);
+  }
+  .steps b { color: var(--app-text-strong); font-weight: 600; }
+
+  .mx-rule { margin: var(--s-5) 0; }
+  .fine { margin: 0; font-size: var(--text-base); line-height: 1.55; color: var(--app-text-muted); }
+  .fine a { color: var(--app-text-strong); text-underline-offset: 2px; }
+</style>

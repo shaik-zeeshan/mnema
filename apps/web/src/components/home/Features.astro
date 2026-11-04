@@ -1,0 +1,79 @@
+---
+import { Image } from "astro:assets";
+import Feature from "./Feature.astro";
+import Shot from "./Shot.astro";
+import deskCode from "../../assets/shots/desk-code.webp";
+import recallDark from "../../assets/shots/quick-recall-dark.webp";
+import recallLight from "../../assets/shots/quick-recall-light.webp";
+import chatDark from "../../assets/shots/chat-dark.webp";
+import chatLight from "../../assets/shots/chat-light.webp";
+import insightsDark from "../../assets/shots/insights-dark.webp";
+import insightsLight from "../../assets/shots/insights-light.webp";
+
+// The figure column is ~1.9/2.9 of the 1200px wrap on desktop, full width below 900px.
+const sizes = "(max-width: 900px) calc(100vw - 32px), 760px";
+const panelSizes = "(max-width: 900px) 58vw, 440px";
+const widths = [960, 1440, 1920];
+---
+
+<Feature
+  id="recall"
+  kicker="Quick Recall"
+  title="Summon it over any app."
+  prose="One shortcut, wherever you are. Every frame keeps its words and every conversation keeps its speakers, so the moment you half-remember is a search away."
+  specs={[
+    ["Screen", "Every window becomes searchable text."],
+    ["Audio", "Meetings and calls, transcribed with who said what."],
+    ["Activity", "Which app, which page, for how long."],
+  ]}
+>
+  <figure class="w-float">
+    <Image class="w-float__desk" src={deskCode} alt="" widths={widths} sizes={sizes} />
+    <Image
+      class="w-float__panel w-dark"
+      src={recallDark}
+      alt="Quick Recall over another app: results with matches highlighted"
+      widths={[600, 900, 1200]}
+      sizes={panelSizes}
+    />
+    <Image class="w-float__panel w-light" src={recallLight} alt="" widths={[600, 900, 1200]} sizes={panelSizes} />
+  </figure>
+</Feature>
+
+<Feature
+  id="ask"
+  flip
+  kicker="Ask"
+  title="Ask your own memory a question."
+  prose="Ask the way you'd ask a colleague who never forgets. Answers come from your own history, and every claim links to the moment it came from."
+  specs={[
+    ["Receipts", "Jump from any answer to the exact frame or clip."],
+    ["Threads", "Follow up, refine, come back tomorrow."],
+    ["Your model", "Your ChatGPT plan, your own key, or a local model."],
+  ]}
+>
+  <Shot dark={chatDark} light={chatLight} alt="Ask: an answer with charts and linked sources" sizes={sizes} />
+</Feature>
+
+<Feature
+  id="insights"
+  kicker="Insights"
+  title="See where your week actually went."
+  prose="Mnema builds a quiet picture of how you work: the projects you're deep in, where focus goes, and what you keep coming back to. Yours to read, correct, or wipe."
+  specs={[
+    ["Time", "By app, by category, by focus."],
+    ["Subjects", "The threads you keep returning to."],
+    ["Control", "Pin what rings true. Dismiss what doesn't."],
+  ]}
+>
+  <Shot
+    dark={insightsDark}
+    light={insightsLight}
+    alt="Insights: time by category and focus across the week"
+    sizes={sizes}
+  />
+</Feature>
+
+<style>
+  .w-float { margin: 0; }
+</style>

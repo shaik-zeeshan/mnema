@@ -1,0 +1,280 @@
+/* ==========================================================================
+   The app's component vocabulary (mx-), trimmed from
+   docs/mockups/redesign/kit.css to the classes the web mockups use.
+   Colours come only from tokens.css. Fonts are loaded by Base.astro through
+   @fontsource, so the kit's @font-face rules are gone and --font-sans names
+   the variable family @fontsource registers.
+   ========================================================================== */
+
+/* --- Kit scales (non-color; mode-independent) --------------------------- */
+:root {
+  /* @fontsource-variable registers Hanken as "Hanken Grotesk Variable"; the
+     plain name stays as a fallback for a locally installed copy. */
+  --font-sans: "Hanken Grotesk Variable", "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-mono: "Spline Sans Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  /* spacing: 4-pt */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 64px;
+
+  /* radius */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-pill: 999px;
+
+  /* control heights: every button, segmented, date capsule and input snaps to one of these */
+  --h-sm: 26px; --h-md: 32px;
+
+  /* motion: ease-out only, never bounce */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --t-fast: 120ms; --t-med: 220ms; --t-slow: 420ms;
+}
+/* Derived surfaces (token mixes). Declared on every [data-theme] scope too, so a
+   nested theme pane recomputes them against its own tokens. */
+:root, [data-theme] {
+  --mx-hairline: color-mix(in srgb, var(--app-border) 80%, transparent);
+  /* THE selected-row fill (lists, nav, presets, choice rows). No left bars, ever. */
+  --mx-selected: var(--mx-wash-strong);
+  --mx-glass: color-mix(in srgb, var(--app-surface) 72%, transparent);
+  --mx-dot: color-mix(in srgb, var(--app-fg) 5.5%, transparent);
+  --mx-sheen: linear-gradient(180deg, color-mix(in srgb, var(--app-fg) 3.5%, transparent), transparent 140px);
+  --mx-wash: color-mix(in srgb, var(--app-fg) 4%, transparent);      /* track / ghost-hover fill */
+  --mx-wash-strong: color-mix(in srgb, var(--app-fg) 8%, transparent);
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  --mx-dot: color-mix(in srgb, var(--app-fg) 7%, transparent);
+  --mx-sheen: linear-gradient(180deg, color-mix(in srgb, var(--app-surface) 70%, transparent), transparent 140px);
+  --mx-wash: color-mix(in srgb, var(--app-fg) 5%, transparent);
+  --mx-wash-strong: color-mix(in srgb, var(--app-fg) 9%, transparent);
+  color-scheme: light;
+}
+
+/* --- Base --------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--app-bg);
+  color: var(--app-text);
+  font: 400 var(--text-md)/1.55 var(--font-sans);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--t-med) var(--ease-quart), color var(--t-med) var(--ease-quart);
+}
+button, input, select, textarea { font-family: inherit; }
+::selection { background: var(--app-accent-bg); color: var(--app-text-strong); }
+:focus-visible { outline: none; box-shadow: var(--app-ring); }
+
+/* --- Type roles ---------------------------------------------------------
+   Sans carries the UI (titles, prose, buttons, nav, labels). Mono is the record
+   voice: data, timestamps, durations, counts, kickers, kbd — never sentences.
+   display 40 · title 28 · heading 20 · subheading 16 · body 13 · label 12 · data 12 · kicker 10 */
+.mx-display { font: 600 40px/1.04 var(--font-sans); letter-spacing: -0.034em; color: var(--app-text-strong); margin: 0; text-wrap: balance; }
+.mx-h1, .mx-title { font: 600 28px/1.12 var(--font-sans); letter-spacing: -0.026em; color: var(--app-text-strong); margin: 0; text-wrap: balance; }
+.mx-h2, .mx-heading { font: 600 var(--text-xl)/1.25 var(--font-sans); letter-spacing: -0.018em; color: var(--app-text-strong); margin: 0; }
+.mx-h3, .mx-subheading { font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); margin: 0; }
+.mx-prose { font-size: 14px; line-height: 1.6; color: var(--app-text-muted); margin: 0; text-wrap: pretty; }
+.mx-body-sm { font: 400 var(--text-base)/1.5 var(--font-sans); color: var(--app-text-muted); }
+.mx-label { font: 500 var(--text-base)/1.35 var(--font-sans); color: var(--app-text-subtle); }
+/* data voice: always tabular. `.num` = inline numbers inside sans text. */
+.mono, code, kbd, time { font-family: var(--font-mono); }
+.mx-data, .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.mx-data { font-size: var(--text-base); font-weight: 450; color: var(--app-text); }
+
+/* Kicker: mono eyebrow above a sans title. Green `//` only — the text stays muted. */
+.mx-kicker {
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+.mx-kicker::before { content: "//"; color: var(--app-accent); letter-spacing: 0; }
+.mx-kicker--live::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+
+.mx-spacer { flex: 1; }
+
+/* Sliding thumb for .mx-seg (page scripts position it). */
+.mx-seg__thumb {
+  position: absolute; z-index: 0; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: var(--r-sm);
+  background: var(--app-surface-raised);
+  box-shadow: 0 0 0 1px var(--app-border-strong);
+  transition: transform var(--t-slow) var(--ease-expo), width var(--t-slow) var(--ease-expo);
+}
+
+/* --- Buttons: ONE system ------------------------------------------------
+   Flat and crisp: one uniform 1px border (none on primary/ghost), no inset highlight,
+   no drop shadow. Hover = fill shift · press = 1px down · focus = 2px ring, 2px offset.
+   .mx-btn            secondary (default): surface + 1px border
+   .mx-btn--primary   the ONLY green fill — one per view; solid edge to edge
+   .mx-btn--ghost     text-only; wash on hover; toolbars/inline actions
+   .mx-btn--danger    destructive: neutral surface, danger ink; tints on hover
+   .mx-btn--icon      square icon-only (width = height); combine with any variant
+   .mx-btn--sm        26px · default md 32px
+   <kbd> inside any button = quiet muted mono hint (no box).
+   States: :hover · :active (press) · :focus-visible (ring) · [aria-pressed=true] (toggle on)
+           · :disabled / [aria-disabled=true] · [aria-busy=true] (in flight).
+   */
+.mx-btn {
+  --_h: var(--h-md); --_px: 12px; --_fs: var(--text-md); --_r: 6px; --_gap: 7px;
+  --_bg: var(--app-surface-raised); --_bd: var(--app-border-strong); --_fg: var(--app-text-strong); --_ring: var(--app-accent);
+  position: relative; display: inline-flex; align-items: center; justify-content: center; gap: var(--_gap); flex: none;
+  height: var(--_h); padding: 0 var(--_px); border-radius: var(--_r);
+  background: var(--_bg); color: var(--_fg); border: 1px solid var(--_bd); box-shadow: none;
+  font: 500 var(--_fs)/1 var(--font-sans); letter-spacing: -0.003em; white-space: nowrap; text-decoration: none;
+  cursor: pointer; user-select: none; outline: 0 solid transparent; outline-offset: 2px;
+  transition: background-color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart),
+              color var(--t-fast) var(--ease-quart), transform var(--t-fast) var(--ease-quart);
+}
+.mx-btn svg { flex: none; }
+.mx-btn:hover { --_bg: var(--app-surface-hover); }
+.mx-btn:active { transform: translateY(1px); }
+.mx-btn:focus-visible { box-shadow: none; outline: 2px solid var(--_ring); }
+.mx-btn[aria-pressed="true"] { --_bg: var(--mx-selected); }
+.mx-btn:disabled, .mx-btn[aria-disabled="true"] {
+  opacity: var(--app-disabled-opacity); pointer-events: none; }
+.mx-btn[aria-busy="true"] { opacity: var(--app-busy-opacity); cursor: progress; }
+
+.mx-btn--sm { --_h: var(--h-sm); --_px: 9px; --_fs: var(--text-base); --_r: 5px; --_gap: 6px; }
+.mx-btn--icon { width: var(--_h); padding: 0; }
+
+.mx-btn--primary { --_bg: var(--app-accent); --_bd: transparent; --_fg: var(--app-accent-contrast); }
+.mx-btn--primary:hover { --_bg: color-mix(in srgb, var(--app-accent) 88%, var(--app-text-strong)); }
+.mx-btn--primary:active { --_bg: color-mix(in srgb, var(--app-accent) 80%, var(--app-text-strong)); }
+
+.mx-btn--ghost { --_bg: transparent; --_bd: transparent; --_fg: var(--app-text-muted); }
+.mx-btn--ghost:hover { --_bg: var(--mx-wash-strong); --_fg: var(--app-text-strong); }
+.mx-btn--ghost[aria-pressed="true"],
+.mx-btn--ghost[aria-current="page"] { --_bg: var(--mx-selected); --_fg: var(--app-text-strong); }
+
+.mx-btn--danger { --_fg: var(--app-danger-text); --_ring: var(--app-danger); }
+.mx-btn--danger:hover { --_bg: var(--app-danger-bg); --_bd: var(--app-danger-border); }
+
+/* kbd hint slot: quiet mono text, no box */
+.mx-btn kbd { height: auto; min-width: 0; padding: 0; margin-left: 2px; border: 0; background: none;
+  font-size: var(--text-xs); color: var(--app-text-subtle); }
+.mx-btn--primary kbd { color: color-mix(in srgb, var(--app-accent-contrast) 70%, transparent); }
+/* Accent icon inside a secondary/ghost "ask" action (e.g. Ask about this week). Not a fill. */
+.mx-btn .mx-btn__accent { color: var(--app-accent); }
+
+/* Notification dot on an icon button. Colour = worst unread severity: default (info) · data-tone="warn" · "danger".
+/* --- Segmented control -------------------------------------------------- */
+/* .mx-seg > button[aria-pressed]; kit.js slides the .mx-seg__thumb. Same track/thumb as the
+   titlebar switch. Sans labels; add .mx-seg--mono for data-valued options (1m · 5m, 0.5 fps).
+   Height = sm (26) by default, .mx-seg--md = 32. Buttons may hold an svg before the label. */
+.mx-seg {
+  --_h: var(--h-sm);
+  position: relative; display: inline-flex; height: var(--_h); padding: 2px; isolation: isolate; flex: none;
+  background: var(--mx-wash); border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--mx-hairline);
+}
+.mx-seg--md { --_h: var(--h-md); }
+.mx-seg button {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 10px;
+  border: 0; background: none; cursor: pointer; border-radius: var(--r-sm); white-space: nowrap;
+  font: 500 var(--text-base)/1 var(--font-sans); color: var(--app-text-muted);
+  transition: color var(--t-med) var(--ease-quart);
+}
+.mx-seg--md button { padding: 0 14px; font-size: var(--text-md); }
+.mx-seg--mono button { font-family: var(--font-mono); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.mx-seg button:hover { color: var(--app-text-strong); }
+.mx-seg button[aria-pressed="true"] { color: var(--app-text-strong); }
+.mx-seg button:focus-visible { box-shadow: var(--app-ring); }
+
+
+/* --- Chips / tags (status, not actions) --------------------------------- */
+/* .mx-chip + one of: --screen --mic --sysaudio (sources) · --accent · --warn · --danger · --info
+   .mx-chip--cat with style="--c: var(--cat-research)" for categories.
+   Clickable action that looks like a chip? Use .mx-btn.mx-btn--sm — there is no chip-button. */
+.mx-chip {
+  --c: var(--app-text-muted);
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px;
+  border-radius: var(--r-xs); border: 1px solid var(--app-border); background: var(--app-surface-subtle);
+  font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.02em; color: var(--c); white-space: nowrap;
+}
+.mx-chip--screen { color: var(--app-source-screen); background: var(--app-source-screen-bg); border-color: var(--app-source-screen-border); }
+.mx-chip--mic { color: var(--app-source-mic); background: var(--app-source-mic-bg); border-color: var(--app-source-mic-border); }
+.mx-chip--sysaudio { color: var(--app-source-sysaudio); background: var(--app-source-sysaudio-bg); border-color: var(--app-source-sysaudio-border); }
+.mx-chip--accent { color: var(--app-accent); background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+.mx-chip--warn { color: var(--app-warn); background: var(--app-warn-bg); border-color: var(--app-warn-border); }
+.mx-chip--danger { color: var(--app-danger-text); background: var(--app-danger-bg); border-color: var(--app-danger-border); }
+.mx-chip--info { color: var(--app-info); background: var(--app-info-bg); border-color: var(--app-info-border); }
+.mx-chip--cat { color: var(--app-text); border-color: color-mix(in srgb, var(--c) 30%, var(--app-border));
+  background: color-mix(in srgb, var(--c) 9%, var(--app-surface)); font-family: var(--font-sans); font-size: var(--text-sm); letter-spacing: 0; }
+.mx-chip--cat::before { content: ""; width: 6px; height: 6px; border-radius: 2px; background: var(--c); }
+button.mx-chip { cursor: pointer; transition: border-color var(--t-fast) var(--ease-quart); }
+button.mx-chip:hover { border-color: var(--app-border-hover); }
+
+
+/* --- Keys + matches ---------------------------------------------------- */
+kbd, .mx-kbd {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
+  font: 500 var(--text-xs)/1 var(--font-mono); color: var(--app-text-subtle);
+  background: transparent; border: 1px solid var(--mx-hairline); border-radius: var(--r-xs);
+}
+mark, .mx-match { background: var(--app-accent-bg); color: var(--app-accent); border-radius: 2px; padding: 0 2px;
+  box-shadow: inset 0 -1px 0 var(--app-accent-border); }
+
+/* --- Panels / surfaces -------------------------------------------------- */
+/* Depth = surface lightness + 1px hairline. Flat: no inner highlight, no drop shadows.
+   .mx-panel · --raised · --inset (recessed well) · --glass (overlay on content) · --interactive (hover lift) */
+.mx-panel {
+  background: var(--app-surface); border: 1px solid var(--app-border); border-radius: var(--r-lg);
+
+}
+.mx-panel--raised { background: var(--app-surface-raised); }
+.mx-panel--inset { background: var(--app-surface-subtle); }
+.mx-panel--glass {
+  background: var(--mx-glass); border-color: var(--app-overlay-border);
+  -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+}
+.mx-panel--interactive { cursor: pointer; transition: border-color var(--t-fast) var(--ease-quart), background-color var(--t-fast) var(--ease-quart), transform var(--t-med) var(--ease-expo); }
+.mx-panel--interactive:hover { border-color: var(--app-border-hover); background: var(--app-surface-raised); }
+.mx-panel--interactive:active { transform: scale(0.995); }
+.mx-panel__head { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--mx-hairline); }
+.mx-panel__body { padding: var(--s-4); }
+.mx-rule { height: 1px; border: 0; margin: 0; background: var(--mx-hairline); }
+
+/* --- Stat + spec rows --------------------------------------------------- */
+/* .mx-stat: big tabular number + mono label. .mx-spec: label | value | note rows (not card grids). */
+.mx-stat { display: grid; gap: 7px; }
+.mx-stat__value { font: 400 28px/1 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.05em; color: var(--app-text-strong); }
+.mx-stat__value small { font: 500 var(--text-md)/1 var(--font-sans); color: var(--app-text-subtle); letter-spacing: 0; margin-left: 3px; }
+.mx-stat__label { font: 500 var(--text-xs)/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); }
+.mx-stat__delta { font: 500 var(--text-sm)/1 var(--font-mono); color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+.mx-stat__delta--up { color: var(--focus-deep); }
+.mx-spec { display: grid; grid-template-columns: minmax(120px, max-content) 1fr auto; margin: 0; }
+.mx-spec > div { display: contents; }
+.mx-spec dt, .mx-spec dd { margin: 0; padding: 10px 0; border-top: 1px solid var(--mx-hairline); }
+.mx-spec > div:first-child > * { border-top: 0; }
+.mx-spec dt { font: 500 var(--text-base)/1.4 var(--font-sans); color: var(--app-text-subtle); padding-right: var(--s-5); }
+.mx-spec dd { color: var(--app-text-strong); }
+.mx-spec dd.mx-spec__note { font: 400 var(--text-sm)/1.4 var(--font-mono); color: var(--app-text-subtle); text-align: right; padding-left: var(--s-4); font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   Feedback states — ONE vocabulary for every page (spec: SHELL.md › States).
+   Tone is an attribute shared by all of them: data-tone="info|ok|warn|danger|off"
+   (absent = neutral). Components read --tone / --tone-bg / --tone-bd.
+   ========================================================================== */
+[data-tone] { --tone: var(--app-text-muted); --tone-bg: var(--mx-wash); --tone-bd: var(--app-border-strong); }
+[data-tone="info"] { --tone: var(--app-info); --tone-bg: var(--app-info-bg); --tone-bd: var(--app-info-border); }
+[data-tone="ok"] { --tone: var(--app-accent); --tone-bg: var(--app-accent-bg); --tone-bd: var(--app-accent-border); }
+[data-tone="warn"] { --tone: var(--app-warn); --tone-bg: var(--app-warn-bg); --tone-bd: var(--app-warn-border); }
+[data-tone="danger"] { --tone: var(--app-danger-text); --tone-bg: var(--app-danger-bg); --tone-bd: var(--app-danger-border); }
+
+/* --- Empty / error / off: glyph + title + one line + optional actions ---
+   .mx-empty            panel-sized (left-aligned)   · --center for a whole pane · --compact for a list/panel row
+   [data-tone="danger"] error (solid tinted glyph; action = Retry) · "warn" offline/unreachable · absent = nothing here yet */
+.mx-empty { display: grid; justify-items: start; align-content: start; gap: var(--s-3); padding: var(--s-6); max-width: 440px; }
+.mx-empty__glyph { width: 40px; height: 40px; display: grid; place-items: center; border-radius: var(--r-md);
+  border: 1px dashed var(--app-border-strong); color: var(--app-text-subtle); }
+.mx-empty__title { margin: 0; font: 600 var(--text-lg)/1.3 var(--font-sans); letter-spacing: -0.01em; color: var(--app-text-strong); }
+.mx-empty__text { margin: -6px 0 0; font: 400 var(--text-md)/1.55 var(--font-sans); color: var(--app-text-muted); max-width: 52ch; text-wrap: pretty; }
+.mx-empty__acts { display: flex; flex-wrap: wrap; gap: var(--s-2); margin-top: 2px; }
+.mx-empty[data-tone] .mx-empty__glyph { border-style: solid; border-color: var(--tone-bd); background: var(--tone-bg); color: var(--tone); }
+.mx-empty--center { justify-items: center; text-align: center; margin-inline: auto; align-self: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important; transition-delay: 0ms !important; }
+}

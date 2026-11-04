@@ -1,0 +1,48 @@
+---
+// One feature row: sticky text with spec rows beside a figure (the slot).
+interface Props {
+  id: string;
+  kicker: string;
+  title: string;
+  prose: string;
+  specs: [term: string, detail: string][];
+  flip?: boolean;
+}
+
+const { id, kicker, title, prose, specs, flip = false } = Astro.props;
+---
+
+<section class="w-sec w-sec--rule" id={id}>
+  <div class:list={["w-wrap", "feature", { "feature--flip": flip }]}>
+    <div class="text">
+      <span class="mx-kicker">{kicker}</span>
+      <h2 class="w-title">{title}</h2>
+      <p class="w-prose">{prose}</p>
+      <dl class="mx-spec">
+        {
+          specs.map(([term, detail]) => (
+            <div>
+              <dt>{term}</dt>
+              <dd>{detail}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+    <slot />
+  </div>
+</section>
+
+<style>
+  .feature { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr); gap: var(--s-7); align-items: start; }
+  .feature--flip { grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); }
+  .feature--flip .text { order: 2; }
+  .text { position: sticky; top: 96px; display: grid; gap: var(--s-4); }
+  .mx-spec { grid-template-columns: minmax(110px, max-content) 1fr; margin-top: var(--s-3); }
+  .mx-spec dd { color: var(--app-text-muted); font-size: 14px; line-height: 1.5; }
+  @media (max-width: 900px) {
+    .feature, .feature--flip { grid-template-columns: 1fr; }
+    .text { position: static; }
+    .feature--flip .text { order: 0; }
+  }
+</style>

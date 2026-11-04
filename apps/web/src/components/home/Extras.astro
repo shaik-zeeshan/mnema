@@ -1,0 +1,80 @@
+---
+// "Also included": shipped features the tour above doesn't show. Every line was
+// checked against the app's code (v0.1.26); keep it to what ships on main.
+const groups: { name: string; items: [string, string][] }[] = [
+  {
+    name: "Recording",
+    items: [
+      ["Both sides of a call", "Records your Mac's sound as well as your mic, with no bot in the meeting (macOS 15+). Audio-only sessions too."],
+      ["Keeps going", "Your Mac's sound keeps recording while the display sleeps or comes unplugged. The mic switches off while you're away."],
+      ["Every browser", "Page addresses from Safari, Chrome-based browsers, Firefox and Zen."],
+      ["Knows when to stop", "Pauses when you step away or the disk runs low, and reminds you if you forgot to resume."],
+    ],
+  },
+  {
+    name: "Finding",
+    items: [
+      ["Shortcuts everywhere", "⌘⌥Space opens Quick Recall over any app. ⌘⌥P pauses. Rebind either one."],
+      ["Knows your voice", "Learns how you sound, and lets you rename and merge the other speakers. All on your Mac."],
+      ["Past chats", "Search old conversations and pin the ones you come back to."],
+      ["Ask it to pause", "Tell the chat to pause or resume recording, and it does."],
+    ],
+  },
+  {
+    name: "Your setup",
+    items: [
+      ["Pick the engines", "Apple's built-in text and speech recognition, or open models like Tesseract, PaddleOCR, Whisper and Parakeet."],
+      ["Any AI provider", "OpenRouter, LM Studio or any OpenAI-compatible service, plus your own tools inside Ask. Cloud transcription through Deepgram only if you add your key."],
+      ["Your folder", "Choose where recordings are stored, with a meter for how much space they use."],
+      ["Insights, your way", "Overview, Journal, Subjects and a Digest, plus time spent per app and per site."],
+    ],
+  },
+  {
+    name: "Control",
+    items: [
+      ["From the menu bar", "Exclude the app in front of you, or delete the last 1, 5 or 15 minutes."],
+      ["Sensitive-app hints", "Suggests apps you may want to keep out of your record."],
+      ["Agent permissions", "Approve or block each tool that asks for your history, and see every request it made."],
+    ],
+  },
+];
+---
+
+<section class="w-sec w-sec--rule" aria-labelledby="extras-h">
+  <div class="w-wrap">
+    <div class="w-stack head">
+      <span class="mx-kicker">Also included</span>
+      <h2 class="w-title" id="extras-h">The details you'll notice later.</h2>
+      <p class="w-prose">Everything here ships in the app today, in the same $69.</p>
+    </div>
+    <div class="groups">
+      {
+        groups.map((g) => (
+          <div>
+            <h3 class="w-meta">{g.name}</h3>
+            <dl>
+              {g.items.map(([term, detail]) => (
+                <div>
+                  <dt>{term}</dt>
+                  <dd>{detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .head { margin-bottom: var(--s-7); }
+  .groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s-6); }
+  @media (max-width: 1100px) { .groups { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 600px) { .groups { grid-template-columns: 1fr; } }
+  h3 { margin: 0 0 var(--s-3); text-transform: uppercase; letter-spacing: 0.08em; }
+  dl { margin: 0; border-top: 1px solid var(--app-border); }
+  dl > div { padding: 14px 0; border-bottom: 1px solid var(--mx-hairline); }
+  dt { font: 600 14px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  dd { margin: 4px 0 0; font-size: 14px; line-height: 1.55; color: var(--app-text-muted); text-wrap: pretty; }
+</style>

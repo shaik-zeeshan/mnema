@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web Mockups</title>
+<style>
+/* Anatomy-kit theme for every HTML page and postplan draft. Light and dark in one file:
+   tokens live on .iso (dark) and .iso[data-theme="light"]; body carries both. Inline this whole file. */
+
+.iso{
+  --anatomy-page:#0b0b0b;--anatomy-card:#131313;--anatomy-text:#a3a3a3;--anatomy-strong:#e6e6e6;--anatomy-muted:#6e6e6e;
+  --anatomy-paper:#131313;--anatomy-face:#1b1b1b;--anatomy-top:#1c1c1c;
+  --anatomy-shade-0:#0f0f0f;--anatomy-shade-1:#121212;--anatomy-shade-2:#151515;--anatomy-shade-3:#181818;
+  --anatomy-lit-top:#262626;--anatomy-lit-shade:#1d1d1d;
+  --anatomy-hi:#d4d4d4;--anatomy-mid:#6a6a6a;--anatomy-lo:#3e3e3e;--anatomy-faint:#2a2a2a;--anatomy-lit:#ffffff;
+  --anatomy-halo:#050505;--anatomy-halo-opacity:.9;--anatomy-dot:#e6e6e6;
+  --anatomy-red:#ff6b6b;--anatomy-green:#6be0a0;--anatomy-blue:#6b9bff;
+  --anatomy-weight:.6px;--anatomy-ease:cubic-bezier(.32,.72,0,1);
+  --anatomy-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff0a,inset 0 0 0 1px #ffffff06,0 0 0 1px #00000026,0 1px 1px -.5px #00000014,0 3px 3px -1.5px #00000014,0 6px 6px -3px #00000014,0 12px 12px -6px #00000014;
+}
+.iso[data-theme="light"]{
+  --anatomy-page:#f2f2ef;--anatomy-card:#fbfbfa;--anatomy-text:#57575a;--anatomy-strong:#18181a;--anatomy-muted:#8c8c90;
+  --anatomy-paper:#fbfbfa;--anatomy-face:#ffffff;--anatomy-top:#ffffff;
+  --anatomy-shade-0:#dcdcd9;--anatomy-shade-1:#e5e5e2;--anatomy-shade-2:#ededea;--anatomy-shade-3:#f4f4f1;
+  --anatomy-lit-top:#ffffff;--anatomy-lit-shade:#eeeeeb;
+  --anatomy-hi:#26262a;--anatomy-mid:#8a8a8f;--anatomy-lo:#b4b4b8;--anatomy-faint:#d4d4d6;--anatomy-lit:#000000;
+  --anatomy-halo:#8a8a80;--anatomy-halo-opacity:.32;--anatomy-dot:#3a3a3e;
+  --anatomy-red:#e5484d;--anatomy-green:#30a46c;--anatomy-blue:#3e63dd;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff,0 0 0 1px #0000000f,0 1px 1px -.5px #0000000a,0 3px 3px -1.5px #0000000a,0 6px 6px -3px #0000000a,0 12px 12px -6px #0000000a;
+}
+.iso-svg{display:block;width:100%;height:auto;overflow:visible}
+.iso-svg path,.iso-svg circle{vector-effect:non-scaling-stroke}
+.iso-fill{fill:var(--anatomy-paper);stroke:none}
+.iso-solid[data-lit]>.iso-fill{fill:var(--anatomy-face)}
+.iso-shade,.iso-top{stroke:none}
+.iso-shade[data-shade="0"]{fill:var(--anatomy-shade-0)}
+.iso-shade[data-shade="1"]{fill:var(--anatomy-shade-1)}
+.iso-shade[data-shade="2"]{fill:var(--anatomy-shade-2)}
+.iso-shade[data-shade="3"]{fill:var(--anatomy-shade-3)}
+.iso-top{fill:var(--anatomy-top)}
+.iso-solid[data-lit]>.iso-top{fill:var(--anatomy-lit-top)}
+.iso-solid[data-lit]>.iso-shade{fill:var(--anatomy-lit-shade)}
+.iso-solid[data-seamless]>.iso-shade,.iso-solid[data-seamless]>.iso-top{stroke-width:.4;stroke-linejoin:round}
+.iso-solid[data-seamless]>.iso-shade[data-shade="0"]{stroke:var(--anatomy-shade-0)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="1"]{stroke:var(--anatomy-shade-1)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="2"]{stroke:var(--anatomy-shade-2)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="3"]{stroke:var(--anatomy-shade-3)}
+.iso-solid[data-seamless]>.iso-top{stroke:var(--anatomy-top)}
+.iso-solid[data-seamless][data-lit]>.iso-top{stroke:var(--anatomy-lit-top)}
+.iso-solid[data-seamless][data-lit]>.iso-shade{stroke:var(--anatomy-lit-shade)}
+.iso-solid[data-lit]>.iso-edge{stroke:var(--anatomy-lit)}
+.iso-halo{fill:var(--anatomy-halo);stroke:none;filter:blur(9px);opacity:var(--anatomy-halo-opacity);transform:translateY(3px)}
+.iso-line{fill:none;stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight);stroke-linecap:round;stroke-linejoin:round}
+.iso-line[data-tone="hi"]{stroke:var(--anatomy-hi)}
+.iso-line[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.iso-line[data-tone="lo"]{stroke:var(--anatomy-lo)}
+.iso-line[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.iso-line[data-tone="lit"]{stroke:var(--anatomy-lit)}
+.iso-line[data-tone="red"]{stroke:var(--anatomy-red)}
+.iso-line[data-tone="green"]{stroke:var(--anatomy-green)}
+.iso-line[data-tone="blue"]{stroke:var(--anatomy-blue)}
+.iso-line[data-dotted]{stroke-dasharray:.01 3.5;stroke-width:1}
+.iso-line[data-dashed]{stroke-dasharray:3 3}
+.iso-line[data-flow]{stroke-dasharray:2 6}
+.iso-wire-end{fill:var(--anatomy-paper);stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight)}
+.iso-wire[data-tone="hi"] .iso-wire-end{stroke:var(--anatomy-hi)}
+.iso-wire[data-tone="mid"] .iso-wire-end{stroke:var(--anatomy-mid)}
+.iso-wire[data-tone="faint"] .iso-wire-end{stroke:var(--anatomy-faint)}
+.iso-wire[data-tone="lit"] .iso-wire-end{stroke:var(--anatomy-lit)}
+.iso-dots circle{fill:var(--anatomy-dot);stroke:none;opacity:.32}
+.iso-dots[data-tone="hi"] circle{opacity:.85}
+.iso-dots[data-tone="mid"] circle{opacity:.45}
+.iso-dots[data-tone="lo"] circle{opacity:.22}
+.iso-dots[data-tone="faint"] circle{opacity:.12}
+.iso-face-text{fill:var(--anatomy-mid);font-family:var(--anatomy-mono);letter-spacing:.04em}
+.iso-face-text[data-tone="hi"]{fill:var(--anatomy-hi)}
+.iso-face-text[data-tone="lo"]{fill:var(--anatomy-lo)}
+.iso-face-text[data-tone="faint"]{fill:var(--anatomy-faint)}
+.tb-body{fill:var(--anatomy-shade-2);stroke:none}
+.tb-shine{fill:var(--anatomy-top);stroke:none}
+.tb-shade{fill:var(--anatomy-shade-0);stroke:none}
+.tb-ring{fill:none;stroke:var(--anatomy-lo);stroke-width:.45;stroke-linecap:butt;stroke-linejoin:round}
+.tb-ring[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.tb-ring[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.tb-ring[data-tone="hi"]{stroke:var(--anatomy-hi)}
+@keyframes iso-flow{to{stroke-dashoffset:-32}}
+@keyframes iso-pulse{0%,100%{opacity:.18}12%{opacity:1}40%{opacity:.18}}
+.iso-line[data-flow]{animation:iso-flow 1600ms linear infinite}
+.iso-dots circle[data-pulse]{animation:iso-pulse 1600ms steps(1,end) infinite;animation-delay:var(--pulse-at,0ms)}
+.iso-figure{margin:32px 0 36px}
+.iso-plate{position:relative;padding:52px 24px;border-radius:0;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);--anatomy-paper:var(--anatomy-card)}
+.iso-plate-corners{position:absolute;inset:18px 20px;pointer-events:none}
+.iso-plate-corner{position:absolute;color:var(--anatomy-muted);font-family:var(--anatomy-mono);font-size:10.5px;line-height:1;letter-spacing:.04em;white-space:nowrap}
+.iso-plate-corner[data-corner="fig"]{top:0;left:0;color:var(--anatomy-text)}
+.iso-plate-corner[data-corner="title"]{top:0;right:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="hint"]{bottom:0;left:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="readout"]{right:0;bottom:0;color:var(--anatomy-text);font-variant-numeric:tabular-nums}
+.iso-plate .iso-svg{margin:0 auto}
+.iso-legend{display:grid;gap:8px;margin-top:12px;color:var(--anatomy-muted);font-size:13px;line-height:1.55}
+.iso-keys{display:flex;flex-wrap:wrap;gap:6px 18px}
+.iso-key{display:inline-flex;align-items:center;gap:7px}
+.iso-swatch{width:16px;height:10px;flex:none;overflow:visible}
+.iso-swatch path{fill:none;stroke:var(--anatomy-hi);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.iso-swatch[data-mark="raised"] path,.iso-swatch[data-mark="flat"] path{stroke:var(--anatomy-mid)}
+.iso-swatch[data-mark="lit"] path{stroke:var(--anatomy-lit)}
+.iso-swatch[data-mark="dim"] path{stroke:var(--anatomy-lo)}
+.iso-swatch[data-mark="dotted"] path{stroke-dasharray:.01 3;stroke-width:1.4}
+.iso-swatch[data-mark="dashed"] path{stroke-dasharray:3 2.5}
+.iso-swatch[data-mark="red"] path{stroke:var(--anatomy-red)}
+.iso-swatch[data-mark="green"] path{stroke:var(--anatomy-green)}
+.iso-swatch[data-mark="blue"] path{stroke:var(--anatomy-blue)}
+.iso-swatch-crease{stroke:var(--anatomy-lo)!important}
+@media (max-width:560px){.iso-plate{padding:48px 12px 70px}.iso-plate-corner[data-corner="hint"]{bottom:18px}}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.iso-dots circle[data-pulse]{animation:none}}
+
+/* Page shell */
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body[data-theme="light"]{color-scheme:light}
+body{margin:0;background:var(--anatomy-page);color:var(--anatomy-text);font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.iso-page{width:min(720px,100% - 32px);margin:64px auto 96px}
+
+/* Document components (pp-*) */
+.pp-doc{color:var(--anatomy-text)}
+.pp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.pp-kicker{font:500 11px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin:0 0 12px}
+.pp-doc h1{color:var(--anatomy-strong);font-size:22px;line-height:1.25;letter-spacing:-.01em;margin:0 0 10px;font-weight:600}
+.pp-doc h2{color:var(--anatomy-strong);font-size:15px;margin:34px 0 8px;font-weight:600}
+.pp-doc h2 .pp-n{font:500 11px/1 var(--anatomy-mono);color:var(--anatomy-muted);margin-right:8px;letter-spacing:.06em}
+.pp-doc h3{color:var(--anatomy-strong);font-size:13.5px;margin:20px 0 6px;font-weight:600}
+.pp-lede{font-size:15px;margin:0 0 6px}
+.pp-meta{font:500 11.5px/1.5 var(--anatomy-mono);color:var(--anatomy-muted)}
+.pp-doc ol,.pp-doc ul{padding-left:20px;margin:8px 0}
+.pp-doc li{margin:6px 0}
+.pp-doc b,.pp-doc strong{color:var(--anatomy-strong);font-weight:600}
+.pp-doc a{color:var(--anatomy-strong);text-underline-offset:3px}
+.pp-doc code{font:12.5px/1.5 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-faint);padding:1px 4px}
+.pp-doc pre{font:12.5px/1.55 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px;overflow-x:auto}
+.pp-doc pre code{background:none;box-shadow:none;padding:0}
+.pp-doc table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;display:block;overflow-x:auto}
+.pp-doc th{font:500 10.5px/1.2 var(--anatomy-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--anatomy-muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--anatomy-mid)}
+.pp-doc td{padding:8px 10px;border-bottom:1px solid var(--anatomy-faint);vertical-align:top}
+.pp-doc td.num,.pp-doc th.num{text-align:right;font-variant-numeric:tabular-nums}
+/* A card: same frame as the figure plate, with corner labels */
+.pp-card{position:relative;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:16px 18px;margin:14px 0}
+.pp-card>.pp-label{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin-bottom:10px}
+.pp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.pp-grid .pp-card{margin:0}
+/* Verdict: the one-line answer up top */
+.pp-verdict{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong);padding:16px 18px;margin:18px 0}
+.pp-verdict p{margin:6px 0 0;color:var(--anatomy-strong);font-size:15px}
+/* Chips and buttons */
+.pp-chip{display:inline-block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.05em;text-transform:uppercase;padding:4px 6px;box-shadow:0 0 0 1px var(--anatomy-mid);color:var(--anatomy-text);white-space:nowrap}
+.pp-chip[data-tone="strong"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:none}
+.pp-chip[data-tone="good"]{box-shadow:0 0 0 1px var(--anatomy-green);color:var(--anatomy-green)}
+.pp-chip[data-tone="bad"]{box-shadow:0 0 0 1px var(--anatomy-red);color:var(--anatomy-red)}
+.pp-button,.pp-seg button{font:500 12px/1 var(--anatomy-mono);letter-spacing:.02em;color:var(--anatomy-text);background:var(--anatomy-card);border:0;box-shadow:0 0 0 1px var(--anatomy-mid);padding:8px 11px;border-radius:0;cursor:pointer}
+.pp-button:hover,.pp-seg button:hover{color:var(--anatomy-strong)}
+.pp-button:focus-visible,.pp-seg button:focus-visible{outline:1px solid var(--anatomy-muted);outline-offset:3px}
+.pp-seg{display:inline-flex}
+.pp-seg button+button{margin-left:1px}
+.pp-seg button[aria-pressed="true"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Callouts */
+.pp-callout{padding:12px 14px;margin:14px 0;box-shadow:inset 2px 0 0 var(--anatomy-strong),0 0 0 1px var(--anatomy-faint);background:var(--anatomy-card)}
+.pp-callout[data-tone="good"]{box-shadow:inset 2px 0 0 var(--anatomy-green),0 0 0 1px var(--anatomy-faint)}
+.pp-callout[data-tone="bad"]{box-shadow:inset 2px 0 0 var(--anatomy-red),0 0 0 1px var(--anatomy-faint)}
+.pp-callout>:first-child{margin-top:0}.pp-callout>:last-child{margin-bottom:0}
+/* Numbered steps; mark the current one with data-now */
+.pp-steps{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px}
+.pp-doc .pp-steps{padding:0}
+.pp-doc .pp-steps li{margin:0}
+.pp-steps li{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:10px;padding:7px 10px;box-shadow:0 0 0 1px var(--anatomy-faint);color:var(--anatomy-text)}
+.pp-steps .pp-sn{font:11px/1 var(--anatomy-mono);text-align:center;color:var(--anatomy-muted)}
+.pp-steps .pp-st{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline}
+.pp-doc .pp-steps b{color:inherit}
+.pp-steps small{font-size:12px;color:var(--anatomy-muted)}
+.pp-steps li[data-now]{background:var(--anatomy-page);color:var(--anatomy-strong);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Metrics and bars */
+.pp-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
+.pp-metric{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px}
+.pp-metric span{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--anatomy-muted)}
+.pp-metric b{display:block;margin-top:8px;font:600 22px/1.1 ui-sans-serif,system-ui,sans-serif;color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-metric small{color:var(--anatomy-muted);font-size:12px}
+.pp-bar{display:grid;grid-template-columns:minmax(80px,30%) 1fr auto;align-items:center;gap:10px;font-size:12.5px;margin:6px 0}
+.pp-bar i{display:block;height:10px;box-shadow:0 0 0 1px var(--anatomy-mid)}
+.pp-bar i>span{display:block;height:100%;background:var(--anatomy-strong)}
+.pp-bar output{font:12px/1 var(--anatomy-mono);color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--anatomy-faint);font:500 11px/1.6 var(--anatomy-mono);color:var(--anatomy-muted)}
+@media (max-width:560px){.pp-seg{width:100%}.pp-seg button{flex:1;padding:8px 6px;font-size:11px}}
+
+/* gallery cards */
+.mk-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:14px 0}
+.mk-grid .pp-card.mk{margin:0;display:grid;gap:6px;align-content:start;text-decoration:none;color:var(--anatomy-text);transition:box-shadow .2s var(--anatomy-ease)}
+.mk-grid .pp-card.mk:hover{box-shadow:0 0 0 1px var(--anatomy-strong)}
+.mk-grid img{width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;box-shadow:0 0 0 1px var(--anatomy-mid);margin-bottom:8px}
+.mk-grid b{color:var(--anatomy-strong)}
+.mk-grid p{margin:0;font-size:14px;color:var(--anatomy-muted)}
+
+</style>
+</head>
+<body class="iso" data-theme="light">
+<!-- Theme: opens in the system theme. Classic inline script; no browser storage (postplan's sandbox blocks it). -->
+<script>document.body.setAttribute("data-theme",matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");</script>
+<main class="iso-page">
+<article class="pp-doc">
+
+  <div class="pp-top">
+    <div>
+      <p class="pp-kicker">Mnema · web mockups</p>
+      <h1>Five ways to bring the site onto the app's new design</h1>
+    </div>
+    <button type="button" class="pp-button" data-theme-toggle aria-label="Switch light or dark theme">Dark</button>
+  </div>
+  <p class="pp-lede">The app was redesigned, the website wasn't. These five landing pages are built from the app's own design kit and use real screenshots of the app, so the site and the app finally look like one product.</p>
+  <p class="pp-meta">2026-10-31 · docs/mockups/web · builds on docs/mockups/redesign/kit.css</p>
+
+  <div class="pp-verdict">
+    <span class="pp-chip" data-tone="strong">Pick</span>
+    <p>Start from <b>03 Recall anything</b> for the hero (you try the product in the first screen) and <b>01 Window</b> for everything below it. <b>02</b>'s pinned status bar is a good extra if you want one memorable touch.</p>
+  </div>
+
+  <h2><span class="pp-n">01</span>The five directions</h2>
+  <p>Every page has the same story as today's site (record, recall, ask, insights, privacy, price) and the same jargon-free copy. They differ in how they show the app. Each one opens in light or dark from your system, with a button to switch.</p>
+
+  <div class="mk-grid">
+    <a class="pp-card mk" href="01-window.html"><img src="shots/thumb-01-window.webp" alt="" loading="lazy"><span class="pp-label">01 · Window</span><b>The app is the hero</b><p>A left-aligned headline over the app's dot-grid, the real Timeline window under it. Each feature is one window with short spec rows beside it. Closest to the app, lowest risk.</p></a>
+    <a class="pp-card mk" href="02-day.html"><img src="shots/thumb-02-day.webp" alt="" loading="lazy"><span class="pp-label">02 · A day on the record</span><b>The page is a recorded day</b><p>The app's status bar is pinned to the bottom. Scrolling runs its clock from 09:00 to 18:00 and switches its screen, mic and system lanes per section. It ends “paused, you stepped away.”</p></a>
+    <a class="pp-card mk" href="03-recall.html"><img src="shots/thumb-03-recall.webp" alt="" loading="lazy"><span class="pp-label">03 · Recall anything</span><b>Search is the hero</b><p>The hero is the app's command field, scaled up. Click an example and the panel answers with result rows and highlighted matches. Switch to Ask for an answer with numbered sources.</p></a>
+    <a class="pp-card mk" href="04-anatomy.html"><img src="shots/thumb-04-anatomy.webp" alt="" loading="lazy"><span class="pp-label">04 · Anatomy</span><b>An editorial spec sheet</b><p>A visible column grid and a spec-table hero. The Timeline and Ask windows are taken apart with numbered callouts, ←/→ controls, a status line and a legend. Privacy is a table.</p></a>
+    <a class="pp-card mk" href="05-tour.html"><img src="shots/thumb-05-tour.webp" alt="" loading="lazy"><span class="pp-label">05 · Tour</span><b>One window, four surfaces</b><p>The app's choice list switches between Timeline, Quick Recall, Ask and Insights. Arrow keys work too. Pricing and the FAQ sit on the same page.</p></a>
+    <a class="pp-card mk" href="06-combined.html"><img src="shots/thumb-03-recall.webp" alt="" loading="lazy"><span class="pp-label">06 · Recall + Window</span><b>03 on top, 01 below</b><p>The picked direction: the search-field hero from 03, then 01's full window, three pillars, feature rows and privacy rows.</p></a>
+  </div>
+
+  <h2><span class="pp-n">01b</span>The rest of the site, in 06's style</h2>
+  <p>Every other page on today's site, restyled with its real copy kept. The four comparison pages share one layout, so one mockup stands for all four. 06's menu and footer link to these.</p>
+  <div class="mk-grid">
+    <a class="pp-card mk" href="pages/pricing.html"><img src="shots/thumb-p-pricing.webp" alt="" loading="lazy"><span class="pp-label">Pricing</span><b>One card, one price</b><p>$69 once with the five "included" rows, the optional $29/yr renewal, and the four FAQ answers.</p></a>
+    <a class="pp-card mk" href="pages/agents.html"><img src="shots/thumb-p-agents.webp" alt="" loading="lazy"><span class="pp-label">Agents</span><b>The technical page</b><p>The CLI broker docs: a four-step request flow, the six guarantees as spec rows, setup and usage in mono code panels, MCP config.</p></a>
+    <a class="pp-card mk" href="pages/alternatives.html"><img src="shots/thumb-p-alternatives.webp" alt="" loading="lazy"><span class="pp-label">Comparisons</span><b>The hub</b><p>The four comparison pages as numbered rows with a link each.</p></a>
+    <a class="pp-card mk" href="pages/alternatives-rewind-ai.html"><img src="shots/thumb-p-alternatives-rewind-ai.webp" alt="" loading="lazy"><span class="pp-label">Rewind AI alternative</span><b>Template for all four comparisons</b><p>Dated history rows, the four things to look for, the comparison table (Mnema column highlighted; stacks on phones), FAQ, download panel. Limitless, Recall for Mac and Screenpipe use the same layout.</p></a>
+    <a class="pp-card mk" href="pages/privacy.html"><img src="shots/thumb-p-privacy.webp" alt="" loading="lazy"><span class="pp-label">Privacy</span><b>A calm reading page</b><p>Every word of the policy kept. A contents list that follows you, the never-sent list, the four services as spec rows.</p></a>
+    <a class="pp-card mk" href="pages/support.html"><img src="shots/thumb-p-support.webp" alt="" loading="lazy"><span class="pp-label">Support</span><b>Email first</b><p>The support address in the hero, then GitHub issues and device limits as settings-style rows.</p></a>
+    <a class="pp-card mk" href="pages/license-open.html"><img src="shots/thumb-p-license-open.webp" alt="" loading="lazy"><span class="pp-label">License · open</span><b>Where checkout lands</b><p>A small dialog-style card with a state switcher: claim, renewal, and no checkout id. No site menu, same as today.</p></a>
+    <a class="pp-card mk" href="pages/license-devices.html"><img src="shots/thumb-p-license-devices.webp" alt="" loading="lazy"><span class="pp-label">License · devices</span><b>Move to a new Mac</b><p>The three steps to free up devices and the once-every-30-days rule, as one static card.</p></a>
+  </div>
+
+  <h2><span class="pp-n">02</span>What changes from today's site</h2>
+  <p>All five pages link the app's kit directly (<code>../redesign/kit.css</code>, the same tokens and fonts the app ships), plus a thin web layer in <code>site.css</code> for the nav, page-sized type, screenshot frames and footer.</p>
+  <table>
+    <thead><tr><th>Part</th><th>Today's site</th><th>Mockups (the app's rules)</th></tr></thead>
+    <tbody>
+      <tr><td>Green</td><td>Glowing CTA and ambient glow</td><td>Flat green, only for the one main button, focus and matches</td></tr>
+      <tr><td>Recording</td><td>A green pulsing dot</td><td>Red, a steady dot with a ring, like the app's status bar</td></tr>
+      <tr><td>Motion</td><td>Blinking carets, looping mocks</td><td>One entrance on load. Nothing loops; things move when you scroll or click</td></tr>
+      <tr><td>Buttons</td><td>Mono labels</td><td>The app's buttons: sans labels, one primary per view</td></tr>
+      <tr><td>Depth</td><td>Shadows and glows</td><td>Surface lightness plus a 1px hairline; dot-grid as the only texture</td></tr>
+      <tr><td>Sources</td><td>All green</td><td>The app's own colours for screen, mic and system audio</td></tr>
+      <tr><td>Product shots</td><td>Old UI, hand-built fake mocks</td><td>The real redesigned app, in both themes</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="pp-n">03</span>How the screenshots were made</h2>
+  <p>The running app hides its own window from screen capture, so the shots don't come from your real app or your data. Instead the app's real interface ran in a browser with every backend call answered by invented data: a made-up working week, made-up projects, and first names only.</p>
+  <div class="pp-grid">
+    <div class="pp-card"><span class="pp-label">Frames</span><p>No real screen recordings. Every “captured screen” is a drawn placeholder: grey code lines, wireframe cards, a fake notes page.</p></div>
+    <div class="pp-card"><span class="pp-label">App icons</span><p>Letter tiles, not real brand logos.</p></div>
+    <div class="pp-card"><span class="pp-label">Surfaces</span><p>Timeline, Quick Recall (search and ask), Ask chat, Insights overview, journal and a subject. Light and dark each.</p></div>
+  </div>
+  <div class="pp-callout"><p><b>One visible model name.</b> The Ask shots show “Claude Sonnet 4.5” in the composer because a provider has to be set up. Swap it if you'd rather show a local model.</p></div>
+
+  <h2><span class="pp-n">04</span>Open questions</h2>
+  <ol class="pp-steps">
+    <li><span class="pp-sn">1</span><span class="pp-st"><b>Which hero?</b><small>Search (03), window (01), the day (02), the spec sheet (04) or the tour (05). They can mix.</small></span><span class="pp-chip" data-tone="strong">needs you</span></li>
+    <li><span class="pp-sn">2</span><span class="pp-st"><b>Light or dark by default?</b><small>Today's site is dark first. The mockups follow the system setting.</small></span><span class="pp-chip">needs you</span></li>
+    <li><span class="pp-sn">3</span><span class="pp-st"><b>An audio shot</b><small>The transcript drawer with speakers wasn't shot yet; 02 draws a transcript in HTML instead.</small></span><span class="pp-chip">can add</span></li>
+  </ol>
+
+  <footer class="pp-footer">Generated with Claude Code</footer>
+</article>
+</main>
+<script>
+(function () {
+  var toggle = document.querySelector("[data-theme-toggle]");
+  if (!toggle) return;
+  var label = function () { toggle.textContent = document.body.getAttribute("data-theme") === "dark" ? "Light" : "Dark"; };
+  label();
+  toggle.addEventListener("click", function () {
+    document.body.setAttribute("data-theme", document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+    label();
+  });
+})();
+</script>
+</body>
+</html>

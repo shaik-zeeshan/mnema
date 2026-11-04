@@ -1,16 +1,13 @@
 ---
 import Base from "../layouts/Base.astro";
 import TopBar from "../components/TopBar.astro";
-import Hero from "../components/Hero.astro";
-import HowItWorks from "../components/HowItWorks.astro";
-import TimelineRewind from "../components/TimelineRewind.astro";
-import WhatItRemembers from "../components/WhatItRemembers.astro";
-import AskAi from "../components/AskAi.astro";
-import Insights from "../components/Insights.astro";
-import Privacy from "../components/Privacy.astro";
-import MoreFeatures from "../components/MoreFeatures.astro";
-import AgentsPointer from "../components/AgentsPointer.astro";
-import FinalCta from "../components/FinalCta.astro";
+import Hero from "../components/home/Hero.astro";
+import Timeline from "../components/home/Timeline.astro";
+import Features from "../components/home/Features.astro";
+import Extras from "../components/home/Extras.astro";
+import Privacy from "../components/home/Privacy.astro";
+import AgentsPointer from "../components/home/AgentsPointer.astro";
+import Cta from "../components/home/Cta.astro";
 import Footer from "../components/Footer.astro";
 import { DOWNLOAD_URL, GITHUB_URL } from "../config";
 
@@ -48,15 +45,12 @@ const appJsonLd = JSON.stringify({
   <TopBar />
   <main>
     <Hero />
-    <HowItWorks />
-    <TimelineRewind />
-    <WhatItRemembers />
-    <AskAi />
-    <Insights />
+    <Timeline />
+    <Features />
+    <Extras />
     <Privacy />
-    <MoreFeatures />
     <AgentsPointer />
-    <FinalCta />
+    <Cta />
   </main>
   <Footer />
 </Base>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema web · Support</title>
+<meta name="description" content="Get help with Mnema. Email support@mnema.day, report bugs on GitHub, or manage your license and devices yourself.">
+<link rel="stylesheet" href="../site.css">
+<script>(function(){var r=document.documentElement;r.dataset.theme=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";})();</script>
+<style>
+  /* Support — hero with the email card beside it, then the faster channels as
+     app Settings rows (Obsidian-style: copy left, action right, hairline between). */
+  .col { max-width: 760px; }
+  .hero { padding-top: clamp(56px, 9vw, 112px); padding-bottom: clamp(40px, 6vw, 72px); }
+  .hero__grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--s-7); align-items: end; }
+  @media (max-width: 900px) { .hero__grid { grid-template-columns: 1fr; gap: var(--s-6); } }
+  .hero .w-display { margin-top: var(--s-4); max-width: 14ch; }
+  .hero .w-lede { margin-top: var(--s-4); }
+  .hero .w-meta { margin-top: var(--s-5); display: inline-flex; align-items: center; gap: 8px; }
+  .hero .w-meta::before { content: ""; width: 4px; height: 4px; border-radius: 1px; background: var(--app-text-faint); }
+
+  .mail { padding: clamp(20px, 3vw, 28px); display: grid; gap: var(--s-3); }
+  .mail__addr {
+    justify-self: start; max-width: 100%; overflow-wrap: anywhere;
+    font: 400 clamp(20px, 2.4vw, 26px)/1.25 var(--font-mono); letter-spacing: -0.02em;
+    color: var(--app-text-strong); text-decoration: none;
+    border-bottom: 1px solid var(--app-accent-border);
+    transition: color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart);
+  }
+  .mail__addr:hover { color: var(--app-accent); border-color: var(--app-accent); }
+  .mail .w-prose { font-size: 14px; max-width: 54ch; }
+  .path { font: 450 0.86em/1 var(--font-mono); color: var(--app-text-strong); white-space: nowrap;
+    padding: 2px 6px; border-radius: var(--r-sm); background: var(--app-surface-subtle); box-shadow: inset 0 0 0 1px var(--app-border); }
+
+  .head { display: grid; gap: var(--s-3); margin-bottom: var(--s-5); }
+  .rows { border-top: 1px solid var(--app-border); }
+  .srow {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-6);
+    padding: 18px 0; border-bottom: 1px solid var(--mx-hairline);
+  }
+  .srow__label { font: 600 15px/1.35 var(--font-sans); color: var(--app-text-strong); }
+  .srow__desc { margin: 4px 0 0; font-size: 14px; line-height: 1.55; color: var(--app-text-muted); max-width: 58ch; }
+  .srow .mx-btn { white-space: nowrap; }
+  @media (max-width: 600px) { .srow { grid-template-columns: 1fr; gap: var(--s-3); } .srow .mx-btn { justify-self: start; } }
+</style>
+</head>
+<body>
+<div class="w-mockbar"><b>Web mockup · Support</b><span>The support page as an app Settings page: email card, then settings rows for the faster channels.</span><span class="mx-spacer"></span><a href="../index.html">all mockups</a></div>
+
+<header class="w-nav">
+  <div class="w-wrap w-nav__in">
+    <a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a>
+    <nav class="w-nav__links" aria-label="Main">
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#recall">Recall</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#ask">Ask</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#insights">Insights</a>
+      <a class="mx-btn mx-btn--ghost" href="../06-combined.html#privacy">Privacy</a>
+      <a class="mx-btn mx-btn--ghost" href="agents.html">Agents</a>
+      <a class="mx-btn mx-btn--ghost" href="pricing.html">Pricing</a>
+    </nav>
+    <span class="mx-spacer"></span>
+    <button class="mx-btn mx-btn--ghost mx-btn--sm" type="button" data-theme-toggle aria-label="Switch light or dark theme">Light</button>
+    <a class="mx-btn mx-btn--primary" href="#">Download</a>
+  </div>
+</header>
+
+<main>
+  <section class="hero w-texture">
+    <div class="w-wrap hero__grid">
+      <div>
+        <span class="mx-kicker w-in">Support</span>
+        <h1 class="w-display w-in" style="--d:60ms">Need a hand?</h1>
+        <p class="w-lede w-in" style="--d:120ms">A real person reads every email. Purchases, refunds, licenses, or anything you can't figure out — write to us and we'll sort it out.</p>
+        <p class="w-meta w-in" style="--d:150ms">replies from a human, usually within a day</p>
+      </div>
+      <div class="mx-panel mail w-in" style="--d:180ms" aria-labelledby="email">
+        <span class="mx-kicker" id="email">Email us</span>
+        <a class="mail__addr" href="mailto:support@mnema.day">support@mnema.day</a>
+        <p class="w-prose">Include your macOS version and the Mnema version (shown in <span class="path">Settings → About</span>) — it saves a round trip.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="w-sec w-sec--rule" aria-labelledby="other-channels">
+    <div class="w-wrap">
+      <div class="col">
+        <div class="head">
+          <span class="mx-kicker">Or go direct</span>
+          <h2 class="w-title" id="other-channels">Some things are faster elsewhere</h2>
+        </div>
+        <div class="rows">
+          <div class="srow">
+            <div>
+              <div class="srow__label">Bug or crash?</div>
+              <p class="srow__desc">Open an issue on GitHub — it's the fastest way to get a fix into a release, and other users can find it too.</p>
+            </div>
+            <a class="mx-btn" href="#" target="_blank" rel="noopener noreferrer">Open a GitHub issue →</a>
+          </div>
+          <div class="srow">
+            <div>
+              <div class="srow__label">New Mac refused — device limit reached?</div>
+              <p class="srow__desc">Your license works on up to 3 Macs at a time. If a new one was refused because all 3 are used, you can free them up yourself from inside the app.</p>
+            </div>
+            <a class="mx-btn" href="license-devices.html">Free up your devices →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="w-foot">
+  <div class="w-wrap">
+    <div class="w-foot__in">
+      <div class="w-stack"><a class="w-brand" href="../06-combined.html"><img src="../icon.png" alt="" width="22" height="22">mnema</a><p class="w-prose" style="font-size:14px">A private, searchable memory of your Mac.</p></div>
+      <div><h4>Product</h4><ul><li><a href="#">Download</a></li><li><a href="pricing.html">Pricing</a></li><li><a href="agents.html">Agents</a></li></ul></div>
+      <div><h4>Compare</h4><ul><li><a href="alternatives-rewind-ai.html">Rewind alternative</a></li><li><a href="alternatives.html">Recall for Mac</a></li><li><a href="alternatives.html">Screenpipe alternative</a></li></ul></div>
+      <div><h4>Help</h4><ul><li><a href="support.html" aria-current="page">Support</a></li><li><a href="privacy.html">Privacy</a></li><li><a href="#">GitHub</a></li></ul></div>
+    </div>
+    <div class="w-foot__base w-meta"><span>AGPL-3.0</span><span>no cookies · anonymous analytics</span></div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var r = document.documentElement;
+  function label() { document.querySelectorAll("[data-theme-toggle]").forEach(function (b) { b.textContent = r.dataset.theme === "dark" ? "Light" : "Dark"; }); }
+  label();
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-theme-toggle]")) return;
+    r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+    label();
+  });
+})();
+</script>
+</body>
+</html>

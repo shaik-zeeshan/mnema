@@ -2,6 +2,7 @@
 import Base from "../layouts/Base.astro";
 import TopBar from "../components/TopBar.astro";
 import Footer from "../components/Footer.astro";
+import OnThisPage from "../components/OnThisPage.astro";
 
 const pageTitle = "mnema — privacy";
 const pageDescription =
@@ -21,10 +22,18 @@ const processors = [
     note: "We never see or store your card details.",
   },
   {
-    name: "License server (mnema.day)",
-    what: "A one-way hash of your Mac's hardware id, plus your license key, when the app activates.",
-    why: "So a license runs on up to 3 Macs and can't be shared endlessly. After activation the app verifies offline.",
-    note: "The hash can't be reversed into anything about you or your machine.",
+    name: "License server",
+    host: "license.mnema.day",
+    what: "When you first record (to start the trial) and when you activate a license: the license id, a salted one-way hash of your Mac's hardware id, and its model label, like “Mac15,7”. The app also downloads the public revocation list, which sends no id at all.",
+    why: "So a trial runs once per Mac and a license on up to 3 Macs. After activation the app checks your license offline.",
+    note: "No name, email or computer name. The hash can't be reversed into anything about you or your machine.",
+  },
+  {
+    name: "Update check",
+    host: "release.mnema.day",
+    what: "Every couple of hours the app downloads a small public file that lists the newest version.",
+    why: "So it can tell you when an update is ready. Installing takes one click, and only when you choose.",
+    note: "A plain request for a public file: no license, no device id, nothing you recorded.",
   },
   {
     name: "Email (support)",
@@ -34,186 +43,182 @@ const processors = [
 ];
 
 const never = [
-  "Your screen recordings, screenshots, audio, or transcripts — these are written to an encrypted database on your Mac and are never uploaded anywhere.",
+  "Your screen recordings, screenshots, audio, or transcripts. They are never uploaded anywhere.",
   "Anything about which apps you use, what you type, or what you search for inside Mnema.",
   "Usage analytics, telemetry, or crash reports from inside the app.",
+];
+const toc: [string, string][] = [
+  ["never", "What Mnema never sends anywhere"],
+  ["stored", "How it's stored on your Mac"],
+  ["network", "When the app goes online"],
+  ["processors", "The services involved"],
+  ["rights", "Removing your data"],
 ];
 ---
 
 <Base title={pageTitle} description={pageDescription}>
   <TopBar />
-  <main class="docs">
-    <article class="docs-col">
-      <header class="docs-hero">
-        <p class="kicker">// privacy</p>
-        <h1 class="docs-title">What we collect, and what we never touch</h1>
-        <p class="docs-sub">
-          Mnema records your screen and audio, so the honest answer matters more
-          here than a page of legal boilerplate. Everything Mnema captures stays
-          on your Mac. The only data that reaches us comes from this website,
-          buying a license, and emailing support.
-        </p>
-        <p class="docs-meta">// last updated 2026-07-25</p>
-      </header>
-
-      <section class="docs-section" aria-labelledby="never">
-        <p class="kicker">// never leaves your Mac</p>
-        <h2 class="section-heading" id="never">
-          What Mnema never sends anywhere
-        </h2>
-        <ul class="plain-list">
-          {never.map((n) => <li>{n}</li>)}
-        </ul>
-        <p class="docs-sub">
-          If you turn on a cloud AI provider or cloud transcription in Settings,
-          the app sends data to <em>your own</em> account with that provider,
-          using your own API key or subscription sign-in. That is your
-          arrangement with them — it never passes through us.
-        </p>
-      </section>
-
-      <section class="docs-section" aria-labelledby="processors">
-        <p class="kicker">// who touches what</p>
-        <h2 class="section-heading" id="processors">
-          The four services involved
-        </h2>
-        <div class="channel-list">
-          {
-            processors.map((p) => (
-              <div class="channel-item">
-                <span class="channel-label">{p.name}</span>
-                <span class="channel-detail">{p.what}</span>
-                <span class="channel-detail">{p.why}</span>
-                {p.note && <span class="channel-note">{p.note}</span>}
-              </div>
-            ))
-          }
+  <main>
+    <section class="hero w-texture">
+      <div class="doc">
+        <span aria-hidden="true"></span>
+        <div class="w-stack">
+          <span class="mx-kicker w-in">privacy</span>
+          <h1 class="w-title w-in" style="--d:60ms">What we collect, and what we never touch</h1>
+          <p class="w-lede w-in" style="--d:120ms">
+            Mnema records your screen and audio, so the honest answer matters more here than a page of legal
+            boilerplate. Everything Mnema captures stays on your Mac. The only data that reaches us comes from this
+            website, buying and activating a license, the app's update check, and emailing support.
+          </p>
+          <div class="hero__meta w-in" style="--d:150ms">
+            <span class="mx-chip mx-chip--accent">local only</span>
+            <span class="w-meta">last updated 2026-11-02</span>
+          </div>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <section class="docs-section" aria-labelledby="rights">
-        <p class="kicker">// your call</p>
-        <h2 class="section-heading" id="rights">Removing your data</h2>
-        <p class="docs-sub">
-          Recordings are yours to delete from inside the app at any time — we
-          can't delete them for you, because we never had them. For anything we
-          do hold (your purchase record, your support emails, your license
-          activations), write to <a href="mailto:support@mnema.day"
-            >support@mnema.day</a
-          > and we'll remove it.
-        </p>
-        <p class="docs-sub">
-          Questions about any of this go to the same address. If this page ever
-          disagrees with what the app actually does, treat it as a bug and tell
-          us.
-        </p>
-      </section>
-    </article>
+    <div class="doc body w-sec--rule">
+      <OnThisPage items={toc} spy />
+
+      <article class="art">
+        <section id="never" aria-labelledby="never-h">
+          <span class="mx-kicker">never leaves your Mac</span>
+          <h2 id="never-h">What Mnema never sends anywhere</h2>
+          <ul class="never">
+            {never.map((n) => <li>{n}</li>)}
+          </ul>
+          <div class="aside">
+            <p>
+              If you turn on a cloud AI provider or cloud transcription in Settings, the app sends data to <em
+                >your own</em
+              > account with that provider, using your own API key or subscription sign-in. That is your arrangement
+              with them — it never passes through us.
+            </p>
+          </div>
+        </section>
+
+        <section id="stored" aria-labelledby="stored-h">
+          <span class="mx-kicker">on your Mac</span>
+          <h2 id="stored-h">How it's stored on your Mac</h2>
+          <p>
+            Your searchable history (every word read from the screen, every transcript, every app and page name) lives
+            in a database that is encrypted on disk, with its key in your Mac's Keychain. Video, audio and frame images
+            are saved as ordinary files in the folder you choose; turn on FileVault to encrypt those too.
+          </p>
+          <p>
+            Browsers are recorded like any other app, <em>including private windows</em>, unless you exclude the browser
+            itself. Mnema doesn't detect password pages or password fields. It strips passwords, API keys, tokens and card
+            numbers it recognises in captured text before search, AI or connected tools see it.
+          </p>
+          <p>
+            Mnema records your Mac, not a meeting bot. If you record calls, telling the people on them is on you, and the
+            law in some places requires it. You can exclude any app, pause with ⌘⌥P, or delete the last 1, 5 or 15
+            minutes from the menu bar.
+          </p>
+        </section>
+
+        <section id="network" aria-labelledby="network-h">
+          <span class="mx-kicker">what leaves your Mac</span>
+          <h2 id="network-h">When the app goes online</h2>
+          <p>
+            Nothing you record ever leaves your Mac. The app makes two kinds of network calls on its own, a license check
+            and an update check, and neither carries anything you recorded. Both are listed below with their real
+            addresses. Cloud AI and cloud transcription stay off until you add your own key or sign in.
+          </p>
+        </section>
+
+        <section id="processors" aria-labelledby="processors-h">
+          <span class="mx-kicker">who touches what</span>
+          <h2 id="processors-h">The services involved</h2>
+          <dl class="mx-spec proc">
+            {
+              processors.map((p) => (
+                <div>
+                  <dt>
+                    {p.name}
+                    {p.host && <small>{p.host}</small>}
+                  </dt>
+                  <dd>
+                    <span>{p.what}</span>
+                    <span>{p.why}</span>
+                    {p.note && <span class="note">{p.note}</span>}
+                  </dd>
+                </div>
+              ))
+            }
+          </dl>
+        </section>
+
+        <section id="rights" aria-labelledby="rights-h">
+          <span class="mx-kicker">your call</span>
+          <h2 id="rights-h">Removing your data</h2>
+          <p>
+            Recordings are yours to delete from inside the app at any time — we can't delete them for you, because we
+            never had them. For anything we do hold (your purchase record, your support emails, your license
+            activations), write to <a href="mailto:support@mnema.day">support@mnema.day</a> and we'll remove it.
+          </p>
+          <p>
+            Questions about any of this go to the same address. If this page ever disagrees with what the app actually
+            does, treat it as a bug and tell us.
+          </p>
+        </section>
+      </article>
+    </div>
   </main>
   <Footer />
 </Base>
 
 <style>
-  /* ---- Docs layout shell (lifted pattern) ---- */
-  .docs {
-    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  /* A calm reading page: an empty rail-width column keeps the hero aligned with
+     the reading column below it; the rail collapses above the column on phones. */
+  .doc {
+    width: min(var(--w-max), 100% - 2 * var(--w-gutter)); margin-inline: auto;
+    display: grid; grid-template-columns: 200px minmax(0, 44rem); gap: clamp(40px, 6vw, 88px); justify-content: center;
   }
+  .body { padding-bottom: var(--w-sec); }
 
-  .docs-col {
-    max-width: 44rem;
-    margin: 0 auto;
-    line-height: 1.7;
+  .hero { padding-block: clamp(48px, 8vw, 104px) clamp(36px, 5vw, 56px); }
+  .hero .w-title { font-size: clamp(32px, 4.4vw, 52px); max-width: 20ch; }
+  .hero .w-lede { max-width: 60ch; }
+  .hero__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4); }
+
+  .art { min-width: 0; }
+  .art section { padding-top: var(--s-7); scroll-margin-top: 72px; }
+  .art section + section { margin-top: var(--s-7); border-top: 1px solid var(--mx-hairline); }
+  .art h2 { margin: var(--s-3) 0 var(--s-5); font: 600 clamp(22px, 2.4vw, 28px)/1.2 var(--font-sans); letter-spacing: -0.024em; color: var(--app-text-strong); text-wrap: balance; }
+  .art p { margin: 0; font-size: 16px; line-height: 1.75; color: var(--app-text-muted); max-width: 64ch; text-wrap: pretty; }
+  .art p + p { margin-top: var(--s-4); }
+  .art em { color: var(--app-text-strong); }
+  .art a { color: var(--app-accent); text-decoration: underline; text-decoration-color: var(--app-accent-border); text-underline-offset: 3px; }
+  .art a:hover { text-decoration-color: currentColor; }
+
+  .never { list-style: none; margin: 0 0 var(--s-6); padding: 0; counter-reset: n; }
+  .never li {
+    counter-increment: n; display: grid; grid-template-columns: 36px 1fr; gap: var(--s-3); padding: 14px 0;
+    border-top: 1px solid var(--mx-hairline); font-size: 15.5px; line-height: 1.65; color: var(--app-text);
   }
+  .never li:last-child { border-bottom: 1px solid var(--mx-hairline); }
+  .never li::before { content: counter(n, decimal-leading-zero); font: 450 12px/2.1 var(--font-mono); color: var(--app-text-faint); }
 
-  .kicker {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--accent);
-    letter-spacing: 0.04em;
-    margin-bottom: var(--space-xs);
+  .aside { padding: var(--s-4) var(--s-5); border-left: 2px solid var(--app-accent-border); background: var(--app-surface-subtle); border-radius: 0 var(--r-md) var(--r-md) 0; }
+  .art .aside p { font-size: 15px; line-height: 1.7; }
+
+  .proc { grid-template-columns: minmax(150px, max-content) 1fr; }
+  .proc dt { color: var(--app-text-strong); font-weight: 600; font-size: 15px; padding-block: 18px; }
+  .proc dt small { display: block; margin-top: 4px; font: 450 12px/1.4 var(--font-mono); color: var(--app-text-subtle); }
+  .proc dd { display: grid; gap: 6px; padding-block: 18px; font-size: 15px; line-height: 1.6; }
+  .proc dd span { color: var(--app-text); }
+  .proc dd span + span:not(.note) { color: var(--app-text-muted); }
+  .proc dd .note { position: relative; margin-top: 2px; padding-left: 14px; font: 450 12.5px/1.6 var(--font-mono); color: var(--app-text-subtle); }
+  .proc dd .note::before { content: ""; position: absolute; left: 0; top: 0.62em; width: 5px; height: 5px; border-radius: 1px; background: var(--app-accent); }
+
+  @media (max-width: 900px) {
+    .doc { grid-template-columns: minmax(0, 1fr); gap: 0; }
   }
-
-  .docs-hero {
-    padding-bottom: var(--space-xl);
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-xl);
-  }
-
-  .docs-title {
-    font-family: var(--font-sans);
-    font-size: var(--text-3xl);
-    margin-bottom: var(--space-sm);
-    max-width: 22ch;
-  }
-
-  .docs-sub {
-    font-family: var(--font-sans);
-    color: var(--fg-muted);
-    font-size: var(--text-base);
-    line-height: 1.7;
-    max-width: 60ch;
-    margin-bottom: var(--space-md);
-  }
-
-  .docs-meta {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    letter-spacing: 0.02em;
-  }
-
-  .docs-section {
-    margin-bottom: var(--space-2xl);
-  }
-
-  .section-heading {
-    font-family: var(--font-sans);
-    font-size: var(--text-2xl);
-    margin-bottom: var(--space-sm);
-    max-width: 26ch;
-  }
-
-  .plain-list {
-    display: grid;
-    gap: var(--space-sm);
-    margin: var(--space-md) 0 var(--space-lg);
-    padding-left: 1.1rem;
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    line-height: 1.7;
-  }
-
-  /* ---- Processor list ---- */
-  .channel-list {
-    display: grid;
-    gap: var(--space-sm);
-    margin-top: var(--space-md);
-  }
-
-  .channel-item {
-    display: grid;
-    gap: 0.35rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    padding: var(--space-md) var(--space-lg);
-  }
-
-  .channel-label {
-    font-weight: 600;
-    color: var(--fg);
-  }
-
-  .channel-detail {
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    line-height: 1.6;
-  }
-
-  .channel-note {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--accent);
-    line-height: 1.6;
+  @media (max-width: 560px) {
+    .proc { grid-template-columns: 1fr; }
+    .proc dt { padding-bottom: 0; }
+    .proc dd { border-top: 0; padding-top: 8px; }
   }
 </style>

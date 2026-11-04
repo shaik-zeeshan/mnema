@@ -1,0 +1,23 @@
+---
+// Not in the approved mockup: the founder keeps a quiet landing → /agents door.
+---
+
+<section class="w-sec--rule agents">
+  <div class="w-wrap row">
+    <span class="mx-kicker">For power users</span>
+    <p class="w-prose">
+      Let your own AI agents and command-line tools search your redacted history through a brokered, read-only bridge.
+    </p>
+    <a class="mx-btn mx-btn--ghost" href="/agents/">Read the agent access docs <span aria-hidden="true">→</span></a>
+  </div>
+</section>
+
+<style>
+  .agents { padding-block: var(--s-6); }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-3) var(--s-5); }
+  .w-prose { flex: 1 1 32ch; }
+  /* Once it wraps under the text, line the label up with the text edge. */
+  @media (max-width: 760px) {
+    .mx-btn { margin-left: -12px; }
+  }
+</style>
