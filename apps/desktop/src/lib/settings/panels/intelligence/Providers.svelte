@@ -146,8 +146,6 @@
       modelPool={c.settingsModelLoader.pool}
       providers={rec.draftAiProviders}
       firstProvider={rec.draftAiDefaultModel?.provider ?? null}
-      sentinelLabel="No default model"
-      sentinelSelected={rec.draftAiDefaultModel === null}
       selectedProvider={rec.draftAiDefaultModel?.provider ?? null}
       selectedModel={rec.draftAiDefaultModel?.model ?? null}
       loading={c.settingsModelLoader.loading}
