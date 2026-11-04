@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
+  import { ModelPrefs } from "$lib/chat/modelPrefs.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
   import Choice from "$lib/components/Choice.svelte";
@@ -19,6 +20,8 @@
   import IconOff from "~icons/lucide/ban";
 
   const c = getSettingsController();
+  // Starred/recent models, shared with Chat's picker (saved straight to the AI settings).
+  const modelPrefs = new ModelPrefs(() => c.rec.recordingSettings?.aiRuntime);
   const rec = c.rec;
   const askAi = c.askAi;
 
@@ -71,6 +74,9 @@
       loading={c.settingsModelLoader.loading}
       failures={c.settingsModelFailureRows}
       onretry={() => void c.settingsModelLoader.load(c.settingsModelRetryTargets)}
+      favorites={modelPrefs.favorites}
+      recents={modelPrefs.recents}
+      onfavorite={(engine) => modelPrefs.toggleFavorite(engine)}
       bind:open={c.askAiModelOpen}
       onopen={() => void c.loadSettingsModels()}
       onselect={(engine) => { rec.draftAskAiModel = engine ? engine.model : ""; }}

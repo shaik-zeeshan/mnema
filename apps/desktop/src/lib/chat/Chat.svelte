@@ -40,6 +40,10 @@
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
   import IconPin from "~icons/lucide/pin";
   import { regeneratePlan } from "./regenerate";
+  import { ModelPrefs } from "./modelPrefs.svelte";
+  import { nextFavorite } from "./model-favorites";
+  import { setKeyboardHelpGroups } from "$lib/keyboard-help.svelte";
+  import { detectKeyboardPlatform, matchShortcut, type ShortcutDefinition } from "$lib/keyboard";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -122,8 +126,34 @@
     defaultModel = askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null);
   });
 
+  // Starred + recent models (the picker's short list) live in the AI settings.
+  const modelPrefs = new ModelPrefs(() => aiRuntime);
+  const platform = detectKeyboardPlatform();
+  const NEXT_FAVORITE: ShortcutDefinition = {
+    id: "chatNextFavoriteModel",
+    label: "Next favorite model",
+    bindings: [{ key: "M", primary: true, shift: true }],
+    kind: "command",
+    scope: "global",
+  };
+  $effect(() =>
+    modelPrefs.favorites.length > 0
+      ? setKeyboardHelpGroups("chat-model", [{ id: "chat-model", title: "Chat", rows: [NEXT_FAVORITE] }])
+      : undefined,
+  );
+  // ⌘⇧M: switch this chat to the next starred model without opening the picker.
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.repeat || !matchShortcut(event, NEXT_FAVORITE, platform)) return;
+    const current = engineProvider !== null && engineModel !== null ? { provider: engineProvider, model: engineModel } : null;
+    const next = nextFavorite(modelPrefs.favorites, current);
+    if (!next) return;
+    event.preventDefault();
+    void handleModelSelect(next);
+  }
+
   async function handleModelSelect(engine: { provider: string; model: string } | null): Promise<void> {
     const conversationId = activeConversationId;
+    if (engine) modelPrefs.pushRecent(engine);
     pinProvider = engine?.provider ?? null;
     pinModel = engine?.model ?? null;
     // No row exists before the first turn; persisting now would upsert a phantom
@@ -572,6 +602,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 {#snippet composerSlot(docked: boolean)}
   <ChatComposer
     bind:this={composer}
@@ -587,6 +619,7 @@
     {askAiModelOverride}
     {pinProvider}
     {pinModel}
+    {modelPrefs}
     onselect={(engine) => void handleModelSelect(engine)}
     onsend={() => void send()}
     onstop={() => void stopStreaming()}

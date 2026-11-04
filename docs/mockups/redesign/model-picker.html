@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model picker: favorites first</title>
+<!-- App look: real tokens + kit (fonts, popover, chips, search). The anatomy theme below wins for the page itself. -->
+<link rel="stylesheet" href="./kit.css">
+<style>
+/* Anatomy-kit theme for every HTML page and postplan draft. Light and dark in one file:
+   tokens live on .iso (dark) and .iso[data-theme="light"]; body carries both. Inline this whole file. */
+
+.iso{
+  --anatomy-page:#0b0b0b;--anatomy-card:#131313;--anatomy-text:#a3a3a3;--anatomy-strong:#e6e6e6;--anatomy-muted:#6e6e6e;
+  --anatomy-paper:#131313;--anatomy-face:#1b1b1b;--anatomy-top:#1c1c1c;
+  --anatomy-shade-0:#0f0f0f;--anatomy-shade-1:#121212;--anatomy-shade-2:#151515;--anatomy-shade-3:#181818;
+  --anatomy-lit-top:#262626;--anatomy-lit-shade:#1d1d1d;
+  --anatomy-hi:#d4d4d4;--anatomy-mid:#6a6a6a;--anatomy-lo:#3e3e3e;--anatomy-faint:#2a2a2a;--anatomy-lit:#ffffff;
+  --anatomy-halo:#050505;--anatomy-halo-opacity:.9;--anatomy-dot:#e6e6e6;
+  --anatomy-red:#ff6b6b;--anatomy-green:#6be0a0;--anatomy-blue:#6b9bff;
+  --anatomy-weight:.6px;--anatomy-ease:cubic-bezier(.32,.72,0,1);
+  --anatomy-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff0a,inset 0 0 0 1px #ffffff06,0 0 0 1px #00000026,0 1px 1px -.5px #00000014,0 3px 3px -1.5px #00000014,0 6px 6px -3px #00000014,0 12px 12px -6px #00000014;
+}
+.iso[data-theme="light"]{
+  --anatomy-page:#f2f2ef;--anatomy-card:#fbfbfa;--anatomy-text:#57575a;--anatomy-strong:#18181a;--anatomy-muted:#8c8c90;
+  --anatomy-paper:#fbfbfa;--anatomy-face:#ffffff;--anatomy-top:#ffffff;
+  --anatomy-shade-0:#dcdcd9;--anatomy-shade-1:#e5e5e2;--anatomy-shade-2:#ededea;--anatomy-shade-3:#f4f4f1;
+  --anatomy-lit-top:#ffffff;--anatomy-lit-shade:#eeeeeb;
+  --anatomy-hi:#26262a;--anatomy-mid:#8a8a8f;--anatomy-lo:#b4b4b8;--anatomy-faint:#d4d4d6;--anatomy-lit:#000000;
+  --anatomy-halo:#8a8a80;--anatomy-halo-opacity:.32;--anatomy-dot:#3a3a3e;
+  --anatomy-red:#e5484d;--anatomy-green:#30a46c;--anatomy-blue:#3e63dd;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff,0 0 0 1px #0000000f,0 1px 1px -.5px #0000000a,0 3px 3px -1.5px #0000000a,0 6px 6px -3px #0000000a,0 12px 12px -6px #0000000a;
+}
+.iso-svg{display:block;width:100%;height:auto;overflow:visible}
+.iso-svg path,.iso-svg circle{vector-effect:non-scaling-stroke}
+.iso-fill{fill:var(--anatomy-paper);stroke:none}
+.iso-solid[data-lit]>.iso-fill{fill:var(--anatomy-face)}
+.iso-shade,.iso-top{stroke:none}
+.iso-shade[data-shade="0"]{fill:var(--anatomy-shade-0)}
+.iso-shade[data-shade="1"]{fill:var(--anatomy-shade-1)}
+.iso-shade[data-shade="2"]{fill:var(--anatomy-shade-2)}
+.iso-shade[data-shade="3"]{fill:var(--anatomy-shade-3)}
+.iso-top{fill:var(--anatomy-top)}
+.iso-solid[data-lit]>.iso-top{fill:var(--anatomy-lit-top)}
+.iso-solid[data-lit]>.iso-shade{fill:var(--anatomy-lit-shade)}
+.iso-solid[data-seamless]>.iso-shade,.iso-solid[data-seamless]>.iso-top{stroke-width:.4;stroke-linejoin:round}
+.iso-solid[data-seamless]>.iso-shade[data-shade="0"]{stroke:var(--anatomy-shade-0)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="1"]{stroke:var(--anatomy-shade-1)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="2"]{stroke:var(--anatomy-shade-2)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="3"]{stroke:var(--anatomy-shade-3)}
+.iso-solid[data-seamless]>.iso-top{stroke:var(--anatomy-top)}
+.iso-solid[data-seamless][data-lit]>.iso-top{stroke:var(--anatomy-lit-top)}
+.iso-solid[data-seamless][data-lit]>.iso-shade{stroke:var(--anatomy-lit-shade)}
+.iso-solid[data-lit]>.iso-edge{stroke:var(--anatomy-lit)}
+.iso-halo{fill:var(--anatomy-halo);stroke:none;filter:blur(9px);opacity:var(--anatomy-halo-opacity);transform:translateY(3px)}
+.iso-line{fill:none;stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight);stroke-linecap:round;stroke-linejoin:round}
+.iso-line[data-tone="hi"]{stroke:var(--anatomy-hi)}
+.iso-line[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.iso-line[data-tone="lo"]{stroke:var(--anatomy-lo)}
+.iso-line[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.iso-line[data-tone="lit"]{stroke:var(--anatomy-lit)}
+.iso-line[data-tone="red"]{stroke:var(--anatomy-red)}
+.iso-line[data-tone="green"]{stroke:var(--anatomy-green)}
+.iso-line[data-tone="blue"]{stroke:var(--anatomy-blue)}
+.iso-line[data-dotted]{stroke-dasharray:.01 3.5;stroke-width:1}
+.iso-line[data-dashed]{stroke-dasharray:3 3}
+.iso-line[data-flow]{stroke-dasharray:2 6}
+.iso-wire-end{fill:var(--anatomy-paper);stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight)}
+.iso-wire[data-tone="hi"] .iso-wire-end{stroke:var(--anatomy-hi)}
+.iso-wire[data-tone="mid"] .iso-wire-end{stroke:var(--anatomy-mid)}
+.iso-wire[data-tone="faint"] .iso-wire-end{stroke:var(--anatomy-faint)}
+.iso-wire[data-tone="lit"] .iso-wire-end{stroke:var(--anatomy-lit)}
+.iso-dots circle{fill:var(--anatomy-dot);stroke:none;opacity:.32}
+.iso-dots[data-tone="hi"] circle{opacity:.85}
+.iso-dots[data-tone="mid"] circle{opacity:.45}
+.iso-dots[data-tone="lo"] circle{opacity:.22}
+.iso-dots[data-tone="faint"] circle{opacity:.12}
+.iso-face-text{fill:var(--anatomy-mid);font-family:var(--anatomy-mono);letter-spacing:.04em}
+.iso-face-text[data-tone="hi"]{fill:var(--anatomy-hi)}
+.iso-face-text[data-tone="lo"]{fill:var(--anatomy-lo)}
+.iso-face-text[data-tone="faint"]{fill:var(--anatomy-faint)}
+.tb-body{fill:var(--anatomy-shade-2);stroke:none}
+.tb-shine{fill:var(--anatomy-top);stroke:none}
+.tb-shade{fill:var(--anatomy-shade-0);stroke:none}
+.tb-ring{fill:none;stroke:var(--anatomy-lo);stroke-width:.45;stroke-linecap:butt;stroke-linejoin:round}
+.tb-ring[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.tb-ring[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.tb-ring[data-tone="hi"]{stroke:var(--anatomy-hi)}
+@keyframes iso-flow{to{stroke-dashoffset:-32}}
+@keyframes iso-pulse{0%,100%{opacity:.18}12%{opacity:1}40%{opacity:.18}}
+.iso-line[data-flow]{animation:iso-flow 1600ms linear infinite}
+.iso-dots circle[data-pulse]{animation:iso-pulse 1600ms steps(1,end) infinite;animation-delay:var(--pulse-at,0ms)}
+.iso-figure{margin:32px 0 36px}
+.iso-plate{position:relative;padding:52px 24px;border-radius:0;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);--anatomy-paper:var(--anatomy-card)}
+.iso-plate-corners{position:absolute;inset:18px 20px;pointer-events:none}
+.iso-plate-corner{position:absolute;color:var(--anatomy-muted);font-family:var(--anatomy-mono);font-size:10.5px;line-height:1;letter-spacing:.04em;white-space:nowrap}
+.iso-plate-corner[data-corner="fig"]{top:0;left:0;color:var(--anatomy-text)}
+.iso-plate-corner[data-corner="title"]{top:0;right:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="hint"]{bottom:0;left:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="readout"]{right:0;bottom:0;color:var(--anatomy-text);font-variant-numeric:tabular-nums}
+.iso-plate .iso-svg{margin:0 auto}
+.iso-legend{display:grid;gap:8px;margin-top:12px;color:var(--anatomy-muted);font-size:13px;line-height:1.55}
+.iso-keys{display:flex;flex-wrap:wrap;gap:6px 18px}
+.iso-key{display:inline-flex;align-items:center;gap:7px}
+.iso-swatch{width:16px;height:10px;flex:none;overflow:visible}
+.iso-swatch path{fill:none;stroke:var(--anatomy-hi);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.iso-swatch[data-mark="raised"] path,.iso-swatch[data-mark="flat"] path{stroke:var(--anatomy-mid)}
+.iso-swatch[data-mark="lit"] path{stroke:var(--anatomy-lit)}
+.iso-swatch[data-mark="dim"] path{stroke:var(--anatomy-lo)}
+.iso-swatch[data-mark="dotted"] path{stroke-dasharray:.01 3;stroke-width:1.4}
+.iso-swatch[data-mark="dashed"] path{stroke-dasharray:3 2.5}
+.iso-swatch[data-mark="red"] path{stroke:var(--anatomy-red)}
+.iso-swatch[data-mark="green"] path{stroke:var(--anatomy-green)}
+.iso-swatch[data-mark="blue"] path{stroke:var(--anatomy-blue)}
+.iso-swatch-crease{stroke:var(--anatomy-lo)!important}
+@media (max-width:560px){.iso-plate{padding:48px 12px 70px}.iso-plate-corner[data-corner="hint"]{bottom:18px}}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.iso-dots circle[data-pulse]{animation:none}}
+
+/* Page shell */
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body[data-theme="light"]{color-scheme:light}
+body{margin:0;background:var(--anatomy-page);color:var(--anatomy-text);font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.iso-page{width:min(720px,100% - 32px);margin:64px auto 96px}
+
+/* Document components (pp-*) */
+.pp-doc{color:var(--anatomy-text)}
+.pp-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.pp-kicker{font:500 11px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin:0 0 12px}
+.pp-doc h1{color:var(--anatomy-strong);font-size:22px;line-height:1.25;letter-spacing:-.01em;margin:0 0 10px;font-weight:600}
+.pp-doc h2{color:var(--anatomy-strong);font-size:15px;margin:34px 0 8px;font-weight:600}
+.pp-doc h2 .pp-n{font:500 11px/1 var(--anatomy-mono);color:var(--anatomy-muted);margin-right:8px;letter-spacing:.06em}
+.pp-doc h3{color:var(--anatomy-strong);font-size:13.5px;margin:20px 0 6px;font-weight:600}
+.pp-lede{font-size:15px;margin:0 0 6px}
+.pp-meta{font:500 11.5px/1.5 var(--anatomy-mono);color:var(--anatomy-muted)}
+.pp-doc ol,.pp-doc ul{padding-left:20px;margin:8px 0}
+.pp-doc li{margin:6px 0}
+.pp-doc b,.pp-doc strong{color:var(--anatomy-strong);font-weight:600}
+.pp-doc a{color:var(--anatomy-strong);text-underline-offset:3px}
+.pp-doc code{font:12.5px/1.5 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-faint);padding:1px 4px}
+.pp-doc pre{font:12.5px/1.55 var(--anatomy-mono);color:var(--anatomy-strong);background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px;overflow-x:auto}
+.pp-doc pre code{background:none;box-shadow:none;padding:0}
+.pp-doc table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;display:block;overflow-x:auto}
+.pp-doc th{font:500 10.5px/1.2 var(--anatomy-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--anatomy-muted);text-align:left;padding:8px 10px;border-bottom:1px solid var(--anatomy-mid)}
+.pp-doc td{padding:8px 10px;border-bottom:1px solid var(--anatomy-faint);vertical-align:top}
+.pp-doc td.num,.pp-doc th.num{text-align:right;font-variant-numeric:tabular-nums}
+/* A card: same frame as the figure plate, with corner labels */
+.pp-card{position:relative;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:16px 18px;margin:14px 0}
+.pp-card>.pp-label{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--anatomy-muted);margin-bottom:10px}
+.pp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:12px 0}
+.pp-grid .pp-card{margin:0}
+/* Verdict: the one-line answer up top */
+.pp-verdict{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong);padding:16px 18px;margin:18px 0}
+.pp-verdict p{margin:6px 0 0;color:var(--anatomy-strong);font-size:15px}
+/* Chips and buttons */
+.pp-chip{display:inline-block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.05em;text-transform:uppercase;padding:4px 6px;box-shadow:0 0 0 1px var(--anatomy-mid);color:var(--anatomy-text);white-space:nowrap}
+.pp-chip[data-tone="strong"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:none}
+.pp-chip[data-tone="good"]{box-shadow:0 0 0 1px var(--anatomy-green);color:var(--anatomy-green)}
+.pp-chip[data-tone="bad"]{box-shadow:0 0 0 1px var(--anatomy-red);color:var(--anatomy-red)}
+.pp-button,.pp-seg button{font:500 12px/1 var(--anatomy-mono);letter-spacing:.02em;color:var(--anatomy-text);background:var(--anatomy-card);border:0;box-shadow:0 0 0 1px var(--anatomy-mid);padding:8px 11px;border-radius:0;cursor:pointer}
+.pp-button:hover,.pp-seg button:hover{color:var(--anatomy-strong)}
+.pp-button:focus-visible,.pp-seg button:focus-visible{outline:1px solid var(--anatomy-muted);outline-offset:3px}
+.pp-seg{display:inline-flex}
+.pp-seg button+button{margin-left:1px}
+.pp-seg button[aria-pressed="true"]{background:var(--anatomy-strong);color:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Callouts */
+.pp-callout{padding:12px 14px;margin:14px 0;box-shadow:inset 2px 0 0 var(--anatomy-strong),0 0 0 1px var(--anatomy-faint);background:var(--anatomy-card)}
+.pp-callout[data-tone="good"]{box-shadow:inset 2px 0 0 var(--anatomy-green),0 0 0 1px var(--anatomy-faint)}
+.pp-callout[data-tone="bad"]{box-shadow:inset 2px 0 0 var(--anatomy-red),0 0 0 1px var(--anatomy-faint)}
+.pp-callout>:first-child{margin-top:0}.pp-callout>:last-child{margin-bottom:0}
+/* Numbered steps; mark the current one with data-now */
+.pp-steps{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px}
+.pp-doc .pp-steps{padding:0}
+.pp-doc .pp-steps li{margin:0}
+.pp-steps li{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:10px;padding:7px 10px;box-shadow:0 0 0 1px var(--anatomy-faint);color:var(--anatomy-text)}
+.pp-steps .pp-sn{font:11px/1 var(--anatomy-mono);text-align:center;color:var(--anatomy-muted)}
+.pp-steps .pp-st{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline}
+.pp-doc .pp-steps b{color:inherit}
+.pp-steps small{font-size:12px;color:var(--anatomy-muted)}
+.pp-steps li[data-now]{background:var(--anatomy-page);color:var(--anatomy-strong);box-shadow:0 0 0 1px var(--anatomy-strong)}
+/* Metrics and bars */
+.pp-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:12px 0}
+.pp-metric{background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);padding:12px 14px}
+.pp-metric span{display:block;font:500 10.5px/1 var(--anatomy-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--anatomy-muted)}
+.pp-metric b{display:block;margin-top:8px;font:600 22px/1.1 ui-sans-serif,system-ui,sans-serif;color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-metric small{color:var(--anatomy-muted);font-size:12px}
+.pp-bar{display:grid;grid-template-columns:minmax(80px,30%) 1fr auto;align-items:center;gap:10px;font-size:12.5px;margin:6px 0}
+.pp-bar i{display:block;height:10px;box-shadow:0 0 0 1px var(--anatomy-mid)}
+.pp-bar i>span{display:block;height:100%;background:var(--anatomy-strong)}
+.pp-bar output{font:12px/1 var(--anatomy-mono);color:var(--anatomy-strong);font-variant-numeric:tabular-nums}
+.pp-footer{margin-top:48px;padding-top:14px;border-top:1px solid var(--anatomy-faint);font:500 11px/1.6 var(--anatomy-mono);color:var(--anatomy-muted)}
+@media (max-width:560px){.pp-seg{width:100%}.pp-seg button{flex:1;padding:8px 6px;font-size:11px}}
+
+
+/* ---- page tweaks ---- */
+.iso-page{width:min(820px,100% - 32px)}
+.pp-doc .mp-notes{margin:10px 0 0}
+.pp-doc .mp-notes li{margin:4px 0}
+
+/* ---- stage: an app-coloured strip holding one picker ---- */
+.mp-stage{margin:14px 0 6px;padding:14px;border-radius:12px;background:var(--app-bg);box-shadow:0 0 0 1px var(--app-border);
+  font:400 var(--text-md)/1.4 var(--font-sans);color:var(--app-text)}
+.mp-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mp-ask{flex:1 1 160px;min-width:0;padding:8px 10px;border-radius:8px;background:var(--app-surface-subtle);box-shadow:inset 0 0 0 1px var(--app-border);color:var(--app-text-subtle);font-size:var(--text-base)}
+.mp-status{margin:10px 2px 0;font:400 var(--text-sm)/1.4 var(--font-mono);color:var(--app-text-muted)}
+.mp-status b{color:var(--app-text-strong);font-weight:500}
+.mp-stage .mx-pop-anchor{width:100%}
+.mp-stage .ch-pop{position:relative;top:auto;left:auto;right:auto;margin-top:8px;width:min(var(--w,380px),100%);display:none;
+  opacity:1;transform:none;pointer-events:auto;background:var(--app-surface-raised);border-color:var(--app-border-strong)}
+.mp-stage .ch-pop[data-open]{display:block}
+
+/* ---- trigger (copied from ModelPickerMenu.svelte) ---- */
+.ch-model{--_px:8px}
+.ch-model[aria-expanded="true"]{--_bg:var(--mx-wash-strong);--_fg:var(--app-text-strong)}
+.ch-model .mono{font:500 var(--text-sm)/1 var(--font-mono);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-glyph{flex:none;display:inline-grid;place-items:center;width:18px;height:18px;border-radius:5px;font:600 10px/1 var(--font-sans);
+  color:var(--app-text-strong);background:var(--app-surface-hover);box-shadow:inset 0 0 0 1px var(--app-border-strong)}
+.ch-model .mx-chip,.ch-opts h6 .mx-chip,.mp-group .mx-chip{height:18px;padding:0 5px}
+
+/* ---- popover body ---- */
+.ch-pop .mx-search{margin:8px 8px 0}
+.ch-opts{max-height:330px;overflow:auto;padding:4px;position:relative}
+.ch-opts h6{display:flex;align-items:center;gap:6px;margin:10px 8px 4px;font:600 var(--text-sm)/1 var(--font-sans);color:var(--app-text-muted)}
+.ch-opts h6 small{margin-left:auto;font:400 var(--text-xs)/1 var(--font-sans);color:var(--app-text-subtle)}
+.ch-opts h6 svg{color:var(--app-text-subtle)}
+.ch-opts h6.mp-sticky{position:sticky;top:-4px;z-index:1;margin:0;padding:10px 8px 6px;background:var(--app-surface-raised)}
+.ch-opt{display:grid;grid-template-columns:18px minmax(0,1fr) auto 20px 14px;align-items:center;gap:8px;width:100%;padding:6px 8px;
+  border-radius:var(--r-sm);cursor:pointer;color:var(--app-text);font:500 var(--text-sm)/1.2 var(--font-mono)}
+.ch-opt:hover,.ch-opt.is-cursor,.mp-act.is-cursor,.mp-group.is-cursor{background:var(--app-surface-hover);color:var(--app-text-strong)}
+.ch-opt__main{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-opt__main mark{all:unset;color:var(--app-accent);font-weight:700}
+.ch-opt small{font:400 var(--text-xs)/1 var(--font-mono);color:var(--app-text-subtle);white-space:nowrap}
+.ch-tick{color:var(--app-accent);visibility:hidden}
+.ch-opt[aria-selected="true"]{color:var(--app-text-strong)}
+.ch-opt[aria-selected="true"] .ch-tick{visibility:visible}
+.ch-opt--default .ch-opt__main{font-family:var(--font-sans)}
+.ch-opt em{font-style:normal;color:var(--app-text-subtle);font-family:var(--font-mono);font-size:var(--text-xs);margin-left:6px}
+.ch-pop__foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;border-top:1px solid var(--app-overlay-border);
+  font:400 var(--text-sm)/1.4 var(--font-sans);color:var(--app-text-subtle)}
+.ch-pop__foot kbd{font-size:var(--text-xs)}
+.pp-doc .ch-pop__foot code{font:500 var(--text-xs)/1 var(--font-mono);background:none;box-shadow:none;padding:0;color:var(--app-text-muted)}
+
+/* star: hidden until hover, always shown when on */
+.mp-star{display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:5px;background:none;cursor:pointer;color:var(--app-text-subtle);visibility:hidden}
+.ch-opt:hover .mp-star,.ch-opt.is-cursor .mp-star,.mp-star[aria-pressed="true"]{visibility:visible}
+.mp-star:hover{background:var(--mx-wash-strong);color:var(--app-text-strong)}
+.mp-star[aria-pressed="true"]{color:var(--app-warn)}
+.mp-star[aria-pressed="true"] svg{fill:currentColor}
+.mp-note{margin:0;padding:6px 8px 4px;font:400 var(--text-sm)/1.4 var(--font-sans);color:var(--app-text-subtle)}
+
+/* generic action row (Show all…, Browse all…, back) */
+.mp-act{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:0;border-radius:var(--r-sm);background:none;cursor:pointer;text-align:left;
+  font:500 var(--text-sm)/1.2 var(--font-sans);color:var(--app-text-muted)}
+.mp-act:hover{background:var(--app-surface-hover);color:var(--app-text-strong)}
+.mp-act small{margin-left:auto;font:400 var(--text-xs)/1 var(--font-mono);color:var(--app-text-subtle)}
+.mp-sep{height:1px;margin:6px 4px;background:var(--app-overlay-border)}
+
+/* folding provider header (Browse all) */
+.mp-group{position:sticky;top:-4px;z-index:1;display:flex;align-items:center;gap:6px;width:100%;margin-top:2px;padding:8px;border:0;border-radius:var(--r-sm);
+  background:var(--app-surface-raised);cursor:pointer;text-align:left;font:600 var(--text-sm)/1 var(--font-sans);color:var(--app-text-muted)}
+.mp-group:hover{color:var(--app-text-strong)}
+.mp-group svg.mp-chev{color:var(--app-text-subtle);transition:transform var(--t-fast) var(--ease-quart)}
+.mp-group[aria-expanded="true"] svg.mp-chev{transform:rotate(90deg)}
+.mp-group small{margin-left:auto;font:400 var(--text-xs)/1 var(--font-mono);color:var(--app-text-subtle)}
+
+/* C — number badges, hover "make default" */
+.mp-num{display:inline-grid;place-items:center;min-width:16px;height:16px;padding:0 3px;border-radius:4px;font:500 10px/1 var(--font-mono);
+  color:var(--app-text-subtle);box-shadow:inset 0 0 0 1px var(--app-border-strong)}
+.mp-mkdef{padding:2px 6px;border:0;border-radius:4px;background:none;cursor:pointer;font:500 var(--text-xs)/1.2 var(--font-sans);color:var(--app-text-subtle);display:none}
+.ch-opt:hover .mp-mkdef,.ch-opt.is-cursor .mp-mkdef{display:inline-block}
+.ch-opt:hover .mp-mkdef + .mp-meta,.ch-opt.is-cursor .mp-mkdef + .mp-meta{display:none}
+.mp-mkdef:hover{background:var(--mx-wash-strong);color:var(--app-text-strong)}
+.mp-toast{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:6px;background:var(--app-surface-raised);box-shadow:inset 0 0 0 1px var(--app-border-strong);
+  font:500 var(--text-sm)/1 var(--font-sans);color:var(--app-text-strong)}
+
+</style>
+</head>
+<body class="iso" data-theme="light">
+<script>document.body.setAttribute("data-theme",matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");</script>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-star" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m12 19-7-7 7-7M19 12H5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+</svg>
+<main class="iso-page">
+<article class="pp-doc">
+
+  <div class="pp-top">
+    <div>
+      <p class="pp-kicker">Mnema · model picker · chosen design</p>
+      <h1>Favorites first: the models you switch between on one short screen, everything else folded behind “Browse all”</h1>
+    </div>
+    <button type="button" class="pp-button" data-theme-toggle aria-label="Switch light or dark theme">Dark</button>
+  </div>
+  <p class="pp-lede">The mockup below is clickable and uses the app's real colors and fonts. The model list is realistic: five providers, about 170 models, most of them from OpenRouter. Star a model (hover a row, or press <code>⌘D</code>), pick one, search, and use the arrow keys.</p>
+  <p class="pp-meta">2026-11-05 · replaces <code>apps/desktop/src/lib/chat/ModelPickerMenu.svelte</code> (used by Chat, Settings → AI, and the Insights detail panels)</p>
+
+  <div class="pp-verdict">
+    <span class="pp-chip" data-tone="strong">Chosen</span>
+    <p><b>Favorites first, with folding provider groups inside "Browse all".</b> Most switches are between two or three models, so this puts those on one short screen with number keys, and the long lists only appear when you ask for them. The trade-off: finding a brand-new model takes one extra click ("Browse all") unless you just type.</p>
+  </div>
+
+  <h2><span class="pp-n">00</span>What's wrong today</h2>
+  <div class="pp-grid">
+    <div class="pp-card"><span class="pp-label">Too much scrolling</span><p>Every provider is expanded, one after another. With OpenRouter connected that's about 170 rows in a 290 px box, and Ollama is at the very bottom.</p></div>
+    <div class="pp-card"><span class="pp-label">No memory</span><p>The picker never learns what you use. Switching back to the model you used five minutes ago means searching or scrolling again.</p></div>
+  </div>
+
+  <h2><span class="pp-n">01</span>Favorites first</h2>
+  <p>Opening the picker shows only what you switch between: the default, your <b>favorites with number keys</b> (press <code>1</code>–<code>9</code>), and the last two models you used. "Browse all" opens the full list; typing searches it directly. Hover a row to <b>make it the default</b>. Outside the picker, <code>⌘⇧M</code> jumps to the next favorite without opening anything.</p>
+  <div data-mock="C"></div>
+  <ul class="mp-notes">
+    <li><b>Good:</b> a two-model habit becomes one keystroke; the picker stays small no matter how many providers you connect.</li>
+    <li><b>Costs:</b> number keys only work while the search box is empty (otherwise you couldn't type "4o"). New models are one click further away.</li>
+  </ul>
+
+  <h2><span class="pp-n">02</span>What ships with it</h2>
+  <table>
+    <thead><tr><th>Change</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Favorites with number keys 1–9</td><td>A two-model habit becomes one keystroke</td></tr>
+      <tr><td>Recent models (last two picked)</td><td>Covers switching back without having to star anything</td></tr>
+      <tr><td>"Browse all" with folding provider groups</td><td>The long lists only appear when you ask; each provider shows its model count</td></tr>
+      <tr><td>Highlight the matching letters in search</td><td>Shows why a row matched, especially with long OpenRouter ids</td></tr>
+      <tr><td>"Make default" right from the row</td><td>Today that needs a trip to Settings → AI</td></tr>
+      <tr><td>Next-favorite shortcut (<code>⌘⇧M</code>)</td><td>Switch without opening the picker at all</td></tr>
+    </tbody>
+  </table>
+
+  <div class="pp-callout"><p><b>What favorites need underneath.</b> One saved list of provider + model pairs in the AI settings, shared by every place the picker appears (Chat, Settings, Insights), so starring in one shows up in all. Recent models can come from the chats you already have, with nothing new saved. A favorite whose provider gets removed is simply hidden, not deleted.</p></div>
+
+  <footer class="pp-footer">Generated with Claude Code</footer>
+</article>
+</main>
+<script>
+(function () {
+  /* ---------- data: five providers, ~190 models ---------- */
+  var P = {
+    anthropic: { name: "Anthropic", g: "A", w: "cloud", via: "your API key" },
+    openai: { name: "OpenAI", g: "O", w: "cloud", via: "your API key" },
+    chatgpt: { name: "ChatGPT", g: "C", w: "cloud", via: "your ChatGPT sign-in" },
+    openrouter: { name: "OpenRouter", g: "R", w: "cloud", via: "openrouter.ai" },
+    ollama: { name: "Ollama", g: "L", w: "local", via: "localhost:11434" }
+  };
+  var ORDER = ["anthropic", "openai", "chatgpt", "openrouter", "ollama"];
+  var M = [], BY = {};
+  function add(p, list) { list.forEach(function (x) { var m = { p: p, id: x[0], ctx: x[1] || null }; M.push(m); BY[p + "|" + m.id] = m; }); }
+  add("anthropic", [["claude-opus-5-5"], ["claude-sonnet-5-5"], ["claude-haiku-5-5"], ["claude-fable-5-1"], ["claude-opus-4-1"], ["claude-sonnet-4-5"], ["claude-haiku-4-5"],
+    ["claude-sonnet-4-20250514"], ["claude-3-7-sonnet-20250219"], ["claude-3-5-haiku-20241022"]]);
+  add("openai", [["gpt-5"], ["gpt-5-2025-08-07"], ["gpt-5-mini"], ["gpt-5-mini-2025-08-07"], ["gpt-5-nano"], ["gpt-5-codex"], ["gpt-4.1"], ["gpt-4.1-2025-04-14"], ["gpt-4.1-mini"],
+    ["gpt-4.1-nano"], ["gpt-4o"], ["gpt-4o-2024-05-13"], ["gpt-4o-2024-08-06"], ["gpt-4o-2024-11-20"], ["gpt-4o-mini"], ["gpt-4o-mini-2024-07-18"], ["chatgpt-4o-latest"],
+    ["o3"], ["o3-2025-04-16"], ["o3-mini"], ["o4-mini"], ["o4-mini-2025-04-16"], ["o1"], ["o1-2024-12-17"], ["gpt-4-turbo"], ["gpt-4-turbo-2024-04-09"], ["gpt-3.5-turbo"],
+    ["gpt-4o-search-preview"], ["gpt-4o-mini-search-preview"]]);
+  add("chatgpt", [["gpt-5"], ["gpt-5-codex"], ["gpt-5-mini"], ["o3"]]);
+  var OR = {
+    anthropic: [["claude-opus-5.5", 200], ["claude-sonnet-5.5", 1000], ["claude-haiku-5.5", 200], ["claude-opus-4.1", 200], ["claude-sonnet-4.5", 1000], ["claude-haiku-4.5", 200], ["claude-sonnet-4", 1000], ["claude-3.7-sonnet", 200], ["claude-3.5-haiku", 200]],
+    openai: [["gpt-5", 400], ["gpt-5-mini", 400], ["gpt-5-nano", 400], ["gpt-4.1", 1047], ["gpt-4.1-mini", 1047], ["gpt-4o", 128], ["gpt-4o-mini", 128], ["o3", 200], ["o4-mini", 200], ["gpt-oss-120b", 131], ["gpt-oss-20b", 131]],
+    google: [["gemini-2.5-pro", 1048], ["gemini-2.5-flash", 1048], ["gemini-2.5-flash-lite", 1048], ["gemini-2.0-flash-001", 1048], ["gemma-3-27b-it", 96], ["gemma-3-12b-it", 96], ["gemma-3-4b-it", 96]],
+    "meta-llama": [["llama-4-maverick", 1048], ["llama-4-scout", 327], ["llama-3.3-70b-instruct", 131], ["llama-3.1-405b-instruct", 32], ["llama-3.1-70b-instruct", 131], ["llama-3.1-8b-instruct", 131], ["llama-3.2-3b-instruct", 131], ["llama-3.2-11b-vision-instruct", 131]],
+    mistralai: [["mistral-large-2411", 131], ["mistral-medium-3.1", 131], ["mistral-small-3.2-24b-instruct", 131], ["codestral-2508", 256], ["devstral-medium", 131], ["devstral-small", 131], ["ministral-8b", 128], ["ministral-3b", 128], ["pixtral-large-2411", 131], ["mistral-nemo", 131], ["mixtral-8x22b-instruct", 65]],
+    deepseek: [["deepseek-chat-v3.1", 163], ["deepseek-v3.2-exp", 163], ["deepseek-r1-0528", 163], ["deepseek-r1", 163], ["deepseek-r1-distill-llama-70b", 131], ["deepseek-r1-distill-qwen-32b", 131]],
+    qwen: [["qwen3-235b-a22b-2507", 262], ["qwen3-235b-a22b-thinking-2507", 262], ["qwen3-coder", 262], ["qwen3-coder-flash", 128], ["qwen3-32b", 40], ["qwen3-30b-a3b", 40], ["qwen3-14b", 40], ["qwen3-8b", 128], ["qwen-2.5-72b-instruct", 32], ["qwen-2.5-coder-32b-instruct", 32], ["qwen3-max", 256], ["qwq-32b", 131]],
+    "x-ai": [["grok-4", 256], ["grok-4-fast", 2000], ["grok-code-fast-1", 256], ["grok-3", 131], ["grok-3-mini", 131]],
+    moonshotai: [["kimi-k2-0905", 262], ["kimi-k2", 63], ["kimi-dev-72b", 131]],
+    "z-ai": [["glm-4.6", 202], ["glm-4.5", 131], ["glm-4.5-air", 131], ["glm-4.5v", 65]],
+    nousresearch: [["hermes-4-405b", 131], ["hermes-4-70b", 131], ["hermes-3-llama-3.1-405b", 131]],
+    cohere: [["command-a", 256], ["command-r-plus-08-2024", 128], ["command-r-08-2024", 128], ["command-r7b-12-2024", 128]],
+    microsoft: [["phi-4", 16], ["phi-4-reasoning-plus", 32], ["mai-ds-r1", 163], ["wizardlm-2-8x22b", 65]],
+    amazon: [["nova-premier-v1", 1000], ["nova-pro-v1", 300], ["nova-lite-v1", 300], ["nova-micro-v1", 128]],
+    perplexity: [["sonar", 127], ["sonar-pro", 200], ["sonar-reasoning-pro", 128], ["sonar-deep-research", 128]],
+    "ai21": [["jamba-large-1.7", 256], ["jamba-mini-1.7", 256]],
+    inception: [["mercury", 128], ["mercury-coder", 128]],
+    baidu: [["ernie-4.5-300b-a47b", 123], ["ernie-4.5-21b-a3b", 120]],
+    minimax: [["minimax-m2", 204], ["minimax-m1", 1000]],
+    liquid: [["lfm-7b", 32], ["lfm-3b", 32]]
+  };
+  var FREE = ["deepseek/deepseek-chat-v3.1", "deepseek/deepseek-r1-0528", "meta-llama/llama-3.3-70b-instruct", "meta-llama/llama-4-maverick", "google/gemma-3-27b-it",
+    "google/gemini-2.0-flash-001", "qwen/qwen3-coder", "qwen/qwen3-235b-a22b-2507", "qwen/qwen3-14b", "mistralai/mistral-small-3.2-24b-instruct", "mistralai/devstral-small",
+    "moonshotai/kimi-k2", "z-ai/glm-4.5-air", "openai/gpt-oss-20b", "openai/gpt-oss-120b", "nousresearch/hermes-3-llama-3.1-405b", "microsoft/mai-ds-r1", "x-ai/grok-4-fast"];
+  var orList = [];
+  Object.keys(OR).forEach(function (v) { OR[v].forEach(function (x) { orList.push([v + "/" + x[0], x[1] * 1000]); }); });
+  FREE.forEach(function (id) { // ponytail: :free copy sits right after its paid model
+    for (var i = 0; i < orList.length; i++) if (orList[i][0] === id) { orList.splice(i + 1, 0, [id + ":free", orList[i][1]]); break; }
+  });
+  add("openrouter", orList);
+  add("ollama", [["gpt-oss:20b", 131072], ["qwen3:8b", 40960], ["gemma3:12b", 131072], ["llama3.2:3b", 131072], ["deepseek-r1:14b", 131072], ["phi4:14b", 16384], ["mistral:7b", 32768]]);
+
+  /* ---------- helpers ---------- */
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function ic(n, cls, sz) { sz = sz || 13; return '<svg fill="none" class="' + (cls || "") + '" width="' + sz + '" height="' + sz + '" aria-hidden="true"><use href="#i-' + n + '"/></svg>'; }
+  function kfmt(n) { return n ? (n >= 1e6 ? (Math.round(n / 1e5) / 10) + "M" : Math.round(n / 1000) + "k") : ""; }
+  function chip(w) { return '<span class="mx-chip mx-chip--' + (w === "local" ? "accent" : "info") + '">' + w + "</span>"; }
+  function inP(p) { return M.filter(function (m) { return m.p === p; }); }
+  function hl(text, q) { // substring highlight
+    var i = q ? text.toLowerCase().indexOf(q) : -1;
+    return i < 0 ? esc(text) : esc(text.slice(0, i)) + "<mark>" + esc(text.slice(i, i + q.length)) + "</mark>" + esc(text.slice(i + q.length));
+  }
+  function subMatch(m, q) { return m.id.toLowerCase().indexOf(q) >= 0 || P[m.p].name.toLowerCase().indexOf(q) >= 0; }
+  /* row: glyph · name · meta · star · tick */
+  function row(m, s, o) {
+    o = o || {};
+    var k = m.p + "|" + m.id, fav = s.fav.indexOf(k) >= 0;
+    return '<div class="ch-opt' + (o.cls || "") + '" role="option" data-opt data-pick="' + esc(k) + '" aria-selected="' + (s.sel === k) + '" title="' + esc(P[m.p].name + " · " + m.id) + '">' +
+      '<span class="ch-glyph">' + P[m.p].g + "</span>" +
+      '<span class="ch-opt__main">' + (o.html || esc(o.label || m.id)) + (o.extra || "") + "</span>" +
+      "<small>" + (o.meta != null ? o.meta : kfmt(m.ctx)) + "</small>" +
+      '<button type="button" class="mp-star" data-star="' + esc(k) + '" aria-pressed="' + fav + '" aria-label="' + (fav ? "Unstar " : "Star ") + esc(m.id) + '">' + ic("star", "", 12) + "</button>" +
+      ic("check", "ch-tick") + "</div>";
+  }
+  function defRow(s) {
+    var d = BY[s.def];
+    return '<div class="ch-opt ch-opt--default" role="option" data-opt data-pick="default" aria-selected="' + (s.sel === "default") + '">' +
+      '<span class="ch-glyph">' + P[d.p].g + '</span><span class="ch-opt__main">Default<em>' + esc(d.id) + "</em></span><small></small><span></span>" + ic("check", "ch-tick") + "</div>";
+  }
+  function typedRows(raw) {
+    return '<p class="mp-note">No models match “' + esc(raw) + '”.</p><h6>Use as a model id</h6>' + ORDER.map(function (p) {
+      return '<div class="ch-opt" role="option" data-opt data-pick="' + p + "|" + esc(raw) + '" data-typed="1"><span class="ch-glyph">' + P[p].g + '</span><span class="ch-opt__main">' + esc(raw) + "</span><small>" + P[p].name + "</small><span></span><span></span></div>";
+    }).join("");
+  }
+  function head(p, extra) { return '<h6 class="mp-sticky">' + P[p].name + chip(P[p].w) + "<small>" + (extra || P[p].via) + "</small></h6>"; }
+  function favModels(s) { return s.fav.map(function (k) { return BY[k]; }).filter(Boolean); }
+  function recentModels(s, n) { return s.recent.filter(function (k) { return s.fav.indexOf(k) < 0; }).map(function (k) { return BY[k]; }).filter(Boolean).slice(0, n); }
+  function searchGrouped(s, q, raw) {
+    var h = "";
+    ORDER.forEach(function (p) {
+      var ms = inP(p).filter(function (m) { return subMatch(m, q); });
+      if (ms.length) h += head(p, ms.length + " match" + (ms.length > 1 ? "es" : "")) + ms.map(function (m) { return row(m, s, { html: hl(m.id, q) }); }).join("");
+    });
+    return h || typedRows(raw);
+  }
+
+  /* ---------- C: favorites first ---------- */
+  function cRow(m, s, meta, extra) {
+    return row(m, s, { meta: (BY[s.def] === m ? "" : '<button type="button" class="mp-mkdef" data-act="mkdef" data-k="' + esc(m.p + "|" + m.id) + '">Make default</button>') + '<span class="mp-meta">' + meta + "</span>", extra: extra });
+  }
+  var C = {
+    render: function (s) {
+      var raw = s.q.trim(), q = raw.toLowerCase();
+      if (q) return searchGrouped(s, q, raw);
+      if (s.ui.mode === "browse") {
+        var h = '<button type="button" class="mp-act" data-opt data-act="back">' + ic("back", "", 12) + "Favorites</button>";
+        ORDER.forEach(function (p) {
+          var ms = inP(p), open = !!s.ui["o" + p];
+          h += '<button type="button" class="mp-group" data-opt data-act="fold" data-p="' + p + '" aria-expanded="' + open + '">' + ic("chev", "mp-chev", 12) + P[p].name + chip(P[p].w) + "<small>" + ms.length + " models</small></button>";
+          if (open) h += ms.map(function (m) { return cRow(m, s, kfmt(m.ctx)); }).join("");
+        });
+        return h;
+      }
+      var favs = favModels(s), rec = recentModels(s, 2), out = defRow(s);
+      out += "<h6>" + ic("star", "", 11) + "Favorites</h6>";
+      out += favs.length ? favs.map(function (m, i) { return cRow(m, s, i < 9 ? '<span class="mp-num">' + (i + 1) + "</span>" : ""); }).join("") : '<p class="mp-note">Star models in “Browse all” to pin them here with a number key.</p>';
+      if (rec.length) out += "<h6>" + ic("clock", "", 11) + "Recent</h6>" + rec.map(function (m) { return cRow(m, s, kfmt(m.ctx)); }).join("");
+      out += '<div class="mp-sep"></div><button type="button" class="mp-act" data-opt data-act="browse">Browse all ' + M.length + " models<small>" + ORDER.length + " providers</small>" + ic("chev", "", 12) + "</button>";
+      return out;
+    },
+    act: function (s, a, el) {
+      if (a === "browse") { s.ui.mode = "browse"; s.hi = 0; return "Browsing every provider"; }
+      if (a === "back") { s.ui.mode = "quick"; s.hi = 0; return "Back to favorites"; }
+      if (a === "fold") { var p = el.getAttribute("data-p"); s.ui["o" + p] = !s.ui["o" + p]; return (s.ui["o" + p] ? "Opened " : "Folded ") + P[p].name; }
+      if (a === "mkdef") { s.def = el.getAttribute("data-k"); return "Default is now <b>" + esc(BY[s.def].id) + "</b> (for new chats)"; }
+      if (a === "cycle") {
+        var f = s.fav.filter(function (k) { return BY[k]; });
+        if (!f.length) return "No favorites to cycle through";
+        var i = f.indexOf(s.sel); s.sel = f[(i + 1) % f.length];
+        return "⌘⇧M → <b>" + esc(BY[s.sel].id) + "</b> (picker stayed closed)";
+      }
+    },
+    key: function (s, e) {
+      if (s.q.trim() || s.ui.mode === "browse" || !/^[1-9]$/.test(e.key)) return;
+      var m = favModels(s)[+e.key - 1];
+      if (!m) return;
+      e.preventDefault();
+      return { pick: m.p + "|" + m.id };
+    },
+    bar: '<button type="button" class="mx-btn mx-btn--ghost mx-btn--sm" data-act="cycle">Try ⌘⇧M · next favorite</button>',
+    foot: "<span><kbd>1</kbd>–<kbd>9</kbd> pick favorite</span><span><kbd>⌘D</kbd> star</span><span style=\"margin-left:auto\">applies to this chat only</span>"
+  };
+
+  /* ---------- shared mount ---------- */
+  function mount(host, view) {
+    var w = host.getAttribute("data-w");
+    host.innerHTML = '<div class="mp-stage"><div class="mp-bar"><span class="mp-ask">Ask about your day…</span>' + (view.bar || "") + "</div>" +
+      '<div class="mx-pop-anchor"><button type="button" class="mx-btn mx-btn--ghost ch-model" data-trigger aria-haspopup="listbox" aria-expanded="true"></button>' +
+      '<div class="mx-pop ch-pop" data-open data-pop' + (w ? ' style="--w:' + w + '"' : "") + ' role="dialog" aria-label="Choose model">' +
+      '<label class="mx-search">' + ic("search") + '<input data-q type="text" placeholder="Search models or type an id" spellcheck="false" autocomplete="off" aria-label="Search models"></label>' +
+      '<div data-body class="' + (view.bodyIsList === false ? "" : "ch-opts") + '" ' + (view.bodyIsList === false ? "" : 'data-scroll="body" role="listbox"') + "></div>" +
+      '<div class="ch-pop__foot">' + view.foot + "</div></div></div>" +
+      '<p class="mp-status" data-status>Ready. The picker is open; click the model name above to close it.</p></div>';
+    var s = { q: "", hi: 0, sel: "default", def: "anthropic|claude-sonnet-5-5", ui: {},
+      fav: ["anthropic|claude-sonnet-5-5", "openrouter|deepseek/deepseek-chat-v3.1", "ollama|qwen3:8b"],
+      recent: ["openai|gpt-5-mini", "openrouter|google/gemini-2.5-flash", "anthropic|claude-opus-5-5"] };
+    var stage = host.firstChild, body = stage.querySelector("[data-body]"), input = stage.querySelector("[data-q]"),
+      trig = stage.querySelector("[data-trigger]"), pop = stage.querySelector("[data-pop]"), status = stage.querySelector("[data-status]");
+    function say(t) { if (t) status.innerHTML = t; }
+    function opts() { return body.querySelectorAll("[data-opt]"); }
+    function paint() {
+      var o = opts();
+      if (s.hi >= o.length) s.hi = Math.max(0, o.length - 1);
+      for (var i = 0; i < o.length; i++) o[i].classList.toggle("is-cursor", i === s.hi);
+    }
+    function render() {
+      var keep = {};
+      body.querySelectorAll("[data-scroll]").forEach(function (el) { keep[el.getAttribute("data-scroll")] = el.scrollTop; });
+      if (body.hasAttribute("data-scroll")) keep.body = body.scrollTop;
+      body.innerHTML = view.render(s);
+      body.querySelectorAll("[data-scroll]").forEach(function (el) { el.scrollTop = keep[el.getAttribute("data-scroll")] || 0; });
+      if (body.hasAttribute("data-scroll")) body.scrollTop = keep.body || 0;
+      var k = s.sel === "default" ? s.def : s.sel, m = BY[k];
+      trig.innerHTML = '<span class="ch-glyph">' + P[m.p].g + '</span><span class="mono">' + esc(s.sel === "default" ? "Default · " + m.id : m.id) + "</span>" + chip(P[m.p].w) + ic("down", "", 12);
+      paint();
+    }
+    function pick(k, typed) {
+      if (k !== "default" && !BY[k]) { var parts = k.split("|"); add(parts[0], [[parts[1]]]); }
+      s.sel = k;
+      if (k !== "default") s.recent = [k].concat(s.recent.filter(function (x) { return x !== k; })).slice(0, 6);
+      say("Picked <b>" + esc(k === "default" ? "Default (" + BY[s.def].id + ")" : BY[k].id) + "</b>" + (k === "default" ? "" : " · " + P[BY[k].p].name) + (typed ? " (typed id)" : "") + " — picker closes");
+      s.q = ""; input.value = ""; s.hi = 0;
+      pop.removeAttribute("data-open"); trig.setAttribute("aria-expanded", "false");
+      render();
+    }
+    function star(k) {
+      var i = s.fav.indexOf(k);
+      if (i >= 0) s.fav.splice(i, 1); else s.fav.push(k);
+      say((i >= 0 ? "Unstarred " : "Starred ") + "<b>" + esc(BY[k].id) + "</b>");
+      render();
+    }
+    trig.addEventListener("click", function () {
+      var open = !pop.hasAttribute("data-open");
+      pop.toggleAttribute("data-open", open); trig.setAttribute("aria-expanded", String(open));
+      if (open) { if (view === C) s.ui.mode = "quick"; render(); input.focus(); say("Opened the picker"); } else say("Closed the picker");
+    });
+    input.addEventListener("input", function () { s.q = input.value; s.hi = 0; render(); });
+    stage.addEventListener("mousedown", function (e) { if (e.target.closest("[data-pick],[data-act],[data-star]")) e.preventDefault(); });
+    stage.addEventListener("click", function (e) {
+      var t = e.target.closest("[data-star]");
+      if (t) { star(t.getAttribute("data-star")); return; }
+      t = e.target.closest("[data-act]");
+      if (t) { say(view.act(s, t.getAttribute("data-act"), t)); render(); if (pop.hasAttribute("data-open")) input.focus(); return; }
+      t = e.target.closest("[data-pick]");
+      if (t) pick(t.getAttribute("data-pick"), t.hasAttribute("data-typed"));
+    });
+    input.addEventListener("keydown", function (e) {
+      if (view.key) {
+        var r = view.key(s, e);
+        if (r && r.pick) { pick(r.pick); return; }
+        if (r) { say(r); render(); return; }
+      }
+      var o = opts();
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        s.hi = Math.max(0, Math.min(o.length - 1, s.hi + (e.key === "ArrowDown" ? 1 : -1)));
+        paint(); if (o[s.hi]) o[s.hi].scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        e.preventDefault(); if (o[s.hi]) o[s.hi].click();
+      } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+        e.preventDefault(); var k = o[s.hi] && o[s.hi].getAttribute("data-pick");
+        if (k && BY[k] && !o[s.hi].hasAttribute("data-typed")) star(k);
+      } else if (e.key === "Escape") {
+        pop.removeAttribute("data-open"); trig.setAttribute("aria-expanded", "false"); trig.focus(); say("Closed the picker");
+      }
+    });
+    render();
+  }
+  var VIEWS = { C: C };
+  document.querySelectorAll("[data-mock]").forEach(function (h) { mount(h, VIEWS[h.getAttribute("data-mock")]); });
+})();
+</script>
+<script>
+(function () {
+  var toggle = document.querySelector("[data-theme-toggle]");
+  if (!toggle) return;
+  var label = function () { toggle.textContent = document.body.getAttribute("data-theme") === "dark" ? "Light" : "Dark"; };
+  label();
+  toggle.addEventListener("click", function () {
+    document.body.setAttribute("data-theme", document.body.getAttribute("data-theme") === "dark" ? "light" : "dark");
+    label();
+  });
+})();
+</script>
+</body>
+</html>

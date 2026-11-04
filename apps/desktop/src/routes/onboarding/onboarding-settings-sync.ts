@@ -328,6 +328,10 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       // Onboarding doesn't configure MCP connectors — preserve any the returning
       // user already has (the Settings page owns this list).
       mcpServers: base.aiRuntime?.mcpServers ?? [],
+      // Same for the model picker's starred and recent models (this is a full,
+      // authoritative save: omitting them would wipe them).
+      favoriteModels: base.aiRuntime?.favoriteModels ?? [],
+      recentModels: base.aiRuntime?.recentModels ?? [],
     },
   };
 }

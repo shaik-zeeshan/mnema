@@ -21,12 +21,14 @@
     modelDisplayName,
   } from "$lib/insights/conversation";
   import type { AiRuntimeSettings } from "$lib/types/recording";
+  import type { ModelPrefs } from "./modelPrefs.svelte";
 
   let {
     aiRuntime,
     askAiModelOverride,
     pinProvider,
     pinModel,
+    modelPrefs,
     open = $bindable(false),
     up = false,
     onselect,
@@ -39,6 +41,8 @@
     pinProvider: string | null;
     /** The active thread's pinned model id (null → unpinned / default). */
     pinModel: string | null;
+    /** Starred/recent models + "make default" (owned by Chat, which also cycles favorites). */
+    modelPrefs: ModelPrefs;
     /** Open state — bindable so the parent can close on thread switch. */
     open?: boolean;
     /** Open the menu upward (the composer is docked at the bottom). */
@@ -147,6 +151,11 @@
   loading={loader.loading}
   failures={failureRows}
   onretry={() => void loader.load(retryTargets)}
+  favorites={modelPrefs.favorites}
+  recents={modelPrefs.recents}
+  onfavorite={(engine) => modelPrefs.toggleFavorite(engine)}
+  defaultEngine={aiRuntime?.defaultModel ?? null}
+  onmakedefault={askAiModelOverride === null ? (engine) => void modelPrefs.makeDefault(engine) : undefined}
   bind:open
   onopen={handleOpen}
   {onselect}

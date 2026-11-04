@@ -184,6 +184,10 @@ export interface AiRuntimeSettings {
 	defaultModel: AiEngineRef | null;
 	/** User-configured MCP tool connectors (Workstream C). */
 	mcpServers: McpServerConfig[];
+	/** Models starred in the model picker, in star order (first nine get 1-9). */
+	favoriteModels: AiEngineRef[];
+	/** Models last picked in Chat, most recent first (backend caps it at 5). */
+	recentModels: AiEngineRef[];
 }
 
 export interface UpdateAiRuntimeSettingsRequest {
@@ -194,6 +198,10 @@ export interface UpdateAiRuntimeSettingsRequest {
 	defaultModel?: AiEngineRef | null;
 	/** Replacement MCP connector list; omitting leaves the list unchanged. */
 	mcpServers?: McpServerConfig[];
+	/** Replacement starred-model list; omitting leaves it unchanged. */
+	favoriteModels?: AiEngineRef[];
+	/** Replacement recently-picked list; omitting leaves it unchanged. */
+	recentModels?: AiEngineRef[];
 }
 
 /** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */

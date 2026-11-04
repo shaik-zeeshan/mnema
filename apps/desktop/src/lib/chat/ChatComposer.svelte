@@ -6,6 +6,7 @@
   import { tick } from "svelte";
   import type { AiRuntimeSettings } from "$lib/types/recording";
   import ModelPicker from "./ModelPicker.svelte";
+  import type { ModelPrefs } from "./modelPrefs.svelte";
   import ScopePanel from "./ScopePanel.svelte";
   import { scopeLabel, type ChatScope, type GoesTo } from "./scope";
   import { tip } from "$lib/components/tooltip";
@@ -30,6 +31,8 @@
     askAiModelOverride: string | null;
     pinProvider: string | null;
     pinModel: string | null;
+    /** Starred/recent models + "make default" for the picker. */
+    modelPrefs: ModelPrefs;
     pickerOpen: boolean;
     onselect: (engine: { provider: string; model: string } | null) => void;
     onsend: () => void;
@@ -50,6 +53,7 @@
     askAiModelOverride,
     pinProvider,
     pinModel,
+    modelPrefs,
     pickerOpen = $bindable(),
     onselect,
     onsend,
@@ -128,6 +132,7 @@
         {askAiModelOverride}
         {pinProvider}
         {pinModel}
+        {modelPrefs}
         up={docked}
         bind:open={pickerOpen}
         {onselect}

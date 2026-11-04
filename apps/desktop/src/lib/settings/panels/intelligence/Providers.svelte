@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/chat/ModelPickerMenu.svelte";
+  import { ModelPrefs } from "$lib/chat/modelPrefs.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
@@ -17,6 +18,8 @@
   import IconSparkles from "~icons/lucide/sparkles";
 
   const c = getSettingsController();
+  // Starred/recent models, shared with Chat's picker (saved straight to the AI settings).
+  const modelPrefs = new ModelPrefs(() => c.rec.recordingSettings?.aiRuntime);
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
 
@@ -150,6 +153,9 @@
       loading={c.settingsModelLoader.loading}
       failures={c.settingsModelFailureRows}
       onretry={() => void c.settingsModelLoader.load(c.settingsModelRetryTargets)}
+      favorites={modelPrefs.favorites}
+      recents={modelPrefs.recents}
+      onfavorite={(engine) => modelPrefs.toggleFavorite(engine)}
       bind:open={c.aiModelOpen}
       onopen={() => void c.loadSettingsModels()}
       onselect={(engine) => {
