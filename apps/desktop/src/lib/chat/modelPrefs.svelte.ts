@@ -1,8 +1,9 @@
-// ModelPrefs — the model picker's starred + recent models and "make default",
-// read from whatever AI runtime snapshot the surface already holds (Chat's
-// settings load, Settings' canonical store) and saved straight through
+// ModelPrefs — the model picker's starred + recent models, read from whatever
+// AI runtime snapshot the surface already holds (Chat's settings load,
+// Settings' canonical store) and saved straight through
 // `update_ai_runtime_settings` with ONLY the changed field, so it never races
-// the Settings page's provider/default-model autosave.
+// the Settings page's provider/default-model autosave. Also Chat's "Make
+// default", which sets Ask AI's model (`update_access_settings`).
 //
 // Writes are optimistic: the new list shows at once and stays until the
 // surface's snapshot catches up (the save fires `recording_settings_domain_
@@ -76,8 +77,18 @@ export class ModelPrefs {
     });
   }
 
-  /** Make `engine` the global default model (what new chats use). */
-  async makeDefault(engine: AiEngineRef): Promise<void> {
-    await this.#save({ defaultModel: { provider: engine.provider, model: engine.model } });
+  /**
+   * Make `engine` Ask AI's default — the model Chat's "Default" row (and Quick
+   * Recall) runs — saved with its provider. The global default model, which
+   * other AI features use, is left alone.
+   */
+  async makeAskAiDefault(engine: AiEngineRef): Promise<void> {
+    try {
+      await invoke("update_access_settings", {
+        request: { askAiModel: engine.model, askAiModelProvider: engine.provider },
+      });
+    } catch (error) {
+      console.warn("model picker: saving the Ask AI model failed", error);
+    }
   }
 }

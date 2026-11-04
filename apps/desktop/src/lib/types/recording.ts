@@ -35,6 +35,8 @@ export interface AccessSettings {
 	 * is now a bare model id.)
 	 */
 	askAiModel?: string | null;
+	/** Provider instance id `askAiModel` runs on; null = rides on the default model's provider. */
+	askAiModelProvider?: string | null;
 	/** "Answer questions automatically" (Settings → Ask AI). Default `localOnly`. */
 	quickRecallAutoAnswer: QuickRecallAutoAnswer;
 }
@@ -585,6 +587,8 @@ export interface UpdateAccessSettingsRequest {
 	 * engine default.
 	 */
 	askAiModel: string;
+	/** Provider for `askAiModel`, always sent with it; null/empty = bare id on the default's provider. */
+	askAiModelProvider?: string | null;
 	/** Omitted = unchanged. */
 	quickRecallAutoAnswer?: QuickRecallAutoAnswer;
 }

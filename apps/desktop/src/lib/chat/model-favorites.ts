@@ -2,7 +2,7 @@
 // lists persist in the AI runtime settings (`favoriteModels`, `recentModels`);
 // the backend also trims, de-duplicates, drops disconnected providers and caps
 // recents, so these only need to produce the intended next list.
-import type { AiEngineRef } from "$lib/types/recording";
+import type { AccessSettings, AiEngineRef, AiRuntimeSettings } from "$lib/types/recording";
 
 /** How many recent models the backend keeps (mirrors AI_RECENT_MODELS_CAP). */
 export const RECENT_MODELS_CAP = 5;
@@ -42,4 +42,22 @@ export function nextFavorite(favorites: AiEngineRef[], current: AiEngineRef | nu
   if (favorites.length === 0) return null;
   const at = favorites.findIndex((f) => sameEngine(f, current));
   return favorites[(at + 1) % favorites.length];
+}
+
+/**
+ * What Ask AI's "Default" runs (no thread pin) — the frontend mirror of the
+ * backend `ask_ai_resolver_inputs` + resolver: the Ask AI model override on its
+ * saved provider (skipped when that provider is gone), a bare override on the
+ * global default's provider, else the global default model.
+ */
+export function askAiDefaultEngine(
+  aiRuntime: AiRuntimeSettings | null | undefined,
+  access: Pick<AccessSettings, "askAiModel" | "askAiModelProvider"> | null | undefined,
+): AiEngineRef | null {
+  const def = aiRuntime?.defaultModel?.model.trim() ? aiRuntime.defaultModel : null;
+  const model = access?.askAiModel?.trim() ?? "";
+  const provider = access?.askAiModelProvider?.trim() ?? "";
+  if (!model) return def;
+  if (provider) return aiRuntime?.providers.some((p) => p.id === provider) ? { provider, model } : def;
+  return def ? { provider: def.provider, model } : null;
 }

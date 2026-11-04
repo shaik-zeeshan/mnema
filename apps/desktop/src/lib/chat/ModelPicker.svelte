@@ -15,17 +15,15 @@
   import { providerWhere } from "./chat-format";
   import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
   import {
-    defaultEnginePinProvider,
-    defaultEngineModel,
     providerLabelById,
     modelDisplayName,
   } from "$lib/insights/conversation";
-  import type { AiRuntimeSettings } from "$lib/types/recording";
+  import type { AiEngineRef, AiRuntimeSettings } from "$lib/types/recording";
   import type { ModelPrefs } from "./modelPrefs.svelte";
 
   let {
     aiRuntime,
-    askAiModelOverride,
+    askAiDefault,
     pinProvider,
     pinModel,
     modelPrefs,
@@ -35,8 +33,8 @@
   }: {
     /** The aiRuntime settings snapshot backing default/provider labels. */
     aiRuntime: AiRuntimeSettings | null;
-    /** Ask AI model override (access.askAiModel): what "Default" resolves to. */
-    askAiModelOverride: string | null;
+    /** What "Default" runs: the Ask AI model (on its provider), else the global default. */
+    askAiDefault: AiEngineRef | null;
     /** The active thread's pinned provider (null → unpinned / default). */
     pinProvider: string | null;
     /** The active thread's pinned model id (null → unpinned / default). */
@@ -51,19 +49,10 @@
     onselect: (engine: { provider: string; model: string } | null) => void;
   } = $props();
 
-  // The default-model provider/id, resolved from settings. Precedence matches
-  // the backend resolver: Ask AI override (access.askAiModel) wins over the
-  // global default model for the unpinned label.
-  let defaultProvider = $derived(
-    aiRuntime === null ? null : defaultEnginePinProvider(aiRuntime),
-  );
-  let resolvedDefaultModel = $derived(
-    askAiModelOverride !== null
-      ? askAiModelOverride
-      : aiRuntime === null
-        ? null
-        : defaultEngineModel(aiRuntime),
-  );
+  // What "Default" resolves to (the parent mirrors the backend resolver: the
+  // Ask AI model on its provider, else the global default model).
+  let defaultProvider = $derived(askAiDefault?.provider ?? null);
+  let resolvedDefaultModel = $derived(askAiDefault?.model ?? null);
 
   // The trigger shows the friendly name of the model answering this chat (pin, else
   // what Default resolves to) with its provider letter and cloud/local chip; the
@@ -154,8 +143,8 @@
   favorites={modelPrefs.favorites}
   recents={modelPrefs.recents}
   onfavorite={(engine) => modelPrefs.toggleFavorite(engine)}
-  defaultEngine={aiRuntime?.defaultModel ?? null}
-  onmakedefault={askAiModelOverride === null ? (engine) => void modelPrefs.makeDefault(engine) : undefined}
+  defaultEngine={askAiDefault}
+  onmakedefault={(engine) => void modelPrefs.makeAskAiDefault(engine)}
   bind:open
   onopen={handleOpen}
   {onselect}

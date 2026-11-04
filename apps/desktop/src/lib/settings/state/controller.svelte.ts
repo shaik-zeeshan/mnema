@@ -398,8 +398,9 @@ export class SettingsController {
   }
   aiModelValue = $derived(this.aiDefaultModelLabel(this.rec.draftAiDefaultModel));
 
-  askAiModelLabel(value: string): string {
-    return value ? value : "Global default model";
+  askAiModelLabel(value: string, provider = ""): string {
+    if (!value) return "Global default model";
+    return provider ? `${this.aiProviderLabelById(provider)} · ${value}` : value;
   }
 
   userContextCloudDefault = $derived(

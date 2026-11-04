@@ -9,7 +9,7 @@
 //! expose status/test round trips plus provider-tagged model discovery to the
 //! Settings AI surface.
 
-use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind, AiRuntimeSettings};
+use capture_types::{AccessSettings, AiEngineRef, AiProviderConfig, AiProviderKind, AiRuntimeSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::native_capture::{read_recording_settings, RecordingSettingsState};
@@ -388,6 +388,44 @@ fn local_kind(kind: AiProviderKind) -> Option<ai_engine::LocalKind> {
         AiProviderKind::Llamafile => Some(ai_engine::LocalKind::Llamafile),
         _ => None,
     }
+}
+
+/// The Ask AI model override as the resolver's `(pin, feature_override_model)`
+/// inputs, keeping the precedence thread pin → Ask AI override → default.
+///
+/// An override saved with its provider (`ask_ai_model_provider`) is a full
+/// engine: it takes the pin slot when the thread has no usable pin, and when
+/// its provider is no longer connected it is skipped (falls to the default
+/// model) rather than sending its model id to some other provider. A bare
+/// override (no provider) rides on the default model's provider, as before.
+pub(crate) fn ask_ai_resolver_inputs<'a>(
+    settings: &AiRuntimeSettings,
+    access: &'a AccessSettings,
+    pin: Option<(&'a str, &'a str)>,
+) -> (Option<(&'a str, &'a str)>, Option<&'a str>) {
+    let Some(model) = access
+        .ask_ai_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+    else {
+        return (pin, None);
+    };
+    let provider = access
+        .ask_ai_model_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    let Some(provider) = provider else {
+        return (pin, Some(model));
+    };
+    let usable_pin = pin.filter(|(p, m)| {
+        !p.trim().is_empty() && !m.trim().is_empty() && provider_config(settings, p.trim()).is_some()
+    });
+    if usable_pin.is_some() || provider_config(settings, provider).is_none() {
+        return (usable_pin, None);
+    }
+    (Some((provider, model)), None)
 }
 
 /// The connected provider config for an instance id, if the user connected one.
@@ -1519,6 +1557,53 @@ mod tests {
         let (_, _, model) = expect_local(
             resolve_engine_config(&settings, None, None).expect("default should resolve"),
         );
+        assert_eq!(model, "llama-default");
+    }
+
+    #[test]
+    fn ask_ai_override_with_provider_runs_on_that_provider() {
+        let settings = local_settings();
+        let access = |model: Option<&str>, provider: Option<&str>| AccessSettings {
+            ask_ai_model: model.map(str::to_string),
+            ask_ai_model_provider: provider.map(str::to_string),
+            ..AccessSettings::default()
+        };
+        let resolve = |access: &AccessSettings, pin: Option<(&str, &str)>| {
+            let (pin, model) = ask_ai_resolver_inputs(&settings, access, pin);
+            expect_local(resolve_engine_config(&settings, pin, model).expect("resolves"))
+        };
+
+        // Saved with its provider: runs there, not on the default's provider.
+        let with_provider = access(Some("lf-model"), Some("llamafile"));
+        let (kind, _, model) = resolve(&with_provider, None);
+        assert!(matches!(kind, ai_engine::LocalKind::Llamafile));
+        assert_eq!(model, "lf-model");
+
+        // A usable thread pin still wins over it.
+        let (kind, _, model) = resolve(&with_provider, Some(("ollama", "pinned")));
+        assert!(matches!(kind, ai_engine::LocalKind::Ollama));
+        assert_eq!(model, "pinned");
+
+        // A pin to a removed provider falls through to the override, not past it.
+        let (kind, _, model) = resolve(&with_provider, Some(("gone", "pinned")));
+        assert!(matches!(kind, ai_engine::LocalKind::Llamafile));
+        assert_eq!(model, "lf-model");
+
+        // The override's own provider removed: skip it (never send its id to
+        // another provider) and use the global default model.
+        let orphaned = access(Some("lf-model"), Some("gone"));
+        let (kind, _, model) = resolve(&orphaned, None);
+        assert!(matches!(kind, ai_engine::LocalKind::Ollama));
+        assert_eq!(model, "llama-default");
+
+        // No provider saved: a bare id rides on the default's provider, as before.
+        let bare = access(Some("bare-model"), None);
+        let (kind, _, model) = resolve(&bare, None);
+        assert!(matches!(kind, ai_engine::LocalKind::Ollama));
+        assert_eq!(model, "bare-model");
+
+        // No override at all: the default.
+        let (_, _, model) = resolve(&AccessSettings::default(), None);
         assert_eq!(model, "llama-default");
     }
 

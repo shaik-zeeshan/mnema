@@ -57,8 +57,8 @@
 {#snippet modelPicker()}
   <div class="aa-picker">
     <ModelPickerMenu
-      label={c.askAiModelLabel(rec.draftAskAiModel)}
-      title={c.askAiModelLabel(rec.draftAskAiModel)}
+      label={c.askAiModelLabel(rec.draftAskAiModel, rec.draftAskAiModelProvider)}
+      title={c.askAiModelLabel(rec.draftAskAiModel, rec.draftAskAiModelProvider)}
       ariaLabel="Ask AI model override"
       block
       disabled={!rec.draftAskAiEnabled}
@@ -68,9 +68,8 @@
       sentinelLabel="Global default model"
       sentinelTitle="Follows the default model chosen in Providers"
       sentinelSelected={rec.draftAskAiModel === ""}
-      selectedProvider={null}
+      selectedProvider={rec.draftAskAiModelProvider || null}
       selectedModel={rec.draftAskAiModel === "" ? null : rec.draftAskAiModel}
-      exactIdPerProvider={false}
       loading={c.settingsModelLoader.loading}
       failures={c.settingsModelFailureRows}
       onretry={() => void c.settingsModelLoader.load(c.settingsModelRetryTargets)}
@@ -79,7 +78,11 @@
       onfavorite={(engine) => modelPrefs.toggleFavorite(engine)}
       bind:open={c.askAiModelOpen}
       onopen={() => void c.loadSettingsModels()}
-      onselect={(engine) => { rec.draftAskAiModel = engine ? engine.model : ""; }}
+      onselect={(engine) => {
+        // Saved with its provider so it runs there (not on the default model's provider).
+        rec.draftAskAiModel = engine ? engine.model : "";
+        rec.draftAskAiModelProvider = engine ? engine.provider : "";
+      }}
     />
   </div>
 {/snippet}

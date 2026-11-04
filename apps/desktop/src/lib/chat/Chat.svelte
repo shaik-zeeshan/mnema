@@ -24,14 +24,12 @@
     type AskAiUpdateEvent,
     type ConversationSummary,
     contextWindowForModel,
-    defaultEngineModel,
-    defaultEnginePinProvider,
     providerLabelById,
     modelDisplayName,
   } from "$lib/insights/conversation";
   import { conversationStore as store } from "$lib/insights/conversationStore.svelte";
   import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
-  import type { AiRuntimeModel, AiRuntimeModelsResult, AiRuntimeSettings, RecordingSettings, RecordingSettingsDomainUpdateResponse } from "$lib/types/recording";
+  import type { AiEngineRef, AiRuntimeModel, AiRuntimeModelsResult, AiRuntimeSettings, RecordingSettings, RecordingSettingsDomainUpdateResponse } from "$lib/types/recording";
   import ChatTurnView from "./ChatTurn.svelte";
   import ChatComposer from "./ChatComposer.svelte";
   import ChatEmpty from "./ChatEmpty.svelte";
@@ -41,7 +39,7 @@
   import IconPin from "~icons/lucide/pin";
   import { regeneratePlan } from "./regenerate";
   import { ModelPrefs } from "./modelPrefs.svelte";
-  import { nextFavorite } from "./model-favorites";
+  import { askAiDefaultEngine, nextFavorite } from "./model-favorites";
   import { setKeyboardHelpGroups } from "$lib/keyboard-help.svelte";
   import { detectKeyboardPlatform, matchShortcut, type ShortcutDefinition } from "$lib/keyboard";
   import IconEdit from "~icons/lucide/pencil";
@@ -91,7 +89,8 @@
 
   // ── Engine settings + the per-chat model pin (ADR 0034) ──────────────────
   let aiRuntime = $state<AiRuntimeSettings | null>(null);
-  let askAiModelOverride = $state<string | null>(null);
+  // What "Default" runs in Chat: the Ask AI model (on its provider), else the global default.
+  let askAiDefault = $state<AiEngineRef | null>(null);
   let pinProvider = $state<string | null>(null);
   let pinModel = $state<string | null>(null);
   let pickerOpen = $state(false);
@@ -101,18 +100,17 @@
     try {
       const settings = await invoke<RecordingSettings>("get_recording_settings");
       aiRuntime = settings.aiRuntime;
-      const override = settings.access?.askAiModel?.trim() ?? "";
-      askAiModelOverride = override.length > 0 ? override : null;
+      askAiDefault = askAiDefaultEngine(settings.aiRuntime, settings.access);
       webFetch = settings.access?.askAiWebFetchEnabled ?? false;
     } catch {
       aiRuntime = null;
-      askAiModelOverride = null;
+      askAiDefault = null;
     }
   }
 
   // Same precedence as the backend resolver: pin → Ask AI override → default.
-  const engineProvider = $derived(pinProvider ?? (aiRuntime ? defaultEnginePinProvider(aiRuntime) : null));
-  const engineModel = $derived(pinModel ?? askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null));
+  const engineProvider = $derived(pinProvider ?? askAiDefault?.provider ?? null);
+  const engineModel = $derived(pinModel ?? askAiDefault?.model ?? null);
   const engineWhere = $derived(engineProvider === null ? null : providerWhere(aiRuntime?.providers.find((p) => p.id === engineProvider)));
   const sendTo = $derived(engineProvider === null ? null : providerLabelById(aiRuntime?.providers, engineProvider));
   const goesTo = $derived({
@@ -123,7 +121,7 @@
     connectors: aiRuntime?.mcpServers?.filter((m) => m.enabled).length ?? 0,
   });
   $effect(() => {
-    defaultModel = askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null);
+    defaultModel = askAiDefault?.model ?? null;
   });
 
   // Starred + recent models (the picker's short list) live in the AI settings.
@@ -616,7 +614,7 @@
     onoffaction={() => (composerOff.retry ? void loadAskAvailability() : void openSettings("intelligence"))}
     {sendTo}
     {aiRuntime}
-    {askAiModelOverride}
+    {askAiDefault}
     {pinProvider}
     {pinModel}
     {modelPrefs}

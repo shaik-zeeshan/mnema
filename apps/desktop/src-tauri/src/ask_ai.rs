@@ -1957,9 +1957,9 @@ async fn run_ask_ai_turn(
         .flatten();
 
     // 2. Resolve the engine through the single precedence chain (ADR 0034):
-    //    thread pin → Ask AI model override (`access.askAiModel`, a bare
-    //    rig-core model id riding on the default model's provider) → global
-    //    default model.
+    //    thread pin → Ask AI model override (`access.askAiModel`, on its saved
+    //    provider, or riding on the default model's provider when it has none)
+    //    → global default model.
     let settings = read_recording_settings(&app_handle);
     let pin_ref = pin.as_ref().and_then(|(provider, model)| {
         match (provider.as_deref(), model.as_deref()) {
@@ -1967,12 +1967,11 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_ref_live(
-        &settings.ai_runtime,
-        pin_ref,
-        settings.access.ask_ai_model.as_deref(),
-    )
-    .await;
+    let (pin_ref, override_model) =
+        crate::ai_runtime::ask_ai_resolver_inputs(&settings.ai_runtime, &settings.access, pin_ref);
+    let config_result =
+        crate::ai_runtime::resolve_engine_ref_live(&settings.ai_runtime, pin_ref, override_model)
+            .await;
     let (engine_provider, config) = match config_result {
         Ok(resolved) => resolved,
         Err(reason) => {

@@ -1363,12 +1363,20 @@ fn apply_domain_patch_to_settings(
                 touched = true;
             }
             if let Some(value) = request.ask_ai_model {
-                let trimmed = value.trim();
-                settings.access.ask_ai_model = if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
+                // The model and its provider are one value: rewriting the model
+                // always rewrites (or clears) the provider, so a stale provider
+                // never outlives the model it belonged to.
+                let non_empty = |v: &str| {
+                    let trimmed = v.trim();
+                    (!trimmed.is_empty()).then(|| trimmed.to_string())
                 };
+                settings.access.ask_ai_model = non_empty(&value);
+                settings.access.ask_ai_model_provider = settings
+                    .access
+                    .ask_ai_model
+                    .as_ref()
+                    .and(request.ask_ai_model_provider.as_deref())
+                    .and_then(non_empty);
                 touched = true;
             }
         }
@@ -2043,6 +2051,50 @@ mod tests {
     }
 
     #[test]
+    fn access_patch_writes_ask_ai_model_and_provider_together() {
+        let patch = |model: Option<&str>, provider: Option<&str>| {
+            RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
+                ask_ai_model: model.map(str::to_string),
+                ask_ai_model_provider: provider.map(str::to_string),
+                ..Default::default()
+            })
+        };
+        let set = apply_domain_patch_for_test(
+            default_recording_settings(),
+            patch(Some(" qwen3:8b "), Some(" ollama ")),
+        )
+        .expect("access patch should validate");
+        assert_eq!(set.access.ask_ai_model.as_deref(), Some("qwen3:8b"));
+        assert_eq!(set.access.ask_ai_model_provider.as_deref(), Some("ollama"));
+
+        // A new model without a provider clears the old provider (bare id).
+        let bare = apply_domain_patch_for_test(set.clone(), patch(Some("gpt-5"), None))
+            .expect("access patch should validate");
+        assert_eq!(bare.access.ask_ai_model.as_deref(), Some("gpt-5"));
+        assert_eq!(bare.access.ask_ai_model_provider, None);
+
+        // Clearing the model clears its provider too.
+        let cleared = apply_domain_patch_for_test(set.clone(), patch(Some(""), Some("ollama")))
+            .expect("access patch should validate");
+        assert_eq!(cleared.access.ask_ai_model, None);
+        assert_eq!(cleared.access.ask_ai_model_provider, None);
+
+        // A patch that doesn't touch the model leaves the pair alone.
+        let untouched = apply_domain_patch_for_test(
+            set,
+            RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
+                ask_ai_enabled: Some(true),
+                ..Default::default()
+            }),
+        )
+        .expect("access patch should validate");
+        assert_eq!(
+            untouched.access.ask_ai_model_provider.as_deref(),
+            Some("ollama")
+        );
+    }
+
+    #[test]
     fn access_domain_update_preserves_unrelated_settings_fields() {
         let mut base = default_recording_settings();
         base.capture_microphone = true;
@@ -2057,6 +2109,7 @@ mod tests {
                 ask_ai_max_tool_calls: Some(0),
                 ask_ai_web_fetch_enabled: Some(true),
                 ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
+                ask_ai_model_provider: None,
                 quick_recall_auto_answer: Some(capture_types::QuickRecallAutoAnswer::Never),
             }),
         )

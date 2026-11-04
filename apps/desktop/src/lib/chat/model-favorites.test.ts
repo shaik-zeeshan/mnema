@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
-import { nextFavorite, pushRecent, quickRecents, toggleFavorite } from "./model-favorites";
+import { askAiDefaultEngine, nextFavorite, pushRecent, quickRecents, toggleFavorite } from "./model-favorites";
 
 const e = (provider, model) => ({ provider, model });
 
@@ -29,5 +29,25 @@ describe("model favorites", () => {
     expect(nextFavorite(favs, e("p", "z"))).toEqual(e("p", "a"));
     expect(nextFavorite(favs, null)).toEqual(e("p", "a"));
     expect(nextFavorite([], null)).toBeNull();
+  });
+});
+
+describe("askAiDefaultEngine (mirrors ask_ai_resolver_inputs)", () => {
+  const runtime = {
+    providers: [{ id: "anthropic" }, { id: "ollama" }],
+    defaultModel: e("anthropic", "claude-sonnet-4-5"),
+  };
+  test("Ask AI model with its provider runs on that provider", () => {
+    expect(askAiDefaultEngine(runtime, { askAiModel: "qwen3:8b", askAiModelProvider: "ollama" })).toEqual(e("ollama", "qwen3:8b"));
+  });
+  test("its provider removed → the global default, never the id on another provider", () => {
+    expect(askAiDefaultEngine(runtime, { askAiModel: "qwen3:8b", askAiModelProvider: "gone" })).toEqual(e("anthropic", "claude-sonnet-4-5"));
+  });
+  test("a bare model id rides on the default's provider", () => {
+    expect(askAiDefaultEngine(runtime, { askAiModel: "claude-opus-5-5", askAiModelProvider: null })).toEqual(e("anthropic", "claude-opus-5-5"));
+  });
+  test("no Ask AI model → the global default; no default → null", () => {
+    expect(askAiDefaultEngine(runtime, { askAiModel: "" })).toEqual(e("anthropic", "claude-sonnet-4-5"));
+    expect(askAiDefaultEngine({ providers: [], defaultModel: null }, { askAiModel: "x" })).toBeNull();
   });
 });
