@@ -9,18 +9,18 @@ use capture_types::{
     default_privacy_settings, default_semantic_search_model_id, default_semantic_search_provider,
     default_speaker_analysis_model_id, default_speaker_analysis_settings,
     default_speaker_analysis_timeout_seconds, default_system_audio_activity_sensitivity,
-    default_video_bitrate, AccessSettings, AiRuntimeSettings, AudioSpeechDetectionSettings,
-    AudioSpeechDetector, AudioTranscriptionProvider, AudioTranscriptionSettings,
-    CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings, RecordingSettings,
-    RetentionPolicy, ScreenResolution, ScreenResolutionPreset, SemanticSearchSettings,
-    SettingsOwnershipDomain, SpeakerAnalysisSettings, UpdateAccessSettingsRequest,
-    UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
-    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
-    UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
-    UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
+    default_video_bitrate, AccessSettings, AiEngineRef, AiRuntimeSettings,
+    AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
+    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
+    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
+    SemanticSearchSettings, SettingsOwnershipDomain, SpeakerAnalysisSettings,
+    UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
+    UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
+    UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
     UpdateSemanticSearchSettingsRequest, UpdateStorageSettingsRequest,
     UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest, UserContextSettings,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings, AI_RECENT_MODELS_CAP,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -809,7 +809,10 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
 /// legacy single-per-kind file), drop duplicate provider *instance ids* (first
 /// wins — the keychain key lives at the instance id), and clear a default model
 /// whose model id is blank. Multiple instances of one kind are kept as long as
-/// their ids differ, so same-kind providers can coexist.
+/// their ids differ, so same-kind providers can coexist. Favorite and recent
+/// models drop blank ids, duplicates, and refs to a provider no longer
+/// connected (so removing a provider cleans them up for every caller); recents
+/// are capped at [`AI_RECENT_MODELS_CAP`].
 fn normalize_ai_runtime_settings(mut ai_runtime: AiRuntimeSettings) -> AiRuntimeSettings {
     for provider in &mut ai_runtime.providers {
         provider.id = provider.id.trim().to_string();
@@ -835,6 +838,27 @@ fn normalize_ai_runtime_settings(mut ai_runtime: AiRuntimeSettings) -> AiRuntime
             Some(default_model)
         }
     });
+    let providers = &ai_runtime.providers;
+    let clean = |list: Vec<AiEngineRef>| {
+        let mut out: Vec<AiEngineRef> = Vec::new();
+        for mut engine in list {
+            engine.provider = engine.provider.trim().to_string();
+            engine.model = engine.model.trim().to_string();
+            if engine.model.is_empty()
+                || !providers.iter().any(|p| p.id == engine.provider)
+                || out.contains(&engine)
+            {
+                continue;
+            }
+            out.push(engine);
+        }
+        out
+    };
+    let favorite_models = clean(std::mem::take(&mut ai_runtime.favorite_models));
+    let mut recent_models = clean(std::mem::take(&mut ai_runtime.recent_models));
+    recent_models.truncate(AI_RECENT_MODELS_CAP);
+    ai_runtime.favorite_models = favorite_models;
+    ai_runtime.recent_models = recent_models;
     ai_runtime
 }
 
@@ -1367,6 +1391,14 @@ fn apply_domain_patch_to_settings(
             if let Some(value) = request.default_model {
                 // Double-Option: an explicit `null` clears the default model.
                 settings.ai_runtime.default_model = value;
+                touched = true;
+            }
+            if let Some(value) = request.favorite_models {
+                settings.ai_runtime.favorite_models = value;
+                touched = true;
+            }
+            if let Some(value) = request.recent_models {
+                settings.ai_runtime.recent_models = value;
                 touched = true;
             }
         }
@@ -2063,6 +2095,8 @@ mod tests {
                 model: "claude-haiku-4-5".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 
@@ -2090,6 +2124,69 @@ mod tests {
             updated.ai_runtime.default_model,
             base.ai_runtime.default_model
         );
+    }
+
+    #[test]
+    fn ai_runtime_patch_cleans_favorite_and_recent_models() {
+        let engine = |provider: &str, model: &str| capture_types::AiEngineRef {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+
+        // Favorites: trimmed, de-duplicated, blank ids and refs to a provider
+        // that isn't connected dropped; star order kept. Recents: same, capped.
+        let updated = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                favorite_models: Some(vec![
+                    engine("anthropic", " claude-opus-5-5 "),
+                    engine("ollama", "qwen3:8b"),
+                    engine("anthropic", "claude-opus-5-5"),
+                    engine("anthropic", "  "),
+                    engine("anthropic", "claude-haiku-4-5"),
+                ]),
+                recent_models: Some(
+                    (0..8)
+                        .map(|i| engine("anthropic", &format!("m{i}")))
+                        .collect(),
+                ),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+        assert_eq!(
+            updated.ai_runtime.favorite_models,
+            vec![
+                engine("anthropic", "claude-opus-5-5"),
+                engine("anthropic", "claude-haiku-4-5")
+            ]
+        );
+        let recents: Vec<&str> = updated
+            .ai_runtime
+            .recent_models
+            .iter()
+            .map(|e| e.model.as_str())
+            .collect();
+        assert_eq!(recents, ["m0", "m1", "m2", "m3", "m4"]);
+        // The default model is untouched by a favorites-only patch.
+        assert_eq!(
+            updated.ai_runtime.default_model,
+            Some(engine("anthropic", "claude-haiku-4-5"))
+        );
+
+        // Removing the provider drops its favorites and recents too.
+        let removed = apply_domain_patch_for_test(
+            updated,
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                providers: Some(Vec::new()),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+        assert!(removed.ai_runtime.favorite_models.is_empty());
+        assert!(removed.ai_runtime.recent_models.is_empty());
     }
 
     #[test]
@@ -2127,6 +2224,8 @@ mod tests {
                 // Explicit `null` over the wire clears the default model.
                 default_model: Some(None),
                 mcp_servers: None,
+                favorite_models: None,
+                recent_models: None,
             }),
         )
         .expect("ai runtime patch should validate");
@@ -2185,6 +2284,8 @@ mod tests {
                 providers: None,
                 default_model: None,
                 mcp_servers: Some(vec![server.clone()]),
+                favorite_models: None,
+                recent_models: None,
             }),
         )
         .expect("ai runtime patch should validate");

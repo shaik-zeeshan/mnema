@@ -1445,6 +1445,8 @@ mod tests {
                 model: "llama-default".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 
@@ -1613,6 +1615,8 @@ mod tests {
                 model: "default-model".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
 
         // Pin to the second instance resolves to ITS endpoint.
@@ -1645,6 +1649,8 @@ mod tests {
                 model: "some-model".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         // The base-URL check fires before any keychain access.
         assert_eq!(
@@ -1823,6 +1829,8 @@ mod tests {
                 model: "claude-haiku-4-5".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
@@ -1846,6 +1854,8 @@ mod tests {
                 model: "some-model".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         let result = resolve_engine_config(&custom, None, None);
         if let Err(reason) = result {
@@ -1979,6 +1989,8 @@ mod tests {
                 model: "claude-test".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         let sync = resolve_engine_config(&cloud, None, None).expect("sync resolves the cloud key");
         let live = resolve_engine_config_live(&cloud, None, None)
@@ -2033,6 +2045,8 @@ mod tests {
                 model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
@@ -2162,6 +2176,8 @@ mod tests {
                 model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
@@ -2192,6 +2208,8 @@ mod tests {
                 model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         crate::secret_vault_test_support::install_shared_test_secret_vault();
         let _ = app_infra::delete_ai_provider_key("chatgpt");
@@ -2230,6 +2248,8 @@ mod tests {
                 model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         // Only the SECOND instance is connected, and with a long-lived token so
         // resolving it needs no network.
@@ -2309,6 +2329,8 @@ mod tests {
                 model: "gpt-5.6-terra".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),

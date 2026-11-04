@@ -787,7 +787,18 @@ pub struct AiRuntimeSettings {
     /// provider-centric autosave; secrets live in the keychain, never here.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Models the user starred in the model picker, in star order (the picker
+    /// numbers the first nine 1-9). Shared by every picker surface.
+    #[serde(default)]
+    pub favorite_models: Vec<AiEngineRef>,
+    /// The last models picked in Chat, most recent first, capped at
+    /// [`AI_RECENT_MODELS_CAP`].
+    #[serde(default)]
+    pub recent_models: Vec<AiEngineRef>,
 }
+
+/// How many recently picked models the AI settings keep.
+pub const AI_RECENT_MODELS_CAP: usize = 5;
 
 impl Default for AiRuntimeSettings {
     fn default() -> Self {
@@ -796,6 +807,8 @@ impl Default for AiRuntimeSettings {
             providers: Vec::new(),
             default_model: None,
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 }
@@ -916,6 +929,10 @@ struct AiRuntimeSettingsWire {
     default_model: Option<AiEngineRef>,
     #[serde(default)]
     mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    favorite_models: Vec<AiEngineRef>,
+    #[serde(default)]
+    recent_models: Vec<AiEngineRef>,
     // Legacy engine-centric shape.
     engine_kind: Option<LegacyAiEngineKind>,
     cloud_provider: Option<LegacyAiCloudProvider>,
@@ -943,6 +960,8 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
                     .default_model
                     .filter(|model| !model.model.trim().is_empty()),
                 mcp_servers: wire.mcp_servers,
+                favorite_models: wire.favorite_models,
+                recent_models: wire.recent_models,
             };
         }
 
@@ -1005,8 +1024,11 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
             enabled: wire.enabled,
             providers,
             default_model,
-            // No legacy engine-centric file ever carried MCP connectors.
+            // No legacy engine-centric file ever carried MCP connectors,
+            // favorites or recents.
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 }
@@ -1047,6 +1069,10 @@ pub struct UpdateAiRuntimeSettingsRequest {
     /// Replacement MCP connector list (wholesale, like `providers`). `None`
     /// leaves the existing list unchanged; `Some` replaces it.
     pub mcp_servers: Option<Vec<McpServerConfig>>,
+    /// Replacement starred-model list (wholesale). `None` = unchanged.
+    pub favorite_models: Option<Vec<AiEngineRef>>,
+    /// Replacement recently-picked list (wholesale). `None` = unchanged.
+    pub recent_models: Option<Vec<AiEngineRef>>,
 }
 
 /// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine

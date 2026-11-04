@@ -507,6 +507,8 @@ mod tests {
                 model: "claude-haiku-4-5".to_string(),
             }),
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
 
         let json = serde_json::to_value(&settings).expect("serialize");
@@ -603,6 +605,8 @@ mod tests {
                     enabled_tools: None,
                 },
             ],
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         };
 
         let json = serde_json::to_value(&settings).expect("serialize");
@@ -628,6 +632,35 @@ mod tests {
         let settings: AiRuntimeSettings =
             serde_json::from_str(r#"{ "enabled": true, "providers": [] }"#).expect("deserialize");
         assert!(settings.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn ai_runtime_settings_favorite_and_recent_models_default_and_round_trip() {
+        // A settings file from before the model picker kept favorites/recents
+        // (no keys) loads with both lists empty.
+        let settings: AiRuntimeSettings =
+            serde_json::from_str(r#"{ "enabled": true, "providers": [] }"#).expect("deserialize");
+        assert!(settings.favorite_models.is_empty());
+        assert!(settings.recent_models.is_empty());
+
+        // Both lists keep their order through a save/load.
+        let settings: AiRuntimeSettings = serde_json::from_str(
+            r#"{ "enabled": true, "providers": [],
+                 "favoriteModels": [{ "provider": "ollama", "model": "qwen3:8b" },
+                                    { "provider": "anthropic", "model": "claude-sonnet-5-5" }],
+                 "recentModels": [{ "provider": "openai", "model": "gpt-5-mini" }] }"#,
+        )
+        .expect("deserialize");
+        assert_eq!(settings.favorite_models[1].model, "claude-sonnet-5-5");
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["favoriteModels"][0]["model"], "qwen3:8b");
+        assert_eq!(json["recentModels"][0]["provider"], "openai");
+
+        // Patch: absent = unchanged (None), present = replace.
+        let request: UpdateAiRuntimeSettingsRequest =
+            serde_json::from_str(r#"{ "favoriteModels": [] }"#).expect("deserialize");
+        assert_eq!(request.favorite_models, Some(Vec::new()));
+        assert!(request.recent_models.is_none());
     }
 
     #[test]
