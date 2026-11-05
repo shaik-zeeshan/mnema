@@ -154,6 +154,9 @@ struct ModelsListEntry {
     context_length: Option<u64>,
     #[serde(default)]
     max_model_len: Option<u64>,
+    /// Anthropic's `/v1/models` reports the context window as `max_input_tokens`.
+    #[serde(default)]
+    max_input_tokens: Option<u64>,
     /// llama.cpp-style servers (incl. llamafile) nest it as `meta.n_ctx_train`.
     #[serde(default)]
     meta: Option<ModelsListEntryMeta>,
@@ -169,6 +172,7 @@ impl ModelsListEntry {
     fn context_window(&self) -> Option<u64> {
         self.context_length
             .or(self.max_model_len)
+            .or(self.max_input_tokens)
             .or(self.meta.as_ref().and_then(|meta| meta.n_ctx_train))
             .filter(|&tokens| tokens > 0)
     }
@@ -1458,6 +1462,15 @@ pub async fn verify_ai_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_models_listing_reports_max_input_tokens_as_context_window() {
+        let parsed: ModelsListResponse = serde_json::from_str(
+            r#"{"data":[{"id":"claude-opus-5-5","max_input_tokens":1000000,"max_tokens":128000}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.data[0].context_window(), Some(1_000_000));
+    }
 
     /// Settings with local-only providers so resolution never touches the OS
     /// keychain (cloud key loads are exercised by the app-infra store tests).
