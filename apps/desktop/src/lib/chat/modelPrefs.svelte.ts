@@ -24,6 +24,10 @@ export class ModelPrefs {
   #source: () => AiRuntimeSettings | null | undefined;
   #favs = $state.raw<AiEngineRef[] | null>(null); // raw: compared by identity below
   #recents = $state.raw<AiEngineRef[] | null>(null);
+  // The snapshot list a settled override was saved against (null while in
+  // flight): any newer snapshot postdates the save, so it wins over the override.
+  #favsBase: AiEngineRef[] | null = null;
+  #recentsBase: AiEngineRef[] | null = null;
 
   favorites = $derived(this.#favs ?? this.#sourceFavs());
   recents = $derived(this.#recents ?? this.#sourceRecents());
@@ -35,8 +39,8 @@ export class ModelPrefs {
     $effect(() => {
       const favs = this.#sourceFavs();
       const recents = this.#sourceRecents();
-      if (this.#favs && sameList(this.#favs, favs)) this.#favs = null;
-      if (this.#recents && sameList(this.#recents, recents)) this.#recents = null;
+      if (this.#favs && (sameList(this.#favs, favs) || (this.#favsBase && favs !== this.#favsBase))) this.#favs = null;
+      if (this.#recents && (sameList(this.#recents, recents) || (this.#recentsBase && recents !== this.#recentsBase))) this.#recents = null;
     });
   }
 
@@ -59,21 +63,29 @@ export class ModelPrefs {
 
   toggleFavorite(engine: AiEngineRef): void {
     const next = toggleFavorite(this.favorites, engine);
+    const base = this.#sourceFavs();
+    this.#favsBase = null;
     this.#favs = next;
     // Settle on what was actually saved (the backend drops refs to providers
     // that aren't saved yet); on failure fall back to the snapshot.
     void this.#save({ favoriteModels: next }).then((saved) => {
-      if (this.#favs === next) this.#favs = saved ? saved.favoriteModels : null;
+      if (this.#favs !== next) return;
+      this.#favsBase = base;
+      this.#favs = saved ? saved.favoriteModels : null;
     });
   }
 
   /** Record a model picked in Chat (no-op when it's already the most recent). */
   pushRecent(engine: AiEngineRef): void {
     if (sameEngine(this.recents[0], engine)) return;
-    const next = pushRecent(this.recents, engine);
+    const next = pushRecent(this.recents, engine, this.favorites);
+    const base = this.#sourceRecents();
+    this.#recentsBase = null;
     this.#recents = next;
     void this.#save({ recentModels: next }).then((saved) => {
-      if (this.#recents === next) this.#recents = saved ? saved.recentModels : null;
+      if (this.#recents !== next) return;
+      this.#recentsBase = base;
+      this.#recents = saved ? saved.recentModels : null;
     });
   }
 

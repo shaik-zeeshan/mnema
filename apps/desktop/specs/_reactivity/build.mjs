@@ -84,4 +84,12 @@ compile(
   ],
 );
 
+// ModelPrefs: optimistic favorites/recents + settle (model-prefs.test.ts).
+compile(
+  resolve(appRoot, "src/lib/chat/modelPrefs.svelte.ts"),
+  resolve(here, "gen/modelPrefs.js"),
+  [['"./model-favorites"', `"${resolve(appRoot, "src/lib/chat/model-favorites")}"`]],
+);
+compile(resolve(here, "model-prefs-driver.svelte.ts"), resolve(here, "gen/model-prefs-driver.js"), []);
+
 console.log("compiled");

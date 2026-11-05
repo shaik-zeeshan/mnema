@@ -27,9 +27,12 @@ export function toggleFavorite(favorites: AiEngineRef[], engine: AiEngineRef): A
     : [...favorites, engine].map(plain);
 }
 
-/** Move `engine` to the front of the recents, capped. */
-export function pushRecent(recents: AiEngineRef[], engine: AiEngineRef): AiEngineRef[] {
-  return [engine, ...recents.filter((r) => !sameEngine(r, engine))].slice(0, RECENT_MODELS_CAP).map(plain);
+/**
+ * Move `engine` to the front of the recents, capped. Other starred entries are
+ * dropped so picking favorites never pushes the unstarred ones out of the cap.
+ */
+export function pushRecent(recents: AiEngineRef[], engine: AiEngineRef, favorites: AiEngineRef[] = []): AiEngineRef[] {
+  return [engine, ...recents.filter((r) => !sameEngine(r, engine) && !isFavorite(favorites, r))].slice(0, RECENT_MODELS_CAP).map(plain);
 }
 
 /** The recents worth showing next to the favorites: not starred, first `n`. */
@@ -47,8 +50,8 @@ export function nextFavorite(favorites: AiEngineRef[], current: AiEngineRef | nu
 /**
  * What Ask AI's "Default" runs (no thread pin) — the frontend mirror of the
  * backend `ask_ai_resolver_inputs` + resolver: the Ask AI model override on its
- * saved provider (skipped when that provider is gone), a bare override on the
- * global default's provider, else the global default model.
+ * saved provider (skipped when that provider is gone), else the global default
+ * model.
  */
 export function askAiDefaultEngine(
   aiRuntime: AiRuntimeSettings | null | undefined,
@@ -57,7 +60,6 @@ export function askAiDefaultEngine(
   const def = aiRuntime?.defaultModel?.model.trim() ? aiRuntime.defaultModel : null;
   const model = access?.askAiModel?.trim() ?? "";
   const provider = access?.askAiModelProvider?.trim() ?? "";
-  if (!model) return def;
-  if (provider) return aiRuntime?.providers.some((p) => p.id === provider) ? { provider, model } : def;
-  return def ? { provider: def.provider, model } : null;
+  if (!model || !provider) return def;
+  return aiRuntime?.providers.some((p) => p.id === provider) ? { provider, model } : def;
 }

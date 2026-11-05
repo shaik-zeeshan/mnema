@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { askEngine, askNotice, autoAnswerAllowed, isQuestion, nextForced, sameQuestion, scopedQuestion } from "./question-detect";
 
 const settings = (kind: string, override = "") => ({
-  access: { askAiModel: override },
+  access: { askAiModel: override, askAiModelProvider: override ? "p1" : null },
   aiRuntime: {
     enabled: true,
     providers: [{ id: "p1", kind, label: "", baseUrl: "" }],
@@ -49,10 +49,29 @@ describe("nextForced", () => {
 });
 
 describe("askEngine + autoAnswerAllowed", () => {
-  test("local = the default provider's kind; the override replaces only the model", () => {
+  test("local = the answering provider's kind; the override runs on its saved provider", () => {
     expect(askEngine(settings("ollama", "qwen3:14b"))).toEqual({ model: "qwen3:14b", local: true });
     expect(askEngine(settings("anthropic"))).toEqual({ model: "Claude Sonnet 4.6", local: false });
     expect(askEngine(null)).toEqual({ model: null, local: false });
+  });
+  test("an Ask AI model saved with its provider takes that provider's locality", () => {
+    const mixed = (provider: string | null) => ({
+      access: { askAiModel: "m", askAiModelProvider: provider },
+      aiRuntime: {
+        enabled: true,
+        providers: [
+          { id: "cloud", kind: "anthropic", label: "", baseUrl: "" },
+          { id: "local", kind: "ollama", label: "", baseUrl: "" },
+        ],
+        defaultModel: { provider: "local", model: "qwen3:8b" },
+        mcpServers: [],
+      },
+    });
+    // Local default, cloud override: "local only" must NOT auto-answer.
+    expect(askEngine(mixed("cloud") as any)).toEqual({ model: "m", local: false });
+    expect(autoAnswerAllowed("localOnly", askEngine(mixed("cloud") as any))).toBe(false);
+    // Override's provider removed: the global default, local.
+    expect(askEngine(mixed("gone") as any)).toEqual({ model: "qwen3:8b", local: true });
   });
   test("always · local only · never", () => {
     const cloud = { model: "m", local: false };

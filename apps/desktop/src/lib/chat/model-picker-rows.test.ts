@@ -50,6 +50,20 @@ describe("buildPickerRows", () => {
     expect(idx).toEqual(idx.map((_, i) => i));
   });
 
+  test("only the first nine favorites get a number key; an unlisted favorite still shows", () => {
+    const favorites = [e("anthropic", "gone-from-listing"), ...Array.from({ length: 10 }, (_, i) => e("openrouter", `vendor/m${i}`))];
+    const opts = options(buildPickerRows(base({ favorites, recents: [] }))).filter((o) => o.option.kind === "pool");
+    expect(opts.map((o) => o.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, null, null]);
+    expect(opts[0].option.model).toBe("gone-from-listing");
+  });
+
+  test("nothing starred or recent: the picker opened on quick shows browse instead", () => {
+    const rows = buildPickerRows(base({ mode: "quick", favorites: [], recents: [] }));
+    expect(rows[0]).toMatchObject({ type: "option", option: { kind: "sentinel" } });
+    expect(rows.some((r) => r.type === "group")).toBe(true);
+    expect(rows.some((r) => r.type === "action" && r.action === "back")).toBe(false);
+  });
+
   test("browse view: folded groups with counts; the default's provider starts open", () => {
     const rows = buildPickerRows(base({ mode: "browse" }));
     const groups = rows.filter((r) => r.type === "group");
@@ -79,6 +93,12 @@ describe("buildPickerRows", () => {
       ["exact", "anthropic"],
       ["exact", "openrouter"],
     ]);
+  });
+
+  test("a query that matches only the Default row doesn't also say nothing matched", () => {
+    const rows = buildPickerRows(base({ query: "defau" }));
+    expect(options(rows)[0]).toMatchObject({ option: { kind: "sentinel" } });
+    expect(rows.some((r) => r.type === "note")).toBe(false);
   });
 
   test("a provider that failed to list starts open with its failure, no count", () => {

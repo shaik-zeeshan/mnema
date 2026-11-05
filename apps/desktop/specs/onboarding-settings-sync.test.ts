@@ -46,7 +46,8 @@ const base = {
     askAiEnabled: false,
     askAiWebFetchEnabled: true,
     askAiMaxToolCalls: 12,
-    askAiModel: null,
+    askAiModel: "qwen3:8b",
+    askAiModelProvider: "ollama",
     quickRecallAutoAnswer: "never",
   },
   aiRuntime: {
@@ -54,6 +55,8 @@ const base = {
     providers: [],
     defaultModel: null,
     mcpServers,
+    favoriteModels: [{ provider: "ollama", model: "qwen3:8b" }],
+    recentModels: [{ provider: "anthropic", model: "claude-opus-5-5" }],
   },
 } as unknown as RecordingSettings;
 
@@ -75,6 +78,13 @@ describe("buildSettingsRequestFrom preserves Settings-page-owned slices", () => 
 
   test("quickRecallAutoAnswer round-trips from base", () => {
     expect(buildSettingsRequestFrom(draft).access.quickRecallAutoAnswer).toBe("never");
+  });
+
+  test("Ask AI model keeps its provider; favorites and recents survive the full save", () => {
+    const next = buildSettingsRequestFrom(draft);
+    expect([next.access.askAiModel, next.access.askAiModelProvider]).toEqual(["qwen3:8b", "ollama"]);
+    expect(next.aiRuntime.favoriteModels).toEqual(base.aiRuntime.favoriteModels);
+    expect(next.aiRuntime.recentModels).toEqual(base.aiRuntime.recentModels);
   });
 
   test("mcpServers round-trip from base untouched", () => {

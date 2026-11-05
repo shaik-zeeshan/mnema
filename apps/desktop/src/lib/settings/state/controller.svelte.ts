@@ -311,6 +311,12 @@ export class SettingsController {
     if (this.rec.draftAiDefaultModel?.provider === id) {
       this.rec.draftAiDefaultModel = null;
     }
+    // Ask AI skips a model whose provider is gone; don't keep naming it (or let a
+    // same-kind re-add, which reuses the id, silently bring it back).
+    if (this.rec.draftAskAiModelProvider === id) {
+      this.rec.draftAskAiModel = "";
+      this.rec.draftAskAiModelProvider = "";
+    }
     // The last test-connection banner names the tested provider/model; once it is
     // removed the banner would misrepresent the live config, so clear it.
     this.aiRuntime.resetTestResult();

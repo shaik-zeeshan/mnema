@@ -11,10 +11,23 @@ describe("model favorites", () => {
     expect(toggleFavorite([a, b], e("anthropic", "opus"))).toEqual([b]);
   });
 
+  test("the same model id under another provider is a different favorite", () => {
+    const a = e("anthropic", "x"), b = e("openrouter", "x");
+    expect(toggleFavorite([a], b)).toEqual([a, b]);
+    expect(toggleFavorite([a, b], e("openrouter", "x"))).toEqual([a]);
+  });
+
   test("pushRecent moves to front, de-dupes, caps at 5", () => {
     const list = ["1", "2", "3", "4", "5"].map((m) => e("p", m));
     expect(pushRecent(list, e("p", "3")).map((x) => x.model)).toEqual(["3", "1", "2", "4", "5"]);
     expect(pushRecent(list, e("p", "9")).map((x) => x.model)).toEqual(["9", "1", "2", "3", "4"]);
+  });
+
+  test("picking starred models never pushes the unstarred recents off the short list", () => {
+    const favs = ["a", "b", "c", "d"].map((m) => e("p", m));
+    let recents = [e("p", "x"), e("p", "y")];
+    for (const f of favs) recents = pushRecent(recents, f, favs); // e.g. ⌘⇧M through every favorite
+    expect(quickRecents(recents, favs).map((r) => r.model)).toEqual(["x", "y"]);
   });
 
   test("quickRecents skips starred models", () => {
@@ -43,8 +56,8 @@ describe("askAiDefaultEngine (mirrors ask_ai_resolver_inputs)", () => {
   test("its provider removed → the global default, never the id on another provider", () => {
     expect(askAiDefaultEngine(runtime, { askAiModel: "qwen3:8b", askAiModelProvider: "gone" })).toEqual(e("anthropic", "claude-sonnet-4-5"));
   });
-  test("a bare model id rides on the default's provider", () => {
-    expect(askAiDefaultEngine(runtime, { askAiModel: "claude-opus-5-5", askAiModelProvider: null })).toEqual(e("anthropic", "claude-opus-5-5"));
+  test("a model id saved without its provider is not an override (no old-format fallback)", () => {
+    expect(askAiDefaultEngine(runtime, { askAiModel: "claude-opus-5-5", askAiModelProvider: null })).toEqual(e("anthropic", "claude-sonnet-4-5"));
   });
   test("no Ask AI model → the global default; no default → null", () => {
     expect(askAiDefaultEngine(runtime, { askAiModel: "" })).toEqual(e("anthropic", "claude-sonnet-4-5"));

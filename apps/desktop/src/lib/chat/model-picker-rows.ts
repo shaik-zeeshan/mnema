@@ -146,7 +146,7 @@ export function buildPickerRows(input: PickerRowsInput): PickerRow[] {
       for (const model of matches) addEngine(provider, model, { markQuery: true });
     }
     const listed = input.engines.some((e) => e.model === raw);
-    if (!rows.some((r) => r.type === "option" && r.option.kind !== "sentinel")) {
+    if (!rows.some((r) => r.type === "option")) {
       rows.push({ type: "note", key: "no-match", text: `No models match “${raw}”.` });
     }
     if (input.allowExactId && !listed) {

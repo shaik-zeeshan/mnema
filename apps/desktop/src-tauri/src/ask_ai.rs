@@ -619,8 +619,8 @@ async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(),
     if !read_ask_ai_enabled(app_handle) {
         return Err("Ask AI access is disabled in settings".to_string());
     }
-    let settings = read_ai_runtime_settings(app_handle);
-    crate::ai_runtime::engine_configured_prerequisite(&settings).await
+    let settings = read_recording_settings(app_handle);
+    crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access).await
 }
 
 /// Execute one brokered data-tool request under the Ask AI seam: re-checks access
@@ -1570,8 +1570,10 @@ pub async fn ask_ai_availability(
 
     // The engine prerequisite reason (no model / no key / unreachable local …)
     // is surfaced verbatim so the UI can explain why Ask AI is unavailable.
-    let settings = read_ai_runtime_settings(&app_handle);
-    match crate::ai_runtime::engine_configured_prerequisite(&settings).await {
+    let settings = read_recording_settings(&app_handle);
+    match crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access)
+        .await
+    {
         Ok(()) => Ok(AskAiAvailability {
             available: true,
             reason: None,
@@ -4631,6 +4633,9 @@ model believes the narrower contract: {}",
         let snapshot = snapshot_live_turn(conv).expect("snapshot present");
         // Applying the op stream from version 0 == the snapshot at that version.
         assert_eq!(folded, snapshot.view);
+        // The engine op lands in the reattach snapshot, not just equally nowhere.
+        assert_eq!(snapshot.view.provider.as_deref(), Some("openai-2"));
+        assert_eq!(snapshot.view.model.as_deref(), Some("gpt-5"));
 
         remove_live_turn_if_owner(conv, token);
     }
