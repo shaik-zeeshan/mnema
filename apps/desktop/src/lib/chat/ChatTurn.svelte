@@ -28,10 +28,6 @@
     turn: ChatTurn;
     /** The last turn of the thread (only it gets Retry / Regenerate). */
     trailing: boolean;
-    /** The chat's current model + where it runs: the footer's fallback for an
-     *  answer that predates per-turn engine stamps (or is still live). */
-    model: string | null;
-    where: "cloud" | "local" | null;
     /** The model's context window when known (for the token bar). */
     contextWindow: number | null;
     settings: AiRuntimeSettings | null;
@@ -40,7 +36,7 @@
     /** Retry a failed turn, or Regenerate a finished one — the same in-place path. */
     onRetry: () => void;
   }
-  let { turn, trailing, model, where, contextWindow, settings, retryDisabled, onRetry }: Props = $props();
+  let { turn, trailing, contextWindow, settings, retryDisabled, onRetry }: Props = $props();
 
   const live = $derived(turn.phase === "thinking" || turn.phase === "streaming");
   const liveLabel = $derived(
@@ -52,10 +48,11 @@
   });
   const reasoningLive = $derived(live && (turn.reasoning ?? "").trim().length > 0 && turn.blocks.length === 0);
   const copyText = $derived(answerPlainText(turn));
-  // The answer's own engine, so a mid-chat model switch never relabels it.
-  const shownModel = $derived(turn.model ? modelDisplayName(turn.model) : model);
+  // Only the answer's own engine — never the picker's current model, which would
+  // relabel past answers on a switch. Unstamped turns show no model.
+  const shownModel = $derived(turn.model ? modelDisplayName(turn.model) : null);
   const shownWhere = $derived.by(() => {
-    if (!turn.provider) return where;
+    if (!turn.provider) return null;
     const provider = settings?.providers.find((p) => p.id === turn.provider);
     return provider ? providerWhere(provider) : null;
   });

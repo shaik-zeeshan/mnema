@@ -70,8 +70,8 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// flag — the "cancel at the very start of a request" race. The frontend reveals
 /// the Stop button the instant a turn is sent, but `ask_ai_start` /
 /// `ask_ai_followup` run on the async runtime, so a Stop's `ask_ai_cancel` can be
-/// scheduled first. A cancel landing in that window finds no flag via
-/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id + arrival
+/// scheduled first. A cancel landing in that window finds no in-flight
+/// flag; rather than drop it, `ask_ai_cancel` records the id + arrival
 /// time here and the imminent `register_inflight` consumes it, bringing the turn
 /// up already cancelled so it short-circuits before any model call.
 ///
@@ -95,7 +95,7 @@ fn ask_ai_pending_cancel() -> &'static Mutex<HashMap<String, std::time::Instant>
 /// Record a cancel that arrived before the conversation's turn registered. A
 /// `register_inflight` for this id within [`PENDING_CANCEL_TTL`] consumes the
 /// entry and starts its flag already set. Used by `ask_ai_cancel` only when
-/// `take_inflight` found no flag.
+/// it found no in-flight flag.
 fn record_cancel_before_register(conversation_id: &str) {
     if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
         // Expired entries can never apply; drop them so stale ids don't pile up.
@@ -165,9 +165,10 @@ pub(crate) fn turn_in_flight(conversation_id: &str) -> bool {
         .is_ok_and(|map| map.contains_key(conversation_id))
 }
 
-/// Take (remove and return) the in-flight flag for a conversation. Used by
-/// `ask_ai_cancel`: setting the returned flag cooperatively stops the running
-/// turn, and removing it keeps the registry tidy.
+/// Take (remove and return) the in-flight flag for a conversation: the tests'
+/// stand-in for `ask_ai_cancel`, which does the same take inline so it can mark
+/// a discard under the lock.
+#[cfg(test)]
 fn take_inflight(conversation_id: &str) -> Option<Arc<AtomicBool>> {
     ask_ai_inflight()
         .lock()
@@ -299,6 +300,10 @@ fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
         TurnUpdate::LiveActivity { entry } => view.live_activity = entry.clone(),
         TurnUpdate::Sources { sources } => view.sources = sources.clone(),
         TurnUpdate::ContextTokens { tokens } => view.context_tokens = Some(*tokens),
+        TurnUpdate::Engine { provider, model } => {
+            view.provider = Some(provider.clone());
+            view.model = Some(model.clone());
+        }
         TurnUpdate::Error { message, .. } => {
             view.error_message = Some(message.clone());
             view.phase = "error".to_string();
@@ -2110,9 +2115,20 @@ async fn run_ask_ai_turn(
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
-            provider: Some(engine_provider),
-            model: Some(engine_model),
+            provider: Some(engine_provider.clone()),
+            model: Some(engine_model.clone()),
             context_tokens: None,
+        },
+    );
+    // The frontend's own turn starts without the engine; tell it which engine
+    // answers, so its label never falls back to the picker's current model.
+    emit_live_update(
+        &app_handle,
+        &conversation_id,
+        turn_token,
+        TurnUpdate::Engine {
+            provider: engine_provider,
+            model: engine_model,
         },
     );
 
@@ -4590,6 +4606,10 @@ model believes the narrower contract: {}",
             },
             TurnUpdate::Sources {
                 sources: serde_json::json!([{ "kind": "frame" }]),
+            },
+            TurnUpdate::Engine {
+                provider: "openai-2".to_string(),
+                model: "gpt-5".to_string(),
             },
             TurnUpdate::Done,
         ];

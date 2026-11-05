@@ -30,3 +30,9 @@ test("hydrateTurn keeps the persisted error kind and engine; old turns read null
   const old = hydrateTurn(base);
   expect([old.errorKind, old.provider, old.model]).toEqual([null, null, null]);
 });
+
+test("the engine op stamps the answer's own provider and model", () => {
+  const t = makeTurn(0, "q", "thinking");
+  applyUpdate(t, { op: "engine", provider: "openai-2", model: "gpt-5" });
+  expect([t.provider, t.model]).toEqual(["openai-2", "gpt-5"]);
+});

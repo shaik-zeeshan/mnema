@@ -25,7 +25,6 @@
     type ConversationSummary,
     contextWindowForModel,
     providerLabelById,
-    modelDisplayName,
   } from "$lib/insights/conversation";
   import { conversationStore as store } from "$lib/insights/conversationStore.svelte";
   import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
@@ -181,26 +180,28 @@
   let composer = $state<ReturnType<typeof ChatComposer> | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
-  // Provider-reported context windows for the per-answer token bar: the active
-  // provider's listing, fetched once and only once usage is on screen.
+  // Provider-reported context windows for the per-answer token bar: each
+  // answering provider's listing, fetched once and only once its usage is on screen.
   let providerModels = $state<Record<string, AiRuntimeModel[]>>({});
   const providerModelsRequested = new Set<string>();
-  const hasUsage = $derived(turns.some((t) => t.contextTokens !== null));
+  const usageProviders = $derived([...new Set(turns.filter((t) => t.contextTokens !== null && t.provider).map((t) => t.provider!))]);
   $effect(() => {
-    const provider = engineProvider;
-    if (provider === null || !hasUsage || providerModelsRequested.has(provider)) return;
-    const config = aiRuntime?.providers.find((p) => p.id === provider);
-    if (config === undefined) return;
-    providerModelsRequested.add(provider);
-    void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", { request: { providers: [$state.snapshot(config)] } })
-      .then((result) => (providerModels[provider] = result.models))
-      .catch(() => {});
+    for (const provider of usageProviders) {
+      if (providerModelsRequested.has(provider)) continue;
+      const config = aiRuntime?.providers.find((p) => p.id === provider);
+      if (config === undefined) continue;
+      providerModelsRequested.add(provider);
+      void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", { request: { providers: [$state.snapshot(config)] } })
+        .then((result) => (providerModels[provider] = result.models))
+        .catch(() => {});
+    }
   });
-  const contextWindow = $derived.by(() => {
-    if (engineModel === null) return null;
-    const reported = engineProvider ? providerModels[engineProvider]?.find((m) => m.id === engineModel)?.contextWindow : null;
-    return reported ?? contextWindowForModel(engineModel);
-  });
+  // The window of the model that wrote this answer, never the picker's current one.
+  function contextWindowOf(turn: ChatTurn): number | null {
+    if (turn.model === null) return null;
+    const reported = turn.provider ? providerModels[turn.provider]?.find((m) => m.id === turn.model)?.contextWindow : null;
+    return reported ?? contextWindowForModel(turn.model);
+  }
 
   // One-way mirror up to the store (the list highlights the open row).
   $effect(() => {
@@ -689,9 +690,7 @@
             <ChatTurnView
               {turn}
               trailing={ti === turns.length - 1}
-              model={engineModel === null ? null : modelDisplayName(engineModel)}
-              where={engineWhere}
-              {contextWindow}
+              contextWindow={contextWindowOf(turn)}
               settings={aiRuntime}
               retryDisabled={streaming || !askAvailable}
               onRetry={() => void regenerateTurn(turn)}

@@ -173,6 +173,10 @@ export function applyUpdate(turn: ChatTurn, update: TurnUpdate): void {
     case "contextTokens":
       turn.contextTokens = update.tokens;
       break;
+    case "engine":
+      turn.provider = update.provider;
+      turn.model = update.model;
+      break;
     case "error":
       turn.errorMessage = update.message;
       turn.errorKind = update.kind ?? null;
