@@ -305,6 +305,7 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       // reset the selection back to the PI runtime default on every full save.
       // Left null so Ask AI inherits the global default model chosen below.
       askAiModel: base.access?.askAiModel ?? null,
+      askAiModelProvider: base.access?.askAiModelProvider ?? null,
       quickRecallAutoAnswer: base.access?.quickRecallAutoAnswer ?? "localOnly",
     },
     // Reasoning Engine config connected inline during onboarding (AskAiBody).
@@ -328,6 +329,10 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       // Onboarding doesn't configure MCP connectors — preserve any the returning
       // user already has (the Settings page owns this list).
       mcpServers: base.aiRuntime?.mcpServers ?? [],
+      // Same for the model picker's starred and recent models (this is a full,
+      // authoritative save: omitting them would wipe them).
+      favoriteModels: base.aiRuntime?.favoriteModels ?? [],
+      recentModels: base.aiRuntime?.recentModels ?? [],
     },
   };
 }

@@ -4,8 +4,9 @@
   // button morphs to Stop while a turn streams. When Ask AI can't run, a kit
   // notice with the one helpful action replaces it.
   import { tick } from "svelte";
-  import type { AiRuntimeSettings } from "$lib/types/recording";
+  import type { AiEngineRef, AiRuntimeSettings } from "$lib/types/recording";
   import ModelPicker from "./ModelPicker.svelte";
+  import type { ModelPrefs } from "./modelPrefs.svelte";
   import ScopePanel from "./ScopePanel.svelte";
   import { scopeLabel, type ChatScope, type GoesTo } from "./scope";
   import { tip } from "$lib/components/tooltip";
@@ -27,9 +28,11 @@
     /** The provider the question goes to ("Send to Anthropic"). */
     sendTo: string | null;
     aiRuntime: AiRuntimeSettings | null;
-    askAiModelOverride: string | null;
+    askAiDefault: AiEngineRef | null;
     pinProvider: string | null;
     pinModel: string | null;
+    /** Starred/recent models + "make default" for the picker. */
+    modelPrefs: ModelPrefs;
     pickerOpen: boolean;
     onselect: (engine: { provider: string; model: string } | null) => void;
     onsend: () => void;
@@ -47,9 +50,10 @@
     onoffaction,
     sendTo,
     aiRuntime,
-    askAiModelOverride,
+    askAiDefault,
     pinProvider,
     pinModel,
+    modelPrefs,
     pickerOpen = $bindable(),
     onselect,
     onsend,
@@ -125,9 +129,10 @@
     <div class="ch-bar">
       <ModelPicker
         {aiRuntime}
-        {askAiModelOverride}
+        {askAiDefault}
         {pinProvider}
         {pinModel}
+        {modelPrefs}
         up={docked}
         bind:open={pickerOpen}
         {onselect}

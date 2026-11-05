@@ -249,6 +249,9 @@ pub enum TurnUpdate {
     Sources { sources: serde_json::Value },
     /// Update the turn's context-window occupancy (provider-reported tokens).
     ContextTokens { tokens: u64 },
+    /// The engine answering this turn (provider instance id + model id), sent
+    /// once when it resolves so the label never borrows the picker's model.
+    Engine { provider: String, model: String },
     /// Fail the turn with a message. `kind` (optional, absent on old/unknown
     /// failures) buckets the cause so the UI can offer the one action that
     /// helps: `reconnect | unreachable | settings | quota | auth |
@@ -432,6 +435,15 @@ mod tests {
         assert_eq!(
             serde_json::to_value(TurnUpdate::ContextTokens { tokens: 42 }).unwrap(),
             json!({ "op": "contextTokens", "tokens": 42 })
+        );
+
+        assert_eq!(
+            serde_json::to_value(TurnUpdate::Engine {
+                provider: "openai-2".to_string(),
+                model: "gpt-5".to_string()
+            })
+            .unwrap(),
+            json!({ "op": "engine", "provider": "openai-2", "model": "gpt-5" })
         );
     }
 

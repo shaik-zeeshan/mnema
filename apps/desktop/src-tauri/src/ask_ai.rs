@@ -70,8 +70,8 @@ fn ask_ai_inflight() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// flag — the "cancel at the very start of a request" race. The frontend reveals
 /// the Stop button the instant a turn is sent, but `ask_ai_start` /
 /// `ask_ai_followup` run on the async runtime, so a Stop's `ask_ai_cancel` can be
-/// scheduled first. A cancel landing in that window finds no flag via
-/// `take_inflight`; rather than drop it, `ask_ai_cancel` records the id + arrival
+/// scheduled first. A cancel landing in that window finds no in-flight
+/// flag; rather than drop it, `ask_ai_cancel` records the id + arrival
 /// time here and the imminent `register_inflight` consumes it, bringing the turn
 /// up already cancelled so it short-circuits before any model call.
 ///
@@ -95,7 +95,7 @@ fn ask_ai_pending_cancel() -> &'static Mutex<HashMap<String, std::time::Instant>
 /// Record a cancel that arrived before the conversation's turn registered. A
 /// `register_inflight` for this id within [`PENDING_CANCEL_TTL`] consumes the
 /// entry and starts its flag already set. Used by `ask_ai_cancel` only when
-/// `take_inflight` found no flag.
+/// it found no in-flight flag.
 fn record_cancel_before_register(conversation_id: &str) {
     if let Ok(mut pending) = ask_ai_pending_cancel().lock() {
         // Expired entries can never apply; drop them so stale ids don't pile up.
@@ -165,9 +165,10 @@ pub(crate) fn turn_in_flight(conversation_id: &str) -> bool {
         .is_ok_and(|map| map.contains_key(conversation_id))
 }
 
-/// Take (remove and return) the in-flight flag for a conversation. Used by
-/// `ask_ai_cancel`: setting the returned flag cooperatively stops the running
-/// turn, and removing it keeps the registry tidy.
+/// Take (remove and return) the in-flight flag for a conversation: the tests'
+/// stand-in for `ask_ai_cancel`, which does the same take inline so it can mark
+/// a discard under the lock.
+#[cfg(test)]
 fn take_inflight(conversation_id: &str) -> Option<Arc<AtomicBool>> {
     ask_ai_inflight()
         .lock()
@@ -299,6 +300,10 @@ fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
         TurnUpdate::LiveActivity { entry } => view.live_activity = entry.clone(),
         TurnUpdate::Sources { sources } => view.sources = sources.clone(),
         TurnUpdate::ContextTokens { tokens } => view.context_tokens = Some(*tokens),
+        TurnUpdate::Engine { provider, model } => {
+            view.provider = Some(provider.clone());
+            view.model = Some(model.clone());
+        }
         TurnUpdate::Error { message, .. } => {
             view.error_message = Some(message.clone());
             view.phase = "error".to_string();
@@ -614,8 +619,8 @@ async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(),
     if !read_ask_ai_enabled(app_handle) {
         return Err("Ask AI access is disabled in settings".to_string());
     }
-    let settings = read_ai_runtime_settings(app_handle);
-    crate::ai_runtime::engine_configured_prerequisite(&settings).await
+    let settings = read_recording_settings(app_handle);
+    crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access).await
 }
 
 /// Execute one brokered data-tool request under the Ask AI seam: re-checks access
@@ -1565,8 +1570,10 @@ pub async fn ask_ai_availability(
 
     // The engine prerequisite reason (no model / no key / unreachable local …)
     // is surfaced verbatim so the UI can explain why Ask AI is unavailable.
-    let settings = read_ai_runtime_settings(&app_handle);
-    match crate::ai_runtime::engine_configured_prerequisite(&settings).await {
+    let settings = read_recording_settings(&app_handle);
+    match crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access)
+        .await
+    {
         Ok(()) => Ok(AskAiAvailability {
             available: true,
             reason: None,
@@ -1957,9 +1964,9 @@ async fn run_ask_ai_turn(
         .flatten();
 
     // 2. Resolve the engine through the single precedence chain (ADR 0034):
-    //    thread pin → Ask AI model override (`access.askAiModel`, a bare
-    //    rig-core model id riding on the default model's provider) → global
-    //    default model.
+    //    thread pin → Ask AI model override (`access.askAiModel`, on its saved
+    //    provider, or riding on the default model's provider when it has none)
+    //    → global default model.
     let settings = read_recording_settings(&app_handle);
     let pin_ref = pin.as_ref().and_then(|(provider, model)| {
         match (provider.as_deref(), model.as_deref()) {
@@ -1967,12 +1974,11 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_ref_live(
-        &settings.ai_runtime,
-        pin_ref,
-        settings.access.ask_ai_model.as_deref(),
-    )
-    .await;
+    let (pin_ref, override_model) =
+        crate::ai_runtime::ask_ai_resolver_inputs(&settings.ai_runtime, &settings.access, pin_ref);
+    let config_result =
+        crate::ai_runtime::resolve_engine_ref_live(&settings.ai_runtime, pin_ref, override_model)
+            .await;
     let (engine_provider, config) = match config_result {
         Ok(resolved) => resolved,
         Err(reason) => {
@@ -2111,9 +2117,20 @@ async fn run_ask_ai_turn(
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
-            provider: Some(engine_provider),
-            model: Some(engine_model),
+            provider: Some(engine_provider.clone()),
+            model: Some(engine_model.clone()),
             context_tokens: None,
+        },
+    );
+    // The frontend's own turn starts without the engine; tell it which engine
+    // answers, so its label never falls back to the picker's current model.
+    emit_live_update(
+        &app_handle,
+        &conversation_id,
+        turn_token,
+        TurnUpdate::Engine {
+            provider: engine_provider,
+            model: engine_model,
         },
     );
 
@@ -4592,6 +4609,10 @@ model believes the narrower contract: {}",
             TurnUpdate::Sources {
                 sources: serde_json::json!([{ "kind": "frame" }]),
             },
+            TurnUpdate::Engine {
+                provider: "openai-2".to_string(),
+                model: "gpt-5".to_string(),
+            },
             TurnUpdate::Done,
         ];
 
@@ -4612,6 +4633,9 @@ model believes the narrower contract: {}",
         let snapshot = snapshot_live_turn(conv).expect("snapshot present");
         // Applying the op stream from version 0 == the snapshot at that version.
         assert_eq!(folded, snapshot.view);
+        // The engine op lands in the reattach snapshot, not just equally nowhere.
+        assert_eq!(snapshot.view.provider.as_deref(), Some("openai-2"));
+        assert_eq!(snapshot.view.model.as_deref(), Some("gpt-5"));
 
         remove_live_turn_if_owner(conv, token);
     }

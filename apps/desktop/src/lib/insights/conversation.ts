@@ -190,6 +190,7 @@ export type TurnUpdate =
   | { op: "liveActivity"; entry: ToolActivityEntry | null }
   | { op: "sources"; sources: unknown }
   | { op: "contextTokens"; tokens: number }
+  | { op: "engine"; provider: string; model: string }
   | { op: "error"; message: string; kind?: TurnErrorKind }
   | { op: "done" };
 

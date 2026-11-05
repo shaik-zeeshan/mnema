@@ -3,6 +3,7 @@
 // question, does Tab force ask or search, which model would answer and does
 // "Answer questions automatically" let it answer on its own, and what the hero
 // slot says when Ask AI can't answer.
+import { askAiDefaultEngine } from "$lib/chat/model-favorites";
 import type { QuickRecallAutoAnswer, RecordingSettings } from "$lib/types/recording";
 import { modelDisplayName } from "$lib/insights/conversation";
 import { reasonCopy } from "$lib/insights/engine-state";
@@ -55,15 +56,14 @@ export interface AskEngine {
   local: boolean;
 }
 
-/** The model an Ask AI turn resolves to with no thread pin: the default
- *  model's provider, with the Ask AI override replacing only the model id
- *  (`ai_runtime.rs` `resolve_engine_ref`). */
+/** The model an Ask AI turn resolves to with no thread pin: the Ask AI model
+ *  on its saved provider, a bare one on the default model's provider, else the
+ *  global default (`ai_runtime.rs` `ask_ai_resolver_inputs`). */
 export function askEngine(settings: RecordingSettings | null): AskEngine {
-  const def = settings?.aiRuntime?.defaultModel ?? null;
-  const model = settings?.access?.askAiModel?.trim() || def?.model?.trim() || "";
-  const kind = settings?.aiRuntime?.providers.find((p) => p.id === def?.provider)?.kind;
+  const engine = askAiDefaultEngine(settings?.aiRuntime, settings?.access);
+  const kind = settings?.aiRuntime?.providers.find((p) => p.id === engine?.provider)?.kind;
   return {
-    model: model ? modelDisplayName(model) : null,
+    model: engine ? modelDisplayName(engine.model) : null,
     local: kind === "ollama" || kind === "llamafile",
   };
 }

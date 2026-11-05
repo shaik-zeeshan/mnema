@@ -209,6 +209,7 @@ export class RecordingStore {
   draftAskAiLimitToolCalls = $state(true);
   draftAskAiMaxToolCalls = $state(ASK_AI_DEFAULT_TOOL_CALL_LIMIT);
   draftAskAiModel = $state("");
+  draftAskAiModelProvider = $state("");
   draftQuickRecallAutoAnswer = $state<QuickRecallAutoAnswer>("localOnly");
 
   // AI runtime drafts (ADR 0034). The per-provider key is keychain-only and
@@ -373,6 +374,7 @@ export class RecordingStore {
     this.draftAskAiLimitToolCalls = cap > 0;
     this.draftAskAiMaxToolCalls = cap > 0 ? cap : ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
     this.draftAskAiModel = s.access?.askAiModel ?? "";
+    this.draftAskAiModelProvider = s.access?.askAiModelProvider ?? "";
     this.draftQuickRecallAutoAnswer = s.access?.quickRecallAutoAnswer ?? "localOnly";
   }
 

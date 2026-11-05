@@ -174,6 +174,8 @@ export interface RecordingDraftState {
   draftAskAiEnabled: boolean;
   draftAskAiWebFetchEnabled: boolean;
   draftAskAiModel: string;
+  /** Provider `draftAskAiModel` runs on ("" = the default model's provider). */
+  draftAskAiModelProvider: string;
   draftQuickRecallAutoAnswer: QuickRecallAutoAnswer;
   // The effective persisted tool-call cap (0 = no cap), derived from the
   // limit toggle + numeric value.
@@ -382,6 +384,7 @@ export function buildRecDomainRequest(
         askAiWebFetchEnabled: rec.draftAskAiWebFetchEnabled,
         askAiMaxToolCalls: rec.effectiveAskAiMaxToolCalls,
         askAiModel: rec.draftAskAiModel,
+        askAiModelProvider: rec.draftAskAiModelProvider,
         quickRecallAutoAnswer: rec.draftQuickRecallAutoAnswer,
       };
     case "ai_runtime":
@@ -531,6 +534,7 @@ export function buildRecDomainRequestFromSettings(
           s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
         ),
         askAiModel: s.access?.askAiModel ?? "",
+        askAiModelProvider: s.access?.askAiModelProvider ?? "",
         quickRecallAutoAnswer: s.access?.quickRecallAutoAnswer ?? "localOnly",
       };
     case "ai_runtime":

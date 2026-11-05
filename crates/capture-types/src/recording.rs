@@ -539,6 +539,12 @@ pub struct AccessSettings {
     /// historically a PI `provider:modelId` pair; it is now a bare model id.
     #[serde(default)]
     pub ask_ai_model: Option<String>,
+    /// The provider instance id [`Self::ask_ai_model`] runs on. When set (and
+    /// still connected) the override is a full `{provider, model}` engine like
+    /// a thread pin; `None` keeps the bare-id behaviour (rides on the default
+    /// model's provider). Always written together with `ask_ai_model`.
+    #[serde(default)]
+    pub ask_ai_model_provider: Option<String>,
     /// Whether Quick Recall answers a detected question on its own when the user
     /// pauses. Auto-answer spends a model call per question; the default keeps
     /// cloud calls (money and an upload) explicit.
@@ -566,6 +572,7 @@ impl Default for AccessSettings {
             ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
             ask_ai_web_fetch_enabled: false,
             ask_ai_model: None,
+            ask_ai_model_provider: None,
             quick_recall_auto_answer: QuickRecallAutoAnswer::default(),
         }
     }
@@ -787,7 +794,18 @@ pub struct AiRuntimeSettings {
     /// provider-centric autosave; secrets live in the keychain, never here.
     #[serde(default)]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Models the user starred in the model picker, in star order (the picker
+    /// numbers the first nine 1-9). Shared by every picker surface.
+    #[serde(default)]
+    pub favorite_models: Vec<AiEngineRef>,
+    /// The last models picked in Chat, most recent first, capped at
+    /// [`AI_RECENT_MODELS_CAP`].
+    #[serde(default)]
+    pub recent_models: Vec<AiEngineRef>,
 }
+
+/// How many recently picked models the AI settings keep.
+pub const AI_RECENT_MODELS_CAP: usize = 5;
 
 impl Default for AiRuntimeSettings {
     fn default() -> Self {
@@ -796,6 +814,8 @@ impl Default for AiRuntimeSettings {
             providers: Vec::new(),
             default_model: None,
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 }
@@ -916,6 +936,10 @@ struct AiRuntimeSettingsWire {
     default_model: Option<AiEngineRef>,
     #[serde(default)]
     mcp_servers: Vec<McpServerConfig>,
+    #[serde(default)]
+    favorite_models: Vec<AiEngineRef>,
+    #[serde(default)]
+    recent_models: Vec<AiEngineRef>,
     // Legacy engine-centric shape.
     engine_kind: Option<LegacyAiEngineKind>,
     cloud_provider: Option<LegacyAiCloudProvider>,
@@ -943,6 +967,8 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
                     .default_model
                     .filter(|model| !model.model.trim().is_empty()),
                 mcp_servers: wire.mcp_servers,
+                favorite_models: wire.favorite_models,
+                recent_models: wire.recent_models,
             };
         }
 
@@ -1005,8 +1031,11 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
             enabled: wire.enabled,
             providers,
             default_model,
-            // No legacy engine-centric file ever carried MCP connectors.
+            // No legacy engine-centric file ever carried MCP connectors,
+            // favorites or recents.
             mcp_servers: Vec::new(),
+            favorite_models: Vec::new(),
+            recent_models: Vec::new(),
         }
     }
 }
@@ -1047,6 +1076,10 @@ pub struct UpdateAiRuntimeSettingsRequest {
     /// Replacement MCP connector list (wholesale, like `providers`). `None`
     /// leaves the existing list unchanged; `Some` replaces it.
     pub mcp_servers: Option<Vec<McpServerConfig>>,
+    /// Replacement starred-model list (wholesale). `None` = unchanged.
+    pub favorite_models: Option<Vec<AiEngineRef>>,
+    /// Replacement recently-picked list (wholesale). `None` = unchanged.
+    pub recent_models: Option<Vec<AiEngineRef>>,
 }
 
 /// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine
@@ -1369,6 +1402,10 @@ pub struct UpdateAccessSettingsRequest {
     /// unchanged; an empty string clears the selection back to the engine's
     /// default model.
     pub ask_ai_model: Option<String>,
+    /// The provider the new `ask_ai_model` runs on. Only read alongside
+    /// `ask_ai_model` (the pair is always rewritten together): absent/empty
+    /// saves a bare id that rides on the default model's provider.
+    pub ask_ai_model_provider: Option<String>,
     /// New "Answer questions automatically" choice. `None` leaves it unchanged.
     pub quick_recall_auto_answer: Option<QuickRecallAutoAnswer>,
 }

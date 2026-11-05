@@ -24,14 +24,11 @@
     type AskAiUpdateEvent,
     type ConversationSummary,
     contextWindowForModel,
-    defaultEngineModel,
-    defaultEnginePinProvider,
     providerLabelById,
-    modelDisplayName,
   } from "$lib/insights/conversation";
   import { conversationStore as store } from "$lib/insights/conversationStore.svelte";
   import { isReasonCode, reasonCopy } from "$lib/insights/engine-state";
-  import type { AiRuntimeModel, AiRuntimeModelsResult, AiRuntimeSettings, RecordingSettings, RecordingSettingsDomainUpdateResponse } from "$lib/types/recording";
+  import type { AiEngineRef, AiRuntimeModel, AiRuntimeModelsResult, AiRuntimeSettings, RecordingSettings, RecordingSettingsDomainUpdateResponse } from "$lib/types/recording";
   import ChatTurnView from "./ChatTurn.svelte";
   import ChatComposer from "./ChatComposer.svelte";
   import ChatEmpty from "./ChatEmpty.svelte";
@@ -40,6 +37,10 @@
   import { adoptView, applyUpdate, hydrateTurn, makeTurn, normalizePhase, type ChatTurn } from "./turn-model";
   import IconPin from "~icons/lucide/pin";
   import { regeneratePlan } from "./regenerate";
+  import { ModelPrefs } from "./modelPrefs.svelte";
+  import { askAiDefaultEngine, nextFavorite } from "./model-favorites";
+  import { setKeyboardHelpGroups } from "$lib/keyboard-help.svelte";
+  import { detectKeyboardPlatform, matchShortcut, type ShortcutDefinition } from "$lib/keyboard";
   import IconEdit from "~icons/lucide/pencil";
   import IconTrash from "~icons/lucide/trash-2";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -87,7 +88,8 @@
 
   // ── Engine settings + the per-chat model pin (ADR 0034) ──────────────────
   let aiRuntime = $state<AiRuntimeSettings | null>(null);
-  let askAiModelOverride = $state<string | null>(null);
+  // What "Default" runs in Chat: the Ask AI model (on its provider), else the global default.
+  let askAiDefault = $state<AiEngineRef | null>(null);
   let pinProvider = $state<string | null>(null);
   let pinModel = $state<string | null>(null);
   let pickerOpen = $state(false);
@@ -97,18 +99,17 @@
     try {
       const settings = await invoke<RecordingSettings>("get_recording_settings");
       aiRuntime = settings.aiRuntime;
-      const override = settings.access?.askAiModel?.trim() ?? "";
-      askAiModelOverride = override.length > 0 ? override : null;
+      askAiDefault = askAiDefaultEngine(settings.aiRuntime, settings.access);
       webFetch = settings.access?.askAiWebFetchEnabled ?? false;
     } catch {
       aiRuntime = null;
-      askAiModelOverride = null;
+      askAiDefault = null;
     }
   }
 
   // Same precedence as the backend resolver: pin → Ask AI override → default.
-  const engineProvider = $derived(pinProvider ?? (aiRuntime ? defaultEnginePinProvider(aiRuntime) : null));
-  const engineModel = $derived(pinModel ?? askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null));
+  const engineProvider = $derived(pinProvider ?? askAiDefault?.provider ?? null);
+  const engineModel = $derived(pinModel ?? askAiDefault?.model ?? null);
   const engineWhere = $derived(engineProvider === null ? null : providerWhere(aiRuntime?.providers.find((p) => p.id === engineProvider)));
   const sendTo = $derived(engineProvider === null ? null : providerLabelById(aiRuntime?.providers, engineProvider));
   const goesTo = $derived({
@@ -119,11 +120,37 @@
     connectors: aiRuntime?.mcpServers?.filter((m) => m.enabled).length ?? 0,
   });
   $effect(() => {
-    defaultModel = askAiModelOverride ?? (aiRuntime ? defaultEngineModel(aiRuntime) : null);
+    defaultModel = askAiDefault?.model ?? null;
   });
+
+  // Starred + recent models (the picker's short list) live in the AI settings.
+  const modelPrefs = new ModelPrefs(() => aiRuntime);
+  const platform = detectKeyboardPlatform();
+  const NEXT_FAVORITE: ShortcutDefinition = {
+    id: "chatNextFavoriteModel",
+    label: "Next favorite model",
+    bindings: [{ key: "M", primary: true, shift: true }],
+    kind: "command",
+    scope: "global",
+  };
+  $effect(() =>
+    modelPrefs.favorites.length > 0
+      ? setKeyboardHelpGroups("chat-model", [{ id: "chat-model", title: "Chat", rows: [NEXT_FAVORITE] }])
+      : undefined,
+  );
+  // ⌘⇧M: switch this chat to the next starred model without opening the picker.
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.repeat || !matchShortcut(event, NEXT_FAVORITE, platform)) return;
+    const current = engineProvider !== null && engineModel !== null ? { provider: engineProvider, model: engineModel } : null;
+    const next = nextFavorite(modelPrefs.favorites, current);
+    if (!next) return;
+    event.preventDefault();
+    void handleModelSelect(next);
+  }
 
   async function handleModelSelect(engine: { provider: string; model: string } | null): Promise<void> {
     const conversationId = activeConversationId;
+    if (engine) modelPrefs.pushRecent(engine);
     pinProvider = engine?.provider ?? null;
     pinModel = engine?.model ?? null;
     // No row exists before the first turn; persisting now would upsert a phantom
@@ -153,26 +180,32 @@
   let composer = $state<ReturnType<typeof ChatComposer> | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
-  // Provider-reported context windows for the per-answer token bar: the active
-  // provider's listing, fetched once and only once usage is on screen.
+  // Provider-reported context windows for the per-answer token bar: each
+  // answering provider's listing, fetched once and only once its usage is on screen.
   let providerModels = $state<Record<string, AiRuntimeModel[]>>({});
   const providerModelsRequested = new Set<string>();
-  const hasUsage = $derived(turns.some((t) => t.contextTokens !== null));
+  const usageProviders = $derived([...new Set(turns.filter((t) => t.contextTokens !== null && t.provider).map((t) => t.provider!))]);
   $effect(() => {
-    const provider = engineProvider;
-    if (provider === null || !hasUsage || providerModelsRequested.has(provider)) return;
-    const config = aiRuntime?.providers.find((p) => p.id === provider);
-    if (config === undefined) return;
-    providerModelsRequested.add(provider);
-    void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", { request: { providers: [$state.snapshot(config)] } })
-      .then((result) => (providerModels[provider] = result.models))
-      .catch(() => {});
+    for (const provider of usageProviders) {
+      if (providerModelsRequested.has(provider)) continue;
+      const config = aiRuntime?.providers.find((p) => p.id === provider);
+      if (config === undefined) continue;
+      providerModelsRequested.add(provider);
+      void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", { request: { providers: [$state.snapshot(config)] } })
+        .then((result) => (providerModels[provider] = result.models))
+        .catch(() => {});
+    }
   });
-  const contextWindow = $derived.by(() => {
-    if (engineModel === null) return null;
-    const reported = engineProvider ? providerModels[engineProvider]?.find((m) => m.id === engineModel)?.contextWindow : null;
-    return reported ?? contextWindowForModel(engineModel);
-  });
+  // The window of the model that wrote this answer, never the picker's current one.
+  function contextWindowOf(turn: ChatTurn): number | null {
+    if (turn.model === null) return null;
+    const reported = turn.provider ? providerModels[turn.provider]?.find((m) => m.id === turn.model)?.contextWindow : null;
+    if (reported) return reported;
+    // A local server picks its own window (Ollama: 4k–256k by GPU memory), so a
+    // name-based guess can be off by 30×; show the token count alone instead.
+    const provider = aiRuntime?.providers.find((p) => p.id === turn.provider);
+    return provider && providerWhere(provider) === "local" ? null : contextWindowForModel(turn.model);
+  }
 
   // One-way mirror up to the store (the list highlights the open row).
   $effect(() => {
@@ -572,6 +605,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onWindowKeydown} />
+
 {#snippet composerSlot(docked: boolean)}
   <ChatComposer
     bind:this={composer}
@@ -584,9 +619,10 @@
     onoffaction={() => (composerOff.retry ? void loadAskAvailability() : void openSettings("intelligence"))}
     {sendTo}
     {aiRuntime}
-    {askAiModelOverride}
+    {askAiDefault}
     {pinProvider}
     {pinModel}
+    {modelPrefs}
     onselect={(engine) => void handleModelSelect(engine)}
     onsend={() => void send()}
     onstop={() => void stopStreaming()}
@@ -658,9 +694,7 @@
             <ChatTurnView
               {turn}
               trailing={ti === turns.length - 1}
-              model={engineModel === null ? null : modelDisplayName(engineModel)}
-              where={engineWhere}
-              {contextWindow}
+              contextWindow={contextWindowOf(turn)}
               settings={aiRuntime}
               retryDisabled={streaming || !askAvailable}
               onRetry={() => void regenerateTurn(turn)}

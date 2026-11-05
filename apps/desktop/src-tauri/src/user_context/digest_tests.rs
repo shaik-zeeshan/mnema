@@ -639,6 +639,8 @@ async fn live_resolve_failure_surfaces(force: bool) {
             model: "gpt-5.6-terra".to_string(),
         }),
         mcp_servers: Vec::new(),
+        favorite_models: Vec::new(),
+        recent_models: Vec::new(),
     };
 
     // A range with plenty to read: two ordinary, non-sensitive Activities.
