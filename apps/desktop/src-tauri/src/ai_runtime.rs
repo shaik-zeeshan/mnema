@@ -138,43 +138,78 @@ fn classify_listing_failure(error: &str) -> String {
 
 /// Minimal projection of the OpenAI-style `{ "data": [ { "id": … } ] }` model
 /// list. Anthropic's `/v1/models` shares this `data[].id` shape, so the same
-/// parse covers every provider/runtime we list.
+/// parse covers every provider/runtime we list. Together returns the entries
+/// as a bare top-level array instead, so both shapes are accepted.
 #[derive(Debug, Deserialize)]
-struct ModelsListResponse {
-    #[serde(default)]
-    data: Vec<ModelsListEntry>,
+#[serde(untagged)]
+enum ModelsListResponse {
+    Bare(Vec<ModelsListEntry>),
+    Wrapped {
+        #[serde(default)]
+        data: Vec<ModelsListEntry>,
+    },
 }
 
+impl ModelsListResponse {
+    fn into_entries(self) -> Vec<ModelsListEntry> {
+        match self {
+            Self::Bare(entries) | Self::Wrapped { data: entries } => entries,
+        }
+    }
+}
+
+/// Every name is a separate field (not a serde alias) so an entry carrying two
+/// of them still parses instead of failing on a duplicate field.
 #[derive(Debug, Deserialize)]
 struct ModelsListEntry {
     id: String,
-    /// Context-window size, under the names OpenAI-compatible vendors use:
-    /// `context_length` (OpenRouter, DeepSeek, …) or `max_model_len` (vLLM).
+    /// OpenRouter, xAI, Together.
     #[serde(default)]
     context_length: Option<u64>,
+    /// vLLM.
     #[serde(default)]
     max_model_len: Option<u64>,
-    /// Anthropic's `/v1/models` reports the context window as `max_input_tokens`.
+    /// Anthropic.
     #[serde(default)]
     max_input_tokens: Option<u64>,
-    /// llama.cpp-style servers (incl. llamafile) nest it as `meta.n_ctx_train`.
+    /// Groq, DeepSeek (DeepSeek may omit it).
+    #[serde(default)]
+    context_window: Option<u64>,
+    /// Mistral.
+    #[serde(default)]
+    max_context_length: Option<u64>,
+    /// llama.cpp-style servers (incl. llamafile).
     #[serde(default)]
     meta: Option<ModelsListEntryMeta>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelsListEntryMeta {
+    /// The window the server actually runs with (recent llama.cpp builds).
+    /// Preferred: `--fit` can shrink it far below the trained maximum.
+    #[serde(default)]
+    n_ctx: Option<u64>,
+    /// The model's trained maximum, for builds that don't report `n_ctx`.
     #[serde(default)]
     n_ctx_train: Option<u64>,
 }
 
 impl ModelsListEntry {
     fn context_window(&self) -> Option<u64> {
-        self.context_length
-            .or(self.max_model_len)
-            .or(self.max_input_tokens)
-            .or(self.meta.as_ref().and_then(|meta| meta.n_ctx_train))
-            .filter(|&tokens| tokens > 0)
+        let meta = self.meta.as_ref();
+        [
+            self.context_length,
+            self.max_model_len,
+            self.max_input_tokens,
+            self.context_window,
+            self.max_context_length,
+            meta.and_then(|meta| meta.n_ctx),
+            meta.and_then(|meta| meta.n_ctx_train),
+        ]
+        .into_iter()
+        .flatten()
+        // A 0 (llama.cpp router mode's placeholder) means "unknown", not a size.
+        .find(|&tokens| tokens > 0)
     }
 }
 
@@ -1149,7 +1184,7 @@ async fn list_models_for_provider(
         serde_json::from_str(&body).map_err(|error| error.to_string())?;
 
     Ok(parsed
-        .data
+        .into_entries()
         .into_iter()
         .map(|entry| DiscoveredModel {
             context_window: entry.context_window(),
@@ -1464,12 +1499,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anthropic_models_listing_reports_max_input_tokens_as_context_window() {
-        let parsed: ModelsListResponse = serde_json::from_str(
-            r#"{"data":[{"id":"claude-opus-5-5","max_input_tokens":1000000,"max_tokens":128000}]}"#,
-        )
-        .unwrap();
-        assert_eq!(parsed.data[0].context_window(), Some(1_000_000));
+    fn models_listing_reads_each_vendors_context_window_field() {
+        let windows = |body: &str| -> Vec<Option<u64>> {
+            serde_json::from_str::<ModelsListResponse>(body)
+                .unwrap()
+                .into_entries()
+                .iter()
+                .map(ModelsListEntry::context_window)
+                .collect()
+        };
+        // Anthropic, Groq/DeepSeek, Mistral, OpenAI (none).
+        assert_eq!(
+            windows(
+                r#"{"data":[{"id":"a","max_input_tokens":1000000},{"id":"g","context_window":131072},{"id":"m","max_context_length":32768},{"id":"o"}]}"#
+            ),
+            vec![Some(1_000_000), Some(131_072), Some(32_768), None]
+        );
+        // llama.cpp prefers the runtime window, skips router mode's 0 placeholder.
+        assert_eq!(
+            windows(
+                r#"{"data":[{"id":"l","meta":{"n_ctx":4096,"n_ctx_train":131072}},{"id":"r","meta":{"n_ctx":0,"n_ctx_train":8192}}]}"#
+            ),
+            vec![Some(4096), Some(8192)]
+        );
+        // Together: bare top-level array.
+        assert_eq!(
+            windows(r#"[{"id":"t","context_length":8192}]"#),
+            vec![Some(8192)]
+        );
+        assert_eq!(windows("[]"), Vec::<Option<u64>>::new());
     }
 
     /// Settings with local-only providers so resolution never touches the OS
