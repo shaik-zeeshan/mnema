@@ -200,7 +200,11 @@
   function contextWindowOf(turn: ChatTurn): number | null {
     if (turn.model === null) return null;
     const reported = turn.provider ? providerModels[turn.provider]?.find((m) => m.id === turn.model)?.contextWindow : null;
-    return reported ?? contextWindowForModel(turn.model);
+    if (reported) return reported;
+    // A local server picks its own window (Ollama: 4k–256k by GPU memory), so a
+    // name-based guess can be off by 30×; show the token count alone instead.
+    const provider = aiRuntime?.providers.find((p) => p.id === turn.provider);
+    return provider && providerWhere(provider) === "local" ? null : contextWindowForModel(turn.model);
   }
 
   // One-way mirror up to the store (the list highlights the open row).
