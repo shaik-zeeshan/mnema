@@ -534,6 +534,7 @@ pub fn run() {
         app_core::speaker_analysis_models::SpeakerAnalysisModelDownloadState::default(),
     );
     core.manage(app_core::ocr_models::OcrModelDownloadState::default());
+    core.manage(app_core::updates::AppUpdateSettingsState::default());
     // One settings state, shared by the Tauri builder and app-core.
     let recording_settings = app_core::recording_settings::RecordingSettingsState::default();
     core.manage(recording_settings.clone());
@@ -551,7 +552,6 @@ pub fn run() {
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
-        .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
         .manage(app_core::semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())

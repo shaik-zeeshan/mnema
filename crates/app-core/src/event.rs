@@ -12,6 +12,7 @@ use crate::audio_transcription_models::AudioTranscriptionModelDownloadProgressDt
 use crate::ocr_models::OcrModelDownloadProgressDto;
 use crate::speaker_analysis_models::SpeakerAnalysisModelDownloadProgressDto;
 use crate::semantic_search_models::SemanticSearchModelDownloadProgressDto;
+use crate::updates::AppUpdateStatus;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
@@ -22,7 +23,7 @@ pub enum CoreEvent {
     OcrModelDownloadProgress(OcrModelDownloadProgressDto),
     SemanticSearchModelDownloadProgress(SemanticSearchModelDownloadProgressDto),
     NativeCaptureSessionChanged(Value),
-    AppUpdateStatusChanged(Value),
+    AppUpdateStatusChanged(AppUpdateStatus),
     // Invalidations.
     ConversationChanged,
     UserContextChanged,

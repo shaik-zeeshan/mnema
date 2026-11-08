@@ -73,7 +73,7 @@ struct StatusBarMenuModel {
     pause_enabled: bool,
     source_items: Vec<SourceItemModel>,
     /// Label + enabled for the update row, or `None` when there's nothing to
-    /// install. Owned by `app_updates::tray_update_menu_item`, not built here.
+    /// install. Owned by `app_updates::tray::tray_update_menu_item`, not built here.
     update_item: Option<(String, bool)>,
     tooltip: &'static str,
 }
@@ -310,7 +310,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         .as_ref()
         .is_some_and(|status| !status.capture_allowed_at(app_core::licensing::now_ms()));
     apply_read_only_status(&mut model, blocked, status.as_ref());
-    model.update_item = crate::app_updates::tray_update_item(app);
+    model.update_item = crate::app_updates::tray::tray_update_item(app);
     model
 }
 
@@ -456,7 +456,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// Rebuilds the tray menu from live state. Returns whether the new menu
 /// actually reached the tray: it can fail to build, and before
 /// `initialize` runs there is no tray at all. Callers that memoize what they
-/// last pushed (see `app_updates::refresh_tray_update_item`) must not record a
+/// last pushed (see `app_updates::tray::refresh_tray_update_item`) must not record a
 /// menu that never landed, or the row stays wrong until the state changes
 /// again. Callers that just want a redraw can ignore the result.
 pub(crate) fn refresh(app: &tauri::AppHandle) -> bool {

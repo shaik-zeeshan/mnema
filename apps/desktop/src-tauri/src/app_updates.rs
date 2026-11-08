@@ -1,174 +1,26 @@
-use serde::{Deserialize, Serialize};
 use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
 use time::format_description::well_known::Rfc3339;
 use url::Url;
 
+use app_core::updates::{
+    apply_running_build_window_gate, build_out_of_window, current_settings, decide_remote_update,
+    emit_status, out_of_window_notice, persist_settings, restart_after_update_error,
+    update_size_bytes, user_facing_error_message, AppUpdateAppInfo, AppUpdateChannel,
+    AppUpdateError, AppUpdateErrorKind, AppUpdateInfo, AppUpdateProgress, AppUpdateSettings,
+    AppUpdateState, AppUpdateStatus, UPDATE_CHECK_INTERVAL,
+};
+use app_core::AppCore;
+
 use crate::{native_capture, windows};
 
-pub const APP_UPDATE_STATUS_CHANGED_EVENT: &str = "app_update_status_changed";
 const APP_UPDATE_AVAILABLE_NOTIFICATION_ID: &str = "app-update-available";
-const APP_UPDATE_SETTINGS_FILE_NAME: &str = "app-update-settings.json";
-// Update feeds live on Cloudflare R2 behind release.mnema.day (one latest.json
-// per channel, written by the promote workflow), so they stay reachable even
-// if the source repository goes private. See docs/release-process.md.
-pub const STABLE_UPDATE_ENDPOINT: &str = "https://release.mnema.day/stable/latest.json";
-pub const PREVIEW_UPDATE_ENDPOINT: &str = "https://release.mnema.day/preview/latest.json";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AppUpdateChannel {
-    Stable,
-    Preview,
-}
-
-impl Default for AppUpdateChannel {
-    fn default() -> Self {
-        Self::Stable
-    }
-}
-
-impl AppUpdateChannel {
-    pub(crate) fn endpoint(self) -> &'static str {
-        match self {
-            Self::Stable => STABLE_UPDATE_ENDPOINT,
-            Self::Preview => PREVIEW_UPDATE_ENDPOINT,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AppUpdateState {
-    Idle,
-    Checking,
-    UpToDate,
-    Available,
-    /// A newer build exists (or the running build itself is) past a Licensed
-    /// owner's Update Window. NOT installable — the UI directs the owner to renew
-    /// or fetch the newest covered build (Perpetual Fallback). Never a hard lock;
-    /// capture and recorded history are untouched.
-    AvailableOutOfWindow,
-    Downloading,
-    Installing,
-    RestartRequired,
-    Incompatible,
-    Failed,
-}
-
-impl Default for AppUpdateState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AppUpdateErrorKind {
-    Network,
-    Feed,
-    Incompatible,
-    Verification,
-    Install,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateError {
-    pub kind: AppUpdateErrorKind,
-    pub message: String,
-}
-
-impl AppUpdateError {
-    fn new(kind: AppUpdateErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for AppUpdateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for AppUpdateError {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateSettings {
-    pub channel: AppUpdateChannel,
-    /// Remote version the out-of-window notice last opened the update window
-    /// for. Persisted — unlike the in-window `notified_version` — because only a
-    /// renewal ends that state, so an in-memory gate would reopen it every launch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notified_out_of_window_version: Option<String>,
-}
-
-impl Default for AppUpdateSettings {
-    fn default() -> Self {
-        Self {
-            channel: AppUpdateChannel::Stable,
-            notified_out_of_window_version: None,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct AppUpdateSettingsRuntime {
-    settings: Option<AppUpdateSettings>,
-}
-
-pub type AppUpdateSettingsState = Mutex<AppUpdateSettingsRuntime>;
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateAppInfo {
-    pub product_name: String,
-    pub version: String,
-    pub identifier: String,
-    pub platform: String,
-    pub arch: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateInfo {
-    pub version: String,
-    pub date: Option<String>,
-    pub notes: Option<String>,
-    pub channel: AppUpdateChannel,
-    /// Archive size in bytes from the feed's `platforms[k].size` (written by
-    /// the promote workflow). `None` for feeds published before it existed.
-    pub size_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateProgress {
-    pub downloaded_bytes: u64,
-    pub content_length_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppUpdateStatus {
-    pub app: AppUpdateAppInfo,
-    pub channel: AppUpdateChannel,
-    pub state: AppUpdateState,
-    pub update: Option<AppUpdateInfo>,
-    pub progress: Option<AppUpdateProgress>,
-    pub error: Option<AppUpdateError>,
-    pub last_checked_at_unix_ms: Option<u64>,
-}
+pub(crate) mod tray;
 
 #[derive(Default)]
 pub struct AppUpdateRuntime {
@@ -194,76 +46,8 @@ fn now_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn settings_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    if let Ok(config_dir) = app_handle.path().app_config_dir() {
-        return config_dir.join(APP_UPDATE_SETTINGS_FILE_NAME);
-    }
-
-    PathBuf::from(".mnema").join(APP_UPDATE_SETTINGS_FILE_NAME)
-}
-
-pub(crate) fn load_app_update_settings_from_path(path: &Path) -> AppUpdateSettings {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<AppUpdateSettings>(&raw).ok())
-        .unwrap_or_default()
-}
-
-fn current_settings(
-    app_handle: &tauri::AppHandle,
-    state: &AppUpdateSettingsState,
-) -> AppUpdateSettings {
-    let mut runtime = state.lock().expect("app update settings state poisoned");
-    if let Some(settings) = runtime.settings.clone() {
-        return settings;
-    }
-
-    let settings = load_app_update_settings_from_path(&settings_file_path(app_handle));
-    runtime.settings = Some(settings.clone());
-    settings
-}
-
-fn persist_settings(
-    app_handle: &tauri::AppHandle,
-    state: &AppUpdateSettingsState,
-    settings: AppUpdateSettings,
-) -> Result<AppUpdateSettings, AppUpdateError> {
-    let path = settings_file_path(app_handle);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            AppUpdateError::new(
-                AppUpdateErrorKind::Unknown,
-                format!("Failed to create update settings directory: {error}"),
-            )
-        })?;
-    }
-
-    let serialized = serde_json::to_string_pretty(&settings).map_err(|error| {
-        AppUpdateError::new(
-            AppUpdateErrorKind::Unknown,
-            format!("Failed to serialize update settings: {error}"),
-        )
-    })?;
-    std::fs::write(path, serialized).map_err(|error| {
-        AppUpdateError::new(
-            AppUpdateErrorKind::Unknown,
-            format!("Failed to persist update settings: {error}"),
-        )
-    })?;
-
-    let mut runtime = state.lock().expect("app update settings state poisoned");
-    runtime.settings = Some(settings.clone());
-    Ok(settings)
-}
-
-#[cfg(test)]
-pub fn channel_endpoint(channel: AppUpdateChannel) -> &'static str {
-    channel.endpoint()
-}
-
-#[cfg(test)]
-pub fn channel_requires_additional_per_install_state(_channel: AppUpdateChannel) -> bool {
-    false
+fn core(app_handle: &tauri::AppHandle) -> Arc<AppCore> {
+    app_handle.state::<Arc<AppCore>>().inner().clone()
 }
 
 fn app_info(app_handle: &tauri::AppHandle) -> AppUpdateAppInfo {
@@ -299,7 +83,7 @@ fn status_from_runtime(
     settings: AppUpdateSettings,
     runtime: &AppUpdateRuntime,
 ) -> AppUpdateStatus {
-    let state = apply_running_build_window_gate(app_handle, runtime.state);
+    let state = apply_running_build_window_gate(&core(app_handle), runtime.state);
     let error = runtime.error.clone();
 
     AppUpdateStatus {
@@ -314,10 +98,7 @@ fn status_from_runtime(
 }
 
 fn current_status(app_handle: &tauri::AppHandle) -> AppUpdateStatus {
-    let settings = current_settings(
-        app_handle,
-        app_handle.state::<AppUpdateSettingsState>().inner(),
-    );
+    let settings = current_settings(&core(app_handle));
     let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
     let runtime = runtime_state
         .lock()
@@ -325,50 +106,9 @@ fn current_status(app_handle: &tauri::AppHandle) -> AppUpdateStatus {
     status_from_runtime(app_handle, settings, &runtime)
 }
 
+/// The Tauri host refreshes the tray's update row on this event, after the emit.
 fn emit_current_status(app_handle: &tauri::AppHandle) {
-    let status = current_status(app_handle);
-    let _ = app_handle.emit(APP_UPDATE_STATUS_CHANGED_EVENT, status);
-    refresh_tray_update_item(app_handle);
-}
-
-/// Last update row pushed to the tray. `emit_current_status` fires once per
-/// downloaded chunk, and a menu rebuild per chunk is both wasteful and visibly
-/// flickery — the row only changes a handful of times per update, so rebuild
-/// only when it actually differs. Starts as `None`, matching the row-less menu
-/// `status_bar::initialize` builds before any check has run.
-static LAST_TRAY_UPDATE_ITEM: Mutex<Option<(String, bool)>> = Mutex::new(None);
-
-fn refresh_tray_update_item(app_handle: &tauri::AppHandle) {
-    // The tray carries the same update row, and it's the only surface a user
-    // with no window open can see. Callers always drop the runtime lock before
-    // emitting, so the rebuild's own `current_status` read can't deadlock.
-    let item = tray_update_item(app_handle);
-    {
-        let last = LAST_TRAY_UPDATE_ITEM
-            .lock()
-            .expect("tray update item state poisoned");
-        if !tray_memo_needs_rebuild(&last, &item) {
-            return;
-        }
-    }
-    // The memo records what the tray ACTUALLY shows, so it is committed only
-    // after a rebuild that landed. `status_bar::refresh` swallows a failed menu
-    // build and the not-yet-initialized tray; recording those as delivered
-    // would suppress every later rebuild for the same row.
-    //
-    // The lock is deliberately NOT held across the rebuild: `refresh` blocks on
-    // main-thread round trips, so a main-thread emitter waiting on this lock
-    // would deadlock against it.
-    //
-    // ponytail: `refresh` re-reads live state, so a state change racing the
-    // rebuild can draw a newer row than `item`. That self-heals — the newer
-    // state emits too, and its row differs from this memo, forcing another
-    // rebuild. A duplicate rebuild is the cost; a missing row is not.
-    if crate::status_bar::refresh(app_handle) {
-        *LAST_TRAY_UPDATE_ITEM
-            .lock()
-            .expect("tray update item state poisoned") = item;
-    }
+    emit_status(&core(app_handle), current_status(app_handle));
 }
 
 fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpdateInfo {
@@ -381,117 +121,12 @@ fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpd
     }
 }
 
-/// The `size` of the platform entry the updater selected. `Update.raw_json` is
-/// the whole manifest and `Update.target` is only the OS ("darwin"), not the
-/// key it picked (`darwin-aarch64-app` vs `darwin-aarch64`), so match the entry
-/// by the download URL the updater resolved.
-fn update_size_bytes(raw_json: &serde_json::Value, download_url: &str) -> Option<u64> {
-    raw_json
-        .get("platforms")?
-        .as_object()?
-        .values()
-        .find(|platform| platform.get("url").and_then(|url| url.as_str()) == Some(download_url))?
-        .get("size")?
-        .as_u64()
-}
-
 /// The remote build's release date as unix ms (the manifest `pub_date`, carried
 /// on `update.date`). `None` when the manifest omitted a date.
 fn update_release_date_ms(update: &Update) -> Option<i64> {
     update
         .date
         .map(|date| (date.unix_timestamp_nanos() / 1_000_000) as i64)
-}
-
-/// The running build's own release date as unix ms, stamped by `build.rs`.
-/// `None` if the env var is somehow absent (never block on missing data).
-fn running_build_date_ms() -> Option<i64> {
-    option_env!("MNEMA_BUILD_DATE_MS").and_then(|raw| raw.parse::<i64>().ok())
-}
-
-/// The Update Window gate. A build dated strictly after the owner's
-/// `update_through_ms` is outside the window. Only `Licensed` users are gated —
-/// Trial / ReadOnly / TrialNotStarted / `None` (gate not yet computed) have no
-/// Update Window, so updates flow normally. A missing `build_date_ms` is treated
-/// as in-window: never decline an update on absent data.
-fn build_out_of_window(
-    status: Option<&capture_types::LicenseStatus>,
-    build_date_ms: Option<i64>,
-) -> bool {
-    matches!(
-        status,
-        Some(capture_types::LicenseStatus::Licensed { update_through_ms, .. })
-            if build_date_ms.is_some_and(|date| date > *update_through_ms)
-    )
-}
-
-/// Fresh-install-after-lapse edge: if the running build itself is past the
-/// owner's Update Window, surface `AvailableOutOfWindow` in place of a resting
-/// `Idle`/`UpToDate` state so the UI can direct the owner. Remote-update gating
-/// is decided in `run_update_check` (see [`decide_remote_update`]), so those
-/// states pass through untouched. Pure over (status, build date) — the
-/// app-handle wrapper below feeds it the cached gate status.
-fn running_build_window_gate(
-    state: AppUpdateState,
-    status: Option<&capture_types::LicenseStatus>,
-    build_date_ms: Option<i64>,
-) -> AppUpdateState {
-    if matches!(state, AppUpdateState::Idle | AppUpdateState::UpToDate)
-        && build_out_of_window(status, build_date_ms)
-    {
-        AppUpdateState::AvailableOutOfWindow
-    } else {
-        state
-    }
-}
-
-fn apply_running_build_window_gate(
-    app_handle: &tauri::AppHandle,
-    state: AppUpdateState,
-) -> AppUpdateState {
-    running_build_window_gate(
-        state,
-        app_core::licensing::cached_status(
-            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-        )
-        .as_ref(),
-        running_build_date_ms(),
-    )
-}
-
-/// What `run_update_check` does with a found remote update: the stored state,
-/// whether the update stays installable (`pending_update` kept), and whether
-/// the owner is notified. Out-of-window builds are surfaced (version shown) but
-/// never installable; their notice opens the update window once per version
-/// (see [`out_of_window_notice`]) and skips the "ready to install" bell.
-#[derive(Debug, PartialEq, Eq)]
-struct RemoteUpdateDecision {
-    state: AppUpdateState,
-    installable: bool,
-    notify: bool,
-}
-
-fn decide_remote_update(out_of_window: bool, notify_available: bool) -> RemoteUpdateDecision {
-    RemoteUpdateDecision {
-        state: if out_of_window {
-            AppUpdateState::AvailableOutOfWindow
-        } else {
-            AppUpdateState::Available
-        },
-        installable: !out_of_window,
-        notify: notify_available,
-    }
-}
-
-/// The settings to persist when an out-of-window `version` should open the
-/// update window, or `None` when that version already did (once per version).
-fn out_of_window_notice(settings: &AppUpdateSettings, version: &str) -> Option<AppUpdateSettings> {
-    (settings.notified_out_of_window_version.as_deref() != Some(version)).then(|| {
-        AppUpdateSettings {
-            notified_out_of_window_version: Some(version.to_string()),
-            ..settings.clone()
-        }
-    })
 }
 
 pub(crate) fn map_update_error_kind(error: &tauri_plugin_updater::Error) -> AppUpdateErrorKind {
@@ -528,17 +163,6 @@ pub(crate) fn map_update_error_kind(error: &tauri_plugin_updater::Error) -> AppU
         }
         #[allow(unreachable_patterns)]
         _ => AppUpdateErrorKind::Unknown,
-    }
-}
-
-fn user_facing_error_message(kind: AppUpdateErrorKind) -> &'static str {
-    match kind {
-        AppUpdateErrorKind::Network => "Could not reach the update feed.",
-        AppUpdateErrorKind::Feed => "Update feed could not be read.",
-        AppUpdateErrorKind::Incompatible => "No compatible update is available for this Mac.",
-        AppUpdateErrorKind::Verification => "Update could not be verified.",
-        AppUpdateErrorKind::Install => "Update could not be installed.",
-        AppUpdateErrorKind::Unknown => "Update failed.",
     }
 }
 
@@ -636,68 +260,6 @@ pub(crate) fn install_and_restart(app_handle: tauri::AppHandle) {
     });
 }
 
-/// Label + enabled state for the tray's update item, or `None` when the menu
-/// should carry no update row at all. Out-of-window builds
-/// (`AvailableOutOfWindow`) are deliberately absent: they aren't installable, so
-/// the tray would offer a button that can only fail — Settings does the directing.
-///
-/// `Failed` DOES keep a row. A failed download or bundle swap leaves
-/// `pending_update` intact and is retryable, which is why the update window and
-/// Settings → About both keep their install button live for it; dropping the
-/// tray row instead stranded the windowless user the row exists for.
-///
-/// `installable` is `pending_update.is_some()`, NOT the presence of a version:
-/// they are different fields and they come apart. A failed *check* clears
-/// `update` (no version, no row), but `install_app_update`'s no-pending branch
-/// and `restart_after_app_update`'s error path both set `Failed` while LEAVING
-/// `update` populated — keying the row on the version alone would draw an
-/// enabled "Retry" whose only possible outcome is the failure alert. That is
-/// exactly the "button that can only fail" reasoning that keeps
-/// `AvailableOutOfWindow` off the tray.
-pub(crate) fn tray_update_menu_item(
-    state: AppUpdateState,
-    version: Option<&str>,
-    installable: bool,
-) -> Option<(String, bool)> {
-    match state {
-        AppUpdateState::RestartRequired => Some(("Restart to Finish Update".to_string(), true)),
-        AppUpdateState::Downloading | AppUpdateState::Installing => {
-            Some(("Updating\u{2026}".to_string(), false))
-        }
-        AppUpdateState::Available if installable => {
-            version.map(|version| (format!("Install Update {version}\u{2026}"), true))
-        }
-        AppUpdateState::Failed if installable => {
-            version.map(|version| (format!("Retry Update {version}\u{2026}"), true))
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn tray_update_item(app_handle: &tauri::AppHandle) -> Option<(String, bool)> {
-    let status = current_status(app_handle);
-    let installable = {
-        let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
-        let runtime = runtime_state
-            .lock()
-            .expect("app update runtime state poisoned");
-        runtime.pending_update.is_some()
-    };
-    tray_update_menu_item(
-        status.state,
-        status.update.as_ref().map(|update| update.version.as_str()),
-        installable,
-    )
-}
-
-/// Whether a tray rebuild should be requested for `item`, given what the tray
-/// last actually drew. Split out from [`refresh_tray_update_item`] because that
-/// function is welded to an `AppHandle` and therefore untestable; this is the
-/// part with the decision in it.
-fn tray_memo_needs_rebuild(last: &Option<(String, bool)>, item: &Option<(String, bool)>) -> bool {
-    last != item
-}
-
 #[cfg(test)]
 fn startup_update_notification_for_update(
     update: &AppUpdateInfo,
@@ -722,10 +284,7 @@ async fn run_update_check(
     app_handle: &tauri::AppHandle,
     notify_available: bool,
 ) -> AppUpdateStatus {
-    let settings = current_settings(
-        app_handle,
-        app_handle.state::<AppUpdateSettingsState>().inner(),
-    );
+    let settings = current_settings(&core(app_handle));
 
     {
         let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
@@ -785,10 +344,7 @@ async fn run_update_check(
             // `pending_update = None` so it can't be installed — the UI directs the
             // owner to renew. Perpetual Fallback: their current build keeps working.
             let out_of_window = build_out_of_window(
-                app_core::licensing::cached_status(
-                    &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-                )
-                .as_ref(),
+                app_core::licensing::cached_status(&core(app_handle)).as_ref(),
                 update_release_date_ms(&update),
             );
             let decision = decide_remote_update(out_of_window, notify_available);
@@ -812,11 +368,7 @@ async fn run_update_check(
             // If the channel changed while the check was in flight, the stored
             // result is from the wrong endpoint. Kick off a new check against
             // the current channel and return early without emitting the stale result.
-            let current_channel = current_settings(
-                app_handle,
-                app_handle.state::<AppUpdateSettingsState>().inner(),
-            )
-            .channel;
+            let current_channel = current_settings(&core(app_handle)).channel;
             if current_channel != settings.channel {
                 {
                     let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
@@ -834,12 +386,11 @@ async fn run_update_check(
             // Out of window: open the window (its renew state) once per version,
             // gated on disk, and skip the "ready to install" bell — it isn't.
             if decision.notify && out_of_window {
-                let settings_state = app_handle.state::<AppUpdateSettingsState>();
-                let stored = current_settings(app_handle, settings_state.inner());
+                let stored = current_settings(&core(app_handle));
                 if let Some(next) = out_of_window_notice(&stored, &info.version) {
                     // Open only once recorded: an unwritable gate would reopen
                     // the window every tick.
-                    match persist_settings(app_handle, settings_state.inner(), next) {
+                    match persist_settings(&core(app_handle), next) {
                         Ok(_) => prompt_update_available(app_handle),
                         Err(error) => app_core::debug_log::log_warn(format!(
                             "skipped the out-of-window update notice: {error}"
@@ -883,11 +434,7 @@ async fn run_update_check(
                 runtime.restart_required = false;
                 runtime.last_checked_at_unix_ms = Some(now_unix_ms());
             }
-            let current_channel = current_settings(
-                app_handle,
-                app_handle.state::<AppUpdateSettingsState>().inner(),
-            )
-            .channel;
+            let current_channel = current_settings(&core(app_handle)).channel;
             if current_channel != settings.channel {
                 {
                     let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
@@ -909,11 +456,7 @@ async fn run_update_check(
             } else {
                 AppUpdateState::Failed
             };
-            let current_channel = current_settings(
-                app_handle,
-                app_handle.state::<AppUpdateSettingsState>().inner(),
-            )
-            .channel;
+            let current_channel = current_settings(&core(app_handle)).channel;
             if current_channel != settings.channel {
                 {
                     let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
@@ -932,23 +475,13 @@ async fn run_update_check(
 }
 
 pub fn initialize(app_handle: &tauri::AppHandle) {
-    let settings = current_settings(
-        app_handle,
-        app_handle.state::<AppUpdateSettingsState>().inner(),
-    );
+    let settings = current_settings(&core(app_handle));
     app_core::debug_log::log_info(format!(
         "loaded app update settings (channel={:?}, endpoint={})",
         settings.channel,
         settings.channel.endpoint()
     ));
 }
-
-/// How often a running app re-checks the feed. Mnema is left running for days,
-/// so a startup-only check means a user can sit on a stale build indefinitely.
-/// For reference: Sparkle defaults to 24 h (1 h hard minimum), Chrome's Omaha to
-/// ~5 h. A tick is one GET of a small static R2 file, so the interval is a
-/// notification-noise choice, not a bandwidth one.
-const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Checks immediately (the first `interval` tick fires at once) and every
 /// `UPDATE_CHECK_INTERVAL` after that, for the life of the process.
@@ -992,12 +525,11 @@ pub async fn set_app_update_channel(
     app_handle: tauri::AppHandle,
     channel: AppUpdateChannel,
 ) -> AppUpdateStatus {
-    let settings_state = app_handle.state::<AppUpdateSettingsState>();
     let settings = AppUpdateSettings {
         channel,
-        ..current_settings(&app_handle, settings_state.inner())
+        ..current_settings(&core(&app_handle))
     };
-    if let Err(error) = persist_settings(&app_handle, settings_state.inner(), settings) {
+    if let Err(error) = persist_settings(&core(&app_handle), settings) {
         return set_runtime_error(&app_handle, AppUpdateState::Failed, error);
     }
 
@@ -1056,10 +588,7 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
         if runtime.restart_required {
             return status_from_runtime(
                 &app_handle,
-                current_settings(
-                    &app_handle,
-                    app_handle.state::<AppUpdateSettingsState>().inner(),
-                ),
+                current_settings(&core(&app_handle)),
                 &runtime,
             );
         }
@@ -1069,10 +598,7 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
         ) {
             return status_from_runtime(
                 &app_handle,
-                current_settings(
-                    &app_handle,
-                    app_handle.state::<AppUpdateSettingsState>().inner(),
-                ),
+                current_settings(&core(&app_handle)),
                 &runtime,
             );
         }
@@ -1084,10 +610,7 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
             ));
             return status_from_runtime(
                 &app_handle,
-                current_settings(
-                    &app_handle,
-                    app_handle.state::<AppUpdateSettingsState>().inner(),
-                ),
+                current_settings(&core(&app_handle)),
                 &runtime,
             );
         };
@@ -1188,18 +711,6 @@ pub async fn install_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus
     current_status(&app_handle)
 }
 
-/// The only reason to refuse: nothing was installed. A live capture is NOT a
-/// reason — `request_graceful_restart_after_update` finalizes it before
-/// relaunching, same as any other graceful exit.
-fn restart_after_update_error(restart_required: bool) -> Option<AppUpdateError> {
-    (!restart_required).then(|| {
-        AppUpdateError::new(
-            AppUpdateErrorKind::Install,
-            "No installed update is waiting for restart.",
-        )
-    })
-}
-
 #[tauri::command]
 pub fn restart_after_app_update(app_handle: tauri::AppHandle) -> Result<(), AppUpdateError> {
     let restart_required = {
@@ -1220,433 +731,4 @@ pub fn restart_after_app_update(app_handle: tauri::AppHandle) -> Result<(), AppU
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use capture_types::{NativeCaptureSession, SourceSessionMeta, SourceSessions};
-
-    fn stopped_session() -> NativeCaptureSession {
-        NativeCaptureSession {
-            is_running: false,
-            is_inactivity_paused: false,
-            is_user_paused: false,
-            is_low_disk_suspended: false,
-            requested_sources: None,
-            output_files: None,
-            source_sessions: None,
-        }
-    }
-
-    #[test]
-    fn update_size_comes_from_the_selected_platform_entry() {
-        let url = "https://release.mnema.day/releases/v0.1.24/Mnema_aarch64.app.tar.gz";
-        let feed = |size: serde_json::Value| {
-            serde_json::json!({
-                "version": "0.1.24",
-                "platforms": {
-                    "darwin-x86_64": { "url": "https://x/other.app.tar.gz", "signature": "s", "size": 1 },
-                    "darwin-aarch64": { "url": url, "signature": "s", "size": size },
-                }
-            })
-        };
-        assert_eq!(
-            update_size_bytes(&feed(serde_json::json!(38_400_000)), url),
-            Some(38_400_000)
-        );
-        assert_eq!(
-            update_size_bytes(&feed(serde_json::json!("38400000")), url),
-            None
-        );
-        assert_eq!(update_size_bytes(&feed(serde_json::json!(-1)), url), None);
-        let mut absent = feed(serde_json::Value::Null);
-        absent["platforms"]["darwin-aarch64"]
-            .as_object_mut()
-            .unwrap()
-            .remove("size");
-        assert_eq!(update_size_bytes(&absent, url), None);
-        assert_eq!(
-            update_size_bytes(&serde_json::json!({ "version": "0.1.24" }), url),
-            None
-        );
-    }
-
-    #[test]
-    fn default_settings_loads_stable_when_no_config_exists() {
-        let dir = tempfile::tempdir().expect("temp dir should be created");
-        let settings = load_app_update_settings_from_path(&dir.path().join("missing.json"));
-
-        assert_eq!(settings.channel, AppUpdateChannel::Stable);
-    }
-
-    #[test]
-    fn preview_channel_persists_and_reloads() {
-        let dir = tempfile::tempdir().expect("temp dir should be created");
-        let path = dir.path().join("app-update-settings.json");
-        std::fs::write(
-            &path,
-            serde_json::to_string(&AppUpdateSettings {
-                channel: AppUpdateChannel::Preview,
-                ..AppUpdateSettings::default()
-            })
-            .expect("settings should serialize"),
-        )
-        .expect("settings should write");
-
-        let settings = load_app_update_settings_from_path(&path);
-
-        assert_eq!(settings.channel, AppUpdateChannel::Preview);
-    }
-
-    #[test]
-    fn invalid_settings_file_falls_back_to_stable() {
-        let dir = tempfile::tempdir().expect("temp dir should be created");
-        let path = dir.path().join("app-update-settings.json");
-        std::fs::write(&path, "{not-json").expect("invalid settings should write");
-
-        let settings = load_app_update_settings_from_path(&path);
-
-        assert_eq!(settings.channel, AppUpdateChannel::Stable);
-    }
-
-    #[test]
-    fn channel_endpoint_selection_returns_stable_and_preview_urls() {
-        assert_eq!(
-            channel_endpoint(AppUpdateChannel::Stable),
-            STABLE_UPDATE_ENDPOINT
-        );
-        assert_eq!(
-            channel_endpoint(AppUpdateChannel::Preview),
-            PREVIEW_UPDATE_ENDPOINT
-        );
-    }
-
-    #[test]
-    fn preview_channel_requires_no_extra_per_install_state_after_opt_in() {
-        assert!(!channel_requires_additional_per_install_state(
-            AppUpdateChannel::Preview
-        ));
-    }
-
-    #[test]
-    fn install_stops_a_running_capture_session_first() {
-        let mut session = stopped_session();
-        session.is_running = true;
-
-        assert!(capture_session_needs_stop_before_install(&session));
-    }
-
-    #[test]
-    fn install_stops_a_user_paused_capture_session_first() {
-        let mut session = stopped_session();
-        session.is_user_paused = true;
-
-        assert!(capture_session_needs_stop_before_install(&session));
-    }
-
-    #[test]
-    fn stopped_session_with_finalized_source_metadata_needs_no_stop() {
-        // A stopped session preserves `source_sessions` as finalized metadata
-        // (see `stopped_session_from_runtime`). That is not a liveness signal, so
-        // it must not trigger a pointless stop before the install.
-        let mut session = stopped_session();
-        session.source_sessions = Some(SourceSessions {
-            screen: Some(SourceSessionMeta {
-                session_id: "s1".into(),
-                started_at_unix_ms: 1,
-            }),
-            microphone: None,
-            system_audio: None,
-        });
-
-        assert!(!capture_session_needs_stop_before_install(&session));
-    }
-
-    #[test]
-    fn tray_update_item_only_appears_for_installable_states() {
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Available, Some("0.3.0"), true),
-            Some(("Install Update 0.3.0\u{2026}".to_string(), true))
-        );
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::RestartRequired, None, false),
-            Some(("Restart to Finish Update".to_string(), true))
-        );
-        // Mid-install the row shows progress but must not be clickable again.
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Downloading, Some("0.3.0"), true),
-            Some(("Updating\u{2026}".to_string(), false))
-        );
-        // A failed install is retryable and keeps its pending update, so the
-        // tray keeps a row — matching the update window and Settings, which
-        // both keep `failed` installable.
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Failed, Some("0.3.0"), true),
-            Some(("Retry Update 0.3.0\u{2026}".to_string(), true))
-        );
-        // A failed CHECK carries no version (run_update_check clears it), so
-        // there is nothing to retry and no row.
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Failed, None, false),
-            None
-        );
-        // The dangerous shape: `install_app_update`'s no-pending branch and
-        // `restart_after_app_update`'s error path both set Failed while leaving
-        // `update` populated. A version-keyed row would draw an enabled "Retry"
-        // whose only outcome is the failure alert.
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Failed, Some("0.3.0"), false),
-            None
-        );
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Available, Some("0.3.0"), false),
-            None
-        );
-        for state in [
-            AppUpdateState::Idle,
-            AppUpdateState::Checking,
-            AppUpdateState::UpToDate,
-            AppUpdateState::AvailableOutOfWindow,
-            AppUpdateState::Incompatible,
-        ] {
-            assert_eq!(
-                tray_update_menu_item(state, Some("0.3.0"), true),
-                None,
-                "{state:?}"
-            );
-        }
-        // Available with no version in the feed is a broken row, not a row.
-        assert_eq!(
-            tray_update_menu_item(AppUpdateState::Available, None, true),
-            None
-        );
-    }
-
-    #[test]
-    fn tray_memo_only_short_circuits_on_a_row_the_tray_actually_drew() {
-        let row = Some(("Install Update 0.3.0\u{2026}".to_string(), true));
-
-        // Nothing recorded yet (the row-less menu `initialize` builds): rebuild.
-        assert!(tray_memo_needs_rebuild(&None, &row));
-        // Recorded and unchanged: skip. `emit_current_status` fires once per
-        // downloaded chunk, and a menu rebuild per chunk is visibly flickery.
-        assert!(!tray_memo_needs_rebuild(&row, &row));
-        // Enabled-ness alone is a real change (Available -> mid-install).
-        let disabled = Some(("Install Update 0.3.0\u{2026}".to_string(), false));
-        assert!(tray_memo_needs_rebuild(&row, &disabled));
-        // Row going away is a change too, or a stale row outlives its state.
-        assert!(tray_memo_needs_rebuild(&row, &None));
-        assert!(!tray_memo_needs_rebuild(&None, &None));
-    }
-
-    #[test]
-    fn startup_check_availability_notification_targets_about_settings() {
-        let update = AppUpdateInfo {
-            version: "0.3.0".into(),
-            date: None,
-            notes: None,
-            channel: AppUpdateChannel::Stable,
-            size_bytes: None,
-        };
-
-        let notification = startup_update_notification_for_update(&update, 42);
-
-        assert_eq!(notification.id, APP_UPDATE_AVAILABLE_NOTIFICATION_ID);
-        assert_eq!(notification.severity, "info");
-        match notification.action {
-            Some(native_capture::AppNotificationAction::OpenSettingsTab { tab }) => {
-                assert_eq!(tab, "about");
-            }
-            _ => panic!("expected open settings action"),
-        }
-    }
-
-    #[test]
-    fn update_error_mapping_buckets_common_errors() {
-        assert_eq!(
-            map_update_error_kind(&tauri_plugin_updater::Error::ReleaseNotFound),
-            AppUpdateErrorKind::Feed
-        );
-        assert_eq!(
-            map_update_error_kind(&tauri_plugin_updater::Error::UnsupportedOs),
-            AppUpdateErrorKind::Incompatible
-        );
-        assert_eq!(
-            map_update_error_kind(&tauri_plugin_updater::Error::Network("offline".into())),
-            AppUpdateErrorKind::Network
-        );
-        assert_eq!(
-            map_update_error_kind(&tauri_plugin_updater::Error::PackageInstallFailed),
-            AppUpdateErrorKind::Install
-        );
-    }
-
-    #[test]
-    fn restart_command_rejects_when_no_installed_update_is_pending() {
-        let error = restart_after_update_error(false)
-            .expect("missing pending update should reject restart");
-
-        assert_eq!(error.kind, AppUpdateErrorKind::Install);
-    }
-
-    #[test]
-    fn restart_command_allows_restart_while_capture_is_running() {
-        // The graceful restart stops and finalizes capture itself.
-        assert_eq!(restart_after_update_error(true), None);
-    }
-
-    #[test]
-    fn update_window_gate_only_declines_out_of_window_licensed_builds() {
-        let licensed = |update_through_ms| capture_types::LicenseStatus::Licensed {
-            update_through_ms,
-            in_window: true,
-            email: "a@b.c".into(),
-            name: String::new(),
-            activation: capture_types::Activation::Activated,
-        };
-
-        // Build released after the window → out of window.
-        assert!(build_out_of_window(Some(&licensed(1_000)), Some(2_000)));
-        // Build within the window → allowed.
-        assert!(!build_out_of_window(Some(&licensed(2_000)), Some(1_000)));
-        // Build exactly at the boundary → allowed (`<=` is in window).
-        assert!(!build_out_of_window(Some(&licensed(1_000)), Some(1_000)));
-        // Missing build date → never decline.
-        assert!(!build_out_of_window(Some(&licensed(1_000)), None));
-        // Non-Licensed states have no Update Window: never gated.
-        assert!(!build_out_of_window(
-            Some(&capture_types::LicenseStatus::ReadOnly),
-            Some(9_999)
-        ));
-        assert!(!build_out_of_window(
-            Some(&capture_types::LicenseStatus::Trial {
-                days_left: 3,
-                trial_end_ms: 0
-            }),
-            Some(9_999)
-        ));
-        // Gate not yet computed → updates flow.
-        assert!(!build_out_of_window(None, Some(9_999)));
-    }
-
-    fn out_of_window_licensed() -> capture_types::LicenseStatus {
-        capture_types::LicenseStatus::Licensed {
-            update_through_ms: 1_000,
-            in_window: false,
-            email: "a@b.c".into(),
-            name: String::new(),
-            activation: capture_types::Activation::Activated,
-        }
-    }
-
-    #[test]
-    fn running_build_window_gate_flips_only_resting_states() {
-        let status = out_of_window_licensed();
-        let build_after_window = Some(2_000);
-
-        // Idle / UpToDate → AvailableOutOfWindow when the running build is past
-        // the owner's window (the fresh-install-after-lapse edge).
-        for state in [AppUpdateState::Idle, AppUpdateState::UpToDate] {
-            assert_eq!(
-                running_build_window_gate(state, Some(&status), build_after_window),
-                AppUpdateState::AvailableOutOfWindow,
-            );
-        }
-        // Every other state passes through untouched (remote gating is decided
-        // in run_update_check, in-flight states must not be rewritten).
-        for state in [
-            AppUpdateState::Checking,
-            AppUpdateState::Available,
-            AppUpdateState::AvailableOutOfWindow,
-            AppUpdateState::Downloading,
-            AppUpdateState::Installing,
-            AppUpdateState::RestartRequired,
-            AppUpdateState::Incompatible,
-            AppUpdateState::Failed,
-        ] {
-            assert_eq!(
-                running_build_window_gate(state, Some(&status), build_after_window),
-                state,
-            );
-        }
-    }
-
-    #[test]
-    fn running_build_window_gate_never_flips_in_window_or_unknown() {
-        // In-window build, missing build date, or no computed status → resting
-        // states stay resting.
-        for (status, build_date) in [
-            (Some(out_of_window_licensed()), Some(500)), // build within window
-            (Some(out_of_window_licensed()), None),      // no build date
-            (None, Some(2_000)),                         // gate not yet computed
-        ] {
-            assert_eq!(
-                running_build_window_gate(AppUpdateState::Idle, status.as_ref(), build_date),
-                AppUpdateState::Idle,
-            );
-        }
-    }
-
-    #[test]
-    fn out_of_window_remote_update_is_never_installable_but_still_notifies() {
-        // Out of window: surfaced, pending_update dropped; a notify check still
-        // notifies (the window, gated once per version — not the install bell).
-        assert_eq!(
-            decide_remote_update(true, true),
-            RemoteUpdateDecision {
-                state: AppUpdateState::AvailableOutOfWindow,
-                installable: false,
-                notify: true,
-            },
-        );
-        assert!(!decide_remote_update(true, false).notify);
-        assert_eq!(
-            decide_remote_update(true, false).state,
-            AppUpdateState::AvailableOutOfWindow,
-        );
-        // In window: installable; notification tracks the caller's flag.
-        assert_eq!(
-            decide_remote_update(false, true),
-            RemoteUpdateDecision {
-                state: AppUpdateState::Available,
-                installable: true,
-                notify: true,
-            },
-        );
-        assert_eq!(
-            decide_remote_update(false, false),
-            RemoteUpdateDecision {
-                state: AppUpdateState::Available,
-                installable: true,
-                notify: false,
-            },
-        );
-    }
-
-    /// The out-of-window notice opens the window once per remote version, and
-    /// the gate survives a reload of the settings file (a relaunch).
-    #[test]
-    fn out_of_window_notice_opens_once_per_version_across_reloads() {
-        let dir = tempfile::tempdir().expect("temp dir should be created");
-        let path = dir.path().join("app-update-settings.json");
-        let stored = AppUpdateSettings {
-            channel: AppUpdateChannel::Preview,
-            ..AppUpdateSettings::default()
-        };
-
-        let first = out_of_window_notice(&stored, "0.1.24").expect("first sighting opens");
-        assert_eq!(first.channel, AppUpdateChannel::Preview, "channel kept");
-        std::fs::write(&path, serde_json::to_string(&first).unwrap()).unwrap();
-
-        let reloaded = load_app_update_settings_from_path(&path);
-        assert_eq!(out_of_window_notice(&reloaded, "0.1.24"), None, "no reopen");
-        let next = out_of_window_notice(&reloaded, "0.1.25").expect("new version opens again");
-        let gate = next.notified_out_of_window_version;
-        assert_eq!(gate.as_deref(), Some("0.1.25"));
-
-        // A file written before the field existed still loads.
-        std::fs::write(&path, r#"{"channel":"preview"}"#).unwrap();
-        assert_eq!(
-            load_app_update_settings_from_path(&path).notified_out_of_window_version,
-            None
-        );
-    }
-}
+mod tests;

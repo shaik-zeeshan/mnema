@@ -82,7 +82,7 @@ fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
         OcrModelDownloadProgress(p) => ("ocr_model_download_progress", json(p)),
         SemanticSearchModelDownloadProgress(p) => ("semantic_search_model_download_progress", json(p)),
         NativeCaptureSessionChanged(p) => ("native_capture_session_changed", p),
-        AppUpdateStatusChanged(p) => ("app_update_status_changed", p),
+        AppUpdateStatusChanged(p) => ("app_update_status_changed", json(p)),
         // Unit events were emitted with `()`, which serializes to `null`.
         ConversationChanged => ("conversation_changed", Value::Null),
         UserContextChanged => ("user_context_changed", Value::Null),
@@ -126,8 +126,14 @@ impl Host for TauriHost {
             CoreEvent::LicenseStatus(status) => Some(self.license_status_changed(status)),
             _ => None,
         };
+        let update_status_changed = matches!(event, CoreEvent::AppUpdateStatusChanged(_));
         let (name, payload) = tauri_event(event);
         let _ = app.emit(name, payload);
+        // The tray carries the update row too; rebuild it after the emit, as the
+        // updater's own `emit_current_status` used to.
+        if update_status_changed {
+            app_updates::tray::refresh_tray_update_item(app);
+        }
         // Licensing publishes; the updater and the tray react here, in the order
         // licensing used to call them: re-check updates on a change (the update
         // gate reads the status), then rebuild the tray (Read-Only Mode flips its
@@ -270,6 +276,25 @@ mod tests {
         }
     }
 
+    fn update_status() -> app_core::updates::AppUpdateStatus {
+        use app_core::updates::*;
+        AppUpdateStatus {
+            app: AppUpdateAppInfo {
+                product_name: "Mnema".into(),
+                version: "0.1.24".into(),
+                identifier: "day.mnema".into(),
+                platform: "macos".into(),
+                arch: "aarch64".into(),
+            },
+            channel: AppUpdateChannel::Stable,
+            state: AppUpdateState::Idle,
+            update: None,
+            progress: None,
+            error: None,
+            last_checked_at_unix_ms: None,
+        }
+    }
+
     fn semantic_progress(
     ) -> app_core::semantic_search_models::SemanticSearchModelDownloadProgressDto {
         app_core::semantic_search_models::SemanticSearchModelDownloadProgressDto::new(
@@ -294,7 +319,7 @@ mod tests {
             OcrModelDownloadProgress(ocr_progress()),
             SemanticSearchModelDownloadProgress(semantic_progress()),
             NativeCaptureSessionChanged(p()),
-            AppUpdateStatusChanged(p()),
+            AppUpdateStatusChanged(update_status()),
             ConversationChanged,
             UserContextChanged,
             AudioSegmentsChanged,
@@ -366,7 +391,7 @@ mod tests {
     fn event_names_match_the_constants_the_old_emit_sites_use() {
         use crate::*;
         let constants = [
-            app_updates::APP_UPDATE_STATUS_CHANGED_EVENT,
+            app_core::updates::APP_UPDATE_STATUS_CHANGED_EVENT,
             app_infra::TIMELINE_DATA_CHANGED_EVENT,
             app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
             app_core::audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
