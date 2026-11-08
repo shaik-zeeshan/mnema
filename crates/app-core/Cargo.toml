@@ -52,8 +52,13 @@ image = { version = "0.25", default-features = false, features = ["jpeg"], optio
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.15", default-features = false, features = ["av", "cf", "ns", "macos_15_0"] }
 cocoa = "0.26"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
 core-graphics = "0.25"
 objc = "0.2"
+# The updater's install gate (Apple code-signature checks on a downloaded bundle).
+security-framework = "3"
+security-framework-sys = "2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -38,6 +38,8 @@ pub mod speaker_analysis_runtime;
 mod test_support;
 pub mod third_party_notices;
 pub mod transcription_deepgram;
+#[cfg(target_os = "macos")]
+pub mod updates;
 pub mod usage_charts;
 
 pub use crate::core::AppCore;
