@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 00:30",
-  "verdict": "About a third done: Timeline and Chat are built (screenshots waiting for your sign-off), the main window and all shared controls are approved, and the backend move's first stage (S2) is complete. Recording-engine move, Settings and Insights are in progress; two agents at a time.",
+  "updated": "2026-11-09 01:20",
+  "verdict": "About 40% done. Timeline, Chat and Settings are built (screenshots waiting for your sign-off); the main window and all shared controls are approved; the recording engine move is halfway through its four parts. Insights is building now.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~33%",
+      "value": "~40%",
       "note": "of the whole build"
     },
     {
@@ -14,8 +14,8 @@
     },
     {
       "label": "Screens built",
-      "value": "3 of 8",
-      "note": "shell, Timeline, Chat"
+      "value": "4 of 8",
+      "note": "shell, Timeline, Chat, Settings"
     },
     {
       "label": "Tests passing",
@@ -24,8 +24,8 @@
     },
     {
       "label": "Screenshots",
-      "value": "32 ✓ · 32 waiting",
-      "note": "10 Timeline + 10 Chat new; 12 shell changed"
+      "value": "32 ✓ · 56 waiting",
+      "note": "Timeline 10, Chat 10, Settings 24 new; shell 12 changed"
     }
   ],
   "bars": [
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 40
+      "pct": 55
     },
     {
       "label": "Packaging + updater (S16)",
@@ -61,9 +61,9 @@
       "detail": "segments.rs, the heart of recording: start/stop, low-disk, inactivity pause/resume, wake recovery, audio commit. The riskiest move; every function body diffed against the original."
     },
     {
-      "id": "S13",
-      "title": "Settings screen",
-      "detail": "Rail with search, save status, scroll-spy, all 20 sections, the autosave engine with timing tests."
+      "id": "S12",
+      "title": "Insights screen",
+      "detail": "Overview, Journal with the receipt viewer, Subjects with the evidence drawer and the 5-second Undo, Context, and the six chart types."
     }
   ],
   "done": [
@@ -174,6 +174,12 @@
       "title": "Recording engine move — part 1",
       "what": "Capture runtime, system audio, browser URL, metadata, capture health, and most of activity, microphone and privacy moved to the shared crate; 1,364 tests green.",
       "commit": "5467e174"
+    },
+    {
+      "id": "S13",
+      "title": "Settings screen",
+      "what": "Rail with search, save status, scroll-spy, all sections; autosave timings (450 / 0 / 250 ms) and the 500 ms reload spin tested. Saves that need the recording engine, native dialogs or the updater wait for those steps.",
+      "commit": "daf681ab"
     }
   ],
   "next": [
@@ -246,6 +252,24 @@
         "chat-mid-stream",
         "chat-done",
         "chat-error"
+      ]
+    },
+    {
+      "title": "Settings — new, waiting for sign-off",
+      "note": "12 sections × dark/light.",
+      "files": [
+        "settings-general",
+        "settings-general-shortcuts",
+        "settings-capture",
+        "settings-capture-video",
+        "settings-capture-privacy",
+        "settings-intelligence",
+        "settings-intelligence-askai",
+        "settings-intelligence-ocr",
+        "settings-intelligence-speakers",
+        "settings-data",
+        "settings-data-access",
+        "settings-about"
       ]
     },
     {
