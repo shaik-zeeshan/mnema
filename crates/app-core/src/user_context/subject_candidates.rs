@@ -21,9 +21,8 @@ use std::collections::HashMap;
 
 use app_infra::SubjectVectorStore;
 use semantic_search::EmbedKind;
-use tauri::Manager;
 
-use app_core::semantic_search_worker::{
+use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available,
 };
@@ -58,7 +57,7 @@ const SUBJECT_CANDIDATE_CAP: usize = 40;
 /// so the embedder is loaded once per pass and dropped at the end (no caching) —
 /// the simpler robust option.
 pub(crate) async fn select_semantic_subject_candidates(
-    app_handle: &tauri::AppHandle,
+    core: &crate::AppCore,
     subject_vectors: &SubjectVectorStore,
     activities: &[capture_types::Activity],
 ) -> Vec<String> {
@@ -66,18 +65,8 @@ pub(crate) async fn select_semantic_subject_candidates(
         return Vec::new();
     }
 
-    let settings = effective_semantic_search_settings(
-        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-    );
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            app_core::debug_log::log_warn(format!(
-                "subject-candidate select could not resolve app data dir: {error}"
-            ));
-            return Vec::new();
-        }
-    };
+    let settings = effective_semantic_search_settings(core);
+    let app_data_dir = core.paths().data.clone();
 
     // Model-gate → Mode 1 vs Mode 2: a silent no-op (empty set) when no model is
     // installed / the selection is disabled / unknown, so the caller falls back to
@@ -117,12 +106,12 @@ pub(crate) async fn select_semantic_subject_candidates(
 
     // This is a THIRD background embed path (User Context distillation), so it takes
     // the same slot as the two background sweeps — see
-    // `app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT`. Without it a
+    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT`. Without it a
     // distillation overlapping the semantic backfill is exactly the two-concurrent-
     // embedders case that slot exists to prevent (measured +38% GPU power, +9 °C),
     // and — since `load_embedder` hands both the SAME candle device — it also
     // serializes them on candle's device lock with neither side pacing for the other.
-    let _embed_slot = app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT
+    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
         .acquire()
         .await
         .ok();
@@ -130,27 +119,28 @@ pub(crate) async fn select_semantic_subject_candidates(
     // Embed all Activity texts as QUERIES (they are queries against the stored
     // Document-kind Subject corpus) on a blocking thread. Load the embedder once
     // per pass and drop it when the task returns.
-    let embed_result = tauri::async_runtime::spawn_blocking(move || {
-        let loaded = match load_embedder(&app_data_dir, &descriptor) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                app_core::debug_log::log_warn(format!(
-                    "subject-candidate select failed to load model '{}/{}': {error}",
-                    descriptor.provider, descriptor.model_id
-                ));
-                return None;
-            }
-        };
-        let bodies: Vec<&str> = texts.iter().map(|text| text.as_str()).collect();
-        Some(loaded.embedder.embed_texts(&bodies, EmbedKind::Query))
-    })
-    .await;
+    let embed_result = core
+        .spawn_blocking(move || {
+            let loaded = match load_embedder(&app_data_dir, &descriptor) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    crate::debug_log::log_warn(format!(
+                        "subject-candidate select failed to load model '{}/{}': {error}",
+                        descriptor.provider, descriptor.model_id
+                    ));
+                    return None;
+                }
+            };
+            let bodies: Vec<&str> = texts.iter().map(|text| text.as_str()).collect();
+            Some(loaded.embedder.embed_texts(&bodies, EmbedKind::Query))
+        })
+        .await;
 
     let results = match embed_result {
         Ok(Some(results)) => results,
         Ok(None) => return Vec::new(),
         Err(error) => {
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "subject-candidate select embed task panicked/cancelled: {error}"
             ));
             return Vec::new();
@@ -164,7 +154,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         let vector = match result {
             Ok(vector) => vector,
             Err(error) => {
-                app_core::debug_log::log_warn(format!(
+                crate::debug_log::log_warn(format!(
                     "subject-candidate select embed failed for an activity: {error}"
                 ));
                 continue;
@@ -181,9 +171,7 @@ pub(crate) async fn select_semantic_subject_candidates(
         {
             Ok(hits) => per_activity.push(hits),
             Err(error) => {
-                app_core::debug_log::log_warn(format!(
-                    "subject-candidate select KNN failed: {error}"
-                ));
+                crate::debug_log::log_warn(format!("subject-candidate select KNN failed: {error}"));
             }
         }
     }
@@ -383,16 +371,25 @@ mod tests {
         let semantic = vec!["semantic-old".to_string()];
         let merged = merge_known_subjects(recency.clone(), semantic);
         // First FLOOR entries are the newest recency handles, in order.
-        assert_eq!(&merged[..KNOWN_SUBJECTS_RECENCY_FLOOR], &recency[..KNOWN_SUBJECTS_RECENCY_FLOOR]);
+        assert_eq!(
+            &merged[..KNOWN_SUBJECTS_RECENCY_FLOOR],
+            &recency[..KNOWN_SUBJECTS_RECENCY_FLOOR]
+        );
         // The semantic hit lands immediately after the floor, ahead of the tail.
         assert_eq!(merged[KNOWN_SUBJECTS_RECENCY_FLOOR], "semantic-old");
-        assert_eq!(&merged[KNOWN_SUBJECTS_RECENCY_FLOOR + 1..], &recency[KNOWN_SUBJECTS_RECENCY_FLOOR..]);
+        assert_eq!(
+            &merged[KNOWN_SUBJECTS_RECENCY_FLOOR + 1..],
+            &recency[KNOWN_SUBJECTS_RECENCY_FLOOR..]
+        );
     }
 
     #[test]
     fn known_subjects_drops_blank_handles() {
         let recency = vec!["  ".to_string(), "Real".to_string()];
         let semantic = vec!["".to_string()];
-        assert_eq!(merge_known_subjects(recency, semantic), vec!["Real".to_string()]);
+        assert_eq!(
+            merge_known_subjects(recency, semantic),
+            vec!["Real".to_string()]
+        );
     }
 }

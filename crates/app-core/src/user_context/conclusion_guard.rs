@@ -22,9 +22,8 @@ use std::sync::Arc;
 use app_infra::user_context::conclusion_dedup::{find_lexical_duplicate, statements_compatible};
 use app_infra::UserContextStore;
 use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
-use tauri::Manager;
 
-use app_core::semantic_search_worker::{
+use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder, BACKGROUND_EMBED_SLOT,
 };
@@ -69,11 +68,9 @@ pub(crate) struct DuplicateGuard {
 
 impl DuplicateGuard {
     /// Resolve (but do not load) the embedding model for this pass.
-    pub(crate) fn new(app_handle: &tauri::AppHandle) -> Self {
-        let settings = effective_semantic_search_settings(
-            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-        );
-        let model = app_handle.path().app_data_dir().ok().and_then(|dir| {
+    pub(crate) fn new(core: &crate::AppCore) -> Self {
+        let settings = effective_semantic_search_settings(core);
+        let model = Some(core.paths().data.clone()).and_then(|dir| {
             if !selected_model_available(&dir, &settings) {
                 return None;
             }
@@ -133,7 +130,7 @@ impl DuplicateGuard {
             .collect();
         let mut texts: Vec<String> = vec![statement.to_string()];
         texts.extend(missing.iter().map(|(_, s)| s.clone()));
-        let embedded = tauri::async_runtime::spawn_blocking(move || {
+        let embedded = tokio::task::spawn_blocking(move || {
             let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
             embedder.embedder.embed_texts(&refs, EmbedKind::Document)
         })
@@ -175,8 +172,7 @@ impl DuplicateGuard {
             // Same slot as the other background embed paths (see BACKGROUND_EMBED_SLOT).
             let slot = BACKGROUND_EMBED_SLOT.acquire().await.ok();
             let loaded =
-                tauri::async_runtime::spawn_blocking(move || load_embedder(&dir, &descriptor))
-                    .await;
+                tokio::task::spawn_blocking(move || load_embedder(&dir, &descriptor)).await;
             self.embedding = match loaded {
                 Ok(Ok(embedder)) => Embedding::Ready {
                     embedder,
@@ -205,7 +201,7 @@ impl DuplicateGuard {
 
     /// Fall back to lexical-only for the rest of the pass.
     fn disable(&mut self, reason: String) -> Option<i64> {
-        app_core::debug_log::log_warn(format!(
+        crate::debug_log::log_warn(format!(
             "conclusion duplicate guard: {reason}; using the lexical rule only this pass"
         ));
         self.embedding = Embedding::Off;
@@ -216,16 +212,16 @@ impl DuplicateGuard {
 /// Deferred-startup heal: collapse paraphrase copies already stored (see
 /// `UserContextStore::dedupe_near_duplicate_conclusions`). Idempotent and cheap
 /// when clean, so it runs every launch; a failure is retried on the next one.
-pub(crate) fn run_dedup_startup_pass(infra: &::app_infra::AppInfra) {
-    match tauri::async_runtime::block_on(infra.user_context().dedupe_near_duplicate_conclusions()) {
+pub fn run_dedup_startup_pass(core: &crate::AppCore, infra: &::app_infra::AppInfra) {
+    match core.block_on(infra.user_context().dedupe_near_duplicate_conclusions()) {
         Ok(summary) if summary.conclusions_removed > 0 => {
-            app_core::debug_log::log_info(format!(
+            crate::debug_log::log_info(format!(
                 "user context dedup removed {} near-duplicate conclusion(s) across {} subject(s)",
                 summary.conclusions_removed, summary.subjects_touched
             ));
         }
         Ok(_) => {}
-        Err(error) => app_core::debug_log::log_warn(format!(
+        Err(error) => crate::debug_log::log_warn(format!(
             "user context dedup startup pass failed; retrying next launch: {error}"
         )),
     }

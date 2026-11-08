@@ -17,6 +17,8 @@ ocr-budget-trace = []
 speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
 
 [dependencies]
+# The Reasoning Engine, aliased so it does not collide with `crate::ai_runtime`.
+ai-engine = { package = "ai-runtime", path = "../ai-runtime" }
 app-infra = { path = "../app-infra" }
 async-trait = "0.1"
 # parakeet-onnx: the Parakeet availability check the model status reads (the desktop crate enables it too).
@@ -36,6 +38,7 @@ fs2 = "0.4"
 log = "0.4"
 ocr = { path = "../ocr" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+schemars = "1"
 semantic-search = { path = "../semantic-search" }
 speaker-analysis = { path = "../speaker-analysis", default-features = false }
 serde = { version = "1", features = ["derive"] }

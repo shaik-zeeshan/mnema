@@ -136,13 +136,24 @@ fn prompt_is_chronological_with_a_range_header() {
         activity(1, 1_000, 61_000, "Oldest", "first", None, None),
         activity(2, 100_000, 160_000, "Newest", "last", None, None),
     ];
-    let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities, &[], &HashMap::new());
+    let prompt = build_digest_prompt(
+        "week",
+        0,
+        DAY_MS * 7,
+        DAY_MS * 3,
+        &activities,
+        &[],
+        &HashMap::new(),
+    );
     assert!(prompt.contains("Range: week [0 .. 604800000) ms (2 Activities)"));
     // The local-calendar anchor names today and the range span in local days.
     assert!(prompt.contains("today is"));
     assert!(prompt.contains("Local calendar:"));
     assert!(prompt.contains("one week"));
-    assert!(prompt.contains("the optional turn"), "prompt asks for headline + turn");
+    assert!(
+        prompt.contains("the optional turn"),
+        "prompt asks for headline + turn"
+    );
     let oldest = prompt.find("Oldest").expect("oldest line");
     let newest = prompt.find("Newest").expect("newest line");
     assert!(oldest < newest, "chronological: oldest first, newest last");
@@ -153,7 +164,15 @@ fn prompt_is_chronological_with_a_range_header() {
 fn prompt_leads_with_time_by_category_largest_first() {
     let watched = Some(ActivityCategory::Entertainment);
     let activities = vec![
-        activity(1, 0, 10_000, "Build", "", Some(ActivityCategory::Creating), None),
+        activity(
+            1,
+            0,
+            10_000,
+            "Build",
+            "",
+            Some(ActivityCategory::Creating),
+            None,
+        ),
         activity(2, 20_000, 20_000 + 30 * 60_000, "Videos", "", watched, None),
         activity(3, 0, 10 * 60_000, "Misc", "", None, None),
     ];
@@ -193,7 +212,15 @@ fn prompt_degrades_by_recency_over_the_char_cap_and_says_so() {
             )
         })
         .collect();
-    let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &[], &HashMap::new());
+    let prompt = build_digest_prompt(
+        "month",
+        0,
+        DAY_MS * 30,
+        DAY_MS * 15,
+        &activities,
+        &[],
+        &HashMap::new(),
+    );
     // Bounded: the body stays near the cap (header + a little slack).
     assert!(
         prompt.chars().count() < DIGEST_PROMPT_CHAR_CAP + 1000,
@@ -203,9 +230,15 @@ fn prompt_degrades_by_recency_over_the_char_cap_and_says_so() {
     // Newest survives (its title is still present); the oldest are NOT
     // dropped — they appear, folded into rollup day lines.
     assert!(prompt.contains("Activity 999"), "newest survives");
-    assert!(prompt.contains("Activity 0"), "oldest activity is not dropped");
+    assert!(
+        prompt.contains("Activity 0"),
+        "oldest activity is not dropped"
+    );
     // Degradation actually occurred: rollup day lines exist.
-    assert!(prompt.contains("activities,"), "the oldest days are rolled up");
+    assert!(
+        prompt.contains("activities,"),
+        "the oldest days are rolled up"
+    );
     // The tier-explanation note appears, with the true total.
     assert!(prompt.contains("summarized by local day"));
     assert!(prompt.contains("the true total"));
@@ -234,7 +267,15 @@ fn prompt_compact_tier_drops_summaries_for_older_episodes() {
             )
         })
         .collect();
-    let prompt = build_digest_prompt("week", 0, DAY_MS * 7, DAY_MS * 3, &activities, &[], &HashMap::new());
+    let prompt = build_digest_prompt(
+        "week",
+        0,
+        DAY_MS * 7,
+        DAY_MS * 3,
+        &activities,
+        &[],
+        &HashMap::new(),
+    );
     // Newest keeps its summary (Full tier).
     assert!(prompt.contains(&format!("Episode 299 — {summary}")));
     // Oldest is a compact line: title with no summary separator.
@@ -281,7 +322,15 @@ fn prompt_rollup_computed_folds_oldest_days_into_one_line() {
             )
         })
         .collect();
-    let prompt = build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &[], &HashMap::new());
+    let prompt = build_digest_prompt(
+        "month",
+        0,
+        DAY_MS * 30,
+        DAY_MS * 15,
+        &activities,
+        &[],
+        &HashMap::new(),
+    );
     // A computed rollup line: count + a duration + a category label.
     assert!(prompt.contains("activities,"), "a rollup line with a count");
     assert!(
@@ -289,7 +338,10 @@ fn prompt_rollup_computed_folds_oldest_days_into_one_line() {
         "the oldest day names its category"
     );
     // An oldest individual title is folded into a day line ("e.g. ...").
-    assert!(prompt.contains("e.g. \"Activity"), "sample titles folded in");
+    assert!(
+        prompt.contains("e.g. \"Activity"),
+        "sample titles folded in"
+    );
     assert!(prompt.contains("(1000 Activities)"));
     assert!(prompt.contains("summarized by local day"));
 }
@@ -330,8 +382,15 @@ fn prompt_rollup_hybrid_reuses_cached_day_narrative() {
             )
         })
         .collect();
-    let prompt =
-        build_digest_prompt("month", 0, DAY_MS * 30, DAY_MS * 15, &activities, &day_digests, &HashMap::new());
+    let prompt = build_digest_prompt(
+        "month",
+        0,
+        DAY_MS * 30,
+        DAY_MS * 15,
+        &activities,
+        &day_digests,
+        &HashMap::new(),
+    );
     // The cached narrative appears verbatim on its rollup line.
     assert!(
         prompt.contains(narrative),
@@ -342,7 +401,10 @@ fn prompt_rollup_hybrid_reuses_cached_day_narrative() {
     // a computed " activities," stats clause for the SAME label.
     let day_lbl = day_label(0, local_offset_ms);
     let hybrid_line = format!("- [{day_lbl}] {narrative}");
-    assert!(prompt.contains(&hybrid_line), "hybrid line shape: {hybrid_line}");
+    assert!(
+        prompt.contains(&hybrid_line),
+        "hybrid line shape: {hybrid_line}"
+    );
     let computed_line = format!("- [{day_lbl}] ");
     // The only line starting with that label prefix is the hybrid one.
     let computed_with_stats = format!("- [{day_lbl}] 40 activities,");
@@ -367,7 +429,10 @@ fn local_day_start_ms_matches_a_day_digests_local_midnight() {
     let utc_midnight = 1_780_876_800_000_i64;
     assert_eq!(utc_midnight % DAY_MS, 0);
     // UTC: an instant during that day floors back to the same UTC midnight.
-    assert_eq!(local_day_start_ms(utc_midnight + 12 * 3_600_000, 0), utc_midnight);
+    assert_eq!(
+        local_day_start_ms(utc_midnight + 12 * 3_600_000, 0),
+        utc_midnight
+    );
     // UTC+5:30 (IST): local midnight is 18:30 UTC the previous day. An
     // instant at local noon recovers that same local-midnight key.
     let ist_offset = (5 * 60 + 30) * 60_000;
@@ -397,13 +462,33 @@ fn freshness_floor_widens_with_range_and_gates_on_age() {
 
     let generated_at = 1_000_000_000_000_i64;
     // Just inside vs. at the day floor.
-    assert!(within_freshness_floor("day", generated_at, generated_at + HOUR_MS - 1));
-    assert!(!within_freshness_floor("day", generated_at, generated_at + HOUR_MS));
+    assert!(within_freshness_floor(
+        "day",
+        generated_at,
+        generated_at + HOUR_MS - 1
+    ));
+    assert!(!within_freshness_floor(
+        "day",
+        generated_at,
+        generated_at + HOUR_MS
+    ));
     // A week-old month digest is still fresh; a day-old week digest is not.
-    assert!(within_freshness_floor("month", generated_at, generated_at + 23 * HOUR_MS));
-    assert!(!within_freshness_floor("week", generated_at, generated_at + 24 * HOUR_MS));
+    assert!(within_freshness_floor(
+        "month",
+        generated_at,
+        generated_at + 23 * HOUR_MS
+    ));
+    assert!(!within_freshness_floor(
+        "week",
+        generated_at,
+        generated_at + 24 * HOUR_MS
+    ));
     // Clock moved backwards: fresh, never a forced regeneration.
-    assert!(within_freshness_floor("day", generated_at, generated_at - HOUR_MS));
+    assert!(within_freshness_floor(
+        "day",
+        generated_at,
+        generated_at - HOUR_MS
+    ));
 }
 
 /// PR #112 #8: the hard sensitive post-filter run over the generated digest
@@ -482,7 +567,9 @@ fn sensitive_activity_never_egresses_via_digest_prompt() {
     // The sensitive Activity is dropped; the benign ones survive.
     assert_eq!(filtered.len(), 2, "sensitive activity must be filtered out");
     assert!(
-        filtered.iter().all(|a| !guardrail::is_sensitive(&a.title, &a.summary)),
+        filtered
+            .iter()
+            .all(|a| !guardrail::is_sensitive(&a.title, &a.summary)),
         "no surviving activity may be sensitive"
     );
 
@@ -557,11 +644,17 @@ fn joined_headline_splits_on_the_first_dash_and_clamps_at_140() {
     )
     .expect("headline");
     let (head, turn) = joined.split_once(TURN_SEPARATOR).expect("turn split");
-    assert_eq!(head, "A build week. The pipeline, not the UI, ate your mornings");
+    assert_eq!(
+        head,
+        "A build week. The pipeline, not the UI, ate your mornings"
+    );
     assert_eq!(turn, "until Thursday's calls took the whole day back.");
 
     // No turn → the bare headline; a turn alone is dropped.
-    assert_eq!(joined_headline(" A quiet day ", "  ").as_deref(), Some("A quiet day"));
+    assert_eq!(
+        joined_headline(" A quiet day ", "  ").as_deref(),
+        Some("A quiet day")
+    );
     assert_eq!(joined_headline("", "until lunch"), None);
 
     // A turn that would overrun the cap is dropped whole, never cut mid-clause
@@ -570,195 +663,4 @@ fn joined_headline_splits_on_the_first_dash_and_clamps_at_140() {
     assert_eq!(long, "word ".repeat(20).trim_end());
 }
 
-/// A forced re-read that cannot resolve an engine must SAY so.
-///
-/// `regenerate_user_context_digest` is the Overview's explicit re-read
-/// button, and its contract is that a `too_few` absence means the range genuinely
-/// has nothing to read — the Overview renders exactly one sentence for it:
-/// "Not enough activity in this range to write a read."
-///
-/// Since the engine resolve went LIVE (it now refreshes a ChatGPT OAuth
-/// token), this call can fail for a credential/connectivity reason on a
-/// range that is full of Activities. Collapsing that into `too_few` tells
-/// the user their data is thin when the truth is the engine never
-/// resolved — and records nothing in the derivation-run ledger either, so
-/// the failure is invisible on every surface.
-#[tokio::test]
-async fn a_forced_reread_surfaces_a_live_engine_failure_instead_of_reading_as_no_activity() {
-    live_resolve_failure_surfaces(true).await;
-}
-
-/// OV-06: the lazy path must not read an engine failure as "not enough
-/// activity" either. A sign-in failure is NOT cooled down: the second visit
-/// re-resolves (no network), so signing back in takes effect at once.
-#[tokio::test]
-async fn a_lazy_read_surfaces_a_sign_in_failure_without_a_cooldown() {
-    live_resolve_failure_surfaces(false).await;
-}
-
-async fn live_resolve_failure_surfaces(force: bool) {
-    use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
-
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock after epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("digest-live-resolve-{unique}"));
-    std::fs::create_dir_all(&dir).expect("test dir");
-    let infra = app_infra::AppInfra::initialize(&dir)
-        .await
-        .expect("app infra should initialize");
-    let store = infra.user_context();
-
-    // A ChatGPT provider that IS connected (so the no-network prerequisite
-    // at step 1 passes) but whose access token is long expired with no
-    // refresh token to spend — the live resolver's terminal failure, with
-    // no network involved.
-    let provider_id = format!("chatgpt-digest-live-resolve-{unique}");
-    crate::secret_vault_test_support::install_shared_test_secret_vault();
-    app_core::chatgpt_auth::store_token_set(
-        &provider_id,
-        &app_core::chatgpt_auth::ChatgptTokenSet {
-            access_token: "expired-access-token".to_string(),
-            refresh_token: None,
-            expires_at: Some(0),
-            rejected: false,
-        },
-    )
-    .expect("seed the expired token set");
-    let settings = AiRuntimeSettings {
-        enabled: true,
-        providers: vec![AiProviderConfig {
-            id: provider_id.clone(),
-            kind: AiProviderKind::Chatgpt,
-            label: String::new(),
-            base_url: String::new(),
-        }],
-        default_model: Some(AiEngineRef {
-            provider: provider_id.clone(),
-            model: "gpt-5.6-terra".to_string(),
-        }),
-        mcp_servers: Vec::new(),
-        favorite_models: Vec::new(),
-        recent_models: Vec::new(),
-    };
-
-    // A range with plenty to read: two ordinary, non-sensitive Activities.
-    // A UTC midnight; the two callers use different days so the shared
-    // in-memory cooldown can't couple them.
-    let range_start_ms = 1_780_876_800_000_i64 + if force { 0 } else { 7 * DAY_MS };
-    let range_end_ms = range_start_ms + DAY_MS;
-    for (offset, title) in [(0_i64, "Billing migration"), (2 * 3_600_000, "Code review")] {
-        store
-            .insert_activity_with_evidence(app_infra::NewActivity {
-                title: title.to_string(),
-                summary: format!("{title} work"),
-                category: None,
-                focus: None,
-                started_at_ms: range_start_ms + offset,
-                ended_at_ms: range_start_ms + offset + 1_800_000,
-                derivation_run_id: None,
-                evidence: Vec::new(),
-            })
-            .await
-            .expect("seed an activity");
-    }
-
-    let outcome = get_or_generate_digest(
-        &settings,
-        true,
-        store,
-        "day",
-        range_start_ms,
-        range_end_ms,
-        force,
-    )
-    .await;
-
-    match &outcome {
-        Err(message) => assert!(
-            !message.trim().is_empty(),
-            "the failure must carry a reason the user can act on"
-        ),
-        other => panic!(
-            "a forced re-read whose engine never resolved must not read as \
-             'not enough activity in this range': {other:?}"
-        ),
-    }
-
-    // …and it is on the record: the run ledger is where a failed engine
-    // pass is accounted for (the extraction-failure arm already writes one).
-    let runs = store
-        .list_derivation_runs(10)
-        .await
-        .expect("read the run ledger");
-    assert!(
-        runs.iter().any(|run| run.kind == "digest" && run.status == "failed"),
-        "a failed forced re-read must leave a failed digest run: {runs:?}"
-    );
-
-    if !force {
-        let again = get_or_generate_digest(
-            &settings,
-            true,
-            store,
-            "day",
-            range_start_ms,
-            range_end_ms,
-            false,
-        )
-        .await;
-        assert_eq!(again, outcome, "the lazy retry reports the same failure");
-        let failed_runs = store
-            .list_derivation_runs(10)
-            .await
-            .expect("read the run ledger")
-            .into_iter()
-            .filter(|run| run.kind == "digest" && run.status == "failed")
-            .count();
-        assert_eq!(failed_runs, 2, "a sign-in failure re-resolves instead of replaying");
-    }
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn failure_cooldown_hits_within_the_window_and_misses_after() {
-    let start = 9_000_001;
-    let _: Result<(), _> = cooldown_fail("day", start, "fp", 1_000, "boom".to_string());
-    assert_eq!(
-        cooldown_replay("day", start, "fp", false, 1_000 + FAILURE_COOLDOWN_MS - 1),
-        Some("boom".to_string())
-    );
-    assert_eq!(cooldown_replay("day", start, "fp", false, 1_000 + FAILURE_COOLDOWN_MS), None);
-    // An expired entry is gone for good.
-    assert_eq!(cooldown_replay("day", start, "fp", false, 1_001), None);
-}
-
-#[test]
-fn failure_cooldown_is_bypassed_by_reread_and_cleared_by_a_new_fingerprint() {
-    let start = 9_000_002;
-    let _: Result<(), _> = cooldown_fail("week", start, "fp", 1_000, "boom".to_string());
-    assert_eq!(cooldown_replay("week", start, "fp", true, 1_001), None, "re-read bypasses");
-    assert!(cooldown_replay("week", start, "fp", false, 1_001).is_some(), "bypass keeps it");
-    assert_eq!(cooldown_replay("week", start, "fp2", false, 1_001), None);
-    assert_eq!(
-        cooldown_replay("week", start, "fp", false, 1_001),
-        None,
-        "a new fingerprint clears the entry"
-    );
-}
-
-#[test]
-fn the_sensitive_hold_is_a_distinct_outcome_the_cooldown_replays() {
-    let start = 9_000_003;
-    let held: Result<Option<UserContextDigest>, String> =
-        cooldown_fail("month", start, "fp", 1_000, DIGEST_SENSITIVE_HOLD.to_string());
-    assert_eq!(held, Err(DIGEST_SENSITIVE_HOLD.to_string()));
-    assert_eq!(
-        cooldown_replay("month", start, "fp", false, 1_001).as_deref(),
-        Some(DIGEST_SENSITIVE_HOLD)
-    );
-    cooldown_clear("month", start);
-    assert_eq!(cooldown_replay("month", start, "fp", false, 1_001), None);
-}
+mod failure;

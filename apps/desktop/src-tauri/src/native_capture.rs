@@ -20,6 +20,7 @@ mod system_audio;
 mod tests;
 
 use app_core::debug_log;
+use app_core::privacy_redaction_sources::PrivacyAppCandidate;
 use capture_microphone as microphone_capture;
 use capture_types::{
     AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
@@ -171,17 +172,6 @@ pub struct AppNotification {
     pub created_at_unix_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AppNotificationAction>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PrivacyAppCandidate {
-    pub bundle_id: String,
-    pub display_name: String,
-    pub running: bool,
-    pub icon_path: Option<String>,
-    #[serde(skip)]
-    pub bundle_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

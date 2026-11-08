@@ -214,7 +214,7 @@ async fn read_slow(
     // denied vault short-circuits so the resolver never re-reads (and re-logs).
     let ai_status = startup.filter(|_| ai_settings.enabled).map(|report| {
         if report.vault_unlocked {
-            crate::ai_runtime::engine_prerequisite_static(ai_settings).map(|_| ())
+            app_core::ai_runtime::engine_prerequisite_static(ai_settings).map(|_| ())
         } else {
             Err("vault_denied".to_string())
         }
@@ -332,7 +332,7 @@ pub async fn get_debug_health(
         semantic,
         ai: AiEngineInputs {
             enabled: settings.ai_runtime.enabled,
-            provider: crate::user_context::worker::default_provider_kind(&settings.ai_runtime)
+            provider: app_core::user_context::worker::default_provider_kind(&settings.ai_runtime)
                 .map(provider_label),
             status: slow.ai_status,
             last_turn_at_ms: crate::ask_ai::get_ask_ai_last_turn_usage()

@@ -37,7 +37,6 @@
 //! directly (no whole-batch failure-count heuristic is needed here).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{
@@ -45,29 +44,27 @@ use futures_util::{
     pin_mut,
 };
 use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
-use tauri::Manager;
 use tokio::sync::watch;
 
-use app_core::AppInfraState;
-use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
-use app_core::semantic_search_worker::{
+use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder,
 };
+use crate::AppInfraState;
 
 /// How many subjects to drain per pass. Bounded so the worker stays responsive to
 /// shutdown between passes and caps the per-pass blocking-thread cost.
-const SWEEP_BATCH_SIZE: i64 = 16;
+pub const SWEEP_BATCH_SIZE: i64 = 16;
 
 /// Idle poll interval when there is nothing to embed (caught up, or no model is
 /// installed). Modest so a freshly-installed model and freshly-derived subjects
 /// are picked up promptly, but no work is done on these ticks.
-const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Backoff after a recoverable error this pass (a DB hiccup or an embed failure).
 /// Embedding subjects never blocks any user-facing path, so a failure just retries
 /// later rather than surfacing.
-const ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+pub const ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Consecutive idle passes (backlog drained) before the loaded embedder is dropped
 /// to return its resident model weights to the OS — the "decay to idle" lever the
@@ -109,7 +106,7 @@ const BACKFILL_BATCH_COOLDOWN_MIN: Duration = Duration::from_millis(150);
 const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
 
 /// The outcome of one sweep pass, deciding the loop's next sleep.
-enum SweepPass {
+pub enum SweepPass {
     /// At least one subject was embedded + stored this pass. The carried `Duration`
     /// is the CPU-pacing cooldown before the next pass.
     DidWork(Duration),
@@ -127,7 +124,7 @@ enum SweepPass {
 /// embedder plus the bounded-retry quarantine counters. All deliberately
 /// non-persistent — see [`MAX_CONSECUTIVE_SUBJECT_FAILURES`].
 #[derive(Default)]
-struct SweepState {
+pub struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until the
     /// first pass that needs it with an installed model. An `Arc` because the
     /// instance is shared with the Semantic Index Backfill and the query path
@@ -151,7 +148,7 @@ struct SweepState {
     load_failed_latch: Option<(String, String)>,
     /// Consecutive idle passes since the last pass that embedded something. Drives
     /// the idle-drop ([`IDLE_PASSES_BEFORE_EMBEDDER_DROP`]).
-    consecutive_idles: u32,
+    pub consecutive_idles: u32,
     /// The `(provider, model_id)` the previous pass reconciled against, so a model
     /// switch can be detected and the per-model state (quarantine map, load latch,
     /// cached embedder) cleared for the new model. `None` until the first pass.
@@ -232,88 +229,19 @@ impl SweepState {
     }
 }
 
-/// Spawn the **Subject Vector Backfill** worker. Mirrors
-/// [`crate::semantic_search_worker::spawn_semantic_index_backfill_worker`]: tracks
-/// the handle for graceful shutdown and selects between an idle sleep and the
-/// shutdown watch. The embedder is loaded lazily on the first pass that has work
-/// AND an installed model, reused across passes, and dropped (reloaded next time)
-/// on a model switch or a sustained idle so a Settings change is picked up without
-/// a restart.
-pub fn spawn_user_context_subject_vector_worker(
-    infra: AppInfraState,
-    app_handle: tauri::AppHandle,
-    background_workers: BackgroundWorkersState,
-) {
-    let mut shutdown_rx = background_workers.subscribe();
-    app_core::debug_log::log_info(format!(
-        "starting user-context subject vector worker (batch={}, idle_poll_ms={}, error_retry_ms={})",
-        SWEEP_BATCH_SIZE,
-        IDLE_POLL_INTERVAL.as_millis(),
-        ERROR_RETRY_INTERVAL.as_millis(),
-    ));
-
-    let handle = tauri::async_runtime::spawn(async move {
-        let infra = Arc::clone(&infra);
-        let mut state = SweepState::default();
-
-        loop {
-            if *shutdown_rx.borrow() {
-                break;
-            }
-
-            let pass = run_sweep_pass(&infra, &app_handle, &mut state, &mut shutdown_rx).await;
-            let sleep = match pass {
-                SweepPass::DidWork(cooldown) => {
-                    state.consecutive_idles = 0;
-                    cooldown
-                }
-                SweepPass::Idle => {
-                    maybe_release_embedder_on_idle_decay(&mut state, "idle");
-                    IDLE_POLL_INTERVAL
-                }
-                SweepPass::Error => {
-                    // A persistent error loop is not work: decay the embedder the same
-                    // way an idle stretch does, so the model weights are released after
-                    // the grace period rather than pinned resident for the whole spin.
-                    maybe_release_embedder_on_idle_decay(&mut state, "error");
-                    ERROR_RETRY_INTERVAL
-                }
-                SweepPass::Shutdown => break,
-            };
-
-            if shutdown_aware_sleep(&mut shutdown_rx, sleep).await {
-                break;
-            }
-        }
-
-        app_core::debug_log::log_info("stopped user-context subject vector worker");
-    });
-    background_workers.track(handle);
-}
-
 /// Run one sweep pass: gate on the installed model, drain up to one batch of
 /// subjects (skipping quarantined poison), embed each on a blocking thread with its
 /// canonical-statement-enriched text, and upsert the vectors. Never panics; any
 /// error is logged and turned into [`SweepPass::Error`].
-async fn run_sweep_pass(
+pub async fn run_sweep_pass(
     infra: &AppInfraState,
-    app_handle: &tauri::AppHandle,
+    core: &crate::AppCore,
     state: &mut SweepState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> SweepPass {
-    let settings = effective_semantic_search_settings(
-        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-    );
+    let settings = effective_semantic_search_settings(core);
 
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "subject vector backfill could not resolve app data dir: {error}"
-            ));
-            return SweepPass::Error;
-        }
-    };
+    let app_data_dir = core.paths().data.clone();
 
     // Model-gating: silent no-op when no model is installed (matches the search
     // backfill). Drop any cached embedder and reset the load latch so a fresh
@@ -323,7 +251,7 @@ async fn run_sweep_pass(
         state.consecutive_load_failures = 0;
         state.load_failed_latch = None;
         if !state.logged_no_model {
-            app_core::debug_log::log(
+            crate::debug_log::log(
                 "subject vector backfill skipped: no Semantic Search Model installed (silent no-op)",
             );
             state.logged_no_model = true;
@@ -361,7 +289,7 @@ async fn run_sweep_pass(
     {
         Ok(subjects) => subjects,
         Err(error) => {
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "subject vector backfill failed to list subjects without a vector: {error}"
             ));
             return SweepPass::Error;
@@ -399,7 +327,7 @@ async fn run_sweep_pass(
                 texts.push((subject, text));
             }
             Err(error) => {
-                app_core::debug_log::log_warn(format!(
+                crate::debug_log::log_warn(format!(
                     "subject vector backfill failed to read a canonical statement: {error}"
                 ));
             }
@@ -424,9 +352,9 @@ async fn run_sweep_pass(
 
     // Share the one background GPU slot with the search backfill sweep so the two
     // never embed concurrently — see
-    // `app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
+    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
     // of letting them overlap (+38% GPU power, +9°C).
-    let _embed_slot = app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT
+    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
         .acquire()
         .await
         .ok();
@@ -438,7 +366,7 @@ async fn run_sweep_pass(
     // does not wait on a full batch of model work. If shutdown wins, the task is
     // abandoned (it only computes in memory — no partial DB state) and the worker
     // stops.
-    let embed_task = tauri::async_runtime::spawn_blocking(move || {
+    let embed_task = core.spawn_blocking(move || {
         let loaded = match cached {
             Some(loaded) => loaded,
             None => match load_embedder(&app_data_dir_for_task, &descriptor_for_task) {
@@ -470,7 +398,7 @@ async fn run_sweep_pass(
         Either::Left((join_result, _)) => match join_result {
             Ok(load_embed) => load_embed,
             Err(error) => {
-                app_core::debug_log::log_error(format!(
+                crate::debug_log::log_error(format!(
                     "subject vector backfill embed task panicked/cancelled: {error}"
                 ));
                 // A `spawn_blocking` join `Err` is a candle panic that bypasses the
@@ -496,12 +424,12 @@ async fn run_sweep_pass(
         }
         Err(error) => {
             state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "subject vector backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
                 descriptor.provider, descriptor.model_id, state.consecutive_load_failures
             ));
             if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
-                app_core::debug_log::log_error(format!(
+                crate::debug_log::log_error(format!(
                     "subject vector backfill giving up on loading model '{}/{}' after {MAX_CONSECUTIVE_LOAD_FAILURES} consecutive failures; idling until the selection changes (the search backfill owns the reinstall signal for this model)",
                     descriptor.provider, descriptor.model_id
                 ));
@@ -517,7 +445,7 @@ async fn run_sweep_pass(
     // never goes idle) still lets candle's Metal buffer pool go back to the OS.
     // See `semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME`.
     if loaded.is_stale() {
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "subject vector backfill recycled the embedder after {}s warm \
              (bounds candle's Metal buffer pool; reloads on next batch)",
             loaded.loaded_at.elapsed().as_secs()
@@ -540,14 +468,14 @@ async fn run_sweep_pass(
                 // non-finite input is eventually quarantined rather than retried
                 // forever.
                 if vector.iter().any(|component| !component.is_finite()) {
-                    app_core::debug_log::log_warn(format!(
+                    crate::debug_log::log_warn(format!(
                         "subject vector backfill produced a non-finite component; skipping the subject"
                     ));
                     embed_failures += 1;
                     let (failures, now_quarantined) = state.record_subject_failure(&subject);
                     if now_quarantined {
                         quarantined += 1;
-                        app_core::debug_log::log_error(format!(
+                        crate::debug_log::log_error(format!(
                             "subject vector backfill quarantined a subject after {failures} consecutive failures (excluded until content change/restart)"
                         ));
                     }
@@ -564,7 +492,7 @@ async fn run_sweep_pass(
                     }
                     Err(error) => {
                         transient_errors += 1;
-                        app_core::debug_log::log_warn(format!(
+                        crate::debug_log::log_warn(format!(
                             "subject vector backfill failed to store a subject vector: {error}"
                         ));
                     }
@@ -577,11 +505,11 @@ async fn run_sweep_pass(
                 let (failures, now_quarantined) = state.record_subject_failure(&subject);
                 if now_quarantined {
                     quarantined += 1;
-                    app_core::debug_log::log_error(format!(
+                    crate::debug_log::log_error(format!(
                         "subject vector backfill quarantined a subject after {failures} consecutive embed failures (excluded until content change/restart); last error: {error}"
                     ));
                 } else {
-                    app_core::debug_log::log_warn(format!(
+                    crate::debug_log::log_warn(format!(
                         "subject vector backfill failed to embed a subject (failure {failures}/{MAX_CONSECUTIVE_SUBJECT_FAILURES}): {error}"
                     ));
                 }
@@ -590,7 +518,7 @@ async fn run_sweep_pass(
     }
 
     if stored > 0 {
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "subject vector backfill embedded {stored} subject(s) (batch={}, embed_failures={embed_failures}, quarantined={quarantined}, transient_errors={transient_errors})",
             texts.len()
         ));
@@ -627,9 +555,7 @@ async fn run_sweep_pass(
 /// backlog query/upsert and the candidate scorer's KNN filter
 /// (`subject_candidates.rs`). They must produce byte-identical strings or the KNN
 /// silently ranks nothing.
-pub(crate) fn subject_vector_model_identity(
-    descriptor: &SemanticSearchModelDescriptor,
-) -> String {
+pub(crate) fn subject_vector_model_identity(descriptor: &SemanticSearchModelDescriptor) -> String {
     format!(
         "{}/{}",
         descriptor.provider,
@@ -659,11 +585,11 @@ fn backfill_batch_cooldown(batch_duration: Duration) -> Duration {
 /// handler for both the Idle and Error arms: a caught-up worker AND a worker stuck
 /// in an error loop both release the large model weights after the grace period
 /// instead of pinning them resident. Returns nothing; mutates `state`.
-fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
+pub fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
     state.consecutive_idles = state.consecutive_idles.saturating_add(1);
     if state.consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP && state.embedder.is_some() {
         state.embedder = None;
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "subject vector backfill released the embedder after {} {reason} passes (model weights returned to the OS; reloads on next subject)",
             state.consecutive_idles
         ));

@@ -337,6 +337,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "app-core"
 version = "0.1.0"
 dependencies = [
+ "ai-runtime",
  "app-infra",
  "async-trait",
  "audio-transcription",
@@ -361,6 +362,7 @@ dependencies = [
  "objc",
  "ocr",
  "reqwest 0.12.28",
+ "schemars 1.2.1",
  "security-framework",
  "security-framework-sys",
  "semantic-search",

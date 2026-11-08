@@ -32,6 +32,7 @@ use crate::{AppCore, CoreEvent};
 mod download;
 mod integrity;
 mod status;
+mod task;
 #[cfg(test)]
 mod tests;
 
@@ -40,6 +41,7 @@ pub use download::{
 };
 use integrity::*;
 use status::*;
+pub use task::start_semantic_search_model_download;
 
 /// The frontend event the Settings UI listens on for live download progress.
 /// The bytes/percent in each payload come from the streaming HTTP download of the

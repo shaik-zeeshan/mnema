@@ -2,6 +2,7 @@
 //! host seam, paths, events, the runtime/state container and the fixtures. The
 //! modules move in from `apps/desktop/src-tauri` in S2/S3.
 
+pub mod ai_runtime;
 pub mod audio_transcription_backfill;
 pub mod audio_transcription_models;
 pub mod chatgpt_auth;
@@ -28,10 +29,12 @@ pub mod ocr_budget;
 pub mod ocr_models;
 pub mod one_time_prompts;
 mod paths;
+pub mod privacy_redaction_sources;
 pub mod recording_settings;
 pub mod semantic_search_models;
 pub mod semantic_search_query;
 pub mod semantic_search_worker;
+pub mod sensitive_capture_recommendations;
 pub mod speaker_analysis_models;
 pub mod speaker_analysis_runtime;
 #[cfg(test)]
@@ -40,6 +43,7 @@ pub mod third_party_notices;
 pub mod transcription_deepgram;
 pub mod updates;
 pub mod usage_charts;
+pub mod user_context;
 
 pub use crate::core::AppCore;
 pub use event::CoreEvent;

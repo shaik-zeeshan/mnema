@@ -620,7 +620,7 @@ async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(),
         return Err("Ask AI access is disabled in settings".to_string());
     }
     let settings = read_recording_settings(app_handle);
-    crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access).await
+    app_core::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access).await
 }
 
 /// Execute one brokered data-tool request under the Ask AI seam: re-checks access
@@ -1571,7 +1571,7 @@ pub async fn ask_ai_availability(
     // The engine prerequisite reason (no model / no key / unreachable local …)
     // is surfaced verbatim so the UI can explain why Ask AI is unavailable.
     let settings = read_recording_settings(&app_handle);
-    match crate::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access)
+    match app_core::ai_runtime::ask_ai_engine_prerequisite(&settings.ai_runtime, &settings.access)
         .await
     {
         Ok(()) => Ok(AskAiAvailability {
@@ -1730,7 +1730,7 @@ async fn generate_conversation_title(
     question: String,
 ) {
     let settings = read_ai_runtime_settings(&app_handle);
-    let config = match crate::ai_runtime::resolve_engine_config_live(&settings, None, None).await {
+    let config = match app_core::ai_runtime::resolve_engine_config_live(&settings, None, None).await {
         Ok(config) => config,
         Err(reason) => {
             tauri_plugin_log::log::debug!(
@@ -1975,9 +1975,9 @@ async fn run_ask_ai_turn(
         }
     });
     let (pin_ref, override_model) =
-        crate::ai_runtime::ask_ai_resolver_inputs(&settings.ai_runtime, &settings.access, pin_ref);
+        app_core::ai_runtime::ask_ai_resolver_inputs(&settings.ai_runtime, &settings.access, pin_ref);
     let config_result =
-        crate::ai_runtime::resolve_engine_ref_live(&settings.ai_runtime, pin_ref, override_model)
+        app_core::ai_runtime::resolve_engine_ref_live(&settings.ai_runtime, pin_ref, override_model)
             .await;
     let (engine_provider, config) = match config_result {
         Ok(resolved) => resolved,

@@ -476,6 +476,38 @@ fn download_progress_reaches_the_host_as_a_typed_event() {
 }
 
 #[test]
+fn start_refuses_while_the_core_download_slot_is_held() {
+    let host = Arc::new(crate::test_support::FakeHost::default());
+    let dir = tempfile::tempdir().expect("tempdir");
+    let core = Arc::new(crate::test_support::core_in(host.clone(), dir.path()));
+    core.manage(SemanticSearchModelDownloadState::default());
+    claim_model_download(
+        &core.state::<SemanticSearchModelDownloadState>(),
+        SEMANTIC_SEARCH_PROVIDER_ID,
+        "multilingual-e5-small",
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(tokio::sync::Notify::new()),
+    )
+    .expect("first claim");
+
+    let request = SemanticSearchModelDownloadRequestDto {
+        provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+        model_id: "nomic-embed-text-v1.5".to_string(),
+    };
+    assert!(start_semantic_search_model_download(&core, request).is_err());
+    assert!(host.events.lock().unwrap().is_empty(), "no Starting event");
+    assert_eq!(
+        core.state::<SemanticSearchModelDownloadState>()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("active")
+            .model_id,
+        "multilingual-e5-small"
+    );
+}
+
+#[test]
 fn status_and_delete_use_the_models_dir_under_the_config_dir() {
     let dir = tempfile::tempdir().expect("tempdir");
     let core = crate::test_support::core_in(Default::default(), dir.path());

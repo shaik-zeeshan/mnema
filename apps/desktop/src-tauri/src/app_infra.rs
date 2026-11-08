@@ -1872,7 +1872,10 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         }
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
         // Before the User Context worker spawns below, so no distillation races it.
-        crate::user_context::conclusion_guard::run_dedup_startup_pass(&infra);
+        app_core::user_context::conclusion_guard::run_dedup_startup_pass(
+            &app_handle.state::<Arc<app_core::AppCore>>(),
+            &infra,
+        );
         run_lock_screen_activity_heal_startup_pass(&infra);
     }));
     if post_maintenance.is_err() {
@@ -1891,7 +1894,7 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
-    crate::user_context::worker::spawn_user_context_worker(
+    crate::user_context::spawn_user_context_worker(
         Arc::clone(&infra),
         app_handle.clone(),
         background_workers.clone(),
@@ -1950,7 +1953,7 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // backfill above; inert (silent idle-poll) until a model is installed, then
     // self-starts retroactively. Spawned here on the deferred-startup seam, never
     // on the capture hot path.
-    crate::user_context::subject_vector_worker::spawn_user_context_subject_vector_worker(
+    crate::user_context::spawn_user_context_subject_vector_worker(
         Arc::clone(&infra),
         app_handle.clone(),
         background_workers.clone(),
@@ -3799,7 +3802,7 @@ async fn delete_recent_capture_inner(
     if deletion.deleted_user_context_activities > 0
         || deletion.deleted_user_context_conclusions > 0
     {
-        let _ = app_handle.emit(crate::user_context::worker::USER_CONTEXT_CHANGED_EVENT, ());
+        let _ = app_handle.emit(app_core::user_context::worker::USER_CONTEXT_CHANGED_EVENT, ());
     }
 
     let post_delete_result = async {

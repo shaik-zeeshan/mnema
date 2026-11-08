@@ -76,7 +76,10 @@ fn empty_window_jump_target_always_within_end_and_now() {
     let now = 8_000;
     for next in [None, Some(0), Some(2_000), Some(5_000), Some(99_999)] {
         let result = empty_window_jump_target(end, now, next);
-        assert!(result >= end, "result {result} went backward before end {end}");
+        assert!(
+            result >= end,
+            "result {result} went backward before end {end}"
+        );
         assert!(result <= now, "result {result} overshot now {now}");
     }
 }

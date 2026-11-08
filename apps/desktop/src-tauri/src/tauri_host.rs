@@ -409,7 +409,7 @@ mod tests {
             app_core::ocr_models::OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::semantic_search_models::SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::speaker_analysis_models::SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
-            user_context::worker::USER_CONTEXT_CHANGED_EVENT,
+            app_core::user_context::worker::USER_CONTEXT_CHANGED_EVENT,
             ask_ai::mcp::oauth_flow::MCP_AUTHORIZATION_CHANGED_EVENT,
             BROKER_OPEN_CAPTURE_RESULT_EVENT,
             INSIGHTS_OPEN_CONVERSATION_EVENT,

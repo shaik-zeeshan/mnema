@@ -1,0 +1,41 @@
+//! Orchestration for **User Context** derivation (CONTEXT.md / ADR
+//! 0028–0031).
+//!
+//! `crates/app-infra` owns the encrypted storage and the deterministic policy;
+//! `crates/ai-runtime` (aliased `ai_engine`) owns the LLM round trip. This module
+//! is the glue between them: it reads the wire
+//! [`AiRuntimeSettings`]/[`UserContextSettings`] out of `RecordingSettingsState`,
+//! resolves an [`ai_engine::EngineConfig`] (sourcing the keychain key via
+//! `crate::ai_runtime::resolve_engine_config`), reads a redacted capture window
+//! through `UserContextStore`, asks the engine to segment it into semantic
+//! **Activity** episodes, and persists the results.
+//!
+//! Privacy invariant: only the redacted OCR/transcript *text* exposed by
+//! `UserContextStore::read_capture_window` ever leaves for a cloud engine — never
+//! frame images or audio. The provider key is read from the OS keychain at call
+//! time and is never logged.
+//!
+//! Activity derivation (#93) and Conclusion distillation (#94) share this
+//! orchestration: the worker runs the frequent Activity beat and a slower
+//! Conclusion beat, both funnelling results through `UserContextStore`.
+//!
+//! Submodules:
+//! - [`derivation`] — prompt construction + the structured-extraction calls
+//!   (`derive_activities` and `distill_conclusions`).
+//! - [`digest`] — the lazy, fingerprint-cached **User Context Digest** (the
+//!   Insights Overview narrative lede) generation (#89).
+//! - [`worker`] — one tick of the background, tier-paced derivation loop (OCR
+//!   Catch-Up style); the loop itself is spawned by the host.
+//! - [`commands`] — the command surface (status / list activities +
+//!   conclusions / subject view / digest / run-now).
+
+mod activity_spans;
+pub mod commands;
+pub mod conclusion_guard;
+mod continuation;
+pub mod derivation;
+pub mod digest;
+mod evidence_tags;
+pub mod subject_candidates;
+pub mod subject_vector_worker;
+pub mod worker;

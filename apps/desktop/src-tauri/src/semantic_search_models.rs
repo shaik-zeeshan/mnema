@@ -1,20 +1,15 @@
 //! Tauri commands for the Semantic Search Model catalog; the behaviour lives in
 //! `app_core::semantic_search_models`.
 //!
-//! Three pieces stay here because they call code still in this crate:
-//! the download task (`app_infra::release_model_download_lock`, which re-derives
-//! the OCR/transcription/speaker absent-model locks), its start command, and the
-//! model switch (`native_capture::persist_semantic_search_settings`).
+//! The model switch stays here because it persists through
+//! `native_capture::persist_semantic_search_settings` (S3).
 
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::Arc;
 
-use app_core::debug_log::{log_error, log_info};
 use app_core::semantic_search_models::{
-    self as models, build_download_plan, claim_model_download, download_and_install_model,
-    emit_download_progress, select_model_lock, DownloadPlan, ModelDownloadTaskError,
-    SemanticSearchModelDownloadProgressDto, SemanticSearchModelDownloadRequestDto,
-    SemanticSearchModelDownloadState, SemanticSearchModelDownloadStatusDto,
-    SemanticSearchModelStatusResponseDto, SupportedModelDto, SEMANTIC_SEARCH_MODEL_LOCK_PROCESSOR,
+    self as models, select_model_lock, SemanticSearchModelDownloadProgressDto,
+    SemanticSearchModelDownloadRequestDto, SemanticSearchModelDownloadState,
+    SemanticSearchModelStatusResponseDto, SupportedModelDto,
 };
 use app_core::AppCore;
 use semantic_search::resolve_descriptor;
@@ -33,77 +28,28 @@ pub fn list_semantic_search_supported_models() -> Result<Vec<SupportedModelDto>,
 }
 
 #[tauri::command]
-pub fn cancel_semantic_search_model_download(
-    download_state: State<'_, SemanticSearchModelDownloadState>,
-) -> Result<(), String> {
-    models::cancel_semantic_search_model_download(&download_state)
+pub fn cancel_semantic_search_model_download(core: State<'_, Arc<AppCore>>) -> Result<(), String> {
+    models::cancel_semantic_search_model_download(&core.state::<SemanticSearchModelDownloadState>())
 }
 
 #[tauri::command]
 pub fn delete_semantic_search_model(
     core: State<'_, Arc<AppCore>>,
     request: SemanticSearchModelDownloadRequestDto,
-    download_state: State<'_, SemanticSearchModelDownloadState>,
 ) -> Result<(), String> {
-    models::delete_semantic_search_model(&core, request, &download_state)
+    models::delete_semantic_search_model(
+        &core,
+        request,
+        &core.state::<SemanticSearchModelDownloadState>(),
+    )
 }
 
-/// Start downloading + installing a **Semantic Search Model**. Mirrors the
-/// OCR/transcription model downloaders: claims the single download slot, emits a
-/// `Starting` event, spawns the streaming download on the async runtime, and
-/// returns immediately. Progress arrives as `Downloading` events with real
-/// per-chunk byte counts on [`SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT`].
-///
-/// Mnema only downloads when the user picks a model here — there is no
-/// auto-download path, so nothing is fetched unprompted (ADR 0036).
 #[tauri::command]
 pub fn start_semantic_search_model_download(
-    app_handle: tauri::AppHandle,
+    core: State<'_, Arc<AppCore>>,
     request: SemanticSearchModelDownloadRequestDto,
-    download_state: tauri::State<'_, SemanticSearchModelDownloadState>,
 ) -> Result<SemanticSearchModelDownloadProgressDto, String> {
-    let core = app_handle.state::<Arc<AppCore>>();
-    let plan = build_download_plan(&core, &request).map_err(|error| {
-        log_error(format!(
-            "semantic search model download: failed to build plan for {}/{}: {error}",
-            request.provider, request.model_id
-        ));
-        error.to_string()
-    })?;
-    let cancel_requested = Arc::new(AtomicBool::new(false));
-    let cancel_notify = Arc::new(tokio::sync::Notify::new());
-
-    claim_model_download(
-        download_state.inner(),
-        &plan.provider,
-        &plan.model_id,
-        Arc::clone(&cancel_requested),
-        Arc::clone(&cancel_notify),
-    )
-    .map_err(|error| {
-        log_error(format!(
-            "semantic search model download: could not claim slot for {}/{}: {error}",
-            plan.provider, plan.model_id
-        ));
-        error.to_string()
-    })?;
-
-    let starting = SemanticSearchModelDownloadProgressDto::new(
-        &plan.provider,
-        &plan.model_id,
-        SemanticSearchModelDownloadStatusDto::Starting,
-        0,
-        Some(plan.total_bytes),
-        None,
-    );
-    emit_download_progress(&core, &starting);
-
-    let app_for_task = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        run_model_download_task(app_for_task, plan, cancel_requested, cancel_notify).await;
-    });
-
-    Ok(starting)
+    models::start_semantic_search_model_download(&core, request)
 }
 
 /// **Switch the Semantic Search Model**: rebuild the `vec0` table at the
@@ -230,113 +176,4 @@ pub async fn select_semantic_search_model(
         "semantic search model switched to '{model_id}': rebuilt vector table at {dimension} dims, discarded {cleared} vector(s); the backfill worker will re-derive every anchor under the new model"
     ));
     Ok(cleared)
-}
-
-fn clear_active_download(app_handle: &tauri::AppHandle, provider: &str, model_id: &str) {
-    if let Some(state) = app_handle.try_state::<SemanticSearchModelDownloadState>() {
-        if let Ok(mut active) = state.lock() {
-            if active.as_ref().is_some_and(|download| {
-                download.provider == provider && download.model_id == model_id
-            }) {
-                *active = None;
-            }
-        }
-    }
-}
-
-async fn run_model_download_task(
-    app_handle: tauri::AppHandle,
-    plan: DownloadPlan,
-    cancel_requested: Arc<AtomicBool>,
-    cancel_notify: Arc<tokio::sync::Notify>,
-) {
-    log_info(format!(
-        "semantic search model download started: provider={}, model={}, install_dir={}, files={}, approx_total_bytes={}",
-        plan.provider,
-        plan.model_id,
-        plan.install_dir.display(),
-        plan.files.len(),
-        plan.total_bytes,
-    ));
-    // ponytail: semantic search has no `processing_jobs` rows today (its worker is a sweep loop
-    // already gated on `selected_model_available`, and it never burns failure attempts), so this
-    // lock currently protects nothing. It is taken anyway so the four downloads behave alike the
-    // day semantic search grows a job — drop it if that day never comes.
-    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
-    let download_lock = app_core::model_download_lock::acquire_model_download_lock(
-        &core,
-        SEMANTIC_SEARCH_MODEL_LOCK_PROCESSOR,
-        format!("{}/{}", plan.provider, plan.model_id),
-    )
-    .await;
-    let result = download_and_install_model(&core, &plan, &cancel_requested, &cancel_notify).await;
-    app_core::model_download_lock::release_model_download_lock(&core, download_lock).await;
-    clear_active_download(&app_handle, &plan.provider, &plan.model_id);
-
-    match result {
-        Ok(downloaded_total) => {
-            log_info(format!(
-                "semantic search model download completed: {}/{} installed at {} ({downloaded_total} bytes downloaded)",
-                plan.provider,
-                plan.model_id,
-                plan.install_dir.display(),
-            ));
-            // Report the REAL accumulated download total (not the approximate catalog
-            // size) as downloaded_bytes; total_bytes carries the larger of the two so
-            // a UI progress bar never shows >100%.
-            emit_download_progress(
-                &core,
-                &SemanticSearchModelDownloadProgressDto::new(
-                    &plan.provider,
-                    &plan.model_id,
-                    SemanticSearchModelDownloadStatusDto::Completed,
-                    downloaded_total,
-                    Some(plan.total_bytes.max(downloaded_total)),
-                    None,
-                ),
-            );
-        }
-        Err(ModelDownloadTaskError::Cancelled) => {
-            log_info(format!(
-                "semantic search model download cancelled: {}/{}; removing partial install at {}",
-                plan.provider,
-                plan.model_id,
-                plan.install_dir.display(),
-            ));
-            let _ = std::fs::remove_dir_all(&plan.install_dir);
-            emit_download_progress(
-                &core,
-                &SemanticSearchModelDownloadProgressDto::new(
-                    &plan.provider,
-                    &plan.model_id,
-                    SemanticSearchModelDownloadStatusDto::Cancelled,
-                    0,
-                    Some(plan.total_bytes),
-                    Some("download cancelled".to_string()),
-                ),
-            );
-        }
-        Err(ModelDownloadTaskError::Failed(error)) => {
-            // A partial install must not be detected as Installed: the marker is
-            // written last, so removing the dir leaves the model Missing.
-            log_error(format!(
-                "semantic search model download failed: {}/{}: {error}; removing partial install at {}",
-                plan.provider,
-                plan.model_id,
-                plan.install_dir.display(),
-            ));
-            let _ = std::fs::remove_dir_all(&plan.install_dir);
-            emit_download_progress(
-                &core,
-                &SemanticSearchModelDownloadProgressDto::new(
-                    &plan.provider,
-                    &plan.model_id,
-                    SemanticSearchModelDownloadStatusDto::Failed,
-                    0,
-                    Some(plan.total_bytes),
-                    Some(error.to_string()),
-                ),
-            );
-        }
-    }
 }
