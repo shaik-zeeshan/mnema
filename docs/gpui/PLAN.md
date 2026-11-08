@@ -114,11 +114,11 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running:** S2 B6 (slot 3; also takes the leftover worker loops from B3b/B4), S8 Timeline (slot 2), S11 Chat (slot 1). Done: B4 ebd213ac.
-2. **Waiting for S3** (all in src-tauri): voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
+1. **Running:** S2 B6b frame_preview (slot 3; seam: `WindowSignal::AllowAssetPath`), S8 Timeline (slot 2), S11 Chat (slot 1). Done: B6 e8198e04.
+2. **Waiting for S3** (all in src-tauri): app_infra startup/retention/processing workers + `run_deferred_startup_blocking` (read NativeCaptureState), voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
 3. **UI waves:** S13 Settings next, then S12 Insights, S10 Quick Recall and S15 small windows.
 5. **Docs debt:** `AGENTS.md` and `docs/user-context/CONTEXT.md` still name src-tauri paths for ai_runtime and user_context. Update them in one pass after S3.
-4. **After B6:** S3 (capture + ask_ai), then S4, then S7.
+4. **After B6b:** S3 (capture + ask_ai), then S4, then S7.
 
 ## T0 · Tooling (orchestrator, before S0)
 
