@@ -4,9 +4,10 @@
 //! `scrub_engine` are the pure state machines, `controller` runs their work off
 //! the main thread, `data` / `fixture` answer it.
 //!
-//! The AudioDrawer is S9: a lane bar or the headphones button sets
-//! [`TimelineView::selected_audio`], which the drawer will read. Inert until then.
+//! A lane bar, the headphones button or P sets [`TimelineView::selected_audio`];
+//! render opens (or switches) the [`audio::AudioDrawer`] on it.
 
+pub mod audio;
 mod bands;
 mod controller;
 pub mod data;
@@ -126,8 +127,14 @@ pub struct TimelineView {
     pub status: Option<Status>,
     pub capture: CaptureHint,
     pub developer: bool,
-    /// The S9 AudioDrawer's segment (and the seek into it). Inert until S9.
+    /// The AudioDrawer's segment and the seek into it (ms); `None` closes it.
     pub selected_audio: Option<(i64, i64)>,
+    pub drawer: Option<Entity<audio::AudioDrawer>>,
+    /// What a drawer is built from (goldens and tests swap in fixtures).
+    pub drawer_deps: audio::Deps,
+    /// The audio bar under the pointer: a press there switches, never dismisses.
+    pub(crate) bar_hover: Option<i64>,
+    _drawer_sub: Option<gpui_kit::Subscription>,
     /// The last display whose image decoded: painted until the next one lands.
     pub(crate) painted: Option<scrub_engine::Display>,
     /// Stage and rail sizes from the last layout (the overlays and slots need them).
@@ -143,11 +150,12 @@ pub struct TimelineView {
 
 impl TimelineView {
     pub fn new(source: Arc<dyn Source>, cx: &mut Context<Self>) -> Self {
+        let stage_size: Rc<Cell<Size<Pixels>>> = Rc::default();
         let mut view = Self {
             source,
             paging: Paging::default(),
             engine: ScrubEngine::default(),
-            images: FrameImages::new(cx),
+            images: FrameImages::new(stage_size.clone(), cx),
             advance_px: 0.,
             last_wheel: None,
             readout_dir: 1.,
@@ -167,8 +175,12 @@ impl TimelineView {
             capture: CaptureHint::default(),
             developer: false,
             selected_audio: None,
+            drawer: None,
+            drawer_deps: audio::Deps::live(cx),
+            bar_hover: None,
+            _drawer_sub: None,
             painted: None,
-            stage_size: Rc::default(),
+            stage_size,
             rail_w: Rc::new(Cell::new(px(0.))),
             rail_x: Rc::default(),
             runs: bands::RunsCache::default(),
@@ -208,7 +220,13 @@ impl TimelineView {
         })
     }
 
-    pub fn set_status(&mut self, message: Option<String>, detail: Option<String>, error: bool, cx: &mut Context<Self>) {
+    pub fn set_status(
+        &mut self,
+        message: Option<String>,
+        detail: Option<String>,
+        error: bool,
+        cx: &mut Context<Self>,
+    ) {
         self.status = message.map(|message| Status {
             message,
             detail,
@@ -243,6 +261,57 @@ impl TimelineView {
 
     pub(crate) fn hold_status(&mut self) {
         self.status_timer = None;
+    }
+}
+
+impl TimelineView {
+    /// Open, switch or seek the drawer to match `selected_audio`.
+    fn sync_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, seek)) = self.selected_audio else {
+            self.drawer = None;
+            self._drawer_sub = None;
+            return;
+        };
+        if let Some(d) = &self.drawer {
+            let open = d.read(cx).opened();
+            if open == (id, seek) {
+                return;
+            }
+            if open.0 == id {
+                d.update(cx, |d, cx| d.seek_into(seek, cx));
+                return;
+            }
+        }
+        let Some(seg) = self.audio.iter().find(|s| s.id == id) else {
+            self.selected_audio = None;
+            self.drawer = None;
+            return;
+        };
+        let seg = audio::model::Segment::seed(seg);
+        if let Some(d) = &self.drawer {
+            d.update(cx, |d, cx| d.open(seg, seek, cx));
+            return;
+        }
+        let deps = self.drawer_deps.clone();
+        let d = cx.new(|cx| audio::AudioDrawer::new(deps, seg, seek, window, cx));
+        self._drawer_sub = Some(cx.subscribe_in(&d, window, |this, d, e, window, cx| {
+            // A press on another audio bar is a switch, not a dismissal.
+            if matches!(e, audio::DrawerEvent::Dismiss) && this.bar_hover.is_some() {
+                return;
+            }
+            if let Some(f) = d.read(cx).return_focus.clone() {
+                window.focus(&f, cx);
+            }
+            this.close_drawer(cx);
+        }));
+        self.drawer = Some(d);
+    }
+
+    pub fn close_drawer(&mut self, cx: &mut Context<Self>) {
+        self.selected_audio = None;
+        self.drawer = None;
+        self._drawer_sub = None;
+        cx.notify();
     }
 }
 
@@ -306,6 +375,7 @@ impl Render for TimelineView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::tokens(cx);
         self.settle_painted(window, cx);
+        self.sync_drawer(window, cx);
         div()
             .id("timeline")
             .role(Role::Main)
@@ -325,6 +395,7 @@ impl Render for TimelineView {
             .child(stage::render(self, &p, window, cx))
             .child(rail::render(self, &p, window, cx))
             .children(jumper::render(self, &p, cx))
+            .children(self.drawer.clone())
             .test_support()
     }
 }

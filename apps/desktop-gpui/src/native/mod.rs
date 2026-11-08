@@ -2,6 +2,7 @@
 //! deep links, the Dock, the graceful quit, the native reminder, window chrome,
 //! dialogs and the OS observers, plus the objc2 NSWindow helpers they share.
 
+pub mod audio_player;
 pub mod chrome;
 pub mod deep_links;
 pub mod dialogs;

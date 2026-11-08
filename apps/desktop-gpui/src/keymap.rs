@@ -54,6 +54,8 @@ pub struct Bindings {
     pub open_debug: String,
     pub sources: [String; 3],
     pub toggle_shortcuts_help: String,
+    /// `audioDrawerShortcuts`: play/pause, −5 s, +5 s, −30 s, +30 s.
+    pub audio_drawer: [String; 5],
 }
 
 impl Default for Bindings {
@@ -68,6 +70,13 @@ impl Default for Bindings {
             open_debug: "CommandOrControl+D".into(),
             sources: ["1".into(), "2".into(), "3".into()],
             toggle_shortcuts_help: "/".into(),
+            audio_drawer: [
+                "Space".into(),
+                "ArrowLeft".into(),
+                "ArrowRight".into(),
+                "Shift+ArrowLeft".into(),
+                "Shift+ArrowRight".into(),
+            ],
         }
     }
 }
@@ -121,6 +130,23 @@ impl Bindings {
             "appShortcuts",
             "toggleShortcutsHelp",
         );
+        // The drawer's own scope: the frame arrows aren't reserved there, Esc / Tab are.
+        let drawer = settings.get("audioDrawerShortcuts");
+        let keys = [
+            "playPause",
+            "seekBack",
+            "seekForward",
+            "seekBackFast",
+            "seekForwardFast",
+        ];
+        for (slot, key) in b.audio_drawer.iter_mut().zip(keys) {
+            let value = drawer.and_then(|g| g.get(key)).and_then(Value::as_str);
+            let reserved =
+                |v: &str| ["escape", "tab", "shift+tab"].contains(&v.to_ascii_lowercase().as_str());
+            if let Some(v) = value.filter(|v| !reserved(v)) {
+                *slot = v.to_string();
+            }
+        }
         b
     }
 }
@@ -241,6 +267,25 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
         ),
     ];
     crate::timeline::bind_keys(cx);
+    {
+        use crate::timeline::audio::{
+            self, PlayPause, SeekBack, SeekBackFast, SeekForward, SeekForwardFast,
+        };
+        let [play, back, fwd, back_fast, fwd_fast] = &bindings.audio_drawer;
+        let drawer = [
+            user_binding(play, PlayPause, audio::CONTEXT, cx),
+            user_binding(back, SeekBack, audio::CONTEXT, cx),
+            user_binding(fwd, SeekForward, audio::CONTEXT, cx),
+            user_binding(back_fast, SeekBackFast, audio::CONTEXT, cx),
+            user_binding(fwd_fast, SeekForwardFast, audio::CONTEXT, cx),
+        ];
+        cx.bind_keys(drawer.into_iter().flatten());
+        cx.bind_keys([KeyBinding::new(
+            "escape",
+            audio::Escape,
+            Some("AudioDrawer"),
+        )]);
+    }
     cx.bind_keys(
         [
             KeyBinding::new("cmd-k", FocusRecall, shell),

@@ -35,6 +35,7 @@ export interface Surface {
 
 const MAIN = { width: 1280, height: 800 };
 const WIN = ".mx-window:visible";
+const MIC_BAR = ".timeline-rail__audio-bar--microphone";
 
 /** `{ id: "<param>=<id>" }` for each id; "" means the mockup's default (no param). */
 const q = (param: string, ids: string, extra = ""): Record<string, string> =>
@@ -113,13 +114,24 @@ export const SURFACES: Record<string, Surface> = {
     states: q("state", "ok catching-up display-asleep sysaudio-rebuild low-disk-soon engine-offline not-recording dev-on"),
   },
   // Timeline `/` incl. AudioDrawer (drawer-*), TimelineJumper (jump-*) and the bell (notifs-*).
+  // The drawer states open the mic bar of parity/fixtures/timeline/drawer*.json (S9).
   timeline: {
     route: "/",
     label: "main",
     viewport: MAIN,
     page: "timeline.html",
     selector: WIN,
-    states: q(
+    stateFixture: { repair: "drawer", "drawer-expanded": "drawer" },
+    stateClick: {
+      drawer: [MIC_BAR],
+      "drawer-expanded": [MIC_BAR, '.audio-drawer button:has-text("expand")'],
+      repair: [MIC_BAR, ".audio-drawer .who >> nth=1"],
+      "drawer-not-transcribed": [MIC_BAR],
+    },
+    states: {
+      // No mockup state of its own: the expanded reader is drawn over `drawer`.
+      "drawer-expanded": "state=drawer",
+      ...q(
       "state",
       `default loading first-run starting load-error stale refreshing not-recording permission permission-helper
        screen-off display-asleep landed loading-more end-of-history keys sb-off sb-permission readonly trial
@@ -132,7 +144,8 @@ export const SURFACES: Record<string, Surface> = {
        speakers-running speakers-failed speakers-none speakers-off recognition-off repair repair-saving
        repair-error repair-no-people jump jump-loading jump-empty-day jump-error jump-no-frame notifs
        notifs-warn notifs-empty notifs-error`,
-    ),
+      ),
+    },
   },
   "insights-overview": insights(
     "overview",

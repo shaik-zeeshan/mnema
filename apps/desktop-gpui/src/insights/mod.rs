@@ -131,7 +131,7 @@ impl Insights {
             day: today,
             journal: None,
             receipt: None,
-            images: crate::timeline::image_cache::FrameImages::new(cx),
+            images: crate::timeline::image_cache::FrameImages::new(Default::default(), cx),
             axis: Axis::Conviction,
             subjects: None,
             filter,

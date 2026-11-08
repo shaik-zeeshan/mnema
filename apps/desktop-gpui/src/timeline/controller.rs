@@ -240,7 +240,21 @@ impl TimelineView {
     }
 
     /// Wheel anywhere scrubs: either axis, the larger wins; ⌘/⌃/⌥ pass through.
-    pub(super) fn on_wheel(&mut self, e: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_wheel(
+        &mut self,
+        e: &ScrollEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A wheel outside the drawer collapses its repair panel, else closes it.
+        if let Some(d) = self.drawer.clone() {
+            if !d.update(cx, |d, cx| d.collapse_repair(cx)) {
+                if let Some(f) = d.read(cx).return_focus.clone() {
+                    window.focus(&f, cx);
+                }
+                self.close_drawer(cx);
+            }
+        }
         let m = e.modifiers;
         if m.control || m.platform || m.alt || self.jumper.open || self.paging.frames.is_empty() {
             return;

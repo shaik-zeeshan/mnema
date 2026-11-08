@@ -11,6 +11,8 @@ use gpui_kit::base::Root;
 use gpui_kit::{px, size, AppContext, Entity, VisualTestAppContext};
 use mnema_gpui::shell::{Shell, ShellModel};
 use mnema_gpui::theme;
+use mnema_gpui::timeline::audio::fixture::{FakePlayer, FixtureAudio};
+use mnema_gpui::timeline::audio::Deps;
 use mnema_gpui::timeline::fixture::FixtureSource;
 use mnema_gpui::timeline::TimelineView;
 
@@ -26,12 +28,27 @@ pub struct State {
     viewport: (f32, f32),
     /// List fails on the refresh after the first load.
     stale: bool,
+    drawer: Drawer,
 }
+
+/// Which AudioDrawer state a shot opens (on the fixture's `get_audio_segment`).
+#[derive(Clone, Copy, PartialEq)]
+enum Drawer {
+    None,
+    Peek,
+    /// Expanded, parked mid-paragraph so the karaoke word shows.
+    Expanded,
+    /// The repair slide-over on the suggested voice.
+    Repair,
+}
+
+/// The fixture segment's length (09:00:21 → 09:01:11).
+const SEGMENT_S: f64 = 50.;
 
 const MAIN: (f32, f32) = (1280., 800.);
 const NARROW: (f32, f32) = (800., 600.);
 
-pub const STATES: [State; 5] = [
+pub const STATES: [State; 9] = [
     State {
         name: "populated",
         parity: "default",
@@ -39,6 +56,7 @@ pub const STATES: [State; 5] = [
         shell: "populated",
         viewport: MAIN,
         stale: false,
+        drawer: Drawer::None,
     },
     State {
         name: "empty",
@@ -47,6 +65,7 @@ pub const STATES: [State; 5] = [
         shell: "empty",
         viewport: MAIN,
         stale: false,
+        drawer: Drawer::None,
     },
     State {
         name: "stale",
@@ -55,6 +74,7 @@ pub const STATES: [State; 5] = [
         shell: "populated",
         viewport: MAIN,
         stale: true,
+        drawer: Drawer::None,
     },
     State {
         name: "matches",
@@ -63,6 +83,7 @@ pub const STATES: [State; 5] = [
         shell: "populated",
         viewport: MAIN,
         stale: false,
+        drawer: Drawer::None,
     },
     State {
         name: "narrow",
@@ -71,6 +92,43 @@ pub const STATES: [State; 5] = [
         shell: "populated",
         viewport: NARROW,
         stale: false,
+        drawer: Drawer::None,
+    },
+    State {
+        name: "drawer-peek",
+        parity: "drawer",
+        fixture: "drawer",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::Peek,
+    },
+    State {
+        name: "drawer-expanded",
+        parity: "drawer-expanded",
+        fixture: "drawer",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::Expanded,
+    },
+    State {
+        name: "drawer-repair",
+        parity: "repair",
+        fixture: "drawer",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::Repair,
+    },
+    State {
+        name: "drawer-no-transcript",
+        parity: "drawer-not-transcribed",
+        fixture: "drawer-not-transcribed",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::Peek,
     },
 ];
 
@@ -91,6 +149,58 @@ pub fn settle(cx: &mut VisualTestAppContext, t: &Entity<TimelineView>) {
         cx.advance_clock(Duration::from_millis(100));
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Open the drawer the way a lane click does, then pump its loads and the
+/// 420 ms rise to rest.
+fn open_drawer(
+    cx: &mut VisualTestAppContext,
+    window: gpui_kit::AnyWindowHandle,
+    timeline: &Entity<TimelineView>,
+    state: &State,
+) -> anyhow::Result<()> {
+    let audio = Arc::new(FixtureAudio::load(state.fixture)?);
+    let id = audio
+        .opened()
+        .map(|s| s.id)
+        .expect("fixture get_audio_segment");
+    let player = FakePlayer::new(SEGMENT_S);
+    cx.update(|cx| {
+        timeline.update(cx, |t, cx| {
+            t.drawer_deps = Deps {
+                backend: audio.clone(),
+                open_player: player.factory(),
+            };
+            t.selected_audio = Some((id, 0));
+            cx.notify();
+        })
+    });
+    let pump = |cx: &mut VisualTestAppContext| {
+        for _ in 0..8 {
+            cx.run_until_parked();
+            cx.advance_clock(Duration::from_millis(100));
+        }
+        cx.run_until_parked();
+    };
+    pump(cx);
+    let drawer = cx
+        .read(|cx| timeline.read(cx).drawer.clone())
+        .ok_or_else(|| anyhow::anyhow!("the drawer didn't open"))?;
+    match state.drawer {
+        Drawer::Expanded => cx.update(|cx| {
+            drawer.update(cx, |d, cx| {
+                d.expanded = true;
+                d.seek_to_ms(19_500);
+                cx.notify();
+            })
+        }),
+        Drawer::Repair => cx.update_window(window, |_, window, cx| {
+            drawer.update(cx, |d, cx| d.open_repair(1, window, cx))
+        })?,
+        _ => {}
+    }
+    pump(cx);
+    Ok(())
 }
 
 pub fn shoot(
@@ -117,6 +227,9 @@ pub fn shoot(
         *source.fail_list.lock().unwrap() = true;
         cx.update(|cx| timeline.update(cx, |t, cx| t.refresh(cx)));
         settle(cx, &timeline);
+    }
+    if state.drawer != Drawer::None {
+        open_drawer(cx, window.into(), &timeline, state)?;
     }
     // One more pass so the readout and overlays lay out against measured sizes.
     for _ in 0..3 {

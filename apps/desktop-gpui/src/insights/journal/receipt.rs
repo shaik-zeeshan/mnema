@@ -2,8 +2,12 @@
 //! the real captured frames over the card's span played as a timelapse — no
 //! video, just frame previews swapped on GPUI animation frames at `speed`
 //! frames per second (8× default, 16× fast) — with a scrub track and the
-//! frame's clock. Cited audio (1×, per-turn relive) is S9's AudioDrawer work:
-//! until then the receipt is frames-only and 1× plays silently.
+//! frame's clock.
+//!
+//! shortcut: cited audio (1×, per-turn relive: `receipt-audio.ts` +
+//! `receipt-audio-loader.ts`, ~600 lines of turn hydration and scheduling) is not
+//! wired yet, so 1× plays silently; `timeline::audio::transport::Player` /
+//! `native::audio_player::AudioPlayer` are the player to build it on.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

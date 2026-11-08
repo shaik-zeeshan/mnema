@@ -197,8 +197,14 @@ pub fn audio_lane(
                 .bg(if mic { p.source_mic } else { p.source_sysaudio })
                 .when(selected, |d| d.shadow(vec![spread(p.accent, px(1.5))]))
                 .cursor_pointer()
+                .on_hover(cx.listener(move |this, on: &bool, _, _| {
+                    if *on {
+                        this.bar_hover = Some(id);
+                    } else if this.bar_hover == Some(id) {
+                        this.bar_hover = None;
+                    }
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    // The S9 AudioDrawer opens on this; inert until then.
                     this.selected_audio = Some((id, 0));
                     cx.notify();
                 }));
