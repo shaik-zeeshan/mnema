@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 03:05",
-  "verdict": "About half done. The whole recording engine and Ask AI now run on the shared backend (~80% of the backend moved). Five of eight screens are built; the startup/shutdown move and the small windows are running.",
+  "updated": "2026-11-09 04:00",
+  "verdict": "Over half done. The backend move is finished through startup and shutdown; six of eight screens are built. The native layer (tray, hotkeys, links, Dock, quit) — the step that makes the GPUI app usable end to end — is running, alongside the Timeline smoothness pass.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~50%",
+      "value": "~55%",
       "note": "of the whole build"
     },
     {
@@ -14,8 +14,8 @@
     },
     {
       "label": "Screens built",
-      "value": "5 of 8",
-      "note": "shell, Timeline, Chat, Settings, Insights"
+      "value": "6 of 8",
+      "note": "shell, Timeline, Chat, Settings, Insights, small windows"
     },
     {
       "label": "Tests passing",
@@ -23,9 +23,9 @@
       "note": "1,284 shared + 91 Tauri + 129 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots approved",
-      "value": "108",
-      "note": "shell, controls, Timeline, Chat, Settings, Insights"
+      "label": "Screenshots",
+      "value": "108 ✓ · 42 waiting",
+      "note": "small windows new"
     }
   ],
   "bars": [
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 90
+      "pct": 100
     },
     {
       "label": "Native layer (S7)",
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 65
+      "pct": 75
     },
     {
       "label": "Packaging + updater (S16)",
@@ -56,14 +56,14 @@
   ],
   "now": [
     {
-      "id": "S4",
-      "title": "Startup and shutdown",
-      "detail": "One shared start / deferred-start / graceful-exit sequence for both apps, with the order tested and the startup log lines diffed against today's app."
+      "id": "S7",
+      "title": "Native layer",
+      "detail": "Wires the shared startup/shutdown into the GPUI app, plus tray, global hotkeys, mnema:// links, single instance, Dock, graceful ⌘Q, reminder notification, real native dialogs, and a dev .app bundle."
     },
     {
-      "id": "S15",
-      "title": "Small windows",
-      "detail": "CLI access request, update window, permission helper, and the debug window with its mini mode."
+      "id": "S8-perf",
+      "title": "Timeline smoothness pass",
+      "detail": "A correct frame-time measurement (work per frame + dropped frames) and fixes for the scrub stutters."
     }
   ],
   "done": [
@@ -198,29 +198,21 @@
       "title": "Recording engine move — finished",
       "what": "Recording controls, settings apply, MCP connectors, the not-recording reminder, Ask AI and conversations, and every piece that was waiting. 1,375 backend tests green.",
       "commit": "824c20bc"
-    }
-  ],
-  "next": [
-    {
-      "id": "S8-perf",
-      "title": "Timeline smoothness pass",
-      "detail": "Fix the frame-time metric (it can't go below 16.7 ms on 60 Hz) and chase the real stutters while scrubbing (likely page loads / image uploads)."
-    },
-    {
-      "id": "S3",
-      "title": "Move the recording engine + Ask AI",
-      "detail": "The riskiest step: ~48k lines, in seven ordered steps, each keeping both apps building. Needs a real recording smoke test on a copy of your data."
     },
     {
       "id": "S4",
       "title": "Startup and shutdown",
-      "detail": "One shared start/stop sequence, identical log lines in both apps."
+      "what": "One shared start, deferred-start and graceful-exit sequence; a test pins all 32 startup steps in today's order; every quit path goes through it.",
+      "commit": "4ea3fb16"
     },
     {
-      "id": "S7",
-      "title": "Native layer",
-      "detail": "Tray menu, global hotkeys, mnema:// links, single instance, Dock, graceful quit, reminder notification. Needs one signed-build check from you."
-    },
+      "id": "S15",
+      "title": "Small windows",
+      "what": "CLI access request (live), update window, permission helper, developer window with mini mode.",
+      "commit": "fa8b93c9"
+    }
+  ],
+  "next": [
     {
       "id": "S13 · S12 · S10 · S15 · S9 · S14",
       "title": "The remaining screens",
@@ -251,6 +243,33 @@
     "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
   ],
   "shots": [
+    {
+      "title": "Small windows — new, waiting for sign-off",
+      "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
+      "files": [
+        "access-granted",
+        "access-no-request",
+        "access-request",
+        "access-widen",
+        "debug-ai",
+        "debug-capture",
+        "debug-logs",
+        "debug-mini-mini",
+        "debug-not-recording",
+        "debug-overview-issues",
+        "debug-overview-ok",
+        "debug-pipeline",
+        "permission-helper-granted",
+        "permission-helper-waiting",
+        "update-available",
+        "update-check-failed",
+        "update-checking",
+        "update-downloading",
+        "update-install-failed",
+        "update-ready",
+        "update-uptodate"
+      ]
+    },
     {
       "title": "Timeline — approved",
       "note": "5 states × dark/light.",

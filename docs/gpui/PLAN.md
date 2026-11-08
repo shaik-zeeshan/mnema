@@ -113,9 +113,9 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running, two at a time:** S4 startup/shutdown (slot 3, fresh) and S15 small windows (slot 1). **S3 is complete** (824c20bc). Disk was freed: slots bloat with stale artifacts (slot 3 reached 47 GB), so delete an idle slot after a big move and copy `openblas-src-*` from a live slot into the fresh one.
+1. **Running, two at a time:** S7 native layer (slot 1) and the S8 perf pass (slot 2: the metric fix, the scrub stutters, the gallery cell). Done: S4 4ea3fb16 (`startup-log-diff.sh` not run yet; it needs the founder's real Mnema quit), S15 fa8b93c9 (42 baselines awaiting sign-off; Esc = userCancelled as in today's app).
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
-   - Next after S4: S7 native layer; the S8 perf pass (needs a release build; disk is OK now); S10 Quick Recall (after S7); S9 AudioDrawer; S14 Onboarding (after S7); drop the "pressed primary" gallery cell.
+   - Next: S10 Quick Recall (after S7), S9 AudioDrawer, S14 Onboarding (after S7), S16 rest (packaging + updater flow), S17 on the founder's go.
    - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
