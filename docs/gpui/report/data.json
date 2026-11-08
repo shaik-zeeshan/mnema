@@ -1,16 +1,16 @@
 {
-  "updated": "2026-11-09 03:10",
-  "verdict": "About 45% done. Timeline, Chat, Settings and Insights are built (screenshots waiting for your sign-off); the main window and shared controls are approved; ~70% of the backend has moved and the recording engine move is on its last part.",
+  "updated": "2026-11-09 04:10",
+  "verdict": "About half done. The whole recording engine and Ask AI now run on the shared backend (~80% of the backend moved). Five of eight screens are built; the startup/shutdown move and the small windows are running.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~45%",
+      "value": "~50%",
       "note": "of the whole build"
     },
     {
       "label": "Backend moved",
-      "value": "~70%",
-      "note": "most of the recording engine now shared"
+      "value": "~80%",
+      "note": "the Tauri app keeps only window/tray/plugin glue"
     },
     {
       "label": "Screens built",
@@ -19,8 +19,8 @@
     },
     {
       "label": "Tests passing",
-      "value": "1,370",
-      "note": "1,021 shared + 349 Tauri, 0 failing"
+      "value": "1,504",
+      "note": "1,284 shared + 91 Tauri + 129 GPUI, 0 failing"
     },
     {
       "label": "Screenshots",
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 70
+      "pct": 80
     },
     {
       "label": "Native layer (S7)",
@@ -56,9 +56,9 @@
   ],
   "now": [
     {
-      "id": "S3c+d",
-      "title": "Recording engine move — parts 3–4 of 4",
-      "detail": "The capture root (start/stop/settings), the not-recording reminder, then Ask AI and conversations, plus every piece that was waiting for the recording engine."
+      "id": "S4",
+      "title": "Startup and shutdown",
+      "detail": "One shared start / deferred-start / graceful-exit sequence for both apps, with the order tested and the startup log lines diffed against today's app."
     },
     {
       "id": "S15",
@@ -192,6 +192,12 @@
       "title": "Insights screen",
       "what": "Overview, Journal with the receipt timelapse, Subjects with the evidence drawer and the 5-second Undo, Context (live). Six chart types.",
       "commit": "b934b8ed"
+    },
+    {
+      "id": "S3c+d",
+      "title": "Recording engine move — finished",
+      "what": "Recording controls, settings apply, MCP connectors, the not-recording reminder, Ask AI and conversations, and every piece that was waiting. 1,375 backend tests green.",
+      "commit": "824c20bc"
     }
   ],
   "next": [
@@ -239,8 +245,8 @@
     "12 shell and 20 control screenshots approved after viewing."
   ],
   "risks": [
-    "Disk space: ~13 GB free. It limits how many agents run at once and blocks the Timeline smoothness pass (needs a release build).",
-    "The recording-engine move (S3) is the riskiest step; permission flows need your signed build.",
+    "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
+    "The recording engine now runs from the shared crate; it still needs a real recording smoke test, and permission flows need your signed build.",
     "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
   ],
   "shots": [

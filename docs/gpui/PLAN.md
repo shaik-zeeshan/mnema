@@ -113,7 +113,10 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running, two at a time:** S3c+d, one agent for the `native_capture.rs` root + reminder, then Ask AI and every S3 leftover (slot 3), and S15 small windows (slot 1). Done: S3a 5467e174, S3b 84ff6911 (also moved `lifecycle.rs`), S13 daf681ab, S12 b934b8ed. Disk ~13 GB: the S8 perf pass (needs a release build) waits for space. Old worktrees (removed):
+1. **Running, two at a time:** S4 startup/shutdown (slot 3, fresh) and S15 small windows (slot 1). **S3 is complete** (824c20bc). Disk was freed: slots bloat with stale artifacts (slot 3 reached 47 GB), so delete an idle slot after a big move and copy `openblas-src-*` from a live slot into the fresh one.
+   - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
+   - Next after S4: S7 native layer; the S8 perf pass (needs a release build; disk is OK now); S10 Quick Recall (after S7); S9 AudioDrawer; S14 Onboarding (after S7); drop the "pressed primary" gallery cell.
+   - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
    - S12 Insights: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-acad0b6ce3e5374fa`
