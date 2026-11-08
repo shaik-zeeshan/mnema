@@ -1,0 +1,5 @@
+[toolchain]
+# Exact pin, upgraded on purpose. gpui-pre-util needs >=1.93 (slice_as_array).
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

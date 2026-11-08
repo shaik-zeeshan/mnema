@@ -8,8 +8,7 @@ pkgs=()
 [ -f apps/desktop-gpui/Cargo.toml ] && [ -n "$(git status --porcelain -- apps/desktop-gpui)" ] && pkgs+=(-p mnema-gpui)
 [ ${#pkgs[@]} -eq 0 ] && exit 0
 . scripts/openblas-build-env.sh >/dev/null 2>&1
-# shortcut: +stable until the founder rules on a rust-toolchain.toml (gpui-pre-util needs >=1.93; local default is 1.92)
-out=$(cargo +stable check "${pkgs[@]}" --message-format short 2>&1) && exit 0
+out=$(cargo check "${pkgs[@]}" --message-format short 2>&1) && exit 0
 echo "cargo check ${pkgs[*]} failed:" >&2
 grep -E '^(error|warning: unused)' <<<"$out" | head -30 >&2
 exit 2

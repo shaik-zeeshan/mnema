@@ -20,7 +20,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **`reduce_motion()` is read once at init.** Our observer updates it.
 - **`RenderImage` is BGRA.** Swap channels when decoding RGBA. Free GPU memory with `drop_image` when evicting.
 - **Fonts:** GPUI loads one face per file and ignores a variable font's weight axis. So we embed **static** 400/500/600 TTFs (`apps/desktop-gpui/assets/fonts/*-{400,500,600}.ttf`, cut with `varLib.instancer`; decompress woff2 with `uvx --from fonttools --with brotli`) via `cx.text_system().add_fonts`. UI font is Hanken Grotesk; data/mono is Spline Sans Mono.
-- **Toolchain:** `gpui-pre-util` needs Rust ≥1.93 and the local default is 1.92. Use `cargo +stable …` until the founder rules on a `rust-toolchain.toml`.
+- **Toolchain:** pinned by `rust-toolchain.toml` (1.99.1; `gpui-pre-util` needs ≥1.93). Plain `cargo` picks it up.
 - **Transparent windows:** the gpui-component root paints the theme background, so use `Root::new(..).bg(transparent_black())`.
 - **Never run a nested modal loop** (NSMenu popUp, `runModal`) inside `cx.update`: GPUI re-borrows app state and panics with "RefCell already borrowed". Defer it outside the update.
 - **NSWindow access:** call `HasWindowHandle::window_handle(window)` explicitly. `window.window_handle()` is GPUI's own method.

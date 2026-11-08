@@ -70,7 +70,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - Idle CPU 0.0% with every window hidden.
   - The Tauri app still builds with the shared lock.
   - Fonts need static cuts.
-  - Needs Rust ≥1.93 (founder ruling pending).
+  - Needs Rust ≥1.93: the founder chose to pin stable, and `rust-toolchain.toml` = 1.99.1.
   - Quit swizzle → AppKit's original `terminate:` still fires GPUI's `on_app_quit`.
   - Open for S7: a real tray click (founder), and an unexplained off-screen 500×500 window with sharingState 1.
 
