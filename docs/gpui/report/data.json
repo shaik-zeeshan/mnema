@@ -1,0 +1,63 @@
+{
+  "updated": "2026-11-08 18:45",
+  "verdict": "About a quarter done. The groundwork is proven, the main window and every shared control are built and approved, and ~40% of the backend has moved into the shared crate. Timeline, Chat and the database-layer move are running now.",
+  "metrics": [
+    {"label": "Overall", "value": "~25%", "note": "of the whole build"},
+    {"label": "Backend moved", "value": "~40%", "note": "≈38k of ~104k Rust lines"},
+    {"label": "Screens done", "value": "1 of 8", "note": "main window shell"},
+    {"label": "Tests passing", "value": "1,354", "note": "586 shared + 768 Tauri, 0 failing"},
+    {"label": "Screenshots approved", "value": "32", "note": "12 shell + 20 controls"}
+  ],
+  "bars": [
+    {"label": "Groundwork (plan, spike, tooling)", "pct": 100},
+    {"label": "Backend move (S1–S4)", "pct": 40},
+    {"label": "Native layer (S7)", "pct": 0},
+    {"label": "Screens (S5, S6, S8–S15)", "pct": 20},
+    {"label": "Packaging + updater (S16)", "pct": 30},
+    {"label": "Cut-over (S17)", "pct": 0}
+  ],
+  "now": [
+    {"id": "S2 B6", "title": "Database layer move", "detail": "app_infra (frames, jobs, search, previews, Quick Recall backend), CLI access + approval channel, the worker loops earlier batches left behind. Last batch before the recording engine."},
+    {"id": "S8", "title": "Timeline screen", "detail": "Frame stage, OCR and match overlays, the scrub rail with app bands, the date jumper, the scrub engine with every timing constant tested, image cache, frame-time measurement."},
+    {"id": "S11", "title": "Chat screen", "detail": "Conversation list, thread, live-streaming answers (bars, dossier, timeline blocks), sources, composer, model picker; streaming frame-time measurement."}
+  ],
+  "done": [
+    {"id": "T0", "title": "Plan, agents, skill, hooks", "what": "The slice plan, four specialised agents, a conventions skill every agent loads, and hooks that format code and enforce the 800-line cap.", "commit": "2c315085"},
+    {"id": "P0", "title": "Side-by-side screenshot tool", "what": "One command shoots GPUI | Tauri | mockup for any screen and state, so every gap is visible.", "commit": "0abcfa90"},
+    {"id": "S0", "title": "Spike: proved the stack", "what": "All 11 risky pieces work in GPUI: fonts, transparent titlebar, Quick Recall-style panel, hidden from screen capture, tray, global hotkey, mnema:// links, database on tokio, graceful ⌘Q, offscreen golden screenshots. First paint ~160 ms; 0% CPU when hidden.", "commit": "0c403fb9"},
+    {"id": "Rust pin", "title": "Toolchain pinned to 1.99.1", "what": "GPUI needs Rust ≥1.93; the repo now pins stable so local builds match CI.", "commit": "e6739709"},
+    {"id": "S1", "title": "Shared backend crate", "what": "app-core: the seam both apps run on (host, paths, events, one runtime, typed state). The Tauri app runs on it unchanged.", "commit": "f45ddec5"},
+    {"id": "S2 B0–B1", "title": "First backend moves", "what": "Logging, recording settings, model-download lock, and 7 self-contained modules (clock format, speaker helper, OCR budget, …).", "commit": "d9820408, 630dab6f"},
+    {"id": "S5", "title": "GPUI main window", "what": "Titlebar, status bar, themes with system follow and cross-fade, keyboard shortcuts, notifications / shortcuts / status popovers. 33 behaviour tests.", "commit": "0e168b10"},
+    {"id": "S2 B2 + B5", "title": "More backend moves", "what": "ChatGPT login, app log, storage, debug status, licensing, licence-list refresh, shortcut model. Fixed a regression where ‘open app log’ lost its error message.", "commit": "ff8c2a36"},
+    {"id": "S2 B3", "title": "Model downloads + semantic search", "what": "OCR, transcription and speaker model downloads, the download lock, semantic search models, worker and query (SQL byte-identical).", "commit": "f83ea6ea, 07df67e8"},
+    {"id": "S16a", "title": "Update install gate", "what": "An update installs only if Apple-signed by your own team with the same bundle id (and the CLI helper too). Caught and fixed a forgeable team check before it landed.", "commit": "1c5d32bd"},
+    {"id": "S6", "title": "Shared controls", "what": "Every control the app uses, themed to the redesign: buttons, segmented, switch, inputs, selects, date picker, popovers, tooltips, toasts, modals, notices, skeletons, chips.", "commit": "c04e5ae2"},
+    {"id": "S16b", "title": "Updater core", "what": "Update settings, status machine and the licence update-window gate moved to the shared crate.", "commit": "9d609663"},
+    {"id": "S2 B4", "title": "AI runtime + user context", "what": "AI provider resolution (incl. the ChatGPT token-refresh gate, unchanged), user context, privacy rules, sensitive-app recommendations.", "commit": "ebd213ac"}
+  ],
+  "next": [
+    {"id": "S3", "title": "Move the recording engine + Ask AI", "detail": "The riskiest step: ~48k lines, in seven ordered steps, each keeping both apps building. Needs a real recording smoke test on a copy of your data."},
+    {"id": "S4", "title": "Startup and shutdown", "detail": "One shared start/stop sequence, identical log lines in both apps."},
+    {"id": "S7", "title": "Native layer", "detail": "Tray menu, global hotkeys, mnema:// links, single instance, Dock, graceful quit, reminder notification. Needs one signed-build check from you."},
+    {"id": "S13 · S12 · S10 · S15 · S9 · S14", "title": "The remaining screens", "detail": "Settings, Insights, Quick Recall, small windows, audio drawer, onboarding: three at a time, each with screenshots for your sign-off."},
+    {"id": "S16", "title": "Packaging + updater", "detail": "Bundle script, signing, notarisation, download → verify → replace → relaunch."},
+    {"id": "S17", "title": "Cut-over", "detail": "On your go: GPUI becomes Mnema, Tauri and Svelte are deleted."}
+  ],
+  "rulings": [
+    "Side by side, not a rewrite in place; Tauri keeps shipping until cut-over.",
+    "Pin stable Rust (1.99.1).",
+    "Solid tinted surfaces instead of in-window blur (titlebar, popovers).",
+    "The titlebar section icons may stay the app's own drawings.",
+    "12 shell and 20 control screenshots approved after viewing."
+  ],
+  "risks": [
+    "Disk space: three parallel builds share ~25–30 GB free; it has filled twice. More free space = more agents at once.",
+    "The recording-engine move (S3) is the riskiest step; permission flows need your signed build.",
+    "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
+  ],
+  "shots": [
+    {"title": "Main window — shell", "note": "6 states × dark/light. The middle is a placeholder until the Timeline lands.", "files": ["shell-populated", "shell-empty", "shell-recording", "shell-notifications", "shell-shortcuts", "shell-narrow"]},
+    {"title": "Shared controls — gallery", "note": "Every control in every state, dark/light.", "files": ["gallery-buttons", "gallery-fields", "gallery-choice", "gallery-select", "gallery-date", "gallery-overlays", "gallery-feedback", "gallery-empty", "gallery-loading", "gallery-status"]}
+  ]
+}

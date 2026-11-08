@@ -105,6 +105,14 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
     - offscreen goldens taller than ~1040 px get clamped, so keep viewports ≤1000 px;
     - GPUI shadows don't follow radius+spread (use `ui::ring_box` for focus rings).
 
+### Progress report (founder rule, 2026-11-08)
+After **every** merged slice/feature:
+1. update `docs/gpui/report/data.json` (now / done / next / metrics / screenshots);
+2. run `python3 docs/gpui/report/build.py`;
+3. run `npx -y postplan@latest upload target/gpui-report/index.html --draft d9ymz3pr4vyt`.
+
+The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
+
 ### Next up (orchestrator queue; keep current)
 1. **Running:** S2 B6 (slot 3; also takes the leftover worker loops from B3b/B4), S8 Timeline (slot 2), S11 Chat (slot 1). Done: B4 ebd213ac.
 2. **Waiting for S3** (all in src-tauri): voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
