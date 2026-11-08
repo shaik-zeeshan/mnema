@@ -1,4 +1,4 @@
-use super::output::{
+use app_core::native_capture_output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file, strip_live_system_audio_output_file,
@@ -1227,7 +1227,7 @@ pub(super) fn suspend_screen_capture(
         // segment is still healthy ... so commit it before ending").
         commit_suspended_microphone_outputs(app_handle, runtime, "entering low-disk suspension");
         if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-            super::output::clear_current_microphone_output_file(output_files);
+            app_core::native_capture_output::clear_current_microphone_output_file(output_files);
         }
         runtime.microphone_recording_file = None;
         // The tap writes to the same full volume, so it stops here too — and its
@@ -3008,7 +3008,7 @@ pub(super) fn mark_microphone_family_paused(runtime: &mut NativeCaptureRuntime) 
 pub(super) fn process_inactivity_audio_transitions_for_snapshot(
     runtime: &mut NativeCaptureRuntime,
     now: u64,
-    activity_snapshot: super::inactivity::ActivitySnapshot,
+    activity_snapshot: app_core::native_capture_inactivity::ActivitySnapshot,
 ) -> Result<(), CaptureErrorResponse> {
     if runtime
         .inactivity
@@ -3185,7 +3185,7 @@ pub(super) fn resume_microphone_from_inactivity(
                 microphone_tail_activity_mode,
             )?;
             runtime.microphone_recording_file = Some(microphone_recording_file.clone());
-            super::output::set_current_microphone_output_file(
+            app_core::native_capture_output::set_current_microphone_output_file(
                 current_segment_output_files_mut(runtime),
                 microphone_recording_file,
             );
@@ -3203,7 +3203,7 @@ pub(super) fn resume_microphone_from_inactivity(
                 Ok(session) => {
                     runtime.active_microphone_session = Some(session);
                     runtime.microphone_recording_file = Some(microphone_recording_file.clone());
-                    super::output::set_current_microphone_output_file(
+                    app_core::native_capture_output::set_current_microphone_output_file(
                         current_segment_output_files_mut(runtime),
                         microphone_recording_file,
                     );
@@ -5247,7 +5247,7 @@ mod tests {
             }),
             recording_file: Some("/tmp/screen.mov".to_string()),
             system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
-            inactivity: super::super::inactivity::InactivityState {
+            inactivity: app_core::native_capture_inactivity::InactivityState {
                 enabled: true,
                 idle_timeout_seconds: 10,
                 microphone_paused: true,
@@ -5631,7 +5631,7 @@ pub(super) fn start_capture_runtime(
             capture_screen::reset_last_screen_activity_unix_ms();
             microphone_capture::reset_last_microphone_activity_unix_ms();
             capture_system_audio::reset_system_audio_activity();
-            let initial_inactivity = super::inactivity::InactivityState::from_recording_settings(
+            let initial_inactivity = app_core::native_capture_inactivity::InactivityState::from_recording_settings(
                 settings,
                 started_monotonic,
             );

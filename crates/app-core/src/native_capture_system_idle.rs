@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static INVALID_IDLE_READING_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
-pub(crate) fn current_system_idle_ms() -> Option<u64> {
+pub fn current_system_idle_ms() -> Option<u64> {
     use core_graphics::event::CGEventType;
     use core_graphics::event_source::CGEventSourceStateID;
 
@@ -32,7 +32,7 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
-            app_core::debug_log::log(format!(
+            crate::debug_log::log(format!(
                 "received invalid system idle reading from CoreGraphics: {seconds}"
             ));
         }
@@ -43,7 +43,7 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn current_system_idle_ms() -> Option<u64> {
+pub fn current_system_idle_ms() -> Option<u64> {
     None
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn current_system_idle_ms() -> Option<u64> {
 /// `kCGSSessionOnConsoleKey` (`kCGSessionOnConsoleKey`) is false while
 /// switched out.
 #[cfg(target_os = "macos")]
-pub(crate) fn session_is_away() -> bool {
+pub fn session_is_away() -> bool {
     use cidre::{arc, cf};
 
     #[link(name = "CoreGraphics", kind = "framework")]

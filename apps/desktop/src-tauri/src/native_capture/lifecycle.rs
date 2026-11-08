@@ -4,7 +4,7 @@ use super::microphone_away::{
     mac_is_away, reopen_unwakeable_microphone, should_resume_microphone_after_activity,
     tick_microphone_away,
 };
-use super::output::{
+use app_core::native_capture_output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,

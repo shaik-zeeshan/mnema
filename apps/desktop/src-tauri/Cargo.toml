@@ -18,13 +18,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = ["speaker-analysis-speakrs"]
 cargo-clippy = []
-ocr-budget-trace = []
+ocr-budget-trace = ["app-core/ocr-budget-trace"]
 privacy-refresh-trace = []
 # Forwarding feature: turn the `speaker-analysis` speakrs engine on AND expose a
 # desktop-crate cfg the subprocess dispatcher gates the speakrs arm on (see
-# `speaker_analysis_runtime::analyze_request_for_provider`). Default-on, so the
+# `app_core::speaker_analysis_runtime::analyze_request_for_provider`). Default-on, so the
 # shipped build compiles the on-device diarization engine.
-speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
+speaker-analysis-speakrs = ["speaker-analysis/speakrs", "app-core/speaker-analysis-speakrs"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
-use super::adapter;
+use app_core::licensing::adapter;
 use app_core::AppInfraState;
 
 /// Poll budget: the Polar webhook usually lands within seconds; 15 × 2s ≈ 30s

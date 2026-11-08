@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-use super::inactivity::InactivityState;
+use app_core::native_capture_inactivity::InactivityState;
 use super::segments::FrameArtifactMessage;
 use capture_vad::MicrophoneVadRuntime;
 
@@ -600,7 +600,7 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
                 "failed to remove intermediate ",
             ],
         )
-        .is_some_and(super::output::is_missing_requested_screen_output_failure_detail);
+        .is_some_and(app_core::native_capture_output::is_missing_requested_screen_output_failure_detail);
 
     capture_screen::should_recover_from_segment_finalize_error(error)
         || (error.code == "capture_output_processing_failed" && is_missing_requested_screen_output)

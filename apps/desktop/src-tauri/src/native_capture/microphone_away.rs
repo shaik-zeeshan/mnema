@@ -3,7 +3,7 @@
 //! the Recording Lifecycle owns when they run.
 
 #[cfg(target_os = "macos")]
-use super::inactivity::ActivitySnapshot;
+use app_core::native_capture_inactivity::ActivitySnapshot;
 use super::runtime::{CaptureSuspensionKind, NativeCaptureRuntime};
 use super::segments::{
     mark_microphone_family_paused, pause_microphone_for_inactivity_with_app_handle,
@@ -40,7 +40,7 @@ pub(super) fn mac_is_away(runtime: &NativeCaptureRuntime) -> bool {
     match runtime.away_probe {
         Some(probe) => probe(),
         None => {
-            super::system_idle::session_is_away()
+            app_core::native_capture_system_idle::session_is_away()
                 || !capture_screen::screen_display_available()
         }
     }

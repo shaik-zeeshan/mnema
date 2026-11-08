@@ -7,7 +7,8 @@
 
 use capture_types::{LicenseDevices, ResetDevicesOutcome};
 
-use super::{activation, adapter};
+use super::activation;
+use app_core::licensing::adapter;
 
 /// What to do with the reset call's outcome — pure and IO-free
 /// (`reset_license_devices` is the shell that executes it).

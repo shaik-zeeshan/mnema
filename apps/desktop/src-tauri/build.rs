@@ -18,7 +18,7 @@ fn main() {
     // fetches the live prod CRL and exports the signed wire). Rebuild when it
     // changes so a re-release actually re-bakes the floor into the binary.
     println!("cargo:rerun-if-env-changed=MNEMA_CRL_FLOOR");
-    // licensegate config (`option_env!` in `licensing/adapter.rs`): release CI
+    // licensegate config (`option_env!` in `crates/app-core/src/licensing/adapter.rs`): release CI
     // bakes the prod pubkey/kid/publishable token/base URL; dev builds bake the
     // sandbox equivalents. Rebuild when any of them changes.
     println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PUBLIC_KEY");

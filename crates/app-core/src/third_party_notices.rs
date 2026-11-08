@@ -187,12 +187,6 @@ fn render_plain_text(entries: &[ThirdPartyNoticeEntry]) -> String {
     out
 }
 
-/// Tauri command: return the assembled third-party notices payload.
-#[tauri::command]
-pub fn get_third_party_notices() -> ThirdPartyNotices {
-    collect_third_party_notices()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,8 +200,14 @@ mod tests {
         );
 
         let has_kind = |kind: &str| notices.entries.iter().any(|entry| entry.kind == kind);
-        assert!(has_kind(KIND_SPEAKER), "missing speaker diarization entries");
-        assert!(has_kind(KIND_TRANSCRIPTION), "missing transcription entries");
+        assert!(
+            has_kind(KIND_SPEAKER),
+            "missing speaker diarization entries"
+        );
+        assert!(
+            has_kind(KIND_TRANSCRIPTION),
+            "missing transcription entries"
+        );
         assert!(has_kind(KIND_OCR), "missing OCR entries");
         assert!(has_kind(KIND_FONT), "missing bundled font entries");
     }

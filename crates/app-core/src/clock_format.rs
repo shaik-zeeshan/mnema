@@ -20,7 +20,6 @@ fn hour_pattern_is_24_hour(pattern: &str) -> bool {
     true
 }
 
-#[tauri::command]
 pub fn system_uses_24_hour_time() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {

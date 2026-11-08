@@ -2,6 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    mnema_lib::maybe_run_speaker_analysis_helper_and_exit();
+    app_core::speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
     mnema_lib::run()
 }

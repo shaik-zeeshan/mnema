@@ -1404,18 +1404,18 @@ pub async fn persist_screen_frame_artifact(
         let result = infra
             .capture_frame_skipping_ocr_with_reason(&frame, decision)
             .await?;
-        crate::ocr_budget::record_admission_result(infra, &result);
+        app_core::ocr_budget::record_admission_result(infra, &result);
         return Ok(result);
     }
 
     let payload_json = ocr_payload_json_from_settings(settings, None)
         .map_err(::app_infra::AppInfraError::OcrEngine)?;
 
-    let decision = crate::ocr_budget::decide_admission(infra, &frame, true).await?;
+    let decision = app_core::ocr_budget::decide_admission(infra, &frame, true).await?;
     let result = infra
         .capture_frame_with_ocr_admission(&frame, payload_json.as_deref(), decision)
         .await?;
-    crate::ocr_budget::record_admission_result(infra, &result);
+    app_core::ocr_budget::record_admission_result(infra, &result);
     Ok(result)
 }
 
@@ -1546,7 +1546,7 @@ fn desktop_processing_registry(
             // removed. Legacy `sherpa_onnx` job payloads are remapped to speakrs
             // at the normalize/dispatch seam, so only this provider is registered.
             Arc::new(
-                crate::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
+                app_core::speaker_analysis_runtime::SubprocessSpeakerAnalysisProvider::with_provider(
                     speaker_analysis::SPEAKRS_PROVIDER_ID,
                     speaker_models_dir,
                 ),
@@ -1604,7 +1604,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         ))
     })?;
     let infra = Arc::new(infra);
-    crate::ocr_budget::reset_for_base_dir(&resolved_base_dir.base_dir);
+    app_core::ocr_budget::reset_for_base_dir(&resolved_base_dir.base_dir);
     let frame_preview_cache = FramePreviewCacheState::default();
     let background_workers = BackgroundWorkersState::default();
 
@@ -3066,9 +3066,9 @@ async fn process_pending_jobs_once(
     };
 
     let ocr_outcome =
-        crate::ocr_budget::process_pending_ocr_job_once(infra, live_recording_active(app_handle))
+        app_core::ocr_budget::process_pending_ocr_job_once(infra, live_recording_active(app_handle))
             .await?;
-    let did_ocr = ocr_outcome == crate::ocr_budget::OcrProcessingPass::DidWork;
+    let did_ocr = ocr_outcome == app_core::ocr_budget::OcrProcessingPass::DidWork;
     let did_finalize_after_ocr = if did_ocr {
         match infra.process_next_frame_batch_job().await {
             Ok(result) => result.is_some(),
@@ -3085,7 +3085,7 @@ async fn process_pending_jobs_once(
 
     if did_processing || did_finalize || did_ocr || did_finalize_after_ocr {
         Ok(ProcessingWorkerPass::DidWork)
-    } else if let crate::ocr_budget::OcrProcessingPass::CoolingDown(duration) = ocr_outcome {
+    } else if let app_core::ocr_budget::OcrProcessingPass::CoolingDown(duration) = ocr_outcome {
         Ok(ProcessingWorkerPass::IdleFor(duration))
     } else {
         Ok(ProcessingWorkerPass::Idle)
@@ -7699,10 +7699,10 @@ mod tests {
                 .expect("first OCR job should enqueue");
 
             assert_eq!(
-                crate::ocr_budget::process_pending_ocr_job_once(&first_infra, true)
+                app_core::ocr_budget::process_pending_ocr_job_once(&first_infra, true)
                     .await
                     .expect("first OCR worker pass should succeed"),
-                crate::ocr_budget::OcrProcessingPass::DidWork
+                app_core::ocr_budget::OcrProcessingPass::DidWork
             );
             let first_job = first_infra
                 .get_processing_job(first.job.id)
@@ -7732,10 +7732,10 @@ mod tests {
                 .expect("second OCR job should enqueue");
 
             assert_eq!(
-                crate::ocr_budget::process_pending_ocr_job_once(&second_infra, false)
+                app_core::ocr_budget::process_pending_ocr_job_once(&second_infra, false)
                     .await
                     .expect("second OCR worker pass should succeed"),
-                crate::ocr_budget::OcrProcessingPass::DidWork
+                app_core::ocr_budget::OcrProcessingPass::DidWork
             );
             let second_job = second_infra
                 .get_processing_job(second.job.id)

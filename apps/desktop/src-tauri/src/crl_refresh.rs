@@ -12,7 +12,7 @@
 use tauri::Manager;
 
 use app_core::AppInfraState;
-use crate::licensing::adapter;
+use app_core::licensing::adapter;
 use app_core::debug_log;
 
 /// CI-baked fresh-install floor: release CI fetches the live prod CRL

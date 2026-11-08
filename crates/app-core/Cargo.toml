@@ -9,22 +9,39 @@ publish = false
 # goldens and the parity dumper. Default-on so `cargo test -p app-core` covers
 # it; the desktop binaries depend on app-core with `default-features = false`.
 default = ["fixtures"]
-fixtures = ["dep:image", "dep:time"]
+fixtures = ["dep:image"]
+# Trace OCR admission/pacing decisions to the app log (forwarded from the desktop crate).
+ocr-budget-trace = []
+# Compile the speakrs engine into the speaker-analysis helper subprocess
+# (forwarded from the desktop crate's default-on feature of the same name).
+speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
 
 [dependencies]
 app-infra = { path = "../app-infra" }
+async-trait = "0.1"
+audio-transcription = { path = "../audio-transcription" }
+base64 = "0.22"
 capture-metadata = { path = "../capture-metadata" }
 capture-screen = { path = "../capture-screen" }
 capture-types = { path = "../capture-types" }
+capture-writers = { path = "../capture-writers" }
 dirs = "6"
+licensegate = "0.2"
 log = "0.4"
 ocr = { path = "../ocr" }
 semantic-search = { path = "../semantic-search" }
 speaker-analysis = { path = "../speaker-analysis", default-features = false }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio = { version = "1", features = ["io-util", "process", "rt-multi-thread", "sync", "time"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
-time = { version = "0.3", features = ["formatting", "parsing"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre = { version = "0.15", default-features = false, features = ["av", "cf", "ns", "macos_15_0"] }
+cocoa = "0.26"
+core-graphics = "0.25"
+objc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

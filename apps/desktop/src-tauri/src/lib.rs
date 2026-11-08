@@ -6,7 +6,6 @@ mod audio_transcription_models;
 mod broker_authorization_channel;
 mod chatgpt_auth;
 mod cli_access;
-mod clock_format;
 mod conversation;
 mod crl_refresh;
 mod debug_health;
@@ -17,7 +16,6 @@ mod keyboard_bindings;
 mod licensing;
 mod managed_storage_layout;
 mod native_capture;
-mod ocr_budget;
 mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
@@ -28,10 +26,8 @@ mod sensitive_capture_recommendations;
 #[cfg(test)]
 mod secret_vault_test_support;
 mod speaker_analysis_models;
-mod speaker_analysis_runtime;
 mod status_bar;
 mod tauri_host;
-mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
@@ -698,7 +694,7 @@ pub fn run() {
             ocr_models::start_ocr_model_download,
             ocr_models::cancel_ocr_model_download,
             ocr_models::delete_unused_ocr_models,
-            third_party_notices::get_third_party_notices,
+            get_third_party_notices,
             app_infra::list_app_jobs,
             app_infra::get_app_job,
             app_infra::debug_insert_frame_and_enqueue_processing_job,
@@ -772,7 +768,7 @@ pub fn run() {
             native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,
             native_capture::get_recording_settings,
-            clock_format::system_uses_24_hour_time,
+            system_uses_24_hour_time,
             native_capture::update_recording_settings,
             native_capture::update_capture_source_settings,
             native_capture::update_capture_timing_settings,
@@ -994,8 +990,14 @@ pub fn run() {
         });
 }
 
-pub fn maybe_run_speaker_analysis_helper_and_exit() {
-    speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
+#[tauri::command]
+fn get_third_party_notices() -> app_core::third_party_notices::ThirdPartyNotices {
+    app_core::third_party_notices::collect_third_party_notices()
+}
+
+#[tauri::command]
+fn system_uses_24_hour_time() -> Option<bool> {
+    app_core::clock_format::system_uses_24_hour_time()
 }
 
 #[cfg(test)]

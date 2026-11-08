@@ -4,16 +4,12 @@ pub(crate) mod capture_health;
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
 pub(crate) mod disk_space;
-#[path = "native_capture_inactivity.rs"]
-pub(crate) mod inactivity;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
 mod microphone;
 mod microphone_away;
 pub(crate) mod not_recording_reminder;
-#[path = "native_capture_output.rs"]
-pub(crate) mod output;
 pub(crate) mod privacy;
 mod runtime;
 mod segments;
@@ -21,8 +17,6 @@ mod segments;
 pub(crate) mod settings;
 #[cfg(target_os = "macos")]
 mod system_audio;
-#[path = "native_capture_system_idle.rs"]
-pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
 
@@ -3632,7 +3626,7 @@ fn stop_native_capture_with_state(
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
             let source_session_ids = source_session_ids_before_stop;
-            crate::ocr_budget::clear_sessions_for_base_dir(infra.base_dir(), &source_session_ids);
+            app_core::ocr_budget::clear_sessions_for_base_dir(infra.base_dir(), &source_session_ids);
             let infra = std::sync::Arc::clone(&*infra);
             if let Err(error) = tauri::async_runtime::block_on(async move {
                 infra

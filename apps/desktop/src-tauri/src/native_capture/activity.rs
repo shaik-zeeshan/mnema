@@ -1,9 +1,9 @@
-use super::inactivity::{
+use super::lifecycle::RecordingLifecycle;
+use super::NativeCaptureState;
+use app_core::native_capture_inactivity::{
     ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, ActivitySourceKind,
     AudioActivitySourceState,
 };
-use super::lifecycle::RecordingLifecycle;
-use super::NativeCaptureState;
 use capture_microphone as microphone_capture;
 use capture_types::{
     AudioActivityDecision, AudioActivitySample, IdleDebugActivitySource, IdleDebugInfo,
@@ -59,7 +59,7 @@ struct IdleDebugAudioProjection {
 
 #[cfg(target_os = "macos")]
 fn current_system_idle_ms() -> Option<u64> {
-    super::system_idle::current_system_idle_ms()
+    app_core::native_capture_system_idle::current_system_idle_ms()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -188,7 +188,7 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
     let mut runtime = lock_runtime_for_idle_debug(&state);
     let runtime = runtime.runtime_mut();
     let now = now_monotonic_marker_ms();
-    let system_idle_ms = super::system_idle::current_system_idle_ms();
+    let system_idle_ms = app_core::native_capture_system_idle::current_system_idle_ms();
     let screen_activity_last_unix_ms = capture_screen::last_screen_activity_unix_ms();
     let screen_activity_idle_ms = capture_screen::screen_activity_idle_ms();
     let microphone_raw_sample = RawActivityReading {
@@ -311,7 +311,7 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
 fn policy_source_sample(
     policy: &ActivityPolicyEvaluation,
     kind: ActivitySourceKind,
-) -> Option<&super::inactivity::ActivitySourceSample> {
+) -> Option<&app_core::native_capture_inactivity::ActivitySourceSample> {
     policy.sources.iter().find(|source| source.kind == kind)
 }
 
@@ -455,7 +455,7 @@ pub(super) fn idle_debug_activity_sources(
 /// policy evaluations. This is a pure function testable without Tauri state.
 pub(super) fn idle_debug_family_fields(
     policies: &ActivityPolicyEvaluations,
-    inactivity: &super::inactivity::InactivityState,
+    inactivity: &app_core::native_capture_inactivity::InactivityState,
 ) -> IdleDebugFamilyFields {
     IdleDebugFamilyFields {
         screen_effective_idle_ms: policies.screen.effective_idle.idle_ms,
@@ -496,8 +496,8 @@ pub(super) struct IdleDebugFamilyFields {
 
 #[cfg(test)]
 mod tests {
-    use super::super::inactivity::{ActivitySourceSample, EffectiveIdle};
     use super::*;
+    use app_core::native_capture_inactivity::{ActivitySourceSample, EffectiveIdle};
 
     #[test]
     fn audio_projection_keeps_raw_samples_separate_from_qualified_policy_fields() {

@@ -16,7 +16,8 @@ use capture_types::{Activation, LicenseStatus};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-use super::{activation, adapter};
+use super::activation;
+use app_core::licensing::adapter;
 
 /// 7 days: the one grace policy shared with the Provisional Window — pre-issuance
 /// offline rides the same leash as never-finished activation.

@@ -365,7 +365,7 @@ Then a real recording smoke in the Tauri dev sandbox: start, pause, resume, stop
 
 **Build:**
 1. `main.rs`:
-   - `maybe_run_speaker_analysis_helper_and_exit()` first;
+   - `app_core::speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit()` first;
    - logger (`~/Library/Logs/<id>/rust.log`, 5 MB × 5, Info globally, Debug for `APP_LOG_TARGET_PREFIXES`; reuse the constant from app-core);
    - `gpui_kit::application().with_assets(..)`, `on_open_urls` → channel;
    - `run`: fonts, theme, `AppCore::start(GpuiHost)`, main window, `spawn_deferred_startup`.

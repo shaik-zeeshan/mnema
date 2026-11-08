@@ -9,7 +9,8 @@
 
 use tauri::Manager;
 
-use super::{adapter, ensure_first_seen, is_key_revoked, load_effective_crl, now_ms};
+use super::{ensure_first_seen, is_key_revoked, load_effective_crl, now_ms};
+use app_core::licensing::adapter;
 use app_core::AppInfraState;
 use crate::licensing::ActivationHint;
 

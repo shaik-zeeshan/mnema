@@ -3,7 +3,7 @@ use super::activity::{
     idle_debug_family_fields, lock_runtime_for_idle_debug,
 };
 use super::describe_recording_settings_changes;
-use super::inactivity::{
+use app_core::native_capture_inactivity::{
     ActivityPolicyEvaluation, ActivitySnapshot, AudioActivitySourceState, InactivityState,
 };
 #[cfg(target_os = "macos")]
@@ -20,7 +20,7 @@ use super::microphone_away::{
     apply_microphone_away, reopen_unwakeable_microphone, settle_microphone_reopen,
     should_resume_microphone_after_activity, tick_microphone_away,
 };
-use super::output::set_current_microphone_output_file;
+use app_core::native_capture_output::set_current_microphone_output_file;
 use super::runtime::{
     active_sources_for_inactivity_paused_state, current_segment_sources_for_runtime,
     ensure_microphone_planner_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -2024,7 +2024,7 @@ fn stop_capture_runtime_commits_the_system_audio_segment_on_an_audio_only_stop()
     let sys = sys_path.to_string_lossy().into_owned();
 
     let mut current = super::segments::empty_output_files();
-    super::output::set_current_system_audio_output_file(&mut current, sys.clone());
+    app_core::native_capture_output::set_current_system_audio_output_file(&mut current, sys.clone());
 
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -2758,12 +2758,12 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
 #[test]
 fn idle_debug_activity_sources_include_audio_fields() {
     let policy = ActivityPolicyEvaluation {
-        effective_idle: super::inactivity::EffectiveIdle {
-            source: super::inactivity::ActivitySourceKind::MicrophoneCapture,
+        effective_idle: app_core::native_capture_inactivity::EffectiveIdle {
+            source: app_core::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
             idle_ms: 250,
         },
-        sources: vec![super::inactivity::ActivitySourceSample {
-            kind: super::inactivity::ActivitySourceKind::MicrophoneCapture,
+        sources: vec![app_core::native_capture_inactivity::ActivitySourceSample {
+            kind: app_core::native_capture_inactivity::ActivitySourceKind::MicrophoneCapture,
             enabled: true,
             available: true,
             idle_ms: Some(250),
@@ -5599,7 +5599,7 @@ fn locking_stops_a_running_microphone_and_unlocking_restarts_it() {
         gone: false,
     });
     let outputs = runtime.current_segment_output_files.as_mut().unwrap();
-    super::output::clear_current_microphone_output_file(outputs);
+    app_core::native_capture_output::clear_current_microphone_output_file(outputs);
     set_current_microphone_output_file(outputs, microphone_file.clone());
     runtime.microphone_recording_file = Some(microphone_file.clone());
     runtime.output_files = Some(super::segments::empty_output_files());
@@ -6428,7 +6428,7 @@ fn a_system_audio_resume_into_a_suspended_segment_still_tracks_its_output_file()
         "with both families paused the suspension leaves no segment outputs — the state a resume lands in"
     );
 
-    super::output::set_current_system_audio_output_file(
+    app_core::native_capture_output::set_current_system_audio_output_file(
         super::segments::current_segment_output_files_mut(&mut runtime),
         "/tmp/system-audio-resumed.m4a".to_string(),
     );
@@ -7005,7 +7005,7 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
 
 #[test]
 fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
-    use super::inactivity::{
+    use app_core::native_capture_inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -7052,7 +7052,7 @@ fn idle_debug_family_fields_reflect_independent_screen_and_audio_evaluations() {
 
 #[test]
 fn idle_debug_family_fields_show_screen_paused_audio_active() {
-    use super::inactivity::{
+    use app_core::native_capture_inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -7102,7 +7102,7 @@ fn idle_debug_family_fields_show_screen_paused_audio_active() {
 
 #[test]
 fn idle_debug_family_fields_show_audio_paused_screen_active() {
-    use super::inactivity::{
+    use app_core::native_capture_inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -7149,7 +7149,7 @@ fn idle_debug_family_fields_show_audio_paused_screen_active() {
 
 #[test]
 fn idle_debug_family_fields_both_paused() {
-    use super::inactivity::{
+    use app_core::native_capture_inactivity::{
         ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySourceKind, EffectiveIdle,
         InactivityState,
     };
@@ -9816,8 +9816,8 @@ fn cold_screen_pause_never_finalizes_the_file_the_tap_is_still_writing() {
     };
 
     let mut current_segment_output_files = super::segments::empty_output_files();
-    super::output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
-    super::output::set_current_system_audio_output_file(
+    app_core::native_capture_output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
+    app_core::native_capture_output::set_current_system_audio_output_file(
         &mut current_segment_output_files,
         system_audio.clone(),
     );
@@ -9907,12 +9907,12 @@ fn cold_screen_pause_commits_the_generation_a_rebuild_already_finalized() {
     };
 
     let mut current_segment_output_files = super::segments::empty_output_files();
-    super::output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
-    super::output::set_current_system_audio_output_file(
+    app_core::native_capture_output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
+    app_core::native_capture_output::set_current_system_audio_output_file(
         &mut current_segment_output_files,
         finalized.clone(),
     );
-    super::output::set_current_system_audio_output_file(
+    app_core::native_capture_output::set_current_system_audio_output_file(
         &mut current_segment_output_files,
         live.clone(),
     );
@@ -11335,7 +11335,7 @@ mod low_disk {
         let sys = sys_path.to_string_lossy().into_owned();
 
         let mut current_segment_output_files = super::super::segments::empty_output_files();
-        super::super::output::set_current_system_audio_output_file(
+        app_core::native_capture_output::set_current_system_audio_output_file(
             &mut current_segment_output_files,
             sys.clone(),
         );
@@ -11405,7 +11405,7 @@ mod low_disk {
     /// reads/validates the file.
     fn system_audio_segment_runtime(sys_path: &str, segment_index: u64) -> NativeCaptureRuntime {
         let mut current = super::super::segments::empty_output_files();
-        super::super::output::set_current_system_audio_output_file(&mut current, sys_path.to_string());
+        app_core::native_capture_output::set_current_system_audio_output_file(&mut current, sys_path.to_string());
         NativeCaptureRuntime {
             is_running: true,
             requested_sources: Some(CaptureSources {

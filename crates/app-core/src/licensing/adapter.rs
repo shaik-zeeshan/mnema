@@ -13,14 +13,14 @@ use capture_types::{Activation, LicenseStatus};
 use serde::{Deserialize, Serialize};
 
 /// Provisional Window length in days (ADR 0053 / licensegate config knob N).
-pub(crate) const PROVISIONAL_WINDOW_DAYS: u32 = 7;
+pub const PROVISIONAL_WINDOW_DAYS: u32 = 7;
 
 /// Trial length in days (ADR 0044). Display-only (`TrialNotStarted` promise);
 /// the server's trial plan is the enforcement truth — a running trial's
 /// countdown comes from the issued key's `app` expiry, never this value.
 /// Compile-time override `MNEMA_TRIAL_LEN_DAYS` keeps the promise copy in
 /// step when the server plan changes; 30 is the baked fallback.
-pub(crate) fn trial_len_days() -> u32 {
+pub fn trial_len_days() -> u32 {
     option_env!("MNEMA_TRIAL_LEN_DAYS")
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(30)
@@ -92,7 +92,7 @@ fn pk_token() -> &'static str {
 /// One licensegate deployment, two products: dev/debug builds talk to the
 /// Polar-sandbox product, release builds to prod. The slug is part of the
 /// signature domain, so a sandbox key can never verify on a release build.
-pub(crate) fn product_slug() -> &'static str {
+pub fn product_slug() -> &'static str {
     if cfg!(debug_assertions) {
         "mnema-dev"
     } else {
@@ -107,7 +107,7 @@ const DISPLAY_PREFIX: &str = "MNEMA-";
 /// runtime `MNEMA_LICENSE_BASE_URL` (debug builds only) → build-time
 /// `MNEMA_LICENSE_BASE_URL` → the production domain. Replaces the old
 /// `MNEMA_DEV_ACTIVATION_URL`/`MNEMA_ACTIVATION_URL` pair with one knob.
-pub(crate) fn base_url() -> String {
+pub fn base_url() -> String {
     #[cfg(debug_assertions)]
     if let Ok(url) = std::env::var("MNEMA_LICENSE_BASE_URL") {
         if !url.trim().is_empty() {
@@ -119,7 +119,7 @@ pub(crate) fn base_url() -> String {
 
 /// The one place a `licensegate::Verifier` is built. `None` only on a
 /// misconfigured compile-time key override (not valid 64-char hex).
-pub(crate) fn verifier() -> Option<licensegate::Verifier> {
+pub fn verifier() -> Option<licensegate::Verifier> {
     licensegate::Verifier::new(
         product_slug(),
         Some(DISPLAY_PREFIX),
@@ -130,7 +130,7 @@ pub(crate) fn verifier() -> Option<licensegate::Verifier> {
 
 /// The one place a `licensegate::Client` is built — the activate path uses it
 /// today; slices 3–6 (trial, claim, reset, validate) build on the same call.
-pub(crate) fn client() -> licensegate::Client {
+pub fn client() -> licensegate::Client {
     licensegate::Client::new(&base_url(), pk_token())
 }
 
@@ -141,16 +141,16 @@ pub(crate) fn client() -> licensegate::Client {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FirstSeen {
-    pub(crate) license_id: String,
-    pub(crate) first_seen_at_ms: i64,
+pub struct FirstSeen {
+    pub license_id: String,
+    pub first_seen_at_ms: i64,
 }
 
 /// Pure resolution of a stored first-seen record against a license id: same id
 /// → its stamp; a different id, garbage, or no record → `None` (a genuinely
 /// new license gets a fresh stamp; a re-paste never resets the clock because
 /// the caller only writes when this returns `None`).
-pub(crate) fn first_seen_in(record_json: Option<&str>, license_id: &str) -> Option<i64> {
+pub fn first_seen_in(record_json: Option<&str>, license_id: &str) -> Option<i64> {
     record_json
         .and_then(|json| serde_json::from_str::<FirstSeen>(json).ok())
         .filter(|record| record.license_id == license_id)
@@ -176,7 +176,7 @@ pub(crate) fn first_seen_in(record_json: Option<&str>, license_id: &str) -> Opti
 ///
 /// `machine_supported == false` (non-macOS: no hardware fingerprint) forces
 /// `Activated` — activation can never lock out a platform that can't activate.
-pub(crate) fn map_status(
+pub fn map_status(
     eval: &licensegate::Evaluation,
     key: &licensegate::LicenseKey,
     guarded_now_ms: i64,
@@ -270,7 +270,7 @@ fn days_left(end_ms: i64, guarded_now_ms: i64) -> u32 {
 /// private `parse_ts` (state.rs) so the synthesized ms instant is exactly the
 /// crate's lapse instant. `None` if malformed. Also used by `reset` to turn
 /// the server's `retry_at` into a UI-formattable instant.
-pub(crate) fn parse_ts_ms(s: &str) -> Option<i64> {
+pub fn parse_ts_ms(s: &str) -> Option<i64> {
     let field = |range: core::ops::Range<usize>| s.get(range)?.parse::<i64>().ok();
     let days = days_from_civil(field(0..4)?, field(5..7)?, field(8..10)?);
     let secs = if s.len() >= 19 {
@@ -417,7 +417,11 @@ mod tests {
             let eval = evaluate(&key, Some(&receipt), None, NOW_S - 30 * DAY_S, 7, NOW_S);
             assert_eq!(eval.state, State::Activated);
             let status = map_status(&eval, &key, NOW_MS, true, None);
-            if key.entitlements.iter().any(|e| e.key == "app" && e.expires_at.is_some()) {
+            if key
+                .entitlements
+                .iter()
+                .any(|e| e.key == "app" && e.expires_at.is_some())
+            {
                 assert_eq!(
                     status,
                     LicenseStatus::Trial {
@@ -730,7 +734,9 @@ mod tests {
         // that verify_strict rejects — a build without release config can
         // never accept a key, rather than failing open or panicking.
         let verifier = verifier().expect("placeholder key must construct");
-        assert!(verifier.verify_license("eyJraWQiOiIwMDAwMDAwMCJ9.AA").is_err());
+        assert!(verifier
+            .verify_license("eyJraWQiOiIwMDAwMDAwMCJ9.AA")
+            .is_err());
     }
 
     #[test]

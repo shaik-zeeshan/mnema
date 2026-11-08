@@ -9,8 +9,6 @@
 //! anti-rollback high-water mark; this module is the IO orchestration.
 
 mod activation;
-// pub(crate): `crl_refresh` fetches through the same one-config-point client.
-pub(crate) mod adapter;
 mod claim;
 // pub(crate): its timer is started from deferred startup in `lib.rs`.
 pub(crate) mod receipt_refresh;
@@ -25,6 +23,7 @@ pub use claim::claim_from_deep_link;
 pub use renewed::renewed_from_deep_link;
 pub use trial::ensure_trial_started;
 
+use app_core::licensing::adapter;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};

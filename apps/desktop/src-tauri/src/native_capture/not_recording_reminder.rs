@@ -158,7 +158,7 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
     let step = runtime.observe(
         now_ms,
         capture_off,
-        super::system_idle::current_system_idle_ms(),
+        app_core::native_capture_system_idle::current_system_idle_ms(),
         capture_off && user_away(),
         SNOOZED_UNTIL_MS.load(Ordering::Relaxed),
     );
